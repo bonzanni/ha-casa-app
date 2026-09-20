@@ -2534,6 +2534,9 @@ class TelegramChannel(Channel):
         # restarts, and its engagements never have sdk_session_id).
         if rec.driver != "claude_code" and self._engagement_driver is not None:
             drv = self._engagement_driver
+            continuing_job = bool(rec.origin.get("job")) and not any(
+                handle.engagement_id == rec.id
+                for handle in getattr(reg, "_launch_handles", {}).values())
             if not drv.is_alive(rec) and rec.sdk_session_id:
                 fail_count = rec.origin.get("_resume_fail_count", 0)
                 try:
@@ -2546,6 +2549,10 @@ class TelegramChannel(Channel):
                     else:
                         rec.origin["_resume_fail_count"] = 0
                 except Exception as exc:  # noqa: BLE001
+                    if continuing_job:
+                        # Continuation failures belong to the job sweep's bound.
+                        logger.warning("job resume failed for %s: %s", rec.id[:8], exc)
+                        return False
                     fail_count += 1
                     # #326: durable two-strike counter — without persistence a
                     # restart reset it and an unrecoverable engagement dodged
@@ -2583,6 +2590,12 @@ class TelegramChannel(Channel):
                     return False
             elif not drv.is_alive(rec):
                 # No session to resume — orphan.
+                if continuing_job:
+                    from tools import _finalize_engagement
+                    await _finalize_engagement(
+                        rec, outcome="error", text="no sdk_session_id to resume with",
+                        artifacts=[], next_steps=[], driver=drv)
+                    return False
                 if reg is not None:
                     await reg.mark_error(
                         rec.id, kind="orphan_no_session",

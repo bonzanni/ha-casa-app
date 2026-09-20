@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any, Iterable
 
@@ -23,6 +24,26 @@ logger = logging.getLogger(__name__)
 
 # Casa tool granted to a specialist session only while it runs a job.
 JOB_CASA_GRANTS: tuple[str, ...] = ("mcp__casa-framework__report_job_progress",)
+
+# The COMPLETE casa-framework surface of a plugin-job (resident-hosted) session:
+# it reports and it finishes, and the bridge admits exactly this — no union with
+# MANDATORY_BRIDGE_CASA_GRANTS, so a worker never holds query_engager (C3).
+PLUGIN_JOB_CASA_GRANTS: tuple[str, ...] = (
+    "mcp__casa-framework__report_job_progress",
+    "mcp__casa-framework__emit_completion",
+)
+
+# A job that has not advanced for this long, with no turn queued and no delivery
+# owner live, is stalled and the sweep continues it (C7a).
+_JOB_STALL_S: float = 180.0
+
+# Consecutive failed continuations before the sweep ends the job (C7a).
+_JOB_MAX_STALLS: int = 3
+
+# A launch creates its engagement only after a few awaits.  Keep the small
+# in-process claim separate from durable records so two starts cannot pass
+# that window for the same installed plugin.
+_pending_plugin_job_starts: dict[str, tuple[str, str]] = {}
 
 
 @dataclass(frozen=True)
@@ -39,24 +60,147 @@ class JobDecl:
     turns_per_batch: int | None    # None = the specialist's tools.max_turns
 
 
+@dataclass(frozen=True)
+class JobHost:
+    """Who runs a job: a specialist the caller delegates to, or the calling
+    resident itself (the declaring plugin is installed on it)."""
+
+    kind: str                  # "specialist" | "resident"
+    role: str                  # the specialist's role, or the hosting resident's
+    decl: "JobDecl"
+    plugin: Any                # the declaring ResolvedPlugin
+
+
+def running_job_for_plugin(registry: Any, plugin: str) -> Any | None:
+    """Return the live job record for an installed plugin, if any.
+
+    New plugin jobs persist their registry identity in ``plugin_job``.  The
+    phase-one records have no such marker, so recover it from the pinned
+    artifact whose manifest name declares the qualified job.
+    """
+    for rec in registry.active_and_idle():
+        origin = getattr(rec, "origin", None) or {}
+        job = origin.get("job")
+        if not isinstance(job, dict):
+            continue
+        meta = origin.get("plugin_job")
+        if isinstance(meta, dict):
+            recorded = (meta.get("registry_name") or meta.get("plugin")
+                        or meta.get("name"))
+            if recorded == plugin:
+                return rec
+            continue
+        # No recorded identity (a phase-1 record): the qualified job name
+        # carries the declaring plugin's manifest name, which is what a
+        # phase-1 declaration is keyed by. Prefer a pinned artifact when one
+        # names this installed plugin, else fall back to that prefix.
+        qualified = job.get("name")
+        manifest_name = qualified.split(":", 1)[0] if isinstance(qualified, str) else ""
+        recorded_names = {artifact.get("name") for artifact in
+                          (getattr(rec, "plugin_artifacts", ()) or ())
+                          if isinstance(artifact, dict)}
+        for artifact in getattr(rec, "plugin_artifacts", ()) or ():
+            if not isinstance(artifact, dict):
+                continue
+            if artifact.get("manifest_name") == manifest_name and artifact.get("name") == plugin:
+                return rec
+        # Only when the record names no installed plugin at all does the
+        # qualified job name stand in for its identity: a record that DOES name
+        # one and did not match above is a different installed plugin, and
+        # refusing on its manifest prefix would block two distinct plugins from
+        # running side by side (diff review r1).
+        if manifest_name and manifest_name == plugin and not recorded_names:
+            return rec
+    return None
+
+
+def pending_plugin_job_start(plugin: str) -> tuple[str, str] | None:
+    """The qualified job and title currently claiming *plugin*, if any."""
+    return _pending_plugin_job_starts.get(plugin)
+
+
+def claim_plugin_job_start(plugin: str, job: str, title: str) -> bool:
+    """Synchronously claim an installed plugin's short pre-record window."""
+    if plugin in _pending_plugin_job_starts:
+        return False
+    _pending_plugin_job_starts[plugin] = (job, title)
+    return True
+
+
+def release_plugin_job_start(plugin: str) -> None:
+    _pending_plugin_job_starts.pop(plugin, None)
+
+
+def _job_busy_refusal(plugin: str, job: str, title: str, rec: Any | None) -> dict:
+    """C6's refusal: a live record names its ids, a pending start does not."""
+    if rec is None:
+        return {"status": "error", "kind": "job_busy", "plugin": plugin,
+                "job": job,
+                "message": f"{plugin} is already starting {title}."}
+    return {"status": "error", "kind": "job_busy", "plugin": plugin, "job": job,
+            "engagement_id": rec.id, "topic_id": rec.topic_id,
+            "message": (f"{plugin} already has a running job: {title}. "
+                        "Wait for it to finish or /cancel it in its topic.")}
+
+
+def claim_job_start(host: "JobHost", registry: Any) -> dict | None:
+    """One job per installed plugin (A4): refuse when one is live or starting,
+    else claim the pre-record window. The caller releases in a `finally`."""
+    plugin = host_plugin_name(host)
+    running = (running_job_for_plugin(registry, plugin)
+               if registry is not None else None)
+    if running is not None:
+        job = (getattr(running, "origin", None) or {}).get("job") or {}
+        return _job_busy_refusal(
+            plugin, job.get("name") or host.decl.qualified_name,
+            job.get("title") or getattr(running, "task", "")[:80], running)
+    if not claim_plugin_job_start(plugin, host.decl.qualified_name, host.decl.title):
+        pending = pending_plugin_job_start(plugin) or (
+            host.decl.qualified_name, host.decl.title)
+        return _job_busy_refusal(plugin, pending[0], pending[1], None)
+    return None
+
+
+def release_job_start(plugin: str) -> None:
+    release_plugin_job_start(plugin)
+
+
+def host_plugin_name(host: "JobHost") -> str:
+    """The installed plugin's registry identity — the concurrency key (C6)."""
+    return getattr(getattr(host, "plugin", None), "name", None) or host.decl.plugin
+
+
+def acquire_job_permit(host: "JobHost", limiter: Any):
+    """The per-plugin slot plus the shared global cap (C6). Never the
+    resident's engagement scope, so a job cannot make its host unavailable."""
+    if limiter is None:
+        return None, None
+    permit = limiter.try_acquire(f"plugin-job:{host_plugin_name(host)}")
+    if permit is None:
+        return None, {"status": "error", "kind": "busy",
+                      "message": "Casa is at its concurrent-work limit. "
+                                 "Try again shortly."}
+    return permit, None
+
+
 # ---------------------------------------------------------------------------
 # Declaration and listing
 # ---------------------------------------------------------------------------
 
-def jobs_for_specialist(role: str) -> dict[str, JobDecl]:
-    """The jobs declared by the plugins a specialist's session loads, keyed by
-    qualified name. Any error resolving plugins yields an empty dict."""
+def jobs_for_target(scope: str) -> dict[str, tuple[JobDecl, Any]]:
+    """The jobs declared by the plugins resolved for *scope*
+    (``specialist:<role>`` or ``resident:<role>``), keyed by qualified name."""
     try:
         import plugin_registry
         from plugin_store import manifest_jobs
 
-        jobs: dict[str, JobDecl] = {}
-        for resolved in plugin_registry.resolve_for(f"specialist:{role}").plugins:
+        jobs: dict[str, tuple[JobDecl, Any]] = {}
+        for resolved in plugin_registry.resolve_for(scope).plugins:
             manifest = resolved.manifest
             plugin = manifest["name"]
             for entry in manifest_jobs(manifest):
                 qualified_name = f"{plugin}:{entry['name']}"
-                jobs[qualified_name] = JobDecl(
+                jobs[qualified_name] = (JobDecl(
                     qualified_name=qualified_name,
                     plugin=plugin,
                     name=entry["name"],
@@ -66,32 +210,46 @@ def jobs_for_specialist(role: str) -> dict[str, JobDecl]:
                     batches=(None if entry["batches"] == "unlimited"
                              else entry["batches"]),
                     turns_per_batch=entry.get("turnsPerBatch"),
-                )
+                ), resolved)
         return jobs
     except Exception:
-        logger.warning("Could not list background jobs for specialist %s", role,
+        logger.warning("Could not list background jobs for %s", scope,
                        exc_info=True)
         return {}
 
 
-def startable_jobs(delegate_roles: Iterable[str]) -> list[tuple[str, JobDecl]]:
-    """``(role, decl)`` for every job a caller with these delegates can start,
-    in delegates order; a job declared for two roles appears once, first role."""
-    found: list[tuple[str, JobDecl]] = []
+def jobs_for_specialist(role: str) -> dict[str, JobDecl]:
+    """The jobs declared by the plugins a specialist's session loads, keyed by
+    qualified name. Any error resolving plugins yields an empty dict."""
+    return {name: decl for name, (decl, _plugin) in
+            jobs_for_target(f"specialist:{role}").items()}
+
+
+def startable_jobs(caller_role: str, delegate_roles: Iterable[str]) -> list[JobHost]:
+    """Every job a caller can start, with own plugins before delegates.
+
+    A duplicate qualified name is hosted by the first scope that declares it.
+    """
+    found: list[JobHost] = []
     names: set[str] = set()
+
+    for name, (decl, plugin) in jobs_for_target(f"resident:{caller_role}").items():
+        names.add(name)
+        found.append(JobHost("resident", caller_role, decl, plugin))
     for role in delegate_roles:
-        for name, decl in jobs_for_specialist(role).items():
+        for name, (decl, plugin) in jobs_for_target(f"specialist:{role}").items():
             if name not in names:
                 names.add(name)
-                found.append((role, decl))
+                found.append(JobHost("specialist", role, decl, plugin))
     return found
 
 
-def find_job_host(job: str, delegate_roles: Iterable[str]) -> tuple[str, JobDecl] | None:
-    """The specialist (first in delegates order) that runs *job*, or None."""
-    for role, decl in startable_jobs(delegate_roles):
-        if decl.qualified_name == job:
-            return role, decl
+def find_job_host(job: str, caller_role: str,
+                  delegate_roles: Iterable[str]) -> JobHost | None:
+    """The first eligible host for *job*, or None."""
+    for host in startable_jobs(caller_role, delegate_roles):
+        if host.decl.qualified_name == job:
+            return host
     return None
 
 
@@ -114,6 +272,11 @@ def initial_job_state(decl: JobDecl) -> dict:
         "remaining": None,
         "prev_remaining": None,
         "last_summary": None,
+        # C7a: the sweep's inputs. `last_advance` is written whenever a batch is
+        # admitted and whenever a progress report lands; `stalls` counts
+        # consecutive failed continuations and resets on a successful admission.
+        "last_advance": None,
+        "stalls": 0,
     }
 
 
@@ -179,6 +342,11 @@ async def job_after_turn(rec: Any, channel: Any, *, turn_cut_off: bool = False) 
     latest = channel._engagement_registry.get(rec.id)
     if latest is None or latest.status not in ("active", "idle"):
         return
+    # This hook runs after every turn of a job, the launch turn first: its first
+    # run is the moment launch ownership ends and continuation begins. Recording
+    # it is what lets the sweep tell "still launching" from "running but not
+    # advancing" — three review rounds showed that inferring it from the session
+    # pointer and the rebuild flag misreads a post-launch state (diff review r4).
     if turn_cut_off:
         from tools import _finalize_engagement
         await _finalize_engagement(
@@ -188,12 +356,69 @@ async def job_after_turn(rec: Any, channel: Any, *, turn_cut_off: bool = False) 
     await start_next_batch(latest, channel)
 
 
-async def start_next_batch(rec: Any, channel: Any) -> None:
-    """The only place a batch is counted, judged, limit-checked and started."""
+async def sweep_jobs(registry: Any, channel: Any) -> None:
+    """Periodic owner of job liveness (C7a): continue a stalled job, and end one
+    that could not be continued `_JOB_MAX_STALLS` times running."""
+    if channel is None or channel._stopping:
+        return
+    driver = channel._engagement_driver
+    for rec in registry.active_and_idle():
+        if channel._stopping:
+            return
+        job = rec.origin.get("job")
+        if not job or driver.inbound_unread_depth(rec.id) > 0 or turn_owners(rec.id):
+            continue
+        # The launch owns the record until its acknowledgement turn ends, and
+        # until then there is no turn owner to see (diff review r1). This is a
+        # guard against acting, not a claim about ownership: a record can also
+        # leave its launch without ever reaching here — which is why the sweep
+        # below only ever CONTINUES a job it cannot prove is running, and needs
+        # three failed attempts of its own before it ends one.
+        if getattr(registry, "launch_in_flight", None) and registry.launch_in_flight(rec.id):
+            continue
+        # A job that has never advanced is measured from when it was created,
+        # not from the epoch.
+        since = job.get("last_advance") or getattr(rec, "started_at", None) or 0
+        if time.time() - since < _JOB_STALL_S:
+            continue
+        try:
+            admitted = await start_next_batch(rec, channel)
+        except Exception:
+            logger.warning("job continuation failed for %s", rec.id, exc_info=True)
+            admitted = False
+        if channel._stopping:
+            return
+        if admitted or rec.status not in ("active", "idle"):
+            continue
+        # A refused continuation is the ONLY thing that counts toward ending a
+        # job here. The sweep cannot tell a job that is still launching from one
+        # that is stuck — seven review rounds established that no combination of
+        # live state says so reliably — so it never ends a job on a state read:
+        # it continues one, harmlessly if it was launching, and only its own
+        # three refused attempts end it (INV-BGJOB-003).
+        job["stalls"] = job.get("stalls", 0) + 1
+        await registry.persist_origin(rec.id)
+        if job["stalls"] >= _JOB_MAX_STALLS:
+            from tools import _finalize_engagement
+            await _finalize_engagement(
+                rec, outcome="error",
+                text=f"could not be continued after {_JOB_MAX_STALLS} attempts",
+                artifacts=[], next_steps=[], driver=driver)
+
+
+async def start_next_batch(rec: Any, channel: Any) -> bool:
+    """The only place a batch is counted, judged, limit-checked and started.
+
+    Returns whether it ADMITTED a turn: False for a quiet skip, a refused
+    hand-off, or a finalize. The batch number is chosen and the previous batch
+    judged synchronously (the operator's "count when a batch starts"), but
+    `started` is committed and persisted only once the hand-off succeeded — a
+    refused continuation costs nothing (C7a, review r3)."""
     driver = channel._engagement_driver
     if driver.inbound_unread_depth(rec.id) > 0 or turn_owners(rec.id):
-        return
-    job = rec.origin["job"]
+        return False
+    # Stage the judgment: a refused hand-off must cost no batch or progress.
+    job = dict(rec.origin["job"])
     if job["started"] > job["judged"]:
         progress = job["reported"] and (
             job["remaining"] is None or job["prev_remaining"] is None
@@ -214,10 +439,16 @@ async def start_next_batch(rec: Any, channel: Any) -> None:
             driver=driver))
         channel._turn_tasks.add(task)
         task.add_done_callback(channel._turn_tasks.discard)
-        return
+        await task
+        return False
     job["started"] += 1
     handed_off = await channel.deliver_system_turn(
         rec, batch_prompt(job["started"], job["title"]))
-    await channel._engagement_registry.persist_origin(rec.id)
     if not handed_off:
         logger.info("job batch handoff refused for %s", rec.id)
+        return False
+    rec.origin["job"].update(
+        {key: job[key] for key in ("started", "judged", "stuck", "prev_remaining", "reported")})
+    rec.origin["job"].update(last_advance=time.time(), stalls=0)
+    await channel._engagement_registry.persist_origin(rec.id)
+    return True

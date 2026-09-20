@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-08-13
+last_reviewed: 2026-09-19
 ---
 
 # Delegation and the agent-spawn boundary
@@ -152,13 +152,20 @@ publish a briefly partial role map, since the specialist registry is cleared and
 place off-loop while another reload snapshots it; and *tier* lookups still read a boot-time
 registry global no reload refreshes.
 
-Interactive specialist launches, including `start_job`, use a role-wide
+Interactive specialist launches, including a specialist-hosted `start_job`, use a role-wide
 `<role>:engagement` limiter scope. Before acquiring it, admission checks active and
 idle specialist records across all chats. An existing record produces `engagement_busy`
 with its engagement id, topic id and job title (or the first 80 task characters).
 Quick sync/async delegations retain their chat-and-role scope, independently of the
 engagement slot; the global cap still applies. Boot does not restore permits, so the
 record check also covers resumed engagements.
+
+`start_job` admits one job per installed plugin on top of that, for either host kind: a
+start refused because that plugin already has a job — live, or still inside the window
+before its record exists — answers `job_busy`. A resident-hosted job then takes a
+`plugin-job:<plugin>` scope under the same global cap rather than its host's
+`<role>:engagement` slot, so running one never makes the resident unavailable
+([`background-jobs.md`](background-jobs.md)).
 
 ## Failure behavior
 

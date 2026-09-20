@@ -1081,6 +1081,17 @@ class EngagementRegistry:
                                engagement_id[:8], exc_info=True)
         return handle
 
+    def launch_in_flight(self, engagement_id: str) -> bool:
+        """Whether a launch for *engagement_id* is still enrolled.
+
+        The job sweep reads it: continuation eligibility begins only when launch
+        ownership has ended (INV-BGJOB-003), and a record whose acknowledgement
+        turn has not finished has no turn owner yet, so nothing else
+        distinguishes it from a stalled one.
+        """
+        return any(h.engagement_id == engagement_id
+                   for h in self._launch_handles.values())
+
     def unregister_launch(self, handle: LaunchCancellation | None) -> None:
         """Drop a handle by IDENTITY. Does NOT clear the cause.
 
@@ -1821,7 +1832,18 @@ class EngagementRegistry:
             if rec is None:
                 return
             rec.context_rebuild_pending = False
-            await self._write_tombstone_locked(strict=True)
+            try:
+                await self._write_tombstone_locked(strict=True)
+            except BaseException:
+                # Follow the SETTLED write, not the exception: the write
+                # settles even under cancellation and then re-raises it, so
+                # catching Exception alone missed a genuinely failed write
+                # (r5) while restoring unconditionally contradicted a write
+                # that had succeeded (r6). Memory agrees with the durable row
+                # either way.
+                if not self._last_tombstone_ok:
+                    rec.context_rebuild_pending = True
+                raise
 
     async def backfill_allocated_uid(self, engagement_id: str) -> int:
         """Containment Stage 2 (Task 10): allocate + persist an OS uid for a

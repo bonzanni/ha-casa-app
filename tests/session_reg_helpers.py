@@ -70,7 +70,7 @@ def align_prompt_surface(registry, agent, channel: str, scope_id) -> str:
     from session_registry import build_scoped_session_key
 
     digest = _render_prompt_surface(
-        agent.config.delegates, agent._agent_registry,
+        agent.config.role, agent.config.delegates, agent._agent_registry,
         live_names=_live_agent_directory(),
         allowed_tools=agent.config.tools.allowed,
         executors=agent.config.executors,

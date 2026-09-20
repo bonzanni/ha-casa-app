@@ -84,7 +84,7 @@ def _align_seeded_surface(reg: SessionRegistry, agent, chat: str = "fault-scope"
 
     key = build_scoped_session_key("telegram", "butler", chat)
     reg._data[key]["prompt_surface_digest"] = _render_prompt_surface(
-        agent.config.delegates, agent._agent_registry,
+        agent.config.role, agent.config.delegates, agent._agent_registry,
         live_names=_live_agent_directory(),
         allowed_tools=agent.config.tools.allowed,
         executors=agent.config.executors,

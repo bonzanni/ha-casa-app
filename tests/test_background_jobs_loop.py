@@ -157,14 +157,14 @@ class Harness:
 
 
 @pytest_asyncio.fixture
-async def harness(tmp_path, monkeypatch):
+async def harness(tmp_path, monkeypatch, request):
     h = Harness()
     h.bot, h.client, h.bus = Bot(), Client(), MessageBus()
     h.bus.register("assistant")
     h.reg = EngagementRegistry(tombstone_path=str(tmp_path / "jobs.json"), bus=None)
     decl = jobs.JobDecl("sample:work", "sample", "work", "sample:work", "Process rows", None, None, 10)
     h.rec = await h.reg.create(
-        "specialist", "worker", "in_casa", "Process rows",
+        getattr(request, "param", "specialist"), "worker", "in_casa", "Process rows",
         {"role": "assistant", "channel": "telegram", "chat_id": "100", "user_id": 77,
          "job": jobs.initial_job_state(decl)}, topic_id=555,
         tools_allowed=tools.SPECIALIST_CASA_GRANTS + jobs.JOB_CASA_GRANTS)

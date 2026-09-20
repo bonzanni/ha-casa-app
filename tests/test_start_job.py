@@ -99,17 +99,19 @@ async def runtime(tmp_path, monkeypatch):
         calls.append((rec.id, jobs.turn_owners(rec.id), ch))
     monkeypatch.setattr(jobs, 'job_after_turn', after)
     # U1 owns discovery; these seams enforce its delegate-filtered interface.
-    monkeypatch.setattr(jobs, 'find_job_host', lambda name, roles:
-                        ('finance', DECL) if name == DECL.qualified_name and 'finance' in roles else None)
-    monkeypatch.setattr(jobs, 'startable_jobs', lambda roles:
-                        [('finance', DECL)] if 'finance' in roles else [])
+    host = jobs.JobHost('specialist', 'finance', DECL, SimpleNamespace(name='ledger'))
+    monkeypatch.setattr(jobs, 'find_job_host', lambda name, caller, roles:
+                        host if name == DECL.qualified_name and 'finance' in roles else None)
+    monkeypatch.setattr(jobs, 'startable_jobs', lambda caller, roles:
+                        [host] if 'finance' in roles else [])
     yield SimpleNamespace(registry=registry, driver=driver, channel=channel, bot=bot,
                           cfg=cfg, caller=caller, limiter=limiter, calls=calls)
     await tools.drain_launch_turns()
     await tools.drain_launch_death_reports()
     for rec in registry.active_and_idle():
         await driver.cancel(rec)
-    timer.cancel()
+    # Keep the wakeup through pytest's executor shutdown; closing the loop
+    # clears its scheduled handles.
 
 
 async def call(tool=None, *, channel='telegram', chat='1', **args):
@@ -185,11 +187,16 @@ async def test_second_engagement_from_another_chat_names_open_job(runtime, secon
         result = await call(chat='2')
     else:
         result = await call(tools.delegate_to_agent, chat='2', agent='finance', mode='interactive')
-    assert result['kind'] == 'engagement_busy'
     assert result['engagement_id'] == first['engagement_id']
     assert result['topic_id'] == 42
-    assert result['agent'] == 'finance'
-    assert DECL.title in result['message'] and 'Alex' in result['message']
+    if second_job:
+        assert result['kind'] == 'job_busy'
+        assert result['plugin'] == 'ledger'
+        assert DECL.title in result['message'] and 'already has a running job' in result['message']
+    else:
+        assert result['kind'] == 'engagement_busy'
+        assert result['agent'] == 'finance'
+        assert DECL.title in result['message'] and 'Alex' in result['message']
     assert runtime.bot.create_forum_topic.await_count == 1
 
 
@@ -231,8 +238,8 @@ async def test_host_resolution_preserves_execution_callers_delegate_order(runtim
     runtime.caller.delegates = [DelegateEntry(agent=r, purpose='p', when='w')
                                 for r in ['second', 'finance', 'first']]
     seen = []
-    def find(name, roles):
-        seen.append((name, list(roles)))
+    def find(name, caller, roles):
+        seen.append((name, caller, list(roles)))
         return None
     monkeypatch.setattr(jobs, 'find_job_host', find)
     token = agent.origin_var.set({'role': 'finance', 'execution_role': 'assistant'})
@@ -240,7 +247,7 @@ async def test_host_resolution_preserves_execution_callers_delegate_order(runtim
         await tools.start_job.handler({'job': 'unknown', 'task': 't', 'context': ''})
     finally:
         agent.origin_var.reset(token)
-    assert seen == [('unknown', ['second', 'finance', 'first'])]
+    assert seen == [('unknown', 'assistant', ['second', 'finance', 'first'])]
 
 
 async def test_start_job_is_registered_and_granted_only_to_assistant():

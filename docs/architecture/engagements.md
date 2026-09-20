@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-17
+last_reviewed: 2026-09-19
 ---
 
 # Engagements
@@ -36,8 +36,12 @@ durable record with its own topic, which outlives the call that created it.
 Three launch paths exist and they are not symmetrical. Ordinary specialist delegation runs
 ephemerally. *Interactive* specialist delegation creates an engagement. Engaging an executor
 always creates one. Both engagement-creating paths pass the agent-spawn gate first
-(INV-ENG-008). `start_job` launches through the same interactive specialist path; what Casa
-then does with a job's engagement is [`architecture/background-jobs.md`](background-jobs.md).
+(INV-ENG-008). `start_job` launches through the same interactive launch owner, as a
+`specialist` record when a delegate hosts the job and as a third record kind, `plugin`,
+when the declaring plugin is installed on the calling resident — a worker record whose
+`role_or_type` is that resident and whose session carries neither the resident's tools nor
+its prompt; what Casa then does with a job's engagement is
+[`architecture/background-jobs.md`](background-jobs.md).
 
 **Much less survives a restart than the word "durable" suggests.** The record persists;
 concurrency permits, live drivers, output sequencers, inbound reservations and various
@@ -57,10 +61,10 @@ has no rollback — stopping an in-flight turn is the finalize path's driver tea
 
 **Durable is not indefinite, and engagements can speak up unprompted.** A daily sweep
 suspends a live session after a day idle and posts recurring idle reminders (three days for
-a specialist, seven for an executor, refiring weekly); terminal tombstones age out after
-thirty days, bounding duplicate-task protection. Separately, an observer watches engagement
-events and may post a bounded LLM interjection into the resident chat — capped at three per
-engagement and suppressible with `/silent`. The cap holds under concurrent dispatch: a
+a specialist record, seven for every other kind, refiring weekly); terminal tombstones age
+out after thirty days, bounding duplicate-task protection. Separately, an observer watches
+engagement events and may post a bounded LLM interjection into the resident chat — capped
+at three per engagement and suppressible with `/silent`. The cap holds under concurrent dispatch: a
 budget slot is reserved before evaluation and returned if nothing is posted.
 
 **A `claude_code` record carries an OS uid, and what that uid means is not this document's
