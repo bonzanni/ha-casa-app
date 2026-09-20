@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.324.0] - 2026-09-20
+
+### Fixed
+
+- A scheduled message that never left Casa is no longer reported as sent. When the
+  assistant sends you something with its message tool, the tool used to answer
+  "message sent" whatever the channel actually did — including while the Telegram
+  connection was down, and for a message aimed at the voice channel, which has no
+  way to reach you out of band. A scheduled turn is told to stay quiet after it has
+  sent, so it did, and you received nothing at all and nothing said so. The tool now
+  reports a message that reached nobody as a failure, and reports a send that
+  broke down as a failure without guessing at what you did or did not receive.
+  Either way the turn tells you instead of falling silent. The trigger guidance
+  says the same thing in words, on every surface that teaches how a scheduled
+  prompt ends.
+
 ## [0.323.0] - 2026-09-20
 
 ### Added

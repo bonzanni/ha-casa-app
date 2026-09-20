@@ -147,6 +147,9 @@ it has to tell you, on any branch, it sends with `send_message`. A turn that ask
 ask reports that it is awaiting the operator's answer; when it reports anything
 else, the turn outputs what the ask reported as its final text instead of the
 sentinel.
+A turn that sends with `send_message` has put its message in the chat only when
+the send reports that the message was sent; when it reports anything else, the
+turn outputs what the send reported as its final text instead of the sentinel.
 
 A Home Assistant notification that carries this turn's message to the operator
 is a delivery, including when it is reached through the Home Assistant proxy, so

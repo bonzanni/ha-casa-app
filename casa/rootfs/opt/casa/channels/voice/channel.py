@@ -23,7 +23,7 @@ from agent import _classify_error
 from bus import BusMessage, MessageBus, MessageType
 from channel_authz import agent_allowed_on
 from ingress_identity import ingress_identity
-from channels import Channel
+from channels import Channel, DeliveryOutcome
 from log_cid import new_cid
 from provenance import sanitize_external_context
 from rate_limit import RateLimiter
@@ -526,11 +526,18 @@ class VoiceChannel(Channel):
     # them, instead of counting the no-op as a confirmed delivery (#349).
     delivers_final_text = False
 
-    async def send(self, message: str, context: dict) -> None:
+    async def send(self, message: str, context: dict) -> DeliveryOutcome:
         # Voice has no out-of-band send path — responses are delivered
         # inline on the request's transport. No-op for the ChannelManager's
         # outbound registration (kept so the Channel ABC is satisfied).
-        return None
+        #
+        # #990: it reports NOT_DELIVERED, not UNKNOWN. UNKNOWN means "this
+        # channel has not opted into the contract and cannot say" — which is
+        # not this channel's situation. This one knows: it delivered nothing,
+        # and it never will. A caller-selected `channel="voice"` on a
+        # scheduled telegram turn is exactly where the difference is paid,
+        # because `send_message` reports only a PROVEN negative as an error.
+        return DeliveryOutcome.NOT_DELIVERED
 
     # --- create_on_token: adapter for the production Agent path -------
 
