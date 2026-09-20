@@ -325,6 +325,14 @@ questions to it still work while a job is open. When the job ends the topic
 closes and the assistant tells you the outcome. After a restart an open job
 posts a short "resuming" line and continues.
 
+Jobs come from two places (v0.323.0). A specialist's plugins run their jobs in the
+specialist's own topic, as above. Plugins you installed on a resident directly run
+theirs as a worker of their own, in a topic named after the resident, with nothing
+but that plugin's own tools — so the resident stays free for you meanwhile. One job
+runs per installed plugin. Casa checks open jobs once a minute and restarts one that
+has stalled; a job it cannot get moving again is ended and reported rather than left
+sitting there.
+
 ## Voice pipeline
 
 Casa exposes two transports for Home Assistant voice / generic voice clients. The HA-side integration that consumes them ships separately in `ha-casa-integration` (phase 2.4).
