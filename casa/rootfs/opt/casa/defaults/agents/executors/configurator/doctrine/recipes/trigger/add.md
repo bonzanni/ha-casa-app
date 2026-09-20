@@ -50,6 +50,10 @@ take opposite endings:
   `ask_user` has put its question in the chat only when the ask reports that it
   is awaiting the operator's answer; when it reports anything else, the turn
   outputs what the ask reported as its final text instead of the sentinel.
+  A turn that sends with `send_message` has put its message in the chat only
+  when the send reports that the message was sent; when it reports anything
+  else, the turn outputs what the send reported as its final text instead of
+  the sentinel.
 - from the turn's OWN final text, which Casa delivers when the turn ends. This
   shape must NOT be given the clause: the sentinel would be the whole final text,
   the turn would be suppressed, and the operator would get nothing. The heartbeat

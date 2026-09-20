@@ -61,6 +61,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | the HA facade, HA tool exposure, or anything about what an agent may control | [`architecture/home-assistant-control.md`](architecture/home-assistant-control.md) |
 | the callback route, callback consent or reconciliation, or the validated redirect base URL | [`architecture/callbacks.md`](architecture/callbacks.md) |
 | the callback spool protocol, the attempt ledger or its ack protocol, or the delivery worker | [`architecture/callback-delivery.md`](architecture/callback-delivery.md) |
+| the closing-silence convention, which tool calls count as a scheduled turn's delivery, or the surfaces that state either | [`architecture/scheduled-prompt-endings.md`](architecture/scheduled-prompt-endings.md) |
 | the completion gate, or a driver's inbound count accessors — its unread depth, its in-flight blocking answer, its reservation count | [`architecture/engagement-completion-gate.md`](architecture/engagement-completion-gate.md) |
 | the contribution rules, the verification discipline, or how documentation is kept honest | [`doctrine/working-on-casa.md`](doctrine/working-on-casa.md) |
 | the delegation ACL or alias resolution, the delegates block, the delegation depth cap, or the agent-spawn cap | [`architecture/delegation.md`](architecture/delegation.md) |

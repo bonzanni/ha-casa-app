@@ -63,7 +63,7 @@ from claude_agent_sdk import (
 )
 
 from bus import BusMessage, MessageBus, MessageType
-from channels import ChannelManager
+from channels import ChannelManager, DeliveryOutcome
 from claude_runtime import CLAUDE_CLI_PATH
 from media_policies import MEDIA_POLICIES
 import plugin_outbox
@@ -247,6 +247,21 @@ def sync_agent_role_map(runtime: Any) -> None:
         _agent_registry = fresh_registry
 
 
+def _text_result(text: str, *, is_error: bool = False) -> dict:
+    """One plain-text tool result, marked as an error where it is one.
+
+    ``is_error`` is what turns a failure into a FAILURE in turn telemetry: the
+    SDK's MCP adapter reads it and the wire field follows, so without it
+    ``sdk_logging.log_tool_result`` emits ``ok=True`` for a message that
+    reached nobody (the same F-7/O-1 reasoning as :func:`_result`, which takes
+    a JSON payload rather than plain text).
+    """
+    out: dict[str, Any] = {"content": [{"type": "text", "text": text}]}
+    if is_error:
+        out["is_error"] = True
+    return out
+
+
 @tool(
     "send_message",
     "Send a message to a user through a communication channel.",
@@ -267,14 +282,62 @@ async def send_message(args: dict) -> dict:
         channel = "telegram"
 
     if _channel_manager is None:
-        return {"content": [{"type": "text", "text": "Error: tools not initialized"}]}
+        return _text_result("Error: tools not initialized", is_error=True)
 
     ch = _channel_manager.get(channel)
     if ch is None:
-        return {"content": [{"type": "text", "text": f"Error: channel '{channel}' not found"}]}
+        return _text_result(f"Error: channel '{channel}' not found",
+                            is_error=True)
 
-    await ch.send(message, {})
-    return {"content": [{"type": "text", "text": f"Message sent via {channel}."}]}
+    # #990: report what the channel actually did. The unconditional "Message
+    # sent" this replaced was a FALSE positive on two shipped paths — Telegram
+    # returns NOT_DELIVERED having made zero Bot API calls while its
+    # application is not started, and voice `send` is a documented no-op — and
+    # a scheduled turn told the message was sent ends with `<silent/>` as the
+    # closing-silence convention instructs, so the operator receives nothing at
+    # all. The turn's only signal was the false one.
+    #
+    # Only a PROVEN negative is an error. `UNKNOWN` (or a `None` from a channel
+    # that has not opted into the contract) keeps today's text, explicitly
+    # rather than by omission — the #556 rule: "cannot report" is not "failed",
+    # and reporting it as failure would make every send on such a channel look
+    # lost.
+    ctx: dict[str, Any] = {}
+    try:
+        outcome = await ch.send(message, ctx)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — a send fault is a tool result
+        # This arm makes NO claim about what reached the operator, and that is
+        # the whole of its design. Three review findings across two rounds each
+        # said the same thing about an earlier wording here — that it asserted
+        # more than an exception establishes: "nothing reached the operator" is
+        # false for a response lost in transit after Telegram processed the
+        # request; "it may have been delivered" is false for a `Forbidden`,
+        # which the API evaluated and declined; "then X stopped the rest" is
+        # false when the raising call was the last chunk. So the judgment is
+        # cut rather than sharpened a third time. Casa DOES own that taxonomy —
+        # `channels/telegram.py`'s `_SERVER_REFUSALS`, `_established_unsent`
+        # and `_edit_failure_outcome`, built by review for this exact question
+        # — and it belongs to the channel, which knows its own transport, not
+        # to a channel-agnostic tool inferring from an exception class. The
+        # only delivery claim this tool makes is the one the channel itself
+        # reports through `DeliveryOutcome`.
+        #
+        # Still an error, so the turn speaks rather than falling silent: a
+        # duplicate is the lesser harm, the direction `send_media`'s
+        # `delivery_uncertain` already chose.
+        logger.warning("send_message: %s send failed: %s", channel,
+                       type(exc).__name__)
+        return _text_result(
+            f"Error: sending via {channel} failed ({type(exc).__name__}).",
+            is_error=True)
+    if outcome is DeliveryOutcome.NOT_DELIVERED:
+        logger.warning("send_message: %s channel delivered nothing", channel)
+        return _text_result(
+            f"Error: the {channel} channel delivered nothing — the message "
+            f"did NOT reach the operator.", is_error=True)
+    return _text_result(f"Message sent via {channel}.")
 
 
 # ---------------------------------------------------------------------------

@@ -38,8 +38,11 @@ the message comes from, never by whether the turn calls a tool: a tool call that
 is not a delivery decides nothing here. A turn that asks with `ask_user` has put its question in the chat only when the
 ask reports that it is awaiting the operator's answer; when it reports anything
 else, the turn outputs what the ask reported as its final text instead of the
-sentinel. Which tool calls put
-the copy there, and the worked cases, are in `recipes/trigger/add.md`, under
+sentinel.
+A turn that sends with `send_message` has put its message in the chat only when
+the send reports that the message was sent; when it reports anything else, the
+turn outputs what the send reported as its final text instead of the sentinel.
+Which tool calls put the copy there, and the worked cases, are in `recipes/trigger/add.md`, under
 "Every scheduled prompt says how the turn ends" — read it before you edit rather
 than deciding from this file. A prompt whose delivery IS the turn's own final
 text must NOT be given the clause: the sentinel would be its whole final text

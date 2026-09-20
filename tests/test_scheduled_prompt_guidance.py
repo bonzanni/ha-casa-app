@@ -66,7 +66,7 @@ SURFACES = [
     _RECIPES / "add.md",
     _RECIPES / "update.md",
     REPO_ROOT / "casa/DOCS.md",
-    REPO_ROOT / "docs/architecture/triggers.md",
+    REPO_ROOT / "docs/architecture/scheduled-prompt-endings.md",
 ]
 
 
@@ -298,9 +298,10 @@ def test_every_carrier_says_what_a_turn_outputs_when_the_ask_was_not_awaiting():
     is only safe beside this rule. Its reach, stated: it pins that every carrier
     says what the turn outputs when the ask was not awaiting the operator's
     answer; it does not run that turn, and it does not make an agent follow the
-    sentence. It deliberately says nothing about `send_message` or `send_media`,
-    whose reports are not reliable in either direction (#990), so no rule an
-    author could follow from them is stated.
+    sentence. `send_message` has a rule of its own now that it reports a
+    non-delivery (#990) — the test below — and neither says anything about
+    `send_media`, whose report is not reliable in either direction, so no rule
+    an author could follow from it is stated.
     """
     ASK_RULE = (
         "A turn that asks with `ask_user` has put its question in the chat only "
@@ -310,6 +311,31 @@ def test_every_carrier_says_what_a_turn_outputs_when_the_ask_was_not_awaiting():
     )
     counts = {
         str(path.relative_to(REPO_ROOT)): _normalized(path).count(ASK_RULE)
+        for path in [*SURFACES, PROMPT_EDIT]
+    }
+    assert counts == dict.fromkeys(counts, 1)
+
+
+def test_every_carrier_says_what_a_turn_outputs_when_the_send_delivered_nothing():
+    """#990's prose half, and the same kind of pin as the ask rule above.
+
+    `send_message` used to answer "Message sent via X." whatever its channel
+    did, so no rule could be stated from its report and none was. It now
+    reports a PROVEN non-delivery as an error — Telegram while its application
+    is not started, voice always — which is what makes this sentence followable
+    at all. Its reach is the same as the ask rule's and no more: it pins a
+    WORDING on five carriers. It does not run a turn, and it does not make an
+    agent follow the sentence; what makes the report itself true is
+    `tests/test_send_message_delivery_report.py`.
+    """
+    SEND_RULE = (
+        "A turn that sends with `send_message` has put its message in the chat "
+        "only when the send reports that the message was sent; when it reports "
+        "anything else, the turn outputs what the send reported as its final "
+        "text instead of the sentinel."
+    )
+    counts = {
+        str(path.relative_to(REPO_ROOT)): _normalized(path).count(SEND_RULE)
         for path in [*SURFACES, PROMPT_EDIT]
     }
     assert counts == dict.fromkeys(counts, 1)
@@ -332,9 +358,10 @@ _CODE_ROOT = REPO_ROOT / "casa/rootfs/opt/casa"
 
 # The convention counts a call to one of these as the turn's delivery: when it
 # reports success, the turn has nothing left to say. That is what the tool is
-# FOR, not a guarantee that something landed — `send_message` can report success
-# for a send that delivered nothing (#990), and a refused `ask_user` posts
-# nothing, which is why the surfaces state `ask_user`'s rule. Named on every
+# FOR, not a guarantee that something landed — `send_media` reports an error for
+# a send that may have landed, a refused `ask_user` posts nothing, and
+# `send_message` reported success for a send that delivered nothing until #990,
+# which is why the surfaces state a rule for the last two. Named on every
 # authoring surface; adding a member here is a prose change too.
 DELIVERS_THE_OPERATORS_COPY = {
     "tools.py::send_message",
