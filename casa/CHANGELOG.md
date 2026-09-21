@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.326.0] - 2026-09-22
+
+### Added
+
+- Plugins can pass files to one another. Casa now keeps a shared folder where a
+  plugin leaves a file for another plugin to take — an invoice downloaded from
+  Gmail for an accounting plugin, or a ledger export for an email attachment.
+  Each file is kept seven days and then removed; when the folder is full (2 GB), a
+  new file is refused rather than an old one dropped. A file you sent the assistant
+  in Telegram can be handed to a plugin that needs it, without you being asked
+  again; her own copy is unchanged. Plugins adopt this in their own releases.
+
+### Fixed
+
+- A specialist the assistant delegates to no longer sees the list of files you sent
+  the assistant; the list belongs to the agent actually answering.
+
 ## [0.325.1] - 2026-09-21
 
 ### Changed

@@ -69,6 +69,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | the engagement uid allocator, workspace ownership, root's access into a workspace, the privilege drop, whether an engagement's process is actually stopped, or boot replay's down-first sweep | [`architecture/engagement-containment.md`](architecture/engagement-containment.md) |
 | the event manifest surface, the emission spool, event consent or reconciliation, the delivery worker, or the ack tools | [`architecture/plugin-events.md`](architecture/plugin-events.md) |
 | the in_casa launch handoff, the launch-turn owner, what the engager is told about a launch outcome, the graceful stop's launch drains, or the engagement-outcome envelope | [`architecture/engagement-launch-detach.md`](architecture/engagement-launch-detach.md) |
+| the plugin file handoff folder, publish or capture, its sweep, or share_inbound_file's handoff side | [`architecture/plugin-handoff.md`](architecture/plugin-handoff.md) |
 | the plugin health report or its regeneration, the operator health notice or DM, health repeat suppression or dedup marks, or the plugin status tool | [`architecture/plugin-health.md`](architecture/plugin-health.md) |
 | the response-shape or prompt-file write guards, or why an edit to a resident's per-agent file is refused | [`architecture/prompt-file-guards.md`](architecture/prompt-file-guards.md) |
 | the setup tool's dispatch obligation or its consent gating | [`architecture/plugin-setup.md`](architecture/plugin-setup.md) |

@@ -349,6 +349,12 @@ Anything else you send, such as a sticker, a voice message, a `.zip` or a `.docx
 a short reply saying what she can take. Files work only in the direct chat, not in
 engagement topics, and only the assistant can read them.
 
+Plugins pass files to one another through a folder Casa manages, where each file is kept
+seven days and then removed; when the folder is full, a new file is refused rather than an
+old one dropped. If a plugin needs a file you sent in Telegram — to attach it to an email,
+say — the assistant can hand it a copy without asking you first; the copy is kept seven
+days and her own is unchanged.
+
 Reading a document puts its pages in front of the model, so a long PDF costs more to
 read than a short one — roughly a few thousand tokens per page.
 

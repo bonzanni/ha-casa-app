@@ -12,7 +12,8 @@ What happens to a file the operator sends in the Telegram direct chat: the non-t
 handler, the checks a file passes, the per-role folder it is published into under
 `/data/agent-inbox/`, the read grant that lets the Telegram default agent open it, the
 `list_inbound_files` tool, and the retention sweep. How ordinary text messages become turns
-is [`telegram.md`](telegram.md); how `path_scope` and the rest of an agent's hooks are built is
+is [`telegram.md`](telegram.md); how `share_inbound_file` passes a copy of one of these files
+to a plugin is [`plugin-handoff.md`](plugin-handoff.md); how `path_scope` and the rest of an agent's hooks are built is
 [`hook-resolution.md`](hook-resolution.md); the outbound media surface (`send_media`) is
 [`tools-interface.md`](tools-interface.md).
 
@@ -140,9 +141,10 @@ Telegram's flood control, whose stated wait is honoured once, capped at ten seco
 
 **The tool reports; it does not read.** `list_inbound_files` takes no arguments and returns,
 newest first, each file's display name, kind, size, age and absolute path, and states that
-listing a file is not reading it. It resolves the calling role from the turn's origin, so any
-role without an inbox — every role but the Telegram default agent — is told it has no inbound
-files and is shown no path. Casa never matches the operator's wording against filenames:
+listing a file is not reading it. It resolves the inbox of the agent executing the turn — the
+origin's `execution_role`, falling back to `role` — so any agent without an inbox, including an
+agent the Telegram default agent delegated to, is told it has no inbound files and is shown no
+path (INV-HANDOFF-004). Casa never matches the operator's wording against filenames:
 with several candidates the agent lists them and asks.
 
 **What this does not claim.** Nothing yet stops the agent describing a file it did not open;
@@ -184,6 +186,10 @@ storing a file for a consumer that does not exist.
 
 **Another role receiving files** is a second `wire` call for that role, and with it a second
 standing read grant — decide it as a grant, not as plumbing.
+
+**Passing a file on.** `share_inbound_file` copies a listed file into the plugin handoff
+folder, where any in-Casa plugin can read it for seven days; the inbox copy and its grant are
+unchanged. Its contract is in [`plugin-handoff.md`](plugin-handoff.md).
 
 **Changing the retention or the caps** changes what the acknowledgement and the full-folder
 refusal promise. The reply texts and the tool's description read the constants; the user-facing

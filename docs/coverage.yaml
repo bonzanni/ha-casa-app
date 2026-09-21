@@ -39,6 +39,8 @@
   doc: architecture/personality.md
 - item: casa/rootfs/opt/casa/casa_core.py
   doc: architecture/overview.md
+- item: casa/rootfs/opt/casa/casa_handoff.py
+  doc: architecture/plugin-handoff.md
 - item: casa/rootfs/opt/casa/casa_core_middleware.py
   doc: architecture/observability.md
 - item: casa/rootfs/opt/casa/casa_eval/base.py
@@ -169,6 +171,8 @@
   doc: architecture/plugins.md
 - item: casa/rootfs/opt/casa/plugin_health.py
   doc: architecture/plugin-health.md
+- item: casa/rootfs/opt/casa/plugin_handoff.py
+  doc: architecture/plugin-handoff.md
 - item: casa/rootfs/opt/casa/plugin_outbox.py
   doc: architecture/plugin-runtime.md
 - item: casa/rootfs/opt/casa/plugin_registry.py
@@ -387,6 +391,8 @@
   doc: architecture/tools-interface.md
 - item: tool:list_inbound_files
   doc: architecture/inbound-files.md
+- item: tool:share_inbound_file
+  doc: architecture/plugin-handoff.md
 - item: tool:set_reminder
   doc: architecture/tools-interface.md
 - item: tool:cancel_reminder
@@ -631,6 +637,8 @@
   doc: architecture/mcp-and-tools.md
 - item: env:CASA_PLUGIN_OUTBOX_DIR
   doc: architecture/plugins.md
+- item: env:CASA_HANDOFF_DIR
+  doc: architecture/plugin-handoff.md
 - item: env:CASA_TZ
   doc: reference/operator-options.md
 - item: env:CASA_VERSION
