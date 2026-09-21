@@ -955,8 +955,20 @@ class Agent:
         # Resolve hooks once at construction. HooksConfig.pre_tool_use
         # empty → default policy bundle (block_dangerous_bash + path_scope
         # scoped to cfg.cwd).
+        #
+        # #1036: the role with an inbound-file folder — the Telegram default
+        # agent, and only it — gets read access to exactly that folder's
+        # ``ready/`` directory, appended to path_scope's readable list. Every
+        # other role gets an empty tuple and keeps the deny-everything default
+        # (a delegated turn runs on ITS agent's hooks, so it cannot borrow this).
+        # The grant is standing, not per turn. Everything under ready/ is a file
+        # the operator chose to send this agent, and a document once read sits in
+        # the session history like any tool result, so a per-turn grant would
+        # protect nothing the conversation does not already hold.
+        import agent_inbox
         self._resolved_hooks = resolve_hooks(
             config.hooks, default_cwd=config.cwd,
+            extra_readable=agent_inbox.readable_prefixes(config.role),
         )
 
         # Warm SDK-client pool (spec 2026-07-11, AR-1..AR-10). One warm

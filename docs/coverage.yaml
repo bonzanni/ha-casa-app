@@ -5,6 +5,8 @@
 
 - item: casa/rootfs/opt/casa/agent.py
   doc: architecture/turn-loop.md
+- item: casa/rootfs/opt/casa/agent_inbox.py
+  doc: architecture/inbound-files.md
 - item: casa/rootfs/opt/casa/agent_loader.py
   doc: architecture/agent-taxonomy.md
 - item: casa/rootfs/opt/casa/ask_retirement.py
@@ -383,6 +385,8 @@
   doc: architecture/plugin-secret-exploration.md
 - item: tool:get_schedule
   doc: architecture/tools-interface.md
+- item: tool:list_inbound_files
+  doc: architecture/inbound-files.md
 - item: tool:set_reminder
   doc: architecture/tools-interface.md
 - item: tool:cancel_reminder

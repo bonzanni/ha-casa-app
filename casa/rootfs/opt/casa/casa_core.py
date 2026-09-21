@@ -4369,6 +4369,20 @@ async def main() -> None:
     await plugin_outbox.wire(
         scheduler, os.environ.get("CASA_PLUGIN_OUTBOX_DIR", "/data/plugin-outbox"))
 
+    # The Telegram channel's default agent. Hoisted above agent construction
+    # (#1036) so ONE variable decides both who receives Telegram DMs and who may
+    # read the files sent in them — they can never drift apart.
+    assistant_role = "assistant"
+
+    # #1036: the inbound-file folder for that agent. Provisioned BEFORE agents
+    # are built (each Agent resolves its read grant from it at construction)
+    # and before channels go live (its boot pass reclaims staging, which must
+    # happen before the upload handler exists). Never blocks boot: a failure
+    # leaves the role with no folder and therefore no read grant.
+    import agent_inbox
+    await agent_inbox.wire(
+        scheduler, os.path.join(DATA_DIR, "agent-inbox"), role=assistant_role)
+
     # Plan 4b §5.1 — ensure every loaded in_casa resident or specialist
     # agent has an agent-home with default plugins seeded from
     # plugins.yaml. Idempotent — runs every boot. Executors deliberately
@@ -4427,8 +4441,6 @@ async def main() -> None:
         supervisor_token=supervisor_token,
     )
     runtime.agents = agents  # share the dict reference; reload handlers mutate this directly.
-
-    assistant_role = "assistant"
 
     # 9. Webhook secret (auto-generated if auth enabled, see setup-configs.sh)
     webhook_secret = os.environ.get("WEBHOOK_SECRET", "")

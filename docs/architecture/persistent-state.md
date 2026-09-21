@@ -49,6 +49,14 @@ non-atomic.
 and plugin outbox directories receive content from child processes and plugins. There is no
 closed inventory of what appears there.
 
+**One tree holds content the operator sent, and it is kept by promise, not by space.**
+`/data/agent-inbox/<role>/` holds the files the operator sent in Telegram, each under a
+Casa-generated name beside a small display-name record. An hourly sweep deletes a file seven
+days after publication — the retention its acknowledgement promised — and removes anything in
+the readable directory that Casa did not write; it never deletes for space, so a full folder
+refuses the next upload instead. Boot removes any half-published upload a crash left behind.
+Its contract is [`inbound-files.md`](inbound-files.md).
+
 ## Contracts & invariants
 
 **INV-STATE-001**: Only an explicit whitelist of the mapped configuration root is admitted into version control.

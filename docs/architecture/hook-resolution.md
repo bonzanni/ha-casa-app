@@ -10,7 +10,8 @@ last_reviewed: 2026-08-13
 
 How a workspace subprocess's hook calls are resolved and authenticated, how per-executor
 hook policies are built and fall back, and the load-time containment floor for
-`claude_code` executors. The tool dispatch path and its grants live in
+`claude_code` executors, plus the in-process resolution of an agent's own hooks and the one
+read grant it can carry. The tool dispatch path and its grants live in
 [`architecture/mcp-and-tools.md`](mcp-and-tools.md).
 
 ## Mental model
@@ -54,6 +55,18 @@ that captured document rather than the file on disk, and forces the floor's matc
 values `HOOK_POLICIES` declares regardless of what the document says. Editing `hooks.yaml`
 after that point changes nothing already provisioned from it; only a reload or a fresh load
 sees the edit, and a hollowed edit is refused there exactly as it would be refused at boot.
+
+**An in-process agent's hooks are resolved once, at construction, and one agent's carry a
+read grant.** `resolve_hooks` turns a hooks config into SDK matchers; a config with no
+`pre_tool_use` entries yields the default bundle — `block_dangerous_bash` plus a `path_scope`
+whose readable and writable lists are the agent's `cwd`, or empty when it has none, and an
+empty list denies every path. Its `extra_readable` argument is appended to the readable list
+of *every* `path_scope` entry it builds — default bundle and explicit hooks file alike — and
+never to `writable`. `Agent` passes it only for the Telegram default agent, with exactly that
+agent's inbound-file `ready/` directory, and an empty tuple for every other role; the
+delegated-specialist and in-casa executor builds pass nothing, so neither resolves a wider
+scope than its own configuration or snapshot. The grant's contract is INV-INBOX-002 in
+[`inbound-files.md`](inbound-files.md).
 
 ## Contracts & invariants
 

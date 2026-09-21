@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.325.0] - 2026-09-21
+
+### Added
+
+- You can send the assistant a file. A PDF, a photo, or a text or CSV file sent in
+  your direct chat is kept for seven days, and Casa tells you so as soon as it
+  arrives. Nothing is read on arrival: ask about the file whenever you like and the
+  assistant opens it then. Files up to 8 MB are accepted, and she holds up to 50 files
+  and 200 MB in all — when that is full, a new file is refused rather than an old one quietly
+  dropped. Until now a file sent to the assistant simply vanished, with no reply at
+  all; now every message that is not text gets an answer, including a sticker, a
+  voice message or a `.zip`, which are turned down with a line saying what she can
+  take. Files work in the direct chat only, and only the assistant can read them.
+
 ## [0.324.0] - 2026-09-20
 
 ### Fixed
