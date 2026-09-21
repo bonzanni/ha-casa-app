@@ -3166,12 +3166,22 @@ def resolve_hooks(
     config: "HooksConfig",
     *,
     default_cwd: str,
+    extra_readable: tuple[str, ...] = (),
 ) -> dict[str, list[Any]]:
     """Turn a HooksConfig into ``{"PreToolUse": [HookMatcher, ...]}``.
 
     Builds SDK HookMatcher objects from the two-tier HOOK_POLICIES shape.
     The factory returns a raw HookCallback; HookMatcher wraps it with the
     policy's matcher regex.
+
+    ``extra_readable`` (#1036) is appended to the ``readable`` list of EVERY
+    ``path_scope`` entry built here — the default bundle and any entry from an
+    explicit hooks file alike, so an agent that later ships a hooks file does
+    not silently lose it. It never touches ``writable``. Only ``Agent`` passes
+    it, and only for the role with an inbound-file folder
+    (``agent_inbox.readable_prefixes``); the in-casa executor resynthesis
+    passes nothing, so it can never resynthesize a wider scope than its
+    snapshot.
     """
     from claude_agent_sdk import HookMatcher
 
@@ -3207,6 +3217,9 @@ def resolve_hooks(
             k: v for k, v in entry.items()
             if k not in ("policy", "matcher", "timeout")
         }
+        if policy_name == "path_scope" and extra_readable:
+            params["readable"] = [*(params.get("readable") or ()),
+                                  *extra_readable]
         callback = policy["factory"](**params)
         matchers.append(HookMatcher(
             matcher=policy["matcher"],

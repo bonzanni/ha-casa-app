@@ -461,6 +461,7 @@ NOT_A_DELIVERY = {
     "tools.py::get_item_fields",
     "tools.py::get_schedule",
     "tools.py::list_engagement_workspaces",
+    "tools.py::list_inbound_files",
     "tools.py::list_vault_items",
     "tools.py::peek_engagement_workspace",
     "tools.py::persona_ack_revoke",

@@ -336,6 +336,22 @@ runs per installed plugin. Casa checks open jobs once a minute and restarts one 
 has stalled; a job it cannot get moving again is ended and reported rather than left
 sitting there.
 
+### Sending files to the assistant (v0.325.0)
+
+Send the assistant a PDF, a photo, or a text or CSV file in your direct chat and she
+keeps it: Casa replies with what it saved and how long it will keep it — seven days.
+Nothing is read on arrival. Ask about the file whenever you like ("what does that
+invoice say?") and she opens it then; if several files could match, she asks which.
+
+Files can be up to 8 MB, and she holds up to 50 files and 200 MB in all. When that is
+full a new file is refused rather than an old one dropped — the oldest go after seven days.
+Anything else you send, such as a sticker, a voice message, a `.zip` or a `.docx`, gets
+a short reply saying what she can take. Files work only in the direct chat, not in
+engagement topics, and only the assistant can read them.
+
+Reading a document puts its pages in front of the model, so a long PDF costs more to
+read than a short one — roughly a few thousand tokens per page.
+
 ## Voice pipeline
 
 Casa exposes two transports for Home Assistant voice / generic voice clients. The HA-side integration that consumes them ships separately in `ha-casa-integration` (phase 2.4).

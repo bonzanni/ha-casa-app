@@ -30,7 +30,13 @@ unaffected, because it does not use that route.
 
 **Two kinds of inbound message go to different places.** A direct message becomes an ordinary
 turn on the bus. A message in an engagement topic is delivered to that engagement's driver
-instead — it is input to running work, not a new conversation. For an in-casa engagement,
+instead — it is input to running work, not a new conversation. Both are *text*: the text
+handler is one of two message handlers, and the other takes every new non-text message — a
+file, a photo, a sticker, a pin — and never starts a turn. In the operator's chat it stores an
+accepted file and acknowledges it, and answers everything else with a one-line refusal;
+outside that chat it follows the text path, and in the engagement supergroup only a person's
+content draws a reply ([`inbound-files.md`](inbound-files.md), INV-INBOX-006). The two filters
+are disjoint, so each update reaches exactly one handler. For an in-casa engagement,
 the topic handler and the system-continuation seam (`deliver_system_turn`) both admit the
 turn synchronously, before any await a completion could race, as an admission ticket the
 completion gate reads; recognized commands are consumed by the handler itself and are never
@@ -270,8 +276,12 @@ response header distinguishes the outcomes for programmatic callers: `accepted` 
 `duplicate` (absorbed), or `ignored` (channel not started, or the payload did not parse as
 an update).
 
-**A message arrives from an unconfigured chat.** Logged and dropped. Note that leaving the
-chat id empty accepts other chats — the check is only as narrow as the configuration.
+**A message arrives from an unconfigured chat.** A message is logged and dropped, text or not.
+Note that leaving the chat id empty accepts other chats for text — the check is only as narrow
+as the configuration. A non-text message from a sender who is not the operator, in the
+configured chat or in any chat when none is configured, draws a refusal saying files are
+accepted only from the operator, and nothing is downloaded; an empty chat id therefore accepts
+no chat's files.
 
 **A tap is stale, expired, for the wrong topic, or from the wrong user.** Absorbed with a
 single best-effort acknowledgement; failures answering are themselves absorbed.

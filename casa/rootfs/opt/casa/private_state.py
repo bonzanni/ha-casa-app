@@ -129,6 +129,9 @@ DIRS: tuple[Entry, ...] = (
     Entry("/data/cold-retain-retry", 0o700, PRIVATE,
           "Pending cold-retain records: SDK session ids, transcript dirs and "
           "speaker provenance."),
+    Entry("/data/agent-inbox", 0o700, PRIVATE,
+          "Files the operator sent the assistant in Telegram — invoices, "
+          "letters, screenshots — kept up to seven days."),
     Entry("/config/cc-home", 0o700, PRIVATE,
           "The resident agent's Claude home, including its transcripts."),
     Entry("/config/.git", 0o700, PRIVATE,

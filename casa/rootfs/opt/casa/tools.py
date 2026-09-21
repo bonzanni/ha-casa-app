@@ -6995,6 +6995,58 @@ async def recall_memory(args: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# list_inbound_files — #1036
+# ---------------------------------------------------------------------------
+
+
+def _age_words(seconds: float) -> str:
+    if seconds < 3600:
+        return f"{max(1, int(seconds // 60))} min ago"
+    if seconds < 86400:
+        return f"{int(seconds // 3600)} h ago"
+    return f"{int(seconds // 86400)} d ago"
+
+
+def _inbox_days() -> int:
+    import agent_inbox
+    return agent_inbox.RETENTION_S // 86400
+
+
+@tool(
+    "list_inbound_files",
+    "List the files the operator has sent you in Telegram, newest first: the "
+    "name they gave it, its kind, size, age, and the path to open it with the "
+    "Read tool. Listing a file is not reading it — open it before saying "
+    f"anything about its contents. Files are kept for {_inbox_days()} days.",
+    {},
+)
+async def list_inbound_files(args: dict) -> dict:
+    import agent_inbox
+
+    origin = _snapshot_origin()
+    role = (origin or {}).get("role") or ""
+    inbox = agent_inbox.get_inbox(role) if role else None
+    if inbox is None:
+        return _text_result("You have no inbound files — files sent in Telegram "
+                            "reach only the agent that receives the operator's DMs.")
+    files = await asyncio.to_thread(inbox.list_files)
+    if not files:
+        return _text_result("The operator hasn't sent you any files in the last "
+                            f"{_inbox_days()} days.")
+    now = time.time()
+    lines = ["Files the operator sent you, newest first. Listing a file is not "
+             "reading it: open one with the Read tool before describing it."]
+    for i, f in enumerate(files, 1):
+        shown = f'"{f.display_name}"' if f.display_name != f.name else "a photo"
+        size = (f"{f.size / (1024 * 1024):.1f} MB" if f.size >= 1024 * 1024
+                else f"{max(1, f.size // 1024)} KB")
+        lines.append(f"{i}. {shown} — {f.ext.lstrip('.').upper()}, {size}, "
+                     f"received {_age_words(now - f.published_at)}\n"
+                     f"   path: {f.path}")
+    return _text_result("\n".join(lines))
+
+
+# ---------------------------------------------------------------------------
 # get_schedule — Phase 3.3
 # ---------------------------------------------------------------------------
 
@@ -17445,6 +17497,7 @@ CASA_TOOLS: tuple = (
     wipe_memory,                   # #411 — operator-consented long-term wipe;
                                    # NEVER add to SPECIALIST_CASA_TOOL_ALLOWLIST
     get_schedule,
+    list_inbound_files,            # #1036 — files the operator sent in Telegram
     set_reminder,                  # #396 — durable reminders
     cancel_reminder,               # #396
     ack_event,                     # #419 — plugin-events delivery receipt

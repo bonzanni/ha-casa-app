@@ -58,7 +58,10 @@ totality is a claim about content, not about the machine: an allocation failure 
 propagate as an internal error rather than being reported as a verdict about the bytes,
 because "these bytes are not valid" is a claim the evidence would not support. A kind may
 also validate less than its extensions suggest; the text kind checks encoding, never
-structure, so a malformed `.json` is delivered as the text file it is.
+structure, so a malformed `.json` is delivered as the text file it is. The table is the
+*outbound* surface: files the operator sends in are checked against a separate, smaller
+extension table that borrows only these content predicates
+([`inbound-files.md`](inbound-files.md)).
 
 **A lifecycle surface is only finished when it can also undo.** Personas install, apply and
 publish through consent-bound tools; removing one, sweeping the versions nothing refers to,
@@ -278,6 +281,9 @@ tool-level face).
 
 The assistant's `start_job` and a job session's `report_job_progress` are described in
 [`background-jobs.md`](background-jobs.md).
+`list_inbound_files`, which lists the files the operator sent in Telegram with the path
+the Telegram default agent opens each with, and states that listing is not reading, is
+described in [`inbound-files.md`](inbound-files.md).
 
 ## Extension points
 

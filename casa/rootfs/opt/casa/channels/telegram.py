@@ -22,6 +22,7 @@ import os
 import time
 
 import httpx
+from dataclasses import dataclass
 from io import BytesIO
 from typing import Any, Awaitable, Callable
 
@@ -672,6 +673,147 @@ that is what it says."""
 OnTokenCallback = Callable[[str], Awaitable[None]]
 
 
+
+# ---------------------------------------------------------------------------
+# #1036: inbound files. Arrival stores and acknowledges; it runs no agent turn.
+# ---------------------------------------------------------------------------
+
+#: What the operator is told for every kind the handler refuses. Human words,
+#: keyed by the PTB attribute that identifies the kind; the fallback covers any
+#: kind Telegram adds later, so a new kind is answered rather than dropped.
+_INBOUND_KIND_WORDS = {
+    "sticker": "sticker", "video": "video", "video_note": "video message",
+    "voice": "voice message", "audio": "audio file", "animation": "GIF",
+    "contact": "contact", "location": "location", "venue": "venue",
+    "poll": "poll", "dice": "dice roll", "game": "game", "story": "story",
+    "web_app_data": "Web App result", "invoice": "payment invoice",
+}
+#: Chat notices rather than messages. Answered like everything else (there is
+#: no silent list in the operator's DM), with wording that does not call them
+#: files.
+_INBOUND_NOTICES = (
+    "pinned_message", "new_chat_title", "new_chat_photo", "delete_chat_photo",
+    "message_auto_delete_timer_changed", "new_chat_members", "left_chat_member",
+    "write_access_allowed",
+)
+_ACCEPTED_KINDS_TEXT = "PDFs, images, and text or CSV files"
+
+
+@dataclass(frozen=True)
+class _InboundClass:
+    """What a non-text message is, decided from the update alone."""
+
+    accept: bool
+    file_id: str = ""
+    declared_size: int | None = None
+    display_name: str = ""
+    ext: str = ""
+    refusal: str = ""
+
+
+def _non_text_filter():
+    """The filter the non-text handler is registered with — one definition,
+    so the test that checks it against the real library checks THIS one.
+
+    ``UpdateType.MESSAGE`` is load-bearing: PTB 22.7's ``BaseFilter`` also
+    matches edited messages, channel posts and business messages, and an
+    edited caption must not draw a reply. Disjoint from ``filters.TEXT``."""
+    return filters.UpdateType.MESSAGE & ~filters.TEXT
+
+
+def _carries_content(msg) -> bool:
+    """A message a person sent with something in it — a file, or one of the
+    content kinds above. Chat notices (a topic opened or closed, a member
+    joining, a pin) carry none. Only consulted in the engagement supergroup: in
+    the operator's DM every non-text message is answered."""
+    if getattr(msg, "document", None) is not None or getattr(msg, "photo", None):
+        return True
+    return any(getattr(msg, attr, None) for attr in _INBOUND_KIND_WORDS)
+
+
+def _human_size(n: int) -> str:
+    if n >= 1024 * 1024:
+        return f"{n / (1024 * 1024):.1f} MB"
+    return f"{max(1, n // 1024)} KB"
+
+
+def _classify_inbound(msg) -> _InboundClass:
+    """Decide from the message alone: accept (with what to fetch), or refuse
+    (with the exact words). Never touches the network or the filesystem."""
+    import agent_inbox
+
+    doc = getattr(msg, "document", None)
+    if doc is not None:
+        name = getattr(doc, "file_name", None) or ""
+        ext = agent_inbox.extension_of(name)
+        if ext is None:
+            dot = name.rfind(".")
+            if 0 < dot < len(name) - 1:
+                # The operator's extension: bounded, since it is echoed back.
+                shown = agent_inbox._bounded_display(name[dot:].lower())[:12]
+            else:
+                shown = "file like that"
+            return _InboundClass(False, refusal=(
+                f"I can't open a {shown}, so I haven't kept it. "
+                f"{_ACCEPTED_KINDS_TEXT[0].upper()}{_ACCEPTED_KINDS_TEXT[1:]} all work."))
+        return _InboundClass(True, file_id=doc.file_id,
+                             declared_size=getattr(doc, "file_size", None),
+                             display_name=name, ext=ext)
+    photos = getattr(msg, "photo", None) or ()
+    if photos:
+        # Sizes of ONE image: take the largest, not each.
+        largest = max(photos, key=lambda p: (p.width or 0) * (p.height or 0))
+        return _InboundClass(True, file_id=largest.file_id,
+                             declared_size=getattr(largest, "file_size", None),
+                             display_name="", ext=".jpg")
+    for attr in _INBOUND_NOTICES:
+        if getattr(msg, attr, None):
+            return _InboundClass(False, refusal=(
+                f"I can't do anything with that — I only take {_ACCEPTED_KINDS_TEXT}."))
+    for attr, words in _INBOUND_KIND_WORDS.items():
+        if getattr(msg, attr, None):
+            return _InboundClass(False, refusal=(
+                f"I can't read a {words}. I can take {_ACCEPTED_KINDS_TEXT}."))
+    return _InboundClass(False, refusal=(
+        f"I can't read that kind of message. I can take {_ACCEPTED_KINDS_TEXT}."))
+
+
+def _inbound_reply(receipt, cls: _InboundClass) -> str:
+    """The one line the operator sees for an upload's outcome."""
+    import agent_inbox
+    O = agent_inbox.Outcome
+    shown = agent_inbox._bounded_display(cls.display_name)
+    label = shown if shown else "your photo"
+    kind = cls.ext.lstrip(".").upper() if cls.ext else "file"
+    o = receipt.outcome
+    if o is O.STORED:
+        days = agent_inbox.RETENTION_S // 86400
+        return (f"Got {label} — {_human_size(receipt.size)}. Ask me any time and "
+                f"I'll read it. I'll keep it {days} days.")
+    if o is O.TOO_LARGE:
+        cap = agent_inbox.CAP_BYTES // (1024 * 1024)
+        return (f"That {kind} is more than {cap} MB — more than I can open in "
+                f"one go. {cap} MB is my limit.")
+    if o is O.MISMATCH:
+        return (f"That's named {label} but the contents aren't a {kind}, so "
+                f"I've left it.")
+    if o is O.FULL:
+        days = agent_inbox.RETENTION_S // 86400
+        mb = agent_inbox.MAX_BYTES // (1024 * 1024)
+        return (f"I've no room for another file — I keep up to "
+                f"{agent_inbox.MAX_FILES} files and {mb} MB in all. The oldest go "
+                f"after {days} days; try again then, or ask me to read one I have.")
+    if o is O.DOWNLOAD_FAILED:
+        return "Telegram wouldn't give me that file — try sending it again."
+    if o is O.LOCAL_PATH:
+        return ("Your Telegram server handed back a local file path I can't "
+                "safely import, so I've left the file.")
+    if o is O.UNCERTAIN:
+        return ("I couldn't confirm that file was saved — it may or may not "
+                "still be there. Send it again to be sure.")
+    return "I couldn't save that one. Nothing's been kept — try sending it again."
+
+
 class TelegramChannel(Channel):
     """Bidirectional Telegram channel backed by python-telegram-bot."""
 
@@ -1055,6 +1197,13 @@ class TelegramChannel(Channel):
         # exceptions to the registered error handler.
         app.add_handler(
             MessageHandler(filters.TEXT, self.handle_update, block=False)
+        )
+        # #1036: every non-text message — files and everything else — so none
+        # is dropped silently. See `_non_text_filter` for why it is not a bare
+        # `~filters.TEXT`.
+        app.add_handler(
+            MessageHandler(_non_text_filter(), self._on_non_text_message,
+                           block=False)
         )
         # E-12 (v0.37.0) Task 20: U1 permission verdicts arrive as inline-keyboard
         # callbacks. CallbackQueryHandler with no pattern matches all callback_data;
@@ -2789,6 +2938,88 @@ class TelegramChannel(Channel):
                     self._driver_discharge_inbound(rec, inbound_token)
                 except Exception:  # noqa: BLE001
                     logger.debug("inbound discharge failed", exc_info=True)
+
+    async def _on_non_text_message(
+        self, update, _context: ContextTypes.DEFAULT_TYPE | None = None,
+    ) -> None:
+        """#1036: every non-text message. Arrival stores and acknowledges; it
+        never starts an agent turn. Every path ends in a stored file or one
+        reply — there is no silent path, and no silent list."""
+        msg = getattr(update, "message", None)
+        if msg is None:
+            return
+        chat_id = msg.chat.id
+        user = msg.from_user
+
+        async def reply(text: str, *, thread: int | None = None) -> None:
+            kwargs: dict[str, Any] = {"chat_id": chat_id, "text": text}
+            if thread:
+                kwargs["message_thread_id"] = thread
+            for attempt in (1, 2):
+                try:
+                    await self.bot.send_message(**kwargs)
+                    return
+                except RetryAfter as exc:
+                    # Flood control is Telegram asking for a retry after a stated
+                    # wait; honour it once, capped. Every other failure is logged
+                    # and not retried, as elsewhere in this channel.
+                    if attempt == 2:
+                        logger.warning("inbound-file reply failed: RetryAfter twice")
+                        return
+                    wait = getattr(exc, "retry_after", 1)
+                    wait = wait.total_seconds() if hasattr(wait, "total_seconds") else wait
+                    await asyncio.sleep(min(max(float(wait or 0), 0.0), 10.0))
+                except Exception as exc:  # noqa: BLE001 — a reply fault is logged
+                    logger.warning("inbound-file reply failed: %s", type(exc).__name__)
+                    return
+
+        if self.engagement_supergroup_id and chat_id == self.engagement_supergroup_id:
+            # Only a person's content draws the refusal. Topic lifecycle notices
+            # — many caused by Casa's own topic actions — and bot messages are
+            # not something anyone sent Casa, and a reply to each would be noise.
+            if not getattr(user, "is_bot", False) and _carries_content(msg):
+                await reply("I can't take files in an engagement — send it in "
+                            "our direct chat.",
+                            thread=getattr(msg, "message_thread_id", None))
+            return
+        configured = str(self.chat_id or "").strip()
+        if configured and str(chat_id) != configured:
+            # The text path's rule, unchanged: an update from any other chat is
+            # logged and dropped, never answered.
+            logger.info("Dropping non-text Telegram update from unauthorized "
+                        "chat_id=%s", chat_id)
+            return
+        if not self._sender_is_operator(user):
+            await reply("Files are only accepted from the configured operator. "
+                        "This one wasn't saved.")
+            return
+
+        cls = _classify_inbound(msg)
+        if not cls.accept:
+            await reply(cls.refusal)
+            return
+
+        import agent_inbox
+        inbox = agent_inbox.get_inbox(self.default_agent)
+        if inbox is None:
+            await reply(_inbound_reply(
+                agent_inbox.Receipt(agent_inbox.Outcome.STORAGE_FAILED), cls))
+            return
+        bot = self.bot
+        try:
+            receipt = await inbox.receive(
+                lambda cap: agent_inbox.fetch_telegram_file(bot, cls.file_id, cap),
+                ext=cls.ext, display_name=cls.display_name,
+                declared_size=cls.declared_size,
+            )
+        except Exception:  # noqa: BLE001 — every path ends in a reply
+            # Unexpected, so the outcome is unknown: it may have failed after
+            # publication. Say so; never claim the file is absent.
+            logger.warning("inbound file: unexpected failure", exc_info=True)
+            receipt = agent_inbox.Receipt(agent_inbox.Outcome.UNCERTAIN)
+        logger.info("inbound file: outcome=%s bytes=%d",
+                    receipt.outcome.value, receipt.size)
+        await reply(_inbound_reply(receipt, cls))
 
     async def _maybe_redirect_main_feed(self, user_id: int | None) -> None:
         if user_id is None:
