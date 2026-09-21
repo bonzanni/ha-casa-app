@@ -83,6 +83,44 @@ class TestSupergroupRouting:
         ch._driver_send_user_turn.assert_not_called()
 
 
+class TestOnlyANewMessageStartsATurn:
+    """#1040: PTB delivers an edited message, a channel post and a business
+    message with ``update.message`` unset and the content on another field
+    (and on ``effective_message``). None of them may start a turn — an edit
+    processed as a new message answers the same question twice. The
+    registered filter already excludes them (pinned against real PTB in
+    test_inbound_files); this pins the handler's own check behind it."""
+
+    @staticmethod
+    def _as(field, *, chat_id, thread_id=None):
+        u = _mk_update(chat_id=chat_id, text="actually, make it 8pm",
+                       thread_id=thread_id)
+        msg = u.message
+        u.message = None
+        setattr(u, field, msg)
+        u.effective_message = msg
+        return u
+
+    @pytest.mark.parametrize("field", ["edited_message", "channel_post",
+                                       "business_message"])
+    async def test_a_non_new_message_starts_no_turn(
+            self, fake_telegram_bot, engagement_fixture, field):
+        from channels.telegram import TelegramChannel
+
+        ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
+                             engagement_supergroup_id=-1001)
+        ch._driver_send_user_turn = AsyncMock()
+        ch._route_to_ellen = AsyncMock()
+        ch._engagement_registry = engagement_fixture.registry
+
+        await ch.handle_update(self._as(field, chat_id=100))
+        await ch.handle_update(self._as(field, chat_id=-1001, thread_id=555))
+        await _drain_turns(ch)
+        ch._route_to_ellen.assert_not_called()
+        ch._driver_send_user_turn.assert_not_called()
+        assert fake_telegram_bot.messages == []
+
+
 class TestEngagementTopicRateLimit:
     """#324: engagement-topic messages must consult TELEGRAM_RATE_PER_MIN —
     the limiter was only wired into the DM route, so every topic message
@@ -875,7 +913,7 @@ class TestMessageHandlerWiring:
         # The wiring must point at handle_update, not _handle. H5 (v0.52.0)
         # added block=False so a long engagement turn can't stall PTB's
         # sequential update fetcher.
-        assert "MessageHandler(filters.TEXT, self.handle_update, block=False)" in source, (
+        assert "MessageHandler(_text_filter(), self.handle_update, block=False)" in source, (
             f"_rebuild must register MessageHandler with handle_update "
             f"(block=False); current source excerpt:\n{source}"
         )
