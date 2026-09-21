@@ -7012,6 +7012,18 @@ def _inbox_days() -> int:
     return agent_inbox.RETENTION_S // 86400
 
 
+def _inbox_for_executing_agent():
+    """The inbox of the agent actually running this turn. A delegated agent
+    carries its caller's ``role`` in the origin and its own in
+    ``execution_role`` (``_run_delegated_agent``), so keying on ``role`` alone
+    would hand a delegate its caller's files (#486)."""
+    import agent_inbox
+
+    origin = _snapshot_origin() or {}
+    role = origin.get("execution_role") or origin.get("role") or ""
+    return agent_inbox.get_inbox(role) if role else None
+
+
 @tool(
     "list_inbound_files",
     "List the files the operator has sent you in Telegram, newest first: the "
@@ -7021,11 +7033,7 @@ def _inbox_days() -> int:
     {},
 )
 async def list_inbound_files(args: dict) -> dict:
-    import agent_inbox
-
-    origin = _snapshot_origin()
-    role = (origin or {}).get("role") or ""
-    inbox = agent_inbox.get_inbox(role) if role else None
+    inbox = _inbox_for_executing_agent()
     if inbox is None:
         return _text_result("You have no inbound files — files sent in Telegram "
                             "reach only the agent that receives the operator's DMs.")
@@ -7044,6 +7052,57 @@ async def list_inbound_files(args: dict) -> dict:
                      f"received {_age_words(now - f.published_at)}\n"
                      f"   path: {f.path}")
     return _text_result("\n".join(lines))
+
+
+# ---------------------------------------------------------------------------
+# share_inbound_file — #486
+# ---------------------------------------------------------------------------
+
+
+@tool(
+    "share_inbound_file",
+    "Give a plugin a file the operator sent you in Telegram. Pass the path "
+    "list_inbound_files shows; you get back a path in Casa's handoff folder, "
+    "under the name the operator gave the file, to pass to the plugin tool "
+    "that needs it (for example as an email attachment). Call it whenever a "
+    "plugin tool needs one of those files — the operator does not need to be "
+    "asked. The shared copy is kept 7 days; your own copy is unchanged.",
+    {"path": str},
+)
+async def share_inbound_file(args: dict) -> dict:
+    import casa_handoff
+    import plugin_handoff
+
+    inbox = _inbox_for_executing_agent()
+    if inbox is None:
+        return _text_result("You have no inbound files to share — files sent in "
+                            "Telegram reach only the agent that receives the "
+                            "operator's DMs.")
+    path = args.get("path")
+    files = await asyncio.to_thread(inbox.list_files)
+    match = next((f for f in files if f.path == path), None)
+    if match is None:
+        return _text_result("That is not one of your inbound files. Use "
+                            "list_inbound_files and pass a path exactly as it "
+                            "shows it.")
+    root = plugin_handoff.root()
+    if root is None:
+        return _text_result("The handoff folder is not available, so the file "
+                            "cannot be shared with a plugin.")
+    # No display name (a photo has none; a document's may have been lost —
+    # its meta is best-effort): name it by its kind, never by Casa's name.
+    kind = "photo" if match.ext in (".png", ".jpg", ".jpeg") else "file"
+    fallback = kind + match.ext
+    name = fallback if match.display_name == match.name else match.display_name
+    try:
+        out = await asyncio.to_thread(
+            casa_handoff.publish, "casa", casa_handoff.clean_filename(name, fallback),
+            src=match.path, root=root)
+    except casa_handoff.HandoffError as exc:
+        return _text_result(f"The file could not be shared: {exc}")
+    return _text_result(
+        f'Shared "{out["filename"]}". Pass this path to the plugin tool:\n'
+        f'{out["path"]}\nThe shared copy is kept {casa_handoff.RETENTION_S // 86400} days.')
 
 
 # ---------------------------------------------------------------------------
@@ -17498,6 +17557,7 @@ CASA_TOOLS: tuple = (
                                    # NEVER add to SPECIALIST_CASA_TOOL_ALLOWLIST
     get_schedule,
     list_inbound_files,            # #1036 — files the operator sent in Telegram
+    share_inbound_file,            # #486 — one of those files, to a plugin
     set_reminder,                  # #396 — durable reminders
     cancel_reminder,               # #396
     ack_event,                     # #419 — plugin-events delivery receipt

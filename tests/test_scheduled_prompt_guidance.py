@@ -485,6 +485,7 @@ NOT_A_DELIVERY = {
     "tools.py::resident_persona_swap",
     "tools.py::set_plugin_env_reference",
     "tools.py::set_reminder",
+    "tools.py::share_inbound_file",
     "tools.py::specialist_install_commit",
     "tools.py::specialist_install_inspect",
     "tools.py::specialist_rollback",

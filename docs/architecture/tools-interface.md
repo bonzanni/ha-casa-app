@@ -284,6 +284,9 @@ The assistant's `start_job` and a job session's `report_job_progress` are descri
 `list_inbound_files`, which lists the files the operator sent in Telegram with the path
 the Telegram default agent opens each with, and states that listing is not reading, is
 described in [`inbound-files.md`](inbound-files.md).
+`share_inbound_file`, which copies one of those files into the plugin handoff folder and
+returns the path to pass to a plugin tool, is described in
+[`plugin-handoff.md`](plugin-handoff.md).
 
 ## Extension points
 

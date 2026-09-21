@@ -57,6 +57,13 @@ the readable directory that Casa did not write; it never deletes for space, so a
 refuses the next upload instead. Boot removes any half-published upload a crash left behind.
 Its contract is [`inbound-files.md`](inbound-files.md).
 
+**Files passed between plugins are kept by age, too.** `/data/handoff/<producer>/<id>/` holds
+one file each, published by a plugin or by Casa for another plugin to take; `CASA_HANDOFF_DIR`
+relocates the tree. An hourly sweep deletes a file seven days after the time in its `<id>`,
+removes anything that does not follow the layout, and reclaims a publication a crash left
+half-done after an hour; it never deletes for space, so a full folder refuses the next
+publication instead. Its contract is [`plugin-handoff.md`](plugin-handoff.md).
+
 ## Contracts & invariants
 
 **INV-STATE-001**: Only an explicit whitelist of the mapped configuration root is admitted into version control.

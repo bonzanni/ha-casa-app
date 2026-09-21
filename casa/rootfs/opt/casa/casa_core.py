@@ -4369,6 +4369,13 @@ async def main() -> None:
     await plugin_outbox.wire(
         scheduler, os.environ.get("CASA_PLUGIN_OUTBOX_DIR", "/data/plugin-outbox"))
 
+    # #486: the plugin file handoff folder — provisioned + swept like the
+    # outbox, before any turn can publish or capture. Never blocks boot: a
+    # failure leaves no folder and producers get handoff_unavailable.
+    import casa_handoff
+    import plugin_handoff
+    await plugin_handoff.wire(scheduler, casa_handoff.root_dir())
+
     # The Telegram channel's default agent. Hoisted above agent construction
     # (#1036) so ONE variable decides both who receives Telegram DMs and who may
     # read the files sent in them — they can never drift apart.
