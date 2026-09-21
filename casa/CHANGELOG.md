@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.325.1] - 2026-09-21
+
+### Changed
+
+- No change in behaviour. Editing a message you already sent to the assistant was,
+  and still is, ignored rather than answered as a new message; that rule is now
+  declared where Telegram messages are routed and covered by tests, so a later
+  change cannot quietly start answering edits twice.
+
 ## [0.325.0] - 2026-09-21
 
 ### Added

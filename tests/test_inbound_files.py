@@ -367,7 +367,9 @@ async def test_the_non_text_handler_is_registered(monkeypatch):
     from channels.telegram import TelegramChannel
 
     sentinel = object()
+    text_sentinel = object()
     monkeypatch.setattr(tg_mod, "_non_text_filter", lambda: sentinel)
+    monkeypatch.setattr(tg_mod, "_text_filter", lambda: text_sentinel)
     monkeypatch.setattr(tg_mod, "MessageHandler",
                         lambda f, cb, block=True: ("MessageHandler", f, cb, block))
     registered = []
@@ -386,6 +388,7 @@ async def test_the_non_text_handler_is_registered(monkeypatch):
     with pytest.raises(RuntimeError, match="stop after registration"):
         await ch._rebuild()
     assert ("MessageHandler", sentinel, ch._on_non_text_message, False) in registered
+    assert ("MessageHandler", text_sentinel, ch.handle_update, False) in registered
 
 
 # ---------------------------------------------------------------------------
@@ -403,7 +406,8 @@ _REAL_PTB = textwrap.dedent(r"""
                               Update, User, WebAppData)
     except ImportError:
         print(json.dumps({"skip": True})); raise SystemExit(0)
-    from channels.telegram import _classify_inbound, _non_text_filter
+    from channels.telegram import _classify_inbound, _non_text_filter, _text_filter
+    from telegram.ext import filters
 
     now = dt.datetime(2026, 9, 21, tzinfo=dt.timezone.utc)
     chat = Chat(id=100, type="private")
@@ -431,6 +435,24 @@ _REAL_PTB = textwrap.dedent(r"""
       "channel_post": bool(f.check_update(Update(1, channel_post=Message(
           message_id=1, date=now, chat=Chat(id=-5, type="channel"), document=doc)))),
     }
+    t = _text_filter()            # the text handler's registered expression
+    def text(**kw):
+        return Message(message_id=1, date=now, text="hi", **kw)
+    out["text_filter"] = {
+      "message": bool(t.check_update(Update(1, message=msg(text="hi")))),
+      "document": bool(t.check_update(Update(1, message=msg(document=doc)))),
+      "edited": bool(t.check_update(Update(1, edited_message=msg(text="hi")))),
+      "channel_post": bool(t.check_update(Update(1, channel_post=text(
+          chat=Chat(id=-5, type="channel"))))),
+      "business": bool(t.check_update(Update(1, business_message=text(
+          chat=chat, from_user=user, business_connection_id="bc")))),
+      # the bare filter the conjunct narrows DOES match all three
+      "bare_matches": [bool(filters.TEXT.check_update(u)) for u in (
+          Update(1, edited_message=msg(text="hi")),
+          Update(1, channel_post=text(chat=Chat(id=-5, type="channel"))),
+          Update(1, business_message=text(chat=chat, from_user=user,
+                                          business_connection_id="bc")))],
+    }
     print(json.dumps(out))
 """)
 
@@ -454,6 +476,12 @@ def test_real_ptb_filter_and_attribute_names():
     assert out["text"] is False            # disjoint from the TEXT handler
     assert out["edited"] is False          # an edited caption draws no reply
     assert out["channel_post"] is False
+    # #1040: the text handler takes new messages only
+    assert out["text_filter"] == {
+        "message": True, "document": False, "edited": False,
+        "channel_post": False, "business": False,
+        "bare_matches": [True, True, True],
+    }
 
 
 # ---------------------------------------------------------------------------

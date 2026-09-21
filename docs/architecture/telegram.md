@@ -36,7 +36,9 @@ file, a photo, a sticker, a pin — and never starts a turn. In the operator's c
 accepted file and acknowledges it, and answers everything else with a one-line refusal;
 outside that chat it follows the text path, and in the engagement supergroup only a person's
 content draws a reply ([`inbound-files.md`](inbound-files.md), INV-INBOX-006). The two filters
-are disjoint, so each update reaches exactly one handler. For an in-casa engagement,
+are disjoint, so each update reaches exactly one handler. Both take new messages only: an
+edited message, a channel post and a business message reach neither, so editing a message
+already sent never starts a second turn. For an in-casa engagement,
 the topic handler and the system-continuation seam (`deliver_system_turn`) both admit the
 turn synchronously, before any await a completion could race, as an admission ticket the
 completion gate reads; recognized commands are consumed by the handler itself and are never
@@ -338,6 +340,7 @@ send is available and is not prevented.
 - `casa/rootfs/opt/casa/verdict_broker.py::VerdictBroker`
 - `casa/rootfs/opt/casa/channels/telegram.py::_InboundReservation`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.engagement_inbound_reservation`
+- `casa/rootfs/opt/casa/channels/telegram.py::_text_filter`
 
 **Tests**
 - `tests/test_telegram_update_handler.py`

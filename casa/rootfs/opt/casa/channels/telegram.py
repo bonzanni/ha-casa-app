@@ -711,6 +711,18 @@ class _InboundClass:
     refusal: str = ""
 
 
+def _text_filter():
+    """The filter the text handler is registered with — one definition, so the
+    test that checks it against the real library checks THIS one.
+
+    ``UpdateType.MESSAGE`` is load-bearing for the same reason as in
+    `_non_text_filter`: a bare ``filters.TEXT`` also matches an edited message,
+    a channel post and a business message, and an edited message must not
+    start a second turn. ``handle_update``'s ``update.message`` check drops
+    them too; this states it where the handler is declared."""
+    return filters.UpdateType.MESSAGE & filters.TEXT
+
+
 def _non_text_filter():
     """The filter the non-text handler is registered with — one definition,
     so the test that checks it against the real library checks THIS one.
@@ -1196,7 +1208,7 @@ class TelegramChannel(Channel):
         # serialized by _engagement_handler_locks; PTB routes task
         # exceptions to the registered error handler.
         app.add_handler(
-            MessageHandler(filters.TEXT, self.handle_update, block=False)
+            MessageHandler(_text_filter(), self.handle_update, block=False)
         )
         # #1036: every non-text message — files and everything else — so none
         # is dropped silently. See `_non_text_filter` for why it is not a bare
