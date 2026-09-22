@@ -1,6 +1,37 @@
 # Manifest shard (#367, split #954) — architecture documents N through plugin-l. Loaded with
 # the root docs/manifest.yaml by scripts/verify_docs.py; same entry format.
 
+- doc: architecture/output-boundary.md
+  summary: One place for per-turn output policy — the turn scope, admission of model text at the Telegram transport, the read-before-describe disclosure, and the note a stored payload carries to the turn that sends it.
+  when_changing: what the operator sees from a turn — the turn scope, the admission of model text, the read-before-describe disclosure, a stored payload's note, or the Telegram channel's admitted-text contract
+  covers:
+    - casa/rootfs/opt/casa/output_boundary.py
+    - casa/rootfs/opt/casa/hooks.py::read_evidence_matchers
+    - casa/rootfs/opt/casa/channels/telegram.py::_unadmitted
+    - casa/rootfs/opt/casa/channels/telegram.py::_overflow_head
+    - casa/rootfs/opt/casa/tools.py::_current_scope
+    - casa/rootfs/opt/casa/tools.py::_launch_note
+    - casa/rootfs/opt/casa/agent.py::Agent.handle_message
+    - casa/rootfs/opt/casa/provenance.py::scheduled_delivery_markers
+    - casa/rootfs/opt/casa/reminders.py::spec_from_entry
+  tests:
+    - tests/test_output_boundary.py
+    - tests/test_output_boundary_agent.py
+    - tests/test_output_boundary_channel.py
+    - tests/test_output_boundary_delegation.py
+    - tests/test_output_boundary_evidence.py
+    - tests/test_output_boundary_reminders.py
+    - tests/test_output_boundary_sites.py
+    - tests/test_output_boundary_tools.py
+  related: [architecture/inbound-files.md, architecture/telegram.md, architecture/turn-loop.md, architecture/tools-interface.md, architecture/reminders.md, architecture/delegation.md, architecture/hook-resolution.md, architecture/jobs-and-delivery.md]
+  defines_invariants: [INV-OUT-001, INV-OUT-002, INV-OUT-003, INV-OUT-004, INV-OUT-005]
+  invariant_tests:
+    INV-OUT-001: [tests/test_output_boundary_channel.py::test_send_refuses_a_bare_string_with_zero_bot_calls, tests/test_output_boundary_channel.py::test_send_response_refuses_a_bare_string, tests/test_output_boundary_channel.py::test_finalize_stream_refuses_a_bare_string, tests/test_output_boundary_channel.py::test_finalize_response_stream_refuses_a_bare_string, tests/test_output_boundary_channel.py::test_post_dm_keyboard_refuses_a_bare_string_with_none, tests/test_output_boundary_channel.py::test_send_media_refuses_a_bare_string_caption_by_raising, tests/test_output_boundary_sites.py::test_every_raw_transport_call_is_inside_a_recorded_function, tests/test_output_boundary_sites.py::test_every_casa_text_call_site_is_recorded, tests/test_output_boundary_sites.py::test_every_edit_dm_message_caller_is_recorded_and_classified, tests/test_output_boundary_sites.py::test_channel_text_methods_are_classified]
+    INV-OUT-002: [tests/test_output_boundary_agent.py::test_the_final_reply_of_a_file_turn_reaches_the_channel_admitted_and_annotated, tests/test_output_boundary_agent.py::test_streamed_cumulatives_carry_the_line_while_undischarged, tests/test_output_boundary_agent.py::test_a_silent_file_turn_stays_silent, tests/test_output_boundary.py::test_text_committed_before_the_read_keeps_its_line_and_text_after_does_not, tests/test_output_boundary.py::test_a_failed_read_is_not_evidence, tests/test_output_boundary_evidence.py::test_a_successful_read_of_a_listed_inbox_file_is_evidence, tests/test_output_boundary_channel.py::test_the_line_goes_out_once_before_the_pages_when_the_page_1_edit_failed, tests/test_output_boundary_channel.py::test_the_line_goes_out_once_before_the_chunks_when_the_head_edit_failed, tests/test_output_boundary_plan_p3.py::test_page_1_fallback_destinations_go_whole_after_a_failed_head, tests/test_output_boundary_plan_p3.py::test_a_failed_line_unit_is_logged_and_the_pages_still_go, tests/test_output_boundary_plan_p3.py::test_an_unconfirmed_head_gets_the_line_message_too, tests/test_output_boundary_tools.py::test_send_message_admits_and_reports_the_line, tests/test_output_boundary_tools.py::test_ask_user_posts_an_admitted_body_carrying_the_line, tests/test_output_boundary_tools.py::test_list_inbound_files_arms_the_obligation_with_the_listed_files]
+    INV-OUT-003: [tests/test_output_boundary_reminders.py::test_d1_a_live_registered_spec_fires_with_the_note, tests/test_output_boundary_reminders.py::test_the_boot_loader_builds_reminder_specs_through_that_constructor, tests/test_output_boundary_reminders.py::test_d3_reconciliation_re_registers_the_note, tests/test_output_boundary_reminders.py::test_d4_the_overdue_sweep_fires_with_the_note_from_the_raw_entry, tests/test_output_boundary_reminders.py::test_trigger_spec_is_constructed_only_where_the_design_allows, tests/test_output_boundary_tools.py::test_set_reminder_stores_the_note_and_registers_a_spec_that_carries_it, tests/test_output_boundary_tools.py::test_set_reminder_after_the_read_stores_no_note, tests/test_output_boundary.py::test_an_inherited_note_is_never_discharged_by_a_read, tests/test_output_boundary.py::test_inherited_and_todays_lines_both_appear_and_a_stored_note_concatenates, tests/test_output_boundary_delegation.py::test_the_synthesized_narration_turn_inherits_the_note, tests/test_output_boundary_delegation.py::test_a_job_row_keeps_the_note_across_a_reload, tests/test_output_boundary_delegation.py::test_boot_replay_restores_the_note_on_the_completion_origin, tests/test_output_boundary_delegation.py::test_the_registration_adapter_writes_the_note_from_the_record_origin]
+    INV-OUT-004: [tests/test_output_boundary_delegation.py::test_the_child_runs_under_a_view_with_the_launch_note_even_after_the_holder_is_rewritten, tests/test_output_boundary.py::test_a_child_view_carries_the_launch_note_not_the_parents_live_obligation, tests/test_output_boundary_tools.py::test_a_paused_send_media_commits_under_the_scope_captured_at_entry]
+    INV-OUT-005: [tests/test_output_boundary_tools.py::test_send_message_admits_and_reports_the_line, tests/test_output_boundary_tools.py::test_set_reminder_stores_the_note_and_registers_a_spec_that_carries_it, tests/test_output_boundary_delegation.py::test_the_child_runs_under_a_view_with_the_launch_note_even_after_the_holder_is_rewritten]
+
 - doc: architecture/overview.md
   summary: What Casa is made of — supervised services, the three agent tiers, and where configuration enters.
   when_changing: anything structural, or when you need to find which document owns an area

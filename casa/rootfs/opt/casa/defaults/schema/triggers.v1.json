@@ -49,6 +49,11 @@
             "$comment": "#398 release 2: provenance as DATA. Present only on entries the resident's own reminder tools created — written by set_reminder and by nothing else (there is deliberately no migration out of the retired reminders.yaml — the old file must be cleared before this version is deployed). The schema cannot authenticate authorship: it makes the marker EXPRESSIBLE, and any writer of this file could set it. What it buys is that ownership is stated rather than guessed. NEVER inferred from an entry's own content: the name, `type: date` and `one_shot` are all shapes an operator may legitimately author, and inferring from them is what produced three rounds of findings in #396. Absent is the default and means the entry is the operator's, so the enum is deliberately single-valued — an \"operator\" marker would invert that default. This field is what bounds the reminder writer, the overdue sweep, the reverse job reconciliation and the post-fire cleanup to entries the agent owns, now that all of them read the operator's shared triggers.yaml.",
             "type": "string",
             "enum": ["agent"]
+          },
+          "output_note": {
+            "$comment": "#1038: the resolved disclosure a reminder owes the turn that sends it — 'Casa: Ellen wrote this without opening “invoice.pdf”.' — written by set_reminder when the authoring turn had listed an inbound file and opened none, and by nothing else. Like managed_by it is provenance as DATA: the schema makes it expressible, the one constructor (reminders.spec_from_entry) carries it to the spec, and the dispatch sites stamp it into the firing turn's context, whose scope prepends it to whatever the model sends. Absent means nothing is owed.",
+            "type": "string",
+            "minLength": 1
           }
         },
         "allOf": [

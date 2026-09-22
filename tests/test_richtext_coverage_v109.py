@@ -24,6 +24,7 @@ from telegram.error import BadRequest
 
 from channels.tg_richtext import render
 from test_telegram_topic_stream import _mk_channel_with_fake_bot
+from output_boundary_testing import admitted
 
 
 # ===========================================================================
@@ -34,7 +35,7 @@ from test_telegram_topic_stream import _mk_channel_with_fake_bot
 async def test_post_dm_keyboard_renders_entities():
     ch, bot = _mk_channel_with_fake_bot()
     mid = await ch.post_dm_keyboard(
-        chat_id=100, request_id="r1", text="**Install** the plugin?",
+        chat_id=100, request_id="r1", text=admitted("**Install** the plugin?"),
         options=["Yes", "No"],
     )
     assert mid == 12345
@@ -51,7 +52,7 @@ async def test_post_dm_keyboard_renders_entities():
 async def test_post_dm_keyboard_plain_body_sends_raw():
     ch, bot = _mk_channel_with_fake_bot()
     await ch.post_dm_keyboard(
-        chat_id=100, request_id="r1", text="No markup here",
+        chat_id=100, request_id="r1", text=admitted("No markup here"),
         options=["Ok"],
     )
     kw = bot.send_message.await_args.kwargs
@@ -65,7 +66,7 @@ async def test_post_dm_keyboard_badrequest_retries_plain_original():
     ok = MagicMock(message_id=7)
     bot.send_message = AsyncMock(side_effect=[BadRequest("bad entity"), ok])
     mid = await ch.post_dm_keyboard(
-        chat_id=100, request_id="r1", text="**b**", options=["Ok"],
+        chat_id=100, request_id="r1", text=admitted("**b**"), options=["Ok"],
     )
     assert mid == 7
     assert bot.send_message.await_count == 2

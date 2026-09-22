@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-07-31
+last_reviewed: 2026-09-22
 ---
 
 # Persistent state
@@ -63,6 +63,14 @@ relocates the tree. An hourly sweep deletes a file seven days after the time in 
 removes anything that does not follow the layout, and reclaims a publication a crash left
 half-done after an hour; it never deletes for space, so a full folder refuses the next
 publication instead. Its contract is [`plugin-handoff.md`](plugin-handoff.md).
+
+**Two stored fields carry a disclosure a payload owes.** A reminder entry in a role's
+`triggers.yaml` may carry `output_note`, and a durable job row carries `output_note` — the
+resolved Casa line the payload's authoring turn owed, stored beside the payload rather than
+inside it, so the turn that finally sends it prepends the line whatever its model writes.
+The trigger schema declares the key; the job codec writes it on every row and decodes a row
+without it as owing nothing. Their contract is [`output-boundary.md`](output-boundary.md)
+(INV-OUT-003).
 
 ## Contracts & invariants
 

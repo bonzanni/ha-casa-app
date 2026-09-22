@@ -11,6 +11,7 @@ import pytest
 import agent as agent_mod
 import plugin_outbox
 import tools
+from output_boundary_testing import with_scope
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
 
@@ -36,8 +37,8 @@ def wired(tmp_path):
         mcp_registry=MagicMock(), trigger_registry=MagicMock(),
         engagement_registry=MagicMock(),
     )
-    token = agent_mod.origin_var.set({"role": "assistant", "channel": "telegram",
-                                      "chat_id": 1197017861})
+    token = agent_mod.origin_var.set(with_scope({"role": "assistant", "channel": "telegram",
+                                      "chat_id": 1197017861}))
     try:
         yield ob, ch
     finally:
@@ -106,7 +107,7 @@ async def test_outside_outbox_no_send(wired, tmp_path):
 async def test_origin_refusals(wired, origin, expected):
     ob, ch = wired
     path = _drop(ob, "a.pdf", PDF)
-    token = agent_mod.origin_var.set(origin)
+    token = agent_mod.origin_var.set(with_scope(origin))
     try:
         res = await tools.send_media.handler({"path": path, "kind": "document"})
     finally:
@@ -301,7 +302,7 @@ async def test_channel_unavailable_when_manager_missing(tmp_path):
     tools.init_tools(channel_manager=None, bus=MagicMock(),
                      specialist_registry=MagicMock(), mcp_registry=MagicMock(),
                      trigger_registry=MagicMock(), engagement_registry=MagicMock())
-    token = agent_mod.origin_var.set({"channel": "telegram", "chat_id": 5})
+    token = agent_mod.origin_var.set(with_scope({"channel": "telegram", "chat_id": 5}))
     try:
         res = await tools.send_media.handler({"path": "/x", "kind": "document"})
         assert _payload(res)["kind_error"] == "channel_unavailable"
@@ -396,8 +397,7 @@ async def test_delegated_finance_origin_numeric_string_chat(wired):
     ob, ch = wired
     # A delegated finance turn carries its origin via origin_var (NOT engagement_var)
     # with a numeric-STRING chat_id. The tool must coerce to int and target it.
-    token = agent_mod.origin_var.set(
-        {"role": "finance", "channel": "telegram", "chat_id": "1197017861"})
+    token = agent_mod.origin_var.set(with_scope({"role": "finance", "channel": "telegram", "chat_id": "1197017861"}))
     try:
         assert tools.engagement_var.get(None) is None
         path = _drop(ob, "fin.pdf", PDF)

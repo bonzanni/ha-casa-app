@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-08-30
+last_reviewed: 2026-09-22
 ---
 
 # Triggers and scheduling
@@ -261,6 +261,14 @@ from the same shared helper — per role AND per trigger, so cancelling one remi
 silence the turns of the role's other schedules. The marker is also read only by those two tools, never by the shared
 transport predicate the protected-action approval path gates on, so nothing here widens who
 can raise an approval.
+
+The same helper carries a third marker, `_inherited_note` — reserved and stripped from
+external context like the other two — which is a reminder's `output_note`: the disclosure
+the turn that set it owed, prepended by the firing turn to whatever it sends
+([`output-boundary.md`](output-boundary.md), INV-OUT-003). A scheduled trigger's spec is
+built by one constructor, `reminders.spec_from_entry`, on every route — boot, live
+registration, reconciliation — so a field the entry carries reaches the spec everywhere or
+nowhere; a webhook spec is the loader's own.
 
 ## Failure behavior
 

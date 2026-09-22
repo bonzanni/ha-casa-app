@@ -720,6 +720,77 @@ def _has_prefix(norm: str, prefixes: list[str]) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# read_evidence — #1038 §6.2: did this turn open an inbound file?
+# ---------------------------------------------------------------------------
+
+def read_evidence_matchers(role: str) -> dict[str, list[Any]]:
+    """PostToolUse / PostToolUseFailure matchers on ``Read`` that record, into
+    the running turn's scope, whether an inbox file was opened.
+
+    The runtime's own call, not an inference: the SDK fires PostToolUse only
+    when the tool ran and returned, PostToolUseFailure when it raised, and
+    neither when the ``path_scope`` PreToolUse guard denied it (measured
+    2026-09-22). Both complete BEFORE the tool result reaches the model, so an
+    in-process tool the model calls next cannot race them.
+
+    Only a path under ``agent_inbox.readable_prefixes(role)`` is evidence — the
+    same lexical normalisation the scope guard applies. A read aimed at an
+    inbox file the turn never listed makes the turn a file turn too (a path
+    copied from an earlier listing). A role without an inbox records nothing;
+    a call with no scope bound records nothing. Never breaks the tool: any
+    failure here is logged and the hook returns ``{}``.
+    """
+    from claude_agent_sdk import HookMatcher
+
+    def _record(input_data: dict[str, Any], *, ok: bool) -> None:
+        import agent as agent_mod
+        import agent_inbox
+
+        origin = agent_mod.origin_var.get(None) or {}
+        scope = origin.get("turn_scope")
+        if scope is None:
+            return
+        raw = (input_data.get("tool_input") or {}).get("file_path", "")
+        if not isinstance(raw, str) or not raw:
+            return
+        norm = _normalize_path(raw)
+        prefixes = [_normalize_path(p) for p in agent_inbox.readable_prefixes(role)]
+        if not prefixes or not _has_prefix(norm, prefixes):
+            return
+        inbox = agent_inbox.get_inbox(role)
+        name = os.path.basename(norm)
+        display = inbox.display_name_for(name) if inbox is not None else name
+        scope.note_read_attempt(norm, display_name=display)
+        if ok:
+            scope.note_read_ok(norm)
+        else:
+            scope.note_read_failed(norm)
+
+    async def _post(input_data: dict[str, Any], tool_use_id: str | None,
+                    context: dict[str, Any]) -> dict[str, Any]:
+        try:
+            _record(input_data, ok=True)
+        except Exception:  # noqa: BLE001 — evidence must never break the tool
+            _logger.warning("read_evidence: PostToolUse recording failed",
+                            exc_info=True)
+        return {}
+
+    async def _fail(input_data: dict[str, Any], tool_use_id: str | None,
+                    context: dict[str, Any]) -> dict[str, Any]:
+        try:
+            _record(input_data, ok=False)
+        except Exception:  # noqa: BLE001
+            _logger.warning("read_evidence: PostToolUseFailure recording failed",
+                            exc_info=True)
+        return {}
+
+    return {
+        "PostToolUse": [HookMatcher(matcher="Read", hooks=[_post])],
+        "PostToolUseFailure": [HookMatcher(matcher="Read", hooks=[_fail])],
+    }
+
+
+# ---------------------------------------------------------------------------
 # casa_config_guard - Plan 3 (blocks /data/, schema/, resident deletions)
 # ---------------------------------------------------------------------------
 

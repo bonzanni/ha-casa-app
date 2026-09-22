@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-10
+last_reviewed: 2026-09-22
 ---
 
 # Durable jobs
@@ -68,7 +68,12 @@ gone by the time a resident is resumed. Scheduled-media eligibility (INV-TRIG-01
 therefore a stored boolean rather than a marker riding the origin dict, restored only from
 an exact stored true — a row written before the field existed restores nothing, and the
 resumed turn stays text-only exactly as it did before that feature. Read that as the general
-rule for this file: a capability that must survive a restart has to be *in the row*.
+rule for this file: a capability that must survive a restart has to be *in the row*. The
+note a delegation's brief owes the turn that narrates it is the second such field:
+`output_note`, written by the registration adapter from the record origin's
+`_inherited_note`, restored onto the replay origin by boot recovery, and decoded as empty
+from a row written before the field ([`output-boundary.md`](output-boundary.md),
+INV-OUT-003).
 
 **INV-JOB-009**: A live job that a graceful stop itself settles is not settled at all — the row is left as it stands, so the boot reconciliation treats it exactly as it treats a job lost to a crash. A settling the stop did not cause, and every success or non-cancellation verdict, still commits mid-stop.
 
@@ -226,7 +231,8 @@ deferred no-op would change nothing.
 ## What Casa keeps about a finished delegation
 
 The durable row holds the *caller's* prose — the request as it was made — the specialist's
-role, the origin, the terminal state and its typed failure envelope. The file is written
+role, the origin, the note the brief owes (`output_note`), the terminal state and its typed
+failure envelope. The file is written
 0600.
 
 **It is kept until its deadline, and then it is deleted.** Every terminal write stamps the

@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-08-07
+last_reviewed: 2026-09-22
 ---
 
 # Reminders
@@ -35,6 +35,20 @@ The tool's own description is where this contract is stated, because nothing in 
 state it: the writer inspects `text` only for emptiness, and deciding whether prose is
 operator-facing is a heuristic with false positives, so the surface a model reads *before*
 calling is the only place the guarantee can be made.
+
+**A reminder set without opening the file it is about carries that fact to the turn that
+sends it.** When the setting turn had listed inbound files and read none, `set_reminder`
+resolves the disclosure at creation into the entry's `output_note` — `Casa: <persona> wrote
+this without opening “<file>”.` — beside the unchanged prompt, and reports it in its result.
+Every route that builds the entry's `TriggerSpec` — the boot loader, the immediate
+registration, the sweep's re-registration — goes through the one constructor
+`reminders.spec_from_entry`, so no route can drop the field, and both firing sites stamp it
+into the turn's context as the reserved `_inherited_note` marker through the same
+`scheduled_delivery_markers` helper that stamps delivery eligibility, where the firing
+turn's scope prepends it to whatever the model sends (INV-OUT-003 in
+[`output-boundary.md`](output-boundary.md)). The schema declares the key; a malformed value
+makes the entry ill-formed like any other field. The helper stamps the note for whatever
+channel the trigger names; only the scheduled-delivery marker itself is Telegram-only.
 
 **One file, ownership per entry.** A reminder is an ordinary entry in the role's
 `triggers.yaml`, marked `managed_by: agent`. Reminders once had a file of their own,

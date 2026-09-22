@@ -16,6 +16,7 @@ from telegram import MessageEntity
 from telegram.error import BadRequest, TimedOut
 
 from test_telegram_topic_stream import _mk_channel_with_fake_bot
+from output_boundary_testing import admitted
 
 # asyncio mode is AUTO (pytest.ini); the sync helper tests below take no mark.
 
@@ -171,7 +172,7 @@ async def test_send_response_overflowing_fallback_sends_display_then_target():
 
     bot.send_message = AsyncMock(side_effect=_send)
     label = "L" * 4090
-    await ch.send_response(f"[{label}]({URL})\n\n{TAIL}", {"chat_id": "42"})
+    await ch.send_response(admitted(f"[{label}]({URL})\n\n{TAIL}"), {"chat_id": "42"})
 
     assert sent == [label, label, URL, TAIL]
 
@@ -218,7 +219,7 @@ async def test_head_chunk_landing_stamps_delivery_before_the_tail_raises():
     label = "L" * 4090
     context: dict = {"chat_id": "42"}
     with pytest.raises(TimedOut):
-        await ch.send_response(f"[{label}]({URL})\n\n{TAIL}", context)
+        await ch.send_response(admitted(f"[{label}]({URL})\n\n{TAIL}"), context)
 
     # The head is on the operator's screen; a raising tail must not erase that.
     assert sent == [label, label, URL]
@@ -227,7 +228,7 @@ async def test_head_chunk_landing_stamps_delivery_before_the_tail_raises():
 
 async def test_accepted_entities_send_exactly_the_rendered_pages():
     ch, bot = _mk_channel_with_fake_bot()
-    await ch.send_response(f"[label]({URL})\n\n{TAIL}", {"chat_id": "42"})
+    await ch.send_response(admitted(f"[label]({URL})\n\n{TAIL}"), {"chat_id": "42"})
 
     texts = [c.kwargs["text"] for c in bot.send_message.await_args_list]
     assert texts == ["label", TAIL]
@@ -238,7 +239,7 @@ async def test_single_page_fallback_still_resends_the_authored_text():
     ch, bot = _mk_channel_with_fake_bot()
     bot.send_message.side_effect = [BadRequest("bad entity"), None]
     authored = f"[label]({URL})"
-    await ch.send_response(authored, {"chat_id": "42"})
+    await ch.send_response(admitted(authored), {"chat_id": "42"})
 
     assert [c.kwargs["text"] for c in bot.send_message.await_args_list] == [
         "label", authored]

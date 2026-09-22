@@ -147,6 +147,8 @@
   doc: architecture/memory-wipe.md
 - item: casa/rootfs/opt/casa/observer.py
   doc: architecture/engagements.md
+- item: casa/rootfs/opt/casa/output_boundary.py
+  doc: architecture/output-boundary.md
 - item: casa/rootfs/opt/casa/persona_install.py
   doc: architecture/persona-lifecycle.md
 - item: casa/rootfs/opt/casa/persona_pack.py

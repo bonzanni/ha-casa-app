@@ -34,6 +34,7 @@ Code is the source of truth; these files are a map.
 - [architecture/memory-wipe.md](architecture/memory-wipe.md): The operator-consented wipe — its two doors and the consent each demands, the order the orchestrator works in, the fence every bank writer passes through, and what a wipe deliberately does not cover.
 - [architecture/memory.md](architecture/memory.md): Recall — how a stored fact is rendered on the way back out, and what a caller may claim from what comes back.
 - [architecture/observability.md](architecture/observability.md): How work is traced across components, what reaches a log, and what the health surfaces actually assert.
+- [architecture/output-boundary.md](architecture/output-boundary.md): One place for per-turn output policy — the turn scope, admission of model text at the Telegram transport, the read-before-describe disclosure, and the note a stored payload carries to the turn that sends it.
 - [architecture/overview.md](architecture/overview.md): What Casa is made of — supervised services, the three agent tiers, and where configuration enters.
 - [architecture/persistent-state.md](architecture/persistent-state.md): What the application writes to disk, how it treats a missing or corrupt file, and what that means for recovery.
 - [architecture/persona-lifecycle.md](architecture/persona-lifecycle.md): How a persona arrives, is approved, and leaves — consent-bound install, the approved roots, removal by reference scan, and the operator-run sweep.

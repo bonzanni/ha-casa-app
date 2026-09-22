@@ -41,7 +41,8 @@ from channels import ChannelManager, DeliveryOutcome
 from claude_runtime import CLAUDE_CLI_PATH
 from config import AgentConfig
 from specialist_registry import DelegationComplete
-from hooks import resolve_hooks
+from hooks import read_evidence_matchers, resolve_hooks
+from output_boundary import Admitted, IntentKind, TurnScope, casa_text
 from log_cid import cid_var
 import sdk_logging
 from mcp_registry import McpServerRegistry
@@ -167,6 +168,10 @@ COPIED_CONTEXT_MARKERS = (
     "synthetic", "button_answer", "_origin_route", "_origin_clearance",
     "_operator_turn", "_scheduled_delivery", "_scheduled_epoch",
     "plugin_setup_target",
+    # #1038: the resolved disclosure a stored payload owes the turn that
+    # sends it (stamped by the scheduler, the reminder sweep and delegation
+    # synthesis; registered on the scope at mint as an InheritedNote).
+    "_inherited_note",
 )
 
 # Personality Task 14 / GH #199: the per-turn explanation draft. ``_build_options``
@@ -1054,6 +1059,15 @@ class Agent:
         ):
             msg = self._synthesize_delegation_turn(msg)
 
+        # #1038: one scope per dispatched turn — the one place a per-turn
+        # output property lives. Minted AFTER the synthesis rebind (a
+        # narration turn is its own turn) and BEFORE the streaming callback;
+        # it rides ``msg.context`` under a reserved key so ``_process`` puts
+        # the same object on the origin snapshot, where tool handlers and the
+        # pooled client's read task find it.
+        scope = TurnScope.mint(msg, self.config)
+        msg.context["_turn_scope"] = scope
+
         # Obtain a streaming callback from the channel (if available).
         # SCHEDULED turns are buffered: the agent thinks privately and
         # only the final text is sent. This prevents Telegram leaking
@@ -1179,6 +1193,18 @@ class Agent:
         if text and _strips_to_silence(text):
             text = ""
 
+        # #1038: admission. The model's final text passes through the turn's
+        # scope — obligations applied against the evidence the turn gathered,
+        # nothing withheld — and the channel receives the ``Admitted`` value,
+        # never a bare string. A classified-error reply is Casa's own text.
+        # Silence was tested above on the unannotated text, so a silent turn
+        # is never turned into a visible line.
+        admitted: Admitted | None = None
+        if text:
+            admitted = (scope.admit(IntentKind.FINAL_REPLY, text)
+                        if error_kind is None else casa_text(text))
+            text = admitted
+
         # §3.10 notice: while plugin-health holds a blocking issue affecting
         # this agent's role, prepend a one-line notice to a user-visible reply.
         # Suppression of repeats lives entirely in plugin_health.pending_notice
@@ -1193,7 +1219,12 @@ class Agent:
             text and channel is not None
             and getattr(channel, "delivers_final_text", True)
         ):
-            text, health_notice = await self._maybe_prepend_health_notice(text)
+            noticed, health_notice = await self._maybe_prepend_health_notice(text)
+            # The notice is prepended OUTSIDE the admitted text (outermost, as
+            # today); the admission — its provenance and annotations — is
+            # carried over the re-rendered body.
+            if noticed is not text and admitted is not None:
+                text = admitted.with_text(noticed)
         else:
             health_notice = None
 
@@ -1437,6 +1468,10 @@ class Agent:
             # marker travels — a completion resumed into a scheduled session
             # must be judged against the trigger set that ASKED for the work.
             "_scheduled_epoch",
+            # #1038: the brief's resolved disclosure — the narration turn's
+            # scope registers it as an InheritedNote and prepends it to
+            # whatever the resident narrates, live or after a restart.
+            "_inherited_note",
         ):
             if _marker_key in origin:
                 synth_context[_marker_key] = origin[_marker_key]
@@ -1480,6 +1515,14 @@ class Agent:
         )
         user_text = str(msg.content)
 
+        # #1038: the turn's scope — minted by handle_message; a direct caller
+        # of _process (tests, the setup-evidence turn) gets one minted here so
+        # every turn has exactly one.
+        scope = msg.context.get("_turn_scope")
+        if not isinstance(scope, TurnScope):
+            scope = TurnScope.mint(msg, self.config)
+            msg.context["_turn_scope"] = scope
+
         # The origin snapshot is set into ``origin_var`` for this task (so the
         # delegate_to_agent tool handler can read the outer turn) AND handed to
         # the pool / bypass client as ``origin=`` (the warm client rewrites its
@@ -1514,6 +1557,11 @@ class Agent:
             # NEVER persisted: engagement tombstones strip it (see
             # engagement_registry._persistable_origin).
             "speaker_provenance": self.config.speaker_provenance,
+            # #1038: the turn's output scope, a LIVE object exactly like
+            # ``speaker_provenance`` above — read by tool handlers (via
+            # ``_snapshot_origin``) and by the read-evidence hooks; never
+            # persisted (``_NON_PERSISTABLE_ORIGIN_KEYS``).
+            "turn_scope": scope,
         }
         # Reserved provenance markers (synthetic turn replay, button
         # answers) ride on msg.context when a LATER task (ask_user/button
@@ -1676,6 +1724,7 @@ class Agent:
                     on_token, turn_guard,
                     settle_evidence=(
                         msg.context.get("synthetic") != "plugin_setup"),
+                    scope=scope,
                 )
                 turn_state["state"] = state
                 # #521: keep EVERY attempt's state — a setup tool can run in
@@ -1804,6 +1853,7 @@ class Agent:
                     on_token, turn_guard,
                     settle_evidence=(
                         msg.context.get("synthetic") != "plugin_setup"),
+                    scope=scope,
                 )
                 turn_state["state"] = state
                 turn_state.setdefault("states", []).append(state)
@@ -2665,6 +2715,14 @@ class Agent:
                 hooks[_event] = [*hooks.get(_event, []), *_matchers]
             _broker_env = result_broker.broker_env(_client_id)
 
+        # #1038 §6.2: the read-evidence matchers — PostToolUse /
+        # PostToolUseFailure on ``Read`` — record into the turn's scope whether
+        # an inbound file was actually opened. Always present; a role without
+        # an inbox records nothing (the matcher is "Read" only, so the cost is
+        # one cheap callback per read).
+        for _event, _matchers in read_evidence_matchers(self.config.role).items():
+            hooks[_event] = [*hooks.get(_event, []), *_matchers]
+
         # Skills are enabled via the `skills="all"` option below, NOT by
         # putting "Skill" in allowed_tools ((f) v0.69.9: bare "Skill" is
         # deprecated by the SDK; skills="all" auto-allows the Skill tool +
@@ -2741,6 +2799,7 @@ class Agent:
         on_token: OnTokenCallback | None,
         turn_guard: VoiceTurnGuard | None = None,
         settle_evidence: bool = True,
+        scope: TurnScope | None = None,
     ):
         """Build the per-turn ``on_message(sdk_msg)`` handler + its ``state``.
 
@@ -2820,7 +2879,13 @@ class Agent:
                 return
             if _may_still_be_silence(cum) if partial else _strips_to_silence(cum):
                 return
-            emitted = cum
+            # #1038: a stream update is admitted like any other emission —
+            # while a disclosure is owed and undischarged, every streamed
+            # edit carries the line at its head, so what is on screen is
+            # true at every moment and a failed final edit leaves the line
+            # there. The hold above ran on the UNANNOTATED cumulative.
+            emitted = (scope.admit(IntentKind.STREAM_UPDATE, cum)
+                       if scope is not None else cum)
             if emitted == state["last_emitted"]:
                 return
             await on_token(emitted)

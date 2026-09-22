@@ -1150,6 +1150,15 @@ def _build_triggers(
         else:
             prompt_text = ""  # webhook triggers have no prompt
         is_webhook = t.get("type") == "webhook"
+        if not is_webhook:
+            # #1038: every scheduled trigger's spec comes from the ONE
+            # constructor — the same one set_reminder's live registration and
+            # the sweep's reconciliation use — so a field the entry carries
+            # (``output_note``) cannot be dropped by one loader and kept by
+            # another. ``managed_by`` is read off the entry there too (#398).
+            from reminders import spec_from_entry
+            specs.append(spec_from_entry(t, prompt=prompt_text))
+            continue
         specs.append(TriggerSpec(
             name=t["name"],
             type=t["type"],
@@ -1158,8 +1167,8 @@ def _build_triggers(
             path=t.get("path", "") or "",
             channel=t.get("channel", "") or "",
             prompt=prompt_text,
-            auth=_normalize_webhook_auth(t, trig_name) if is_webhook else None,
-            clearance=t.get("clearance", "public") if is_webhook else "public",
+            auth=_normalize_webhook_auth(t, trig_name),
+            clearance=t.get("clearance", "public"),
             at=t.get("at", "") or "",
             one_shot=bool(t.get("one_shot", False)),
             # #398 release 2: read off the entry, never inferred. An operator

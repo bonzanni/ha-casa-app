@@ -341,6 +341,8 @@ class SpecialistRegistry:
             creator_user_id=self._optional_str(origin.get("user_id")),
             scope_id=str(origin.get("chat_id") or ""),
             scheduled_delivery=scheduled_delivery_of(origin),
+            # #1038: the brief's resolved disclosure, off the record origin.
+            output_note=str(origin.get("_inherited_note") or ""),
             origin_route_id=self._optional_str(origin.get("cid")),
             origin_device_id=self._optional_str(
                 origin.get("origin_device_id")),

@@ -37,6 +37,7 @@ from test_scheduled_ask_user import (
     _payload,
     _scheduled_origin,
 )
+from output_boundary_testing import with_scope
 
 pytestmark = pytest.mark.asyncio
 
@@ -132,7 +133,7 @@ async def _ask_on_raw(channel, origin, question="Send the invoice?"):
         channel_manager=_mk_cm(channel), bus=MagicMock(),
         specialist_registry=MagicMock(), mcp_registry=MagicMock(),
     )
-    tok = agent_mod.origin_var.set(origin)
+    tok = agent_mod.origin_var.set(with_scope(origin))
     try:
         res = await tools_mod.ask_user.handler(
             {"question": question, "options": ["Confirm", "Wrong", "Later"]})

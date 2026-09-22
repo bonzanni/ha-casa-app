@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-07
+last_reviewed: 2026-09-22
 ---
 
 # The warm client pool
@@ -31,6 +31,14 @@ invalidate the entry rather than leave it warm.
 
 When the pool cannot serve a turn it raises, and the turn creates a client for itself
 instead, using it for that turn only. Both paths exist and both are exercised.
+
+The turn's output scope rides that reuse. `_process` hands the pool the origin snapshot with
+the scope on it as `turn_scope`, and the managed client rewrites its origin holder in place
+at each turn start, so a handler that reads the holder after an await that outlives its
+turn reads the next turn's scope. The emitting tools therefore resolve the scope they commit
+under from the snapshot they copied at entry, never from the holder, and a delegation launch
+binds the child's context to a frozen copy around `create_task` (INV-OUT-004 in
+[`output-boundary.md`](output-boundary.md)).
 
 ## Contracts & invariants
 

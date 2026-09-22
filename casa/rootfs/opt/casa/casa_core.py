@@ -56,6 +56,7 @@ from mcp_registry import McpServerRegistry
 from semantic_memory import SemanticMemory
 from policies import load_policies
 import private_state
+from output_boundary import casa_text
 from provenance import sanitize_external_context
 from session_registry import SessionRegistry
 from session_sweeper import SessionSweeper
@@ -3248,7 +3249,7 @@ async def operator_notify(channel_manager: Any, text: str) -> None:
     # default chat — also the operator — when identity is unresolvable).
     op = _tc.operator_identity(ch)
     ctx = {"chat_id": op[0]} if op is not None else {}
-    await ch.send_response(text, ctx)
+    await ch.send_response(casa_text(text), ctx)
 
 
 # #556: every out-of-band operator notice runs the same sequence — read state,
@@ -3304,10 +3305,10 @@ async def notify_placeholder_rewrites(channel_manager: Any) -> None:
             if path in _placeholder_notified:
                 reminders.clear_placeholder_notice(path)
                 continue
-            outcome = await channel.send(
+            outcome = await channel.send(casa_text(
                 f"⚠️ Updated {path}, which uses ${{...}} placeholders — a "
                 f"placeholder entry there may now resolve differently. "
-                f"Worth a look.", {"cid": new_cid()})
+                f"Worth a look."), {"cid": new_cid()})
             if outcome is not DeliveryOutcome.NOT_DELIVERED:
                 _placeholder_notified.add(path)
                 reminders.clear_placeholder_notice(path)
@@ -3392,7 +3393,7 @@ async def _notify_plugin_health_locked(channel_manager: Any, path: str) -> None:
     if channel is None or not getattr(channel, "is_ready", True):
         return  # no deliverable channel — retry next boot/mutation
     try:
-        outcome = await channel.send(content, {"cid": new_cid()})
+        outcome = await channel.send(casa_text(content), {"cid": new_cid()})
     except Exception as exc:  # noqa: BLE001
         logger.warning("plugin_health notify: send failed: %s", exc)
         return  # not marked → retried next boot/mutation
@@ -3475,7 +3476,7 @@ async def _sweep_engagement_topics(channel_manager: Any) -> None:
         if not getattr(channel, "is_ready", True):
             return
         try:
-            await channel.send(content, {"cid": new_cid()})
+            await channel.send(casa_text(content), {"cid": new_cid()})
             _topic_permission_notified = True
         except Exception as exc:  # noqa: BLE001
             logger.warning(
@@ -3803,6 +3804,10 @@ async def _notify_recovered_delegations(
                 # when stored — a legacy row has no field and stays text-only.
                 **({"_scheduled_delivery": True}
                    if job.scheduled_delivery is True else {}),
+                # #1038: the brief's resolved disclosure, restored from the
+                # row so the narration turn after a restart still carries it.
+                **({"_inherited_note": job.output_note}
+                   if job.output_note else {}),
             },
             elapsed_s=0.0,
         )
@@ -4544,7 +4549,9 @@ async def main() -> None:
     async def _telegram_outbound(msg: BusMessage) -> None:
         ch = channel_manager.get("telegram")
         if ch is not None:
-            await ch.send(str(msg.content), msg.context)
+            # Casa-composed notices only (config-sync and the like); a
+            # model turn's reply never reaches this bus target (#1038).
+            await ch.send(casa_text(str(msg.content)), msg.context)
 
     bus.register("telegram", _telegram_outbound)
 

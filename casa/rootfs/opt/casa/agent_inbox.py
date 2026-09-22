@@ -343,6 +343,11 @@ class Inbox:
         out.sort(key=lambda f: f.published_at, reverse=True)
         return out
 
+    def display_name_for(self, name: str) -> str:
+        """The name the operator gave a published file, or Casa's name when no
+        meta was written — what the #1038 disclosure calls the file."""
+        return self._display_name(name)
+
     def _display_name(self, name: str) -> str:
         try:
             with open(os.path.join(self.meta_dir, f"{name}.json"),

@@ -54,6 +54,11 @@ def test_reserved_context_keys_are_exactly_the_spec_set():
         # who could set it would hand itself a fresh-looking epoch and raise a
         # question on behalf of a trigger that no longer exists.
         "_scheduled_epoch",
+        # #1038: the live turn scope handle_message mints, and the resolved
+        # disclosure a stored payload carries to the turn that sends it. A
+        # caller who could set either would hand a turn a scope it did not
+        # earn, or a note it does not owe.
+        "_turn_scope", "_inherited_note",
     })
 
 

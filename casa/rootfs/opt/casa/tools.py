@@ -64,6 +64,10 @@ from claude_agent_sdk import (
 
 from bus import BusMessage, MessageBus, MessageType
 from channels import ChannelManager, DeliveryOutcome
+from output_boundary import (
+    Admitted, IntentKind, ReadBeforeDescribe, TurnScope, UnadmittedText,
+    casa_text,
+)
 from claude_runtime import CLAUDE_CLI_PATH
 from media_policies import MEDIA_POLICIES
 import plugin_outbox
@@ -302,9 +306,15 @@ async def send_message(args: dict) -> dict:
     # rather than by omission — the #556 rule: "cannot report" is not "failed",
     # and reporting it as failure would make every send on such a channel look
     # lost.
+    # #1038: admission — the turn's obligations applied to the text at the
+    # moment it is committed, against the evidence gathered so far.
+    scope = _current_scope(_origin)
+    if scope is None:
+        return _text_result(f"Error: {_NO_SCOPE_MESSAGE}.", is_error=True)
+    admitted = scope.admit(IntentKind.DISCRETE, message)
     ctx: dict[str, Any] = {}
     try:
-        outcome = await ch.send(message, ctx)
+        outcome = await ch.send(admitted, ctx)
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # noqa: BLE001 — a send fault is a tool result
@@ -337,6 +347,11 @@ async def send_message(args: dict) -> dict:
         return _text_result(
             f"Error: the {channel} channel delivered nothing — the message "
             f"did NOT reach the operator.", is_error=True)
+    # #1038 §6.5: the record the model builds on names the exact text Casa
+    # added, so the transcript says what the operator saw.
+    if admitted.annotations:
+        lines = "”, “".join(admitted.annotations)
+        return _text_result(f"Message sent via {channel}. Casa prefixed: “{lines}”")
     return _text_result(f"Message sent via {channel}.")
 
 
@@ -375,7 +390,10 @@ async def _classify_send(ch, content, kind, filename, origin, caption) -> dict:
         await ch.send_media(content, kind, filename, context=origin, caption=caption)
         return {"status": "ok", "kind_error": None, "kind": kind,
                 "filename": filename,
-                "summary": f"delivered {kind} {filename!r}"}
+                "summary": f"delivered {kind} {filename!r}",
+                # #1038 §6.5: the line the caption carried, if any.
+                **({"casa_prefixed": list(caption.annotations)}
+                   if getattr(caption, "annotations", None) else {})}
     except NotImplementedError:
         return {"status": "error", "kind_error": "unsupported_channel", "kind": kind,
                 "message": "channel cannot deliver media"}
@@ -388,6 +406,10 @@ async def _classify_send(ch, content, kind, filename, origin, caption) -> dict:
     except TelegramError as exc:
         return {"status": "error", "kind_error": "delivery_uncertain", "kind": kind,
                 "message": f"delivery uncertain: {type(exc).__name__}; not retried"}
+    except UnadmittedText:
+        # #1038: never "the channel was down" — the caption was not admitted.
+        return {"status": "error", "kind_error": "refused", "kind": kind,
+                "message": "caption refused: not admitted text"}
     except RuntimeError:
         return {"status": "error", "kind_error": "channel_unavailable", "kind": kind,
                 "message": "channel not started"}
@@ -620,8 +642,22 @@ async def send_media(args: dict) -> dict:
         if ch is None:
             return _result({"status": "error", "kind_error": "channel_unavailable",
                             "message": "channel not registered"})
-        if caption is not None and len(caption) > _CAPTION_MAX:
-            caption = caption[:_CAPTION_MAX]
+        if caption is not None:
+            # #1038: the caption is model text — admitted under this emission's
+            # scope (engagement or turn), the line at its head. The existing
+            # cap falls on the model's BODY, never on the line: a line cut by
+            # the cap under a result that reports it whole is a false record
+            # (plan round 2, Astra). A slice of an Admitted is a plain str, so
+            # the shortened caption is re-wrapped under the same admission.
+            _scope = _current_scope(origin)
+            if _scope is None:
+                return _result({"status": "error", "kind_error": "unsupported_origin",
+                                "message": _NO_SCOPE_MESSAGE})
+            body = caption
+            caption = _scope.admit(IntentKind.CAPTION, body)
+            if len(caption) > _CAPTION_MAX:
+                head = str(caption)[:len(caption) - len(body)]
+                caption = caption.with_text(head + body[:max(_CAPTION_MAX - len(head), 0)])
 
         # Containment stage 2 (Task 11): a uid-dropped claude_code engagement's
         # producer plugins can no longer write the SHARED outbox (it stays
@@ -978,7 +1014,10 @@ async def _ask_user_scheduled(
             rid, scheduled_asks.STATE_LIVE, message_id=message_id,
         )
     return _result({"status": "awaiting_user", "request_id": rid,
-                    "delivered_to": "operator_dm"})
+                    "delivered_to": "operator_dm",
+                    # #1038 §6.5: the line the keyboard carried, if any.
+                    **({"casa_prefixed": list(body.annotations)}
+                       if getattr(body, "annotations", ()) else {})})
 
 
 @tool(
@@ -1082,6 +1121,14 @@ async def ask_user(args: dict) -> dict:
     # and the settle edits derive from this one ``body`` so they can never
     # disagree (mirrors the engagement single-source discipline).
     body = render_ask_body(None, question, list(options))
+    # #1038: the question body is model text — admitted under the turn's scope
+    # BEFORE the two arms branch, so the posted keyboard, the stored scheduled
+    # record and every settle edit derived from ``body`` carry the same line.
+    _scope = _current_scope(origin)
+    if _scope is None:
+        return _result({"status": "error", "kind": "unsupported_origin",
+                        "message": _NO_SCOPE_MESSAGE})
+    body = _scope.admit(IntentKind.KEYBOARD, body)
 
     if scheduled:
         return await _ask_user_scheduled(
@@ -1183,7 +1230,9 @@ async def ask_user(args: dict) -> dict:
         return _result({"status": "settled", "request_id": rid,
                         "message": _SETTLED_ASK_MESSAGE})
     scheduled_asks.displace_scheduled_for_chat(chat_id, "superseded")
-    return _result({"status": "awaiting_user", "request_id": rid})
+    return _result({"status": "awaiting_user", "request_id": rid,
+                    **({"casa_prefixed": list(body.annotations)}
+                       if body.annotations else {})})
 
 
 @tool(
@@ -1278,8 +1327,9 @@ async def wipe_memory(args: dict) -> dict:
     )
 
     async def _post():
+        # #1038: the wipe confirmation is Casa's own text, not the model's.
         return await channel.post_dm_keyboard(
-            chat_id=chat_id, request_id=rid, text=body, options=options,
+            chat_id=chat_id, request_id=rid, text=casa_text(body), options=options,
             short_labels=True,
         )
 
@@ -1470,6 +1520,40 @@ def _snapshot_origin() -> dict:
     misattribution. Snapshot once, at entry, before any await."""
     import agent as agent_mod
     return dict(agent_mod.origin_var.get(None) or {})
+
+
+def _current_scope(origin: "dict | None" = None) -> "TurnScope | None":
+    """#1038: the scope this emission commits under. Resolution order (design
+    §3.4): a bound engagement → its scope, minted from the record (so a resumed
+    engagement keeps sending); else the turn's own scope off *origin* — the
+    handler's ENTRY snapshot, never a fresh read of the holder, which the next
+    turn on a pooled client rewrites in place while this handler is mid-await
+    (INV-OUT-004); else ``None`` — and a caller that gets ``None`` refuses, so
+    the absence is loud. Never a permissive default."""
+    from output_boundary import resolve_scope
+    return resolve_scope(origin if origin is not None else _snapshot_origin())
+
+
+_NO_SCOPE_MESSAGE = ("output not submitted: this call carries no turn provenance "
+                     "(no turn scope is bound)")
+
+
+def _launch_note(origin: dict, text: str) -> "tuple[dict, str]":
+    """#1038 §7: a brief handed to a delegation or an engagement is model text
+    STORED for a later turn to narrate, so its disclosure resolves NOW, at
+    launch, into a note carried on the record's origin as a plain string
+    (``_inherited_note`` survives persistence; the live scope does not).
+    Returns ``(origin copy, note)``; the copy is untouched when nothing is
+    owed, and a launch with no scope bound owes nothing here — its child's
+    own emissions are what refuse."""
+    scope = origin.get("turn_scope")
+    out = dict(origin)
+    if not isinstance(scope, TurnScope):
+        return out, ""
+    note = scope.admit(IntentKind.STORED, text).note
+    if note:
+        out["_inherited_note"] = note
+    return out, note
 
 
 def _origin_clearance_markers(origin: dict) -> tuple[str | None, str | None]:
@@ -5516,7 +5600,10 @@ async def _launch_interactive_engagement(
             rec = await _engagement_registry.create(
                 kind="plugin" if plugin_host is not None else "specialist",
                 role_or_type=agent_name, driver="in_casa",
-                task=task_text, origin=dict(origin), topic_id=topic_id,
+                # #1038: the brief's resolved disclosure rides the persisted
+                # origin; the engagement's DM sends inherit it (for_engagement).
+                task=task_text, origin=_launch_note(origin, task_text)[0],
+                topic_id=topic_id,
                 topic_title=short_task if plugin_host is not None else "",
                 plugin_artifacts=_spec_arts,
                 # v0.166.0: pin the specialist's OWN casa-framework grant so
@@ -6071,9 +6158,20 @@ async def delegate_to_agent(args: dict) -> dict:
                 return _deadline_exceeded_result(delegation_id, agent_name)
 
         started_at = time.time()
+        # #1038 §7, §3.3: the brief is model text STORED for a later turn to
+        # narrate — ANY delegation can detach (a sync one degrades to pending
+        # at the wait), so every launch resolves its note now. The note rides
+        # the record's origin as a plain string (it survives persistence),
+        # and the child runs under a scope VIEW carrying it, never the
+        # parent's live obligations (a parent Read after launch must not
+        # un-annotate a brief written unread).
+        _launch_scope = origin.get("turn_scope")
+        if not isinstance(_launch_scope, TurnScope):
+            _launch_scope = None
+        _rec_origin, _note = _launch_note(origin, task_text)
         record = DelegationRecord(
             id=delegation_id, agent=agent_name, started_at=started_at,
-            origin=dict(origin),
+            origin=_rec_origin,
         )
         # Task 6 (spec §4.6): stash the permit on the record for
         # observability only. The SOLE release for this legacy path is the
@@ -6121,6 +6219,15 @@ async def delegate_to_agent(args: dict) -> dict:
         # #541: bind the quota key into the task's context snapshot (reset
         # immediately — only the created task carries it forward).
         _qk_tok = _delegation_quota_key.set(delegation_id)
+        # #1038 §3.3: bind origin_var to a FROZEN COPY of this handler's entry
+        # snapshot for the duration of create_task — the same pattern as the
+        # quota key above — so the child's context binds the copy (with its
+        # scope view), never the pooled holder the next turn rewrites.
+        import agent as _agent_mod
+        _child_origin = dict(origin)
+        if _launch_scope is not None:
+            _child_origin["turn_scope"] = TurnScope.for_child(_launch_scope, _note)
+        _ov_tok = _agent_mod.origin_var.set(_child_origin)
         try:
             task = asyncio.create_task(
                 _run_delegated_agent_bounded(
@@ -6128,6 +6235,7 @@ async def delegate_to_agent(args: dict) -> dict:
                     output_format=(VOICE_JOB_OUTPUT_FORMAT
                                    if is_voice else None)))
         finally:
+            _agent_mod.origin_var.reset(_ov_tok)
             _delegation_quota_key.reset(_qk_tok)
         if permit is not None:
             task.add_done_callback(_permit_release_callback(permit))
@@ -6145,6 +6253,7 @@ async def delegate_to_agent(args: dict) -> dict:
                 "delegation_id": delegation_id,
                 "agent": agent_name,
                 "mode": "async",
+                **({"casa_note": _note} if _note else {}),
             })
 
         # mode == "sync"
@@ -6186,6 +6295,7 @@ async def delegate_to_agent(args: dict) -> dict:
                         "Delegation continues in background; you will receive a "
                         "NOTIFICATION when complete."
                     ),
+                    **({"casa_note": _note} if _note else {}),
                 })
 
         # Task finished within budget — return ok or error synchronously.
@@ -7033,6 +7143,7 @@ def _inbox_for_executing_agent():
     {},
 )
 async def list_inbound_files(args: dict) -> dict:
+    _origin = _snapshot_origin()   # #1038: the entry snapshot, like every emitter
     inbox = _inbox_for_executing_agent()
     if inbox is None:
         return _text_result("You have no inbound files — files sent in Telegram "
@@ -7041,6 +7152,13 @@ async def list_inbound_files(args: dict) -> dict:
     if not files:
         return _text_result("The operator hasn't sent you any files in the last "
                             f"{_inbox_days()} days.")
+    # #1038: this is the tool that shows the model the paths, so it is the
+    # tool that arms the disclosure — from the records it lists, never from
+    # the rendered text. Discharged by a successful Read of any listed file.
+    _scope = _current_scope(_origin)
+    if _scope is not None:
+        _scope.arm(ReadBeforeDescribe(
+            files=tuple((f.path, f.display_name) for f in files)))
     now = time.time()
     lines = ["Files the operator sent you, newest first. Listing a file is not "
              "reading it: open one with the Read tool before describing it."]
@@ -7218,6 +7336,16 @@ async def set_reminder(args: dict) -> dict:
     if not text:
         return _result({"status": "error", "kind": "invalid_argument",
                         "message": "text is required"})
+    # #1038 §7: the reminder's text is model text STORED for a later turn to
+    # send. Its obligation resolves NOW, at commit, into a note carried beside
+    # the entry (``output_note``); the text itself is stored unchanged. The
+    # turn that fires it registers the note and prepends it to whatever its
+    # model sends, so a paraphrase cannot drop it.
+    _scope = _current_scope(_snapshot_origin())
+    if _scope is None:
+        return _result({"status": "error", "kind": "unsupported_origin",
+                        "message": _NO_SCOPE_MESSAGE})
+    _note = _scope.admit(IntentKind.STORED, text).note
 
     from timekeeping import resolve_tz
     tz = resolve_tz()
@@ -7285,6 +7413,8 @@ async def set_reminder(args: dict) -> dict:
         "prompt": (f'Send this exact message via {channel}: "{text}". '
                    "After the send, output the sentinel `<silent/>` and "
                    "nothing else."),
+        # #1038: the resolved disclosure, absent when nothing is owed.
+        **({"output_note": _note} if _note else {}),
     }
 
     try:
@@ -7297,13 +7427,9 @@ async def set_reminder(args: dict) -> dict:
                         "message": str(exc)})
 
     # Register in-process so the reminder is live NOW, not at the next boot.
-    from config import TriggerSpec
-    spec = TriggerSpec(
-        name=name, type=entry["type"], schedule=entry.get("schedule", ""),
-        at=entry.get("at", ""), one_shot=entry["one_shot"],
-        channel=channel, prompt=entry["prompt"],
-        managed_by=reminders.OWNER_AGENT,
-    )
+    # #1038: through the ONE constructor every reminder route uses, so the
+    # spec that fires tonight carries the note without a reload.
+    spec = reminders.spec_from_entry(entry)
     try:
         runtime.trigger_registry.register_agent(role, [spec], channels)
     except Exception as exc:  # noqa: BLE001
@@ -7349,7 +7475,9 @@ async def set_reminder(args: dict) -> dict:
     logger.info("reminder set: role=%s name=%s at=%s repeat=%s",
                 role, name, effective, repeat)
     return _result({"status": "ok", "name": name,
-                    "at": effective, "repeat": repeat})
+                    "at": effective, "repeat": repeat,
+                    # #1038 §6.5: the line the firing turn will prefix.
+                    "note": _note})
 
 
 @tool(
@@ -8323,7 +8451,8 @@ async def _engage_executor_impl(args: dict, _spawn_holder: dict) -> dict:
                     kind="executor", role_or_type=executor_type,
                     driver=defn.driver,
                     task=task_text,
-                    origin={**origin, **_origin_extra},
+                    # #1038: see the in_casa launch above.
+                    origin={**_launch_note(origin, task_text)[0], **_origin_extra},
                     topic_id=topic_id,
                     # v0.166.0: include the launch-mandatory casa grants so the
                     # bridge gate admits query_engager/emit_completion even for an

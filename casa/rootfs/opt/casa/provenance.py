@@ -84,6 +84,13 @@ RESERVED_CONTEXT_KEYS = frozenset({
     # yields is bound to it, so a caller who could set it from outside would
     # aim a delivered link, or a protected-tool challenge, at the wrong role.
     "plugin_setup_target",
+    # #1038: the live turn scope ``Agent.handle_message`` mints, and the
+    # resolved disclosure a stored payload carries to the turn that sends it
+    # (a reminder's ``output_note``, a delegation's launch note). Reserved so
+    # no external context can hand a turn a scope or a note it did not earn;
+    # both are stamped by Casa's own dispatch sites only.
+    "_turn_scope",
+    "_inherited_note",
 })
 
 
@@ -102,7 +109,7 @@ def sanitize_external_context(ctx: dict | None) -> dict:
 
 
 def scheduled_delivery_markers(
-    channel: str | None, epoch: str | None = None,
+    channel: str | None, epoch: str | None = None, *, note: str = "",
 ) -> dict:
     """The context markers a TIME-BASED scheduled dispatch stamps (#485).
 
@@ -128,9 +135,16 @@ def scheduled_delivery_markers(
     turn was dispatched. Omitted (``None``) it is simply absent, which every
     consumer tolerates — a turn without one is a turn nothing can revoke.
     """
+    # #1038: the reminder's resolved disclosure (``TriggerSpec.output_note`` /
+    # the raw entry's ``output_note``) rides as ``_inherited_note`` — ONE place
+    # for both dispatch sites, for the same reason the marker below has one.
+    # Unlike the delivery marker it is not about WHERE the turn may deliver,
+    # so it rides whatever channel the trigger names. Absent when nothing is
+    # owed, so an ordinary trigger is unchanged.
+    markers: dict = {"_inherited_note": note} if note else {}
     if channel != "telegram":
-        return {}
-    markers: dict = {"_scheduled_delivery": True}
+        return markers
+    markers["_scheduled_delivery"] = True
     if epoch is not None:
         markers["_scheduled_epoch"] = epoch
     return markers

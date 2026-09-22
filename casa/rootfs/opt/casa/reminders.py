@@ -106,6 +106,7 @@ from config import (_ENV_RE, dump_yaml_declared_text,
                     load_yaml_declared_text, text_has_lone_placeholder)
 from provenance import scheduled_delivery_markers
 import scheduled_asks
+from config import TriggerSpec  # a leaf module: dataclasses only
 
 
 def _under_pass_lock(fn):
@@ -317,6 +318,8 @@ def triggers_path(agents_dir: str, role: str) -> str:
 _FIELD_TYPES = {
     "name": str, "type": str, "at": str, "schedule": str,
     "channel": str, "prompt": str, "one_shot": bool, "managed_by": str,
+    # #1038: the resolved disclosure a reminder carries (see TriggerSpec).
+    "output_note": str,
 }
 
 
@@ -338,6 +341,33 @@ def _wellformed(entry) -> bool:
         elif not isinstance(value, expected):
             return False
     return True
+
+
+def spec_from_entry(entry: dict, *, prompt: "str | None" = None) -> "TriggerSpec":
+    """The ONE constructor of a scheduled trigger's ``TriggerSpec`` from its
+    ``triggers.yaml`` entry — used by the boot loader, by ``set_reminder``'s
+    immediate registration and by the sweep's reconciliation alike (#1038).
+
+    Three hand-built constructors were how a field that survives the file
+    could still fail to reach the firing turn: each site remembered its own
+    list of keys. ``tests/test_output_boundary_reminders.py`` pins that
+    ``TriggerSpec(`` is constructed nowhere else. *prompt* lets the loader
+    pass a resolved ``prompt_file``; every other field is read off the entry.
+    Webhook triggers, which carry auth and clearance, are the loader's own.
+    """
+    return TriggerSpec(
+        name=str(entry.get("name", "") or ""),
+        type=str(entry.get("type", "") or ""),
+        minutes=int(entry.get("minutes", 0) or 0),
+        schedule=str(entry.get("schedule", "") or ""),
+        path=str(entry.get("path", "") or ""),
+        channel=str(entry.get("channel", "") or ""),
+        prompt=(prompt if prompt is not None else str(entry.get("prompt", "") or "")),
+        at=str(entry.get("at", "") or ""),
+        one_shot=bool(entry.get("one_shot", False)),
+        managed_by=str(entry.get("managed_by", "") or ""),
+        output_note=str(entry.get("output_note", "") or ""),
+    )
 
 
 def _read_doc(path: str) -> "tuple[str | None, dict]":
@@ -999,7 +1029,9 @@ async def sweep_reminders(runtime, now: datetime) -> int:
                         **scheduled_delivery_markers(
                             entry.get("channel", ""),
                             scheduled_asks.epoch_for(
-                                role, f"date-{name}")),
+                                role, f"date-{name}"),
+                            # #1038: the sweep reads the raw entry, not a spec.
+                            note=str(entry.get("output_note") or "")),
                     },
                 ))
             except Exception:  # noqa: BLE001
@@ -1101,14 +1133,9 @@ def _reconcile_registrations(runtime, registry, role: str, path: str,
             except ValueError:
                 continue
         try:
-            registry.register_agent(role, [TriggerSpec(
-                name=name, type=entry.get("type", ""),
-                schedule=entry.get("schedule", ""), at=entry.get("at", ""),
-                one_shot=bool(entry.get("one_shot", False)),
-                channel=entry.get("channel", ""),
-                prompt=entry.get("prompt", ""),
-                managed_by=OWNER_AGENT,
-            )], channels)
+            # #1038: through the one constructor, so the note survives this
+            # route too. The entries here are agent-owned by selection.
+            registry.register_agent(role, [spec_from_entry(entry)], channels)
             logger.info(
                 "reminder sweep: re-registered %s for %s (no live job)",
                 name, role,

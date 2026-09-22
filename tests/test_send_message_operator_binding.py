@@ -5,6 +5,7 @@ import pytest
 
 import agent as agent_mod
 import tools
+from output_boundary_testing import with_scope
 
 pytestmark = [pytest.mark.unit]
 
@@ -32,9 +33,9 @@ class _CM:
 async def test_untrusted_webhook_send_bound_to_operator(monkeypatch):
     cm = _CM()
     monkeypatch.setattr(tools, "_channel_manager", cm)
-    token = agent_mod.origin_var.set({
+    token = agent_mod.origin_var.set(with_scope({
         "channel": "webhook", "_origin_route": "webhook_trigger",
-    })
+    }))
     try:
         # caller tries to select the voice channel — must be ignored
         await tools.send_message.handler({"message": "hi", "channel": "voice"})
@@ -48,7 +49,7 @@ async def test_missing_route_webhook_send_bound_to_operator(monkeypatch):
     """Fail-closed: a webhook turn with no route is still operator-bound."""
     cm = _CM()
     monkeypatch.setattr(tools, "_channel_manager", cm)
-    token = agent_mod.origin_var.set({"channel": "webhook"})
+    token = agent_mod.origin_var.set(with_scope({"channel": "webhook"}))
     try:
         await tools.send_message.handler({"message": "hi", "channel": "voice"})
     finally:
@@ -61,9 +62,9 @@ async def test_invoke_send_honors_caller_channel(monkeypatch):
     """Operator-signed /invoke is trusted — may select the channel."""
     cm = _CM()
     monkeypatch.setattr(tools, "_channel_manager", cm)
-    token = agent_mod.origin_var.set({
+    token = agent_mod.origin_var.set(with_scope({
         "channel": "webhook", "_origin_route": "invoke",
-    })
+    }))
     try:
         await tools.send_message.handler({"message": "hi", "channel": "voice"})
     finally:
@@ -75,7 +76,7 @@ async def test_invoke_send_honors_caller_channel(monkeypatch):
 async def test_normal_telegram_turn_unaffected(monkeypatch):
     cm = _CM()
     monkeypatch.setattr(tools, "_channel_manager", cm)
-    token = agent_mod.origin_var.set({"channel": "telegram"})
+    token = agent_mod.origin_var.set(with_scope({"channel": "telegram"}))
     try:
         await tools.send_message.handler({"message": "hi", "channel": "voice"})
     finally:
