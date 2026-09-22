@@ -276,14 +276,18 @@ async def send_message(args: dict) -> dict:
     message = args.get("message", "")
     channel = args.get("channel", "telegram")
 
-    # Release A / Layer 1 egress binding: an UNTRUSTED webhook turn
-    # (channel=="webhook" and not an explicit `invoke`) may notify only the
-    # operator's Telegram surface — the caller-selected channel is ignored so
-    # third-party content can't be relayed to arbitrary channels (confused
-    # deputy). Trusted /invoke and all non-webhook origins are unaffected.
+    # #1038: the entry snapshot — the scope this send commits under.
     _origin = _snapshot_origin()
-    if _origin.get("channel") == "webhook" and _origin.get("_origin_route") != "invoke":
-        channel = "telegram"
+    scope = _current_scope(_origin)
+    if scope is None:
+        return _text_result(f"Error: {_NO_SCOPE_MESSAGE}.", is_error=True)
+    # Release A / Layer 1 egress binding (#1038 R2: now the scope's
+    # DestinationOperatorOnly obligation, registered at mint): an UNTRUSTED
+    # webhook turn may notify only the operator's Telegram surface — the
+    # caller-selected channel is replaced so third-party content can't be
+    # relayed to arbitrary channels (confused deputy). Trusted /invoke and
+    # all non-webhook origins are unaffected.
+    channel = scope.resolve_channel(channel)
 
     if _channel_manager is None:
         return _text_result("Error: tools not initialized", is_error=True)
@@ -308,9 +312,6 @@ async def send_message(args: dict) -> dict:
     # lost.
     # #1038: admission — the turn's obligations applied to the text at the
     # moment it is committed, against the evidence gathered so far.
-    scope = _current_scope(_origin)
-    if scope is None:
-        return _text_result(f"Error: {_NO_SCOPE_MESSAGE}.", is_error=True)
     admitted = scope.admit(IntentKind.DISCRETE, message)
     ctx: dict[str, Any] = {}
     try:

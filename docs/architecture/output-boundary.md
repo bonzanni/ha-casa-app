@@ -58,8 +58,8 @@ the N files you sent…`. `InheritedNote` is the resolved note of a payload an e
 authored — a reminder's `output_note`, a delegation or engagement brief's launch note —
 re-registered on the turn that sends it so that turn's model cannot paraphrase it away; it
 is never discharged. The model's words are never suppressed or withheld by any of this; the
-`<silent/>` convention is judged before admission, so a silent turn is never turned into a
-visible line.
+`<silent/>` convention is judged inside final-reply admission, on the unannotated text and
+before any line is added, so a silent turn is never turned into a visible line.
 
 **Evidence is the runtime's own call, not an inference from the model's text.**
 `hooks.read_evidence_matchers(role)` adds `PostToolUse` and `PostToolUseFailure` matchers on
@@ -119,8 +119,8 @@ admission.
 
 **INV-OUT-002**: In a turn where inbound files were listed and none read, every model-text emission committed after the listing carries the disclosure line at its head — streamed cumulatives included — and when a streamed reply's page-1 unit did not land, the line goes out once as its own message before the overflow pages; after a successful `Read` of any listed file none does; and a silent turn stays silent.
 
-The final reply passes through `scope.admit(FINAL_REPLY, …)` in `handle_message` after
-the silence test; a classified-error reply is Casa's text and is never annotated; the
+The final reply passes through `scope.admit(FINAL_REPLY, …)` in `handle_message`, which
+judges closing silence itself before annotating; a classified-error reply is Casa's text and is never annotated; the
 health notice is prepended outermost over the admitted value. Every streamed cumulative
 `_emit` releases is admitted as `STREAM_UPDATE` after the INV-TURN-009 hold has judged the
 unannotated cumulative, so what is on screen is true at every moment and a failed final
@@ -177,6 +177,21 @@ payload carries `note`; `ask_user`'s `awaiting_user` payload gains `casa_prefixe
 line was added; `delegate_to_agent` reports the brief's note as `casa_note` on either
 pending result — the async one and a synchronous wait that degraded to pending. The
 transcript the model builds on therefore says what the operator saw.
+
+**INV-OUT-006**: Whether a turn streams, whether its final reply is closing silence, and where an untrusted webhook turn's discrete send goes are properties of its scope — the first and third registered at mint from the message's own facts, the second intrinsic to final-reply admission: a scheduled turn or an event wake never receives a token callback, a final reply that strips to nothing but `<silent/>` sentinels is suppressed by admission while prose after a sentinel is delivered whole, and an untrusted webhook turn's `send_message` is bound to Telegram whatever channel it named.
+
+The three used to be inline checks — the two-clause callback condition and the sentinel
+gate in `handle_message`, the egress clamp in `send_message` — and are now `NoStream`
+(read as `TurnScope.streaming_allowed`), the silence judgement inside
+`admit(FINAL_REPLY, …)` on the unannotated text (the predicates `strips_to_silence` and
+`may_still_be_silence` live in `output_boundary` and are the ones the #650 resume-health
+classification and the #666 stream hold use), and `DestinationOperatorOnly` (applied by
+`TurnScope.resolve_channel`). The behaviour is unchanged: the tests that pinned the three
+checks keep their assertions, and a grep test refuses the old inline forms coming back.
+
+What it does not cover: `send_media` still requires a Telegram origin of its own, so a
+webhook turn's media is refused before the binding matters; the #650 retry-tainted-silence
+reclassification runs before admission and is not an output decision.
 
 ## Failure behavior
 
@@ -261,6 +276,7 @@ model-text methods with that method's own failure value; the voice channel has n
 - `tests/test_output_boundary_reminders.py`
 - `tests/test_output_boundary_sites.py`
 - `tests/test_output_boundary_tools.py`
+- `tests/test_output_boundary_relocation.py`
 
 **Related**
 - [`architecture/inbound-files.md`](../architecture/inbound-files.md)

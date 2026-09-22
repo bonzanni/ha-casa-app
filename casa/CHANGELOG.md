@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.328.0] - 2026-09-22
+
+### Changed
+
+- No change in behaviour. Three rules about what the assistant's turn may show you —
+  a scheduled turn or an event wake thinks privately and sends only its final text,
+  a turn whose whole answer is the closing `<silent/>` sends nothing, and a turn started
+  by an untrusted webhook may notify only your Telegram chat — used to be three separate
+  checks in three places. Each now belongs to the turn itself: the first and third are
+  decided once when the turn starts and applied wherever the turn speaks, the second is
+  judged where the reply is admitted, in the same place the file-disclosure rule of
+  0.327.0 lives. The three old checks are gone; the tests that pinned their
+  behaviour are unchanged and still pass.
+
 ## [0.327.0] - 2026-09-22
 
 ### Added
