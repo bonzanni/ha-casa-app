@@ -22,6 +22,7 @@ import yaml
 import verdict_broker
 from authz_grants import GrantKey, GrantStore
 from verdict_broker import VerdictBroker
+from output_boundary_testing import admitted, with_scope
 
 REPO = Path(__file__).resolve().parents[1]
 CASA = REPO / "casa" / "rootfs" / "opt" / "casa"
@@ -107,7 +108,7 @@ def _set_origin(agent_mod, **overrides):
         "execution_role": "assistant",
     }
     origin.update(overrides)
-    return agent_mod.origin_var.set(origin)
+    return agent_mod.origin_var.set(with_scope(origin))
 
 
 async def _ask(monkeypatch, *, channel=None, args=None, origin_overrides=None,
@@ -596,7 +597,7 @@ class TestDmReadableButtons:
         body = ("Which account?\n\n1. Personal Gmail\n"
                 "2. Configure the enterprise SSO integration")
         mid = await ch.post_dm_keyboard(
-            chat_id=500, request_id="rid", text=body, options=options,
+            chat_id=500, request_id="rid", text=admitted(body), options=options,
             short_labels=True,
         )
         assert mid == 9

@@ -42,6 +42,13 @@ _SCRIPT = textwrap.dedent(
     from channels import DeliveryOutcome
     import channels.telegram as tg
     from channels.telegram import TelegramChannel
+    from output_boundary import IntentKind, TurnScope
+
+    def admitted(text):
+        # #1038: the channel accepts only admitted text; a scope owing nothing.
+        return TurnScope(id="t", cid="c", role="assistant", display_name="Test",
+                         channel="telegram", message_type="channel_in",
+                         ).admit(IntentKind.FINAL_REPLY, text)
 
     Request = getattr(tg, "_SurrogateSafeRequest", HTTPXRequest)
 
@@ -124,7 +131,7 @@ _SCRIPT = textwrap.dedent(
             # ARM1 — spanless three-page reply, one surrogate per page.
             a1 = ("\ud800" + "x" * 4095 + "\n" + "\ud800" + "y" * 4095
                   + "\n" + "\ud800" + "z" * 4095)
-            await run_arm("spanless-3-pages", ch.send_response(a1, CTX()),
+            await run_arm("spanless-3-pages", ch.send_response(admitted(a1), CTX()),
                           [("sendMessage", R + "x" * 4095),
                            ("sendMessage", R + "y" * 4095),
                            ("sendMessage", R + "z" * 4095)],
@@ -132,7 +139,7 @@ _SCRIPT = textwrap.dedent(
 
             # ARM2 — one page whose link converts and a surrogate after it.
             a2 = "[link](https://example.test/a) \ud800"
-            flats = await run_arm("single-page-link", ch.send_response(a2, CTX()),
+            flats = await run_arm("single-page-link", ch.send_response(admitted(a2), CTX()),
                           [("sendMessage", "link " + R)],
                           outcome=DeliveryOutcome.DELIVERED)
             if flats and ("text_link" not in flats[0].get("entities", "")
@@ -140,14 +147,14 @@ _SCRIPT = textwrap.dedent(
                 failures.append("single-page-link: link entity missing from the request")
 
             # ARM3 — plain send with a LOW surrogate (kills high-only cleaning).
-            await run_arm("plain-send-low-surrogate", ch.send("\udc00 hello", CTX()),
+            await run_arm("plain-send-low-surrogate", ch.send(admitted("\udc00 hello"), CTX()),
                           [("sendMessage", R + " hello")],
                           outcome=DeliveryOutcome.DELIVERED)
 
             # ARM5 — two pages whose bold spans convert, surrogate after each.
             a5 = ("**bold** " + "x" * 4080 + "\ud800\n"
                   + "**bold** " + "y" * 4080 + "\ud800")
-            flats = await run_arm("convertible-2-pages", ch.send_response(a5, CTX()),
+            flats = await run_arm("convertible-2-pages", ch.send_response(admitted(a5), CTX()),
                           [("sendMessage", "bold " + "x" * 4080 + R),
                            ("sendMessage", "bold " + "y" * 4080 + R)],
                           outcome=DeliveryOutcome.DELIVERED)
@@ -163,7 +170,7 @@ _SCRIPT = textwrap.dedent(
             async def on_token(_t):
                 state  # a closure CELL: the finalizer peeks the message id there
             flats = await run_arm("stream-finalize",
-                          ch.finalize_response_stream(a6, CTX(), on_token),
+                          ch.finalize_response_stream(admitted(a6), CTX(), on_token),
                           [("editMessageText", "bold " + "a" * 4080 + R),
                            ("sendMessage", R + "b" * 4093),
                            ("sendMessage", R + "b" * 4093 + "\n")],
@@ -173,7 +180,7 @@ _SCRIPT = textwrap.dedent(
 
             # Media — the caption is a form value too; the bytes are not.
             await run_arm("media-caption",
-                          ch.send_media(MEDIA, "document", "x.bin", CTX(), caption="\ud800"),
+                          ch.send_media(MEDIA, "document", "x.bin", CTX(), caption=admitted("\ud800")),
                           [])
             docs = [r for r in seen if endpoint(r) == "sendDocument"]
             parts = multipart(docs[0]) if docs else []

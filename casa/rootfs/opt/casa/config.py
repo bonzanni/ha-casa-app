@@ -521,6 +521,14 @@ class TriggerSpec:
     # trigger. This bounds the reminder writer, the overdue sweep, reverse job
     # reconciliation and the post-fire cleanup.
     managed_by: str = ""
+    # #1038: the resolved disclosure a reminder owes the turn that sends it —
+    # "Casa: Ellen wrote this without opening “invoice.pdf”." — stored beside
+    # the entry as ``output_note`` when the authoring turn had listed a file
+    # and opened none. Stamped into the firing turn's context as the reserved
+    # ``_inherited_note`` marker (``provenance.scheduled_delivery_markers``),
+    # where the turn's scope registers it and prepends it to whatever the
+    # model sends. Empty for every other trigger.
+    output_note: str = ""
 
 
 @dataclass

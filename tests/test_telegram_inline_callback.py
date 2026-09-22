@@ -23,6 +23,7 @@ from telegram.error import BadRequest
 import verdict_broker
 from bus import MessageBus, MessageType
 from verdict_broker import VerdictBroker
+from output_boundary_testing import admitted
 
 pytestmark = pytest.mark.asyncio
 
@@ -1441,7 +1442,7 @@ class TestDmKeyboardApis:
 
         fake_telegram_bot.send_message = _capture
         mid = await ch.post_dm_keyboard(
-            chat_id=500, request_id="f" * 32, text="Q?", options=["Yes", "No"],
+            chat_id=500, request_id="f" * 32, text=admitted("Q?"), options=["Yes", "No"],
         )
         assert mid == 77
         assert captured["chat_id"] == 500
@@ -1461,7 +1462,7 @@ class TestDmKeyboardApis:
             side_effect=RuntimeError("telegram down"),
         )
         mid = await ch.post_dm_keyboard(
-            chat_id=500, request_id="r", text="Q?", options=["Yes"],
+            chat_id=500, request_id="r", text=admitted("Q?"), options=["Yes"],
         )
         assert mid is None
 

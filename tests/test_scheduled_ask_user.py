@@ -27,6 +27,7 @@ import scheduled_asks
 import verdict_broker
 from broker_helpers import deliver, wait_until
 from verdict_broker import VerdictBroker
+from output_boundary_testing import with_scope
 
 OPERATOR = 4242
 LABEL = "cron-invoices"
@@ -145,7 +146,7 @@ async def _ask(monkeypatch, *, channel=None, origin=None, args=None):
         channel_manager=_mk_cm(channel), bus=MagicMock(),
         specialist_registry=MagicMock(), mcp_registry=MagicMock(),
     )
-    tok = agent_mod.origin_var.set(origin or _scheduled_origin())
+    tok = agent_mod.origin_var.set(with_scope(origin or _scheduled_origin()))
     try:
         res = await tools_mod.ask_user.handler(
             args or {"question": "Send the invoice?",

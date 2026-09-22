@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-07
+last_reviewed: 2026-09-22
 ---
 
 # The turn loop
@@ -24,6 +24,20 @@ call the model with retry, stream the output, and record what happened.
 The client the turn calls is usually a warm one the pool hands it rather than one this turn
 created; what that reuse guarantees, and what a close or a reset owes it, is
 [`architecture/sdk-client-pool.md`](sdk-client-pool.md).
+
+**One scope per turn, minted before anything streams.** `handle_message` mints a
+`TurnScope` after delegation synthesis has rebound the message and before the streaming
+callback is obtained, under the reserved context key `_turn_scope`; `_process` mints one for
+a direct caller that arrives without it, and puts the same object on the origin snapshot as
+`turn_scope` — a live value like `speaker_provenance`, never persisted — where the tool
+handlers and the read-evidence hooks find it, and hands `_make_on_message` the same scope.
+The model's final text passes through `scope.admit(FINAL_REPLY, …)` after the silence test,
+so a `<silent/>` turn is never turned into a visible line; a classified-error reply is
+Casa's own text; the plugin-health notice is prepended outermost over the admitted value;
+and every streamed cumulative `_emit` releases is admitted too, after the INV-TURN-009 hold
+has judged the unannotated cumulative. Options assembly is where the read-evidence matchers
+join every resident's hook bundle. What the scope does with the text is
+[`output-boundary.md`](output-boundary.md).
 
 ## Contracts & invariants
 

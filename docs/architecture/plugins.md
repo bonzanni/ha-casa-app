@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-19
+last_reviewed: 2026-09-22
 ---
 
 # Plugins
@@ -143,6 +143,13 @@ here is one line: a challenge retires a waiting scheduled question only once its
 keyboard is on screen, so a challenge that fails to post does not cost the operator the
 question that was waiting. A boot reconcile running while the challenge's post is still in
 flight reads the lane the same way and restores the waiting question (INV-JOB-014).
+
+The protected-tool challenge body interpolates the model's own tool arguments, so it is
+model text: `register_challenge` resolves the scope before it creates the poster — a bound
+engagement's first, else the running turn's (`output_boundary.resolve_scope`) — the poster
+admits the body under it, and posts it as Casa's own text when neither is bound, so a
+challenge raised by a turn that listed an inbound file and read none carries the same Casa
+line as the turn's other output ([`output-boundary.md`](output-boundary.md)).
 
 Who may approve is a separate guarantee, INV-PLUG-007: read this invariant as "one
 approval authorises one action" and that one as "the approver is the configured operator".

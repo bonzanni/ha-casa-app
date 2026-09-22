@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-21
+last_reviewed: 2026-09-22
 ---
 
 # Inbound files
@@ -15,7 +15,8 @@ handler, the checks a file passes, the per-role folder it is published into unde
 is [`telegram.md`](telegram.md); how `share_inbound_file` passes a copy of one of these files
 to a plugin is [`plugin-handoff.md`](plugin-handoff.md); how `path_scope` and the rest of an agent's hooks are built is
 [`hook-resolution.md`](hook-resolution.md); the outbound media surface (`send_media`) is
-[`tools-interface.md`](tools-interface.md).
+[`tools-interface.md`](tools-interface.md); what a turn that listed files and opened none
+says about them is [`output-boundary.md`](output-boundary.md).
 
 ## Mental model
 
@@ -145,10 +146,19 @@ listing a file is not reading it. It resolves the inbox of the agent executing t
 origin's `execution_role`, falling back to `role` — so any agent without an inbox, including an
 agent the Telegram default agent delegated to, is told it has no inbound files and is shown no
 path (INV-HANDOFF-004). Casa never matches the operator's wording against filenames:
-with several candidates the agent lists them and asks.
+with several candidates the agent lists them and asks. Listing is also what arms the
+disclosure: the tool registers the files it listed on the turn's scope, and a successful
+`Read` of any one of them — recorded by the read-evidence hooks, never inferred from the
+model's text — discharges it.
 
-**What this does not claim.** Nothing yet stops the agent describing a file it did not open;
-the tool's wording and the agent's instructions are prose, not a guarantee (#1038). Page
+**What this does not claim.** Nothing stops the agent describing a file it did not open —
+nothing is held — but it no longer passes unremarked for a listed file: a turn that listed
+files and read none has a Casa line at the head of every model-text emission committed after
+the listing, and a payload it stores for a later turn carries the same line as a note
+(INV-OUT-002, INV-OUT-003 in [`output-boundary.md`](output-boundary.md)). The gap that
+remains is the unlisted file: a reply about a file the turn never listed and never tried to
+read, or a message sent before the turn's first listing, gets no line, and the SDK
+transcript and retained memory hold the model's text without one. Page
 count and read cost are not bounded — only bytes are; a PDF over the model's page limit fails
 to read, and the agent says it could not open it. And, as stated under INV-INBOX-001, this is
 not a sandbox against a root process in the same container.

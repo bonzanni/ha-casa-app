@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-08-13
+last_reviewed: 2026-09-22
 ---
 
 # Hook resolution and the containment floor
@@ -67,6 +67,18 @@ agent's inbound-file `ready/` directory, and an empty tuple for every other role
 delegated-specialist and in-casa executor builds pass nothing, so neither resolves a wider
 scope than its own configuration or snapshot. The grant's contract is INV-INBOX-002 in
 [`inbound-files.md`](inbound-files.md).
+
+**Two post-tool matchers record evidence rather than deciding anything.**
+`read_evidence_matchers(role)` adds a `PostToolUse` and a `PostToolUseFailure` matcher on
+`Read` to every resident's bundle in `Agent._build_options`: for a path under
+`agent_inbox.readable_prefixes(role)` — normalised exactly as the `path_scope` check
+normalises — the running turn's scope is told `read_ok` or `read_failed`, and a read aimed
+at an inbox file the turn never listed makes it a file turn too. A read the `path_scope`
+guard denies produces no post event, so a denied read is never evidence; a role without an
+inbox records nothing; no scope bound records nothing; and a failure inside the recorder is
+logged and returns an empty decision, so evidence never breaks the tool. What the evidence
+discharges is [`output-boundary.md`](output-boundary.md)'s INV-OUT-002; the
+delegated-specialist and in-casa executor builds do not carry these matchers.
 
 ## Contracts & invariants
 

@@ -10,6 +10,7 @@ from unittest.mock import MagicMock
 import pytest
 import yaml
 from aiohttp import web
+from output_boundary_testing import with_scope
 
 pytestmark = pytest.mark.unit
 
@@ -89,8 +90,7 @@ def env(tmp_path, monkeypatch, request):
                specialist_registry=MagicMock(), mcp_registry=MagicMock(),
                trigger_registry=registry, runtime=runtime)
 
-    token = agent_mod.origin_var.set(
-        {"role": "assistant", "channel": "telegram"})
+    token = agent_mod.origin_var.set(with_scope({"role": "assistant", "channel": "telegram"}))
     try:
         yield Env(
             agents_dir=str(agents_dir),
@@ -321,7 +321,7 @@ async def test_refuses_outside_a_turn_context(env):
     import agent as agent_mod
     from tools import set_reminder
 
-    token = agent_mod.origin_var.set({})
+    token = agent_mod.origin_var.set(with_scope({}))
     try:
         out = _payload(await set_reminder.handler({"at": FUTURE, "text": "x"}))
     finally:
@@ -375,7 +375,7 @@ async def test_cancel_refuses_outside_a_turn_context(env):
     import agent as agent_mod
     from tools import cancel_reminder
 
-    token = agent_mod.origin_var.set({})
+    token = agent_mod.origin_var.set(with_scope({}))
     try:
         out = _payload(await cancel_reminder.handler(
             {"name": "reminder-a1b2c3"}))
@@ -430,8 +430,8 @@ async def test_get_schedule_lists_a_one_off_reminder(tmp_path, monkeypatch):
     init_tools(channel_manager=MagicMock(), bus=bus,
                specialist_registry=MagicMock(), mcp_registry=MagicMock(),
                trigger_registry=registry, runtime=runtime)
-    token = agent_mod.origin_var.set({"role": "assistant",
-                                      "channel": "telegram"})
+    token = agent_mod.origin_var.set(with_scope({"role": "assistant",
+                                      "channel": "telegram"}))
     try:
         at = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
         created = _payload(await set_reminder.handler(

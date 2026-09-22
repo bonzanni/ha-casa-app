@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-19
+last_reviewed: 2026-09-22
 ---
 
 # Delegation and the agent-spawn boundary
@@ -47,6 +47,24 @@ classify itself as the operator, because absence fails closed.
 **The caller's own declarations are the whole ACL.** A delegation target resolves only
 within the caller's declared delegates, by role id first and display name second, and every
 `<delegates>` block is rendered from the same live map the ACL resolves against.
+
+**A brief is text stored for a later turn to narrate, and its disclosure resolves at
+launch.** Every `delegate_to_agent` launch — synchronous ones included, since a synchronous
+wait degrades to pending — and both engagement `create` sites resolve the launching turn's
+obligation against the brief now (`_launch_note`): when the launcher had listed inbound files
+and read none, the record's origin carries the resolved note as the plain string
+`_inherited_note`, which survives persistence where the live scope does not, and the pending
+result reports it as `casa_note` on either arm — async, or a synchronous wait that degraded. The
+child does not run under the parent's live scope: the launch binds the task's context to a
+frozen copy of the launcher's entry snapshot carrying `TurnScope.for_child` — the launcher's
+identity and markers plus the launch-time note — around `create_task`, the same pattern as
+the delegation quota key, so the pooled holder's next-turn rewrite cannot reach it and a
+parent `Read` after launch cannot un-annotate a brief written unread (INV-OUT-004). An
+engagement's own DM sends mint their scope from its persisted record
+(`TurnScope.for_engagement`), which carries the persisted note and nothing else; the
+synthesized completion turn copies `_inherited_note` from the completion origin, so the
+narration carries the line whatever the resident writes
+([`output-boundary.md`](output-boundary.md)).
 
 ## Contracts & invariants
 

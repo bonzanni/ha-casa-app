@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.327.0] - 2026-09-22
+
+### Added
+
+- The assistant now says so when she answers about a file she did not open. When you
+  have sent her files and she lists them but opens none, everything she sends in that
+  turn — the reply, a message she posts, a question she asks — starts with a line from
+  Casa: *Casa: Ellen answered without opening “invoice.pdf” in this turn.* (the name is
+  your assistant's). The line stays true as she works: it appears on the text as it
+  streams and disappears if she opens the file before finishing. A reminder she sets, or
+  a task she hands to another agent, without opening the file carries the line with it,
+  so the message that fires tomorrow or the report that comes back later is prefixed
+  *Casa: Ellen wrote this without opening “invoice.pdf”.* Opening any one of the listed
+  files clears the line for the rest of the turn. Nothing she writes is ever held back or
+  changed — the line is added, her words are not.
+
+### Changed
+
+- Under the hood, every piece of the assistant's text that reaches you in Telegram — a
+  streamed reply, a posted message, a question with buttons, a media caption, a
+  reminder — now passes through one place that applies such per-turn rules, so a rule
+  added later applies to every way she can speak, including text she stores for a later
+  turn to send. You see no difference unless a rule applies.
+
 ## [0.326.0] - 2026-09-22
 
 ### Added

@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-17
+last_reviewed: 2026-09-22
 ---
 
 # The Telegram channel
@@ -107,6 +107,18 @@ one, so entity offsets computed upstream stay valid. Nothing is normalised at th
 sites, so a new sender cannot forget it. A value nested inside a JSON-encoded parameter (an
 entity address, a button label) is already an ASCII escape by the time it is serialised and
 is left for the platform to judge; a bot injected for a test is outside the seam.
+
+**Model text enters the six model-text methods only as admitted text.** `send`,
+`send_response`, `finalize_stream`, `finalize_response_stream`, `post_dm_keyboard` and
+`send_media`'s caption accept an `Admitted` — the value the authoring turn's scope mints, or
+Casa's own `casa_text` — and refuse a bare string with an `ERROR` log, zero Bot API calls
+and the method's own failure value: `NOT_DELIVERED`, `None`, or `UnadmittedText` from
+`send_media`. `edit_dm_message` stays string-typed, because it re-renders a body admitted
+when it was posted or replaces it with a Casa status; the engagement-topic methods, the
+arrival replies and the delivered-link message are outside the contract. When a streamed
+reply's page-1 unit did not land, both finalizers send the admission's lines once, as their
+own message, before the overflow pages, which go untouched. The contract is INV-OUT-001 in
+[`output-boundary.md`](output-boundary.md), which also records every call site.
 
 **A tap is authorised against the request it answers.** Callback data is versioned and
 carries the namespace and request id; resolution is bound to the operator the request was

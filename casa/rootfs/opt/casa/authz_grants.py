@@ -609,9 +609,21 @@ class ChallengeCoordinator:
         )
         self._entries[key] = ch
 
+        # #1038: the challenge interpolates the model's own tool arguments, so
+        # its body is model text — admitted under the scope of whatever raised
+        # it: a bound engagement's (a specialist engagement whose brief carried
+        # a note has no ambient turn — plan round 1, Astra) or the initiating
+        # turn's. Resolved HERE, before the poster is spawned, so the poster
+        # never looks it up under a context it may not share. A challenge with
+        # neither bound is Casa's own status text.
+        from output_boundary import IntentKind, casa_text, resolve_scope
+        _scope = resolve_scope()
+
         async def _post() -> Any:
+            _body = (_scope.admit(IntentKind.KEYBOARD, challenge_text)
+                     if _scope is not None else casa_text(challenge_text))
             return await channel.post_dm_keyboard(
-                chat_id=chat_id, request_id=rid, text=challenge_text,
+                chat_id=chat_id, request_id=rid, text=_body,
                 options=options,
             )
 

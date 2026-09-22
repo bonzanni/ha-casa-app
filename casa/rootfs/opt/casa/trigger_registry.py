@@ -298,7 +298,8 @@ class TriggerRegistry:
                     **scheduled_delivery_markers(
                         trig.channel,
                         scheduled_asks.epoch_for(
-                            role, f"{trig.type}-{trig.name}")),
+                            role, f"{trig.type}-{trig.name}"),
+                        note=getattr(trig, "output_note", "") or ""),
                 },
             )
             await self._bus.send(msg)

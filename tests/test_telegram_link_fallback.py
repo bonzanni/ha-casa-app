@@ -21,6 +21,7 @@ from telegram import MessageEntity
 from telegram.error import BadRequest
 
 from test_telegram_topic_stream import _mk_channel_with_fake_bot
+from output_boundary_testing import admitted
 
 pytestmark = pytest.mark.asyncio
 
@@ -72,7 +73,7 @@ async def test_send_response_multipage_entity_fallback_keeps_link_target():
     ch, bot = _mk_channel_with_fake_bot()
     attempts = _record_attempts(bot)
 
-    await ch.send_response(AUTHORED, {"chat_id": "42"})
+    await ch.send_response(admitted(AUTHORED), {"chat_id": "42"})
 
     assert (
         len(attempts),
@@ -106,7 +107,7 @@ async def test_finalize_response_stream_multipage_entity_fallback_keeps_link_tar
     await on_token("partial")  # establishes message_id 12345
     attempts.clear()
 
-    await ch.finalize_response_stream(AUTHORED, {"chat_id": "42"}, on_token)
+    await ch.finalize_response_stream(admitted(AUTHORED), {"chat_id": "42"}, on_token)
 
     assert (
         len(attempts),
@@ -295,7 +296,7 @@ async def test_all_four_senders_deliver_the_target_when_conversion_fails():
     ch, bot = _mk_channel_with_fake_bot()
     attempts = _record_without_rejecting(bot)
     fallbacks = _observe_fallback(ch)
-    await ch.send_response(CONVERSION_FAILURE_AUTHORED, {"chat_id": "42"})
+    await ch.send_response(admitted(CONVERSION_FAILURE_AUTHORED), {"chat_id": "42"})
     summaries["send_response"] = _summarise(attempts, fallbacks)
 
     ch, bot = _mk_channel_with_fake_bot()
@@ -306,7 +307,7 @@ async def test_all_four_senders_deliver_the_target_when_conversion_fails():
     await on_token("partial")  # establishes message_id 12345
     attempts.clear()
     await ch.finalize_response_stream(
-        CONVERSION_FAILURE_AUTHORED, {"chat_id": "42"}, on_token
+        admitted(CONVERSION_FAILURE_AUTHORED), {"chat_id": "42"}, on_token
     )
     summaries["finalize_response_stream"] = _summarise(attempts, fallbacks)
 

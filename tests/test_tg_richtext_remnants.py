@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from channels.tg_richtext import parse_markdown, render
+from output_boundary_testing import admitted
 
 
 # --------------------------------------------------------------------------
@@ -408,7 +409,7 @@ _LONG_MD = "**Heading item** with `code.py` and prose line\n" * 200  # ≫4096
 @pytest.mark.asyncio
 async def test_send_response_overflow_renders_each_chunk():
     ch, bot = _mk_channel()
-    await ch.send_response(_LONG_MD, {"chat_id": "100"})
+    await ch.send_response(admitted(_LONG_MD), {"chat_id": "100"})
     assert bot.send_message.await_count >= 2
     for call in bot.send_message.await_args_list:
         kw = call.kwargs
@@ -478,7 +479,7 @@ async def test_plain_paths_stay_plain():
     assert "entities" not in kw
 
     bot.send_message.reset_mock()
-    await ch.send("**stars stay** `literal`", {"chat_id": "42"})
+    await ch.send(admitted("**stars stay** `literal`"), {"chat_id": "42"})
     kw = bot.send_message.await_args.kwargs
     assert kw["text"] == "**stars stay** `literal`"
     assert "entities" not in kw

@@ -16,6 +16,7 @@ import pytest
 
 from channels import DeliveryOutcome
 from test_telegram_topic_stream import _mk_channel_with_fake_bot
+from output_boundary_testing import admitted
 
 pytestmark = pytest.mark.asyncio
 
@@ -24,7 +25,7 @@ class TestSend:
     async def test_send_returns_delivered_and_stamps_context(self):
         ch, bot = _mk_channel_with_fake_bot()
         ctx = {"chat_id": "42"}
-        assert await ch.send("hi", ctx) is DeliveryOutcome.DELIVERED
+        assert await ch.send(admitted("hi"), ctx) is DeliveryOutcome.DELIVERED
         assert ctx["_delivery_head_sent"] is True
         assert bot.send_message.await_count == 1
 
@@ -33,7 +34,7 @@ class TestSend:
         ch, bot = _mk_channel_with_fake_bot()
         ch._app = None
         ctx = {"chat_id": "42"}
-        assert await ch.send("hi", ctx) is DeliveryOutcome.NOT_DELIVERED
+        assert await ch.send(admitted("hi"), ctx) is DeliveryOutcome.NOT_DELIVERED
         assert "_delivery_head_sent" not in ctx
         assert bot.send_message.await_count == 0
 
@@ -57,13 +58,13 @@ class TestSendResponse:
             return sentinel
 
         ch.send = _fake_send
-        assert await ch.send_response("just text", ctx) is sentinel
+        assert await ch.send_response(admitted("just text"), ctx) is sentinel
         assert called == ["just text"]
 
     async def test_rendered_single_page_is_delivered(self):
         ch, bot = _mk_channel_with_fake_bot()
         ctx = {"chat_id": "42"}
-        assert await ch.send_response("**hi**", ctx) is DeliveryOutcome.DELIVERED
+        assert await ch.send_response(admitted("**hi**"), ctx) is DeliveryOutcome.DELIVERED
         assert ctx["_delivery_head_sent"] is True
         assert bot.send_message.await_count == 1
 
@@ -71,7 +72,7 @@ class TestSendResponse:
         ch, bot = _mk_channel_with_fake_bot()
         ch._app = None
         ctx = {"chat_id": "42"}
-        assert await ch.send_response("**hi**", ctx) is DeliveryOutcome.NOT_DELIVERED
+        assert await ch.send_response(admitted("**hi**"), ctx) is DeliveryOutcome.NOT_DELIVERED
         assert "_delivery_head_sent" not in ctx
         assert bot.send_message.await_count == 0
 
@@ -87,7 +88,7 @@ class TestSendResponse:
             MagicMock(message_id=1), TimedOut("network")]
         ctx = {"chat_id": "42"}
         with pytest.raises(TimedOut):
-            await ch.send_response(long_text, ctx)
+            await ch.send_response(admitted(long_text), ctx)
         assert ctx["_delivery_head_sent"] is True
         assert bot.send_message.await_count == 2
 
@@ -105,7 +106,7 @@ class TestFinalizeStream:
         await on_token("partial")
         bot.edit_message_text.side_effect = BadRequest("Message is not modified")
         assert await ch.finalize_stream(
-            "hi", ctx, on_token) is DeliveryOutcome.DELIVERED
+            admitted("hi"), ctx, on_token) is DeliveryOutcome.DELIVERED
         assert ctx["_delivery_head_sent"] is True
 
     async def test_failed_edit_is_not_delivered(self):
@@ -119,7 +120,7 @@ class TestFinalizeStream:
         ctx.pop("_delivery_head_sent", None)
         bot.edit_message_text.side_effect = BadRequest("chat not found")
         assert await ch.finalize_stream(
-            "hi", ctx, on_token) is DeliveryOutcome.NOT_DELIVERED
+            admitted("hi"), ctx, on_token) is DeliveryOutcome.NOT_DELIVERED
         assert "_delivery_head_sent" not in ctx
 
     async def test_timeout_after_acceptance_is_unknown_not_a_negative(self):
@@ -138,7 +139,7 @@ class TestFinalizeStream:
         ctx.pop("_delivery_head_sent", None)
         bot.edit_message_text.side_effect = TimedOut("ack lost")
         assert await ch.finalize_stream(
-            "hi", ctx, on_token) is DeliveryOutcome.UNKNOWN
+            admitted("hi"), ctx, on_token) is DeliveryOutcome.UNKNOWN
 
     async def test_a_server_refusal_is_an_established_negative(self):
         """Sol diff r2: the first fix over-corrected. Forbidden/InvalidToken/
@@ -162,7 +163,7 @@ class TestFinalizeStream:
             await on_token("partial")
             ctx.pop("_delivery_head_sent", None)
             bot.edit_message_text.side_effect = exc
-            assert await ch.finalize_stream("hi", ctx, on_token) is \
+            assert await ch.finalize_stream(admitted("hi"), ctx, on_token) is \
                 DeliveryOutcome.NOT_DELIVERED, f"{type(exc).__name__} is a refusal"
 
     async def test_overflow_head_timeout_is_unknown(self):
@@ -178,7 +179,7 @@ class TestFinalizeStream:
         ctx.pop("_delivery_head_sent", None)
         bot.edit_message_text.side_effect = TimedOut("ack lost")
         assert await ch.finalize_stream(
-            "x" * 9000, ctx, on_token) is DeliveryOutcome.UNKNOWN
+            admitted("x" * 9000), ctx, on_token) is DeliveryOutcome.UNKNOWN
         assert bot.edit_message_text.await_count == 1   # the head WAS attempted
 
     async def test_overflow_head_refusal_is_not_delivered(self):
@@ -192,7 +193,7 @@ class TestFinalizeStream:
         ctx.pop("_delivery_head_sent", None)
         bot.edit_message_text.side_effect = Forbidden("blocked")
         assert await ch.finalize_stream(
-            "x" * 9000, ctx, on_token) is DeliveryOutcome.NOT_DELIVERED
+            admitted("x" * 9000), ctx, on_token) is DeliveryOutcome.NOT_DELIVERED
 
     async def test_without_app_is_not_delivered(self):
         ch, bot = _mk_channel_with_fake_bot()
@@ -203,7 +204,7 @@ class TestFinalizeStream:
         ctx.pop("_delivery_head_sent", None)
         ch._app = None
         assert await ch.finalize_stream(
-            "hi", ctx, on_token) is DeliveryOutcome.NOT_DELIVERED
+            admitted("hi"), ctx, on_token) is DeliveryOutcome.NOT_DELIVERED
 
     async def test_whitespace_overflow_is_not_delivered(self):
         """#305 drops unsendable chunks and returns without editing. The
@@ -217,7 +218,7 @@ class TestFinalizeStream:
         ctx.pop("_delivery_head_sent", None)
         bot.edit_message_text.reset_mock()
         assert await ch.finalize_stream(
-            " " * 5000, ctx, on_token) is DeliveryOutcome.NOT_DELIVERED
+            admitted(" " * 5000), ctx, on_token) is DeliveryOutcome.NOT_DELIVERED
         assert bot.edit_message_text.await_count == 0
 
 
@@ -230,7 +231,7 @@ class TestFinalizeResponseStream:
         await on_token("partial")
         ctx.pop("_delivery_head_sent", None)
         assert await ch.finalize_response_stream(
-            "**hi**", ctx, on_token) is DeliveryOutcome.DELIVERED
+            admitted("**hi**"), ctx, on_token) is DeliveryOutcome.DELIVERED
         assert ctx["_delivery_head_sent"] is True
 
     async def test_badrequest_fallback_still_delivered(self):
@@ -245,7 +246,7 @@ class TestFinalizeResponseStream:
         ctx.pop("_delivery_head_sent", None)
         bot.edit_message_text.side_effect = [BadRequest("bad entity"), None]
         assert await ch.finalize_response_stream(
-            "**hi**", ctx, on_token) is DeliveryOutcome.DELIVERED
+            admitted("**hi**"), ctx, on_token) is DeliveryOutcome.DELIVERED
         assert bot.edit_message_text.await_count == 2
 
     async def test_failed_page1_edit_is_not_delivered(self):
@@ -259,7 +260,7 @@ class TestFinalizeResponseStream:
         ctx.pop("_delivery_head_sent", None)
         bot.edit_message_text.side_effect = BadRequest("chat not found")
         assert await ch.finalize_response_stream(
-            "**hi**", ctx, on_token) is DeliveryOutcome.NOT_DELIVERED
+            admitted("**hi**"), ctx, on_token) is DeliveryOutcome.NOT_DELIVERED
         assert "_delivery_head_sent" not in ctx
 
     async def test_timeout_on_page1_edit_is_unknown(self):
@@ -274,7 +275,7 @@ class TestFinalizeResponseStream:
         ctx.pop("_delivery_head_sent", None)
         bot.edit_message_text.side_effect = TimedOut("ack lost")
         assert await ch.finalize_response_stream(
-            "**hi**", ctx, on_token) is DeliveryOutcome.UNKNOWN
+            admitted("**hi**"), ctx, on_token) is DeliveryOutcome.UNKNOWN
         assert "_delivery_head_sent" not in ctx
 
     async def test_delegates_verbatim_when_no_stream_started(self):
@@ -299,7 +300,7 @@ class TestFinalizeResponseStream:
 
         ch.send_response = _fake_send_response
         assert await ch.finalize_response_stream(
-            "**hi**", ctx, on_token) is sentinel
+            admitted("**hi**"), ctx, on_token) is sentinel
         assert called == ["**hi**"]
 
     async def test_plain_text_delegates_to_finalize_stream_verbatim(self):
@@ -321,6 +322,6 @@ class TestFinalizeResponseStream:
 
         ch.finalize_stream = _fake_finalize_stream
         assert await ch.finalize_response_stream(
-            "plain text", ctx, on_token) is sentinel
+            admitted("plain text"), ctx, on_token) is sentinel
         assert called == ["plain text"]
 

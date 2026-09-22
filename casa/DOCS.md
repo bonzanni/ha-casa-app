@@ -358,6 +358,18 @@ days and her own is unchanged.
 Reading a document puts its pages in front of the model, so a long PDF costs more to
 read than a short one — roughly a few thousand tokens per page.
 
+**She says so when she answered without opening a file (v0.327.0).** If she lists the
+files you sent and opens none, everything she sends in that turn — the reply, a message
+she posts, a question with buttons — starts with a line from Casa, *Casa: Ellen answered
+without opening “invoice.pdf” in this turn.* (with your assistant's name). The line is on
+the text as it streams and goes away if she opens the file before finishing. A reminder
+she sets, or a task she hands to another agent, without opening the file carries the line
+with it, so the message that fires later is prefixed *Casa: Ellen wrote this without
+opening “invoice.pdf”.* Opening any one of the listed files clears it for the rest of the
+turn. Her own words are never held back or changed — the line is added, nothing is
+taken away. A reply about a file she neither listed nor tried to open carries no line;
+that case is still down to her instructions.
+
 ## Voice pipeline
 
 Casa exposes two transports for Home Assistant voice / generic voice clients. The HA-side integration that consumes them ships separately in `ha-casa-integration` (phase 2.4).

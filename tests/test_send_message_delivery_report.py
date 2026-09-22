@@ -29,6 +29,7 @@ import pytest
 import agent as agent_mod
 import tools
 from channels import DeliveryOutcome
+from output_boundary_testing import with_scope
 
 pytestmark = [pytest.mark.unit]
 
@@ -67,7 +68,7 @@ class _CM:
 
 async def _send(monkeypatch, cm, *, channel="telegram", origin_channel="telegram"):
     monkeypatch.setattr(tools, "_channel_manager", cm)
-    token = agent_mod.origin_var.set({"channel": origin_channel})
+    token = agent_mod.origin_var.set(with_scope({"channel": origin_channel}))
     try:
         return await tools.send_message.handler(
             {"message": "Bins out tonight.", "channel": channel})
@@ -245,7 +246,7 @@ async def test_a_last_chunk_that_raises_is_not_reported_as_stopping_the_rest(
 
     ch = _started_channel(_Bot())
     monkeypatch.setattr(tools, "_channel_manager", _CM(ch))
-    token = agent_mod.origin_var.set({"channel": "telegram"})
+    token = agent_mod.origin_var.set(with_scope({"channel": "telegram"}))
     try:
         out = _text(await tools.send_message.handler(
             {"message": "x " * 3000, "channel": "telegram"}))
@@ -272,9 +273,9 @@ async def test_an_untrusted_webhook_turn_still_reports_the_bound_channel(
     tg = _Channel("telegram", outcome=DeliveryOutcome.DELIVERED)
     voice = _Channel("voice", outcome=DeliveryOutcome.NOT_DELIVERED)
     monkeypatch.setattr(tools, "_channel_manager", _CM(tg, voice))
-    token = agent_mod.origin_var.set({
+    token = agent_mod.origin_var.set(with_scope({
         "channel": "webhook", "_origin_route": "webhook_trigger",
-    })
+    }))
     try:
         out = _text(await tools.send_message.handler(
             {"message": "hi", "channel": "voice"}))

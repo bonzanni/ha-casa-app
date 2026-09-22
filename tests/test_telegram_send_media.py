@@ -4,6 +4,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from output_boundary_testing import admitted
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
 
@@ -38,7 +39,7 @@ _DISPATCH_MATRIX = [
 @pytest.mark.parametrize("kind,method", _DISPATCH_MATRIX)
 async def test_send_media_dispatches_per_kind(kind, method):
     ch, bot = _mk_channel()
-    await ch.send_media(b"BYTES", kind, "f.ext", {"chat_id": 555}, caption="hi")
+    await ch.send_media(b"BYTES", kind, "f.ext", {"chat_id": 555}, caption=admitted("hi"))
     target = getattr(bot, method)
     target.assert_awaited_once()
     for other in ("send_document", "send_photo", "send_audio", "send_voice"):

@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-16
+last_reviewed: 2026-09-22
 ---
 
 # The tool interface
@@ -97,6 +97,23 @@ are accepted with the prefix stripped (`tools.py::_reload_role_arg`), so an exec
 hand back exactly what it just read; a bare prefix is still `role_required`, and any
 other prefix is the role as given. The same canonicalisation applies to
 `casa_reload_triggers`.
+
+**A tool that emits or stores model text admits it first, and says what it added.**
+`send_message`, `ask_user`, `send_media`'s caption and `set_reminder` resolve the scope this
+call commits under — a bound engagement's, else the turn scope on the handler's entry
+snapshot — and refuse when none is bound (`send_message` with an error result, the others
+with `unsupported_origin`), never defaulting to plain text. `send_message`'s result then
+names the exact line — `Message sent via telegram. Casa prefixed: “…”`; `ask_user` admits
+the body before its plain and scheduled arms branch, so the keyboard, the stored record and
+every settle edit carry the same text, and its `awaiting_user` payload gains `casa_prefixed`
+when a line was added; `send_media`'s length cap applies over the admitted whole, and a
+caption the channel refuses reports `kind_error: refused`, never a down channel;
+`set_reminder` stores the resolved note as the entry's `output_note` with the prompt
+unchanged and reports it as `note`; `list_inbound_files` arms the obligation from the files
+it lists; `delegate_to_agent` resolves the brief's note at every launch and reports it as
+`casa_note` on either pending result; and
+`wipe_memory`'s consent keyboard is Casa's own text. The rules are INV-OUT-002 to
+INV-OUT-005 in [`output-boundary.md`](output-boundary.md).
 
 **Engagement mutation is a funnel, not parallel paths.** Completion and cancellation
 converge on one finalize path whose strict registry transition picks a single winner

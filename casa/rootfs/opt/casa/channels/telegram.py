@@ -59,6 +59,7 @@ from ingress_identity import (
     ingress_identity,
 )
 from channels import Channel, DeliveryOutcome
+from output_boundary import Admitted, UnadmittedText
 # v0.79.0 (§2 Primitive A): the per-topic OUTPUT SEQUENCER + relay-mediated
 # discrete-posting intent registry. Implemented in the sibling module and
 # RE-EXPORTED here so ``channels.telegram.OutputSequencer`` resolves per the
@@ -86,6 +87,34 @@ from rate_limit import RateLimiter
 import topic_ledger
 
 logger = logging.getLogger(__name__)
+
+
+def _unadmitted(method: str, text: Any) -> bool:
+    """#1038 INV-OUT-001: model text reaches this transport only as an
+    ``Admitted`` minted by the authoring turn's scope. A bare string is
+    refused here — loudly, with zero Bot API calls — and the caller sees the
+    method's OWN failure value (``NOT_DELIVERED``, ``None``, or a raise), so
+    every existing consumer already handles it. Casa-composed text comes
+    through ``output_boundary.casa_text``."""
+    if isinstance(text, Admitted):
+        return False
+    logger.error("unadmitted model text refused: %s (%s)", method,
+                 type(text).__name__)
+    return True
+
+
+def _overflow_head(text: Any, outcome: DeliveryOutcome) -> str:
+    """#1038 §6.6 (as amended in plan round 3): when the page-1 unit of a
+    streamed reply did not land, the admission's lines go out once, as their
+    own message, before the overflow pages — otherwise the operator can see the
+    claims on pages 2+ with no line before them. Empty when the head landed or
+    nothing was annotated. ``UNKNOWN`` is an unconfirmed head — the edit may
+    have applied with its acknowledgement lost — and deliberately gets the line
+    message too: a line shown twice costs less than claims shown with none."""
+    if outcome is DeliveryOutcome.DELIVERED:
+        return ""
+    lines = getattr(text, "annotations", ()) or ()
+    return "\n\n".join(lines) if lines else ""
 
 # Telegram typing indicator lasts ~5 s; resend every 4 s to keep it alive.
 _TYPING_INTERVAL = 4.0
@@ -3988,6 +4017,8 @@ class TelegramChannel(Channel):
         """
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+        if _unadmitted("post_dm_keyboard", text):
+            return None
         heuristic = short_option_labels(options) if short_labels else None
         kbd = InlineKeyboardMarkup([
             [InlineKeyboardButton(
@@ -4784,6 +4815,8 @@ class TelegramChannel(Channel):
         target_chat = _resolve_chat_id(context, self.chat_id)
         self._release_typing(context, target_chat)
 
+        if _unadmitted("send", message):
+            return DeliveryOutcome.NOT_DELIVERED
         if self._app is None:
             logger.warning("Telegram channel not started; cannot send message")
             return DeliveryOutcome.NOT_DELIVERED
@@ -4821,6 +4854,8 @@ class TelegramChannel(Channel):
         # must survive a reconnect window even when the send itself can't run).
         target_chat = _resolve_chat_id(context, self.chat_id)
         self._release_typing(context, target_chat)
+        if caption is not None and _unadmitted("send_media", caption):
+            raise UnadmittedText("send_media: caption is not admitted text")
         if self._app is None:
             raise RuntimeError("Telegram channel not started; cannot send media")
         method = getattr(self._app.bot, MEDIA_POLICIES[kind].ptb_method)
@@ -4871,6 +4906,24 @@ class TelegramChannel(Channel):
                 continue
             targets.append(url)
         return [display, *_split_message("\n".join(targets))]
+
+    async def _send_overflow_line(self, chat_id, line: str) -> None:
+        """#1038 §6.6 (plan round 3): the admission's lines as ONE plain message
+        before the overflow pages of a head that did not land. The pages then go
+        exactly as they do when the head landed — never re-split around a
+        prefix, which is where four findings in three rounds lived. A failure
+        here is logged and the pages still go: the model's words are never
+        withheld (#1036 ruling 2); the pages keep their own policies — the rich
+        finalizer's overflow sends log and continue, the plain finalizer's
+        chunk sends propagate, as before. The callers send this only when an
+        overflow send follows; ``UNKNOWN`` (an unconfirmed head) counts as not
+        landed, deliberately — see ``_overflow_head``."""
+        if not line:
+            return
+        try:
+            await self._app.bot.send_message(chat_id=chat_id, text=line)
+        except TelegramError as exc:
+            logger.warning("Final stream disclosure send failed: %s", exc)
 
     async def _send_one(self, chat_id, original, display, entities, **kw):
         """Send one ≤4096 message with entities; on entity BadRequest resend the
@@ -4930,6 +4983,8 @@ class TelegramChannel(Channel):
         # Release the lease before the availability guard (reconnect-safe).
         target_chat = _resolve_chat_id(context, self.chat_id)
         self._release_typing(context, target_chat)
+        if _unadmitted("send_response", message):
+            return DeliveryOutcome.NOT_DELIVERED
         if self._app is None:
             logger.warning("Telegram channel not started; cannot send message")
             return DeliveryOutcome.NOT_DELIVERED
@@ -4979,6 +5034,8 @@ class TelegramChannel(Channel):
         # Release the lease before the availability guard (reconnect-safe).
         target_chat = _resolve_chat_id(context, self.chat_id)
         self._release_typing(context, target_chat)
+        if _unadmitted("finalize_response_stream", full_text):
+            return DeliveryOutcome.NOT_DELIVERED
         if self._app is None:
             return DeliveryOutcome.NOT_DELIVERED
         message_id = _peek_stream_message_id(on_token)
@@ -5034,7 +5091,14 @@ class TelegramChannel(Channel):
         # An edit cannot be split, so page 1's overflow destinations follow as
         # ordinary messages — after the outcome above is decided, under the
         # same log-and-continue policy the overflow pages use.
-        for chunk in (chunks0[1:] if fell_back0 else ()):
+        # #1038 §6.6: a head that did not land cannot carry the disclosure for
+        # the pages that follow, so the admission's lines go out first, once,
+        # as their own message — only when something follows; the pages
+        # themselves are untouched.
+        tail0 = chunks0[1:] if fell_back0 else []
+        if tail0 or pages[1:]:
+            await self._send_overflow_line(target_chat, _overflow_head(full_text, outcome))
+        for chunk in tail0:
             try:
                 await self._app.bot.send_message(
                     chat_id=target_chat, text=chunk)
@@ -5210,6 +5274,8 @@ class TelegramChannel(Channel):
         target_chat = _resolve_chat_id(context, self.chat_id)
         self._release_typing(context, target_chat)
 
+        if _unadmitted("finalize_stream", full_text):
+            return DeliveryOutcome.NOT_DELIVERED
         if self._app is None:
             return DeliveryOutcome.NOT_DELIVERED
 
@@ -5271,6 +5337,12 @@ class TelegramChannel(Channel):
             else:
                 outcome = DeliveryOutcome.DELIVERED
                 context["_delivery_head_sent"] = True
+            # #1038 §6.6: a head that did not land cannot carry the
+            # disclosure for the chunks that follow — the lines go out first,
+            # once, as their own message, only when a chunk follows; the
+            # chunks are untouched.
+            if chunks[1:]:
+                await self._send_overflow_line(target_chat, _overflow_head(full_text, outcome))
             for chunk in chunks[1:]:
                 await self._app.bot.send_message(
                     chat_id=target_chat,

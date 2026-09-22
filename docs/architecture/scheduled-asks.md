@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-01
+last_reviewed: 2026-09-22
 ---
 
 # Scheduled asks
@@ -65,6 +65,13 @@ same sentence the live path would have.
 Which action the crash window forbids replaying is worth stating rather than implying: the
 DISPATCH, and only the dispatch. The keyboard edit is idempotent and, being the text the record
 itself decided, cannot say anything the outcome did not.
+
+The body the record stores is the admitted body: `ask_user` admits the question text under
+the turn's scope before its plain and scheduled arms branch, so the record written before
+the post, the keyboard, and every terminal edit derived from the stored body carry the same
+Casa line when one was owed ([`output-boundary.md`](output-boundary.md), INV-OUT-002). The
+replayed edit is a derived re-render of that body, which is why `edit_dm_message` takes a
+string rather than an admitted value.
 
 One asymmetry is worth stating, because it is the seam between the two halves of this
 design. Revocation reads the broker, never the record file (INV-JOB-008) — but from process

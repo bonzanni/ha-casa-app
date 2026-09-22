@@ -147,6 +147,14 @@ class VoiceJob:
     # the fail-closed direction (the turn stays text-only, exactly as it did
     # before the feature).
     scheduled_delivery: bool = False
+    # #1038: the resolved disclosure the delegation's brief owes the turn that
+    # narrates its result — "Casa: Ellen wrote this without opening
+    # “invoice.pdf”." The live completion carries it on the record's origin,
+    # but a restart resumes through THIS row, whose origin is rebuilt field by
+    # field — so, like ``scheduled_delivery`` above, it is a field or it is
+    # silently gone. Empty when nothing was owed; a row written before the
+    # field decodes as empty.
+    output_note: str = ""
 
 
 @dataclass(frozen=True)
@@ -1553,6 +1561,8 @@ class JobRegistry:
                 # malformed one must not mint eligibility — bool("false")
                 # is True, which is precisely the coercion to avoid here.
                 scheduled_delivery=row.get("scheduled_delivery") is True,
+                # #1038: a string or nothing; a legacy row has no key.
+                output_note=str(row.get("output_note") or ""),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise JobRegistryError(f"invalid job snapshot row: {exc}") from exc
@@ -1615,6 +1625,7 @@ class JobRegistry:
             "handoff_state": job.handoff_state.value,
             "delivery_modality": job.delivery_modality,
             "scheduled_delivery": job.scheduled_delivery,
+            "output_note": job.output_note,
         }
 
     async def _write_snapshot_locked(

@@ -89,6 +89,9 @@ _NON_PERSISTABLE_ORIGIN_KEYS = frozenset({
     "_progress_sink",
     "voice_route_capabilities",
     "voice_deadline",
+    # #1038: the live TurnScope; an engagement's own scope is re-minted from
+    # the persisted record (``TurnScope.for_engagement``), never stored.
+    "turn_scope",
 })
 
 

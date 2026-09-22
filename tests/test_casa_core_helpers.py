@@ -95,6 +95,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from rate_limit import RateLimiter, rate_limit_response
+from output_boundary_testing import with_scope
 
 
 @pytest.mark.asyncio
@@ -310,11 +311,11 @@ class TestBrokerShutdownOrdering:
             channel_manager=cm, bus=MagicMock(), specialist_registry=MagicMock(),
             mcp_registry=MagicMock(),
         )
-        tok = agent_mod.origin_var.set({
+        tok = agent_mod.origin_var.set(with_scope({
             "role": "assistant", "channel": "telegram", "chat_id": "500",
             "user_id": 999, "message_type": "channel_in", "source": "telegram",
             "execution_role": "assistant",
-        })
+        }))
         try:
             result = await tools.ask_user.handler(
                 {"question": "Proceed?", "options": ["Yes", "No"]},
