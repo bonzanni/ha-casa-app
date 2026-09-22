@@ -42,7 +42,10 @@ from claude_runtime import CLAUDE_CLI_PATH
 from config import AgentConfig
 from specialist_registry import DelegationComplete
 from hooks import read_evidence_matchers, resolve_hooks
-from output_boundary import Admitted, IntentKind, TurnScope, casa_text
+from output_boundary import (
+    Admitted, IntentKind, TurnScope, casa_text, may_still_be_silence,
+    strips_to_silence,
+)
 from log_cid import cid_var
 import sdk_logging
 from mcp_registry import McpServerRegistry
@@ -568,50 +571,13 @@ def speaker_provenance_for_role(cfg: AgentConfig) -> SpeakerProvenance:
 RESUME_FAULT_LIMIT: int = _env_int("SDK_RESUME_FAULT_LIMIT", 2)
 
 
-def _strips_to_silence(text: str | None) -> bool:
-    """True when a turn's entire output is silence: empty/whitespace, or
-    nothing but one-or-more literal ``<silent/>`` sentinels and whitespace.
-
-    The single definition shared by ``handle_message``'s sentinel gate and
-    the #650 retry-tainted-silence paths, so the two can never drift. The G-3
-    recant contract lives in the second condition: residual PROSE after a
-    sentinel is NOT silence.
-    """
-    if not text:
-        return True
-    stripped = text.strip()
-    return not stripped or not stripped.replace("<silent/>", "").strip()
-
-
+# The silence predicates live in output_boundary (#1038 R2) — one definition
+# for the final-reply admission, the #650 retry-tainted-silence paths, the
+# resume-health verdict and the #666 stream hold, so none can drift. These
+# names are the ones this module's callers and tests use.
+_strips_to_silence = strips_to_silence
+_may_still_be_silence = may_still_be_silence
 _SILENCE_SENTINEL = "<silent/>"
-
-
-def _may_still_be_silence(text: str | None) -> bool:
-    """True when *text* is silence today, or could still BECOME silence as
-    more deltas arrive: what remains after consuming leading complete
-    sentinels and whitespace is a prefix of one more sentinel.
-
-    #666: the voice ``StreamEvent`` path sees a sentinel arrive in fragments,
-    and a fragment is not silence — ``_strips_to_silence("<sil")`` is False. A
-    hold keyed on the shared predicate alone would leak ``"<"``, ``"<sil"``, …
-    to the device before the completed sentinel could ever be held.
-
-    ADDITIVE, never a fork: the completed case delegates to
-    ``_strips_to_silence``, which keeps its exact meaning for the sentinel gate,
-    the #650 reclassification and the resume-health verdict. This predicate is
-    strictly weaker and is used on the partial-delta path ONLY — the canonical
-    fold uses the strict one, so the stream and ``handle_message``'s gate agree
-    on what silence is, and a fold that the gate would DELIVER is never held.
-
-    The incomplete prefix must be the SUFFIX: ``"<sil<silent/>"`` releases,
-    because a fragment with content behind it can never complete.
-    """
-    if _strips_to_silence(text):
-        return True
-    rest = (text or "").lstrip()
-    while rest.startswith(_SILENCE_SENTINEL):
-        rest = rest[len(_SILENCE_SENTINEL):].lstrip()
-    return _SILENCE_SENTINEL.startswith(rest)
 
 
 def _resume_fault_streak(entry: dict | None, sid: str | None) -> int:
@@ -1081,11 +1047,12 @@ class Agent:
         on_token: OnTokenCallback | None = None
         channel = self._channel_manager.get(msg.channel) if msg.channel else None
 
+        # #1038 R2: whether this turn streams is a property of its scope — a
+        # NoStream obligation registered at mint from the two facts above.
         if (
             channel is not None
             and hasattr(channel, "create_on_token")
-            and msg.type != MessageType.SCHEDULED
-            and (msg.context or {}).get("synthetic") != "event_wake"
+            and scope.streaming_allowed
         ):
             on_token = channel.create_on_token(msg.context)
 
@@ -1188,22 +1155,22 @@ class Agent:
         # repeats it, is still suppressed). Residual PROSE after a sentinel
         # is still sent — the G-3 recant contract: a model that emits
         # `<silent/>` and then a real message must not have it swallowed.
-        # The predicate lives in _strips_to_silence, shared with the #650
-        # retry-tainted-silence paths.
-        if text and _strips_to_silence(text):
-            text = ""
+        # The predicate lives in output_boundary (#1038 R2): the final-reply
+        # admission tests it on the UNANNOTATED text, so a silent turn is
+        # never turned into a visible line, and the #650 reclassification
+        # above uses the same definition.
 
         # #1038: admission. The model's final text passes through the turn's
         # scope — obligations applied against the evidence the turn gathered,
         # nothing withheld — and the channel receives the ``Admitted`` value,
         # never a bare string. A classified-error reply is Casa's own text.
-        # Silence was tested above on the unannotated text, so a silent turn
-        # is never turned into a visible line.
+        # An admission that is ``suppressed`` (closing silence) empties the
+        # text, and delivery below is skipped exactly as before.
         admitted: Admitted | None = None
         if text:
             admitted = (scope.admit(IntentKind.FINAL_REPLY, text)
                         if error_kind is None else casa_text(text))
-            text = admitted
+            text = "" if admitted.suppressed else admitted
 
         # §3.10 notice: while plugin-health holds a blocking issue affecting
         # this agent's role, prepend a one-line notice to a user-visible reply.

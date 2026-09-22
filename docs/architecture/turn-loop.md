@@ -31,13 +31,17 @@ callback is obtained, under the reserved context key `_turn_scope`; `_process` m
 a direct caller that arrives without it, and puts the same object on the origin snapshot as
 `turn_scope` — a live value like `speaker_provenance`, never persisted — where the tool
 handlers and the read-evidence hooks find it, and hands `_make_on_message` the same scope.
-The model's final text passes through `scope.admit(FINAL_REPLY, …)` after the silence test,
-so a `<silent/>` turn is never turned into a visible line; a classified-error reply is
-Casa's own text; the plugin-health notice is prepended outermost over the admitted value;
-and every streamed cumulative `_emit` releases is admitted too, after the INV-TURN-009 hold
-has judged the unannotated cumulative. Options assembly is where the read-evidence matchers
-join every resident's hook bundle. What the scope does with the text is
-[`output-boundary.md`](output-boundary.md).
+Whether the turn streams at all is the scope's `streaming_allowed` — a scheduled turn or an
+event wake is minted with `NoStream` and gets no token callback. The model's final text
+passes through `scope.admit(FINAL_REPLY, …)`, which judges closing silence itself, on the
+unannotated text, so a `<silent/>` turn is suppressed before any line could be added and
+prose after a sentinel is delivered whole; a classified-error reply is Casa's own text; the
+plugin-health notice is prepended outermost over the admitted value; and every streamed
+cumulative `_emit` releases is admitted too, after the INV-TURN-009 hold has judged the
+unannotated cumulative with the same predicates. Options assembly is where the
+read-evidence matchers join every resident's hook bundle. What the scope does with the text
+is [`output-boundary.md`](output-boundary.md) (INV-OUT-006 for the three decisions that
+used to be inline checks here and in `send_message`).
 
 ## Contracts & invariants
 

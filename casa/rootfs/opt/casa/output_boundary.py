@@ -20,6 +20,17 @@ Obligations are a closed, Casa-owned set; the model can never add one.
 * :class:`InheritedNote` — the resolved note of a payload authored by an
   earlier turn, re-registered on the turn that sends it, so that turn's model
   cannot paraphrase it away. Never discharged.
+* :class:`NoStream` — a scheduled turn or an event wake thinks privately and
+  delivers only its final text (#534); registered at mint from the message's
+  own facts, read by ``handle_message`` as :attr:`TurnScope.streaming_allowed`.
+* :class:`DestinationOperatorOnly` — an untrusted webhook turn may notify only
+  the operator's Telegram surface (Release A egress binding); registered at
+  mint, applied by :meth:`TurnScope.resolve_channel`.
+* Closing silence is intrinsic to a final reply: ``admit(FINAL_REPLY, …)`` on
+  text that strips to nothing but ``<silent/>`` sentinels returns an empty,
+  ``suppressed`` admission — tested on the UNANNOTATED text, so a silent turn is
+  never turned into a visible line; prose after a sentinel is delivered whole
+  (the G-3 recant contract, INV-TURN-009).
 
 Nothing is held or withheld: the model's words are never suppressed here
 (operator ruling, #1036). Casa-composed text enters through :func:`casa_text`.
@@ -59,16 +70,18 @@ class Admitted(str):
     annotations: tuple[str, ...]
     source: str
     note: str
+    suppressed: bool
 
     def __new__(cls, text: str, *, scope_id: str, kind: IntentKind | None,
                 annotations: tuple[str, ...] = (), source: str = "model",
-                note: str = "") -> "Admitted":
+                note: str = "", suppressed: bool = False) -> "Admitted":
         obj = str.__new__(cls, text)
         obj.scope_id = scope_id
         obj.kind = kind
         obj.annotations = tuple(annotations)
         obj.source = source
         obj.note = note
+        obj.suppressed = suppressed
         return obj
 
     @property
@@ -80,11 +93,44 @@ class Admitted(str):
         prepend that happens after admission (the plugin-health notice)."""
         return Admitted(text, scope_id=self.scope_id, kind=self.kind,
                         annotations=self.annotations, source=self.source,
-                        note=self.note)
+                        note=self.note, suppressed=self.suppressed)
 
     def __repr__(self) -> str:  # pragma: no cover — logging aid
         return (f"Admitted({str.__repr__(self)}, scope_id={self.scope_id!r}, "
                 f"annotations={self.annotations!r}, source={self.source!r})")
+
+
+# ---------------------------------------------------------------------------
+# Closing silence — the predicates, shared with agent.py (the #650 resume-
+# health classification and the #666 stream hold import them from here)
+# ---------------------------------------------------------------------------
+
+SILENCE_SENTINEL = "<silent/>"
+
+
+def strips_to_silence(text: str | None) -> bool:
+    """True when a turn's entire output is silence: empty/whitespace, or
+    nothing but one-or-more literal ``<silent/>`` sentinels and whitespace.
+    Strict, exact-match-after-strip: residual PROSE after a sentinel is NOT
+    silence (the G-3 recant contract)."""
+    if not text:
+        return True
+    stripped = text.strip()
+    return not stripped or not stripped.replace(SILENCE_SENTINEL, "").strip()
+
+
+def may_still_be_silence(text: str | None) -> bool:
+    """True when *text* is silence today, or could still BECOME silence as more
+    deltas arrive: what remains after consuming leading complete sentinels and
+    whitespace is a prefix of one more sentinel (#666). Strictly weaker than
+    :func:`strips_to_silence`; used on the partial-delta path only. The
+    incomplete prefix must be the SUFFIX: ``"<sil<silent/>"`` releases."""
+    if strips_to_silence(text):
+        return True
+    rest = (text or "").lstrip()
+    while rest.startswith(SILENCE_SENTINEL):
+        rest = rest[len(SILENCE_SENTINEL):].lstrip()
+    return SILENCE_SENTINEL.startswith(rest)
 
 
 class UnadmittedText(RuntimeError):
@@ -163,6 +209,23 @@ class InheritedNote(Obligation):
     text: str
 
 
+@dataclass(frozen=True)
+class NoStream(Obligation):
+    """The turn thinks privately: no token callback, only the final text is
+    delivered (#534 event wakes; scheduled turns). ``reason`` is the fact it
+    was registered from — ``"scheduled"`` or ``"event_wake"``."""
+
+    reason: str
+
+
+@dataclass(frozen=True)
+class DestinationOperatorOnly(Obligation):
+    """An untrusted webhook turn may notify only the operator's Telegram
+    surface: the caller-selected channel of a discrete send is replaced, never
+    honoured (Release A / Layer 1 egress binding, confused-deputy containment).
+    Trusted ``/invoke`` turns and every non-webhook origin are unaffected."""
+
+
 @dataclass
 class Evidence:
     read_ok: set[str] = field(default_factory=set)
@@ -216,6 +279,14 @@ class TurnScope:
         note = ctx.get("_inherited_note")
         if isinstance(note, str) and note.strip():
             scope.arm(InheritedNote(note))
+        # The per-turn output decisions that used to be inline checks (R2):
+        # registered here, from the same facts those checks read.
+        if scope.message_type == "scheduled":
+            scope.arm(NoStream("scheduled"))
+        elif markers.get("synthetic") == "event_wake":
+            scope.arm(NoStream("event_wake"))
+        if scope.channel == "webhook" and markers.get("_origin_route") != "invoke":
+            scope.arm(DestinationOperatorOnly())
         return scope
 
     @classmethod
@@ -276,6 +347,18 @@ class TurnScope:
         copied from an earlier listing) makes this a file turn too."""
         self.arm(ReadBeforeDescribe(files=((_norm(path), display_name),)))
 
+    @property
+    def streaming_allowed(self) -> bool:
+        """False when a :class:`NoStream` obligation is registered."""
+        return not any(isinstance(ob, NoStream) for ob in self.obligations)
+
+    def resolve_channel(self, requested: str) -> str:
+        """The channel a discrete send actually goes to: the requested one,
+        unless :class:`DestinationOperatorOnly` binds it to Telegram."""
+        if any(isinstance(ob, DestinationOperatorOnly) for ob in self.obligations):
+            return "telegram"
+        return requested
+
     def _read_before_describe(self) -> ReadBeforeDescribe | None:
         for ob in self.obligations:
             if isinstance(ob, ReadBeforeDescribe):
@@ -294,7 +377,10 @@ class TurnScope:
 
     def admit(self, kind: IntentKind, text: str) -> Admitted:
         """Apply every obligation to *text* at this moment. Empty text is never
-        annotated. Order: inherited notes first, then today's line."""
+        annotated. Order: silence (final replies only, on the UNANNOTATED
+        text), then inherited notes, then today's line."""
+        if kind is IntentKind.FINAL_REPLY and strips_to_silence(text):
+            return Admitted(text="", scope_id=self.id, kind=kind, suppressed=True)
         if not (text or "").strip():
             return Admitted(text=text, scope_id=self.id, kind=kind)
         head: list[str] = [ob.text for ob in self.obligations
