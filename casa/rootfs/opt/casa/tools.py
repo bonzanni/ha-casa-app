@@ -15538,8 +15538,12 @@ async def specialist_rollback(args: dict) -> dict:
 @tool(
     "specialist_uninstall",
     "Remove an installed specialist entirely (its binding, config, and legacy operational files). "
-    "Does not affect a hand-authored (non-installed) specialist of the same name.",
-    {"type": "object", "properties": {"slug": {"type": "string"}}, "required": ["slug"]},
+    "Does not affect a hand-authored (non-installed) specialist of the same name. When a bundled "
+    "plugin declares an eraser the operator is asked first (Keep data / Erase data / Cancel): "
+    "call without erase_data and wait for Casa to continue with their choice.",
+    {"type": "object", "properties": {
+        "slug": {"type": "string"}, "erase_data": {"type": "boolean"}},
+     "required": ["slug"]},
 )
 async def specialist_uninstall(args: dict) -> dict:
     from specialist_install import SpecialistInstallError, uninstall_specialist
@@ -15548,6 +15552,13 @@ async def specialist_uninstall(args: dict) -> dict:
 
     slug = args["slug"]
     targets_removed = [f"specialist:{slug}"]
+    gate, reports = await _erase_gate(
+        tool="specialist_uninstall", arg="slug", name=slug,
+        subject=f"specialist:{slug}", what=f"the specialist {slug}",
+        specs=_erase_specs_for(_owned_entries_now(slug)),
+        erase=args.get("erase_data"))
+    if gate is not None:
+        return _result(gate)
 
     async def _txn() -> dict:
         # Whole-branch M: map a typed refusal (invalid_slug / bundle_required)
@@ -15582,7 +15593,10 @@ async def specialist_uninstall(args: dict) -> dict:
         payload.update(_swap_removal_disclosure(txn))
         return payload
 
-    return _result(await _run_bundle_transaction(_txn))
+    outcome = await _run_bundle_transaction(_txn)
+    if reports and isinstance(outcome, dict) and outcome.get("ok") is True:
+        _apply_erasure_to_disclosure(outcome, reports)
+    return _result(outcome)
 
 
 @tool(
@@ -16188,15 +16202,270 @@ async def plugin_unassign(args: dict) -> dict:
         return _result(core)
 
 
+# --- #1046: erasing a plugin's data at uninstall -----------------------------------
+#
+# A plugin may declare the eraser (`casa.eraseTool`) that erases everything it
+# holds and revokes what it can at its providers. Uninstalling it asks ONE
+# Casa-owned question (plugin_erase_consent): Keep data / Erase data / Cancel.
+# An Erase tap is the authorization; the eraser then runs in the background
+# (plugin_erasure) and its outcome continues the configurator engagement. The
+# plugin is removed only by a finishing call that finds a complete erasure for
+# the artifact the registry still resolves — Casa sequences the plugin's
+# eraser and never erases anything itself.
+
+_ERASED_NOTE = (
+    "The plugin's own eraser reported its data erased before the removal "
+    "(erase_report — relay it to the operator verbatim). Home Assistant backups "
+    "taken before now still contain the data; Casa did not delete them.")
+
+
+def _erase_specs_for(entries: "list[dict]") -> "list":
+    """An :class:`plugin_erasure.EraseSpec` for every registry entry in
+    *entries* whose resolved artifact declares a valid ``casa.eraseTool`` and
+    has an MCP server to call it on; entries without one are skipped (their
+    removal is today's)."""
+    import plugin_erasure
+    from plugin_grants import plugin_tool_names, protected_map
+    from plugin_store import StoreError, manifest_erase_tool
+    resolution = plugin_registry.resolve_all()
+    by_name = {rp.name: rp for rp in getattr(resolution, "plugins", None) or []}
+    protected = protected_map(resolution)
+    specs = []
+    for entry in entries:
+        rp = by_name.get(entry.get("name"))
+        if rp is None or rp.artifact_id != entry.get("artifact_id"):
+            continue
+        try:
+            tool = manifest_erase_tool(rp.manifest)
+        except StoreError:
+            tool = None
+        names = plugin_tool_names(rp, tool) if tool else ()
+        if not names:
+            continue
+        summary = next((protected[n]["summary"] for n in names if n in protected),
+                       None)
+        specs.append(plugin_erasure.EraseSpec(
+            name=rp.name, artifact_id=rp.artifact_id,
+            targets=tuple(entry.get("targets") or ()), tool_names=names,
+            protected=any(n in protected for n in names), tool=tool,
+            summary=summary))
+    return specs
+
+
+def _owned_entries_now(slug: str) -> "list[dict]":
+    data = plugin_registry.load_registry()
+    return plugin_registry.owned_entries_for(slug, data) if data.valid else []
+
+
+def _engagement_deliverer(channel: Any, eng: Any):
+    """A continuation into the configurator engagement *eng* (the persona
+    install-consent precedent): returns True only when the turn was handed
+    off."""
+    async def _deliver(text: str) -> bool:
+        if eng is None or channel is None:
+            return False
+        registry = getattr(channel, "_engagement_registry", None)
+        deliver = getattr(channel, "deliver_system_turn", None)
+        if registry is None or deliver is None:
+            return False
+        rec = registry.get(eng.id)
+        if rec is None:
+            return False
+        return bool(await deliver(rec, text))
+    return _deliver
+
+
+def _erase_call(tool: str, arg: str, name: str, erase: bool) -> str:
+    return f"{tool}({arg}={name!r}, erase_data={'true' if erase else 'false'})"
+
+
+def _choice_continuation(tool: str, arg: str, name: str, choice: int) -> str:
+    import plugin_erase_consent as pec
+    if choice == pec.KEEP:
+        return (f"The operator chose Keep data. Call {_erase_call(tool, arg, name, False)} "
+                "now to uninstall and keep the data, then finish the recipe.")
+    if choice == pec.ERASE:
+        return (f"The operator chose Erase data. Call {_erase_call(tool, arg, name, True)} "
+                "now: it starts the plugin's eraser and removes nothing yet. Casa "
+                "then sends the eraser's result into this topic — wait for it.")
+    return (f"The operator cancelled uninstalling {name!r}. Nothing was removed; "
+            "tell them so and finish.")
+
+
+async def _deliver_erasure_outcome(tool: str, name: str, outcomes: list,
+                                   deliver) -> None:
+    """Continue the configurator with what the eraser(s) said; if the
+    engagement cannot take it, tell the operator directly. Never raises."""
+    arg = "slug" if tool == "specialist_uninstall" else "name"
+    try:
+        if outcomes and all(o.verdict == "complete" for o in outcomes):
+            reports = "; ".join(f"{o.name}: {o.report}" for o in outcomes)
+            model_text = (
+                f"The eraser reported the erasure complete. Its report, to relay "
+                f"to the operator verbatim: {reports}. Now call "
+                f"{_erase_call(tool, arg, name, True)} to finish the uninstall.")
+            # Casa's own words only: this DM is a Casa notice, and the
+            # plugin's report is plugin-authored text.
+            operator_text = (
+                f"Erasing {name}'s data finished, but the configurator could not "
+                "be resumed to finish the uninstall — ask it to uninstall "
+                f"{name} again; the plugin's report is relayed there.")
+        else:
+            last = outcomes[-1] if outcomes else None
+            plugin = last.name if last else name
+            report = last.report if last else ""
+            verdict = last.verdict if last else "not_dispatched"
+            model_text = (
+                f"Erasing {plugin!r}'s data did not complete ({verdict}). Nothing "
+                f"was removed. The plugin's report, verbatim for the operator: "
+                f"{report} — Relay it verbatim, then ask the operator whether to "
+                "try again later (run the uninstall again, which asks again) or "
+                "uninstall anyway keeping whatever is left "
+                f"({_erase_call(tool, arg, name, False)}).")
+            operator_text = (
+                f"Erasing {plugin}'s data did not complete, so nothing was "
+                "removed, and the configurator could not be resumed to relay "
+                "the plugin's report — run the uninstall again to see it.")
+        if await deliver(model_text):
+            return
+        import casa_core
+        await casa_core.operator_notify(_channel_manager, operator_text)
+    except Exception:  # noqa: BLE001 — a background task: log, never raise
+        logger.exception("erasure outcome delivery failed (%s %s)", tool, name)
+
+
+_ERASE_TASKS: "set[asyncio.Task]" = set()
+
+
+async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
+                      what: str, specs: list, erase) -> "tuple[dict | None, list]":
+    """The erase step in front of an uninstall. Returns ``(payload, reports)``:
+    a payload is the refusal / pending result to return with nothing removed;
+    ``None`` means proceed, with *reports* ``[(plugin, report)]`` of the
+    complete erasures it consumed (empty when nothing was erased)."""
+    import plugin_erase_consent as pec
+    import plugin_erasure
+    import trigger_consent
+    if not specs or erase is False:
+        return None, []
+    rows = [(f"plugin:{s.name}", s.artifact_id) for s in specs]
+    if erase is True and all(plugin_erasure.RECORDS.has_complete(*r) for r in rows):
+        return None, [(s.name, plugin_erasure.RECORDS.take_complete(*r))
+                      for s, r in zip(specs, rows)]
+    channel = _channel_manager.get("telegram") if _channel_manager is not None else None
+    op = trigger_consent.operator_identity(channel) if channel is not None else None
+    if op is None:
+        return {"ok": False, "kind": "consent_channel_unavailable",
+                "detail": ("the operator's Telegram DM is not available, so the "
+                           "erase-data question cannot be asked; nothing was "
+                           "removed. Fix the Telegram channel, or uninstall with "
+                           "erase_data=false to keep the data.")}, []
+    chat_id, operator_id = op
+    key = pec.EraseChoiceKey(operator_id=operator_id, chat_id=chat_id,
+                             subject=subject,
+                             artifacts=tuple(s.artifact_id for s in specs))
+    eng = engagement_var.get(None)
+    deliver = _engagement_deliverer(channel, eng)
+    if erase is None:
+        text = pec.render_erase_choice(
+            what, [(s.name, s.tool, s.summary) for s in specs])
+
+        async def _continue(choice: int) -> bool:
+            return await deliver(_choice_continuation(tool, arg, name, choice))
+        try:
+            handle = pec.prompt_erase_choice(
+                coordinator=CHALLENGES, channel=channel, key=key, text=text,
+                continue_cb=_continue,
+                inbound_reservation=_continuation_inbound_reservation(channel, eng))
+        except Exception as exc:  # noqa: BLE001 — structured, never a raise
+            logger.exception("erase-choice prompt failed to post")
+            return {"ok": False, "kind": "consent_prompt_failed",
+                    "detail": f"{type(exc).__name__}: {exc}"}, []
+        failure = await _settle_install_consent_post(handle)
+        if failure is not None:
+            return failure, []
+        return {"ok": False, "kind": "erase_choice_pending",
+                "detail": ("Nothing was removed yet. The operator was asked in "
+                           "their DM whether to also erase the data "
+                           f"({', '.join(s.name for s in specs)}); Casa continues "
+                           "this topic with their choice — wait for it.")}, []
+    if not pec.CHOICES.consume(key, pec.ERASE):
+        return {"ok": False, "kind": "erase_not_confirmed",
+                "detail": ("erase_data=true needs the operator's Erase tap on the "
+                           "question Casa posts, for this exact version, and runs "
+                           "once per tap — call again without erase_data to ask "
+                           "them. Nothing was removed.")}, []
+
+    async def _run() -> None:
+        outcomes = await plugin_erasure.run_erase_episode(specs, (chat_id, operator_id))
+        await _deliver_erasure_outcome(tool, name, outcomes, deliver)
+    task = asyncio.get_running_loop().create_task(_run())
+    _ERASE_TASKS.add(task)
+    task.add_done_callback(_ERASE_TASKS.discard)
+    return {"ok": False, "kind": "erasure_running",
+            "detail": ("The plugin's eraser is running; nothing is removed yet. "
+                       "Casa sends its result into this topic — wait for it, "
+                       "then follow what it says.")}, []
+
+
+def _apply_erasure_to_disclosure(payload: dict, reports: list) -> None:
+    """A removal that followed a complete erasure: the erased plugins are no
+    longer 'data may remain'; their reports are relayed."""
+    if not reports:
+        return
+    erased = {n for n, _r in reports}
+    payload["erasure"] = "complete"
+    if len(reports) == 1 and "slug" not in payload:
+        payload["erase_report"] = reports[0][1]
+    else:
+        payload["erase_reports"] = [{"name": n, "report": r} for n, r in reports]
+    remaining = [n for n in payload.get("plugin_data_plugins") or [] if n not in erased]
+    if "plugin_data_plugins" in payload and remaining:
+        payload["plugin_data_plugins"] = remaining
+        payload["erased_note"] = _ERASED_NOTE
+        return
+    for k in ("plugin_data_may_remain", "provider_revocation_performed",
+              "plugin_data_plugins"):
+        payload.pop(k, None)
+    payload["plugin_data_note"] = _ERASED_NOTE
+
+
 @tool(
     "plugin_remove",
     "Remove a plugin from the registry entirely (artifact retained for GC). Does NOT delete the "
     "plugin's CLI-managed persistent data directory (CLAUDE_PLUGIN_DATA), which may hold stored "
     "authorizations such as OAuth tokens: that data survives and a reinstall re-attaches to it. "
-    "Performs no provider-side revocation.",
-    {"name": str},
+    "Performs no provider-side revocation. A plugin that declares an eraser asks the operator "
+    "first (Keep data / Erase data / Cancel): call without erase_data and wait for Casa to "
+    "continue with their choice.",
+    {"type": "object", "properties": {
+        "name": {"type": "string"},
+        "erase_data": {"type": "boolean"}},
+     "required": ["name"]},
 )
 async def plugin_remove(args: dict) -> dict:
+    name = args["name"]
+    erase = args.get("erase_data")
+    data = plugin_registry.load_registry()
+    entry = _find_entry(data, name) if data.valid else None
+    reports: list = []
+    if entry is not None and plugin_registry.entry_owner(entry) is None:
+        gate, reports = await _erase_gate(
+            tool="plugin_remove", arg="name", name=name, subject=f"plugin:{name}",
+            what=f"the plugin {name}", specs=_erase_specs_for([entry]),
+            erase=erase)
+        if gate is not None:
+            return _result(gate)
+    result = await _plugin_remove_locked(args)
+    if reports:
+        payload = json.loads(result["content"][0]["text"])
+        if payload.get("ok") is True:
+            _apply_erasure_to_disclosure(payload, reports)
+            return _result(payload)
+    return result
+
+
+async def _plugin_remove_locked(args: dict) -> dict:
     async with _PLUGIN_TOOLS_LOCK:
         # #928 (design + seam round, astra + terra): the registry write runs in
         # a THREAD, and a thread cannot be cancelled — a cancellation on that

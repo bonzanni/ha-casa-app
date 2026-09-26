@@ -143,6 +143,11 @@ class ErasureRecords:
         with self._lock:
             self._rows[(subject, artifact_id)] = (verdict, report)
 
+    def has_complete(self, subject: str, artifact_id: str) -> bool:
+        with self._lock:
+            row = self._rows.get((subject, artifact_id))
+            return row is not None and row[0] == "complete"
+
     def take_complete(self, subject: str, artifact_id: str) -> str | None:
         """The report of a complete erasure of *subject* at *artifact_id*,
         consumed; ``None`` when there is none."""
@@ -190,6 +195,8 @@ class EraseSpec:
     targets: tuple
     tool_names: tuple
     protected: bool
+    tool: str = ""                  # the declared (bare) tool name
+    summary: "str | None" = None    # its protected-tool summary, if any
 
 
 @dataclass(frozen=True)
