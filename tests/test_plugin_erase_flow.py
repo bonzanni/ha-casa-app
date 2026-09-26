@@ -153,8 +153,16 @@ def flow(monkeypatch, tmp_path):
     tm = _wire(monkeypatch, tmp_path, st, publish=_pr())
     state = SimpleNamespace(st=st, tm=tm, prompts=[], episodes=[],
                             specs=[_spec()], delivered=[])
-    monkeypatch.setattr(tm, "_erase_specs_for", lambda entries: [
-        s for s in state.specs if any(e.get("name") == s.name for e in entries)])
+    def specs_for(entries):
+        # the spec of an entry names the artifact the registry holds for it NOW
+        out = []
+        for s in state.specs:
+            e = next((e for e in entries if e.get("name") == s.name), None)
+            if e is not None:
+                out.append(pe.EraseSpec(**{**s.__dict__,
+                                           "artifact_id": e.get("artifact_id")}))
+        return out
+    monkeypatch.setattr(tm, "_erase_specs_for", specs_for)
     monkeypatch.setattr(pec, "CHOICES", pec.ChoiceGrants())
     monkeypatch.setattr(pe, "RECORDS", pe.ErasureRecords())
 
@@ -296,10 +304,25 @@ def sflow(flow, monkeypatch):
     flow.specs = [_spec("fin.bank", "1" * 64)]
     flow.uninstalled = []
 
-    async def fake_txn(body):
+    # The REAL transaction body runs (it consumes the erasure records), with
+    # the uninstall's disk and reload work stubbed.
+    import specialist_install
+    import specialist_bundle_journal
+
+    def fake_uninstall(**kw):
         flow.uninstalled.append(True)
-        return {"ok": True, "slug": "fin"}
-    monkeypatch.setattr(flow.tm, "_run_bundle_transaction", fake_txn)
+        return SimpleNamespace(slug="fin", removed_artifact_ids=[], journal_path=None)
+
+    async def fake_seq(slug, **kw):
+        return {"ok": True, "reloaded": [], "verify": {}}
+
+    async def run_body(body):
+        return await body()
+    monkeypatch.setattr(specialist_install, "uninstall_specialist", fake_uninstall)
+    monkeypatch.setattr(flow.tm, "_bundle_reload_and_verify", fake_seq)
+    monkeypatch.setattr(specialist_bundle_journal, "complete", lambda p: None)
+    monkeypatch.setattr(flow.tm, "_swap_removal_disclosure", lambda txn: {})
+    monkeypatch.setattr(flow.tm, "_run_bundle_transaction", run_body)
     return flow
 
 
@@ -335,3 +358,44 @@ async def test_specialist_uninstalls_only_when_every_erasure_completed(sflow):
     out = await _uninstall(sflow.tm, erase_data=True)
     assert out["ok"] is True and sflow.uninstalled == [True]
     assert [r["name"] for r in out["erase_reports"]] == ["fin.bank", "fin.tags"]
+
+
+@pytest.mark.asyncio
+async def test_an_update_while_the_finishing_call_waits_is_not_removed(flow):
+    """Diff r1 (Terra S2 / Astra S2): the records are checked and consumed under
+    the same mutation lock as the removal. A plugin_update that lands while the
+    finishing call waits for the lock leaves an unerased version, which is not
+    removed."""
+    tm = flow.tm
+    pe.RECORDS.put("plugin:probe", ART, "complete", "old version erased")
+    await tm._PLUGIN_TOOLS_LOCK.acquire()
+    try:
+        task = asyncio.get_running_loop().create_task(_remove(tm, erase_data=True))
+        await asyncio.sleep(0.01)
+        flow.st.raw["plugins"][0]["artifact_id"] = "9" * 64      # the update
+    finally:
+        tm._PLUGIN_TOOLS_LOCK.release()
+    out = await task
+    assert out["ok"] is False and _still_registered(flow)
+    assert out["kind"] == "erasure_changed"
+
+
+@pytest.mark.asyncio
+async def test_specialist_records_are_checked_inside_the_transaction(sflow, monkeypatch):
+    """The bundle's owned entries are re-read inside the transaction body: an
+    artifact that changed since the gate is not uninstalled."""
+    tm = sflow.tm
+    pe.RECORDS.put("plugin:fin.bank", "1" * 64, "complete", "bank gone")
+    owned_now = [{"name": "fin.bank", "artifact_id": "8" * 64,
+                  "targets": ["specialist:fin"], "owner": "specialist:fin"}]
+    calls = {"n": 0}
+    real = tm._owned_entries_now
+
+    def owned(slug):
+        calls["n"] += 1
+        return real(slug) if calls["n"] == 1 else owned_now
+    monkeypatch.setattr(tm, "_owned_entries_now", owned)
+
+    out = await _uninstall(tm, erase_data=True)
+    assert out["ok"] is False and out["kind"] == "erasure_changed"
+    assert sflow.uninstalled == []

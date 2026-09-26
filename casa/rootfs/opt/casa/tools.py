@@ -15552,15 +15552,24 @@ async def specialist_uninstall(args: dict) -> dict:
 
     slug = args["slug"]
     targets_removed = [f"specialist:{slug}"]
-    gate, reports = await _erase_gate(
+    gate, finish = await _erase_gate(
         tool="specialist_uninstall", arg="slug", name=slug,
         subject=f"specialist:{slug}", what=f"the specialist {slug}",
         specs=_erase_specs_for(_owned_entries_now(slug)),
         erase=args.get("erase_data"))
     if gate is not None:
         return _result(gate)
+    reports: list = []
 
     async def _txn() -> dict:
+        if finish:
+            # #1046: inside the transaction, which owns the mutation lock: the
+            # bundle's erasing plugins as the registry holds them NOW.
+            taken = _take_complete_erasures(
+                _erase_specs_for(_owned_entries_now(slug)))
+            if taken is None:
+                return dict(_ERASURE_CHANGED)
+            reports.extend(taken)
         # Whole-branch M: map a typed refusal (invalid_slug / bundle_required)
         # to a structured ok:false envelope, never a raw exception out of the
         # tool — the same guard the other four bundle tools already have.
@@ -16337,21 +16346,43 @@ async def _deliver_erasure_outcome(tool: str, name: str, outcomes: list,
 _ERASE_TASKS: "set[asyncio.Task]" = set()
 
 
+_ERASURE_CHANGED = {
+    "ok": False, "kind": "erasure_changed",
+    "detail": ("The plugin changed after its data was erased (it was updated, "
+               "reinstalled or removed), so the erasure no longer covers what is "
+               "installed and nothing was removed. Run the uninstall again; Casa "
+               "asks again.")}
+
+
+def _take_complete_erasures(specs: list) -> "list | None":
+    """Under the mutation lock, immediately before a removal: the reports of a
+    complete erasure for EVERY erasing plugin at the artifact the registry
+    resolves now, consumed — or ``None`` (nothing consumed) when any is
+    missing, or when no erasing plugin remains."""
+    import plugin_erasure
+    rows = [(f"plugin:{s.name}", s.artifact_id) for s in specs]
+    if not rows or not all(plugin_erasure.RECORDS.has_complete(*r) for r in rows):
+        return None
+    return [(s.name, plugin_erasure.RECORDS.take_complete(*r))
+            for s, r in zip(specs, rows)]
+
+
 async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
-                      what: str, specs: list, erase) -> "tuple[dict | None, list]":
-    """The erase step in front of an uninstall. Returns ``(payload, reports)``:
+                      what: str, specs: list, erase) -> "tuple[dict | None, bool]":
+    """The erase step in front of an uninstall. Returns ``(payload, finish)``:
     a payload is the refusal / pending result to return with nothing removed;
-    ``None`` means proceed, with *reports* ``[(plugin, report)]`` of the
-    complete erasures it consumed (empty when nothing was erased)."""
+    ``None`` means proceed — as the finishing call of a complete erasure when
+    *finish* is True, whose records the caller then re-reads and consumes under
+    the mutation lock (:func:`_take_complete_erasures`), never here: a plugin
+    update can land between this check and the removal."""
     import plugin_erase_consent as pec
     import plugin_erasure
     import trigger_consent
     if not specs or erase is False:
-        return None, []
+        return None, False
     rows = [(f"plugin:{s.name}", s.artifact_id) for s in specs]
     if erase is True and all(plugin_erasure.RECORDS.has_complete(*r) for r in rows):
-        return None, [(s.name, plugin_erasure.RECORDS.take_complete(*r))
-                      for s, r in zip(specs, rows)]
+        return None, True
     channel = _channel_manager.get("telegram") if _channel_manager is not None else None
     op = trigger_consent.operator_identity(channel) if channel is not None else None
     if op is None:
@@ -16359,7 +16390,7 @@ async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
                 "detail": ("the operator's Telegram DM is not available, so the "
                            "erase-data question cannot be asked; nothing was "
                            "removed. Fix the Telegram channel, or uninstall with "
-                           "erase_data=false to keep the data.")}, []
+                           "erase_data=false to keep the data.")}, False
     chat_id, operator_id = op
     key = pec.EraseChoiceKey(operator_id=operator_id, chat_id=chat_id,
                              subject=subject,
@@ -16380,21 +16411,21 @@ async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
         except Exception as exc:  # noqa: BLE001 — structured, never a raise
             logger.exception("erase-choice prompt failed to post")
             return {"ok": False, "kind": "consent_prompt_failed",
-                    "detail": f"{type(exc).__name__}: {exc}"}, []
+                    "detail": f"{type(exc).__name__}: {exc}"}, False
         failure = await _settle_install_consent_post(handle)
         if failure is not None:
-            return failure, []
+            return failure, False
         return {"ok": False, "kind": "erase_choice_pending",
                 "detail": ("Nothing was removed yet. The operator was asked in "
                            "their DM whether to also erase the data "
                            f"({', '.join(s.name for s in specs)}); Casa continues "
-                           "this topic with their choice — wait for it.")}, []
+                           "this topic with their choice — wait for it.")}, False
     if not pec.CHOICES.consume(key, pec.ERASE):
         return {"ok": False, "kind": "erase_not_confirmed",
                 "detail": ("erase_data=true needs the operator's Erase tap on the "
                            "question Casa posts, for this exact version, and runs "
                            "once per tap — call again without erase_data to ask "
-                           "them. Nothing was removed.")}, []
+                           "them. Nothing was removed.")}, False
 
     async def _run() -> None:
         outcomes = await plugin_erasure.run_erase_episode(specs, (chat_id, operator_id))
@@ -16405,7 +16436,7 @@ async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
     return {"ok": False, "kind": "erasure_running",
             "detail": ("The plugin's eraser is running; nothing is removed yet. "
                        "Casa sends its result into this topic — wait for it, "
-                       "then follow what it says.")}, []
+                       "then follow what it says.")}, False
 
 
 def _apply_erasure_to_disclosure(payload: dict, reports: list) -> None:
@@ -16448,49 +16479,66 @@ async def plugin_remove(args: dict) -> dict:
     erase = args.get("erase_data")
     data = plugin_registry.load_registry()
     entry = _find_entry(data, name) if data.valid else None
-    reports: list = []
+    finish = False
     if entry is not None and plugin_registry.entry_owner(entry) is None:
-        gate, reports = await _erase_gate(
+        gate, finish = await _erase_gate(
             tool="plugin_remove", arg="name", name=name, subject=f"plugin:{name}",
             what=f"the plugin {name}", specs=_erase_specs_for([entry]),
             erase=erase)
         if gate is not None:
             return _result(gate)
-    result = await _plugin_remove_locked(args)
-    if reports:
-        payload = json.loads(result["content"][0]["text"])
-        if payload.get("ok") is True:
-            _apply_erasure_to_disclosure(payload, reports)
-            return _result(payload)
-    return result
+    return await _plugin_remove_locked(args, finish=finish)
 
 
-async def _plugin_remove_locked(args: dict) -> dict:
+async def _plugin_remove_locked(args: dict, *, finish: bool = False) -> dict:
     async with _PLUGIN_TOOLS_LOCK:
-        # #928 (design + seam round, astra + terra): the registry write runs in
-        # a THREAD, and a thread cannot be cancelled — a cancellation on that
-        # await cannot stop the removal committing, it only stops US from
-        # continuing. So the commit and EVERYTHING IT OWES DURABLY are one
-        # child unit, drained through repeated cancellation; only the runtime
-        # reload below is abandonable.
-        #
-        # Two review rounds found the same shape here — a cancellation
-        # stranding one piece of a committed removal's teardown (the setup
-        # retire, then the callback revocation) — because the settlement used
-        # to be SPLIT ACROSS the reload. Naming the unit is what stops a third.
-        core = await _settle_through_cancellation(
-            _remove_and_settle(args["name"]))
-        if core.get("ok") is not True:
-            # Spec §E: the pinned payload shape holds on EVERY path.
-            core.setdefault("kind", "unknown")
-            core.setdefault("activation_committed", False)
-            core.setdefault("runtime_ready", False)
-            core.setdefault("verify", {})
-            return _result(core)
-        seq = await _reload_and_verify_targets(
-            core["name"], core["targets"], expect="absent")
-        core.update(seq)
+        reports: list = []
+        if finish:
+            # #1046: re-read and consume the erasure records under the lock the
+            # removal commits under — an update that landed while this call
+            # waited replaced the erased artifact with one nothing erased.
+            data = plugin_registry.load_registry()
+            entry = _find_entry(data, args["name"]) if data.valid else None
+            taken = (_take_complete_erasures(_erase_specs_for([entry]))
+                     if entry is not None else None)
+            if taken is None:
+                return _result(dict(_ERASURE_CHANGED))
+            reports = taken
+        result = await _plugin_remove_unit(args)
+        if reports:
+            payload = json.loads(result["content"][0]["text"])
+            if payload.get("ok") is True:
+                _apply_erasure_to_disclosure(payload, reports)
+                return _result(payload)
+        return result
+
+
+async def _plugin_remove_unit(args: dict) -> dict:
+    """The removal proper; the caller holds ``_PLUGIN_TOOLS_LOCK``."""
+    # #928 (design + seam round, astra + terra): the registry write runs in
+    # a THREAD, and a thread cannot be cancelled — a cancellation on that
+    # await cannot stop the removal committing, it only stops US from
+    # continuing. So the commit and EVERYTHING IT OWES DURABLY are one
+    # child unit, drained through repeated cancellation; only the runtime
+    # reload below is abandonable.
+    #
+    # Two review rounds found the same shape here — a cancellation
+    # stranding one piece of a committed removal's teardown (the setup
+    # retire, then the callback revocation) — because the settlement used
+    # to be SPLIT ACROSS the reload. Naming the unit is what stops a third.
+    core = await _settle_through_cancellation(
+        _remove_and_settle(args["name"]))
+    if core.get("ok") is not True:
+        # Spec §E: the pinned payload shape holds on EVERY path.
+        core.setdefault("kind", "unknown")
+        core.setdefault("activation_committed", False)
+        core.setdefault("runtime_ready", False)
+        core.setdefault("verify", {})
         return _result(core)
+    seq = await _reload_and_verify_targets(
+        core["name"], core["targets"], expect="absent")
+    core.update(seq)
+    return _result(core)
 
 
 async def _remove_and_settle(name: str) -> dict:

@@ -492,8 +492,9 @@ _DENY_STALE_REFERENCE = (
     "with the same reference.")
 _DENY_INTERNAL = "not executed: internal result-broker error"
 _DENY_ERASE_BINDING = (
-    "not executed: this erase run was approved for another version of the "
-    "plugin than this session loaded — nothing was erased")
+    "not executed: this erase turn may run only the eraser the operator "
+    "approved, for the plugin version the approval named, while Casa is still "
+    "waiting for its result — nothing was erased")
 
 
 def _erase_turn_artifact() -> str | None:
@@ -585,16 +586,19 @@ def make_plugin_admission_hook(
             seg = contract_map.plugin_seg_of(tool_name)
             plugin = contract_map.plugins.get(seg) if seg is not None else None
             entry = contract_map.tools.get(tool_name) if plugin is not None else None
-            # #1046: on an erase-marked turn, an eraser an erase episode armed
-            # runs only when this session's binding carries the artifact the
-            # operator's tap named — a publish between the tap and the session
-            # build would otherwise run another version's eraser, and an
-            # unprotected eraser meets no grant check at all.
+            # #1046: an erase-marked turn exists to run ONE eraser: a plugin
+            # tool runs on it only when an erase episode is waiting for that
+            # exact tool on the artifact the operator's tap named, and this
+            # session's binding carries that artifact. Anything else — another
+            # version (a publish between the tap and the session build), an
+            # episode that already timed out and stopped waiting, another tool
+            # — is refused before execution; an unprotected eraser meets no
+            # grant check at all, so this is its only gate.
             erase_art = _erase_turn_artifact()
             if erase_art is not None:
                 from plugin_erasure import WATCH
-                if WATCH.is_armed_name(tool_name) and (
-                        plugin is None or plugin.artifact_id != erase_art
+                if (not erase_art or plugin is None
+                        or plugin.artifact_id != erase_art
                         or not WATCH.is_armed(erase_art, tool_name)):
                     return _deny(_DENY_ERASE_BINDING)
             # The exempt setup tool: declared absent or safe. A setup tool

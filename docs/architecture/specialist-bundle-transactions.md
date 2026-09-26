@@ -49,7 +49,10 @@ tap, and lets the transaction start only on a Keep choice (`erase_data=false`) o
 erasing plugin reported a complete erasure. That step takes none of these locks and writes no
 journal, so an uninstall that answers `erase_choice_pending`, `erasure_running` or
 `erase_not_confirmed` has opened no transaction and has nothing to compensate; a
-transaction that then fails leaves the erased plugins installed. The step is
+transaction that then fails leaves the erased plugins installed. The finishing call's
+records are re-read and consumed inside the transaction body, under its lock, so an owned
+plugin updated since the erasure refuses the uninstall (`erasure_changed`) before the swap.
+The step is
 [`plugin-erasure.md`](plugin-erasure.md)'s; a successful uninstall that followed it carries
 the plugins' reports as `erase_reports`.
 

@@ -89,11 +89,13 @@ plugin in turn (`plugin_erasure.run_erase_episode`):
   operator, the executing role and the tapped artifact — single-use and TTL-bound like any
   grant (INV-PLUG-004, INV-PLUG-005). The Erase tap was the operator's approval of exactly
   this call, so no second challenge is posted. An unprotected eraser gets no grant.
-- *Binding check.* On an erase-marked turn, the result broker's admission hook refuses an
-  armed eraser before it runs unless the session's binding carries the plugin at the
-  tapped artifact and that exact key is armed: an update published between the tap and
-  the session build would otherwise run another version's eraser, and an unprotected
-  eraser meets no grant check that could catch it.
+- *Binding check.* An erase-marked turn exists to run one eraser. On such a turn the result
+  broker's admission hook refuses every plugin tool before it runs unless an episode is
+  waiting for that exact tool at the tapped artifact and the session's binding carries the
+  plugin at that artifact: an update published between the tap and the session build would
+  otherwise run another version's eraser, a turn that runs after its episode stopped
+  waiting would run an eraser nobody is waiting for, and an unprotected eraser meets no
+  grant check that could catch either.
 - *Capture.* The result hook hands an armed eraser's result to the episode on an
   erase-marked turn before the early return a `safe` tool takes, and passes the result
   itself on unchanged; the failure hook answers it as an error.
@@ -115,7 +117,10 @@ or to uninstall anyway keeping what is left (`erase_data=false`).
 
 **The finishing call removes.** A second `erase_data=true` call finds a complete record for
 every erasing plugin at the artifact the registry resolves at that moment, consumes them,
-and runs the ordinary removal. Its ok result carries `erasure: "complete"` and the reports
+and runs the ordinary removal. The records are read and consumed under the plugin mutation
+lock the removal commits under — inside the bundle transaction for a specialist — so an
+update that lands while the call waits for the lock is seen: the erased artifact is no
+longer the installed one, nothing is removed, and the call returns `erasure_changed`. Its ok result carries `erasure: "complete"` and the reports
 — `erase_report` for a `plugin_remove`, `erase_reports` (name and report per plugin) for a
 specialist — and replaces the survival disclosure for the erased plugins with a
 `plugin_data_note` saying that the plugin's own eraser reported its data erased and that
@@ -146,13 +151,13 @@ step. With no reachable operator DM the gate refuses (`consent_channel_unavailab
 than removing. What it does not cover: a removal with `erase_data=false`, which is the
 ordinary removal and asks nothing.
 
-**INV-PLUG-037**: An `erase_data=true` call removes only when a complete erasure record exists for every erasing plugin at the artifact the registry resolves at that call, and it consumes those records; an incomplete record, a record for another artifact, or a missing one removes nothing.
+**INV-PLUG-037**: An `erase_data=true` call removes only when a complete erasure record exists for every erasing plugin at the artifact the registry resolves under the mutation lock the removal commits under, and it consumes those records there; an incomplete record, a record for another artifact (including one an update replaced while the call waited for the lock), or a missing one removes nothing.
 
 Enforced in `tools._erase_gate`, which computes the erasing plugins from the registry at
 the call and takes the records only when all are complete — a refused call spends none of
 them. A complete erasure of one version therefore never removes another.
 
-**INV-PLUG-038**: On an erase-marked turn, an eraser an erase episode armed is refused before it runs unless the session's binding carries its plugin at the artifact the operator's tap named, and only an armed key's result or failure on such a turn answers the episode; a protected eraser is pre-authorized by exactly one single-use grant per server name for its argument-free call, bound to the executing role and that artifact, and an unprotected one by none.
+**INV-PLUG-038**: On an erase-marked turn, a plugin tool is refused before it runs unless an erase episode is waiting for that exact tool at the artifact the operator's tap named and the session's binding carries its plugin at that artifact, and only an armed key's result or failure on such a turn answers the episode; a protected eraser is pre-authorized by exactly one single-use grant per server name for its argument-free call, bound to the executing role and that artifact, and an unprotected one by none.
 
 Enforced by the result broker's admission, result and failure hooks and by the episode's
 grant mint. What it does not cover: an unmarked turn, which neither triggers the check nor
@@ -182,8 +187,9 @@ before the removal ran, so a removal that then fails — a bundle transaction re
 leaves the plugin installed with its data as the eraser left it. Running the uninstall again
 asks the question again; Keep removes it.
 
-**The eraser reports after the wait.** The episode has disarmed its key, so a late result
-is not captured and the record stays not complete; the operator runs the uninstall again.
+**The eraser reports after the wait.** The episode has disarmed its key, so an erase turn
+that only now reaches the eraser is refused before it runs (the binding check), and the
+record stays not complete; the operator runs the uninstall again.
 
 **A restart mid-erasure.** The watch, the choices and the records are all in process
 memory. A restart loses them, which leaves the plugin installed — the safe side — and the

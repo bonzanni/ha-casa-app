@@ -154,3 +154,21 @@ def test_records_take_complete_once_for_the_same_artifact():
     assert r.take_complete("plugin:p", ARTIFACT) is None
     r.put("plugin:p", ARTIFACT, "incomplete", "kept")
     assert r.take_complete("plugin:p", ARTIFACT) is None
+
+
+@pytest.mark.asyncio
+async def test_admission_denies_any_plugin_tool_on_an_erase_turn_nothing_waits_for(watch):
+    """Diff r1 (Astra S1): an erase turn that runs after its episode timed out
+    (the watch disarmed) must not run the eraser — on any artifact."""
+    store, _ = _store()
+    hook = rb.make_plugin_admission_hook("finance", _map(), client_id="c1", store=store)
+    with _Origin(ERASE_TURN):                   # nothing armed at all
+        assert "erase" in _deny_reason(await hook(_pre(ERASE), "t", {}))
+    turn = {**ERASE_TURN, "plugin_erase_artifact": OTHER_ARTIFACT}
+    watch.arm(OTHER_ARTIFACT, ERASE)            # armed, but not this session's
+    with _Origin(turn):
+        assert "erase" in _deny_reason(await hook(_pre(ERASE), "t", {}))
+    watch.arm(ARTIFACT, ERASE)                  # another tool of the plugin
+    with _Origin(ERASE_TURN):
+        from test_result_broker import FETCH
+        assert "erase" in _deny_reason(await hook(_pre(FETCH), "t", {}))
