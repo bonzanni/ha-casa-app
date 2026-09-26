@@ -71,6 +71,59 @@ async def test_evidence_is_handed_over_before_the_turn_ends(tmp_path):
     assert [c["tool"] for c in calls] == [_SETUP_NS]
 
 
+async def test_a_cleared_failure_refreshes_health_before_the_reply(tmp_path):
+    """#1052: when the evidence clears a FAILED obligation, the persisted
+    health report is regenerated while the turn is still streaming — the
+    reply's health notice is read at delivery, after the turn, so it reads the
+    regenerated report and cannot say setup could not finish."""
+    import plugin_setup_episodes as pse
+    import tools as tm
+    agent = _make_agent(tmp_path)
+    events: list[str] = []
+
+    class _Recording(ScriptedToolClient):
+        async def receive_response(self):
+            async for m in super().receive_response():
+                events.append(type(m).__name__)
+                yield m
+    ScriptedToolClient.reset([
+        _mk_init("sid-f", [_SETUP_NS]),
+        _mk_tool_use("t1", _SETUP_NS),
+        _mk_tool_result("t1", is_error=False, text="auth url"),
+        _mk_assistant("Setup ran."),
+        _mk_result("sid-f"),
+    ])
+    with patch("sdk_client_pool._default_make_client", _Recording), \
+            patch.object(pse, "settle_from_tool_evidence",
+                         lambda **kw: events.append("settle") or True), \
+            patch.object(tm, "_regenerate_plugin_health",
+                         lambda extra: events.append("regen")):
+        await agent._process(_msg("telegram", "op-6", text="run setup"))
+    assert events.count("settle") == 1 and events.count("regen") == 1
+    # regenerated right after the settlement, before the next message
+    assert events[events.index("settle") + 1] == "regen"
+    assert events.index("regen") < events.index("ResultMessage")
+
+
+async def test_no_refresh_when_the_evidence_cleared_nothing(tmp_path):
+    import plugin_setup_episodes as pse
+    import tools as tm
+    agent = _make_agent(tmp_path)
+    ScriptedToolClient.reset([
+        _mk_init("sid-g", [_SETUP_NS]),
+        _mk_tool_use("t1", _SETUP_NS),
+        _mk_tool_result("t1", is_error=False, text="auth url"),
+        _mk_assistant("Setup ran."),
+        _mk_result("sid-g"),
+    ])
+    regens: list = []
+    with patch("sdk_client_pool._default_make_client", ScriptedToolClient), \
+            patch.object(pse, "settle_from_tool_evidence", lambda **kw: None), \
+            patch.object(tm, "_regenerate_plugin_health", regens.append):
+        await agent._process(_msg("telegram", "op-7", text="run setup"))
+    assert regens == []
+
+
 async def test_an_errored_result_is_not_evidence(tmp_path):
     agent = _make_agent(tmp_path)
     ScriptedToolClient.reset([
