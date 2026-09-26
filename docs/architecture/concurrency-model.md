@@ -58,7 +58,10 @@ nothing where a fenced entry point already holds it, and the only serialization 
 where a handler is called directly instead of dispatched: the report's own lock serializes the write and not the computation before
 it, so an unguarded pass that began before a mutation committed could publish its older
 result last and delete a row that mutation had just added — with nothing scheduling a
-repair. Only the boot reconciliations are exempt, and by ordering rather than by argument:
+repair. A pass cancelled part-way is seen through, not abandoned, because cancelling the
+await never stops the computing thread: a caller holding nothing regenerates as one settled
+unit (acquire, compute, write, release), and a caller already holding the lock keeps it
+until that thread has written (INV-PLUG-031). Only the boot reconciliations are exempt, and by ordering rather than by argument:
 they run before the HTTP server, the channels and the agent loops start. Where a
 regeneration is followed by an operator notification, the guard spans both, so the
 notification's own record cannot be raced by the next regeneration. The specialist lifecycle serializes

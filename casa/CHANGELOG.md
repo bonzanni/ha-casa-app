@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.328.3] - 2026-09-26
+
+### Fixed
+
+- A plugin problem that had already been fixed could come back in Casa's plugin
+  health report, and with it in the assistant's replies and your health messages.
+  This happened when a health check was interrupted partway through, because its
+  older result could still be saved after a newer, correct one. An interrupted
+  check now finishes before any later check can start, so the newest result is
+  always the one that stays.
+
 ## [0.328.2] - 2026-09-26
 
 ### Fixed

@@ -455,8 +455,7 @@ async def _regen_health_safe() -> None:
     """
     try:
         import tools
-        async with tools._plugin_tools_guard():
-            await asyncio.to_thread(tools._regenerate_plugin_health, [])
+        await tools._regenerate_plugin_health_guarded()
     except Exception:  # noqa: BLE001
         logger.warning("post-consent plugin-health regen failed", exc_info=True)
 

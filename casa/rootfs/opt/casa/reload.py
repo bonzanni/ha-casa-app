@@ -1928,9 +1928,8 @@ async def reload_plugin_env(runtime: Any, *, role: str | None = None) -> list[st
         # regen+notify against a §3.9 registry mutation; taking it here while
         # the RW lock is held is what INV-CFG-011 forbids, and no dispatched
         # path does that any more.
-        async with tools_mod._plugin_tools_guard():
-            await asyncio.to_thread(tools_mod._regenerate_plugin_health, [])
-            await tools_mod._notify_plugin_health_if_possible()
+        await tools_mod._regenerate_plugin_health_guarded(
+            then=tools_mod._notify_plugin_health_if_possible)
         actions.append("plugin_health_regenerated")
     except Exception:  # noqa: BLE001
         logger.warning("plugin_env reload: health regeneration failed",
@@ -2390,9 +2389,8 @@ async def reload_executors(
         # is fenced at the entry too (tools._plugin_tools_reload_guard) — this
         # acquisition is a same-task re-entrant no-op there. Kept for the direct
         # callers, which it still serializes; INV-CFG-011.
-        async with tools_mod._plugin_tools_guard():
-            await asyncio.to_thread(tools_mod._regenerate_plugin_health, [])
-            await tools_mod._notify_plugin_health_if_possible()
+        await tools_mod._regenerate_plugin_health_guarded(
+            then=tools_mod._notify_plugin_health_if_possible)
         actions.append("plugin_health_regenerated")
     except Exception as exc:  # noqa: BLE001
         logger.debug("executors reload: plugin-health regen skipped: %s", exc)

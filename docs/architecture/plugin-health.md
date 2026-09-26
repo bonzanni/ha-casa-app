@@ -190,6 +190,21 @@ never ran a plugin setup must not start disclosing damage. What this does not co
 round ledger's own repairs — a round or member that cannot be read is dropped and re-sealed
 from live state — are repair, not history loss, and are logged rather than reported.
 
+**INV-PLUG-031**: A live plugin-health regeneration that is cancelled neither drops its pass nor writes last: a caller that does not hold the plugin lock regenerates through one settled unit — acquire, compute, write, release — that runs to completion through the cancellation, and a caller that already holds the lock keeps it until the computing thread has written; so a regeneration that starts after it always writes after it.
+
+`asyncio.to_thread` cancels the await, never the thread, and the report lock orders only the
+write, not the computation before it. A caller cancelled mid-computation that released the
+plugin lock let a competing regeneration write the current report and then had its own older
+report land last — a cleared setup failure, for one, came back. The rule lives in two helpers
+in the tools layer, `_regenerate_plugin_health_guarded` for callers holding nothing and
+`_regenerate_plugin_health_held` for the mutation paths already under the lock, and every live
+regeneration goes through one of them; a static test keeps new callers off the bare thread
+hop. The guarded helper runs its unit in a child task, except when the current task already
+owns the guard — a fenced reload re-entering its handler — where a child would queue behind its
+own parent, so it settles only the thread hop there. What this does not cover: the boot
+reconcile regenerations, which run before the HTTP server, the channels and the agent loops
+start, so nothing can race them.
+
 ## Failure behavior
 
 **The report cannot be written at boot.** Boot still exits successfully — deliberately,
@@ -257,10 +272,13 @@ setup run and wired by the configurator ([`plugin-runtime.md`](plugin-runtime.md
 - `casa/rootfs/opt/casa/plugin_health.py::render_notice`
 - `casa/rootfs/opt/casa/plugin_health.py::mark_notified`
 - `casa/rootfs/opt/casa/casa_core.py::notify_plugin_health`
+- `casa/rootfs/opt/casa/tools.py::_regenerate_plugin_health_guarded`
+- `casa/rootfs/opt/casa/tools.py::_regenerate_plugin_health_held`
 
 **Tests**
 - `tests/test_plugin_health.py`
 - `tests/test_plugin_health_notify.py`
+- `tests/test_settled_health_regeneration.py`
 
 **Related**
 - [`architecture/plugins.md`](../architecture/plugins.md)
