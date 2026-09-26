@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.328.6] - 2026-09-26
+
+### Fixed
+
+- When you paste a sign-in link or one-time code to the assistant yourself so a
+  specialist can finish signing in (a bank's "Sign in" email link, say), the
+  assistant now passes it to the specialist instead of refusing it as something
+  it may not forward. Links a tool fetches for it, such as one read from your
+  mailbox, are still handled under the stricter rule.
+- The assistant no longer tells you to continue in a specialist's topic in the
+  Engagements group when no such topic was opened. A quick hand-off to a
+  specialist opens no topic; when you do need to talk to the specialist
+  directly, the assistant opens one first and then points you to it.
+
 ## [0.328.5] - 2026-09-26
 
 ### Fixed
