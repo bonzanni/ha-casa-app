@@ -30,6 +30,15 @@ from dataclasses import dataclass
 # context (Telegram update payload, /invoke body, voice SSE/WS payload)
 # must never be allowed to set these directly — sanitize_external_context
 # strips them before Casa's own values are merged in.
+# The Casa-dispatched plugin turns whose marker admits the ``setup`` transport,
+# each with the reserved key naming the role the turn is FOR (#1015 setup,
+# #1046 erase). One table: every site that gates on the marker reads it here,
+# so a new kind cannot be admitted at one site and forgotten at another.
+CASA_PLUGIN_TURN_TARGETS: dict[str, str] = {
+    "plugin_setup": "plugin_setup_target",
+    "plugin_erase": "plugin_erase_target",
+}
+
 RESERVED_CONTEXT_KEYS = frozenset({
     "synthetic",
     "button_answer",
@@ -84,6 +93,12 @@ RESERVED_CONTEXT_KEYS = frozenset({
     # yields is bound to it, so a caller who could set it from outside would
     # aim a delivered link, or a protected-tool challenge, at the wrong role.
     "plugin_setup_target",
+    # #1046: the same for a Casa-dispatched plugin-ERASE turn, plus the
+    # artifact the operator's Erase tap named. The erase tool runs only when
+    # the executing session's binding carries that artifact, so a caller who
+    # could set it would aim an irreversible erasure at another version.
+    "plugin_erase_target",
+    "plugin_erase_artifact",
     # #1038: the live turn scope ``Agent.handle_message`` mints, and the
     # resolved disclosure a stored payload carries to the turn that sends it
     # (a reminder's ``output_note``, a delegation's launch note). Reserved so
@@ -213,7 +228,7 @@ def turn_provenance() -> Provenance:
             transport = "dm"
         elif marker == "button":
             transport = "button"
-        elif marker == "plugin_setup":
+        elif marker in CASA_PLUGIN_TURN_TARGETS:
             transport = "setup"
         # any other marker value falls through, leaving transport "other"
 

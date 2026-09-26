@@ -1282,15 +1282,19 @@ def resolve_grant_identity(role: str, artifact_id: str = ""):
     # an engagement bound), it never does — an engagement outlives the setup
     # turn that could have created it and carries the copied origin through
     # tombstone and resume.
+    # #1046: a plugin-ERASE marker is gated identically, on its own target.
+    from provenance import CASA_PLUGIN_TURN_TARGETS
     rec_origin = getattr(rec, "origin", None) if rec is not None else None
     src = rec_origin if isinstance(rec_origin, dict) else origin
-    if (src.get("synthetic") == "plugin_setup"
-            or (rec is not None and origin.get("synthetic") == "plugin_setup")):
+    marker = src.get("synthetic")
+    if marker not in CASA_PLUGIN_TURN_TARGETS and rec is not None:
+        marker = origin.get("synthetic")
+    if marker in CASA_PLUGIN_TURN_TARGETS:
         if prov.execution == "engagement":
             return None, "setup_engagement"
         if prov.transport != "setup":
             return None, "unsupported_origin"
-        if src.get("plugin_setup_target") != role:
+        if src.get(CASA_PLUGIN_TURN_TARGETS[marker]) != role:
             return None, "setup_target_mismatch"
         live = _live_operator_identity()
         stamped = (strict_positive_id(src.get("chat_id")),

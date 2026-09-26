@@ -4506,7 +4506,9 @@ async def _prelaunch(
     # identity (the marker is refused on the engagement branch); an error
     # result here, BEFORE any record or topic exists, returns the courier
     # row to pending under its bounded budget instead of consuming it.
-    if mode != "sync" and (origin or {}).get("synthetic") == "plugin_setup":
+    from provenance import CASA_PLUGIN_TURN_TARGETS
+    if (mode != "sync" and (origin or {}).get("synthetic")
+            in CASA_PLUGIN_TURN_TARGETS):
         return None, None, None, None, _result({
             "status": "error",
             "kind": "mode_unsupported_on_setup_turn",
@@ -5573,7 +5575,8 @@ async def _launch_interactive_engagement(
             return _result({"status": "error", "kind": "delegation_depth_exceeded"})
         if origin.get("channel") == "voice":
             return _result({"status": "error", "kind": "job_needs_text_channel"})
-        if origin.get("synthetic") == "plugin_setup":
+        from provenance import CASA_PLUGIN_TURN_TARGETS
+        if origin.get("synthetic") in CASA_PLUGIN_TURN_TARGETS:
             return _result({"status": "error", "kind": "mode_unsupported_on_setup_turn"})
         from plugin_grants import withhold_env_unresolved
         try:

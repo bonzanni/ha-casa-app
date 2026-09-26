@@ -167,10 +167,13 @@ origin_var: ContextVar[dict | None] = ContextVar("origin_var", default=None)
 #   _scheduled_delivery        — #485 Casa's own schedule fired this turn
 #   _scheduled_epoch           — #573 the trigger-lifecycle epoch it fired under
 #   plugin_setup_target        — #1015 the role a plugin-setup dispatch is FOR
+#   plugin_erase_target / _artifact — #1046 the same for a plugin-erase
+#                                dispatch, and the artifact the tap named
 COPIED_CONTEXT_MARKERS = (
     "synthetic", "button_answer", "_origin_route", "_origin_clearance",
     "_operator_turn", "_scheduled_delivery", "_scheduled_epoch",
     "plugin_setup_target",
+    "plugin_erase_target", "plugin_erase_artifact",
     # #1038: the resolved disclosure a stored payload owes the turn that
     # sends it (stamped by the scheduler, the reminder sweep and delegation
     # synthesis; registered on the scope at mint as an InheritedNote).
