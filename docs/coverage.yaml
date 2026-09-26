@@ -167,6 +167,10 @@
   doc: architecture/plugin-events.md
 - item: casa/rootfs/opt/casa/plugin_env_conf.py
   doc: architecture/plugin-runtime.md
+- item: casa/rootfs/opt/casa/plugin_erase_consent.py
+  doc: architecture/plugin-erasure.md
+- item: casa/rootfs/opt/casa/plugin_erasure.py
+  doc: architecture/plugin-erasure.md
 - item: casa/rootfs/opt/casa/plugin_events.py
   doc: architecture/plugin-events.md
 - item: casa/rootfs/opt/casa/plugin_grants.py

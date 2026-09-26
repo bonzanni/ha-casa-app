@@ -147,7 +147,7 @@ tools it shares a projection with, and the classified `op` failure are
 [`architecture/plugins.md`](plugins.md). A specialist inspection reports the same field under
 the same rule (INV-SPEC-018, [`architecture/specialist-lifecycle.md`](specialist-lifecycle.md)).
 
-**INV-TOOL-007**: A committed plugin removal reported by `plugin_remove`, by the owned-set swap of a SUCCESSFUL specialist bundle — install, upgrade, rollback or uninstall alike — or by a bundle compensation that measured the entry still removed — or that could not read the registry back and says so in the same envelope — discloses that the plugin's CLI-managed persistent data may remain and that no provider revocation was performed; no removal-path string claims a deletion or a revocation Casa did not perform.
+**INV-TOOL-007**: A committed plugin removal reported by `plugin_remove`, by the owned-set swap of a SUCCESSFUL specialist bundle — install, upgrade, rollback or uninstall alike — or by a bundle compensation that measured the entry still removed — or that could not read the registry back and says so in the same envelope — discloses that the plugin's CLI-managed persistent data may remain and that no provider revocation was performed, save for a plugin its own eraser reported completely erased, whose report it relays instead (INV-PLUG-037); no removal-path string claims a deletion or a revocation Casa did not perform.
 
 A plugin's persistent data directory belongs to the Claude CLI, not to Casa: it lives on the
 config volume, the CLI injects its path, and it outlives every lifecycle operation Casa
@@ -201,6 +201,9 @@ three that can now receive it from a successful swap naming that arm too, since 
 removal is confirmed rather than measured or unknown. A payload no recipe relays is a
 disclosure the operator never sees, so the payload gate and the recipe gate cover the same
 set of doors.
+
+**A plugin that declares an eraser is asked about first**: the question, the erase episode and
+the finishing `erase_data=true` call are [`plugin-erasure.md`](plugin-erasure.md)'s.
 
 The wording is bounded by INV-TOOL-005, which is why it reads the way it does. `may remain`,
 because Casa cannot see whether the plugin ever stored anything; and

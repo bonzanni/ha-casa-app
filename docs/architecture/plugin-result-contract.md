@@ -88,6 +88,14 @@ background-job worker is inside it: it loads exactly its declaring plugin, and i
 derive an identity bound to the host resident and that pinned artifact
 ([`background-jobs.md`](background-jobs.md)).
 
+**The broker also serves an erase episode.** On a turn carrying Casa's `plugin_erase`
+marker, the admission callback refuses an eraser an episode armed unless the session's
+binding carries the artifact the operator's Erase tap named, and the result and failure
+hooks hand that eraser's outcome to the waiting episode — the result hook before the early
+return a `safe` tool takes, passing the result itself on unchanged. An eraser must be
+declared `safe`, so nothing here changes what the contract lets through; the rule is
+INV-PLUG-038, in [`plugin-erasure.md`](plugin-erasure.md).
+
 ## Contracts & invariants
 
 **INV-PLUG-017**: In a resident, delegated-specialist, specialist-engagement or plugin-job-worker session that loads a plugin, a call to a non-setup MCP tool of a plugin that has not adopted the result contract is refused before it runs by a code-registered PreToolUse hook whose reason quotes none of the call's arguments, and a result arriving for such a tool is replaced before the model sees it by a code-registered PostToolUse hook whose replacement quotes none of the result's bytes; the plugin's exact setup tool is exempt from both, and no hooks document can shed either hook.
