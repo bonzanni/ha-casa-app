@@ -1101,13 +1101,22 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # residual text: exactly those inserts (one on restricted_webhook and voice,
 # two on text) and nothing else; the six butler and concierge carriers
 # byte-identical. No retention claim anywhere.
+# MOVED 2026-09-26 (#1048), the three `assistant:*` carriers ONLY. Core gains
+# one paragraph: the credential rule covers what a tool returns (a mailbox, a
+# tool result, a completion stay under it), so a sign-in link a person pasted
+# is passed to the operation that consumes it. Text gains
+# one paragraph: a topic in the Engagements supergroup is named only when a
+# call returned an engagement for it. Measured: stripping exactly those two
+# paragraphs from the new compiled text gives the base text on every carrier
+# (one insert on restricted_webhook and voice, two on text); the six butler
+# and concierge carriers byte-identical. No retention claim anywhere.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
-        "b4d63752ce1ac9b29386c649cad58887d9e3e6ffdd5452ebbdc401dedb7cb3b4",
+        "b3636bd481825bc3fa237f9a374479e7d293882293a9ad8a2734da010cfe87a9",
     "assistant:text":
-        "b133382a8ef18d95147573e4b59f43e5bd9f486456b3d9336462d6d6c8384ca2",
+        "426dcc219edf7f3f02574dfd5836903e7c72faf48a9cc8aa5de4381bbf55f026",
     "assistant:voice":
-        "9577fb72caf1932d52b9312a40cbfa91b799357fb308470c26b9b6b4aa9c5b53",
+        "456bc85eb6b7b47f20ce407db1796d0284f53bbed13784e1e466429fb64a5a49",
     "butler:restricted_webhook":
         "63f746c67fa33c396267c125c11a7d6948d897e579d5cf0021626dd7d616501f",
     "butler:text":
@@ -1375,3 +1384,88 @@ def test_plugin_status_description_leads_with_standing():
     assert counts == [1, 1, 1]
     assert description.startswith(sentences[0])
     assert description == " ".join(sentences)
+
+
+# ---------------------------------------------------------------------------
+# #1048 red case — a sign-in link the operator pasted by hand, and a topic
+# that was never opened.
+#
+# The safety kernel's credential rule (`safety-kernel.md:7`) governs "a
+# credential-bearing artifact a tool returns". Nothing in a shipped assistant
+# carrier says what it does NOT govern, so the assistant applied it to a link
+# the operator pasted into the DM and refused to hand it to the specialist's
+# sign-in tool — the one route a sync delegation leaves open. Every assistant
+# sentence that names an Engagements topic is conditioned on an
+# engagement-creating call, and none says a sync delegation opens no topic, so
+# it twice sent the operator to a topic that did not exist.
+#
+# This DECLARES the two tellings; it asserts PRESENCE and PROVENANCE in the
+# served carriers and nothing about the model obeying them.
+# ---------------------------------------------------------------------------
+
+_PASTED_LINK_DOCTRINE = (
+    "The rule on credential-bearing artifacts covers what a tool returns, and "
+    "anything you or a specialist read from a mailbox, a tool result or a "
+    "completion stays under it. A sign-in link or one-time code a person put "
+    "into their own message to you, so that a step can use it, is theirs to "
+    "hand over: pass it to the operation that consumes it — for a specialist's sign-in tool, in "
+    "the brief of a delegation to that specialist — instead of refusing it or "
+    "sending them elsewhere with it, and do not repeat it back in your reply."
+)
+
+_UNOPENED_TOPIC_DOCTRINE = (
+    "Point someone to a topic in the Engagements supergroup only when a call "
+    "you made returned an engagement for it and no completion has closed it "
+    "since; a sync delegation opens no topic. When a step needs the person to "
+    "talk to a specialist directly and no such engagement exists, open one "
+    "with an interactive delegation to that specialist and point them there "
+    "once it returns; never refer to a topic you have not opened."
+)
+
+
+def _assistant_doctrine_sections() -> tuple[str, str]:
+    from markdown_sections import select_markdown_sections
+    from prompt_compiler import _PROJECTION_HEADINGS
+
+    doctrine = (_casa_root() / "defaults/roles/resident/assistant"
+                / "doctrine.md").read_text(encoding="utf-8")
+    core = select_markdown_sections(
+        doctrine, ("Core doctrine",), exclude=_PROJECTION_HEADINGS)
+    text = select_markdown_sections(
+        doctrine, ("Text projection",), exclude=_PROJECTION_HEADINGS)
+    return core, text
+
+
+def test_a_pasted_signin_link_reaches_its_consumer_on_every_assistant_surface():
+    """RED pre-fix: the telling occurs zero times on every carrier."""
+    needle = _collapse_ws(_PASTED_LINK_DOCTRINE)
+    compiled = _compiled_resident_carriers()
+    assert {name: _collapse_ws(body).count(needle)
+            for name, body in compiled} == {
+                f"{slot}:{surface}": int(slot == "assistant")
+                for slot in _RESIDENT_SLOTS
+                for surface in ("text", "voice", "restricted_webhook")}
+
+    core, text = _assistant_doctrine_sections()
+    assert (_collapse_ws(core).count(needle),
+            _collapse_ws(text).count(needle)) == (1, 0)
+    legacy = dict(_legacy_prompt_carriers())
+    assert _collapse_ws(legacy["assistant"]).count(needle) == 1
+
+
+def test_the_assistant_never_points_to_an_unopened_engagement_topic():
+    """RED pre-fix: the telling occurs zero times on every carrier."""
+    needle = _collapse_ws(_UNOPENED_TOPIC_DOCTRINE)
+    compiled = _compiled_resident_carriers()
+    assert {name: _collapse_ws(body).count(needle)
+            for name, body in compiled} == {
+                f"{slot}:{surface}": int(slot == "assistant"
+                                         and surface == "text")
+                for slot in _RESIDENT_SLOTS
+                for surface in ("text", "voice", "restricted_webhook")}
+
+    core, text = _assistant_doctrine_sections()
+    assert (_collapse_ws(core).count(needle),
+            _collapse_ws(text).count(needle)) == (0, 1)
+    legacy = dict(_legacy_prompt_carriers())
+    assert _collapse_ws(legacy["assistant"]).count(needle) == 1
