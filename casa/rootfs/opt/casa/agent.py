@@ -2125,6 +2125,10 @@ class Agent:
             # cancelled one (role teardown cancels in-flight dispatches) all
             # report. Synchronous + never raises by contract.
             self._report_setup_outcome(msg, turn_state)
+            # #1046: an erase-marked turn that ends without its eraser's
+            # result answers the waiting episode now (same contract).
+            import plugin_erasure
+            plugin_erasure.turn_ended(msg.context)
             _explain_draft_var.reset(explain_token)
             origin_var.reset(origin_token)
 
