@@ -491,6 +491,29 @@ _DENY_STALE_REFERENCE = (
     "session, or for a different capability). Fetch a fresh one; do not retry "
     "with the same reference.")
 _DENY_INTERNAL = "not executed: internal result-broker error"
+_DENY_ERASE_BINDING = (
+    "not executed: this erase run was approved for another version of the "
+    "plugin than this session loaded — nothing was erased")
+
+
+def _erase_turn_artifact() -> str | None:
+    """The artifact an erase-marked turn's tap named (#1046), else None."""
+    import agent as agent_mod
+    from plugin_erasure import erase_turn_artifact
+    return erase_turn_artifact(agent_mod.origin_var.get(None))
+
+
+def _erase_session_artifact(contract_map, tool_name: str) -> str | None:
+    """On an erase-marked turn, this session's binding artifact for the
+    plugin of *tool_name* when it is the artifact the tap named; else None."""
+    erase_art = _erase_turn_artifact()
+    if not erase_art:
+        return None
+    seg = contract_map.plugin_seg_of(tool_name)
+    plugin = contract_map.plugins.get(seg) if seg is not None else None
+    if plugin is None or plugin.artifact_id != erase_art:
+        return None
+    return erase_art
 
 
 def _deny(reason: str) -> dict[str, Any]:
@@ -562,6 +585,18 @@ def make_plugin_admission_hook(
             seg = contract_map.plugin_seg_of(tool_name)
             plugin = contract_map.plugins.get(seg) if seg is not None else None
             entry = contract_map.tools.get(tool_name) if plugin is not None else None
+            # #1046: on an erase-marked turn, an eraser an erase episode armed
+            # runs only when this session's binding carries the artifact the
+            # operator's tap named — a publish between the tap and the session
+            # build would otherwise run another version's eraser, and an
+            # unprotected eraser meets no grant check at all.
+            erase_art = _erase_turn_artifact()
+            if erase_art is not None:
+                from plugin_erasure import WATCH
+                if WATCH.is_armed_name(tool_name) and (
+                        plugin is None or plugin.artifact_id != erase_art
+                        or not WATCH.is_armed(erase_art, tool_name)):
+                    return _deny(_DENY_ERASE_BINDING)
             # The exempt setup tool: declared absent or safe. A setup tool
             # declared as a CAPABILITY (#1015, it delivers its link) takes
             # the capability path like any other tool.
@@ -743,6 +778,13 @@ def make_result_hook(
             seg = contract_map.plugin_seg_of(tool_name) or "?"
             plugin = contract_map.plugins.get(seg)
             entry = contract_map.tools.get(tool_name) if plugin is not None else None
+            # #1046: an erase episode's capture, before any early return (an
+            # eraser is declared ``safe``). The result itself passes unchanged.
+            erase_art = _erase_session_artifact(contract_map, tool_name)
+            if erase_art is not None:
+                from plugin_erasure import WATCH
+                WATCH.resolve(erase_art, tool_name, text=_response_text(
+                    (input_data or {}).get("tool_response")))
             if (plugin is not None and tool_name in plugin.setup_tools
                     and (entry is None or entry.kind != "capability")):
                 return {}      # the exempt setup tool (declared absent or safe)
@@ -798,6 +840,12 @@ def make_failure_hook(
                 call = store.close_call(client_id, str(tool_use_id or ""))
                 if call is not None:
                     store.drop_call_deposits(call)
+                erase_art = _erase_session_artifact(contract_map, tool_name)
+                if erase_art is not None:
+                    from plugin_erasure import WATCH
+                    error = (input_data or {}).get("error")
+                    WATCH.resolve(erase_art, tool_name,
+                                  error=str(error) if error else "tool error")
         except Exception:  # noqa: BLE001
             logger.exception("result broker failure-hook error (tool=%s)",
                              (input_data or {}).get("tool_name"))
