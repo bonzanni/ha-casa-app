@@ -874,6 +874,19 @@ def build_restricted_webhook_options(
 # or the whole answer whose acknowledgement was lost with the process
 # (INV-JOB-010's accepted duplicate). "Not confirmed" is true of all three;
 # "nothing was sent" would be false of two.
+# #1049: appended when the delegation stopped on a protected call whose
+# approval keyboard is (or was) in the operator's DM. This turn's origin can
+# never use the operator's approval — a retry here is refused, and narrating
+# that refusal told the operator to resend a call their approval was still
+# waiting to run. Same instruction-not-description rule as the authz deny
+# strings: no user-facing fact about the button to relay.
+_AWAITING_APPROVAL_NOTE = (
+    "\n{agent} stopped at an action that needs the operator's approval. On "
+    "THIS turn do NOT retry that action, do NOT delegate it again, and say "
+    "nothing about approvals: the operator's decision reaches you as its own "
+    "message, and that message is where the action gets carried out.\n"
+)
+
 _REPLAY_REANNOUNCEMENT = (
     "This is a post-restart re-announcement. The delegation finished before a "
     "Casa restart, and full delivery of its result to the user has NOT been "
@@ -1412,6 +1425,13 @@ class Agent:
                 f"Delegation failed ({complete.kind or 'unknown'}): "
                 f"{complete.message}\n"
             )
+        try:
+            from authz_grants import take_delegation_awaiting_approval
+            if take_delegation_awaiting_approval(complete.delegation_id):
+                body += _AWAITING_APPROVAL_NOTE.format(agent=complete.agent)
+        except Exception:  # noqa: BLE001 — the note is advisory
+            logger.warning("awaiting-approval note lookup failed",
+                           exc_info=True)
         body += (
             f"\nThe original user question was: {user_text}\n\n"
             "Reply to the user via their original channel. Be concise.\n"

@@ -59,6 +59,7 @@ count); ``record_cost`` aggregates only when a ``ResultMessage`` is observed.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 
@@ -153,6 +154,9 @@ class SpecialistLimiter:
         self._max_global = max_global
         self._global_count = 0
         self._active_scopes: set[str] = set()
+        # #1049: one event per scope someone is waiting on, set and dropped by
+        # the release that frees it — O(waited-on scopes), like the set above.
+        self._free_events: dict[str, asyncio.Event] = {}
 
     def try_acquire(self, scope: str) -> "Permit | None":
         """Attempt to acquire one global + one per-scope slot for *scope*.
@@ -174,6 +178,25 @@ class SpecialistLimiter:
         self._active_scopes.discard(scope)
         if self._global_count > 0:
             self._global_count -= 1
+        event = self._free_events.pop(scope, None)
+        if event is not None:
+            event.set()
+
+    async def wait_until_free(self, scope: str, timeout: float) -> bool:
+        """#1049: wait until *scope* holds no permit. ``True`` once it is free
+        (at once if it already is), ``False`` after *timeout* seconds. Reserves
+        nothing: another caller may take the freed slot first."""
+        if scope not in self._active_scopes:
+            return True
+        # Shared by every waiter on the scope and dropped only by the release
+        # that sets it — a waiter that times out must not take it away from
+        # another still waiting (a held permit is always released).
+        event = self._free_events.setdefault(scope, asyncio.Event())
+        try:
+            await asyncio.wait_for(event.wait(), timeout)
+        except asyncio.TimeoutError:
+            return False
+        return True
 
     @property
     def in_flight(self) -> int:
