@@ -326,6 +326,8 @@ _REASON_PHRASES = {
     # and is wired by the configurator — never something the operator supplies.
     "setup_env_unprovisioned": "is waiting for a setup-provided value to be wired in",
     "env_unresolved": "is missing a setting it needs",
+    # #1053: a declared system requirement whose program is not installed.
+    "system_requirement_missing": "is missing a program it needs",
     "setup_episode_pending": "has a setup step still to finish",
     "setup_episode_failed": "could not finish setting up",
     "setup_episode_stale": "started setting up and stopped partway",
@@ -375,6 +377,25 @@ _REASON_SUFFIXES = (
 )
 
 _REASON_FALLBACK = "is not working"
+
+# #1053: the states an install walks a plugin through on its way to working —
+# consent still to give, a setup-provided value still to wire, setup still to
+# run, a first install awaiting its reload, a plugin installed before its
+# specialist. Expected while the installing engagement is live, so the DM
+# defers them for that plugin until the engagement ends; every other code is a
+# fault whether or not an install is running.
+_INSTALL_PHASE_CODES = frozenset({
+    "setup_env_unprovisioned",
+    "setup_episode_pending",
+    "not_loaded",
+    "target_pending",
+})
+
+
+def is_install_phase(code: "str | None") -> bool:
+    """True for a reason code that describes an install still in progress."""
+    code = str(code or "")
+    return code in _INSTALL_PHASE_CODES or code.endswith("_pending_ack")
 
 
 def describe_issue(d: dict) -> str:

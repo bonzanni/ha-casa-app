@@ -202,6 +202,10 @@ def init_tools(
     _agent_registry = agent_registry
     _trigger_registry = trigger_registry
     _engagement_registry = engagement_registry
+    # #1053: an ended install engagement owes the DM the rows it deferred.
+    if engagement_registry is not None and hasattr(
+            engagement_registry, "set_terminal_observer"):
+        engagement_registry.set_terminal_observer(_on_engagement_terminal)
     _executor_registry = executor_registry
     _runtime = runtime
     _specialist_limiter = specialist_limiter
@@ -13279,17 +13283,48 @@ def _env_detail_for(verify: dict, reason: str) -> "str | None":
     return None if statuses is None else _secret_names_detail(verify, statuses)
 
 
-def _row_health_reason(row: dict) -> str:
+def _row_health_reason(row: dict, verify: "dict | None" = None) -> str:
     """The health reason for a not-ready verify target row. #1051: a
     `reload_required` row whose agent has never bound the plugin at all
     (`active_artifact_id` None) is a plugin NOT LOADED YET — a first install
     awaiting its reload — not an agent "still running its previous version";
-    verify's own grading is unchanged, only the operator-facing code differs."""
-    reason = (row.get("reasons") or ["not_ready"])[0]
+    verify's own grading is unchanged, only the operator-facing code differs.
+
+    #1053: the row carries ONE code, and the operator DM defers install-phase
+    codes while the plugin's install is running — so an install-phase code must
+    never stand in front of a real fault. When the first code is install-phase,
+    the row takes the first code that is not, from its own remaining reasons and
+    then *verify*'s configured reasons (which a `reload_required` grading
+    replaces on the row, so they are otherwise unseen here)."""
+    import plugin_health
+    reasons = list(row.get("reasons") or ["not_ready"])
+    reason = reasons[0]
     if (reason == "reload_required" and row.get("state") == "active"
             and row.get("active_artifact_id") is None):
-        return "not_loaded"
+        reason = "not_loaded"
+    if plugin_health.is_install_phase(reason):
+        return _install_phase_fault(reasons[1:], verify) or reason
     return reason
+
+
+def _install_phase_fault(codes: list, verify: "dict | None") -> "str | None":
+    """#1053: the fault an install-phase code would otherwise stand in front
+    of, or None when the plugin's non-readiness is install-phase through and
+    through. Covers every input of verify's configured readiness — its reason
+    codes, its system requirements (reported as `tools`, with no code of their
+    own) and its secrets — so a failure verify grades without a code is not
+    deferred either."""
+    import plugin_health
+    verify = verify or {}
+    for code in list(codes) + list(verify.get("reasons") or []):
+        if not plugin_health.is_install_phase(code):
+            return code
+    if any(t.get("status") != "ready" for t in verify.get("tools") or []):
+        return "system_requirement_missing"
+    if any(s.get("status") not in ("resolved", "unprovisioned")
+           for s in verify.get("secrets") or []):
+        return "env_unresolved"
+    return None
 
 
 def _regenerate_plugin_health(extra_issues: list) -> None:
@@ -13355,14 +13390,21 @@ def _regenerate_plugin_health(extra_issues: list) -> None:
             rows = verify.get("targets") or []
             for row in rows:
                 if not row.get("ready"):
-                    reason = _row_health_reason(row)
+                    reason = _row_health_reason(row, verify)
                     _add(name, row.get("target"), reason,
                          detail=_env_detail_for(verify, reason))
             # Sol round-3 H13: a top-level not-ready with NO target rows (e.g. an
             # unassigned plugin with a missing secret / mcp_invalid) would else be
             # erased — surface it against the plugin itself.
             if verify.get("ready") is not True and not rows:
-                for reason in (verify.get("reasons") or ["not_ready"]):
+                reasons = list(verify.get("reasons") or ["not_ready"])
+                # #1053: a failure verify grades without a code (a missing
+                # program) gets a row of its own when only install-phase
+                # codes would otherwise speak for the plugin.
+                fault = _install_phase_fault(reasons, verify)
+                if fault is not None and fault not in reasons:
+                    reasons.append(fault)
+                for reason in reasons:
                     _add(name, None, reason,
                          detail=_env_detail_for(verify, reason))
     # #211: a registered plugin targeting a NOT-yet-installed specialist is
@@ -13492,6 +13534,58 @@ async def _notify_plugin_health_if_possible() -> None:
         logger.debug("plugin health notify skipped", exc_info=True)
 
 
+# #1053: which engagement is installing each plugin — registry name (scoped for
+# a bundle's entries) → engagement id, written by the plugin mutations an
+# engagement makes. In-process only: after a restart nothing is deferred, so a
+# still-running install's rows are announced (a spare DM, never a lost one).
+_PLUGIN_INSTALLERS: dict[str, str] = {}
+# Strong refs for the notify passes the terminal observer schedules.
+_INSTALL_END_NOTIFIES: set = set()
+
+
+def _record_plugin_installer(names) -> None:
+    """Record the bound engagement, if any, as installing each of *names*."""
+    eng = engagement_var.get(None)
+    if eng is None:
+        return
+    for name in names:
+        if isinstance(name, str) and name:
+            _PLUGIN_INSTALLERS[name] = eng.id
+
+
+def plugins_under_live_install() -> set:
+    """Names whose recorded installing engagement is still live. Only
+    :func:`_on_engagement_terminal` removes an entry."""
+    reg = _engagement_registry
+    if reg is None:
+        return set()
+    live: set = set()
+    for name, eid in list(_PLUGIN_INSTALLERS.items()):
+        rec = reg.get(eid)
+        if rec is None or rec.status in ("completed", "cancelled", "error"):
+            # Read-only: the status flips before the terminal write settles and
+            # the observer runs after it, so pruning here would take the entry
+            # the observer needs to know a pass is owed.
+            continue
+        live.add(name)
+    return live
+
+
+def _on_engagement_terminal(rec) -> None:
+    """EngagementRegistry terminal observer: an engagement that was installing
+    plugins has ended, so the rows the DM deferred for them are deferred no
+    longer — run one notify pass now rather than at the next mutation or boot,
+    which may never come. Runs under the registry lock: schedule only."""
+    if rec.id not in _PLUGIN_INSTALLERS.values():
+        return
+    for name, eid in list(_PLUGIN_INSTALLERS.items()):
+        if eid == rec.id:
+            del _PLUGIN_INSTALLERS[name]
+    task = asyncio.ensure_future(_notify_plugin_health_if_possible())
+    _INSTALL_END_NOTIFIES.add(task)
+    task.add_done_callback(_INSTALL_END_NOTIFIES.discard)
+
+
 def _specialist_target_pending(runtime, role: str) -> bool:
     """True when ``specialist:<role>`` has no agent directory yet (#211).
 
@@ -13571,7 +13665,7 @@ def _issues_from_mutation(name: str, *, reload_errors: list, verify: dict,
     for row in row_failures:
         issues.append(PluginIssue(
             name=name, target=row.get("target"), stage="verify",
-            reason_code=_row_health_reason(row)))
+            reason_code=_row_health_reason(row, verify)))
     if snapshot_raced:
         issues.append(PluginIssue(
             name=name, target=None, stage="verify",
@@ -13606,6 +13700,7 @@ async def _reload_and_verify_targets(name: str, targets: list,
     _eng_pre = engagement_var.get(None)
     if _eng_pre is not None:
         _ENGAGEMENTS_PREACTIVATED.discard(_eng_pre.id)
+    _record_plugin_installer([name])   # #1053
     await asyncio.to_thread(plugin_registry.reload_snapshot)   # 1. FIRST
     import agent as agent_mod
     import reload as reload_mod
@@ -13988,6 +14083,16 @@ async def _bundle_reload_and_verify(
 
     # 2. ONE snapshot reload.
     await asyncio.to_thread(plugin_registry.reload_snapshot)
+    # #1053: the bundle's owned entries, by their scoped names, belong to the
+    # engagement installing it (an uninstall has none left to record).
+    try:
+        _owned = await asyncio.to_thread(
+            lambda: [e.get("name") for e in plugin_registry.owned_entries_for(
+                slug, plugin_registry.load_registry())])
+    except Exception:  # noqa: BLE001 — recording never fails the sequencer
+        logger.debug("bundle installer record skipped", exc_info=True)
+        _owned = []
+    _record_plugin_installer(_owned)
 
     # 3. agents-level reconstruction / eviction.
     runtime = getattr(agent_mod, "active_runtime", None)
@@ -17407,6 +17512,7 @@ async def verify_plugin_secrets(args: dict) -> dict:
     {"plugin": str, "var_name": str, "op_ref_or_value": str},
 )
 async def set_plugin_env_reference(args: dict) -> dict:
+    _record_plugin_installer([args.get("plugin")])   # #1053
     return _result(_tool_set_plugin_env_reference(
         plugin=args["plugin"],
         var_name=args["var_name"],

@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.328.4] - 2026-09-26
+
+### Fixed
+
+- Installing a plugin no longer sends you a "Something needs attention" message
+  about steps the install is still working through, such as an approval you have
+  not given yet, a setup value not wired in yet, or setup still to run. While the
+  install is running, those steps wait. When it ends, you hear about anything
+  still unfinished. A real problem, like a failed setup, is still reported
+  straight away. If a plugin has both a real problem and an unfinished install
+  step, the health report now names the real problem.
+
 ## [0.328.3] - 2026-09-26
 
 ### Fixed

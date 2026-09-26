@@ -432,6 +432,9 @@ class EngagementRegistry:
         # working; with none configured a record still records the durable
         # obligation and boot recovery discharges it.
         self._quiesce_owner: Any | None = None
+        # #1053: told of each record that wins a terminal transition; see
+        # ``_on_terminal_locked``. Optional, like the quiesce owner.
+        self._terminal_observer: Any | None = None
         # Strong refs to in-flight discharge tasks, keyed by engagement, so the
         # loop cannot drop one mid-kill and so the finalize funnel can await the
         # one its own transition scheduled.
@@ -1000,6 +1003,29 @@ class EngagementRegistry:
                     logger.warning("engagement %s %s release raised",
                                    rec.id[:8], field, exc_info=True)
 
+    def set_terminal_observer(self, observer) -> None:
+        """#1053: wire a ``(record) -> None`` callable told of every record
+        that wins a terminal transition in this process (tools, once)."""
+        self._terminal_observer = observer
+
+    def _on_terminal_locked(self, rec: "EngagementRecord") -> None:
+        """Everything owed by a record that JUST won a terminal transition in
+        this process: the #599 quiesce discharge, then the #1053 observer.
+
+        Called at exactly the points ``_schedule_quiesce_locked`` documents, so
+        a strict transition that rolled back — which leaves the record live —
+        tells nobody. Under ``self._lock`` and MUST NOT await: the observer may
+        only schedule, and it can never fail the transition that called it."""
+        self._schedule_quiesce_locked(rec)
+        observer = getattr(self, "_terminal_observer", None)
+        if observer is None:
+            return
+        try:
+            observer(rec)
+        except Exception:  # noqa: BLE001 — never fail a terminal transition
+            logger.warning("engagement terminal observer failed for %s",
+                           rec.id, exc_info=True)
+
     def set_quiesce_owner(self, owner) -> None:
         """Wire the #599 discharge owner (casa_core, once the driver exists)."""
         self._quiesce_owner = owner
@@ -1269,7 +1295,7 @@ class EngagementRegistry:
                 # #599 (Sol, diff review): the write can SETTLE and then re-raise
                 # a cancellation, which would skip this and leave a durably
                 # terminal record owing a kill with no in-process owner.
-                self._schedule_quiesce_locked(rec)
+                self._on_terminal_locked(rec)
 
     async def mark_cancelled(self, engagement_id: str) -> None:
         async with self._lock:
@@ -1283,7 +1309,7 @@ class EngagementRegistry:
             try:
                 await self._write_tombstone_locked()
             finally:
-                self._schedule_quiesce_locked(rec)
+                self._on_terminal_locked(rec)
 
     def _stamp_shutdown_reason(self, rec: EngagementRecord) -> None:
         """#698: the ONE stamper. Every terminal write inside this registry
@@ -1325,7 +1351,7 @@ class EngagementRegistry:
             try:
                 await self._write_tombstone_locked()
             finally:
-                self._schedule_quiesce_locked(rec)
+                self._on_terminal_locked(rec)
             return True
 
     async def try_transition_terminal(
@@ -1423,7 +1449,7 @@ class EngagementRegistry:
                 try:
                     await self._write_tombstone_locked()
                 finally:
-                    self._schedule_quiesce_locked(rec)
+                    self._on_terminal_locked(rec)
                 return True
 
             # STRICT: full-field snapshot + shield-and-await + rollback-on-fail.
@@ -1509,7 +1535,7 @@ class EngagementRegistry:
                         # the direct mutators, in the path the finalize funnel
                         # itself takes.
                         self._release_permit(rec)
-                        self._schedule_quiesce_locked(rec)
+                        self._on_terminal_locked(rec)
                     raise
                 # Task 6 (spec §4.6): release the permit ONLY after the
                 # terminal status is durably committed — the strict path can
@@ -1522,7 +1548,7 @@ class EngagementRegistry:
                 # because a cancellation landing on the shield would otherwise
                 # skip registration and leave a durable obligation with no
                 # in-process owner until the next boot (Terra, design round 4).
-                self._schedule_quiesce_locked(rec)
+                self._on_terminal_locked(rec)
                 return True
 
             task = asyncio.ensure_future(_mutate_and_persist())
