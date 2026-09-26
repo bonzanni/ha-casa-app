@@ -3153,18 +3153,14 @@ async def _refresh_health_after_setup_cleared() -> None:
     (whose health notice reads the report) no longer says setup could not
     finish.
 
-    Under ``_plugin_tools_guard``, like every other live regeneration: the
-    report lock orders only the write, so an unserialized pass could compute
+    Through ``_regenerate_plugin_health_guarded``, like every other live
+    regeneration (#1055): the report lock orders only the write, so an unserialized pass could compute
     from the still-failed row, write after this one, and restore the notice
     (diff round 1, Astra S2). The guard is taken in a task of its own and
     waited for with a bound, never by the turn directly: a guard holder may
     itself be waiting on this turn, and the turn must not deadlock or stall
     on it. Past the bound the refresh completes in the background. Never
     raises."""
-    async def _guarded() -> None:
-        async with _plugin_tools_guard():
-            await asyncio.to_thread(_regenerate_plugin_health, [])
-
     def _done(t: asyncio.Task) -> None:
         _SETUP_CLEARED_REFRESHES.discard(t)
         if not t.cancelled() and t.exception() is not None:
@@ -3172,7 +3168,7 @@ async def _refresh_health_after_setup_cleared() -> None:
                          "failed", exc_info=t.exception())
 
     try:
-        task = asyncio.ensure_future(_guarded())
+        task = asyncio.ensure_future(_regenerate_plugin_health_guarded())
         _SETUP_CLEARED_REFRESHES.add(task)
         task.add_done_callback(_done)
         await asyncio.wait_for(asyncio.shield(task),
@@ -12962,8 +12958,9 @@ async def _settle_through_cancellation(coro):
 
     The task is a CHILD of the caller, so it must not be started inside a hold of
     a guard whose re-entrancy is by task identity — it would not be recognised as
-    the owner and would deadlock against its own parent. The one caller starts it
-    with no such hold, deliberately.
+    the owner and would deadlock against its own parent. Its callers start it
+    with no such hold, deliberately; `_regenerate_plugin_health_guarded` checks
+    ownership before choosing it.
 
     The wait is bounded by the current lock holder's own teardown: cancellation
     unwinds a holder's `async with` and releases the lock, so a shutdown that
@@ -12980,6 +12977,78 @@ async def _settle_through_cancellation(coro):
                 continue
             except Exception:  # noqa: BLE001 — the cancellation wins
                 break
+        raise
+
+
+async def _regenerate_plugin_health_held(extra_issues: list | None = None) -> None:
+    """#1055: regenerate the plugin health report for a caller that ALREADY holds
+    `_PLUGIN_TOOLS_LOCK` (raw or through the guard), letting the worker thread
+    finish before a cancellation propagates.
+
+    `asyncio.to_thread` cancels the await, never the thread: a cancelled holder
+    would release the lock with its computation still running, a competing
+    guarded regeneration would write the correct report, and this one's older
+    report would land last (`plugin_health._REPORT_LOCK` orders only the write).
+    Only the thread hop is settled here — it starts no task that takes the lock,
+    so it cannot deadlock against the caller's own hold."""
+    await _settle_through_cancellation(
+        asyncio.to_thread(_regenerate_plugin_health, list(extra_issues or [])))
+
+
+async def _regenerate_plugin_health_guarded(*, then=None) -> None:
+    """#1055: the one settled, guarded plugin-health regeneration for a caller
+    that does not hold `_PLUGIN_TOOLS_LOCK` — acquire, regenerate, optionally
+    await *then* (a notify that must read the report under the same hold),
+    release.
+
+    The unit runs in a child task that a cancellation cannot stop before its
+    write has landed, for the two measured doors
+    `_regenerate_plugin_health_after_reload` documents: cancelled
+    during the write, a stale report would land after a newer one; cancelled
+    while queued for the guard, the regeneration would be dropped.
+
+    When the CURRENT task already owns the guard (a fenced reload dispatch
+    re-entering a handler), the unit cannot run in a child task — the guard's
+    re-entrancy is by task identity, so the child would queue behind its own
+    parent forever. There the hold is already in place and only the thread hop
+    is settled, through `_regenerate_plugin_health_held`.
+
+    Only the regeneration is settled, never *then*: once the report is written a
+    cancellation reaches the notify as it always did, so a slow send cannot hold
+    the lock through a shutdown (diff round 1, Terra S2)."""
+    if _PLUGIN_TOOLS_LOCK_OWNER is asyncio.current_task():
+        await _regenerate_plugin_health_held()
+        if then is not None:
+            await then()
+        return
+
+    written = asyncio.Event()
+
+    async def _unit() -> None:
+        async with _plugin_tools_guard():
+            await asyncio.to_thread(_regenerate_plugin_health, [])
+            written.set()
+            if then is not None:
+                await then()
+
+    task = asyncio.ensure_future(_unit())
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        waiter = asyncio.ensure_future(written.wait())
+        while not task.done() and not written.is_set():
+            try:
+                await asyncio.wait({task, waiter},
+                                   return_when=asyncio.FIRST_COMPLETED)
+            except asyncio.CancelledError:
+                continue
+        waiter.cancel()
+        if not task.done():
+            task.cancel()
+        try:
+            await asyncio.shield(task)
+        except BaseException:  # noqa: BLE001 — the caller's cancellation wins
+            pass
         raise
 
 
@@ -13044,12 +13113,8 @@ async def _regenerate_plugin_health_after_reload(scope: str, result: dict) -> No
         return
     if result.get("status") != "ok":
         return
-    async def _guarded_regeneration() -> None:
-        async with _plugin_tools_guard():
-            await asyncio.to_thread(_regenerate_plugin_health, [])
-
     try:
-        await _settle_through_cancellation(_guarded_regeneration())
+        await _regenerate_plugin_health_guarded()
     except Exception:  # noqa: BLE001 — a diagnostic never fails the reload
         logger.warning("post-reload plugin-health regeneration failed",
                        exc_info=True)
@@ -13690,7 +13755,7 @@ async def _reload_and_verify_targets(name: str, targets: list,
         name, reload_errors=reload_errors, verify=verify,
         expect=expect, postcondition_ok=ok,
         stale_absent_targets=stale_absent, snapshot_raced=snapshot_raced)
-    await asyncio.to_thread(_regenerate_plugin_health, mutation_issues)
+    await _regenerate_plugin_health_held(mutation_issues)
     await _notify_plugin_health_if_possible()
     result = {
         # Spec §E pinned payload: activation_committed = the registry pin
@@ -13985,7 +14050,7 @@ async def _bundle_reload_and_verify(
             absent_violations.append(f"agent:{slug}")
 
     # 5. ONE health regeneration + notify.
-    await asyncio.to_thread(_regenerate_plugin_health, [])
+    await _regenerate_plugin_health_held()
     await _notify_plugin_health_if_possible()
 
     ok = not reload_errors and not not_ready and not absent_violations
@@ -16181,7 +16246,7 @@ async def trigger_ack_revoke(args: dict) -> dict:
         CHALLENGES.cancel_matching(plugin=name)
         # Refresh health (trigger_pending_ack reappears via the recomputable
         # input) WITHOUT the operator DM — they just did this deliberately.
-        await asyncio.to_thread(_regenerate_plugin_health, [])
+        await _regenerate_plugin_health_held()
         return _result({
             "ok": True, "name": name, "revoked": len(removed),
             "unrouted": sorted(r.get("effective") or "" for r in removed),
@@ -16267,7 +16332,7 @@ async def callback_ack_revoke(args: dict) -> dict:
         # reconcile is registered by now (prompts fire under _RECONCILE_LOCK,
         # which our reconcile serialized behind).
         CHALLENGES.cancel_matching(plugin=plugin)
-        await asyncio.to_thread(_regenerate_plugin_health, [])
+        await _regenerate_plugin_health_held()
         return _result({
             "ok": True, "plugin": plugin, "name": name,
             "revoked": len(removed),
@@ -16317,7 +16382,7 @@ async def event_ack_revoke(args: dict) -> dict:
         # in-flight reconcile is registered by now (prompts fire under
         # event_reconcile's own lock, which our reconcile serialized behind).
         CHALLENGES.cancel_matching(plugin=subscriber)
-        await asyncio.to_thread(_regenerate_plugin_health, [])
+        await _regenerate_plugin_health_held()
         # Minor-9 (review round 1): a malformed record's emitter/event must
         # never crash the sort with a None-vs-str comparison — map to "" so
         # a defensive-only anomaly is merely mis-sorted, never a raise.
@@ -16411,8 +16476,7 @@ async def consent_reprompt(args: dict) -> dict:
     # so it takes the guard — the report lock orders the write, not the
     # computation preceding it, and an unguarded pass can write a pre-mutation
     # result last and delete the row a concurrent mutation just added.
-    async with _plugin_tools_guard():
-        await asyncio.to_thread(_regenerate_plugin_health, [])
+    await _regenerate_plugin_health_guarded()
     # Sol/Terra diff-gate r1: a kind that FAILED (compute raised, a prompt
     # registration raised, or the whole reprompt_pending call raised) must
     # never read as "nothing pending" — its pending state could not be

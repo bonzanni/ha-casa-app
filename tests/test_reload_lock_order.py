@@ -40,13 +40,17 @@ def _fenced_scopes() -> frozenset:
     return tools_mod._PLUGIN_TOOLS_RELOAD_SCOPES
 
 
+# The guard itself, and the settled regeneration that acquires it (#1055).
+_GUARD_TAKERS = {"_plugin_tools_guard", "_regenerate_plugin_health_guarded"}
+
+
 def _takes_the_guard(node: ast.AST) -> bool:
     for sub in ast.walk(node):
         if isinstance(sub, ast.Call):
             fn = sub.func
             name = fn.attr if isinstance(fn, ast.Attribute) else (
                 fn.id if isinstance(fn, ast.Name) else None)
-            if name == "_plugin_tools_guard":
+            if name in _GUARD_TAKERS:
                 return True
     return False
 

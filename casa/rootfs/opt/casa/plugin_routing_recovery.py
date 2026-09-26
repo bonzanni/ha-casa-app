@@ -134,7 +134,7 @@ async def _recover() -> None:
                                "failed", exc_info=True)
             # Both reconcile locks are released here; the guard is still held,
             # so this regeneration cannot race a mutation's own write.
-            await asyncio.to_thread(tools._regenerate_plugin_health, [])
+            await tools._regenerate_plugin_health_held()
     except Exception:  # noqa: BLE001 — a background pass must never raise
         logger.exception("plugin routing recovery pass failed")
 

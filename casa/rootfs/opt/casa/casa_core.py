@@ -5519,9 +5519,8 @@ async def main() -> None:
         # the write, not the computation before it, so this takes the same
         # guard every mutation holds — across the notify too, matching the
         # plugin_env reload scope.
-        async with _tools_mod._plugin_tools_guard():
-            await asyncio.to_thread(_tools_mod._regenerate_plugin_health, [])
-            await notify_plugin_health(channel_manager)
+        await _tools_mod._regenerate_plugin_health_guarded(
+            then=lambda: notify_plugin_health(channel_manager))
     except Exception:  # noqa: BLE001 — the notify is now inside this arm too
         # (it was previously outside it): boot must not die on an operator
         # notification, and the function's own contract is already non-fatal.
