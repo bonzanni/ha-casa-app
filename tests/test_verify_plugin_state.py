@@ -934,6 +934,48 @@ def test_postcondition_row_suppressed_when_reload_required_explains():
     assert not any(c == "postcondition_failed" for c, _ in codes)
 
 
+def test_a_never_bound_plugin_is_reported_not_loaded_not_previous_version(
+        monkeypatch, event_routing_ok):
+    """#1051: `reload_required` against an agent whose binding has NO entry
+    for the plugin (a first install awaiting its reload) must not tell the
+    operator the agent is "still running its previous version" — there is
+    none. A binding on another artifact keeps `reload_required`; verify's own
+    grading is untouched on both paths (health regeneration and mutation)."""
+    import tools
+    import plugin_health
+    import plugin_registry
+    first = {"target": "resident:assistant", "ready": False, "state": "active",
+             "active_artifact_id": None, "reasons": ["reload_required"]}
+    stale = {"target": "resident:butler", "ready": False, "state": "active",
+             "active_artifact_id": "art-0", "reasons": ["reload_required"]}
+    verify = {"ready": False, "reasons": [], "targets": [first, stale]}
+    issues = tools._issues_from_mutation(
+        "gmail", reload_errors=[], verify=verify, expect="present",
+        postcondition_ok=False)
+    codes = {(i.reason_code, i.target) for i in issues}
+    assert codes == {("not_loaded", "resident:assistant"),
+                     ("reload_required", "resident:butler")}
+    assert first["reasons"] == ["reload_required"]
+
+    captured = {}
+    monkeypatch.setattr(plugin_registry, "resolve_all",
+                        lambda: SimpleNamespace(issues=[], warnings=[]))
+    monkeypatch.setattr(plugin_registry, "load_registry",
+                        lambda *a, **k: SimpleNamespace(
+                            valid=True, entries=[{"name": "gmail"}]))
+    monkeypatch.setattr(tools, "_tool_verify_plugin_state",
+                        lambda *, plugin_name: verify)
+    monkeypatch.setattr(plugin_health, "write_report",
+                        lambda **k: captured.update(k))
+    tools._regenerate_plugin_health([])
+    regen = {(i.reason_code, i.target) for i in captured["issues"]}
+    assert ("not_loaded", "resident:assistant") in regen
+    assert ("reload_required", "resident:butler") in regen
+    line = plugin_health.describe_issue(
+        {"name": "gmail", "reason_code": "not_loaded"})
+    assert line == "gmail is not loaded yet"
+
+
 def test_postcondition_row_suppressed_when_top_level_reason_explains():
     from tools import _issues_from_mutation
     verify = {"ready": False, "reasons": ["mcp_invalid"], "targets": []}

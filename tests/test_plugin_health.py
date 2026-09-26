@@ -188,7 +188,9 @@ def _live_reason_codes() -> set[str]:
                  for s in ("pending", "failed", "stale", "refused"))
     codes.update({"reload_required", "env_unresolved", "setup_env_unprovisioned",
                   "not_ready", "mcp_invalid", "artifact_missing",
-                  "verify_exception", "authorization_missing"})
+                  "verify_exception", "authorization_missing",
+                  # #1051: `_row_health_reason` returns it as a bare literal.
+                  "not_loaded"})
     # #923: emitted through `plugin_registry.IGNORED_EXECUTOR_TARGET`, a
     # constant — the patterns above only see a string LITERAL at the
     # `reason_code=` keyword, so a code minted as a named constant is invisible

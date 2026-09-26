@@ -4025,6 +4025,14 @@ def _declared_delegates_for_origin(origin: dict) -> set[str]:
     return {d.agent for d in (getattr(caller_cfg, "delegates", None) or [])}
 
 
+def declares_delegate(caller_role: str, target_role: str) -> bool:
+    """#1051: whether *caller_role*'s live declarations name *target_role* —
+    the same membership the delegation ACL tests, read from the same map, so
+    a setup courier is dispatched only once its delegation can pass."""
+    return target_role in _declared_delegates_for_origin(
+        {"execution_role": caller_role})
+
+
 def _canonical_delegate_target(agent_name: str, origin: dict) -> str:
     """#433: *agent_name* as a role id when it is unambiguously a declared
     delegate's display name, else UNCHANGED.
@@ -13107,6 +13115,19 @@ def _env_detail_for(verify: dict, reason: str) -> "str | None":
     return None if statuses is None else _secret_names_detail(verify, statuses)
 
 
+def _row_health_reason(row: dict) -> str:
+    """The health reason for a not-ready verify target row. #1051: a
+    `reload_required` row whose agent has never bound the plugin at all
+    (`active_artifact_id` None) is a plugin NOT LOADED YET — a first install
+    awaiting its reload — not an agent "still running its previous version";
+    verify's own grading is unchanged, only the operator-facing code differs."""
+    reason = (row.get("reasons") or ["not_ready"])[0]
+    if (reason == "reload_required" and row.get("state") == "active"
+            and row.get("active_artifact_id") is None):
+        return "not_loaded"
+    return reason
+
+
 def _regenerate_plugin_health(extra_issues: list) -> None:
     """§3.10/R2-4 + Sol #13 + D2/B3 (v0.74.0): rewrite the health report from
     the CURRENT resolver state PLUS the RUNTIME verify state of EVERY
@@ -13170,7 +13191,7 @@ def _regenerate_plugin_health(extra_issues: list) -> None:
             rows = verify.get("targets") or []
             for row in rows:
                 if not row.get("ready"):
-                    reason = (row.get("reasons") or ["not_ready"])[0]
+                    reason = _row_health_reason(row)
                     _add(name, row.get("target"), reason,
                          detail=_env_detail_for(verify, reason))
             # Sol round-3 H13: a top-level not-ready with NO target rows (e.g. an
@@ -13384,10 +13405,9 @@ def _issues_from_mutation(name: str, *, reload_errors: list, verify: dict,
     row_failures = [row for row in (verify.get("targets") or [])
                     if not row.get("ready")]
     for row in row_failures:
-        reasons = row.get("reasons") or ["not_ready"]
         issues.append(PluginIssue(
             name=name, target=row.get("target"), stage="verify",
-            reason_code=reasons[0]))
+            reason_code=_row_health_reason(row)))
     if snapshot_raced:
         issues.append(PluginIssue(
             name=name, target=None, stage="verify",

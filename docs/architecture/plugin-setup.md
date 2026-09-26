@@ -57,7 +57,21 @@ a placeholder-credentialed server — a consent round can settle while the insta
 engagement is still wiring secrets, and every successful reload re-kicks the dispatch
 worker; and for a resident execution target it stays pending while that agent's published
 binding predates those secrets, until an agent reload makes the plugin loadable there
-(specialists resolve fresh per delegation and need no such hold).
+(specialists resolve fresh per delegation and need no such hold). A specialist target has a
+hold of its own instead: its setup is sent as a courier turn asking the assistant to
+delegate, and it stays pending until the assistant's live delegate list names that
+specialist (INV-PLUG-029).
+
+**INV-PLUG-029**: A specialist-target setup obligation is not dispatched while the courier resident's live delegate declarations — the map the delegation ACL itself reads — do not name the specialist; it holds `pending` with its released verdict intact and no execution retry spent, every successful reload (which refreshes those declarations first) re-kicks the check, and a check that raises holds rather than dispatches.
+
+An install makes the delegation valid only at its last step, the per-role reload of the
+resident. Before this hold, a setup obligation released earlier in the install was sent
+into that window, the ACL refused the courier's delegation, and each refusal spent one of
+the bounded execution retries INV-PLUG-024 grants — so the whole budget could be gone
+before the reload that would have let it succeed. Holding means nothing is spent until the
+courier can succeed. The row stays visible in plugin health while it waits. If the
+assistant is never given the delegate, it waits indefinitely, which is accurate: no courier
+turn could run the setup in that state.
 
 The single-runner rule is load-bearing rather than tidy. Until v0.161.0 an agent could
 also run setup, acting on a `run_plugin_setup_tool` hand-back in the configurator's

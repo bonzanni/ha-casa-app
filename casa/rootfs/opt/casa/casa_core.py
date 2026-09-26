@@ -5331,6 +5331,14 @@ async def main() -> None:
         agents = getattr(runtime, "agents", {}) or {}
         return _pd.execution_ready(agents.get(role), plugin, artifact_id)
 
+    def _setup_courier_ready(courier: str, specialist: str) -> bool:
+        # #1051: a courier turn delegates to the specialist, and the
+        # delegation ACL refuses it until the courier's live declarations
+        # name that specialist — hold until they do. Late-binding, like the
+        # binding check above.
+        import tools as _tools
+        return _tools.declares_delegate(courier, specialist)
+
     _pse.configure(
         dispatch=_setup_dispatch, notify_operator=_setup_notify,
         resolve_registry_entry=_setup_registry_entry,
@@ -5350,6 +5358,7 @@ async def main() -> None:
         applied_routing=_applied_plugin_routing,
         secrets_ready=_setup_secrets_ready,
         execution_ready=_setup_execution_ready,
+        courier_ready=_setup_courier_ready,
     )
     _pse.start_worker()
 

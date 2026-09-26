@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.328.1] - 2026-09-26
+
+### Fixed
+
+- Installing a specialist whose plugin has a setup step (for example the finance
+  specialist's bank feed) no longer starts that setup too early. The assistant
+  runs it by handing it to the specialist, and she can only do that once the
+  install has finished connecting her to the specialist. Before this fix the setup
+  could be tried before then. Each attempt was refused, three refusals used up all
+  the automatic retries, and you then got a "could not finish setting up" message,
+  sometimes after you had already run the setup yourself. Casa now waits until the
+  assistant can reach the specialist and then runs the setup once.
+- A plugin installed for the first time is described as "not loaded yet" while it
+  waits to be loaded, instead of "still running its previous version". There was no
+  previous version.
+
 ## [0.328.0] - 2026-09-22
 
 ### Changed
