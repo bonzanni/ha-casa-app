@@ -670,6 +670,79 @@ async def test_execution_gate_skips_specialist_branch(wired, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_courier_gate_holds_until_the_assistant_declares_the_specialist(
+        wired, monkeypatch):
+    # #1051: a specialist-target row is sent as a courier turn asking the
+    # assistant to delegate, and the delegation ACL refuses that call until
+    # the assistant's live declarations name the specialist. Dispatching
+    # before then spent the whole execution-retry budget (observed live:
+    # three delegation_not_declared refusals, then `failed`). Hold instead;
+    # the post-reload kick re-checks, and no retry is spent while holding.
+    wired["entry"]["targets"] = ["specialist:finance"]
+    seen = []
+    declared = {"v": False}
+    monkeypatch.setattr(pse, "_courier_ready",
+                        lambda courier, specialist:
+                            seen.append((courier, specialist)) or declared["v"])
+    _prompt()
+    await _decide()
+    await _drain_pending(wired)
+    await _drain_pending(wired)
+    assert wired["dispatches"] == []
+    ep = pse.episodes()[0]
+    assert ep["status"] == "pending" and ep["gate"] == "released"
+    assert ep.get("last_error") == (
+        "waiting for the assistant to be able to delegate to 'finance'")
+    assert not ep.get("execution_retries")
+    assert seen[0] == ("assistant", "finance")
+    declared["v"] = True
+    await _drain_pending(wired)                        # post-reload kick
+    assert len(wired["dispatches"]) == 1
+    assert wired["dispatches"][0][0] == "assistant"
+    assert pse.episodes()[0]["status"] == "dispatched"
+
+
+@pytest.mark.asyncio
+async def test_courier_gate_fails_closed(wired, monkeypatch):
+    wired["entry"]["targets"] = ["specialist:finance"]
+
+    def boom(courier, specialist):
+        raise RuntimeError("role map unreadable")
+    monkeypatch.setattr(pse, "_courier_ready", boom)
+    _prompt()
+    await _decide()
+    await _drain_pending(wired)
+    assert wired["dispatches"] == []
+    assert pse.episodes()[0]["status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_courier_gate_is_not_consulted_for_a_resident_target(
+        wired, monkeypatch):
+    # A resident runs the tool itself; no delegation, so no courier hold.
+    monkeypatch.setattr(pse, "_courier_ready",
+                        lambda courier, specialist: False)
+    _prompt()
+    await _decide()
+    await _drain_pending(wired)
+    assert len(wired["dispatches"]) == 1
+
+
+def test_declares_delegate_reads_the_acl_map(monkeypatch):
+    # #1051: the seam casa_core wires reads the SAME map the delegation ACL
+    # reads, so "ready" here is exactly "the courier's call will pass".
+    import tools
+    from types import SimpleNamespace as NS
+    assistant = NS(delegates=[NS(agent="butler")])
+    monkeypatch.setattr(tools, "_agent_role_map", {"assistant": assistant})
+    assert tools.declares_delegate("assistant", "butler") is True
+    assert tools.declares_delegate("assistant", "finance") is False
+    assistant.delegates.append(NS(agent="finance"))
+    assert tools.declares_delegate("assistant", "finance") is True
+    assert tools.declares_delegate("nobody", "finance") is False
+
+
+@pytest.mark.asyncio
 async def test_configure_wires_secrets_ready(wired):
     # #423: the seam arrives through configure(), like routes_live; a
     # configure without the kwarg resets it (no stale gate across boots).

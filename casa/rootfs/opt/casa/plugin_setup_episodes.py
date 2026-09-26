@@ -179,6 +179,7 @@ _routes_live: Callable[[str], bool] | None = None
 _applied_routing: "Callable[[], tuple[bool, int] | None] | None" = None
 _secrets_ready: Callable[[str], bool] | None = None
 _execution_ready: Callable[[str, str, str], bool] | None = None
+_courier_ready: Callable[[str, str], bool] | None = None
 _sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
 
 _lock: asyncio.Lock | None = None
@@ -194,7 +195,7 @@ def _now() -> float:
 def configure(*, dispatch, notify_operator, resolve_registry_entry,
               ack_lookup=None, routes_live=None, applied_routing=None,
               secrets_ready=None, execution_ready=None,
-              registry_entry_fresh=None,
+              courier_ready=None, registry_entry_fresh=None,
               sleep=asyncio.sleep) -> None:
     """casa_core boot wiring. Idempotent. ``ack_lookup(identity)`` returns
     the persisted ack's approval generation (or None) — the boot recovery
@@ -212,7 +213,13 @@ def configure(*, dispatch, notify_operator, resolve_registry_entry,
     artifact — an agent whose published binding was built while the plugin
     was env-withheld keeps excluding it until an agent reload, and a
     dispatch into that session would consume the episode against a session
-    without the tool; agent reloads call :func:`kick`. ``applied_routing()``
+    without the tool; agent reloads call :func:`kick`.
+    ``courier_ready(courier, specialist)`` (#1051) reports whether the
+    courier resident's LIVE delegation list declares the specialist: a
+    specialist-target episode holds until it does, since the delegation ACL
+    refuses the courier's call before then and each refusal spends an
+    execution retry; every successful reload refreshes that list and then
+    calls :func:`kick`. ``applied_routing()``
     (#803) reports the APPLIED routing overlays as ``(published, generation)``
     or ``None`` when no runtime registry is bound: the worker reads it before
     the route recomputation and again, yield-free, before the send, and
@@ -226,7 +233,8 @@ def configure(*, dispatch, notify_operator, resolve_registry_entry,
     re-arm a plugin that is gone. Absent, no mark is ever consumed."""
     global _dispatch, _notify_operator, _resolve_registry_entry
     global _ack_lookup, _routes_live, _applied_routing, _secrets_ready
-    global _execution_ready, _registry_entry_fresh, _sleep, _lock, _kick
+    global _execution_ready, _courier_ready, _registry_entry_fresh
+    global _sleep, _lock, _kick
     _dispatch = dispatch
     _notify_operator = notify_operator
     _resolve_registry_entry = resolve_registry_entry
@@ -236,6 +244,7 @@ def configure(*, dispatch, notify_operator, resolve_registry_entry,
     _applied_routing = applied_routing
     _secrets_ready = secrets_ready
     _execution_ready = execution_ready
+    _courier_ready = courier_ready
     _sleep = sleep
     if _lock is None:
         _lock = asyncio.Lock()
@@ -1785,6 +1794,28 @@ async def _run_episode(ep: dict) -> bool:
         await _note(f"Plugin {plugin}: automatic setup could not run "
                     f"({instruction}). Run its setup tool manually.")
         return
+    # #1051: a specialist-target episode is sent as a COURIER turn asking
+    # `role` (the assistant) to delegate to the specialist, and the delegation
+    # ACL refuses that call until the courier's live delegate list declares
+    # the specialist. An install makes that true only at its last step (the
+    # per-role reload of the resident, #1009), so dispatching earlier spent
+    # the whole execution-retry budget inside a window where the courier
+    # could not succeed. Hold instead, like the binding gate above: the row
+    # stays `pending` and released, and every successful reload — which
+    # refreshes that list first — kicks a re-check. Fails CLOSED.
+    exec_tier, exec_role = plugin_dispatch.execution_target(entry)
+    if exec_tier == "specialist" and _courier_ready is not None:
+        try:
+            courier_ok = bool(_courier_ready(role, exec_role))
+        except Exception:  # noqa: BLE001
+            logger.exception("episode %s: courier_ready check failed",
+                             ep["id"])
+            courier_ok = False
+        if not courier_ok:
+            _update_episode(ep["id"], last_error=(
+                f"waiting for the {role} to be able to delegate to "
+                f"'{exec_role}'"))
+            return
     ok = False
     attempts = int(ep.get("attempts") or 0)
     while attempts < _MAX_DISPATCH_ATTEMPTS and not ok:

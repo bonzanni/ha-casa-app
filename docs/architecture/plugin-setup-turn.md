@@ -124,6 +124,10 @@ assistant ran the setup tool itself)" whatever status a later removal leaves on 
 assistant is just the delegation courier there, and its own session says nothing about the
 specialist's — but the courier turn does say whether the delegation went through.
 
+A courier turn is not sent until the assistant declares the specialist as a delegate
+([`plugin-setup.md`](plugin-setup.md), INV-PLUG-029), so the courier's retry budget is not
+spent on refusals that happen before an install has finished wiring the delegation.
+
 **The courier's delegation is the evidence.** A plugin that targets only a specialist has
 its setup composed as a courier turn to the assistant, and the courier session never
 carries the specialist's setup tool, so the row records no expected setup tool. What the

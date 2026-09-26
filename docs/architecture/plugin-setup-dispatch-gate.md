@@ -20,10 +20,12 @@ discovery markers this gate reads are written by the reconciles described in
 **Release is not dispatch, and holding here is the answer the obligation already gives
 elsewhere.** An obligation released by a positively sealed consent verdict
 ([`plugin-setup.md`](plugin-setup.md), INV-PLUG-010) can still hold at this gate. The
-obligation holds in the same way in two places of its own: while its plugin still has
-unresolved environment variables, and, for a resident execution target, while that agent's
-published binding predates the secrets the plugin needs. Those are the environment and
-binding holds; every hold this gate adds is of the same kind — the obligation stays `pending`
+obligation holds in the same way in three places of its own: while its plugin still has
+unresolved environment variables; for a resident execution target, while that agent's
+published binding predates the secrets the plugin needs; and for a specialist target, while
+the assistant that must delegate to it does not yet declare it
+([`plugin-setup.md`](plugin-setup.md), INV-PLUG-029). Those are the environment, binding and
+courier holds; every hold this gate adds is of the same kind — the obligation stays `pending`
 and released rather than being spent.
 
 **A consent decision and the artifacts it authorizes land at different moments, so the

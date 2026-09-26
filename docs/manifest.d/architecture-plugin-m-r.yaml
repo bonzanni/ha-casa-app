@@ -105,8 +105,9 @@
     - tests/test_plugin_setup_single_runner.py
     - tests/test_plugin_setup_episodes.py
   related: [architecture/plugin-runtime.md, architecture/plugins.md, architecture/triggers.md, architecture/callbacks.md, architecture/plugin-setup-dispatch-gate.md, architecture/plugin-setup-turn.md]
-  defines_invariants: [INV-PLUG-010, INV-PLUG-020]
+  defines_invariants: [INV-PLUG-010, INV-PLUG-020, INV-PLUG-029]
   invariant_tests:
+    INV-PLUG-029: [tests/test_plugin_setup_episodes.py::test_courier_gate_holds_until_the_assistant_declares_the_specialist, tests/test_plugin_setup_episodes.py::test_courier_gate_fails_closed, tests/test_plugin_setup_episodes.py::test_declares_delegate_reads_the_acl_map]
     INV-PLUG-020: [tests/test_plugin_setup_episodes.py::test_removed_failed_same_artifact_rearms_with_fresh_budget, tests/test_plugin_setup_single_runner.py::test_a_same_download_reinstall_after_removal_retries_setup_end_to_end]
     INV-PLUG-010: [tests/test_plugin_setup_single_runner.py::test_absence_of_a_round_is_never_a_permission, tests/test_plugin_setup_single_runner.py::test_no_shipped_doctrine_routes_setup_to_an_agent, tests/test_plugin_setup_single_runner.py::test_a_failed_pending_compute_holds_rather_than_choosing, tests/test_plugin_setup_single_runner.py::test_unreachable_operator_holds_rather_than_choosing, tests/test_plugin_setup_single_runner.py::test_denied_consent_refuses_and_a_reprompt_rearms]
 - doc: architecture/plugin-setup-turn.md

@@ -40,7 +40,9 @@ reads as something actionable, and an unrecognized one degrades to a plain state
 than leaking. The shared renderer is now the whole sentence, not merely the per-issue clause:
 the two surfaces had each written their own wrapper around the shared clause and those had
 already drifted, so a set of stale bindings was announced as an incomplete update in-band
-and as a generic fault by DM. What deliberately stays per-surface is how many issues each
+and as a generic fault by DM. An agent whose binding has never carried the plugin at all —
+a first install still awaiting its reload — is reported as a plugin not loaded yet, never as
+one still running a previous version it never had. What deliberately stays per-surface is how many issues each
 names — the in-band line rides on top of a reply and names two, while the DM is a message of
 its own and names five, because the operator has no other way to see those names in that
 moment. The truncated tail is answerable now: the read-only plugin status tool the assistant

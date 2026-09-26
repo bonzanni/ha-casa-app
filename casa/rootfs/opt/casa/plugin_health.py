@@ -334,6 +334,9 @@ _REASON_PHRASES = {
     # while its history cannot be read or was reset after damage.
     "setup_history_unavailable": "setup history could not be read",
     "target_pending": "is waiting for the specialist it belongs to",
+    # #1051: `reload_required` against an agent that never bound the plugin —
+    # a first install awaiting its reload, not a previous version still live.
+    "not_loaded": "is not loaded yet",
     # #923: the stored worker assignment Casa does not serve. Says IGNORED, not
     # deleted — the assignment is still in the operator's registry file, and
     # `plugin_unassign` is what clears it. No _REASON_SUFFIXES family matches
