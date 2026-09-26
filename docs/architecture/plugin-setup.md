@@ -33,7 +33,9 @@ INV-PLUG-016); that gate is [`plugin-setup-dispatch-gate.md`](plugin-setup-dispa
 and it is the route gate this document refers to below. Bus acceptance marks the row
 `dispatched`, but the turn itself reports back what it evidenced, and only positive
 evidence keeps the row consumed (INV-PLUG-012, INV-PLUG-023, INV-PLUG-024) —
-[`plugin-setup-turn.md`](plugin-setup-turn.md).
+[`plugin-setup-turn.md`](plugin-setup-turn.md). A row that ended `failed` or `stale` asks
+the operator to run the setup by hand; a successful run of the setup tool by the plugin's
+executing role, resident or delegated specialist, clears it from plugin health (INV-PLUG-030).
 
 **A reconcile pass describes one registry snapshot.** Each pass pins a single registry
 resolution and serves every read from it — the plugins and their manifests, each target's

@@ -2105,19 +2105,21 @@ class Agent:
             _explain_draft_var.reset(explain_token)
             origin_var.reset(origin_token)
 
-    def _settle_from_tool_evidence(self, tool: str, invoked_at) -> None:
+    def _settle_from_tool_evidence(self, tool: str, invoked_at) -> bool:
         """#1003: hand one successful plugin-tool invocation of an ordinary
         turn to the setup-obligation store, with THIS instance's resolved
         plugin binding (the artifact its session was built on — a retained
         old Agent after a failed reload still reports its old artifact).
+        Returns True iff it cleared a failed obligation (#1052).
         Synchronous, fail-safe, never raises into the message handler."""
         try:
             import plugin_setup_episodes
-            plugin_setup_episodes.settle_from_tool_evidence(
+            return plugin_setup_episodes.settle_from_tool_evidence(
                 role=self.config.role, tool=tool, invoked_at=invoked_at,
-                binding=self.active_plugin_binding)
+                binding=self.active_plugin_binding) is True
         except Exception:  # noqa: BLE001
             logger.exception("setup-episode evidence handover failed")
+            return False
 
     def _report_setup_outcome(self, msg: BusMessage,
                               turn_state: dict) -> None:
@@ -2960,9 +2962,16 @@ class Agent:
                                     and getattr(block, "is_error", None)
                                     is not True
                                     and name.startswith("mcp__plugin_")):
-                                self._settle_from_tool_evidence(
-                                    name, state["tool_use_at"].get(
-                                        getattr(block, "tool_use_id", "")))
+                                if self._settle_from_tool_evidence(
+                                        name, state["tool_use_at"].get(
+                                            getattr(block, "tool_use_id", ""))):
+                                    # #1052: the settlement cleared a failed
+                                    # obligation; refresh the persisted
+                                    # health report before this turn's reply
+                                    # reads it for its notice.
+                                    from tools import (
+                                        _refresh_health_after_setup_cleared)
+                                    await _refresh_health_after_setup_cleared()
                 elif isinstance(sdk_msg, ResultMessage):
                     sdk_logging.log_turn_done(
                         sdk_msg, started_ms=state["started_ms"],

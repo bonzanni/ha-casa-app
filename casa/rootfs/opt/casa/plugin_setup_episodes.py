@@ -390,18 +390,46 @@ def _read_store() -> StoreRead:
 # has since written, and publishing it would read "no candidate" while a
 # released row exists (diff round 2, Astra S1). Keyed by STORE_PATH so a
 # re-pointed store (tests) starts unknown.
-_WATCH: "tuple[Path, frozenset[str]] | None" = None
+# #1052: a third member, the plugin names of the terminal rows a later run
+# can clear (`_terminal_candidate`). A specialist-target row carries no
+# `expected_tool` once its courier was dispatched, so the prefilter for those
+# is the executing session's own binding meeting one of these names.
+_WATCH: "tuple[Path, frozenset[str], frozenset[str]] | None" = None
+
+#: #1052: the terminal statuses whose note asks the operator to run the setup
+#: by hand, and which a later successful run of the setup tool therefore
+#: clears. ``refused`` is not one: a consent decision is its way back.
+_CLEARABLE_TERMINAL = ("failed", "stale")
+
+
+def _terminal_candidate(r: dict) -> bool:
+    """#1052: a released, unsettled ``failed``/``stale`` row of the CURRENT
+    installation — a row stamped ``removed_ts`` describes an installation that
+    is gone, and the reinstall sweep owns it (INV-PLUG-020)."""
+    return (r.get("status") in _CLEARABLE_TERMINAL
+            and r.get("gate") == "released" and not r.get("settled_by")
+            and _removal_mark(r) is None)
 
 
 def _watch_from(data: dict) -> frozenset[str]:
-    """Composed setup-tool names of the released, unsettled
-    `pending`/`dispatched` rows — the only rows turn evidence can settle."""
+    """Composed setup-tool names of the rows turn evidence can settle: the
+    released, unsettled `pending`/`dispatched` rows, and the terminal rows a
+    later run clears (#1052)."""
     return frozenset(
         r["expected_tool"] for r in data.get("episodes", [])
         if isinstance(r, dict) and isinstance(r.get("expected_tool"), str)
         and r["expected_tool"]
-        and r.get("status") in ("pending", "dispatched")
-        and r.get("gate") == "released" and not r.get("settled_by"))
+        and ((r.get("status") in ("pending", "dispatched")
+              and r.get("gate") == "released" and not r.get("settled_by"))
+             or _terminal_candidate(r)))
+
+
+def _terminal_plugins_from(data: dict) -> frozenset[str]:
+    """#1052: plugin names of the terminal rows a later run clears."""
+    return frozenset(
+        r["plugin"] for r in data.get("episodes", [])
+        if isinstance(r, dict) and isinstance(r.get("plugin"), str)
+        and _terminal_candidate(r))
 
 
 def _on_loop_thread() -> bool:
@@ -419,7 +447,8 @@ def _publish_watch(data: dict) -> None:
     if not _on_loop_thread():
         return
     try:
-        _WATCH = (STORE_PATH, _watch_from(data))
+        _WATCH = (STORE_PATH, _watch_from(data),
+                  _terminal_plugins_from(data))
     except Exception:  # noqa: BLE001 — a derived index must never raise
         _WATCH = None
 
@@ -2069,7 +2098,7 @@ def _row_by_id(data: dict, episode_id: str) -> dict | None:
 
 
 def settle_from_tool_evidence(*, role: str, tool: str, invoked_at,
-                              binding) -> None:
+                              binding, delegated: bool = False) -> bool:
     """#1003: consume a RELEASED obligation on evidence that its setup tool ran
     in an ordinary turn — not the Casa-dispatched one.
 
@@ -2095,15 +2124,32 @@ def settle_from_tool_evidence(*, role: str, tool: str, invoked_at,
     Only ``pending`` / ``dispatched`` rows with ``gate == "released"`` and no
     prior settlement are candidates; ``dispatched`` stays the one consumed
     status and ``settled_by="turn_evidence"`` is the authoritative mark.
-    SYNCHRONOUS, yield-free, never raises."""
+
+    #1052: a released, unsettled ``failed``/``stale`` row of the current
+    installation (:func:`_terminal_candidate`) is a candidate too — its note
+    asked the operator to run the setup by hand, and a successful run clears
+    it from plugin health. Nothing is in flight for such a row, so the
+    session-gate ordering above is not needed, and the executing role may be
+    a specialist: the target's ROLE must be *role*, whatever its tier. The
+    other proofs are unchanged. *delegated* marks evidence from a delegated
+    session (``tools._run_delegated_agent``), which holds no resident session
+    gate and so may settle ONLY such a terminal row — a pending specialist row
+    belongs to its courier (INV-PLUG-024). Every settlement records
+    ``settled_role``. A terminal row released before ``released_ts`` existed
+    takes its failure stamp (``updated_ts``) as the lower bound instead.
+
+    Returns True iff a terminal row was cleared: plugin health is a persisted
+    report, and the caller regenerates it so the reply that follows the run
+    no longer carries the failure. SYNCHRONOUS, yield-free, never raises."""
+    cleared = False
     try:
         if not isinstance(tool, str) or not tool:
-            return
+            return False
         at = _finite(invoked_at)
         if at is None:
-            return
+            return False
         if not isinstance(binding, dict):
-            return
+            return False
         # The I/O-free common path (diff rounds 1-2, Astra + Terra S1): this
         # runs inside on_message for EVERY successful plugin-tool result of
         # every ordinary turn, on the loop thread, under the session gate.
@@ -2114,25 +2160,32 @@ def settle_from_tool_evidence(*, role: str, tool: str, invoked_at,
         # watched name — the rare window between a release and its
         # settlement. That rare path stays synchronous on the loop: every
         # other writer of this file is a loop-thread read-modify-write, and
-        # a thread-side write would race them.
+        # a thread-side write would race them. #1052: or when the session's
+        # binding carries a plugin with a clearable terminal row.
         watch = _WATCH
         if watch is not None and watch[0] == STORE_PATH \
-                and tool not in watch[1]:
-            return
+                and tool not in watch[1] and not watch[2].intersection(binding):
+            return False
         data = _load()
         changed = False
         for row in data["episodes"]:
             if not isinstance(row, dict):
                 continue
-            if row.get("status") not in ("pending", "dispatched"):
-                continue
-            if row.get("gate") != "released" or row.get("settled_by"):
-                continue
+            terminal = _terminal_candidate(row)
+            if not terminal:
+                if delegated:
+                    continue
+                if row.get("status") not in ("pending", "dispatched"):
+                    continue
+                if row.get("gate") != "released" or row.get("settled_by"):
+                    continue
             plugin = row.get("plugin")
             artifact = row.get("artifact_id")
             if not isinstance(plugin, str) or not isinstance(artifact, str):
                 continue
             released_at = _finite(row.get("released_ts"))
+            if released_at is None and terminal:
+                released_at = _finite(row.get("updated_ts"))
             if released_at is None or at < released_at:
                 continue
             if binding.get(plugin) != artifact:
@@ -2140,7 +2193,11 @@ def settle_from_tool_evidence(*, role: str, tool: str, invoked_at,
             resolved_ok, entry = _resolve_entry(plugin)
             if not resolved_ok or entry.get("artifact_id") != artifact:
                 continue
-            if plugin_dispatch.execution_target(entry) != ("resident", role):
+            target = plugin_dispatch.execution_target(entry)
+            if terminal:
+                if target[0] is None or target[1] != role:
+                    continue
+            elif target != ("resident", role):
                 continue
             setup_tool = entry.get("setup_tool")
             grants = sorted(entry.get("granted_tools") or [])
@@ -2150,22 +2207,34 @@ def settle_from_tool_evidence(*, role: str, tool: str, invoked_at,
             expected = f"{grants[0]}__{setup_tool}"
             if tool != expected:
                 continue
+            was = row.get("status")
             row.update({
                 "status": "dispatched", "settled_by": "turn_evidence",
-                "settled_ts": _now(), "expected_tool": expected,
-                "last_error": "", "updated_ts": _now(),
+                "settled_ts": _now(), "settled_role": role,
+                "expected_tool": expected, "last_error": "",
+                "updated_ts": _now(),
             })
             changed = True
-            logger.info(
-                "setup episode %s settled by turn evidence (plugin=%s "
-                "role=%s tool=%s): the setup tool ran in an ordinary turn "
-                "after the release; nothing re-dispatches it",
-                row.get("id"), plugin, role, expected)
+            if terminal:
+                cleared = True
+                logger.info(
+                    "setup episode %s cleared by turn evidence (plugin=%s "
+                    "role=%s tool=%s): the setup tool ran after the row "
+                    "went %s; it leaves plugin health", row.get("id"),
+                    plugin, role, expected, was)
+            else:
+                logger.info(
+                    "setup episode %s settled by turn evidence (plugin=%s "
+                    "role=%s tool=%s): the setup tool ran in an ordinary "
+                    "turn after the release; nothing re-dispatches it",
+                    row.get("id"), plugin, role, expected)
         if changed:
             _save(data)
     except Exception:  # noqa: BLE001 — the turn path must never see a raise
         logger.exception("setup-episode evidence settlement failed "
                          "(role=%s tool=%s)", role, tool)
+        return False
+    return cleared
 
 
 def _expected_setup_tool(plugin: str) -> str | None:

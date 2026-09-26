@@ -40,7 +40,9 @@ protected tool the target calls be approved through the operator's keyboard.
 
 **INV-PLUG-012**: A resident-execution setup obligation rests consumed (`dispatched`) only when its dispatched turn positively evidenced the setup tool — the tool produced a non-error result, or the turn completed with the session's init listing the tool and no attempted call erring without one; a turn with no such evidence (including one that raised or was cancelled, whose listed-but-uncalled tool evidences nothing because no reply was produced) returns the obligation to `pending` with its released verdict intact, boundedly, and past the bound it fails with an operator note rather than being silently spent.
 
-**INV-PLUG-023**: A released resident-execution setup obligation is also consumed when its setup tool produces a non-error result in any turn of the executing resident, provided the invocation is proven to follow the release and to run in a session built on the obligation's exact artifact — a finite `tool_use` timestamp not earlier than the row's finite `released_ts`, and the executing agent instance's own plugin binding carrying that artifact while the registry still resolves to it; a row so settled (`settled_by`) is never re-dispatched, a dispatched turn that finds it settled once it holds the session gate does not run, and a later toolless report from the dispatched turn cannot reopen it — evidence that proves less (an earlier invocation, an unstamped or non-finite stamp, another artifact, another role, another tool, a specialist target) settles nothing.
+**INV-PLUG-023**: A released resident-execution setup obligation is also consumed when its setup tool produces a non-error result in any turn of the executing resident, provided the invocation is proven to follow the release and to run in a session built on the obligation's exact artifact — a finite `tool_use` timestamp not earlier than the row's finite `released_ts`, and the executing agent instance's own plugin binding carrying that artifact while the registry still resolves to it; a row so settled (`settled_by`) is never re-dispatched, a dispatched turn that finds it settled once it holds the session gate does not run, and a later toolless report from the dispatched turn cannot reopen it — evidence that proves less (an earlier invocation, an unstamped or non-finite stamp, another artifact, another role, another tool, a specialist target) settles nothing, and evidence from a delegated session settles no `pending` or `dispatched` row.
+
+**INV-PLUG-030**: A `failed` or `stale` setup obligation of the current installation — released, unsettled, and not stamped by a removal — is cleared (`dispatched`, `settled_by`, with the role that ran it) when its setup tool produces a non-error result in a session of the plugin's executing role, of either tier, whether an ordinary resident turn or a delegated session: the invocation must not precede the row's finite `released_ts` (for a row released before that stamp existed, its finite failure stamp), the session's own binding must carry the row's artifact while the registry still resolves to it, and the tool must be the one the dispatch composes; a cleared row leaves plugin health, the persisted report is regenerated under the plugin lock every live regeneration holds and waited for, boundedly, before the turn that ran the tool continues, and it is neither re-dispatched nor re-armed by the reconcile sweep; a `refused` row, a removal-stamped row, and evidence from any other role, artifact or tool clear nothing.
 
 **INV-PLUG-024**: A specialist-target setup obligation, whose dispatched turn is a courier turn asking the assistant to delegate the setup to the specialist, rests consumed (`dispatched`) only when that courier turn produced a non-error `delegate_to_agent` result whose target, canonicalised as the delegation ACL resolves it, is the row's specialist — a delegation to any other agent, an errored one, and a listed but uncalled delegation tool all evidence nothing for a courier, whether or not the turn completed; a courier turn with no such result (including one that raised, was cancelled, or replied with silence) returns the obligation to `pending` with its released verdict intact, under the same bounded budget as a resident turn, and past the bound it fails with an operator note naming the delegation that could not be made; the delegation tool is recorded under its own key, never as the row's expected setup tool, so no ordinary turn's delegation result can settle a specialist-target row; and a `dispatched` row that carries neither an expected tool nor a courier key and no settlement mark — one no turn will ever report on — is retired by the next worker pass as `failed` with a reason naming the manual run and one operator note, never re-dispatched.
 
@@ -124,6 +126,26 @@ assistant ran the setup tool itself)" whatever status a later removal leaves on 
 assistant is just the delegation courier there, and its own session says nothing about the
 specialist's — but the courier turn does say whether the delegation went through.
 
+**A setup that failed is run by hand, and succeeds.** Every failure note asks the operator
+to run the setup manually — observed live in #1051: the courier's retries were spent while
+an install was still wiring the delegation, the row went `failed`, the operator had the
+assistant delegate the setup to the specialist, the specialist ran it successfully, and plugin
+health still announced that setup "could not finish" afterwards. A successful run now
+clears the terminal row (INV-PLUG-030). The same handover that settles a live row carries it
+for a resident; a delegated session hands its own successful plugin-tool results over with the
+binding of the resolution its session was built from, flagged as delegated, and a delegated
+session can clear only a terminal row — it holds no resident session gate, so a live row
+stays with the dispatch and its courier. The watch gains the plugin names of clearable rows,
+since a courier row carries no expected tool once dispatched, so a session whose binding
+names none of them still reads no file. Plugin health is a persisted report, so a clearing
+settlement regenerates it before the turn continues; the reply to the manual run reads the
+new report for its notice. The regeneration takes the plugin lock like every other live
+one — the report lock orders only the write, so a pass that computed from the still-failed
+row could otherwise land afterwards and restore the notice. It runs in a task of its own
+and the turn waits for it with a bound, since a lock holder may itself be waiting on the
+turn; past the bound it finishes in the background. A `refused` row is not cleared this way (its way back is a consent
+decision), and a removal-stamped row belongs to the reinstall sweep.
+
 A courier turn is not sent until the assistant declares the specialist as a delegate
 ([`plugin-setup.md`](plugin-setup.md), INV-PLUG-029), so the courier's retry budget is not
 spent on refusals that happen before an install has finished wiring the delegation.
@@ -193,6 +215,7 @@ is the stamped one.
 **Tests**
 - `tests/test_plugin_setup_evidence_settlement.py`
 - `tests/test_agent_setup_evidence_turn.py`
+- `tests/test_delegated_setup_evidence.py`
 - `tests/test_authz_grants_setup_identity.py`
 - `tests/test_delegate_setup_mode_gate.py`
 

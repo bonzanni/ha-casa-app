@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.328.2] - 2026-09-26
+
+### Fixed
+
+- When a plugin's automatic setup could not finish, Casa asks you to run the setup
+  yourself. If you did and it worked, Casa kept telling you, for up to three days,
+  that the setup "could not finish". A successful run now clears that report. This
+  covers a setup the assistant runs herself and one she hands to a specialist, such
+  as the finance specialist's bank feed. The reply to that run no longer carries the
+  old warning, and when you ask how a plugin's setup went, the answer says who ran it.
+
 ## [0.328.1] - 2026-09-26
 
 ### Fixed

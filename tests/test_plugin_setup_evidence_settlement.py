@@ -16,7 +16,8 @@ import pytest
 
 import plugin_setup_episodes as pse
 from test_plugin_setup_episodes import (  # noqa: F401 — fixtures
-    _decide, _dispatched, _drain_pending, _prompt, wired,
+    _COURIER, _courier_dispatched, _decide, _dispatched, _drain_pending,
+    _prompt, wired,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -109,7 +110,7 @@ async def test_a_second_evidence_is_a_no_op(wired, monkeypatch):
     "before_release", "unreleased_row", "other_role", "other_tool",
     "tool_empty", "binding_absent", "binding_other_artifact",
     "binding_not_a_dict", "registry_superseded", "registry_unavailable",
-    "two_grants", "no_setup_tool", "row_stale", "row_artifact_missing",
+    "two_grants", "no_setup_tool", "row_refused", "row_artifact_missing",
     "invoked_at_nan", "invoked_at_inf", "invoked_at_none",
     "released_ts_missing", "released_ts_nan",
 ])
@@ -144,8 +145,9 @@ async def test_evidence_that_does_not_prove_the_run_is_ignored(
             def get(self, key, default=None):
                 return "art-1"
         binding = _MappingLike()
-    elif case == "row_stale":
-        pse._update_episode(row["id"], status="stale")
+    elif case == "row_refused":
+        # #1052: `failed`/`stale` rows are clearable now; `refused` never is
+        pse._update_episode(row["id"], status="refused")
     elif case == "row_artifact_missing":
         data = pse._load()
         for e in data["episodes"]:
@@ -416,3 +418,207 @@ async def test_status_sentence_plain_dispatched_still_reads_running():
     from tools import _episode_sentence
     assert "setup is running" in _episode_sentence(
         {"plugin": "gmail", "status": "dispatched"})
+
+
+# --- #1052: a later successful run clears a failed obligation ---------------
+#
+# Observed on v0.328.0 (#1051 round 1): the courier's retries were spent while
+# the install was still wiring the delegation, the row went `failed`, the
+# operator ran the setup by hand through the assistant and it succeeded — and
+# plugin health still announced "could not finish setting up" afterwards.
+
+_FIN_BINDING = {"elevenlabs": "art-1"}
+
+
+async def _failed_courier_row(wired):
+    """The production shape: a specialist-target row whose courier retries
+    were exhausted."""
+    ep = await _courier_dispatched(wired)
+    for _ in range(3):
+        pse.report_dispatch_outcome(
+            ep["id"], tools_used_ok=set(), tools_attempted={_COURIER},
+            available_tools={_COURIER})
+        await _drain_pending(wired)
+    row = pse.episodes()[0]
+    assert row["status"] == "failed"
+    assert [i["kind"] for i in pse.health_issues()] == ["setup_episode_failed"]
+    return row
+
+
+async def _failed_resident_row(wired):
+    ep = await _dispatched(wired)
+    for _ in range(3):
+        pse.report_dispatch_outcome(
+            ep["id"], tools_used_ok=set(), tools_attempted=set(),
+            available_tools={"Read"})
+        await _drain_pending(wired)
+    row = pse.episodes()[0]
+    assert row["status"] == "failed"
+    return row
+
+
+async def test_the_specialists_own_run_clears_a_failed_courier_row(wired):
+    row = await _failed_courier_row(wired)
+    cleared = pse.settle_from_tool_evidence(
+        role="finance", tool=_NS, invoked_at=pse._now(),
+        binding=_FIN_BINDING, delegated=True)
+    assert cleared is True
+    row = pse.episodes()[0]
+    assert row["status"] == "dispatched"
+    assert row["settled_by"] == "turn_evidence"
+    assert row["settled_role"] == "finance"
+    assert row["last_error"] == ""
+    assert pse.health_issues() == []
+
+
+async def test_the_residents_own_run_clears_a_failed_resident_row(wired):
+    row = await _failed_resident_row(wired)
+    assert pse.settle_from_tool_evidence(
+        role="assistant", tool=_NS, invoked_at=pse._now(),
+        binding=_BINDING) is True
+    assert pse.episodes()[0]["settled_role"] == "assistant"
+    assert pse.health_issues() == []
+
+
+async def test_a_stale_row_is_cleared_too(wired):
+    row = await _released_pending(wired)
+    pse._update_episode(row["id"], status="stale",
+                        last_error="registry unresolvable after retries")
+    assert pse.settle_from_tool_evidence(
+        role="assistant", tool=_NS, invoked_at=_after(row),
+        binding=_BINDING) is True
+    assert pse.health_issues() == []
+
+
+async def test_a_cleared_row_is_not_redispatched_or_rearmed(wired):
+    await _failed_courier_row(wired)
+    pse.settle_from_tool_evidence(
+        role="finance", tool=_NS, invoked_at=pse._now(),
+        binding=_FIN_BINDING, delegated=True)
+    sent_before = len(wired["dispatches"])
+    await _drain_pending(wired)
+    await pse._worker_pass()
+    assert pse.ensure_obligation(plugin="elevenlabs", artifact_id="art-1") \
+        is False
+    assert len(wired["dispatches"]) == sent_before
+    assert pse.episodes()[0]["settled_by"] == "turn_evidence"
+
+
+@pytest.mark.parametrize("case", [
+    "other_role", "assistant_role", "other_tool", "binding_other_artifact",
+    "registry_superseded", "before_release", "removed",
+])
+async def test_evidence_that_does_not_prove_the_run_leaves_the_failed_row(
+        wired, monkeypatch, case):
+    row = await _failed_courier_row(wired)
+    role, tool, binding = "finance", _NS, dict(_FIN_BINDING)
+    invoked_at = pse._now()
+    if case == "other_role":
+        role = "butler"
+    elif case == "assistant_role":
+        # the courier itself: the assistant's session never ran the tool
+        role = "assistant"
+    elif case == "other_tool":
+        tool = "mcp__plugin_elevenlabs_elevenlabs__list_voices"
+    elif case == "binding_other_artifact":
+        binding = {"elevenlabs": "art-0"}
+    elif case == "registry_superseded":
+        wired["entry"] = dict(wired["entry"], artifact_id="art-2")
+    elif case == "before_release":
+        invoked_at = row["released_ts"] - 0.001
+    elif case == "removed":
+        pse.retire_for_removed("elevenlabs")
+    monkeypatch.setattr(pse, "_WATCH", None)
+    assert pse.settle_from_tool_evidence(
+        role=role, tool=tool, invoked_at=invoked_at, binding=binding,
+        delegated=True) is False
+    row = pse.episodes()[0]
+    assert row["status"] == "failed"
+    assert "settled_by" not in row
+
+
+async def test_a_refused_row_is_never_cleared(wired):
+    _prompt()
+    await _decide(approved=False)
+    row = pse.episodes()[0]
+    assert row["status"] == "refused"
+    pse._update_episode(row["id"], gate="released",
+                        released_ts=pse._now() - 10)
+    cleared = pse.settle_from_tool_evidence(
+        role="assistant", tool=_NS, invoked_at=pse._now(), binding=_BINDING)
+    assert cleared is False
+    assert pse.episodes()[0]["status"] == "refused"
+
+
+async def test_delegated_evidence_never_settles_a_live_obligation(wired):
+    """A delegated session holds no resident session gate, and a pending
+    specialist row belongs to its courier (INV-PLUG-024): only a terminal row
+    is a candidate for it — resident-target or specialist-target."""
+    row = await _released_pending(wired)
+    assert pse.settle_from_tool_evidence(
+        role="assistant", tool=_NS, invoked_at=_after(row),
+        binding=_BINDING, delegated=True) is False
+    assert "settled_by" not in pse.episodes()[0]
+
+
+async def test_delegated_evidence_never_settles_a_pending_courier_row(wired):
+    wired["entry"] = dict(wired["entry"], targets=["specialist:finance"])
+    _prompt()
+    await _decide()
+    row = pse.episodes()[0]
+    assert row["status"] == "pending" and row["gate"] == "released"
+    assert pse.settle_from_tool_evidence(
+        role="finance", tool=_NS, invoked_at=_after(row),
+        binding=_FIN_BINDING, delegated=True) is False
+    assert "settled_by" not in pse.episodes()[0]
+
+
+async def test_a_legacy_terminal_row_takes_its_failure_stamp_as_the_bound(
+        wired):
+    """A row released before `released_ts` existed: the run must follow the
+    failure, since nothing else dates the release."""
+    row = await _failed_courier_row(wired)
+    data = pse._load()
+    for e in data["episodes"]:
+        e.pop("released_ts", None)
+    pse._save(data)
+    failed_at = pse.episodes()[0]["updated_ts"]
+    assert pse.settle_from_tool_evidence(
+        role="finance", tool=_NS, invoked_at=failed_at - 0.001,
+        binding=_FIN_BINDING, delegated=True) is False
+    assert pse.settle_from_tool_evidence(
+        role="finance", tool=_NS, invoked_at=failed_at + 0.001,
+        binding=_FIN_BINDING, delegated=True) is True
+
+
+async def test_no_store_read_for_a_session_without_a_failed_plugin(
+        wired, monkeypatch):
+    await _failed_courier_row(wired)
+    loads = _count_loads(monkeypatch)
+    pse.settle_from_tool_evidence(
+        role="finance", tool="mcp__plugin_other_other__setup_other",
+        invoked_at=pse._now(), binding={"other": "art-9"}, delegated=True)
+    assert loads == []
+    pse.settle_from_tool_evidence(
+        role="finance", tool=_NS, invoked_at=pse._now(),
+        binding=_FIN_BINDING, delegated=True)
+    assert loads == [1]
+    loads.clear()
+    pse.settle_from_tool_evidence(          # cleared: no longer watched
+        role="finance", tool=_NS, invoked_at=pse._now(),
+        binding=_FIN_BINDING, delegated=True)
+    assert loads == []
+
+
+async def test_status_sentence_names_the_specialist_that_ran_it():
+    from tools import _episode_sentence
+    line = _episode_sentence({
+        "plugin": "bank-feed", "status": "dispatched",
+        "settled_by": "turn_evidence", "settled_role": "finance"})
+    assert "setup ran ('finance' ran the setup tool itself)" in line
+    assert "assistant" not in _episode_sentence({
+        "plugin": "bank-feed", "status": "dispatched",
+        "settled_by": "turn_evidence", "settled_role": "finance"})
+    assert "the assistant ran" in _episode_sentence({
+        "plugin": "gmail", "status": "dispatched",
+        "settled_by": "turn_evidence"})

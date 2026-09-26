@@ -57,7 +57,9 @@ from claude_agent_sdk import (
     ResultMessage,
     SdkMcpTool,
     TextBlock,
+    ToolResultBlock,
     ToolUseBlock,
+    UserMessage,
     create_sdk_mcp_server,
     tool,
 )
@@ -1872,6 +1874,15 @@ def engagement_casa_grant_names(engagement) -> "set[str] | None":
     return {t[len(prefix):] for t in allowed if t.startswith(prefix)}
 
 
+def _delegated_resolution(cfg):
+    """The plugin resolution a delegated session of *cfg* is built from, with
+    the CONCRETE tier + role (see ``_build_specialist_options``)."""
+    _role = getattr(cfg, "role", "unknown")
+    _tier = (_agent_registry.tier_for_role(_role)
+             if _agent_registry is not None else None) or "specialist"
+    return plugin_registry.resolve_for(f"{_tier}:{_role}")
+
+
 def _build_specialist_options(
     cfg,
     *,
@@ -1944,9 +1955,7 @@ def _build_specialist_options(
     # drift), and a resumed engagement rebuilds from its RECORDED artifacts.
     _role = getattr(cfg, "role", "unknown")
     if resolution is None:
-        _tier = (_agent_registry.tier_for_role(_role)
-                 if _agent_registry is not None else None) or "specialist"
-        resolution = plugin_registry.resolve_for(f"{_tier}:{_role}")
+        resolution = _delegated_resolution(cfg)
     # #424 r2 (Terra 2): a delegated specialist's build is a session build
     # like any other — withhold plugins whose required env vars are
     # unresolved (INV-PLUG-008), or the delegation starts their MCP servers
@@ -3103,6 +3112,78 @@ def _result_contract_block(output_format: Any) -> str:
     )
 
 
+def _settle_setup_from_delegated_results(cfg, sdk_msg, tool_calls: dict,
+                                        binding: dict) -> bool:
+    """#1052: hand every NON-error plugin-tool result of a delegated session
+    to the setup-obligation store — a specialist that runs its plugin's setup
+    tool by hand clears the ``failed`` row that asked for that run. Only a
+    terminal row is a candidate (``delegated=True``); see
+    ``plugin_setup_episodes.settle_from_tool_evidence``. Returns True iff a
+    row was cleared. Never raises."""
+    cleared = False
+    try:
+        for block in getattr(sdk_msg, "content", None) or []:
+            if not isinstance(block, ToolResultBlock) \
+                    or getattr(block, "is_error", None) is True:
+                continue
+            name, invoked_at = tool_calls.get(
+                getattr(block, "tool_use_id", ""), ("", None))
+            if not name.startswith("mcp__plugin_"):
+                continue
+            import plugin_setup_episodes
+            if plugin_setup_episodes.settle_from_tool_evidence(
+                    role=getattr(cfg, "role", ""), tool=name,
+                    invoked_at=invoked_at, binding=binding, delegated=True):
+                cleared = True
+    except Exception:  # noqa: BLE001 — the turn path must never see a raise
+        logger.exception("delegated setup-evidence handover failed")
+    return cleared
+
+
+#: #1052: how long a turn waits for the health refresh a cleared setup
+#: obligation starts. The refresh itself is never abandoned — past this bound
+#: it finishes in the background.
+_SETUP_CLEARED_REFRESH_WAIT_S = 10.0
+_SETUP_CLEARED_REFRESHES: set = set()
+
+
+async def _refresh_health_after_setup_cleared() -> None:
+    """#1052: a setup evidence cleared a failed obligation — regenerate the
+    persisted plugin-health report now, so the reply that follows the run
+    (whose health notice reads the report) no longer says setup could not
+    finish.
+
+    Under ``_plugin_tools_guard``, like every other live regeneration: the
+    report lock orders only the write, so an unserialized pass could compute
+    from the still-failed row, write after this one, and restore the notice
+    (diff round 1, Astra S2). The guard is taken in a task of its own and
+    waited for with a bound, never by the turn directly: a guard holder may
+    itself be waiting on this turn, and the turn must not deadlock or stall
+    on it. Past the bound the refresh completes in the background. Never
+    raises."""
+    async def _guarded() -> None:
+        async with _plugin_tools_guard():
+            await asyncio.to_thread(_regenerate_plugin_health, [])
+
+    def _done(t: asyncio.Task) -> None:
+        _SETUP_CLEARED_REFRESHES.discard(t)
+        if not t.cancelled() and t.exception() is not None:
+            logger.error("plugin health refresh after a cleared setup "
+                         "failed", exc_info=t.exception())
+
+    try:
+        task = asyncio.ensure_future(_guarded())
+        _SETUP_CLEARED_REFRESHES.add(task)
+        task.add_done_callback(_done)
+        await asyncio.wait_for(asyncio.shield(task),
+                               timeout=_SETUP_CLEARED_REFRESH_WAIT_S)
+    except asyncio.TimeoutError:
+        logger.info("plugin health refresh after a cleared setup is waiting "
+                    "for the plugin lock; it finishes in the background")
+    except Exception:  # noqa: BLE001 — a turn must never fail on health
+        logger.debug("plugin health refresh wait failed", exc_info=True)
+
+
 async def _run_delegated_agent(
     cfg, task_text: str, context_text: str, resolution=None,
     output_format=None, tool_counts: dict[str, int] | None = None,
@@ -3301,10 +3382,21 @@ async def _run_delegated_agent(
     # cancellation landing during `_build_specialist_options` would otherwise
     # produce no phase line at all — and "cancelled before the client even
     # started" is one of the answers we are looking for.
+    # #1052: the session's plugin binding ({plugin: artifact_id}) — from the
+    # SAME resolution the options are built from, so a setup-tool result
+    # observed below is attributed to the artifact this session really ran.
+    binding: dict[str, str] = {}
+    tool_calls: dict[str, tuple[str, float]] = {}
+
+    def _options_and_binding():
+        res = resolution if resolution is not None \
+            else _delegated_resolution(cfg)
+        return (_build_specialist_options(cfg, resolution=res,
+                                          output_format=output_format),
+                {rp.name: rp.artifact_id
+                 for rp in (getattr(res, "plugins", None) or [])})
     try:
-        options = await asyncio.to_thread(
-            _build_specialist_options, cfg, resolution=resolution,
-            output_format=output_format)
+        options, binding = await asyncio.to_thread(_options_and_binding)
         _ph["options"] = time.monotonic()
         token = agent_mod.origin_var.set(child_origin)
         client_options = (
@@ -3343,12 +3435,19 @@ async def _run_delegated_agent(
                             if isinstance(block, TextBlock):
                                 text += block.text
                             elif isinstance(block, ToolUseBlock):
+                                tool_calls[getattr(block, "id", "")] = (
+                                    str(getattr(block, "name", "")),
+                                    time.time())
                                 if tool_counts is not None:
                                     name = block.name.rsplit("__", 1)[-1]
                                     tool_counts[name] = tool_counts.get(name, 0) + 1
                                 if not _first_tool:
                                     _first_tool = True
                                     _ph["first_tool"] = time.monotonic()
+                    elif isinstance(sdk_msg, UserMessage):
+                        if _settle_setup_from_delegated_results(
+                                cfg, sdk_msg, tool_calls, binding):
+                            await _refresh_health_after_setup_cleared()
                     elif isinstance(sdk_msg, ResultMessage):
                         # Task 6 (spec §4.6): previously discarded — captured
                         # below (in `finally`, so it's recorded even when the
@@ -16389,7 +16488,13 @@ def _episode_sentence(row: dict) -> str:
     # left on it. Said independently of `status`; no claim about the
     # external side, which Casa cannot see.
     if row.get("settled_by") == "turn_evidence":
-        said = "setup ran (the assistant ran the setup tool itself)"
+        # #1052: a specialist's own run settles too; name who ran it. A row
+        # settled before `settled_role` existed was the assistant's.
+        who = row.get("settled_role")
+        if not isinstance(who, str) or not who or who == "assistant":
+            said = "setup ran (the assistant ran the setup tool itself)"
+        else:
+            said = f"setup ran ('{who}' ran the setup tool itself)"
     parts = [f"{plugin}: {said}"]
     attempts = _status_int(row.get("attempts"))
     retries = _status_int(row.get("execution_retries"))
