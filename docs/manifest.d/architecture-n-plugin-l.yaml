@@ -217,13 +217,17 @@
     - casa/rootfs/opt/casa/casa_core.py::notify_plugin_health
     - casa/rootfs/opt/casa/tools.py::_regenerate_plugin_health_guarded
     - casa/rootfs/opt/casa/tools.py::_regenerate_plugin_health_held
+    - casa/rootfs/opt/casa/tools.py::plugins_under_live_install
+    - casa/rootfs/opt/casa/plugin_health.py::is_install_phase
   tests:
     - tests/test_plugin_health.py
     - tests/test_plugin_health_notify.py
     - tests/test_settled_health_regeneration.py
+    - tests/test_install_phase_health_dm.py
   related: [architecture/plugins.md, architecture/plugin-setup.md, architecture/plugin-events.md, architecture/telegram.md]
-  defines_invariants: [INV-PLUG-013, INV-PLUG-014, INV-PLUG-015, INV-PLUG-031]
+  defines_invariants: [INV-PLUG-013, INV-PLUG-014, INV-PLUG-015, INV-PLUG-031, INV-PLUG-032]
   invariant_tests:
+    INV-PLUG-032: [tests/test_install_phase_health_dm.py::test_live_install_defers_its_install_rows_and_sends_its_faults, tests/test_install_phase_health_dm.py::test_the_install_ending_names_what_still_stands, tests/test_install_phase_health_dm.py::test_a_rolled_back_transition_leaves_the_install_live, tests/test_install_phase_health_dm.py::test_row_reason_prefers_a_fault_behind_an_install_code, tests/test_install_phase_health_dm.py::test_row_reason_sees_a_fault_a_stale_binding_replaced, tests/test_install_phase_health_dm.py::test_a_plugin_mutation_records_its_engagement, tests/test_install_phase_health_dm.py::test_a_bundle_install_records_its_scoped_entries, tests/test_install_phase_health_dm.py::test_an_install_that_ended_unobserved_defers_nothing, tests/test_install_phase_health_dm.py::test_a_notify_between_the_flip_and_the_observer_keeps_the_pass_owed, tests/test_install_phase_health_dm.py::test_row_reason_sees_a_missing_program, tests/test_install_phase_health_dm.py::test_a_targetless_plugin_gets_a_row_for_a_codeless_fault]
     INV-PLUG-031: [tests/test_settled_health_regeneration.py::test_a_cancelled_regeneration_cannot_land_after_a_newer_one, tests/test_settled_health_regeneration.py::test_a_regeneration_cancelled_while_queued_still_runs, tests/test_settled_health_regeneration.py::test_the_guard_owner_regenerates_inline_without_deadlocking, tests/test_settled_health_regeneration.py::test_a_cancel_after_the_write_reaches_the_notify, tests/test_settled_health_regeneration.py::test_a_holder_cancelled_mid_regeneration_keeps_the_lock_until_it_lands, tests/test_settled_health_regeneration.py::test_no_live_caller_hops_to_the_regeneration_thread_directly]
     INV-PLUG-015: [tests/test_plugin_setup_episodes.py::test_damaged_setup_history_is_disclosed_live_after_reset_and_until_decay]
     INV-PLUG-013: [tests/test_plugin_health_notify.py::test_only_the_rows_it_named_are_marked, tests/test_plugin_health_notify.py::test_a_regeneration_during_the_send_defers_the_mark, tests/test_plugin_health_notify.py::test_a_confirmed_dm_leaves_no_in_band_duplicate, tests/test_plugin_health_notify.py::test_a_failed_dm_leaves_the_in_band_notice_armed, tests/test_plugin_health.py::test_mark_notified_is_skipped_when_the_report_moved_on, tests/test_plugin_health.py::test_notice_omits_rows_the_dm_already_named, tests/test_plugin_health.py::test_a_legacy_report_that_moved_mid_send_is_still_fenced, tests/test_plugin_health.py::test_a_warning_is_never_carried_by_the_in_band_notice, tests/test_plugin_health.py::test_an_executor_targeted_issue_is_never_carried_by_the_in_band_notice]

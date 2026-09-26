@@ -3355,6 +3355,26 @@ async def _notify_plugin_health_locked(channel_manager: Any, path: str) -> None:
     entries = [e for e in (list(report.get("issues", []))
                            + list(report.get("warnings", [])))
                if e.get("fingerprint") in fp_set]
+    # #1053: an install walks its plugin through states that are expected on
+    # the way (consent pending, a setup-provided value not wired yet, setup
+    # still to run…). While the engagement installing that plugin is live, its
+    # install-phase rows are neither named nor marked — so they stay new, and
+    # the pass run when that engagement ends (tools._on_engagement_terminal)
+    # names whatever still stands. Any other row is a fault and is sent as ever.
+    try:
+        import tools as _tools_mod
+        installing = _tools_mod.plugins_under_live_install()
+    except Exception:  # noqa: BLE001 — unknown → defer nothing
+        logger.warning("plugin_health notify: live-install lookup failed",
+                       exc_info=True)
+        installing = set()
+    if installing:
+        entries = [e for e in entries
+                   if not (e.get("name") in installing
+                           and plugin_health.is_install_phase(
+                               e.get("reason_code")))]
+        if not entries:
+            return
     # #551: the DM addresses the same human as the in-band notice, so it shares
     # the one operator-facing renderer rather than printing reason codes. It
     # carries the detail (an unresolved var name, a setup episode's last_error)

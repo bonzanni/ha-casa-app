@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-17
+last_reviewed: 2026-09-26
 ---
 
 # Plugin health
@@ -131,6 +131,23 @@ notice's own count. None of those is lost — they stay unrecorded, so a later n
 name them, five at a time, and the status tool lists them on request — but nothing here
 delivers them on a schedule.
 
+**An install's own intermediate states are not faults while it runs.** Installing a plugin
+walks it through states that are expected on the way: consent still to give, a
+setup-provided value not wired yet, setup still to run, a first install not loaded yet, a
+plugin installed before its specialist. The plugin mutations an engagement makes record
+that engagement as installing the plugin — bundle entries by their scoped names — and while
+it is live the DM neither names nor marks that plugin's rows in those states. They stay new,
+so when the engagement ends, by whatever path, one notify pass runs and names whatever still
+stands; an install that ended with the plugin not working is exactly what the operator must
+hear. Every other row — a failed setup, a corrupt artifact — is sent at once, install or not,
+and a row never lets an install-phase state stand in front of a real fault: a report row
+carries one reason, and an install-phase one only when every other input of the plugin's
+readiness is ready or install-phase too — including a missing program, which verification
+reports without a code of its own and which the row then names. The
+record is in-process, so after a restart nothing is deferred (a spare DM, never a lost one);
+the in-band notice and the status tool are unaffected. The ending pass is an ordinary one, so
+it names five rows and counts the rest like any other.
+
 Two consequences are deliberate. A `target=None` row is operator-global — one DM naming it
 records it for every role. And a changed `detail` on an unchanged fingerprint no longer
 re-shows in-band; the DM never re-announced it either, so this closes an undesigned channel
@@ -205,6 +222,16 @@ own parent, so it settles only the thread hop there. What this does not cover: t
 reconcile regenerations, which run before the HTTP server, the channels and the agent loops
 start, so nothing can race them.
 
+**INV-PLUG-032**: While the engagement installing a plugin is live, the operator DM neither names nor marks that plugin's rows whose reason is an install phase (consent pending, a setup-provided value unwired, setup pending, not loaded yet, target pending); every other row is sent as before; and when that engagement reaches a terminal state in this process, a notify pass runs that can name those rows.
+
+Both halves fail silently. Deferring without the ending pass leaves an install that stopped
+short unannounced until some later mutation or boot, which may never come; so the pass is
+driven from the engagement registry's one terminal funnel, which every in-process terminal
+write reaches — and a strict transition that rolled back, leaving the engagement live, does
+not. Deferring by plugin alone would withhold a real fault for as long as the install runs,
+which is why the filter keys on the reason as well, and why a row's reason is chosen so that
+an install-phase code never hides one.
+
 ## Failure behavior
 
 **The report cannot be written at boot.** Boot still exits successfully — deliberately,
@@ -274,11 +301,14 @@ setup run and wired by the configurator ([`plugin-runtime.md`](plugin-runtime.md
 - `casa/rootfs/opt/casa/casa_core.py::notify_plugin_health`
 - `casa/rootfs/opt/casa/tools.py::_regenerate_plugin_health_guarded`
 - `casa/rootfs/opt/casa/tools.py::_regenerate_plugin_health_held`
+- `casa/rootfs/opt/casa/tools.py::plugins_under_live_install`
+- `casa/rootfs/opt/casa/plugin_health.py::is_install_phase`
 
 **Tests**
 - `tests/test_plugin_health.py`
 - `tests/test_plugin_health_notify.py`
 - `tests/test_settled_health_regeneration.py`
+- `tests/test_install_phase_health_dm.py`
 
 **Related**
 - [`architecture/plugins.md`](../architecture/plugins.md)

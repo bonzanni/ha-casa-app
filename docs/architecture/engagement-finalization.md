@@ -58,7 +58,11 @@ record and returns failure; the finalize path performs topic closure, driver tea
 notification only on success. The winning transition also schedules the engagement's uid
 quiesce, and the funnel waits for it — bounded — before any of those effects, so an
 engagement's own processes stop before the operator is told it ended (INV-CONT-006, in
-[`architecture/engagement-containment.md`](engagement-containment.md)).
+[`architecture/engagement-containment.md`](engagement-containment.md)). The same point —
+and only it, so a strict transition that rolled back tells nobody — hands the record to one
+optional observer, which may only schedule work: the tools layer uses it to run the
+plugin-health pass an ended install owes (INV-PLUG-032, in
+[`architecture/plugin-health.md`](plugin-health.md)).
 
 The direct status mutators honour the same boundary: each re-checks for a prior terminal
 state under the registry lock and declines to overwrite one — the idle sweep cannot flip a
