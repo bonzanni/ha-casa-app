@@ -84,6 +84,15 @@ def canonical_args_hash(tool_input: dict) -> str:
 # default; single-use".
 DEFAULT_GRANT_TTL_S = 300.0
 
+# #1049: the approve edit states the grant's window, so an identical re-ask
+# inside it running without a new prompt is what the operator was told.
+_GRANT_TTL_MINUTES = int(DEFAULT_GRANT_TTL_S // 60)
+
+# #1049: how long a delegated call's approval waits for the specialist's
+# delegation slot before it is handed back anyway — under the grant's TTL, so
+# the continuation still arrives while the grant can serve it.
+_APPROVAL_SLOT_WAIT_S = 240.0
+
 
 def normalize_role(target: str) -> str:
     """Strip a plugin target's tier qualifier so it matches
@@ -211,6 +220,40 @@ class GrantStore:
 # PreToolUse authz hook's consume, plugin/reload lifecycle purges, and the
 # casa_core.py hourly sweep job) all import THIS instance.
 GRANTS = GrantStore()
+
+
+# #1049: delegations whose protected call raised a DM approval challenge. A
+# sync delegation that outlives its 60 s wait ends in a completion
+# NOTIFICATION, and the resident turn Casa builds from it runs at an origin no
+# grant can serve — retrying the call there is refused, and the resident then
+# told the operator to send it "fresh" while their approval was still live.
+# The notification turn reads this record and tells the resident to leave the
+# call to the approval's own continuation. In-process and advisory (a restart
+# loses it along with every grant); capped because a delegation that returned
+# in time never produces a notification to take its entry.
+_AWAITING_APPROVAL_CAP = 256
+_AWAITING_APPROVAL: dict[str, None] = {}
+
+
+def note_delegation_awaiting_approval(delegation_id: str) -> None:
+    if not delegation_id:
+        return
+    _AWAITING_APPROVAL.pop(delegation_id, None)
+    _AWAITING_APPROVAL[delegation_id] = None
+    while len(_AWAITING_APPROVAL) > _AWAITING_APPROVAL_CAP:
+        del _AWAITING_APPROVAL[next(iter(_AWAITING_APPROVAL))]
+
+
+def forget_delegation_awaiting_approval(delegation_id: str) -> None:
+    _AWAITING_APPROVAL.pop(delegation_id, None)
+
+
+def take_delegation_awaiting_approval(delegation_id: str) -> bool:
+    """True exactly once for a delegation noted above."""
+    if not delegation_id or delegation_id not in _AWAITING_APPROVAL:
+        return False
+    del _AWAITING_APPROVAL[delegation_id]
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -509,6 +552,17 @@ class ChallengeHandle:
             return "delivery_failed"
         return "inactive"
 
+    def answered(self) -> bool:
+        """#1049: did the operator answer this challenge (either button)? An
+        answer committed while the post was still settling reads back as
+        ``inactive`` from :meth:`settled_post`; this tells it apart from a
+        timeout or a cancellation."""
+        ch = self._challenge
+        if ch is None or not ch.req._future.done():
+            return False
+        outcome = ch.req._future.result()
+        return isinstance(outcome, dict) and outcome.get("outcome") == "answered"
+
 
 class ChallengeCoordinator:
     """Atomic challenge registration + async-settled setup driver + two-latch
@@ -530,6 +584,13 @@ class ChallengeCoordinator:
         # Strong refs to the owned setup drivers so they are never GC'd
         # mid-flight; ``drain`` awaits exactly this set at shutdown.
         self._drivers: set[asyncio.Task] = set()
+        # #1049: delegated decisions waiting for their specialist's slot, and
+        # the slot waits inside them — ``drain`` cuts the waits short (the
+        # decision is then delivered at once, as before the wait existed) and
+        # awaits the deliveries before the channels stop.
+        self._continuations: set[asyncio.Task] = set()
+        self._slot_waits: set[asyncio.Task] = set()
+        self._stopping = False
 
     # -- generic registration (SYNCHRONOUS, loop-confined, single owner) -----
 
@@ -847,6 +908,25 @@ class ChallengeCoordinator:
                     "authz continuation dispatch failed (%s)", _target_desc)
                 return False
 
+        async def _deliver(text: str, fail_text: str) -> None:
+            if not await _safe_dispatch(text):
+                await channel.edit_dm_message(chat_id, message_id, fail_text)
+
+        async def _hand_over(text: str, fail_text: str) -> None:
+            """#1049: a delegated call's decision goes back to the resident that
+            delegated, which must delegate again — and a sync delegation
+            degraded to `pending` keeps its specialist's slot until the run
+            ends, so a continuation dispatched at once is refused `busy`. It is
+            handed over once the slot is free (bounded under the grant's TTL;
+            on timeout, as before), on a task of its own: this hook is awaited
+            by the broker's global hook drain, which engagement finalization
+            and shutdown both wait on. Everything else is delivered inline."""
+            if engagement_id or enforcement_role == target_role or self._stopping:
+                await _deliver(text, fail_text)
+                return
+            self._spawn_continuation(self._after_slot(
+                chat_id, enforcement_role, lambda: _deliver(text, fail_text)))
+
         async def _finish(outcome: dict) -> None:
             # #663: release-guarantee. The whole body is wrapped because every
             # arm that never reaches the delivery seam — expiry, an unrecorded
@@ -887,34 +967,69 @@ class ChallengeCoordinator:
                 await channel.edit_dm_message(
                     chat_id, message_id,
                     f"✅ Approved — {display} ({enforcement_role}) may run "
-                    f"{short} once with exactly these arguments",
+                    f"{short} once with exactly these arguments in the next "
+                    f"{_GRANT_TTL_MINUTES} minutes",
                 )
-                ok = await _safe_dispatch(
+                await _hand_over(
                     "[authorization approved]: have "
                     f"{enforcement_role} call {tool_name} with EXACTLY "
-                    f"these arguments:\n{canonical_json}"
+                    f"these arguments:\n{canonical_json}",
+                    # #1049: an engagement-bound grant can be used only by that
+                    # engagement, so "say 'retry' in chat" was false advice
+                    # there; the DM-path grant does serve an identical retry.
+                    f"⚠️ Approved, but {_target_desc} could not be "
+                    "resumed to use it — ask for it again"
+                    if engagement_id else
+                    f"⚠️ Approved, but delivery to {_target_desc} "
+                    "failed — say 'retry' in chat",
                 )
-                if not ok:
-                    await channel.edit_dm_message(
-                        chat_id, message_id,
-                        f"⚠️ Approved, but delivery to {_target_desc} "
-                        "failed — say 'retry' in chat",
-                    )
             else:
                 await channel.edit_dm_message(
                     chat_id, message_id, f"❌ Denied — {short} will not run",
                 )
-                ok = await _safe_dispatch(
-                    f"[authorization denied]: do not retry {tool_name}"
+                await _hand_over(
+                    f"[authorization denied]: do not retry {tool_name}",
+                    f"⚠️ Denied, but delivery to {_target_desc} "
+                    "failed — say 'retry' in chat",
                 )
-                if not ok:
-                    await channel.edit_dm_message(
-                        chat_id, message_id,
-                        f"⚠️ Denied, but delivery to {_target_desc} "
-                        "failed — say 'retry' in chat",
-                    )
 
         return _finish
+
+    # -- #1049: delegated decisions delivered once the specialist is free ----
+
+    def _spawn_continuation(self, coro: Any) -> None:
+        task = asyncio.get_running_loop().create_task(coro)
+        self._continuations.add(task)
+        task.add_done_callback(self._continuations.discard)
+
+    async def _after_slot(
+        self, chat_id: int, role: str, deliver: Callable[[], Any],
+    ) -> None:
+        # Checked here, not only in the finish hook: a task queued before the
+        # shutdown drain swept the waits but started after it would begin a
+        # wait nobody cancels.
+        if not self._stopping:
+            await self._wait_for_slot(chat_id, role)
+        try:
+            await deliver()
+        except Exception:  # noqa: BLE001 — a background task: log, never raise
+            logger.exception("authz continuation delivery failed for %s", role)
+
+    async def _wait_for_slot(self, chat_id: int, role: str) -> None:
+        import tools as tools_mod
+
+        wait = asyncio.ensure_future(tools_mod.wait_for_delegation_slot(
+            chat_id, role, _APPROVAL_SLOT_WAIT_S))
+        self._slot_waits.add(wait)
+        try:
+            await asyncio.wait({wait})
+        finally:
+            self._slot_waits.discard(wait)
+            if not wait.done():
+                wait.cancel()
+        if not wait.cancelled() and wait.exception() is not None:
+            logger.warning("authz continuation: slot wait failed for %s",
+                           role, exc_info=wait.exception())
 
     # -- two-latch cleanup (coordinator-driven, never inside the edit) ------
 
@@ -939,11 +1054,12 @@ class ChallengeCoordinator:
     def cancel_matching(
         self, *, role: str | None = None, artifact: str | None = None,
         chat: int | None = None, plugin: str | None = None,
-        persona: str | None = None,
+        persona: str | None = None, engagement: str | None = None,
+        reason: str = "challenge_cancelled",
     ) -> int:
         """Cancel the broker records for every live challenge matching ANY of
-        the provided filters (keyboard -> expired via the finish hook). Returns
-        the number of records actually cancelled."""
+        the provided filters (keyboard -> retired via the finish hook, worded
+        by *reason*). Returns the number of records actually cancelled."""
 
         def _matches(k: Any) -> bool:
             # getattr-based so BOTH key types match on the fields they carry:
@@ -970,6 +1086,12 @@ class ChallengeCoordinator:
             # generation, not this sweep.
             if persona is not None and getattr(k, "persona_id", None) == persona:
                 return True
+            # engagement filter (#1049): an engagement that went terminal
+            # retires its own unanswered challenges — a tap after the end would
+            # mint a grant bound to an engagement nothing can ever resume. A
+            # falsy filter never matches, so the DM path's "" is never swept.
+            if engagement and getattr(k, "engagement_id", None) == engagement:
+                return True
             return False
 
         matched = [ch for k, ch in self._entries.items() if _matches(k)]
@@ -977,7 +1099,7 @@ class ChallengeCoordinator:
         for ch in matched:
             if ch.broker.cancel(
                 namespace="resident_ask", scope=ch.scope,
-                request_id=ch.rid, reason="challenge_cancelled",
+                request_id=ch.rid, reason=reason,
             ):
                 n += 1
         return n
@@ -985,10 +1107,17 @@ class ChallengeCoordinator:
     async def drain(self) -> None:
         """Await all outstanding setup-driver tasks (r4-B2/r5-B2). Called from
         casa_core's shutdown ladder AFTER ``BROKER.cancel_all()`` so a draining
-        driver can only find a cancelled request (no fresh keyboard is posted)."""
-        drivers = list(self._drivers)
-        if drivers:
-            await asyncio.gather(*drivers, return_exceptions=True)
+        driver can only find a cancelled request (no fresh keyboard is posted).
+
+        #1049: also cuts every delegated decision's slot wait short, so the
+        decision is delivered now rather than holding shutdown for up to
+        ``_APPROVAL_SLOT_WAIT_S``, and awaits those deliveries."""
+        self._stopping = True
+        for wait in list(self._slot_waits):
+            wait.cancel()
+        pending = list(self._drivers) + list(self._continuations)
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
 
 # Process-wide singleton (mirrors GRANTS): casa_core's shutdown ladder and the
@@ -1335,6 +1464,13 @@ def make_resident_authz_hook(
                 )
                 if handle.refused == "args_too_large":
                     return _deny(_DENY_UNRENDERABLE)
+                # #1049: noted BEFORE the post settles — an Approve that commits
+                # while the post is still settling reads back as `inactive`,
+                # and that approval is just as live.
+                delegation_id = "" if engagement_id else str(
+                    (agent_mod.origin_var.get(None) or {}).get(
+                        "_delegation_id") or "")
+                note_delegation_awaiting_approval(delegation_id)
                 if handle.created is False:
                     return _deny(_DENY_PENDING)  # identical challenge already up.
 
@@ -1342,8 +1478,13 @@ def make_resident_authz_hook(
                 # (shielded); deny latency ≈ one Telegram post RTT.
                 outcome = await handle.settled_post()
                 if outcome == "delivery_failed":
+                    forget_delegation_awaiting_approval(delegation_id)
                     return _deny(_DENY_DELIVERY_FAILED)
                 if outcome == "inactive":
+                    # #1049: an expiry or a cancellation leaves no decision to
+                    # wait for; an answer that raced the post does.
+                    if not handle.answered():
+                        forget_delegation_awaiting_approval(delegation_id)
                     return _deny(_DENY_INACTIVE)
                 return _deny(_DENY_POSTED)
 

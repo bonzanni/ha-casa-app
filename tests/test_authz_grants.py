@@ -1288,7 +1288,7 @@ class TestAuthzFinishHook:
         # No display name threaded ⇒ render-time guard substitutes the role.
         assert channel.edits[-1][2] == (
             "✅ Approved — finance (finance) may run invoice_reset once with "
-            "exactly these arguments"
+            "exactly these arguments in the next 5 minutes"
         )
 
     async def test_approved_edit_names_display_name_when_threaded(
@@ -1303,7 +1303,7 @@ class TestAuthzFinishHook:
         await _settle()
         assert channel.edits[-1][2] == (
             "✅ Approved — Alex (finance) may run invoice_reset once with "
-            "exactly these arguments"
+            "exactly these arguments in the next 5 minutes"
         )
 
     async def test_denied_edit_uses_humanized_settlement_copy(
@@ -1744,6 +1744,6 @@ class TestC1EngagementContinuationReservation:
         texts = [e[2] for e in channel.edits]
         facts = (len(texts),
                  "approved" in texts[0].lower() if texts else None,
-                 "failed" in texts[-1].lower() if len(texts) > 1 else False,
+                 "could not be resumed" in texts[-1].lower() if len(texts) > 1 else False,
                  sum(l.releases for l in channel.leases))
         assert facts == (2, True, True, 1), f"authz raise facts: {facts!r}"

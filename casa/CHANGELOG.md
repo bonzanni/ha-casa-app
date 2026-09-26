@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.328.5] - 2026-09-26
+
+### Fixed
+
+- Approving a specialist's protected action (a purge or a restore, say) no longer
+  goes nowhere when the specialist's work finishes before you tap. If the
+  specialist's conversation has ended, its approval button is withdrawn and says
+  so, so you are not asked to approve something nothing can carry out. If the
+  request came from a longer task the assistant handed to a specialist, your
+  approval now waits until that task has finished and is then carried out,
+  instead of bouncing off it. When that task finishes, the assistant is now told
+  to leave the action to your approval. Before, it could retry the action itself,
+  be refused, and ask you to send it again while your approval was still valid.
+- The approval confirmation now says the approval lasts five minutes. Asking
+  for the same action again within that time runs it without a second prompt.
+
 ## [0.328.4] - 2026-09-26
 
 ### Fixed

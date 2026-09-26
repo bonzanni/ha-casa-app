@@ -74,6 +74,9 @@ _CAUSES: dict[str, tuple[tuple[str, str], str]] = {
     # by what, because `cancel_matching` does not carry that and widening it to
     # say so would be a different change.
     "challenge_cancelled": (_WITHDRAWN, "was withdrawn before it was answered"),
+    # #1049: the engagement that raised the challenge ended first.
+    "engagement_ended": (
+        _WITHDRAWN, "was withdrawn when the engagement that asked for it ended"),
     # Both lanes.
     "new_session": (_CANCELLED, "was cancelled by /new"),
     "casa_shutdown": (_CANCELLED, "was cancelled when Casa shut down"),

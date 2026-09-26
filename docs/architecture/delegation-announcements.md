@@ -83,12 +83,16 @@ does instead is say what it is. The resident is told that this is a post-restart
 re-announcement whose full delivery was not confirmed — the interrupted relay may have shown
 the operator nothing, a partial streamed draft, or the whole answer with only its
 acknowledgement lost — and that the complete result is still owed; a live completion is never
-so marked, and the two prompts differ in exactly that statement. Repeating an answer the
+so marked, and that statement is the only difference the replay introduces. A live prompt can
+carry one more instruction that a replay cannot: the note telling the resident not to retry an
+action that stopped at an operator approval
+([`plugins.md`](plugins.md), under INV-PLUG-004) is read from an in-process record, which no
+boot replay inherits. Repeating an answer the
 operator may already have read is the price of never losing one, and a resident that read
 the replay as a duplicate and narrated a fragment discharged the whole answer by the rule
 above, which is why it is now told not to.
 
-**INV-JOB-016**: A retained answer replayed at boot is handed to the consuming resident as a post-restart re-announcement whose full delivery was not confirmed, with the instruction to relay the whole answer — a completion announced live is never so marked, and the two synthesized prompts differ in exactly that statement.
+**INV-JOB-016**: A retained answer replayed at boot is handed to the consuming resident as a post-restart re-announcement whose full delivery was not confirmed, with the instruction to relay the whole answer — a completion announced live is never so marked, and that statement is the only difference the replay introduces: for the same completion the two synthesized prompts differ in exactly that statement, except where the live prompt also carries an instruction that depends on in-process state.
 
 **INV-JOB-015**: A non-voice delegated answer is retained on the durable row exactly while its announcement is owed — it is written in the same snapshot that arms the obligation and only when the obligation is armed, and it is removed in the same snapshot that clears the obligation on DELIVERY — so an answer that was in hand when a delegation completed reaches its creator across a restart, and stops being retained once a delivery has been acknowledged.
 

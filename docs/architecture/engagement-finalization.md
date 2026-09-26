@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-19
+last_reviewed: 2026-09-26
 ---
 
 # Engagement finalization
@@ -62,7 +62,9 @@ engagement's own processes stop before the operator is told it ended (INV-CONT-0
 and only it, so a strict transition that rolled back tells nobody — hands the record to one
 optional observer, which may only schedule work: the tools layer uses it to run the
 plugin-health pass an ended install owes (INV-PLUG-032, in
-[`architecture/plugin-health.md`](plugin-health.md)).
+[`architecture/plugin-health.md`](plugin-health.md)) and to withdraw the engagement's
+unanswered authorization challenges (INV-PLUG-033, in
+[`architecture/plugins.md`](plugins.md)).
 
 The direct status mutators honour the same boundary: each re-checks for a prior terminal
 state under the registry lock and declines to overwrite one — the idle sweep cannot flip a

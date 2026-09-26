@@ -84,6 +84,7 @@ EDIT_DM_MESSAGE_CALLERS = {
     ("scheduled_asks.py", "_settle"): {"derived"},                 # the stored admitted body + terminal suffix
     ("scheduled_asks.py", "_replay_terminal_edit"): {"derived"},   # the persisted terminal_edit of that body
     ("authz_grants.py", "_finish_inner"): {"status"},              # retired / denied / delivery-failed statuses
+    ("authz_grants.py", "_deliver"): {"status"},                   # #1049: the delivery-failed status, moved out of _finish_inner
     ("callback_consent.py", "_finish"): {"plugin"},                # consent bodies are plugin-authored
     ("event_consent.py", "_finish"): {"plugin"},
     ("persona_install_consent.py", "_finish_inner"): {"plugin"},

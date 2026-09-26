@@ -3994,6 +3994,16 @@ def _attach_completion_callback(
     task.add_done_callback(_done)
 
 
+async def wait_for_delegation_slot(chat_id: int, role: str, timeout: float) -> bool:
+    """#1049: wait until a non-interactive delegation to *role* from *chat_id*
+    would not be refused ``busy`` by the per-scope cap — the scope computed by
+    the one function ``_prelaunch`` uses. ``True`` with no limiter wired."""
+    if _specialist_limiter is None:
+        return True
+    return await _specialist_limiter.wait_until_free(
+        _delegation_scope({"chat_id": chat_id}, role, "sync"), timeout)
+
+
 def _delegation_scope(origin: dict, agent_name: str, mode: str = "sync") -> str:
     """Role-wide for text engagements; calling-session scope for quick work.
 
@@ -13575,7 +13585,15 @@ def _on_engagement_terminal(rec) -> None:
     """EngagementRegistry terminal observer: an engagement that was installing
     plugins has ended, so the rows the DM deferred for them are deferred no
     longer — run one notify pass now rather than at the next mutation or boot,
-    which may never come. Runs under the registry lock: schedule only."""
+    which may never come. Runs under the registry lock: schedule only.
+
+    #1049: an ended engagement also retires its own unanswered authorization
+    challenges — a later tap could only mint a grant bound to an engagement
+    nothing will ever resume. Synchronously, in this same step: a deferred
+    retirement left a window after the transition in which a tap still
+    committed. ``cancel_matching`` never awaits; the keyboard edits it causes
+    run later on the broker's own hook tasks."""
+    CHALLENGES.cancel_matching(engagement=rec.id, reason="engagement_ended")
     if rec.id not in _PLUGIN_INSTALLERS.values():
         return
     for name, eid in list(_PLUGIN_INSTALLERS.items()):
