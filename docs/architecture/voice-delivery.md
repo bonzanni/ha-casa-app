@@ -33,7 +33,7 @@ serialized even across route reconnects.
 **The bounds are fixed and small.** A disconnected route stays fresh for sixty seconds; a
 completed result is deliverable for at most fifteen minutes (a specialist's shorter privacy
 expiry wins), and that same deadline is when the record is deleted — see
-[what Casa keeps about a finished delegation](jobs-and-delivery.md#what-casa-keeps-about-a-finished-delegation),
+[what Casa keeps about a finished delegation](delegation-announcements.md#what-casa-keeps-about-a-finished-delegation),
 which owns the retention rule; a route holds at most five live-or-ready jobs; a claim leases
 for fifteen seconds with five-second renewals, and a nacked endpoint parks re-offers for
 thirty. These decide admission, expiry and redelivery latency — none is
@@ -88,7 +88,7 @@ answer for that id with *job not found* rather than reporting an expired job —
 is gone, and saying so is the truthful answer. The one exception is a row that still owes
 its creator an announcement, which is kept until the notice is delivered; the retention
 rule and its exemption are stated in
-[what Casa keeps about a finished delegation](jobs-and-delivery.md#what-casa-keeps-about-a-finished-delegation).
+[what Casa keeps about a finished delegation](delegation-announcements.md#what-casa-keeps-about-a-finished-delegation).
 
 ## Extension points
 

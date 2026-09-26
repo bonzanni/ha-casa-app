@@ -46,7 +46,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | hook resolution or authentication, hook policy parameters or fallbacks, or the containment-floor snapshot | [`architecture/hook-resolution.md`](architecture/hook-resolution.md) |
 | how a deferred answer reaches a device, the delivery frame protocol, leases or TTLs, per-device ordering, or what a voice result may disclose | [`architecture/voice-delivery.md`](architecture/voice-delivery.md) |
 | installing or removing a persona, where a persona ref may resolve, persona install consent or its revocation, applying a persona override, or the persona sweep | [`architecture/persona-lifecycle.md`](architecture/persona-lifecycle.md) |
-| job persistence, restart recovery, what a stop does to a delegation, or what a finished delegation still owes its creator | [`architecture/jobs-and-delivery.md`](architecture/jobs-and-delivery.md) |
+| job persistence, restart recovery, or what a stop does to a delegation | [`architecture/jobs-and-delivery.md`](architecture/jobs-and-delivery.md) |
 | logging, correlation ids, redaction, or a health surface | [`architecture/observability.md`](architecture/observability.md) |
 | personas, bindings, prompt composition, the per-surface admission ceilings, or the binding digest | [`architecture/personality.md`](architecture/personality.md) |
 | plugin environment resolution or withholding, the plugin env conf file, or the plugin media outbox | [`architecture/plugin-runtime.md`](architecture/plugin-runtime.md) |
@@ -81,6 +81,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | turn admission — how a turn is handed to a live engagement, or what a terminal record is never handed | [`architecture/engagement-turn-admission.md`](architecture/engagement-turn-admission.md) |
 | voice transports, voice authentication, the turn budget, specialist handoff, or deferred delivery | [`architecture/voice.md`](architecture/voice.md) |
 | what a dispatched setup turn reports or settles, the courier delegation rule, or the grant identity of a setup-marked turn | [`architecture/plugin-setup-turn.md`](architecture/plugin-setup-turn.md) |
+| what a finished delegation still owes its creator — the announcement obligation, the retained answer, the replayed prompt, or how long a finished job row is kept | [`architecture/delegation-announcements.md`](architecture/delegation-announcements.md) |
 | what a specialist's persisted instance tuple may hold, the secret or digest guard on a tuple snapshot, the boot scrub of persisted tuples, a pending-configuration candidate and its re-commit, or how a damaged tuple is loaded at boot | [`architecture/specialist-instance-tuples.md`](architecture/specialist-instance-tuples.md) |
 | what a terminal engagement's topic or its engager is told, the outcome mark, the unconfirmed-post disclosure, or the durable obligation to notify | [`architecture/engagement-terminal-telling.md`](architecture/engagement-terminal-telling.md) |
 | what a terminal outcome discloses about inbound messages, a driver's inbound text accessors, the evicted-message population, or a reservation's disclosed text and the count over it | [`architecture/engagement-inbound-disclosure.md`](architecture/engagement-inbound-disclosure.md) |
