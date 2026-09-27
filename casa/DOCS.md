@@ -1334,16 +1334,25 @@ The same repository-driven flow covers **upgrading** to a newer version,
 just ask Ellen (e.g. *"Upgrade the finance specialist"*, *"Roll back
 finance to the previous version"*, *"Uninstall the finance specialist"*).
 
-**Erasing a plugin's data.** Some plugins can erase everything they hold
-themselves — the finance specialist's bank feed, for example, erases its ledger
-and backups and withdraws your bank consents. When you uninstall such a plugin,
-or a specialist that bundles one, Casa asks you first in a DM: **Keep data**,
-**Erase data** or **Cancel**. Keep data uninstalls as before, and a reinstall
-picks the data up again. Erase data runs the plugin's own eraser first, and
-the uninstall goes ahead only if the plugin reports the erasure complete; if it
-does not (a bank would not confirm withdrawing its consent, say), nothing is
-removed and you get the plugin's own report, so you can try again or uninstall
-anyway. Home Assistant backups taken earlier still contain the data either way.
+**Erasing a plugin's data.** Some plugins can erase their own data — the
+finance specialist's bank feed, for example, erases its ledger and backups.
+When you uninstall such a plugin, or a specialist that bundles one, Casa asks
+you first in a DM, offering the choices the plugin supports:
+
+- **Keep data** uninstalls as before, and a reinstall picks the data up again.
+- **Erase data, keep sign-ins** erases the data but keeps what a reinstall
+  needs to carry on without signing in again (for a bank feed, its bank
+  sessions).
+- **Erase everything** erases all of it, sign-ins included, and Casa also
+  clears its own references to the plugin's secrets — as if the plugin had
+  never been installed.
+- **Cancel** removes nothing.
+
+An erase runs the plugin's own eraser first, and the uninstall goes ahead only
+if the plugin reports the erasure complete. If it does not (a bank would not
+confirm withdrawing its consent, say), nothing is removed and you get the
+plugin's own report, so you can try again or uninstall anyway. Home Assistant
+backups taken earlier still contain the data either way.
 You can also swap which persona an installed specialist uses (its bundled
 default, or another installed persona) by asking Ellen to apply a
 different persona to it.

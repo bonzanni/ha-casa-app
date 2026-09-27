@@ -664,9 +664,11 @@ def artifact_verdict(path: Path, *, name: str, repo: str, revision: str,
         manifest_setup_tool(manifest)
     except StoreError:
         return "setup_tool_invalid"
-    # #1046: same upgrade-path posture for casa.eraseTool.
+    # #1046: same upgrade-path posture for casa.eraseTool (and #1067's
+    # casa.eraseDataOnlyTool).
     try:
         manifest_erase_tool(manifest)
+        manifest_erase_data_only_tool(manifest)
     except StoreError:
         return "erase_tool_invalid"
     # #1047: and for casa.dropOffs.
@@ -1252,7 +1254,7 @@ def manifest_erase_tool(manifest: dict) -> str | None:
     revokes what it can at its providers; it must be argument-free and
     return ``{"erasure": "complete"|"incomplete", "report": str}``
     (``docs/architecture/plugin-erasure.md``). Casa runs it only on the
-    operator's Erase tap at uninstall, before removing the plugin.
+    operator's Erase everything tap at uninstall, before removing the plugin.
 
     PRESENT-but-malformed raises ``StoreError(reason_code=
     "erase_tool_invalid")``, validated on every artifact-verification path
@@ -1261,13 +1263,31 @@ def manifest_erase_tool(manifest: dict) -> str | None:
     ``casa.resultContract`` — which the declaration therefore requires: the
     result broker refuses every non-setup tool of a plugin that has not
     adopted the contract, so an eraser there could never run."""
+    return _manifest_eraser(manifest, "eraseTool")
+
+
+def manifest_erase_data_only_tool(manifest: dict) -> str | None:
+    """Guarded + STRICT ``casa.eraseDataOnlyTool`` extraction (#1067): the
+    eraser that erases the plugin's data but keeps what a reinstall needs to
+    carry on without re-authenticating. Same contract and refusal as
+    :func:`manifest_erase_tool`, and it must also differ from the
+    ``casa.eraseTool``. Casa runs it on the operator's "Erase data, keep
+    sign-ins" tap."""
+    tool = _manifest_eraser(manifest, "eraseDataOnlyTool")
+    if tool is not None and tool == manifest["casa"].get("eraseTool"):
+        raise StoreError(f"casa.eraseDataOnlyTool invalid: {tool!r} is also "
+                         "the casa.eraseTool", reason_code="erase_tool_invalid")
+    return tool
+
+
+def _manifest_eraser(manifest: dict, field: str) -> str | None:
     casa = manifest.get("casa")
-    if not isinstance(casa, dict) or "eraseTool" not in casa:
+    if not isinstance(casa, dict) or field not in casa:
         return None
-    raw = casa.get("eraseTool")
+    raw = casa.get(field)
 
     def _invalid(why: str) -> StoreError:
-        return StoreError(f"casa.eraseTool invalid: {why}",
+        return StoreError(f"casa.{field} invalid: {why}",
                           reason_code="erase_tool_invalid")
 
     if not isinstance(raw, str) or not _ERASE_TOOL_RE.fullmatch(raw):
@@ -1796,8 +1816,10 @@ def validate_manifest(root: Path, expected_name: str, *,
     # v0.112.0: a PRESENT-but-malformed casa.setupTool refuses the
     # install/update outright (strict; raises setup_tool_invalid).
     manifest_setup_tool(manifest)
-    # #1046: likewise casa.eraseTool (strict; raises erase_tool_invalid).
+    # #1046: likewise casa.eraseTool (strict; raises erase_tool_invalid), and
+    # #1067's casa.eraseDataOnlyTool.
     manifest_erase_tool(manifest)
+    manifest_erase_data_only_tool(manifest)
     # #1047: likewise casa.dropOffs (strict; raises drop_offs_invalid).
     manifest_drop_offs(manifest)
     # #792: casa.resultContract is validated at install/update like the

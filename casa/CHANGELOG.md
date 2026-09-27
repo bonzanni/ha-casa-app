@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.331.0] - 2026-09-27
+
+### Added
+
+- Uninstalling a plugin that can erase its own data can now keep your sign-ins.
+  The DM question offers the choices the plugin supports: **Keep data**,
+  **Erase data, keep sign-ins** (the data goes, and a reinstall carries on
+  without signing in again), **Erase everything** (the data and the sign-ins
+  go) and **Cancel**. After Erase everything, Casa also clears its own
+  references to the plugin's secrets, so nothing of the plugin is left behind.
+  Plugin authors declare the data-only eraser as `casa.eraseDataOnlyTool`,
+  beside `casa.eraseTool`.
+
+### Changed
+
+- The uninstall question's "Erase data" button is now called "Erase
+  everything", which is what it always did.
+
 ## [0.330.0] - 2026-09-27
 
 ### Added

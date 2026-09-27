@@ -171,15 +171,17 @@ What it does not cover: the version-controlled set and the set the reconciler ow
 
 **INV-CFG-011**: A reload scope whose handler takes the plugin-mutation lock acquires that lock at the entry point, before the reload read/write lock — never underneath it.
 
-Enforced by the shared fence both reload entry points wrap their dispatch in, over the
-scope set the handlers' own acquisitions define.
+Enforced by the shared fence every reload entry point wraps its dispatch in — `casa_reload`,
+the admin reload route, and the `plugin_env` reload an Erase everything uninstall runs
+after clearing references ([`plugin-erasure.md`](plugin-erasure.md)) — over the scope set
+the handlers' own acquisitions define.
 
 What it does not cover: it is an ordering rule, not an exclusion rule. Two fenced reloads
 still serialize against each other only as far as the locks themselves say, and a fenced
 scope now waits for an in-flight plugin mutation before it starts rather than partway
 through — deliberately, since it had to wait for that lock either way. Nor does it close
 the ordering by construction: nothing prevents a future caller from dispatching a fenced
-scope from somewhere neither entry point covers, which is why the set and the callers are
+scope from somewhere no entry point covers, which is why the set and the callers are
 pinned statically as well as behaviourally.
 
 **INV-CFG-012**: A reload that reads a specialist's `enabled: false` constructs and registers nothing for it and retires none of its Casa-minted secret slots; and for each of — its runtime agent, its bus queue, its scheduled jobs and webhook routes, its agent-registry entry, its delegation-map entry — the reload either removes it or names the step that failed in its report or its error; whichever scope read the file.

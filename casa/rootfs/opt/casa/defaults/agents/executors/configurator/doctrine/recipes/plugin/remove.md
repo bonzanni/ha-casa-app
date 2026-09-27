@@ -43,10 +43,14 @@ and `plugin_data_note`.
 
 ## A plugin that can erase its own data (`erase_data`)
 
-Some plugins declare an eraser: a tool of their own that erases everything they
-hold and revokes what they can at their providers. For those, Casa asks the
-operator ONE question itself, as a keyboard in their DM: **Keep data / Erase
-data / Cancel**. You never ask it and never choose for them.
+Some plugins declare an eraser: a tool of their own that erases their data.
+There are two kinds. **Erase everything** erases all of it, sign-ins included,
+and revokes what it can at the providers. **Erase data, keep sign-ins** erases
+the data but keeps what a reinstall needs to carry on without signing in again.
+For those plugins, Casa asks the operator ONE question itself, as a keyboard in
+their DM: **Keep data**, the erase options the plugin declares, and **Cancel**.
+You never ask it and never choose for them. The operator's tap decides which
+eraser runs; your call is the same `erase_data=true` either way.
 
 - Call the removal WITHOUT `erase_data`. If the result is
   `kind: "erase_choice_pending"`, nothing was removed: tell the operator the
@@ -56,16 +60,25 @@ data / Cancel**. You never ask it and never choose for them.
   `erase_data=true` works only after the operator's Erase tap: the first such
   call returns `kind: "erasure_running"` — the plugin's eraser runs and
   nothing is removed yet; wait, Casa sends the eraser's result into this topic.
-  `kind: "erase_not_confirmed"` means there was no Erase tap for this version:
+  `kind: "erase_not_confirmed"` means there was no erase tap for this version:
   call again without `erase_data` to ask. `kind: "erase_unavailable"` means the
-  plugin no longer declares an eraser (it was updated): call again without
-  `erase_data`.
+  plugin no longer declares the eraser the operator chose (it was updated):
+  call again without `erase_data`.
 - When the eraser reports the erasure complete, Casa tells you to call
   `erase_data=true` again; that call removes the plugin and its result carries
   `erasure: "complete"` and the plugin's report (`erase_report`, or
-  `erase_reports` for a specialist). Relay the report verbatim, and the
-  `plugin_data_note`: Home Assistant backups taken earlier still contain the
-  data.
+  `erase_reports` for a specialist), and `erasure_kind` says which eraser ran.
+  Relay the report verbatim, and the `plugin_data_note`: Home Assistant backups
+  taken earlier still contain the data.
+- After **Erase everything** (`erasure_kind: "everything"`), Casa has already
+  cleared the plugin's plugin-env.conf references (`env_references_cleared`)
+  and reloaded the plugin environment — do not clear them again. Only if the
+  result carries `env_reload_ok: false`, run `casa_reload(scope="plugin_env")`.
+  If it carries `env_references_not_cleared`, Casa could not clear those: tell
+  the operator, remove each with `remove_plugin_env_reference`, then run
+  `casa_reload(scope="plugin_env")`.
+  After **Erase data, keep sign-ins** (`erasure_kind: "data_only"`), the
+  references stay on purpose — a reinstall uses them — so do not clear them.
 - When the erasure did NOT complete, nothing was removed. Relay the plugin's
   report verbatim — never summarise it as success — and ask the operator
   whether to try again later (run the uninstall again, which asks again) or to
@@ -78,8 +91,8 @@ have committed. Say that: the removal may have taken effect, and if it did,
 the same survival applies — no plugin data was deleted and nothing was revoked
 at the provider. Run `plugin_list()` to see which.
 
-If the plugin required secrets, clear its plugin-env.conf entries afterward (see
-`secrets.md`) — and that clearing DOES need its own
+After an ordinary removal (a plugin without an eraser, or Keep data), if the
+plugin required secrets, clear its plugin-env.conf entries afterward (see `secrets.md`) — and that clearing DOES need its own
 `casa_reload(scope="plugin_env")`, exactly as `secrets.md` instructs; clearing
 an entry is neither credential deletion nor provider revocation. **For the
 removal itself no separate casa_reload is needed** — reload + verify happen

@@ -27,7 +27,10 @@ not-ready state instead (INV-PLUG-009).
 
 Two more attachment paths are easy to miss. **Plugin environment values live in a
 mode-0600 conf file** re-sourced into the process only by the plugin-env reload scope —
-deleting an entry from the file changes nothing until that reload runs. **Plugin media
+deleting an entry from the file changes nothing until that reload runs. Every writer holds
+one lock across its read-modify-write, so overlapping edits cannot lose one another; an
+Erase everything uninstall deletes the removed plugin's lines itself and runs the reload
+([`plugin-erasure.md`](plugin-erasure.md), INV-PLUG-040). **Plugin media
 flows through an outbox** — the shared directory (operator-relocatable by environment
 variable) for an ordinary engagement, or a private per-uid directory for a uid-dropped
 one, since that producer can no longer write the shared, non-group-writable tree — with

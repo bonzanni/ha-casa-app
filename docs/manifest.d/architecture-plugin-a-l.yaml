@@ -1,0 +1,149 @@
+# Manifest shard (split from N-plugin-l at the 40 KB index ceiling, #1067) — architecture
+# documents plugin-a through plugin-l. Loaded with the root docs/manifest.yaml by
+# scripts/verify_docs.py; same entry format.
+
+- doc: architecture/plugin-authorization.md
+  summary: What a protected plugin tool call needs before it runs — the single-use grant it consumes, the challenge that mints it, who may answer, and what retires an unanswered one.
+  when_changing: authorization grants, the protected-tool challenge, who may approve a protected call, or what a finished engagement does to its challenges
+  covers:
+    - casa/rootfs/opt/casa/authz_grants.py::GrantKey
+    - casa/rootfs/opt/casa/authz_grants.py::GrantStore
+    - casa/rootfs/opt/casa/authz_grants.py::ChallengeCoordinator.cancel_matching
+    - casa/rootfs/opt/casa/authz_grants.py::note_delegation_awaiting_approval
+    - casa/rootfs/opt/casa/specialist_limits.py::SpecialistLimiter.wait_until_free
+    - casa/rootfs/opt/casa/tools.py::wait_for_delegation_slot
+  tests:
+    - tests/test_authz_grants.py
+    - tests/test_authz_hook.py
+    - tests/test_approval_outlives_raiser.py
+  related: [architecture/plugins.md, architecture/engagement-finalization.md, architecture/scheduled-asks.md, architecture/delegation-announcements.md]
+  defines_invariants: [INV-PLUG-004, INV-PLUG-005, INV-PLUG-007, INV-PLUG-033]
+  invariant_tests:
+    INV-PLUG-004: [tests/test_authz_hook.py::test_third_call_rechallenges_single_use, tests/test_authz_hook.py::test_args_drift_rechallenges, tests/test_authz_grants.py::test_exactly_one_thread_consumes, tests/test_authz_hook.py::TestEngagementBackedAuthz::test_grant_from_other_engagement_not_consumable]
+    INV-PLUG-005: [tests/test_authz_hook.py::test_restart_loses_grants_fresh_store_rechallenges]
+    INV-PLUG-007: [tests/test_authz_hook.py::test_non_operator_sender_is_denied_with_no_challenge, tests/test_authz_hook.py::test_non_operator_with_live_grant_consumes_nothing, tests/test_authz_hook.py::test_accept_all_mode_denies_protected_tools_for_everyone]
+    INV-PLUG-033: [tests/test_approval_outlives_raiser.py::TestEngagementEndRetiresItsChallenges::test_cancel_matching_by_engagement_touches_only_that_one, tests/test_approval_outlives_raiser.py::TestEngagementEndRetiresItsChallenges::test_terminal_transition_withdraws_the_keyboard, tests/test_approval_outlives_raiser.py::TestEngagementEndRetiresItsChallenges::test_a_tap_right_after_the_transition_is_refused]
+
+- doc: architecture/plugin-erasure.md
+  summary: How an uninstall erases a plugin's data first — the casa.eraseTool and casa.eraseDataOnlyTool fields and their result convention, Casa's question offering the declared erase kinds, the erase episode that runs the chosen eraser, the finishing call that removes only after a complete erasure, and the plugin-env.conf references cleared after Erase everything.
+  when_changing: a plugin's declared eraser or its result convention, the erase-data question or its choice grant, the erase episode, the plugin_erase marker, or what plugin_remove or specialist_uninstall do with erase_data
+  covers:
+    - casa/rootfs/opt/casa/plugin_erasure.py
+    - casa/rootfs/opt/casa/plugin_erase_consent.py
+    - casa/rootfs/opt/casa/plugin_store.py::manifest_erase_tool
+    - casa/rootfs/opt/casa/plugin_store.py::manifest_erase_data_only_tool
+    - casa/rootfs/opt/casa/plugin_grants.py::plugin_tool_names
+    - casa/rootfs/opt/casa/tools.py::_erase_gate
+    - casa/rootfs/opt/casa/tools.py::_erase_specs_for
+    - casa/rootfs/opt/casa/tools.py::_deliver_erasure_outcome
+    - casa/rootfs/opt/casa/tools.py::_apply_erasure_to_disclosure
+    - casa/rootfs/opt/casa/tools.py::_offered_erase_choices
+    - casa/rootfs/opt/casa/tools.py::_env_names_to_clear
+    - casa/rootfs/opt/casa/tools.py::_clear_env_references
+    - casa/rootfs/opt/casa/tools.py::_reload_plugin_env_after_clear
+    - casa/rootfs/opt/casa/plugin_env_conf.py::remove_entries
+  tests:
+    - tests/test_plugin_erase_manifest.py
+    - tests/test_plugin_erase_identity.py
+    - tests/test_plugin_erasure_capture.py
+    - tests/test_plugin_erasure_episode.py
+    - tests/test_plugin_erase_flow.py
+    - tests/test_plugin_erase_kinds.py
+  related: [architecture/plugin-mutation-tools.md, architecture/plugin-result-contract.md, architecture/plugin-setup-turn.md, architecture/specialist-bundle-transactions.md, architecture/plugins.md]
+  defines_invariants: [INV-PLUG-034, INV-PLUG-035, INV-PLUG-036, INV-PLUG-037, INV-PLUG-038, INV-PLUG-039, INV-PLUG-040]
+  invariant_tests:
+    INV-PLUG-034: [tests/test_plugin_erase_manifest.py::test_absent_erase_tool_is_none, tests/test_plugin_erase_manifest.py::test_valid_erase_tool_returned, tests/test_plugin_erase_manifest.py::test_malformed_erase_tool_refused, tests/test_plugin_erase_manifest.py::test_explicit_null_erase_tool_refused, tests/test_plugin_erase_manifest.py::test_erase_tool_equal_to_setup_tool_refused, tests/test_plugin_erase_manifest.py::test_erase_tool_without_result_contract_refused, tests/test_plugin_erase_manifest.py::test_erase_tool_missing_from_contract_refused, tests/test_plugin_erase_manifest.py::test_erase_tool_contract_entry_must_be_safe, tests/test_plugin_erase_manifest.py::test_install_path_refuses_malformed_erase_tool, tests/test_plugin_erase_manifest.py::test_install_path_accepts_valid_erase_tool, tests/test_plugin_erase_manifest.py::test_artifact_verdict_rechecks_erase_tool, tests/test_plugin_erase_kinds.py::test_a_data_only_eraser_is_read_from_the_manifest, tests/test_plugin_erase_kinds.py::test_a_malformed_data_only_eraser_refuses_and_fails_the_verdict, tests/test_plugin_erase_kinds.py::test_the_install_path_and_the_stored_verdict_check_the_data_only_eraser]
+    INV-PLUG-035: [tests/test_plugin_erasure_capture.py::test_parse_complete_and_incomplete, tests/test_plugin_erasure_capture.py::test_anything_else_is_unreadable, tests/test_plugin_erasure_capture.py::test_none_is_unreadable_with_empty_report, tests/test_plugin_erasure_capture.py::test_parse_bounds_report_and_rejects_non_object, tests/test_plugin_erasure_episode.py::test_a_courier_turn_carries_the_stamps_and_a_complete_result_is_recorded, tests/test_plugin_erasure_episode.py::test_anything_but_complete_records_nothing_removable, tests/test_plugin_erasure_episode.py::test_a_turn_that_never_reports_times_out, tests/test_plugin_erasure_episode.py::test_a_plugin_with_no_target_is_not_dispatched, tests/test_plugin_erasure_episode.py::test_an_eraser_with_no_server_is_not_dispatched]
+    INV-PLUG-036: [tests/test_plugin_erase_flow.py::test_an_eraser_asks_first_and_removes_nothing, tests/test_plugin_erase_flow.py::test_a_declared_eraser_with_no_server_still_counts, tests/test_plugin_erase_flow.py::test_remove_with_eraser_no_channel_refuses, tests/test_plugin_erase_flow.py::test_erase_true_rejects_expired_and_reused_grant, tests/test_plugin_erase_flow.py::test_an_erase_tap_mints_a_single_use_erase_choice_and_continues, tests/test_plugin_erase_flow.py::test_a_keep_tap_mints_no_erase_choice, tests/test_plugin_erase_flow.py::test_cancel_and_no_answer_mint_nothing, tests/test_plugin_erase_flow.py::test_an_erase_choice_expires_and_is_bound_to_its_subject_and_artifacts, tests/test_plugin_erase_flow.py::test_keep_removes_as_before, tests/test_plugin_erase_flow.py::test_a_plugin_without_an_eraser_is_removed_as_before, tests/test_plugin_erase_flow.py::test_specialist_asks_once_for_its_erasing_plugins, tests/test_plugin_erase_flow.py::test_an_erase_tap_on_an_earlier_question_is_void_after_a_new_one, tests/test_plugin_erase_flow.py::test_a_keep_tap_closes_the_question_at_once, tests/test_plugin_erasure_capture.py::test_questions_replace_and_close, tests/test_plugin_erase_flow.py::test_specialist_without_erasers_unchanged, tests/test_plugin_erase_kinds.py::test_an_option_is_offered_only_when_every_erasing_plugin_declares_it, tests/test_plugin_erase_kinds.py::test_a_button_index_means_the_choice_it_shows, tests/test_plugin_erase_kinds.py::test_erase_true_runs_the_eraser_the_operator_tapped, tests/test_plugin_erase_kinds.py::test_a_kind_no_longer_declared_is_unavailable]
+    INV-PLUG-037: [tests/test_plugin_erase_flow.py::test_a_complete_erasure_lets_the_finishing_call_remove, tests/test_plugin_erase_flow.py::test_record_voided_by_artifact_change, tests/test_plugin_erase_flow.py::test_an_incomplete_erasure_never_removes, tests/test_plugin_erase_flow.py::test_specialist_uninstalls_only_when_every_erasure_completed, tests/test_plugin_erasure_capture.py::test_records_take_complete_once_for_the_same_artifact, tests/test_plugin_erase_flow.py::test_an_update_while_the_finishing_call_waits_is_not_removed, tests/test_plugin_erase_flow.py::test_specialist_erase_step_runs_inside_the_transaction, tests/test_plugin_erase_flow.py::test_an_eraser_added_while_the_removal_waits_is_asked_about, tests/test_plugin_erase_flow.py::test_erase_true_on_a_plugin_without_an_eraser_removes_nothing, tests/test_plugin_erase_flow.py::test_a_fresh_question_discards_an_earlier_erasure_record, tests/test_plugin_erase_flow.py::test_a_keep_removal_discards_the_erasure_records, tests/test_plugin_erase_flow.py::test_an_older_run_cannot_finish_a_newer_question]
+    INV-PLUG-038: [tests/test_plugin_erasure_capture.py::test_watch_resolves_once_for_its_exact_key, tests/test_plugin_erasure_capture.py::test_result_hook_captures_an_armed_safe_eraser_on_an_erase_turn, tests/test_plugin_erasure_capture.py::test_result_hook_ignores_the_tool_on_an_unmarked_turn, tests/test_plugin_erasure_capture.py::test_failure_hook_resolves_the_watch_as_an_error, tests/test_plugin_erasure_capture.py::test_admission_denies_an_armed_eraser_bound_to_another_artifact, tests/test_plugin_erasure_capture.py::test_admission_allows_the_armed_eraser_on_its_own_artifact, tests/test_plugin_erasure_capture.py::test_admission_denies_any_plugin_tool_on_an_erase_turn_nothing_waits_for, tests/test_plugin_erasure_capture.py::test_a_late_result_of_one_run_never_answers_another, tests/test_plugin_erasure_capture.py::test_an_erase_turn_of_a_voided_question_runs_nothing, tests/test_plugin_erasure_episode.py::test_the_episode_mints_no_grant, tests/test_plugin_erasure_capture.py::test_the_broker_admits_a_protected_eraser_only_on_its_own_run]
+    INV-PLUG-039: [tests/test_plugin_erasure_episode.py::test_the_real_agent_turn_end_answers_an_eraser_it_never_called, tests/test_plugin_erasure_episode.py::test_turn_ended_ignores_other_turns, tests/test_plugin_erasure_episode.py::test_a_turn_that_never_reports_times_out, tests/test_plugin_erasure_episode.py::test_several_plugins_run_in_turn_and_stop_at_the_first_not_complete]
+    INV-PLUG-040: [tests/test_plugin_erase_kinds.py::test_the_names_to_clear_are_the_plugins_own, tests/test_plugin_erase_kinds.py::test_an_everything_removal_clears_the_plugins_references, tests/test_plugin_erase_kinds.py::test_a_data_only_removal_keeps_every_reference, tests/test_plugin_erase_kinds.py::test_a_keep_removal_and_a_refused_finish_clear_nothing, tests/test_plugin_erase_kinds.py::test_a_specialist_clears_only_its_erased_plugins, tests/test_plugin_erase_kinds.py::test_a_reference_set_during_a_clear_is_not_lost, tests/test_plugin_erase_kinds.py::test_a_failed_clear_is_reported_never_claimed, tests/test_plugin_erase_kinds.py::test_a_cancelled_removal_holds_the_lock_until_the_clear_settles]
+- doc: architecture/plugin-events.md
+  summary: Plugin-emitted domain events — casa-minted generations, per-subscriber delivery receipts, and consent-gated headless wakes.
+  when_changing: the event manifest surface, the emission spool, event consent or reconciliation, the delivery worker, or the ack tools
+  covers:
+    - casa/rootfs/opt/casa/plugin_events.py::ack_identity
+    - casa/rootfs/opt/casa/plugin_events.py::parse_and_validate_emits
+    - casa/rootfs/opt/casa/plugin_events.py::parse_and_validate_subscribes
+    - casa/rootfs/opt/casa/event_spool.py::EventSpool
+    - casa/rootfs/opt/casa/event_spool.py::EventSpool.fold_pass
+    - casa/rootfs/opt/casa/event_spool.py::EventSpool.sweep
+    - casa/rootfs/opt/casa/event_spool.py::EventSpool.ack
+    - casa/rootfs/opt/casa/event_spool.py::EventSpool.update_delivery_nudge
+    - casa/rootfs/opt/casa/event_spool.py::EventSpool.gc_orphan_dirs
+    - casa/rootfs/opt/casa/event_spool.py::emit
+    - casa/rootfs/opt/casa/event_attempts.py::validate_record
+    - casa/rootfs/opt/casa/event_attempts.py::terminalize
+    - casa/rootfs/opt/casa/event_attempts.py::next_nudge_after_accept
+    - casa/rootfs/opt/casa/event_acks.py::EventAckStore
+    - casa/rootfs/opt/casa/event_consent.py::render_event_consent_message
+    - casa/rootfs/opt/casa/event_reconcile.py::compute_desired
+    - casa/rootfs/opt/casa/event_reconcile.py::reconcile_plugin_events
+    - casa/rootfs/opt/casa/event_reconcile.py::revoke_and_unroute
+    - casa/rootfs/opt/casa/event_episodes.py::configure
+    - casa/rootfs/opt/casa/event_episodes.py::_gate_ok
+    - casa/rootfs/opt/casa/plugin_dispatch.py::compose
+    - casa/rootfs/opt/casa/tools.py::ack_event
+    - casa/rootfs/opt/casa/tools.py::event_ack_revoke
+  tests:
+    - tests/test_plugin_events.py
+    - tests/test_event_spool.py
+    - tests/test_event_attempts.py
+    - tests/test_event_acks.py
+    - tests/test_event_consent.py
+    - tests/test_event_reconcile.py
+    - tests/test_event_episodes.py
+    - tests/test_tools_ack_event.py
+    - tests/test_event_wiring.py
+    - tests/test_event_acceptance.py
+  related: [architecture/callbacks.md, architecture/plugins.md, architecture/triggers.md]
+  defines_invariants: [INV-EV-001, INV-EV-002, INV-EV-003, INV-EV-004, INV-EV-005, INV-EV-006]
+  invariant_tests:
+    INV-EV-001: [tests/test_event_spool.py::test_sweep_deletes_emissions_of_an_unrouted_pair_next_pass, tests/test_event_episodes.py::test_gate_defers_on_artifact_update, tests/test_event_episodes.py::test_gate_defers_on_retarget, tests/test_event_episodes.py::test_sentinel_suspends_dispatch_and_destructive_work, tests/test_event_reconcile.py::test_reconcile_compute_failure_publishes_sentinel_and_raises]
+    INV-EV-002: [tests/test_event_spool.py::test_folded_remainder_folds_into_the_next_generation, tests/test_event_spool.py::test_fold_batch_bound_65_folds_64_oldest_65th_survives, tests/test_event_spool.py::test_reconstruction_rebuilds_state_at_max_record_gen_no_emission, tests/test_event_spool.py::test_state_lost_with_no_records_silently_resets_to_gen1_no_issue]
+    INV-EV-003: [tests/test_event_reconcile.py::test_artifact_update_voids_consent, tests/test_event_reconcile.py::test_retarget_voids_consent, tests/test_event_acks.py::test_malformed_record_missing_field_yields_zero_acks, tests/test_event_acks.py::test_identity_key_mismatch_yields_zero_acks_whole_store, tests/test_event_spool.py::test_deroute_then_sweep_drop_then_reconsent_never_resurrects]
+    INV-EV-004: [tests/test_event_attempts.py::test_terminalize_double_terminalize_is_a_no_op, tests/test_event_episodes.py::test_six_accepts_exhaust_via_one_atomic_update_then_note, tests/test_event_episodes.py::test_failed_exhaustion_write_sends_no_note, tests/test_event_episodes.py::test_exhaustion_notice_survives_a_boot_window_send_failure, tests/test_event_episodes.py::test_exhaustion_send_success_mark_failure_never_resends, tests/test_event_spool.py::test_mark_delivery_noted_refuses_pending_gen_mismatch_and_unknown, tests/test_event_episodes.py::test_concurrent_ack_beats_bookkeeping_on_the_advance_branch]
+    INV-EV-005: [tests/test_tools_ack_event.py::test_ack_event_token_never_in_reply_or_logs, tests/test_event_acceptance.py::test_no_envelope_bytes_or_ack_token_reach_any_log_surface, tests/test_event_attempts.py::test_envelope_extra_key_refused_meta_included, tests/test_event_spool.py::test_stale_token_cas_after_fold_rotates_it]
+    INV-EV-006: [tests/test_event_wiring.py::TestEventWakeMarkerUnreachable::test_synthetic_key_is_reserved, tests/test_event_wiring.py::TestEventWakeMarkerUnreachable::test_event_wake_value_is_stripped_from_external_context, tests/test_event_wiring.py::TestAskUserRejectsEventDispatchedTurn::test_ask_user_rejects_event_wake_origin]
+- doc: architecture/plugin-handoff.md
+  summary: The folder files move through between plugins — /data/handoff, publish and capture (the vendored casa_handoff contract), the sweep, share_inbound_file's handoff side.
+  when_changing: the plugin file handoff folder, publish or capture, its sweep, or share_inbound_file's handoff side
+  covers:
+    - casa/rootfs/opt/casa/casa_handoff.py
+    - casa/rootfs/opt/casa/plugin_handoff.py
+    - casa/rootfs/opt/casa/tools.py::share_inbound_file
+    - casa/rootfs/opt/casa/tools.py::_inbox_for_executing_agent
+  tests:
+    - tests/test_plugin_handoff.py
+  related: [architecture/inbound-files.md, architecture/plugin-runtime.md, architecture/persistent-state.md, architecture/engagement-containment.md]
+  defines_invariants: [INV-HANDOFF-001, INV-HANDOFF-002, INV-HANDOFF-003, INV-HANDOFF-004]
+  invariant_tests:
+    INV-HANDOFF-001: [tests/test_plugin_handoff.py::test_capture_returns_the_published_bytes_and_name, tests/test_plugin_handoff.py::test_capture_refuses_a_leaf_symlink_to_a_credential, tests/test_plugin_handoff.py::test_capture_refuses_a_producer_dir_linked_outside, tests/test_plugin_handoff.py::test_capture_refuses_a_hard_link_to_a_credential, tests/test_plugin_handoff.py::test_capture_refuses_a_fifo_without_hanging, tests/test_plugin_handoff.py::test_capture_refuses_paths_that_resolve_outside, tests/test_plugin_handoff.py::test_capture_refuses_a_lookalike_root, tests/test_plugin_handoff.py::test_capture_refuses_a_staging_path, tests/test_plugin_handoff.py::test_capture_refuses_an_over_cap_file]
+    INV-HANDOFF-002: [tests/test_plugin_handoff.py::test_publish_from_src_writes_fresh_bytes_never_the_source_inode, tests/test_plugin_handoff.py::test_publish_refuses_a_symlinked_src, tests/test_plugin_handoff.py::test_publish_refuses_over_the_per_file_cap, tests/test_plugin_handoff.py::test_publish_refuses_when_the_folder_is_full_and_evicts_nothing, tests/test_plugin_handoff.py::test_publish_refuses_when_the_disk_is_nearly_full, tests/test_plugin_handoff.py::test_a_failed_publication_leaves_no_staging]
+    INV-HANDOFF-003: [tests/test_plugin_handoff.py::test_sweep_removes_at_seven_days_and_not_a_second_before, tests/test_plugin_handoff.py::test_sweep_keeps_a_future_dated_file, tests/test_plugin_handoff.py::test_sweep_removes_links_and_off_pattern_entries, tests/test_plugin_handoff.py::test_sweep_reclaims_abandoned_staging_only_after_an_hour]
+    INV-HANDOFF-004: [tests/test_plugin_handoff.py::test_share_refuses_a_path_that_is_not_an_inbound_file, tests/test_plugin_handoff.py::test_a_delegate_neither_lists_nor_shares_its_callers_files, tests/test_plugin_handoff.py::test_share_publishes_under_the_operators_name]
+- doc: architecture/plugin-health.md
+  summary: How a plugin's problems reach the operator — the standing health report, the notice and DM with their dedup marks, and the status tool.
+  when_changing: the plugin health report or its regeneration, the operator health notice or DM, health repeat suppression or dedup marks, or the plugin status tool
+  covers:
+    - casa/rootfs/opt/casa/plugin_health.py::render_notice
+    - casa/rootfs/opt/casa/plugin_health.py::mark_notified
+    - casa/rootfs/opt/casa/casa_core.py::notify_plugin_health
+    - casa/rootfs/opt/casa/tools.py::_regenerate_plugin_health_guarded
+    - casa/rootfs/opt/casa/tools.py::_regenerate_plugin_health_held
+    - casa/rootfs/opt/casa/tools.py::plugins_under_live_install
+    - casa/rootfs/opt/casa/plugin_health.py::is_install_phase
+  tests:
+    - tests/test_plugin_health.py
+    - tests/test_plugin_health_notify.py
+    - tests/test_settled_health_regeneration.py
+    - tests/test_install_phase_health_dm.py
+  related: [architecture/plugins.md, architecture/plugin-setup.md, architecture/plugin-events.md, architecture/telegram.md]
+  defines_invariants: [INV-PLUG-013, INV-PLUG-014, INV-PLUG-015, INV-PLUG-031, INV-PLUG-032]
+  invariant_tests:
+    INV-PLUG-032: [tests/test_install_phase_health_dm.py::test_live_install_defers_its_install_rows_and_sends_its_faults, tests/test_install_phase_health_dm.py::test_the_install_ending_names_what_still_stands, tests/test_install_phase_health_dm.py::test_a_rolled_back_transition_leaves_the_install_live, tests/test_install_phase_health_dm.py::test_row_reason_prefers_a_fault_behind_an_install_code, tests/test_install_phase_health_dm.py::test_row_reason_sees_a_fault_a_stale_binding_replaced, tests/test_install_phase_health_dm.py::test_a_plugin_mutation_records_its_engagement, tests/test_install_phase_health_dm.py::test_a_bundle_install_records_its_scoped_entries, tests/test_install_phase_health_dm.py::test_an_install_that_ended_unobserved_defers_nothing, tests/test_install_phase_health_dm.py::test_a_notify_between_the_flip_and_the_observer_keeps_the_pass_owed, tests/test_install_phase_health_dm.py::test_row_reason_sees_a_missing_program, tests/test_install_phase_health_dm.py::test_a_targetless_plugin_gets_a_row_for_a_codeless_fault]
+    INV-PLUG-031: [tests/test_settled_health_regeneration.py::test_a_cancelled_regeneration_cannot_land_after_a_newer_one, tests/test_settled_health_regeneration.py::test_a_regeneration_cancelled_while_queued_still_runs, tests/test_settled_health_regeneration.py::test_the_guard_owner_regenerates_inline_without_deadlocking, tests/test_settled_health_regeneration.py::test_a_cancel_after_the_write_reaches_the_notify, tests/test_settled_health_regeneration.py::test_a_holder_cancelled_mid_regeneration_keeps_the_lock_until_it_lands, tests/test_settled_health_regeneration.py::test_no_live_caller_hops_to_the_regeneration_thread_directly]
+    INV-PLUG-015: [tests/test_plugin_setup_episodes.py::test_damaged_setup_history_is_disclosed_live_after_reset_and_until_decay]
+    INV-PLUG-013: [tests/test_plugin_health_notify.py::test_only_the_rows_it_named_are_marked, tests/test_plugin_health_notify.py::test_a_regeneration_during_the_send_defers_the_mark, tests/test_plugin_health_notify.py::test_a_confirmed_dm_leaves_no_in_band_duplicate, tests/test_plugin_health_notify.py::test_a_failed_dm_leaves_the_in_band_notice_armed, tests/test_plugin_health.py::test_mark_notified_is_skipped_when_the_report_moved_on, tests/test_plugin_health.py::test_notice_omits_rows_the_dm_already_named, tests/test_plugin_health.py::test_a_legacy_report_that_moved_mid_send_is_still_fenced, tests/test_plugin_health.py::test_a_warning_is_never_carried_by_the_in_band_notice, tests/test_plugin_health.py::test_an_executor_targeted_issue_is_never_carried_by_the_in_band_notice]
+    INV-PLUG-014: [tests/test_plugin_boot.py::test_boot_partial_health_write_preserves_standing_mark_and_exposes_new_issue, tests/test_plugin_health.py::test_carry_forward_dedup_and_reappearance]
