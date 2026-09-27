@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-26
+last_reviewed: 2026-09-27
 ---
 
 # Plugins
@@ -9,8 +9,10 @@ last_reviewed: 2026-09-26
 ## Scope
 
 How a plugin becomes something an agent can use: the registry that assigns it, the store
-that holds its bytes, what pins its identity, and what stands between a plugin's tools and
-an operator's approval. It does not cover authoring a plugin, nor the MCP protocol itself.
+that holds its bytes, what pins its identity, and which of its tools are protected. It does
+not cover authoring a plugin, nor the MCP protocol itself. What a protected call needs before
+it runs — the single-use grant, the challenge that mints it, who may answer it — is
+[`plugin-authorization.md`](plugin-authorization.md).
 How a plugin's problems reach the operator — the health report, the notices and their
 dedup — is [`plugin-health.md`](plugin-health.md).
 
@@ -51,11 +53,9 @@ checksum until an explicit verification, the next snapshot reload — or an inte
 specialist resume, which deep-validates its recorded artifacts automatically. Executor
 resume checks only that the recorded directories still exist.
 
-**Approval is per call, not per install, and it does not survive a restart.** A protected
-tool call by a resident or specialist consumes a single-use grant bound to a specific
-operator, chat, role, artifact, tool name and exact arguments, and it lives for the grant
-TTL — the approve edit says so ("once with exactly these arguments in the next 5 minutes").
-The grant store is in process memory only.
+**Approval is per call, not per install, and it does not survive a restart** — the grant a
+protected call consumes, and the challenge that mints it, are
+[`plugin-authorization.md`](plugin-authorization.md)'s subject.
 
 **Tiers are not gated alike, and this is the asymmetry to carry away.** Residents and
 specialists get plugin grants merged into their allowed tools, a fail-closed tool gate, and
@@ -106,88 +106,6 @@ as well where the runtime supports it, but it is defence in depth — the per-me
 what actually carries the guarantee, and the fallback exists because the shipped interpreter
 predates the filter.
 
-**INV-PLUG-004**: A protected tool call from a resident or specialist proceeds only by consuming an exact, single-use grant.
-
-Enforced by the authorization hook, with consumption made atomic in the grant store. The
-grant binds operator, chat, tier-stripped role, artifact, full tool name, and a hash of the
-canonical arguments — so an approval authorises one action with one argument set, not a
-capability.
-
-What it does not cover: unprotected plugin tools, and the executor path entirely. And
-"proceeds by consuming" applies to direct resident calls, ephemerally delegated
-specialists, and — since #400 — interactive specialist *engagements*: a protected call whose
-provenance is an engagement routes through the same DM authorization challenge, but its grant
-additionally binds the engagement id, so an approval minted inside one engagement can never
-consume a matching call in another. Identity for the engagement path comes from the live
-engagement record (its own operator DM), and on approval the challenge resumes that
-engagement rather than a resident continuation. Both taps resume it — a denial dispatches its
-own continuation so the engagement stops retrying — and both take the engagement's ingress
-reservation at the tap's synchronous commit step, before either the approval edit or the
-dispatch. That ordering matters here specifically: this arm awaits a message edit *before* it
-dispatches, so without the reservation a successful completion committing during that round
-trip would take the engagement terminal while the continuation still had no existence anywhere.
-The edit still precedes the dispatch — the reservation makes that order harmless rather than
-moving it — and if the dispatch does not hand off, the DM is corrected to say that the
-engagement could not be resumed to use the approval and to ask for it again, because that
-grant can serve no other caller. An engagement that ends before the tap takes its unanswered
-challenges with it (INV-PLUG-033).
-[`architecture/engagement-completion-gate.md`](engagement-completion-gate.md) owns the
-reservation's lifetime. A non-authorizable engagement record still denies, fail-closed,
-before any grant lookup: authorizable means an active record with a topic and a reachable
-operator, and of a kind that carries an approval seam — a specialist, or a resident-hosted
-plugin-job worker whose identity is additionally bound to its host role and its pinned
-artifact ([`background-jobs.md`](background-jobs.md)).
-
-A *delegated* protected call on the DM path — no engagement id, the enforcing specialist
-differing from the resident that delegated — is approved back to that resident, which must
-delegate again. Its delegation may still hold the specialist's slot: a sync delegation that
-outlives its wait degrades to pending and keeps the slot until the run ends, so a
-continuation dispatched at once would be refused `busy`. After the approval edit, the
-decision's continuation therefore waits, bounded under the grant TTL
-(`SpecialistLimiter.wait_until_free`, through `tools.wait_for_delegation_slot` and the scope
-`_prelaunch` computes), until that scope holds no permit, and on timeout dispatches as
-before; the wait reserves nothing. It waits on a coordinator-owned task, never inside the
-finish hook, because the broker's global hook drain — which engagement finalization and
-shutdown both await — must not wait on a specialist; the shutdown drain cuts any such wait
-short and delivers at once. Raising or
-reusing the challenge also records the delegation id
-(`authz_grants.note_delegation_awaiting_approval`) before the post settles, and forgets it
-if the post fails or the challenge was retired unanswered while it posted — an answer that
-raced the post keeps it. The resident turn later synthesized from that delegation's completion
-notification runs at an origin no grant serves, so it takes the record once and is told not
-to retry or re-delegate the action and to say nothing about approvals — the approval's own
-continuation carries the action out. The record is in-process, capped and advisory: losing
-it costs a confusing reply, never an unapproved call.
-
-Every challenge the coordinator raises — the protected-tool one above and the trigger,
-callback, event, specialist-install and persona-install consents alike — shares the
-operator's attention lane with any machine-timed question already waiting there. The lane
-rule itself lives with the scheduled question in
-[`scheduled-asks.md`](scheduled-asks.md) (INV-JOB-008), and the part that matters
-here is one line: a challenge retires a waiting scheduled question only once its own
-keyboard is on screen, so a challenge that fails to post does not cost the operator the
-question that was waiting. A boot reconcile running while the challenge's post is still in
-flight reads the lane the same way and restores the waiting question (INV-JOB-014).
-
-The protected-tool challenge body interpolates the model's own tool arguments, so it is
-model text: `register_challenge` resolves the scope before it creates the poster — a bound
-engagement's first, else the running turn's (`output_boundary.resolve_scope`) — the poster
-admits the body under it, and posts it as Casa's own text when neither is bound, so a
-challenge raised by a turn that listed an inbound file and read none carries the same Casa
-line as the turn's other output ([`output-boundary.md`](output-boundary.md)).
-
-Who may approve is a separate guarantee, INV-PLUG-007: read this invariant as "one
-approval authorises one action" and that one as "the approver is the configured operator".
-
-**INV-PLUG-005**: Grants exist only in process memory; a restart revokes every one of them.
-
-There is no persistence path. Revocation additionally happens on consumption, on TTL expiry
-plus a periodic sweep, on a chat reset, on role reload or removal, and on plugin update or
-removal.
-
-Trigger consent is the deliberate exception: a webhook-trigger acknowledgement is persisted
-and re-validated from disk at startup, because it authorises a route rather than a call.
-
 **INV-PLUG-006**: Executor options receive plugin paths without a grant merge and without a tool gate.
 
 Stated as an invariant because it is a security-relevant asymmetry that reads like an
@@ -204,40 +122,6 @@ the boundary this holds at — and nothing about an engagement already running, 
 resumes from the artifacts it recorded and never resolves again. It is a statement about
 the operator's supported operations and about fresh, registry-derived executor launches,
 which together are the paths by which a plugin could otherwise reach a worker.
-
-**INV-PLUG-007**: An authorization challenge is posted, and its grant minted, only for a turn whose sender is the configured operator; any other sender's protected call is denied outright, before any grant lookup and with no challenge.
-
-Enforced in the authorization hook through the Telegram channel's single operator rule —
-the same sender-id match that decides attribution and clearance — so the person who taps
-Approve is the person the deployment names as operator, not whoever asked. Denying without
-a challenge is the point: posting one would hand the requester their own approval button.
-
-What it does not cover: with `telegram_chat_id` empty ("accept all chats") there is no
-configured operator, so protected tools are denied for every sender — deliberate, and
-announced by a warning at channel construction. The in-engagement permission relay now
-follows the same rule (its keyboard is answerable only by the configured operator, and
-with none configured it denies immediately rather than posting one); in-engagement
-*questions* remain answerable by the engagement's creator, since an answer is interaction,
-not authorization. Sender identity itself is Telegram's authentication of its user ids,
-not an additional Casa-side proof.
-
-**INV-PLUG-033**: An engagement that reaches a terminal state in this process leaves no answerable authorization challenge bound to it — its unanswered challenges are withdrawn.
-
-Enforced by the registry's terminal observer (see
-[`engagement-finalization.md`](engagement-finalization.md)): whichever path wins the
-terminal transition — completion, cancellation, error — the tools layer calls
-`ChallengeCoordinator.cancel_matching(engagement=…, reason="engagement_ended")` in that same
-step, so no tap can commit after the transition returns; it
-cancels every live challenge whose grant key carries that engagement id, and the keyboard is
-retired as "withdrawn when the engagement that asked for it ended". A tap after the end
-would otherwise mint a grant bound to an engagement nothing will ever resume. The empty
-engagement id of the DM path is never a filter, so resident and delegated challenges are
-untouched.
-
-What it does not cover: a tap that committed before the transition — its continuation meets
-a terminal record and the DM is corrected to "ask for it again"; an engagement that ended
-in an earlier process, whose challenges a restart already dropped with every grant
-(INV-PLUG-005); and challenges not bound to an engagement.
 
 **INV-PLUG-022**: The ref literal `latest`, given to `plugin_add` or `plugin_update`, resolves only to a published release tag — GitHub's latest release when its name is a release tag (`v<semver>`), else the highest release tag by numeric order — looked up in the tag namespace and peeled, through any chain of annotated tags to a terminal commit and to nothing else, never through a commit lookup that a same-named branch could satisfy; the tag, never the literal, is what the registry stores and the result reports as `resolved_ref`, the tag-version and expected-revision guards run against that tag and its peel, and a repository with no published release is refused with `no_release_found` before any artifact is published, any system requirement is installed or any registry write.
 
@@ -266,21 +150,6 @@ not resolved and the reason is recorded. Other plugins are unaffected.
 **An archive is unsafe.** Extraction raises, staging is cleaned up, and the failure is
 reported. This happens *before* any registry mutation, so a refused install leaves no
 half-state.
-
-**A protected tool is called without an approval.** The hook denies the call and posts or
-reuses an approval challenge to the operator. The retry must present identical canonical
-arguments — a changed argument is a different grant.
-
-**The engagement that raised a challenge ends before the tap.** The challenge is withdrawn
-and its keyboard says so (INV-PLUG-033); nothing is resumed.
-
-**A delegated call is approved while its specialist is still running.** The continuation
-waits, bounded, for the specialist's delegation slot, then goes to the resident; if the slot
-never frees in time it is dispatched anyway and may be refused `busy`, which the unconsumed
-grant survives until its TTL.
-
-**The authorization hook itself fails.** Any unexpected exception becomes an explicit deny;
-only cancellation is re-raised. The hook fails closed.
 
 **The plugin's MCP declaration is missing or malformed.** Grants degrade to none. A missing
 declaration is not an error — a plugin with no tools is valid — but a malformed one is
@@ -329,7 +198,8 @@ separately — verification will tell you it is missing, but no merge happens fo
 
 **Adding a protected tool** is a manifest declaration. Validation checks its shape and name
 uniqueness, **not that the named tool exists**; a typo produces a declaration that protects
-nothing. And it applies only to the resident and specialist paths.
+nothing. And it applies only to the resident and specialist paths; what a protected call
+then needs is [`plugin-authorization.md`](plugin-authorization.md).
 
 **Declaring system requirements** is strict the same way the other manifest extensions
 are: an absent declaration means none, but a present-but-malformed one (a non-list value,
@@ -343,7 +213,8 @@ status instead of crashing the verify.
 **Adding a webhook trigger** requires intrinsic validation plus a durable operator consent
 bound to the exact trigger identity. This approval outlives a restart — one of the durable
 approval ledgers (specialist and persona install acknowledgements are others), in contrast
-to the in-memory tool-call grants above.
+to the in-memory tool-call grants of
+[`plugin-authorization.md`](plugin-authorization.md).
 
 **Adding an authorization callback** is a sibling manifest extractor: `casa.callbacks` is a
 peer of `casa.triggers`, parsed and intrinsically validated the same way, and gated by a
@@ -372,12 +243,6 @@ role-scoped grants and pending challenges before a role is replaced or removed.
 - `casa/rootfs/opt/casa/plugin_store.py::resolve_latest_release`
 - `casa/rootfs/opt/casa/plugin_store.py::_peel_tag`
 - `casa/rootfs/opt/casa/plugin_grants.py::protected_map`
-- `casa/rootfs/opt/casa/authz_grants.py::GrantKey`
-- `casa/rootfs/opt/casa/authz_grants.py::GrantStore`
-- `casa/rootfs/opt/casa/authz_grants.py::ChallengeCoordinator.cancel_matching`
-- `casa/rootfs/opt/casa/authz_grants.py::note_delegation_awaiting_approval`
-- `casa/rootfs/opt/casa/specialist_limits.py::SpecialistLimiter.wait_until_free`
-- `casa/rootfs/opt/casa/tools.py::wait_for_delegation_slot`
 - `casa/rootfs/opt/casa/plugin_boot.py::main`
 
 **Tests**
@@ -386,10 +251,7 @@ role-scoped grants and pending challenges before a role is replaced or removed.
 - `tests/test_plugin_registry.py`
 - `tests/test_plugin_store_publish.py`
 - `tests/test_plugin_grants.py`
-- `tests/test_authz_grants.py`
-- `tests/test_authz_hook.py`
 - `tests/test_plugin_boot.py`
-- `tests/test_approval_outlives_raiser.py`
 
 **Related**
 - [`architecture/overview.md`](../architecture/overview.md)
@@ -397,4 +259,5 @@ role-scoped grants and pending challenges before a role is replaced or removed.
 - [`architecture/callbacks.md`](../architecture/callbacks.md)
 - [`architecture/plugin-health.md`](../architecture/plugin-health.md)
 - [`architecture/plugin-mutation-tools.md`](../architecture/plugin-mutation-tools.md)
+- [`architecture/plugin-authorization.md`](../architecture/plugin-authorization.md)
 <!-- END SOURCEMAP -->

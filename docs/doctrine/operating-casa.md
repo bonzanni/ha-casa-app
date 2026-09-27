@@ -39,7 +39,7 @@ single-use and bound to the exact canonical arguments. If a call is denied and y
 the arguments, you are asking a different question and need a new approval — do not treat a
 prior approval as a capability you now hold. Install consent is a different animal: a
 specialist or persona install acknowledgement is persistent and covers the inspected
-artifact, and is not consumed by use. See `architecture/plugins.md`.
+artifact, and is not consumed by use. See `architecture/plugin-authorization.md`.
 
 **When a protected tool call is denied pending authorization, stop.** That refusal is an
 instruction, not a description: produce no narration and end the turn. Narrating "I'm

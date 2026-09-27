@@ -11,8 +11,9 @@ last_reviewed: 2026-08-08
 The environment a validly installed plugin's MCP servers need before an agent can use it,
 and the two side channels a plugin reaches the rest of Casa through. WHO runs the setup
 tool that provisions that environment, and what must hold before it runs, is its own
-subject: [`plugin-setup.md`](plugin-setup.md). Installation, artifact identity and
-per-call authorization are [`plugins.md`](plugins.md).
+subject: [`plugin-setup.md`](plugin-setup.md). Installation and artifact identity are
+[`plugins.md`](plugins.md); per-call authorization is
+[`plugin-authorization.md`](plugin-authorization.md).
 
 ## Mental model
 
