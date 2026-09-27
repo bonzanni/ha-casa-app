@@ -48,6 +48,7 @@ def test_reserved_context_keys_are_exactly_the_spec_set():
         # #1046: the plugin-erase dispatch's target and the tap's artifact.
         "plugin_erase_target",
         "plugin_erase_artifact",
+        "plugin_erase_episode",
         # #485: scheduled-delivery marker — an external caller who could set it
         # would aim media at the operator's DM from a webhook payload. The
         # authenticated webhook route dispatches MessageType.SCHEDULED too,

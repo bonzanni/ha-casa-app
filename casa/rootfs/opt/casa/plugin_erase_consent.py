@@ -36,6 +36,7 @@ class EraseChoiceKey:
     chat_id: int
     subject: str
     artifacts: tuple
+    question: str = ""        # plugin_erasure.QUESTIONS id of this question
 
 
 class ChoiceGrants:

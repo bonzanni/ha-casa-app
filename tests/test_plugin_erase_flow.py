@@ -168,6 +168,7 @@ def flow(monkeypatch, tmp_path):
     monkeypatch.setattr(tm, "_erase_specs_for", specs_for)
     monkeypatch.setattr(pec, "CHOICES", pec.ChoiceGrants())
     monkeypatch.setattr(pe, "RECORDS", pe.ErasureRecords())
+    monkeypatch.setattr(pe, "QUESTIONS", pe.QuestionIds())
 
     class _Ch:
         chat_id = "42"
@@ -184,8 +185,8 @@ def flow(monkeypatch, tmp_path):
         return None
     monkeypatch.setattr(tm, "_settle_install_consent_post", settled)
 
-    async def fake_episode(specs, operator):
-        state.episodes.append((list(specs), operator))
+    async def fake_episode(specs, operator, question):
+        state.episodes.append((list(specs), operator, question))
         return []
     monkeypatch.setattr(pe, "run_erase_episode", fake_episode)
     return state
@@ -215,7 +216,8 @@ async def test_an_eraser_asks_first_and_removes_nothing(flow):
     assert out["ok"] is False and out["kind"] == "erase_choice_pending"
     assert _still_registered(flow)
     [prompt] = flow.prompts
-    assert prompt["key"] == pec.EraseChoiceKey(42, 42, "plugin:probe", (ART,))
+    assert prompt["key"] == pec.EraseChoiceKey(
+        42, 42, "plugin:probe", (ART,), pe.QUESTIONS.current("plugin:probe"))
     assert "erase_all" in prompt["text"]
 
 
@@ -238,7 +240,8 @@ async def test_erase_true_rejects_expired_and_reused_grant(flow):
     out = await _remove(flow.tm, erase_data=True)
     assert out["kind"] == "erase_not_confirmed" and _still_registered(flow)
     assert flow.episodes == []
-    key = pec.EraseChoiceKey(42, 42, "plugin:probe", (ART,))
+    q = pe.QUESTIONS.open("plugin:probe")
+    key = pec.EraseChoiceKey(42, 42, "plugin:probe", (ART,), q)
     pec.CHOICES.mint(key, pec.ERASE)
     out = await _remove(flow.tm, erase_data=True)
     assert out["kind"] == "erasure_running" and _still_registered(flow)
@@ -250,7 +253,8 @@ async def test_erase_true_rejects_expired_and_reused_grant(flow):
 
 @pytest.mark.asyncio
 async def test_a_complete_erasure_lets_the_finishing_call_remove(flow):
-    pe.RECORDS.put("plugin:probe", ART, "complete", "Everything erased.")
+    pe.RECORDS.put("plugin:probe", ART, "complete", "Everything erased.",
+                   pe.QUESTIONS.open("plugin:probe"))
     out = await _remove(flow.tm, erase_data=True)
     assert out["ok"] is True and not _still_registered(flow)
     assert out["erasure"] == "complete"
@@ -262,14 +266,16 @@ async def test_a_complete_erasure_lets_the_finishing_call_remove(flow):
 @pytest.mark.asyncio
 async def test_record_voided_by_artifact_change(flow):
     """A complete erasure of another version does not remove this one."""
-    pe.RECORDS.put("plugin:probe", "0" * 64, "complete", "old version erased")
+    pe.RECORDS.put("plugin:probe", "0" * 64, "complete", "old version erased",
+                   pe.QUESTIONS.open("plugin:probe"))
     out = await _remove(flow.tm, erase_data=True)
     assert out["kind"] == "erase_not_confirmed" and _still_registered(flow)
 
 
 @pytest.mark.asyncio
 async def test_an_incomplete_erasure_never_removes(flow):
-    pe.RECORDS.put("plugin:probe", ART, "incomplete", "A bank kept its consent.")
+    pe.RECORDS.put("plugin:probe", ART, "incomplete", "A bank kept its consent.",
+                   pe.QUESTIONS.open("plugin:probe"))
     out = await _remove(flow.tm, erase_data=True)
     assert out["kind"] == "erase_not_confirmed" and _still_registered(flow)
 
@@ -353,11 +359,12 @@ async def test_specialist_asks_once_for_its_erasing_plugins(sflow):
 @pytest.mark.asyncio
 async def test_specialist_uninstalls_only_when_every_erasure_completed(sflow):
     sflow.specs = [_spec("fin.bank", "1" * 64), _spec("fin.tags", "2" * 64)]
-    pe.RECORDS.put("plugin:fin.bank", "1" * 64, "complete", "bank gone")
+    q = pe.QUESTIONS.open("specialist:fin")
+    pe.RECORDS.put("plugin:fin.bank", "1" * 64, "complete", "bank gone", q)
     out = await _uninstall(sflow.tm, erase_data=True)
     assert out["kind"] == "erase_not_confirmed" and sflow.uninstalled == []
     # the complete record was not spent by the refused call
-    pe.RECORDS.put("plugin:fin.tags", "2" * 64, "complete", "tags gone")
+    pe.RECORDS.put("plugin:fin.tags", "2" * 64, "complete", "tags gone", q)
     out = await _uninstall(sflow.tm, erase_data=True)
     assert out["ok"] is True and sflow.uninstalled == [True]
     assert [r["name"] for r in out["erase_reports"]] == ["fin.bank", "fin.tags"]
@@ -370,7 +377,8 @@ async def test_an_update_while_the_finishing_call_waits_is_not_removed(flow):
     finishing call waits for the lock leaves an unerased version, which is not
     removed."""
     tm = flow.tm
-    pe.RECORDS.put("plugin:probe", ART, "complete", "old version erased")
+    pe.RECORDS.put("plugin:probe", ART, "complete", "old version erased",
+                   pe.QUESTIONS.open("plugin:probe"))
     await tm._PLUGIN_TOOLS_LOCK.acquire()
     try:
         task = asyncio.get_running_loop().create_task(_remove(tm, erase_data=True))
@@ -389,7 +397,8 @@ async def test_specialist_erase_step_runs_inside_the_transaction(sflow, monkeypa
     the transaction body — which owns the mutation lock — so the decision and
     the uninstall see one registry state."""
     tm = sflow.tm
-    pe.RECORDS.put("plugin:fin.bank", "1" * 64, "complete", "bank gone")
+    pe.RECORDS.put("plugin:fin.bank", "1" * 64, "complete", "bank gone",
+                   pe.QUESTIONS.open("specialist:fin"))
     in_txn = {"now": False, "reads": []}
     real_owned = tm._owned_entries_now
 
@@ -445,20 +454,22 @@ async def test_a_fresh_question_discards_an_earlier_erasure_record(flow):
     """Diff r2 (Astra S2): a record from an earlier installation of the same
     artifact must not certify this one — asking again forgets it, so an Erase
     tap runs the eraser again."""
-    pe.RECORDS.put("plugin:probe", ART, "complete", "an earlier installation")
+    pe.RECORDS.put("plugin:probe", ART, "complete", "an earlier installation",
+                   pe.QUESTIONS.open("plugin:probe"))
     out = await _remove(flow.tm)
     assert out["kind"] == "erase_choice_pending"
-    pec.CHOICES.mint(pec.EraseChoiceKey(42, 42, "plugin:probe", (ART,)), pec.ERASE)
+    pec.CHOICES.mint(_current_key(), pec.ERASE)
     out = await _remove(flow.tm, erase_data=True)
     assert out["kind"] == "erasure_running" and _still_registered(flow)
 
 
 @pytest.mark.asyncio
 async def test_a_keep_removal_discards_the_erasure_records(flow):
-    pe.RECORDS.put("plugin:probe", ART, "complete", "erased, then kept")
+    pe.RECORDS.put("plugin:probe", ART, "complete", "erased, then kept",
+                   pe.QUESTIONS.open("plugin:probe"))
     out = await _remove(flow.tm, erase_data=False)
     assert out["ok"] is True
-    assert pe.RECORDS.has_complete("plugin:probe", ART) is False
+    assert pe.QUESTIONS.current("plugin:probe") is None      # its question closed
 
 
 def test_a_declared_eraser_with_no_server_still_counts(tmp_path, monkeypatch):
@@ -479,3 +490,41 @@ def test_a_declared_eraser_with_no_server_still_counts(tmp_path, monkeypatch):
     [spec] = tools_mod._erase_specs_for(
         [{"name": "probe", "artifact_id": ART, "targets": ["resident:assistant"]}])
     assert spec.tool_names == () and spec.tool == "erase_all"
+
+
+# --- diff r4: every tap, run and record belongs to one question ---------------------
+
+def _current_key():
+    return pec.EraseChoiceKey(42, 42, "plugin:probe", (ART,),
+                              pe.QUESTIONS.current("plugin:probe"))
+
+
+@pytest.mark.asyncio
+async def test_an_erase_tap_on_an_earlier_question_is_void_after_a_new_one(flow):
+    """Diff r4 (Astra S1): question A → Erase tap → question B → Cancel on B →
+    a delayed erase_data=true runs nothing."""
+    await _remove(flow.tm)                                   # question A
+    pec.CHOICES.mint(_current_key(), pec.ERASE)              # Erase on A
+    await _remove(flow.tm)                                   # question B
+    b = flow.prompts[-1]
+    assert await b["continue_cb"](pec.CANCEL) in (True, False)   # Cancel on B
+    out = await _remove(flow.tm, erase_data=True)
+    assert out["kind"] == "erase_not_confirmed" and flow.episodes == []
+    assert _still_registered(flow)
+
+
+@pytest.mark.asyncio
+async def test_an_older_run_cannot_finish_a_newer_question(flow):
+    """Diff r4 (Terra S1): run A starts; question B is asked; A then completes;
+    erase_data=true without a tap on B removes nothing."""
+    await _remove(flow.tm)                                   # question A
+    qid_a = pe.QUESTIONS.current("plugin:probe")
+    pec.CHOICES.mint(_current_key(), pec.ERASE)
+    out = await _remove(flow.tm, erase_data=True)            # run A starts
+    assert out["kind"] == "erasure_running"
+    await asyncio.sleep(0)
+    assert flow.episodes[0][2] == qid_a                      # the run carries A
+    await _remove(flow.tm)                                   # question B
+    pe.RECORDS.put("plugin:probe", ART, "complete", "A finished", qid_a)
+    out = await _remove(flow.tm, erase_data=True)
+    assert out["kind"] == "erase_not_confirmed" and _still_registered(flow)

@@ -497,24 +497,25 @@ _DENY_ERASE_BINDING = (
     "waiting for its result — nothing was erased")
 
 
-def _erase_turn_artifact() -> str | None:
-    """The artifact an erase-marked turn's tap named (#1046), else None."""
+def _erase_turn() -> "tuple[str, str] | None":
+    """``(tapped artifact, run id)`` on an erase-marked turn (#1046), else
+    None."""
     import agent as agent_mod
-    from plugin_erasure import erase_turn_artifact
-    return erase_turn_artifact(agent_mod.origin_var.get(None))
+    from plugin_erasure import erase_turn
+    return erase_turn(agent_mod.origin_var.get(None))
 
 
-def _erase_session_artifact(contract_map, tool_name: str) -> str | None:
-    """On an erase-marked turn, this session's binding artifact for the
-    plugin of *tool_name* when it is the artifact the tap named; else None."""
-    erase_art = _erase_turn_artifact()
-    if not erase_art:
+def _erase_run_of(contract_map, tool_name: str) -> str | None:
+    """On an erase-marked turn, its run id when this session's binding carries
+    the plugin of *tool_name* at the artifact the tap named; else None."""
+    turn = _erase_turn()
+    if not turn or not turn[0] or not turn[1]:
         return None
     seg = contract_map.plugin_seg_of(tool_name)
     plugin = contract_map.plugins.get(seg) if seg is not None else None
-    if plugin is None or plugin.artifact_id != erase_art:
+    if plugin is None or plugin.artifact_id != turn[0]:
         return None
-    return erase_art
+    return turn[1]
 
 
 def _deny(reason: str) -> dict[str, Any]:
@@ -594,12 +595,10 @@ def make_plugin_admission_hook(
             # episode that already timed out and stopped waiting, another tool
             # — is refused before execution; an unprotected eraser meets no
             # grant check at all, so this is its only gate.
-            erase_art = _erase_turn_artifact()
-            if erase_art is not None:
+            if _erase_turn() is not None:
                 from plugin_erasure import WATCH
-                if (not erase_art or plugin is None
-                        or plugin.artifact_id != erase_art
-                        or not WATCH.is_armed(erase_art, tool_name)):
+                run_id = _erase_run_of(contract_map, tool_name)
+                if run_id is None or not WATCH.is_armed(run_id, tool_name):
                     return _deny(_DENY_ERASE_BINDING)
             # The exempt setup tool: declared absent or safe. A setup tool
             # declared as a CAPABILITY (#1015, it delivers its link) takes
@@ -784,10 +783,10 @@ def make_result_hook(
             entry = contract_map.tools.get(tool_name) if plugin is not None else None
             # #1046: an erase episode's capture, before any early return (an
             # eraser is declared ``safe``). The result itself passes unchanged.
-            erase_art = _erase_session_artifact(contract_map, tool_name)
-            if erase_art is not None:
+            run_id = _erase_run_of(contract_map, tool_name)
+            if run_id is not None:
                 from plugin_erasure import WATCH
-                WATCH.resolve(erase_art, tool_name, text=_response_text(
+                WATCH.resolve(run_id, tool_name, text=_response_text(
                     (input_data or {}).get("tool_response")))
             if (plugin is not None and tool_name in plugin.setup_tools
                     and (entry is None or entry.kind != "capability")):
@@ -844,11 +843,11 @@ def make_failure_hook(
                 call = store.close_call(client_id, str(tool_use_id or ""))
                 if call is not None:
                     store.drop_call_deposits(call)
-                erase_art = _erase_session_artifact(contract_map, tool_name)
-                if erase_art is not None:
+                run_id = _erase_run_of(contract_map, tool_name)
+                if run_id is not None:
                     from plugin_erasure import WATCH
                     error = (input_data or {}).get("error")
-                    WATCH.resolve(erase_art, tool_name,
+                    WATCH.resolve(run_id, tool_name,
                                   error=str(error) if error else "tool error")
         except Exception:  # noqa: BLE001
             logger.exception("result broker failure-hook error (tool=%s)",

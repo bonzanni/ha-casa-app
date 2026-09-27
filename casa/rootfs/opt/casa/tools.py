@@ -16346,13 +16346,14 @@ async def _deliver_erasure_outcome(tool: str, name: str, outcomes: list,
 _ERASE_TASKS: "set[asyncio.Task]" = set()
 
 
-def _take_complete_erasures(specs: list) -> "list | None":
+def _take_complete_erasures(specs: list, question: str) -> "list | None":
     """Under the mutation lock, immediately before a removal: the reports of a
     complete erasure for EVERY erasing plugin at the artifact the registry
-    resolves now, consumed — or ``None`` (nothing consumed) when any is
-    missing, or when no erasing plugin remains."""
+    resolves now, run for the still-open *question*, consumed — or ``None``
+    (nothing consumed) when any is missing, or when no erasing plugin
+    remains."""
     import plugin_erasure
-    rows = [(f"plugin:{s.name}", s.artifact_id) for s in specs]
+    rows = [(f"plugin:{s.name}", s.artifact_id, question) for s in specs]
     if not rows or not all(plugin_erasure.RECORDS.has_complete(*r) for r in rows):
         return None
     return [(s.name, plugin_erasure.RECORDS.take_complete(*r))
@@ -16380,17 +16381,19 @@ async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
     import plugin_erase_consent as pec
     import plugin_erasure
     import trigger_consent
+    questions = plugin_erasure.QUESTIONS
     if erase is False:
-        # Keep data: today's removal. Whatever an earlier erasure recorded no
-        # longer describes an installation that exists after this.
-        for s in specs:
-            plugin_erasure.RECORDS.discard(f"plugin:{s.name}")
+        # Keep data: today's removal. It answers — and so closes — whatever
+        # question is open, voiding every tap, run and record of it.
+        questions.close(subject)
         return None, []
     if not specs:
         return (dict(_ERASE_UNAVAILABLE), []) if erase is True else (None, [])
     if erase is True:
-        taken = _take_complete_erasures(specs)
+        open_q = questions.current(subject)
+        taken = _take_complete_erasures(specs, open_q) if open_q else None
         if taken is not None:
+            questions.close(subject, open_q)
             return None, taken
     channel = _channel_manager.get("telegram") if _channel_manager is not None else None
     op = trigger_consent.operator_identity(channel) if channel is not None else None
@@ -16401,21 +16404,23 @@ async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
                            "removed. Fix the Telegram channel, or uninstall with "
                            "erase_data=false to keep the data.")}, []
     chat_id, operator_id = op
-    key = pec.EraseChoiceKey(operator_id=operator_id, chat_id=chat_id,
-                             subject=subject,
-                             artifacts=tuple(s.artifact_id for s in specs))
+    artifacts = tuple(s.artifact_id for s in specs)
     eng = engagement_var.get(None)
     deliver = _engagement_deliverer(channel, eng)
     if erase is None:
-        # A fresh question: an earlier installation's erasure record (the same
-        # artifact removed with Keep and reinstalled, say) must not certify
-        # this one, so the answer to THIS question decides.
-        for s in specs:
-            plugin_erasure.RECORDS.discard(f"plugin:{s.name}")
+        # A fresh question replaces any open one: every tap, run and record of
+        # an earlier question — or of an earlier installation of the same
+        # artifact — is void, so only the answer to THIS question decides.
+        question = questions.open(subject)
+        key = pec.EraseChoiceKey(operator_id=operator_id, chat_id=chat_id,
+                                 subject=subject, artifacts=artifacts,
+                                 question=question)
         text = pec.render_erase_choice(
             what, [(s.name, s.tool, s.summary) for s in specs])
 
         async def _continue(choice: int) -> bool:
+            if choice == pec.CANCEL:
+                questions.close(subject, question)
             return await deliver(_choice_continuation(tool, arg, name, choice))
         try:
             handle = pec.prompt_erase_choice(
@@ -16434,7 +16439,11 @@ async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
                            "their DM whether to also erase the data "
                            f"({', '.join(s.name for s in specs)}); Casa continues "
                            "this topic with their choice — wait for it.")}, []
-    if not pec.CHOICES.consume(key, pec.ERASE):
+    question = questions.current(subject)
+    key = pec.EraseChoiceKey(operator_id=operator_id, chat_id=chat_id,
+                             subject=subject, artifacts=artifacts,
+                             question=question or "")
+    if question is None or not pec.CHOICES.consume(key, pec.ERASE):
         return {"ok": False, "kind": "erase_not_confirmed",
                 "detail": ("erase_data=true needs the operator's Erase tap on the "
                            "question Casa posts, for this exact version, and runs "
@@ -16442,7 +16451,8 @@ async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
                            "them. Nothing was removed.")}, []
 
     async def _run() -> None:
-        outcomes = await plugin_erasure.run_erase_episode(specs, (chat_id, operator_id))
+        outcomes = await plugin_erasure.run_erase_episode(
+            specs, (chat_id, operator_id), question)
         await _deliver_erasure_outcome(tool, name, outcomes, deliver)
     task = asyncio.get_running_loop().create_task(_run())
     _ERASE_TASKS.add(task)

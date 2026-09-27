@@ -70,47 +70,46 @@ def parse_erase_result(text: str | None) -> tuple[Verdict, str]:
 
 
 class EraseWatch:
-    """The erase results an episode is waiting for, keyed by the exact
-    ``(artifact_id, full tool name)`` it armed. The result broker's hooks
-    resolve an armed key from an erase-marked turn; nothing else does."""
+    """The erase results the episodes are waiting for, keyed by the exact
+    ``(run id, full tool name)`` each run armed. A run id is unique to one
+    dispatched erase turn and travels on it as ``plugin_erase_episode``, so a
+    late result of one run can never answer another, even for the same
+    artifact and tool. The result broker's hooks resolve an armed key from an
+    erase-marked turn of that run; nothing else does."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._futures: dict[tuple[str, str], asyncio.Future] = {}
 
-    def arm(self, artifact_id: str, tool_name: str) -> asyncio.Future:
+    def arm(self, run_id: str, tool_name: str) -> asyncio.Future:
         fut = asyncio.get_running_loop().create_future()
         with self._lock:
-            self._futures[(artifact_id, tool_name)] = fut
+            self._futures[(run_id, tool_name)] = fut
         return fut
 
-    def disarm(self, artifact_id: str, tool_name: str) -> None:
+    def disarm(self, run_id: str, tool_name: str) -> None:
         with self._lock:
-            self._futures.pop((artifact_id, tool_name), None)
+            self._futures.pop((run_id, tool_name), None)
 
-    def is_armed(self, artifact_id: str, tool_name: str) -> bool:
+    def is_armed(self, run_id: str, tool_name: str) -> bool:
         with self._lock:
-            return (artifact_id, tool_name) in self._futures
+            return (run_id, tool_name) in self._futures
 
-    def resolve_turn_end(self, artifact_id: str) -> None:
-        """The erase turn for *artifact_id* ended: every key it armed that is
-        still unanswered resolves as "no call"."""
+    def resolve_turn_end(self, run_id: str) -> None:
+        """The erase turn of *run_id* ended: every key it armed that is still
+        unanswered resolves as "no call"."""
         with self._lock:
-            keys = [k for k in self._futures if k[0] == artifact_id]
+            keys = [k for k in self._futures if k[0] == run_id]
         for key in keys:
             self.resolve(*key, error=None, text=None, _no_call=True)
 
-    def is_armed_name(self, tool_name: str) -> bool:
-        with self._lock:
-            return any(name == tool_name for _a, name in self._futures)
-
-    def resolve(self, artifact_id: str, tool_name: str, *,
+    def resolve(self, run_id: str, tool_name: str, *,
                 text: str | None = None, error: str | None = None,
                 _no_call: bool = False) -> bool:
         """Hand the result to the waiting episode. False when the key is not
         armed or already resolved."""
         with self._lock:
-            fut = self._futures.get((artifact_id, tool_name))
+            fut = self._futures.get((run_id, tool_name))
         if fut is None or fut.done():
             return False
         payload = {"text": text, "error": error}
@@ -129,53 +128,85 @@ class EraseWatch:
         return True
 
 
-class ErasureRecords:
-    """What each finished erasure reported, keyed ``(subject, artifact_id)``
-    where subject is ``plugin:<name>``. A complete record is taken once, by
-    the finishing call, for the same artifact the eraser ran against."""
+class QuestionIds:
+    """The uninstall question currently open for each subject
+    (``plugin:<name>`` / ``specialist:<slug>``). Every Erase tap, erase run
+    and erasure record carries the id of the question it answers, and only
+    the CURRENT question's can authorize or finish an uninstall: asking again
+    — or answering Keep or Cancel — replaces it, which voids every older tap,
+    run and record at once."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._rows: dict[tuple[str, str], tuple[Verdict, str]] = {}
+        self._current: dict[str, str] = {}
+
+    def open(self, subject: str) -> str:
+        import uuid
+        qid = uuid.uuid4().hex
+        with self._lock:
+            self._current[subject] = qid
+        return qid
+
+    def current(self, subject: str) -> "str | None":
+        with self._lock:
+            return self._current.get(subject)
+
+    def close(self, subject: str, qid: "str | None" = None) -> None:
+        """Void the open question (only if it is still *qid*, when given)."""
+        with self._lock:
+            if qid is None or self._current.get(subject) == qid:
+                self._current.pop(subject, None)
+
+
+class ErasureRecords:
+    """What each finished erasure reported, keyed ``(plugin subject,
+    artifact_id)`` and stamped with the question its run answered. A complete
+    record is taken once, by the finishing call, for the same artifact and the
+    same, still current, question."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._rows: dict[tuple[str, str], tuple[Verdict, str, str]] = {}
 
     def put(self, subject: str, artifact_id: str, verdict: Verdict,
-            report: str) -> None:
+            report: str, question: str) -> None:
         with self._lock:
-            self._rows[(subject, artifact_id)] = (verdict, report)
+            self._rows[(subject, artifact_id)] = (verdict, report, question)
 
-    def discard(self, subject: str) -> None:
-        """Forget every record of *subject*, whatever its artifact."""
-        with self._lock:
-            for key in [k for k in self._rows if k[0] == subject]:
-                del self._rows[key]
-
-    def has_complete(self, subject: str, artifact_id: str) -> bool:
+    def has_complete(self, subject: str, artifact_id: str,
+                     question: str) -> bool:
         with self._lock:
             row = self._rows.get((subject, artifact_id))
-            return row is not None and row[0] == "complete"
+            return (row is not None and row[0] == "complete"
+                    and row[2] == question)
 
-    def take_complete(self, subject: str, artifact_id: str) -> str | None:
-        """The report of a complete erasure of *subject* at *artifact_id*,
-        consumed; ``None`` when there is none."""
+    def take_complete(self, subject: str, artifact_id: str,
+                      question: str) -> str | None:
+        """The report of a complete erasure of *subject* at *artifact_id* for
+        *question*, consumed; ``None`` when there is none."""
         with self._lock:
             row = self._rows.get((subject, artifact_id))
-            if row is None or row[0] != "complete":
+            if row is None or row[0] != "complete" or row[2] != question:
                 return None
             del self._rows[(subject, artifact_id)]
             return row[1]
 
 
 WATCH = EraseWatch()
+QUESTIONS = QuestionIds()
 RECORDS = ErasureRecords()
 
 
-def erase_turn_artifact(origin: dict | None) -> str | None:
-    """The artifact the operator's tap named, on an erase-marked turn;
-    ``None`` on any other turn."""
+def erase_turn(origin: dict | None) -> "tuple[str, str] | None":
+    """``(tapped artifact, run id)`` on an erase-marked turn — either may be
+    "" when missing, which no armed key matches — or ``None`` on any other
+    turn."""
     if not isinstance(origin, dict) or origin.get("synthetic") != "plugin_erase":
         return None
     artifact = origin.get("plugin_erase_artifact")
-    return artifact if isinstance(artifact, str) and artifact else ""
+    run_id = origin.get("plugin_erase_episode")
+    return (artifact if isinstance(artifact, str) else "",
+            run_id if isinstance(run_id, str) else "")
 
 
 def turn_ended(context: dict | None) -> None:
@@ -183,9 +214,9 @@ def turn_ended(context: dict | None) -> None:
     on an erase-marked turn, resolve whatever its eraser did not answer.
     Synchronous; never raises."""
     try:
-        artifact = erase_turn_artifact(context)
-        if artifact:
-            WATCH.resolve_turn_end(artifact)
+        turn = erase_turn(context)
+        if turn and turn[1]:
+            WATCH.resolve_turn_end(turn[1])
     except Exception:  # noqa: BLE001 — the turn's reply is already produced
         logger.exception("erase turn-end report failed")
     return None
@@ -260,6 +291,7 @@ def _outcome(spec: EraseSpec, payload: dict | None) -> ErasureOutcome:
 
 
 async def _erase_one(spec: EraseSpec, operator: tuple[int, int]) -> ErasureOutcome:
+    import uuid
     import plugin_dispatch
     entry = {"targets": list(spec.targets)}
     _tier, exec_role = plugin_dispatch.execution_target(entry)
@@ -269,13 +301,15 @@ async def _erase_one(spec: EraseSpec, operator: tuple[int, int]) -> ErasureOutco
             or not spec.tool_names):
         return ErasureOutcome(spec.name, spec.artifact_id, "not_dispatched",
                               NOT_DISPATCHED_REPORT)
-    futures = [WATCH.arm(spec.artifact_id, t) for t in spec.tool_names]
+    run_id = uuid.uuid4().hex
+    futures = [WATCH.arm(run_id, t) for t in spec.tool_names]
     try:
         if spec.protected:
             _mint_grant(spec, exec_role, operator)
         accepted = await _dispatch(role, instruction, {
             "synthetic": "plugin_erase", "plugin_erase_target": exec_role,
-            "plugin_erase_artifact": spec.artifact_id})
+            "plugin_erase_artifact": spec.artifact_id,
+            "plugin_erase_episode": run_id})
         if not accepted:
             return ErasureOutcome(spec.name, spec.artifact_id, "not_dispatched",
                                   NOT_DISPATCHED_REPORT)
@@ -287,22 +321,24 @@ async def _erase_one(spec: EraseSpec, operator: tuple[int, int]) -> ErasureOutco
         return _outcome(spec, (real or payloads or [None])[0])
     finally:
         for t in spec.tool_names:
-            WATCH.disarm(spec.artifact_id, t)
+            WATCH.disarm(run_id, t)
 
 
-async def run_erase_episode(specs: list[EraseSpec],
-                            operator: tuple[int, int]) -> list[ErasureOutcome]:
+async def run_erase_episode(specs: list[EraseSpec], operator: tuple[int, int],
+                            question: str) -> list[ErasureOutcome]:
     """Run each plugin's eraser in turn and record what it reported,
     stopping at the first erasure that is not complete: an uninstall
     proceeds only when every one completed, so running the rest would erase
     data the operator then keeps a plugin for. Returns the outcomes of the
-    plugins that ran."""
+    plugins that ran. Every record is stamped with *question*, the uninstall
+    question whose Erase tap started this episode."""
     outcomes: list[ErasureOutcome] = []
     for spec in specs:
         out = await _erase_one(spec, operator)
         verdict = out.verdict if out.verdict in ("complete", "incomplete") \
             else "unreadable"
-        RECORDS.put(f"plugin:{spec.name}", spec.artifact_id, verdict, out.report)
+        RECORDS.put(f"plugin:{spec.name}", spec.artifact_id, verdict,
+                    out.report, question)
         outcomes.append(out)
         if out.verdict != "complete":
             break

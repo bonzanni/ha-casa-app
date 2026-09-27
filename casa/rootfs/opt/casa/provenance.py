@@ -99,6 +99,9 @@ RESERVED_CONTEXT_KEYS = frozenset({
     # could set it would aim an irreversible erasure at another version.
     "plugin_erase_target",
     "plugin_erase_artifact",
+    # ...and the erase run it belongs to: only that run's waiting episode may
+    # take its result, so a caller who could set it would answer another run.
+    "plugin_erase_episode",
     # #1038: the live turn scope ``Agent.handle_message`` mints, and the
     # resolved disclosure a stored payload carries to the turn that sends it
     # (a reminder's ``output_note``, a delegation's launch note). Reserved so

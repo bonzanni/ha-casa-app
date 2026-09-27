@@ -89,10 +89,10 @@ derive an identity bound to the host resident and that pinned artifact
 ([`background-jobs.md`](background-jobs.md)).
 
 **The broker also serves an erase episode.** On a turn carrying Casa's `plugin_erase`
-marker, the admission callback refuses every plugin tool unless an episode is waiting for
-that exact tool at the artifact the operator's Erase tap named and the session's binding
-carries that artifact, and the result and failure
-hooks hand that eraser's outcome to the waiting episode — the result hook before the early
+marker, the admission callback refuses every plugin tool unless the turn's own erase run
+is waiting for that exact tool and the session's binding carries the artifact the
+operator's Erase tap named, and the result and failure
+hooks hand that eraser's outcome to the turn's own run — the result hook before the early
 return a `safe` tool takes, passing the result itself on unchanged. An eraser must be
 declared `safe`, so nothing here changes what the contract lets through; the rule is
 INV-PLUG-038, in [`plugin-erasure.md`](plugin-erasure.md).
