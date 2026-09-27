@@ -12,7 +12,7 @@
 - item: casa/rootfs/opt/casa/ask_retirement.py
   doc: architecture/scheduled-asks.md
 - item: casa/rootfs/opt/casa/authz_grants.py
-  doc: architecture/plugins.md
+  doc: architecture/plugin-authorization.md
 - item: casa/rootfs/opt/casa/background_jobs.py
   doc: architecture/background-jobs.md
 - item: casa/rootfs/opt/casa/bus.py

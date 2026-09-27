@@ -64,7 +64,7 @@ optional observer, which may only schedule work: the tools layer uses it to run 
 plugin-health pass an ended install owes (INV-PLUG-032, in
 [`architecture/plugin-health.md`](plugin-health.md)) and to withdraw the engagement's
 unanswered authorization challenges (INV-PLUG-033, in
-[`architecture/plugins.md`](plugins.md)).
+[`architecture/plugin-authorization.md`](plugin-authorization.md)).
 
 The direct status mutators honour the same boundary: each re-checks for a prior terminal
 state under the registry lock and declines to overwrite one — the idle sweep cannot flip a

@@ -42,6 +42,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | anything published — docs, comments, commit messages, PR text, branch names | [`doctrine/publishing.md`](doctrine/publishing.md) |
 | anything structural, or when you need to find which document owns an area | [`architecture/overview.md`](architecture/overview.md) |
 | anything that must serialize, a new lock, bus dispatch, or blocking I/O placement | [`architecture/concurrency-model.md`](architecture/concurrency-model.md) |
+| authorization grants, the protected-tool challenge, who may approve a protected call, or what a finished engagement does to its challenges | [`architecture/plugin-authorization.md`](architecture/plugin-authorization.md) |
 | bundle-transaction failure behaviour, the compensation a failed sync phase or sequencer runs, boot reconciliation of bundle journals, or the consent-receipt and staging age sweeps | [`architecture/specialist-bundle-recovery.md`](architecture/specialist-bundle-recovery.md) |
 | config-tree reconciliation, the entry-level merge, or `${VAR}` placeholder resolution | [`architecture/config-reconciliation.md`](architecture/config-reconciliation.md) |
 | engagement lifecycle, engagement launch, or the driver protocol | [`architecture/engagements.md`](architecture/engagements.md) |
@@ -52,7 +53,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | logging, correlation ids, redaction, or a health surface | [`architecture/observability.md`](architecture/observability.md) |
 | personas, bindings, prompt composition, the per-surface admission ceilings, or the binding digest | [`architecture/personality.md`](architecture/personality.md) |
 | plugin environment resolution or withholding, the plugin env conf file, or the plugin media outbox | [`architecture/plugin-runtime.md`](architecture/plugin-runtime.md) |
-| plugin installation, artifact identity, protected tools, or authorization grants | [`architecture/plugins.md`](architecture/plugins.md) |
+| plugin installation, artifact identity, or protected-tool declarations | [`architecture/plugins.md`](architecture/plugins.md) |
 | plugin mutation sequencing, a plugin or specialist mutation envelope, what a result may say about an integration being live, the removal disclosure, or re-issuing a plugin-consent DM on demand | [`architecture/plugin-mutation-tools.md`](architecture/plugin-mutation-tools.md) |
 | plugin trigger declaration, the routing overlay, trigger consent, or per-trigger secret backing | [`architecture/plugin-triggers.md`](architecture/plugin-triggers.md) |
 | read clearance, the per-sender origin stamp, the engagement clearance clamp, or the executor-archive epoch scoping | [`architecture/memory-scoping.md`](architecture/memory-scoping.md) |

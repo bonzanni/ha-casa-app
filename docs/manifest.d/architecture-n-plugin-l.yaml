@@ -144,6 +144,28 @@
     INV-PERS-010: [tests/test_refusal_observation.py::test_divergent_damaged_overrides_one_record_carries_both_restore_facts, tests/test_refusal_observation.py::test_active_unreadable_with_staged_readable, tests/test_refusal_observation.py::test_both_unreadable_one_record_active_error_wins, tests/test_refusal_observation.py::test_dangling_symlink_tuple_is_unreadable_never_absent, tests/test_refusal_observation.py::test_staged_image_default_beside_failing_default_shows_null_facts, tests/test_refusal_observation.py::test_commit_failure_after_fresh_stage_reports_the_candidate, tests/test_refusal_observation.py::test_recovery_names_no_runtime_tool_and_only_universal_facts, tests/test_refusal_observation.py::test_fact_rule_component_default_active_gets_facts_staged_does_not, tests/test_refusal_observation.py::test_fresh_install_default_failure_has_no_restore_facts]
     INV-PERS-015: [tests/test_assistant_prompts.py::test_every_resident_projection_carries_the_credential_rule_exactly_once]
     INV-PERS-009: [tests/test_prompt_compiler.py::test_a_nested_subsection_reaches_the_text_projection_exactly_once, tests/test_prompt_compiler.py::test_a_second_root_and_its_subsection_each_reach_text_once, tests/test_prompt_compiler.py::test_a_section_authored_above_core_is_emitted_once_and_only_once, tests/test_persona_pack.py::test_root_sections_returns_the_prefix_minimum_rows_in_document_order]
+- doc: architecture/plugin-authorization.md
+  summary: What a protected plugin tool call needs before it runs — the single-use grant it consumes, the challenge that mints it, who may answer, and what retires an unanswered one.
+  when_changing: authorization grants, the protected-tool challenge, who may approve a protected call, or what a finished engagement does to its challenges
+  covers:
+    - casa/rootfs/opt/casa/authz_grants.py::GrantKey
+    - casa/rootfs/opt/casa/authz_grants.py::GrantStore
+    - casa/rootfs/opt/casa/authz_grants.py::ChallengeCoordinator.cancel_matching
+    - casa/rootfs/opt/casa/authz_grants.py::note_delegation_awaiting_approval
+    - casa/rootfs/opt/casa/specialist_limits.py::SpecialistLimiter.wait_until_free
+    - casa/rootfs/opt/casa/tools.py::wait_for_delegation_slot
+  tests:
+    - tests/test_authz_grants.py
+    - tests/test_authz_hook.py
+    - tests/test_approval_outlives_raiser.py
+  related: [architecture/plugins.md, architecture/engagement-finalization.md, architecture/scheduled-asks.md, architecture/delegation-announcements.md]
+  defines_invariants: [INV-PLUG-004, INV-PLUG-005, INV-PLUG-007, INV-PLUG-033]
+  invariant_tests:
+    INV-PLUG-004: [tests/test_authz_hook.py::test_third_call_rechallenges_single_use, tests/test_authz_hook.py::test_args_drift_rechallenges, tests/test_authz_grants.py::test_exactly_one_thread_consumes, tests/test_authz_hook.py::TestEngagementBackedAuthz::test_grant_from_other_engagement_not_consumable]
+    INV-PLUG-005: [tests/test_authz_hook.py::test_restart_loses_grants_fresh_store_rechallenges]
+    INV-PLUG-007: [tests/test_authz_hook.py::test_non_operator_sender_is_denied_with_no_challenge, tests/test_authz_hook.py::test_non_operator_with_live_grant_consumes_nothing, tests/test_authz_hook.py::test_accept_all_mode_denies_protected_tools_for_everyone]
+    INV-PLUG-033: [tests/test_approval_outlives_raiser.py::TestEngagementEndRetiresItsChallenges::test_cancel_matching_by_engagement_touches_only_that_one, tests/test_approval_outlives_raiser.py::TestEngagementEndRetiresItsChallenges::test_terminal_transition_withdraws_the_keyboard, tests/test_approval_outlives_raiser.py::TestEngagementEndRetiresItsChallenges::test_a_tap_right_after_the_transition_is_refused]
+
 - doc: architecture/plugin-erasure.md
   summary: How an uninstall erases a plugin's data first — the casa.eraseTool field and its result convention, Casa's Keep/Erase/Cancel question, the erase episode that runs the plugin's own eraser, and the finishing call that removes only after a complete erasure.
   when_changing: a plugin's declared eraser or its result convention, the erase-data question or its choice grant, the erase episode, the plugin_erase marker, or what plugin_remove or specialist_uninstall do with erase_data

@@ -11,8 +11,9 @@ last_reviewed: 2026-09-26
 How a plugin's problems reach the operator: the standing health report, the two
 operator-facing surfaces — the in-band notice and the DM — with the marks that keep
 them from repeating themselves, and the read-only status tool. It does not cover what
-puts a plugin into a broken state: installation, artifact identity and per-call
-authorization are [`plugins.md`](plugins.md); environment resolution and withholding
+puts a plugin into a broken state: installation and artifact identity are
+[`plugins.md`](plugins.md), per-call authorization
+[`plugin-authorization.md`](plugin-authorization.md); environment resolution and withholding
 are [`plugin-runtime.md`](plugin-runtime.md); the setup-episode lifecycle behind a
 setup row is [`plugin-setup.md`](plugin-setup.md)'s.
 

@@ -14,7 +14,7 @@ session that asked, and its manners in the operator's attention lane. It does no
 job ledger it is modelled on ([`architecture/jobs-and-delivery.md`](jobs-and-delivery.md)),
 the trigger that fired the schedule ([`architecture/triggers.md`](triggers.md)), or the
 authorization challenges that share the lane
-([`architecture/plugins.md`](plugins.md)).
+([`architecture/plugin-authorization.md`](plugin-authorization.md)).
 
 ## Mental model
 

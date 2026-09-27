@@ -12,8 +12,8 @@ What the plugin and specialist mutation tools guarantee: how a mutation orders i
 registry commit against the runtime convergence that follows, what a mutation envelope may
 and may not claim about a plugin's integration, and what a committed removal discloses
 about what it leaves behind. It covers the tools' contracts, not the machinery they drive
-— the registry, content-addressed store and per-call authorization are in
-[`plugins.md`](plugins.md), the declared setup run in
+— the registry and content-addressed store are in [`plugins.md`](plugins.md),
+per-call authorization in [`plugin-authorization.md`](plugin-authorization.md), the declared setup run in
 [`plugin-setup.md`](plugin-setup.md), and the health surfaces the status tool reads in
 [`plugin-health.md`](plugin-health.md). The tool surface itself — one registry, the
 two-layer result envelope, the question lifecycle and completion — is in

@@ -40,6 +40,7 @@ Code is the source of truth; these files are a map.
 - [architecture/persistent-state.md](architecture/persistent-state.md): What the application writes to disk, how it treats a missing or corrupt file, and what that means for recovery.
 - [architecture/persona-lifecycle.md](architecture/persona-lifecycle.md): How a persona arrives, is approved, and leaves — consent-bound install, the approved roots, removal by reference scan, and the operator-run sweep.
 - [architecture/personality.md](architecture/personality.md): What an agent is versus how it presents — role artifacts, personas, bindings, and which prompt is actually served.
+- [architecture/plugin-authorization.md](architecture/plugin-authorization.md): What a protected plugin tool call needs before it runs — the single-use grant it consumes, the challenge that mints it, who may answer, and what retires an unanswered one.
 - [architecture/plugin-erasure.md](architecture/plugin-erasure.md): How an uninstall erases a plugin's data first — the casa.eraseTool field and its result convention, Casa's Keep/Erase/Cancel question, the erase episode that runs the plugin's own eraser, and the finishing call that removes only after a complete erasure.
 - [architecture/plugin-events.md](architecture/plugin-events.md): Plugin-emitted domain events — casa-minted generations, per-subscriber delivery receipts, and consent-gated headless wakes.
 - [architecture/plugin-handoff.md](architecture/plugin-handoff.md): The folder files move through between plugins — /data/handoff, publish and capture (the vendored casa_handoff contract), the sweep, share_inbound_file's handoff side.
@@ -52,7 +53,7 @@ Code is the source of truth; these files are a map.
 - [architecture/plugin-setup-turn.md](architecture/plugin-setup-turn.md): The dispatched setup turn — what it evidences, how a courier turn's delegation is correlated, and the operator identity it carries for the role it is addressed to.
 - [architecture/plugin-setup.md](architecture/plugin-setup.md): Who runs a plugin's declared setup tool — the single-runner obligation and the consent verdict that releases it.
 - [architecture/plugin-triggers.md](architecture/plugin-triggers.md): What a plugin's declared webhook must satisfy before it routes — the overlay, its preconditions, and the operator approval gating them.
-- [architecture/plugins.md](architecture/plugins.md): How a plugin becomes usable — registry, content-addressed store, artifact identity, and per-call authorization.
+- [architecture/plugins.md](architecture/plugins.md): How a plugin becomes usable — registry, content-addressed store, artifact identity, and which tools are protected.
 - [architecture/prompt-file-guards.md](architecture/prompt-file-guards.md): The per-agent prompt files a compiled bundle makes dead — response_shape.yaml and prompts/system.md — and the file-tool guards that refuse an edit to them.
 - [architecture/reminders.md](architecture/reminders.md): How an agent comes to nudge someone later — entry ownership, the narrow writer, delivery, and the sweep that redeems a past-dated one-shot the process was down for.
 - [architecture/scheduled-asks.md](architecture/scheduled-asks.md): A scheduled question as a durable obligation — its record on disk, its terminal delivery back to the session that asked, and its manners in the operator's attention lane.

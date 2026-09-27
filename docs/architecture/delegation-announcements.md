@@ -86,7 +86,7 @@ acknowledgement lost — and that the complete result is still owed; a live comp
 so marked, and that statement is the only difference the replay introduces. A live prompt can
 carry one more instruction that a replay cannot: the note telling the resident not to retry an
 action that stopped at an operator approval
-([`plugins.md`](plugins.md), under INV-PLUG-004) is read from an in-process record, which no
+([`plugin-authorization.md`](plugin-authorization.md), under INV-PLUG-004) is read from an in-process record, which no
 boot replay inherits. Repeating an answer the
 operator may already have read is the price of never losing one, and a resident that read
 the replay as a duplicate and narrated a fragment discharged the whole answer by the rule
