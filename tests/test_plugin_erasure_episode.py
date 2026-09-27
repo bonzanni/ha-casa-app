@@ -18,6 +18,7 @@ ART = "a" * 64
 TOOL = "mcp__plugin_bank-feed_bank-feed__delete_all_data"
 OP = (42, 42)       # (chat_id, user_id)
 Q = "question-1"
+SUBJ = "specialist:finance"
 
 
 def _spec(targets=("specialist:finance",), protected=True, name="finance.bank-feed"):
@@ -61,7 +62,7 @@ async def test_a_courier_turn_carries_the_stamps_and_a_complete_result_is_record
     _watch, records, grants = fresh
     dispatch, sent = _dispatcher(json.dumps({"erasure": "complete", "report": "gone"}))
     pe.configure(dispatch=dispatch)
-    [out] = await pe.run_erase_episode([_spec()], operator=OP, question=Q)
+    [out] = await pe.run_erase_episode([_spec()], operator=OP, question=Q, subject=SUBJ)
     assert out == pe.ErasureOutcome("finance.bank-feed", ART, "complete", "gone")
     role, text, ctx = sent[0]
     assert role == "assistant"                                  # the courier
@@ -69,7 +70,8 @@ async def test_a_courier_turn_carries_the_stamps_and_a_complete_result_is_record
     run = ctx.pop("plugin_erase_episode")
     assert isinstance(run, str) and len(run) == 32
     assert ctx == {"synthetic": "plugin_erase", "plugin_erase_target": "finance",
-                   "plugin_erase_artifact": ART}
+                   "plugin_erase_artifact": ART, "plugin_erase_subject": SUBJ,
+                   "plugin_erase_question": Q}
     assert records.take_complete("plugin:finance.bank-feed", ART, "other-q") is None
     assert records.take_complete("plugin:finance.bank-feed", ART, Q) == "gone"
 
@@ -90,7 +92,7 @@ async def test_a_protected_eraser_is_pre_authorized_for_exactly_its_no_arg_call(
         pe.turn_ended(context)
         return True
     pe.configure(dispatch=dispatch)
-    await pe.run_erase_episode([_spec()], operator=OP, question=Q)
+    await pe.run_erase_episode([_spec()], operator=OP, question=Q, subject=SUBJ)
     assert seen == {"other": False, "exact": True, "again": False}
 
 
@@ -100,7 +102,7 @@ async def test_an_unprotected_eraser_mints_no_grant(fresh):
     dispatch, _ = _dispatcher(json.dumps({"erasure": "complete", "report": "ok"}))
     pe.configure(dispatch=dispatch)
     await pe.run_erase_episode([_spec(targets=("resident:assistant",),
-                                      protected=False)], operator=OP, question=Q)
+                                      protected=False)], operator=OP, question=Q, subject=SUBJ)
     key = GrantKey(42, 42, "assistant", ART, TOOL, canonical_args_hash({}), "")
     assert grants.consume(key) is False
 
@@ -118,7 +120,7 @@ async def test_anything_but_complete_records_nothing_removable(fresh, kw, verdic
     _w, records, _g = fresh
     dispatch, _ = _dispatcher(**kw)
     pe.configure(dispatch=dispatch)
-    [out] = await pe.run_erase_episode([_spec()], operator=OP, question=Q)
+    [out] = await pe.run_erase_episode([_spec()], operator=OP, question=Q, subject=SUBJ)
     assert (out.verdict, out.report) == (verdict, report)
     assert records.take_complete("plugin:finance.bank-feed", ART, Q) is None
 
@@ -128,7 +130,7 @@ async def test_a_turn_that_never_reports_times_out(fresh, monkeypatch):
     monkeypatch.setattr(pe, "ERASE_WAIT_S", 0.05)
     dispatch, _ = _dispatcher(end_turn=False)
     pe.configure(dispatch=dispatch)
-    [out] = await pe.run_erase_episode([_spec()], operator=OP, question=Q)
+    [out] = await pe.run_erase_episode([_spec()], operator=OP, question=Q, subject=SUBJ)
     assert (out.verdict, out.report) == ("timed_out", pe.TIMED_OUT_REPORT)
     assert pe.WATCH._futures == {}                              # disarmed
 
@@ -137,7 +139,7 @@ async def test_a_turn_that_never_reports_times_out(fresh, monkeypatch):
 async def test_a_plugin_with_no_target_is_not_dispatched(fresh):
     dispatch, sent = _dispatcher()
     pe.configure(dispatch=dispatch)
-    [out] = await pe.run_erase_episode([_spec(targets=())], operator=OP, question=Q)
+    [out] = await pe.run_erase_episode([_spec(targets=())], operator=OP, question=Q, subject=SUBJ)
     assert out.verdict == "not_dispatched" and sent == []
 
 
@@ -157,7 +159,7 @@ async def test_several_plugins_run_in_turn_and_stop_at_the_first_not_complete(fr
     pe.configure(dispatch=dispatch)
     b = pe.EraseSpec("finance.b", "b" * 64, ("specialist:finance",), ("t2",), False)
     c = pe.EraseSpec("finance.c", "c" * 64, ("specialist:finance",), ("t3",), False)
-    outs = await pe.run_erase_episode([_spec(), b, c], operator=OP, question=Q)
+    outs = await pe.run_erase_episode([_spec(), b, c], operator=OP, question=Q, subject=SUBJ)
     assert [o.verdict for o in outs] == ["complete", "incomplete"]
     assert sent == [ART, "b" * 64]                              # c never ran
 
@@ -185,5 +187,19 @@ async def test_an_eraser_with_no_server_is_not_dispatched(fresh):
     dispatch, sent = _dispatcher()
     pe.configure(dispatch=dispatch)
     spec = pe.EraseSpec("p", ART, ("resident:assistant",), (), False, tool="erase_all")
-    [out] = await pe.run_erase_episode([spec], operator=OP, question=Q)
+    [out] = await pe.run_erase_episode([spec], operator=OP, question=Q, subject=SUBJ)
     assert out.verdict == "not_dispatched" and sent == []
+
+
+
+@pytest.mark.asyncio
+async def test_a_pregrant_the_run_never_used_is_revoked_when_it_ends(fresh):
+    """Diff r5 (Terra): a protected eraser's pre-authorization lives only as
+    long as its run — a run that ended without the call leaves no grant a later
+    ordinary call could consume without the operator's challenge."""
+    _w, _r, grants = fresh
+    dispatch, _ = _dispatcher()                       # the turn ends, no call
+    pe.configure(dispatch=dispatch)
+    await pe.run_erase_episode([_spec()], operator=OP, question=Q, subject=SUBJ)
+    key = GrantKey(42, 42, "finance", ART, TOOL, canonical_args_hash({}), "")
+    assert grants.consume(key) is False

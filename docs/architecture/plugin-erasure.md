@@ -102,7 +102,8 @@ plugin in turn (`plugin_erasure.run_erase_episode`):
   once, with no arguments, and to call nothing else.
 - *Marker.* The turn carries Casa's `plugin_erase` marker beside
   `plugin_erase_target` (the role that runs the eraser), `plugin_erase_artifact` (the
-  artifact the tap named) and `plugin_erase_episode` (the run id). All are reserved context
+  artifact the tap named), `plugin_erase_episode` (the run id), and `plugin_erase_subject` /
+  `plugin_erase_question` (the uninstall question the run answers). All are reserved context
   keys no ingress can supply, the agent copies the stamps onto the turn's origin, and the
   marker admits the `setup`
   transport, so the turn's grant identity is gated exactly like a setup turn's, from one
@@ -112,14 +113,18 @@ plugin in turn (`plugin_erasure.run_erase_episode`):
   the dispatch, one grant per server name for the argument-free call, bound to the
   operator, the executing role and the tapped artifact — single-use and TTL-bound like any
   grant (INV-PLUG-004, INV-PLUG-005). The Erase tap was the operator's approval of exactly
-  this call, so no second challenge is posted. An unprotected eraser gets no grant.
+  this call, so no second challenge is posted. The grant lives only as long as the run: one
+  the eraser did not consume is revoked when the run ends. An unprotected eraser gets no
+  grant.
 - *Binding check.* An erase-marked turn exists to run one eraser. On such a turn the result
   broker's admission hook refuses every plugin tool before it runs unless the turn's own run
-  is waiting for that exact tool and the session's binding carries the plugin at the tapped
-  artifact: an update published between the tap and the session build would otherwise run
-  another version's eraser, a turn that runs after its run stopped waiting — or a turn of
-  another run — would run an eraser nobody is waiting for, and an unprotected eraser meets
-  no grant check that could catch any of these.
+  is waiting for that exact tool, the question the run answers is still the open one, and
+  the session's binding carries the plugin at the tapped artifact. So asking again, Keep or
+  Cancel also stops an approved erase whose turn has not reached the eraser yet (an
+  operator ruling). Without these checks an update published between the tap and the
+  session build would run another version's eraser, a turn that runs after its run stopped
+  waiting — or a turn of another run — would run an eraser nobody is waiting for, and an
+  unprotected eraser meets no grant check that could catch any of these.
 - *Capture.* The result hook hands the eraser's result to the turn's own run, before the
   early return a `safe` tool takes, and passes the result itself on unchanged; the failure
   hook answers it as an error. A late result of one run can never answer another, even
@@ -182,7 +187,7 @@ Enforced in `tools._erase_gate`, which computes the erasing plugins from the reg
 the call and takes the records only when all are complete — a refused call spends none of
 them. A complete erasure of one version therefore never removes another.
 
-**INV-PLUG-038**: On an erase-marked turn, a plugin tool is refused before it runs unless the turn's own erase run is waiting for that exact tool and the session's binding carries its plugin at the artifact the operator's tap named, and only the turn's own run is answered by its result or failure; a protected eraser is pre-authorized by exactly one single-use grant per server name for its argument-free call, bound to the executing role and that artifact, and an unprotected one by none.
+**INV-PLUG-038**: On an erase-marked turn, a plugin tool is refused before it runs unless the turn's own erase run is waiting for that exact tool, the uninstall question that run answers is still the open one, and the session's binding carries its plugin at the artifact the operator's tap named, and only the turn's own run is answered by its result or failure; a protected eraser is pre-authorized by exactly one single-use grant per server name for its argument-free call, bound to the executing role and that artifact and revoked when the run ends if unconsumed, and an unprotected one by none.
 
 Enforced by the result broker's admission, result and failure hooks and by the episode's
 grant mint. What it does not cover: an unmarked turn, which neither triggers the check nor

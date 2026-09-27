@@ -596,9 +596,12 @@ def make_plugin_admission_hook(
             # — is refused before execution; an unprotected eraser meets no
             # grant check at all, so this is its only gate.
             if _erase_turn() is not None:
-                from plugin_erasure import WATCH
+                import agent as agent_mod
+                from plugin_erasure import WATCH, erase_turn_question_open
                 run_id = _erase_run_of(contract_map, tool_name)
-                if run_id is None or not WATCH.is_armed(run_id, tool_name):
+                if (run_id is None or not WATCH.is_armed(run_id, tool_name)
+                        or not erase_turn_question_open(
+                            agent_mod.origin_var.get(None))):
                     return _deny(_DENY_ERASE_BINDING)
             # The exempt setup tool: declared absent or safe. A setup tool
             # declared as a CAPABILITY (#1015, it delivers its link) takes

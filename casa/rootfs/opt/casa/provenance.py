@@ -102,6 +102,10 @@ RESERVED_CONTEXT_KEYS = frozenset({
     # ...and the erase run it belongs to: only that run's waiting episode may
     # take its result, so a caller who could set it would answer another run.
     "plugin_erase_episode",
+    # ...and the uninstall question it answers: the eraser runs only while
+    # that question is still the open one, so these must not be forgeable.
+    "plugin_erase_subject",
+    "plugin_erase_question",
     # #1038: the live turn scope ``Agent.handle_message`` mints, and the
     # resolved disclosure a stored payload carries to the turn that sends it
     # (a reminder's ``output_note``, a delegation's launch note). Reserved so

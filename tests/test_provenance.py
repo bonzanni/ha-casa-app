@@ -49,6 +49,8 @@ def test_reserved_context_keys_are_exactly_the_spec_set():
         "plugin_erase_target",
         "plugin_erase_artifact",
         "plugin_erase_episode",
+        "plugin_erase_subject",
+        "plugin_erase_question",
         # #485: scheduled-delivery marker — an external caller who could set it
         # would aim media at the operator's DM from a webhook payload. The
         # authenticated webhook route dispatches MessageType.SCHEDULED too,

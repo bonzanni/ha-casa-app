@@ -16452,7 +16452,7 @@ async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
 
     async def _run() -> None:
         outcomes = await plugin_erasure.run_erase_episode(
-            specs, (chat_id, operator_id), question)
+            specs, (chat_id, operator_id), question, subject)
         await _deliver_erasure_outcome(tool, name, outcomes, deliver)
     task = asyncio.get_running_loop().create_task(_run())
     _ERASE_TASKS.add(task)

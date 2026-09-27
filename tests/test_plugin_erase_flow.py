@@ -185,7 +185,7 @@ def flow(monkeypatch, tmp_path):
         return None
     monkeypatch.setattr(tm, "_settle_install_consent_post", settled)
 
-    async def fake_episode(specs, operator, question):
+    async def fake_episode(specs, operator, question, subject):
         state.episodes.append((list(specs), operator, question))
         return []
     monkeypatch.setattr(pe, "run_erase_episode", fake_episode)

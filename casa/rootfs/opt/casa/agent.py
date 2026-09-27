@@ -175,6 +175,7 @@ COPIED_CONTEXT_MARKERS = (
     "_operator_turn", "_scheduled_delivery", "_scheduled_epoch",
     "plugin_setup_target",
     "plugin_erase_target", "plugin_erase_artifact", "plugin_erase_episode",
+    "plugin_erase_subject", "plugin_erase_question",
     # #1038: the resolved disclosure a stored payload owes the turn that
     # sends it (stamped by the scheduler, the reminder sweep and delegation
     # synthesis; registered on the scope at mint as an InheritedNote).

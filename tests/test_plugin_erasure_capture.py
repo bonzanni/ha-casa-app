@@ -22,8 +22,10 @@ from test_result_broker import (
 
 ERASE = LIST        # a safe tool of the adopting probe plugin
 RUN = "run-1"
+QID = "question-1"
 ERASE_TURN = {**DM, "synthetic": "plugin_erase", "plugin_erase_target": "finance",
-              "plugin_erase_artifact": ARTIFACT, "plugin_erase_episode": RUN}
+              "plugin_erase_artifact": ARTIFACT, "plugin_erase_episode": RUN,
+              "plugin_erase_subject": "plugin:probe", "plugin_erase_question": QID}
 
 
 # --- parse_erase_result ------------------------------------------------------------
@@ -85,6 +87,9 @@ async def test_watch_resolves_once_for_its_exact_key():
 def watch(monkeypatch):
     w = pe.EraseWatch()
     monkeypatch.setattr(pe, "WATCH", w)
+    qs = pe.QuestionIds()
+    qs._current["plugin:probe"] = QID          # ERASE_TURN's question is open
+    monkeypatch.setattr(pe, "QUESTIONS", qs)
     return w
 
 
@@ -205,3 +210,28 @@ async def test_a_late_result_of_one_run_never_answers_another(watch):
         assert await admit(_pre(ERASE), "t", {}) == {}
         await result(_post(ERASE, body), "t", {})
     assert fut_b.result()["text"] == body
+
+
+@pytest.mark.asyncio
+async def test_an_erase_turn_of_a_voided_question_runs_nothing(watch, monkeypatch):
+    """Diff r5 (Astra S1, Terra S1; operator ruling: Cancel stops it): a queued
+    erase turn whose question was replaced or cancelled before it ran is
+    refused before the eraser executes."""
+    qs = pe.QuestionIds()
+    monkeypatch.setattr(pe, "QUESTIONS", qs)
+    store, _ = _store()
+    admit = rb.make_plugin_admission_hook("finance", _map(), client_id="c1", store=store)
+    q1 = qs.open("plugin:probe")
+    watch.arm(RUN, ERASE)
+    turn = {**ERASE_TURN, "plugin_erase_subject": "plugin:probe",
+            "plugin_erase_question": q1}
+    with _Origin(turn):
+        assert await admit(_pre(ERASE), "t", {}) == {}           # still open
+    qs.open("plugin:probe")                                      # asked again
+    with _Origin(turn):
+        assert "erase" in _deny_reason(await admit(_pre(ERASE), "t", {}))
+    qs.close("plugin:probe")                                     # and cancelled
+    with _Origin(turn):
+        assert "erase" in _deny_reason(await admit(_pre(ERASE), "t", {}))
+    with _Origin({**turn, "plugin_erase_question": ""}):         # no stamp
+        assert "erase" in _deny_reason(await admit(_pre(ERASE), "t", {}))
