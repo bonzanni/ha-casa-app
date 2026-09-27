@@ -264,8 +264,9 @@ async def _erase_one(spec: EraseSpec, operator: tuple[int, int]) -> ErasureOutco
     entry = {"targets": list(spec.targets)}
     _tier, exec_role = plugin_dispatch.execution_target(entry)
     role, instruction = plugin_dispatch.compose(
-        entry, _instruction(spec.tool_names[0]))
-    if role is None or exec_role is None or _dispatch is None:
+        entry, _instruction(spec.tool_names[0] if spec.tool_names else ""))
+    if (role is None or exec_role is None or _dispatch is None
+            or not spec.tool_names):
         return ErasureOutcome(spec.name, spec.artifact_id, "not_dispatched",
                               NOT_DISPATCHED_REPORT)
     futures = [WATCH.arm(spec.artifact_id, t) for t in spec.tool_names]

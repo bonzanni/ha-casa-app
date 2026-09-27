@@ -459,3 +459,23 @@ async def test_a_keep_removal_discards_the_erasure_records(flow):
     out = await _remove(flow.tm, erase_data=False)
     assert out["ok"] is True
     assert pe.RECORDS.has_complete("plugin:probe", ART) is False
+
+
+def test_a_declared_eraser_with_no_server_still_counts(tmp_path, monkeypatch):
+    """Diff r3 (Terra S2): a valid casa.eraseTool on a plugin with no MCP server
+    to run it is still an eraser — the uninstall asks, and an erasure cannot
+    complete — never silently an ordinary removal."""
+    import plugin_registry as preg
+    import tools as tools_mod
+    art = tmp_path / "art"
+    (art / ".claude-plugin").mkdir(parents=True)          # no .mcp.json
+    manifest = {"name": "probe", "casa": {
+        "eraseTool": "erase_all",
+        "resultContract": {"version": 1, "tools": {"erase_all": {"result": "safe"}}}}}
+    rp = preg.ResolvedPlugin(name="probe", artifact_id=ART, path=str(art),
+                             version="1", manifest=manifest)
+    monkeypatch.setattr(preg, "resolve_all", lambda: preg.ResolutionResult(
+        registry_valid=True, plugins=[rp]))
+    [spec] = tools_mod._erase_specs_for(
+        [{"name": "probe", "artifact_id": ART, "targets": ["resident:assistant"]}])
+    assert spec.tool_names == () and spec.tool == "erase_all"

@@ -47,8 +47,10 @@ verbatim and cut at 4000 characters with a ` [truncated]` marker. Anything else 
 another value, a missing key, a non-string report, a tool error — is not a complete
 erasure, and its raw text becomes the report. A plugin may also list its eraser in
 `casa.protectedTools`; the question then shows the plugin's own summary for it, and Casa
-pre-authorizes exactly the one call (below). A plugin that declares no MCP server has
-nothing to call the eraser on and is removed as before, without a question.
+pre-authorizes exactly the one call (below). A plugin that declares an eraser but no MCP
+server to call it on is still treated as declaring one: the uninstall asks, and an Erase
+choice can never complete (the episode is not dispatched), so it is never silently removed
+as an ordinary plugin.
 
 **One question, asked by Casa, and the tap is the authorization.** An uninstall that
 includes a plugin whose resolved artifact declares a valid eraser — `plugin_remove` of a

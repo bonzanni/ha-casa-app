@@ -16226,9 +16226,10 @@ _ERASED_NOTE = (
 
 def _erase_specs_for(entries: "list[dict]") -> "list":
     """An :class:`plugin_erasure.EraseSpec` for every registry entry in
-    *entries* whose resolved artifact declares a valid ``casa.eraseTool`` and
-    has an MCP server to call it on; entries without one are skipped (their
-    removal is today's)."""
+    *entries* whose resolved artifact declares a valid ``casa.eraseTool`` —
+    with empty ``tool_names`` when it has no MCP server to call it on, so its
+    erasure can never complete; entries without one are skipped (their removal
+    is today's)."""
     import plugin_erasure
     from plugin_grants import plugin_tool_names, protected_map
     from plugin_store import StoreError, manifest_erase_tool
@@ -16244,9 +16245,12 @@ def _erase_specs_for(entries: "list[dict]") -> "list":
             tool = manifest_erase_tool(rp.manifest)
         except StoreError:
             tool = None
-        names = plugin_tool_names(rp, tool) if tool else ()
-        if not names:
+        if not tool:
             continue
+        # A declared eraser with no MCP server to run it on still counts: the
+        # uninstall asks, and its erasure can never complete (not dispatched)
+        # — never silently an ordinary removal.
+        names = plugin_tool_names(rp, tool)
         summary = next((protected[n]["summary"] for n in names if n in protected),
                        None)
         specs.append(plugin_erasure.EraseSpec(

@@ -173,3 +173,12 @@ async def test_the_real_agent_turn_end_answers_an_eraser_it_never_called(
     fut = watch.arm("b" * 64, TOOL)            # _erase_msg stamps "b" * 64
     await _run(tmp_path, _erase_msg())
     assert fut.done() and fut.result().get("no_call") is True
+
+
+@pytest.mark.asyncio
+async def test_an_eraser_with_no_server_is_not_dispatched(fresh):
+    dispatch, sent = _dispatcher()
+    pe.configure(dispatch=dispatch)
+    spec = pe.EraseSpec("p", ART, ("resident:assistant",), (), False, tool="erase_all")
+    [out] = await pe.run_erase_episode([spec], operator=OP)
+    assert out.verdict == "not_dispatched" and sent == []
