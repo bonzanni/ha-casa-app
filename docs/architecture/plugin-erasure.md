@@ -8,10 +8,12 @@ last_reviewed: 2026-09-27
 
 ## Scope
 
-How an uninstall can erase a plugin's data first: the `casa.eraseTool` manifest field and
-the result convention a plugin author implements, the one question Casa asks the operator,
-the erase episode that runs the plugin's eraser, and the finishing `plugin_remove` or
-`specialist_uninstall` call that removes the plugin only after a complete erasure. What a
+How an uninstall can erase a plugin's data first: the `casa.eraseTool` and
+`casa.eraseDataOnlyTool` manifest fields and the result convention a plugin author
+implements, the one question Casa asks the operator, the erase episode that runs the chosen
+eraser, the finishing `plugin_remove` or `specialist_uninstall` call that removes the plugin
+only after a complete erasure, and the `plugin-env.conf` references Casa clears after an
+Erase everything. What a
 removal discloses when nothing was erased is
 [`plugin-mutation-tools.md`](plugin-mutation-tools.md)'s (INV-TOOL-007); the result broker
 the capture lives in is [`plugin-result-contract.md`](plugin-result-contract.md)'s; the
@@ -47,7 +49,13 @@ verbatim and cut at 4000 characters with a ` [truncated]` marker. Anything else 
 another value, a missing key, a non-string report, a tool error — is not a complete
 erasure, and its raw text becomes the report. A plugin may also list its eraser in
 `casa.protectedTools`; the question then shows the plugin's own summary for it, and the
-operator's Erase tap is the approval of exactly the one call (below). A plugin that declares an eraser but no MCP
+operator's Erase tap is the approval of exactly the one call (below).
+
+**A plugin may declare two erasers.** `casa.eraseTool` erases everything, sign-ins
+included. `casa.eraseDataOnlyTool` erases the data but keeps what a reinstall needs to
+carry on without re-authenticating — for a bank feed, its bank sessions. The second field
+has the same contract and must also differ from the first. A plugin may declare either, or
+both; everything below about "the eraser" holds for each. A plugin that declares an eraser but no MCP
 server to call it on is still treated as declaring one: the uninstall asks, and an Erase
 choice can never complete (the episode is not dispatched), so it is never silently removed
 as an ordinary plugin.
@@ -56,20 +64,27 @@ as an ordinary plugin.
 includes a plugin whose resolved artifact declares a valid eraser — `plugin_remove` of a
 plugin no specialist owns, or `specialist_uninstall` of a specialist whose owned plugins
 include one — first posts a keyboard in the operator's DM, through the same challenge
-coordinator the install-consent keyboards use: **Keep data / Erase data / Cancel**. The
-question names each erasing plugin and its eraser and says that earlier Home Assistant
-backups keep the data either way. It stays answerable for 600 s. The call that posted it
+coordinator the install-consent keyboards use: **Keep data / Erase data, keep sign-ins /
+Erase everything / Cancel**, each erase option only when EVERY erasing plugin in the
+uninstall declares that kind (`tools._offered_erase_choices`) — a plugin lacking it could
+honour neither promise, and with no common kind only Keep and Cancel remain. The button
+index maps to a choice id through the question's own list. The question names each eraser
+an offered option would run and says that earlier Home Assistant backups keep the data
+either way. It stays answerable for 600 s. The call that posted it
 returns `erase_choice_pending` with nothing removed. An Erase tap records a single-use
 choice bound to the operator, the uninstall subject (`plugin:<name>` or
 `specialist:<slug>`) and the erasing artifacts as they were at question time, valid for
-300 s; Keep and Cancel record nothing, because keeping the data is the ordinary removal.
+300 s, and records its kind; Keep and Cancel record nothing, because keeping the data is the ordinary removal.
 Every tap continues the configurator engagement with the exact call to make next, and the
 DM message is edited to say what happens — including, when the engagement could not be
 resumed, that the operator has to ask the configurator to continue. The model can never
-assert "erase" on the operator's behalf: an `erase_data=true` call that neither finishes a
+assert "erase" on the operator's behalf, nor pick the kind — `erase_data=true` runs the
+kind the tap recorded, so a "keep sign-ins" tap can never become a clean slate or the
+reverse: an `erase_data=true` call that neither finishes a
 complete erasure nor consumes that recorded choice returns `erase_not_confirmed`, and one on
 an uninstall that no longer includes an erasing plugin (an update dropped the eraser, say)
-returns `erase_unavailable`.
+returns `erase_unavailable`, as does one whose plugins no longer all declare the tapped
+kind.
 
 **The step and the removal see one state.** The erase step runs under the plugin mutation
 lock the removal commits under — `plugin_remove` holds it across both, and a specialist's
@@ -90,8 +105,9 @@ left, or one left by an earlier installation of the same artifact (erased, remov
 Keep, reinstalled): only an erasure run for THIS question can finish it.
 
 **The erase episode runs in the background.** An `erase_data=true` call that consumes the
-choice starts the episode and returns `erasure_running`, removing nothing. For each erasing
-plugin in turn (`plugin_erasure.run_erase_episode`):
+choice starts the episode and returns `erasure_running`, removing nothing. Each erasing
+plugin is projected onto the tapped kind (`EraseSpec.for_kind`), and in turn
+(`plugin_erasure.run_erase_episode`):
 
 - *Dispatch.* Each run gets its own run id, and the eraser's full tool name is armed in a
   watch under each MCP server the plugin declares, keyed by that run id. Casa then
@@ -135,8 +151,8 @@ plugin in turn (`plugin_erasure.run_erase_episode`):
   answer, preferring a real result over a "no call" on another server, and then disarms.
 
 Each plugin's outcome is recorded as an erasure record keyed by `plugin:<name>` and the
-tapped artifact and stamped with the question id: `complete` only when the eraser said so,
-otherwise not complete. The
+tapped artifact and stamped with the question id and the kind: `complete` only when the
+eraser said so, otherwise not complete. The
 episode stops at the first plugin whose erasure did not complete, because the uninstall
 proceeds only when all of them did, and running the rest would erase data the operator
 then keeps a plugin for. The outcome then continues the configurator engagement: a
@@ -155,13 +171,29 @@ specialist — and replaces the survival disclosure for the erased plugins with 
 `plugin_data_note` saying that the plugin's own eraser reported its data erased and that
 Home Assistant backups taken before still contain it. A specialist whose cascade also drops
 owned plugins without an eraser keeps the ordinary disclosure for those, naming only them,
-with the erased-plugins statement beside it as `erased_note`.
+with the erased-plugins statement beside it as `erased_note`. `erasure_kind` says which
+eraser ran, and the note says what that kind kept.
+
+**After Erase everything, Casa clears the plugin's references.** Casa never touches
+1Password — deleting the vault items a plugin created is its eraser's job — but the
+`plugin-env.conf` lines that point at them are Casa's. On the finishing call of an
+everything erasure the names are computed under the mutation lock before the removal,
+from the resolved snapshot: every name the erased plugins' `.mcp.json` references (either
+`${VAR}` form) and their `casa.setupProvides`, minus every name another resolved plugin
+uses (`tools._env_names_to_clear`). Once the removal committed, still under the lock, their
+lines are deleted in one rewrite (`plugin_env_conf.remove_entries`), settled through a
+cancellation of the caller before the lock is released; every conf writer
+holds one lock across its read-modify-write, so a reference set meanwhile is neither lost
+nor undone. The `plugin_env` reload that drops them from the environment runs after the
+lock is released, entered the way `casa_reload` enters it, because its handler takes the
+plugin guard itself. The result carries `env_references_cleared`. A data-only erasure, a
+Keep removal and every refused call clear nothing.
 
 ## Contracts & invariants
 
-**INV-PLUG-034**: A present `casa.eraseTool` is accepted only as a lowercase ASCII tool name that is not the plugin's `casa.setupTool` and is declared `safe` in its `casa.resultContract`; any other value — an explicit null included — refuses the install or update with `erase_tool_invalid`, and a stored artifact carrying one gets the artifact verdict `erase_tool_invalid`.
+**INV-PLUG-034**: A present `casa.eraseTool` or `casa.eraseDataOnlyTool` is accepted only as a lowercase ASCII tool name that is not the plugin's `casa.setupTool` and is declared `safe` in its `casa.resultContract`, and a `casa.eraseDataOnlyTool` only when it also differs from the `casa.eraseTool`; any other value — an explicit null included — refuses the install or update with `erase_tool_invalid`, and a stored artifact carrying one gets the artifact verdict `erase_tool_invalid`.
 
-Enforced by `plugin_store.manifest_erase_tool`, called from manifest validation on the
+Enforced by `plugin_store.manifest_erase_tool` and `manifest_erase_data_only_tool`, called from manifest validation on the
 install and update paths and from `artifact_verdict` on the stored-artifact path, the same
 upgrade-path posture `casa.setupTool` has. What it does not cover: whether the declared tool
 actually erases anything, which only the plugin can know.
@@ -172,7 +204,7 @@ Enforced by `plugin_erasure.parse_erase_result` and by the episode folding every
 outcome to a non-complete record. Reading anything looser as success would let a plugin's
 prose ("done, all erased") remove the one tool that could still finish the job.
 
-**INV-PLUG-036**: An uninstall that includes a plugin whose resolved artifact declares an eraser removes nothing until the operator answers Casa's DM question; only an Erase tap on the currently open question authorizes an erasure, recorded as a single-use choice bound to the operator, the uninstall subject, the erasing artifacts and that question and expiring after 300 s; posting a new question replaces the open one and a Keep or Cancel tap or a Keep removal closes it, voiding every earlier choice; and an `erase_data=true` call that finds no complete erasure to finish and cannot consume the open question's choice starts nothing and removes nothing.
+**INV-PLUG-036**: An uninstall that includes a plugin whose resolved artifact declares an eraser removes nothing until the operator answers Casa's DM question, which offers an erase option only when every erasing plugin declares that kind of eraser; only an erase tap on the currently open question authorizes an erasure, recorded as a single-use choice of the tapped kind bound to the operator, the uninstall subject, the erasing artifacts and that question and expiring after 300 s, and an erasure it starts runs that kind's eraser and no other; posting a new question replaces the open one and a Keep or Cancel tap or a Keep removal closes it, voiding every earlier choice; and an `erase_data=true` call that finds no complete erasure to finish and cannot consume the open question's choice starts nothing and removes nothing.
 
 Enforced by `tools._erase_gate` in front of both removal tools and by
 `plugin_erase_consent`, whose tap hook records the choice in the Telegram callback's commit
@@ -195,6 +227,13 @@ answers the episode.
 
 Enforced by `plugin_erasure.turn_ended`, called from `Agent._process`'s `finally` for every
 turn and inert on any other marker, and by `run_erase_episode`.
+
+**INV-PLUG-040**: A `plugin-env.conf` line is deleted by an uninstall only after a removal that followed a complete Erase everything, and only for a name the erased plugins use and no other resolved plugin uses; a data-only erasure, a Keep removal and a refused or failed removal delete none; and every writer of the file holds one lock across its read-modify-write.
+
+Enforced by `tools._env_names_to_clear` and `_clear_env_references`, both called under the
+mutation lock the removal holds, and by `plugin_env_conf._WRITE_LOCK`. What it does not
+cover: a name used only by a plugin that is not resolved at the call (a broken artifact),
+which counts as unused; and the vault items themselves.
 
 ## Failure behavior
 
@@ -220,6 +259,13 @@ turn that only now reaches the eraser is refused before it runs (the binding che
 result that arrives now answers no other run, and the record stays not complete; the
 operator runs the uninstall again.
 
+**Clearing the references fails.** The removal stands; the result lists the names in
+`env_references_not_cleared` and its note says Casa could not clear them, never that it
+did, and the recipe removes them by hand.
+
+**The reload after clearing fails.** The lines stay deleted and the removal stands; the
+result carries `env_reload_ok: false`, and the recipe runs `casa_reload(scope="plugin_env")`.
+
 **A restart mid-erasure.** The watch, the question ids, the choices and the records are all in process
 memory. A restart loses them, which leaves the plugin installed — the safe side — and the
 next uninstall asks again.
@@ -242,11 +288,17 @@ the question and reports its data as surviving when it was erased, or the revers
 - `casa/rootfs/opt/casa/plugin_erasure.py`
 - `casa/rootfs/opt/casa/plugin_erase_consent.py`
 - `casa/rootfs/opt/casa/plugin_store.py::manifest_erase_tool`
+- `casa/rootfs/opt/casa/plugin_store.py::manifest_erase_data_only_tool`
 - `casa/rootfs/opt/casa/plugin_grants.py::plugin_tool_names`
 - `casa/rootfs/opt/casa/tools.py::_erase_gate`
 - `casa/rootfs/opt/casa/tools.py::_erase_specs_for`
 - `casa/rootfs/opt/casa/tools.py::_deliver_erasure_outcome`
 - `casa/rootfs/opt/casa/tools.py::_apply_erasure_to_disclosure`
+- `casa/rootfs/opt/casa/tools.py::_offered_erase_choices`
+- `casa/rootfs/opt/casa/tools.py::_env_names_to_clear`
+- `casa/rootfs/opt/casa/tools.py::_clear_env_references`
+- `casa/rootfs/opt/casa/tools.py::_reload_plugin_env_after_clear`
+- `casa/rootfs/opt/casa/plugin_env_conf.py::remove_entries`
 
 **Tests**
 - `tests/test_plugin_erase_manifest.py`
@@ -254,6 +306,7 @@ the question and reports its data as surviving when it was erased, or the revers
 - `tests/test_plugin_erasure_capture.py`
 - `tests/test_plugin_erasure_episode.py`
 - `tests/test_plugin_erase_flow.py`
+- `tests/test_plugin_erase_kinds.py`
 
 **Related**
 - [`architecture/plugin-mutation-tools.md`](../architecture/plugin-mutation-tools.md)

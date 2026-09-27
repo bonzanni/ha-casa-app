@@ -27,6 +27,10 @@ import pytest
 GUARDED_ENTRY_POINTS = {
     ("tools.py", "casa_reload"),
     ("internal_handlers.py", "build_admin_reload_handler"),
+    # #1067: the plugin_env reload after an Erase everything cleared a removed
+    # plugin's references — entered through the same fence, after the removal
+    # released the raw lock.
+    ("tools.py", "_reload_plugin_env_after_clear"),
 }
 
 
@@ -114,7 +118,7 @@ def test_no_production_caller_dispatches_a_fenced_scope_outside_an_entry_point()
                 offenders.append((path.name, top.name, first.value))
 
     assert offenders == [], (
-        "a production path dispatches a fenced reload scope outside the two "
+        "a production path dispatches a fenced reload scope outside the "
         "guarded entry points, so nothing acquires the plugin-tools lock "
         "before the reload RW lock on that path (INV-CFG-011)")
 

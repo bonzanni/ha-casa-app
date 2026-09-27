@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import threading
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -18,6 +19,11 @@ _HEADER = (
     "# Managed by Configurator. Edit via Configurator to avoid sync loss.\n"
 )
 _VAR_NAME_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+# #1067: every writer reads the whole file and rewrites it, so two writers that
+# overlap lose one of their edits — a reference set while an uninstall clears
+# another plugin's lines would vanish, or a cleared line come back. One lock
+# covers each read-modify-write, in whichever thread it runs.
+_WRITE_LOCK = threading.Lock()
 
 
 class PluginEnvConfError(ValueError):
@@ -53,7 +59,11 @@ def read_entries() -> dict[str, str]:
 def set_entry(var_name: str, value: str) -> None:
     if not _VAR_NAME_RE.match(var_name):
         raise PluginEnvConfError(f"invalid env var name: {var_name!r}")
+    with _WRITE_LOCK:
+        _set_entry_locked(var_name, value)
 
+
+def _set_entry_locked(var_name: str, value: str) -> None:
     lines: list[str] = []
     if PLUGIN_ENV_CONF_PATH.is_file():
         lines = PLUGIN_ENV_CONF_PATH.read_text(encoding="utf-8").splitlines(keepends=True)
@@ -94,22 +104,39 @@ def remove_entry(var_name: str) -> bool:
     — the reload's deletion-diff (M22) pops the removed key from the
     effective environment and regenerates plugin health.
     """
-    if not _VAR_NAME_RE.match(var_name):
-        raise PluginEnvConfError(f"invalid env var name: {var_name!r}")
-    if not PLUGIN_ENV_CONF_PATH.is_file():
-        return False
+    return bool(remove_entries([var_name]))
+
+
+def remove_entries(var_names) -> list[str]:
+    """Delete the ``VAR=...`` line of every name in *var_names* in one
+    read-modify-write (#1067); returns the names that had a line, sorted.
+    Same contract as :func:`remove_entry` — comments and every other line are
+    kept byte-for-byte, the file stays 0600, and the caller follows with a
+    ``plugin_env`` reload."""
+    names = set(var_names)
+    for name in names:
+        if not _VAR_NAME_RE.match(name):
+            raise PluginEnvConfError(f"invalid env var name: {name!r}")
+    with _WRITE_LOCK:
+        return _remove_entries_locked(names)
+
+
+def _remove_entries_locked(names: set) -> list[str]:
+    if not names or not PLUGIN_ENV_CONF_PATH.is_file():
+        return []
 
     lines = PLUGIN_ENV_CONF_PATH.read_text(encoding="utf-8").splitlines(keepends=True)
     kept: list[str] = []
-    removed = False
+    removed: set = set()
     for line in lines:
-        if (not line.lstrip().startswith("#") and "=" in line
-                and line.split("=", 1)[0].strip() == var_name):
-            removed = True
-            continue
+        if not line.lstrip().startswith("#") and "=" in line:
+            name = line.split("=", 1)[0].strip()
+            if name in names:
+                removed.add(name)
+                continue
         kept.append(line)
     if not removed:
-        return False
+        return []
 
     fd = os.open(PLUGIN_ENV_CONF_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -118,4 +145,4 @@ def remove_entry(var_name: str) -> bool:
         os.chmod(PLUGIN_ENV_CONF_PATH, 0o600)
     except PermissionError:
         pass  # non-root in tests
-    return True
+    return sorted(removed)

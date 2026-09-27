@@ -50,7 +50,7 @@ async def _tap(idx, *, continued=True, answered=True):
         return continued
     pec.prompt_erase_choice(coordinator=coord, channel=ch, key=_key(),
                             text="q", continue_cb=cont, grants=grants)
-    assert coord.kw["options"] == ["Keep data", "Erase data", "Cancel"]
+    assert coord.kw["options"] == ["Keep data", "Erase everything", "Cancel"]
     meta: dict = {}
     if answered:
         coord.kw["on_commit_sync"](idx, meta)
@@ -185,8 +185,8 @@ def flow(monkeypatch, tmp_path):
         return None
     monkeypatch.setattr(tm, "_settle_install_consent_post", settled)
 
-    async def fake_episode(specs, operator, question, subject):
-        state.episodes.append((list(specs), operator, question))
+    async def fake_episode(specs, operator, question, subject, kind="everything"):
+        state.episodes.append((list(specs), operator, question, kind))
         return []
     monkeypatch.setattr(pe, "run_erase_episode", fake_episode)
     return state

@@ -1,5 +1,7 @@
 """#1046: erasing a plugin's data at uninstall, through the eraser the plugin
-declares (``casa.eraseTool``).
+declares (``casa.eraseTool``) — or, since #1067, its data-only eraser
+(``casa.eraseDataOnlyTool``), which keeps what a reinstall needs to carry on
+without re-authenticating.
 
 Casa never erases anything itself: only the plugin knows what its data is and
 what must be revoked at its providers. Casa *sequences* the eraser — it runs
@@ -28,6 +30,12 @@ Verdict = Literal["complete", "incomplete", "unreadable"]
 # What an episode can end with: the eraser's own verdict, or why it gave none.
 Outcome = Literal["complete", "incomplete", "unreadable", "error", "no_call",
                   "timed_out", "not_dispatched"]
+
+# The two eraser kinds (#1067): the operator's "Erase everything" runs the
+# plugin's casa.eraseTool; "Erase data, keep sign-ins" its casa.eraseDataOnlyTool.
+EVERYTHING = "everything"
+DATA_ONLY = "data_only"
+Kind = Literal["everything", "data_only"]
 
 # How long an episode waits for the eraser's result. An eraser withdraws a
 # consent per provider, so this is generous; a turn that ends without calling
@@ -160,18 +168,29 @@ class QuestionIds:
 
 class ErasureRecords:
     """What each finished erasure reported, keyed ``(plugin subject,
-    artifact_id)`` and stamped with the question its run answered. A complete
-    record is taken once, by the finishing call, for the same artifact and the
-    same, still current, question."""
+    artifact_id)`` and stamped with the question its run answered and the
+    eraser kind it ran. A complete record is taken once, by the finishing
+    call, for the same artifact and the same, still current, question."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._rows: dict[tuple[str, str], tuple[Verdict, str, str]] = {}
+        self._rows: dict[tuple[str, str], tuple[Verdict, str, str, str]] = {}
 
     def put(self, subject: str, artifact_id: str, verdict: Verdict,
-            report: str, question: str) -> None:
+            report: str, question: str, kind: Kind = EVERYTHING) -> None:
         with self._lock:
-            self._rows[(subject, artifact_id)] = (verdict, report, question)
+            self._rows[(subject, artifact_id)] = (verdict, report, question, kind)
+
+    def complete_kind(self, subject: str, artifact_id: str,
+                      question: str) -> "Kind | None":
+        """The eraser kind of a complete erasure of *subject* at
+        *artifact_id* for *question*, not consumed; ``None`` when there is
+        none."""
+        with self._lock:
+            row = self._rows.get((subject, artifact_id))
+            if row is None or row[0] != "complete" or row[2] != question:
+                return None
+            return row[3]
 
     def has_complete(self, subject: str, artifact_id: str,
                      question: str) -> bool:
@@ -239,7 +258,12 @@ def turn_ended(context: dict | None) -> None:
 class EraseSpec:
     """One plugin to erase: its registry name, the artifact the operator's tap
     named, its registry ``targets``, the eraser's full tool name on each of
-    its MCP servers, and whether the plugin declared it protected."""
+    its MCP servers, and whether the plugin declared it protected.
+
+    The ``tool`` fields describe the plugin's ``casa.eraseTool`` ("" when it
+    declares none); the ``data_`` fields its ``casa.eraseDataOnlyTool``
+    (#1067). An episode runs a spec projected onto one kind
+    (:meth:`for_kind`), whose ``tool`` fields are that kind's eraser."""
     name: str
     artifact_id: str
     targets: tuple
@@ -247,6 +271,23 @@ class EraseSpec:
     protected: bool
     tool: str = ""                  # the declared (bare) tool name
     summary: "str | None" = None    # its protected-tool summary, if any
+    data_tool: str = ""
+    data_tool_names: tuple = ()
+    data_protected: bool = False
+    data_summary: "str | None" = None
+
+    def offers(self, kind: Kind) -> bool:
+        return bool(self.data_tool if kind == DATA_ONLY else self.tool)
+
+    def for_kind(self, kind: Kind) -> "EraseSpec":
+        """This plugin with *kind*'s eraser in the ``tool`` fields."""
+        if kind == DATA_ONLY:
+            return EraseSpec(self.name, self.artifact_id, self.targets,
+                             self.data_tool_names, self.data_protected,
+                             tool=self.data_tool, summary=self.data_summary)
+        return EraseSpec(self.name, self.artifact_id, self.targets,
+                         self.tool_names, self.protected, tool=self.tool,
+                         summary=self.summary)
 
 
 @dataclass(frozen=True)
@@ -324,20 +365,22 @@ async def _erase_one(spec: EraseSpec, operator: tuple[int, int],
 
 
 async def run_erase_episode(specs: list[EraseSpec], operator: tuple[int, int],
-                            question: str, subject: str) -> list[ErasureOutcome]:
+                            question: str, subject: str,
+                            kind: Kind = EVERYTHING) -> list[ErasureOutcome]:
     """Run each plugin's eraser in turn and record what it reported,
     stopping at the first erasure that is not complete: an uninstall
     proceeds only when every one completed, so running the rest would erase
     data the operator then keeps a plugin for. Returns the outcomes of the
     plugins that ran. Every record is stamped with *question*, the uninstall
-    question whose Erase tap started this episode."""
+    question whose Erase tap started this episode, and with *kind*, the
+    eraser the tap chose — *specs* are already projected onto it."""
     outcomes: list[ErasureOutcome] = []
     for spec in specs:
         out = await _erase_one(spec, operator, question, subject)
         verdict = out.verdict if out.verdict in ("complete", "incomplete") \
             else "unreadable"
         RECORDS.put(f"plugin:{spec.name}", spec.artifact_id, verdict,
-                    out.report, question)
+                    out.report, question, kind)
         outcomes.append(out)
         if out.verdict != "complete":
             break

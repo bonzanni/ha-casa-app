@@ -15553,6 +15553,8 @@ async def specialist_uninstall(args: dict) -> dict:
     slug = args["slug"]
     targets_removed = [f"specialist:{slug}"]
     reports: list = []
+    cleared: list = []
+    not_cleared: list = []
 
     async def _txn() -> dict:
         # #1046: the erase step runs inside the transaction, which owns the
@@ -15566,6 +15568,12 @@ async def specialist_uninstall(args: dict) -> dict:
         if gate is not None:
             return gate
         reports.extend(taken)
+        # #1067: after an Erase everything, the erased plugins' names are
+        # computed before the uninstall and cleared once it committed, both
+        # inside this transaction (which owns the mutation lock). An owned
+        # plugin without an eraser keeps its data, and so its references.
+        clear = (_env_names_to_clear({r[0] for r in taken})
+                 if taken and _erased_everything(taken) else [])
         # Whole-branch M: map a typed refusal (invalid_slug / bundle_required)
         # to a structured ok:false envelope, never a raw exception out of the
         # tool — the same guard the other four bundle tools already have.
@@ -15585,6 +15593,9 @@ async def specialist_uninstall(args: dict) -> dict:
         if not seq.get("ok", True):
             return await _bundle_seq_failure(txn, seq, slug=slug)
         await asyncio.to_thread(specialist_bundle_journal.complete, txn.journal_path)
+        done, failed = await _clear_env_references(clear)
+        cleared.extend(done)
+        not_cleared.extend(failed)
         # #676: the uninstall CASCADED these owned plugins out of the registry —
         # the same persisting committed removal, reached by another door, so the
         # same disclosure is owed. Zero owned plugins removes nothing and discloses
@@ -15600,7 +15611,11 @@ async def specialist_uninstall(args: dict) -> dict:
 
     outcome = await _run_bundle_transaction(_txn)
     if reports and isinstance(outcome, dict) and outcome.get("ok") is True:
-        _apply_erasure_to_disclosure(outcome, reports)
+        # The reload takes the plugin guard itself, so it runs after the
+        # transaction released the lock.
+        if cleared and not await _reload_plugin_env_after_clear():
+            outcome["env_reload_ok"] = False
+        _apply_erasure_to_disclosure(outcome, reports, cleared, not_cleared)
     return _result(outcome)
 
 
@@ -16217,48 +16232,173 @@ async def plugin_unassign(args: dict) -> dict:
 # plugin is removed only by a finishing call that finds a complete erasure for
 # the artifact the registry still resolves — Casa sequences the plugin's
 # eraser and never erases anything itself.
+#
+# #1067: a plugin may also declare a data-only eraser (`casa.eraseDataOnlyTool`)
+# that keeps what a reinstall needs to carry on without signing in again. The
+# question then offers "Erase data, keep sign-ins" beside "Erase everything",
+# each only when every erasing plugin in the uninstall declares that kind. The
+# tap records the kind, so `erase_data=true` never lets the model choose it.
+# After a removal that followed an Erase everything, Casa clears the plugin's
+# plugin-env.conf references and reloads the plugin environment.
 
-_ERASED_NOTE = (
-    "The plugin's own eraser reported its data erased before the removal "
-    "(erase_report — relay it to the operator verbatim). Home Assistant backups "
+_ERASED_EVERYTHING_NOTE = (
+    "The plugin's own eraser reported everything it held erased, sign-ins "
+    "included, before the removal (erase_report — relay it to the operator "
+    "verbatim), and Casa cleared its plugin-env.conf references "
+    "(env_references_cleared). Home Assistant backups taken before now still "
+    "contain the data; Casa did not delete them.")
+_ERASED_EVERYTHING_UNCLEARED_NOTE = (
+    "The plugin's own eraser reported everything it held erased, sign-ins "
+    "included, before the removal (erase_report — relay it to the operator "
+    "verbatim), but Casa could NOT clear its plugin-env.conf references "
+    "(env_references_not_cleared): remove each with "
+    "remove_plugin_env_reference, then run casa_reload(scope=\"plugin_env\"). "
+    "Home Assistant backups taken before now still contain the data; Casa did "
+    "not delete them.")
+_ERASED_DATA_ONLY_NOTE = (
+    "The plugin's own eraser reported its data erased before the removal, "
+    "keeping its sign-ins so a reinstall carries on without signing in again "
+    "(erase_report — relay it to the operator verbatim). Casa kept its "
+    "plugin-env.conf references for the same reason. Home Assistant backups "
     "taken before now still contain the data; Casa did not delete them.")
 
 
 def _erase_specs_for(entries: "list[dict]") -> "list":
     """An :class:`plugin_erasure.EraseSpec` for every registry entry in
-    *entries* whose resolved artifact declares a valid ``casa.eraseTool`` —
-    with empty ``tool_names`` when it has no MCP server to call it on, so its
-    erasure can never complete; entries without one are skipped (their removal
-    is today's)."""
+    *entries* whose resolved artifact declares a valid ``casa.eraseTool`` or
+    ``casa.eraseDataOnlyTool`` (#1067) — each eraser with empty tool names
+    when it has no MCP server to call it on, so its erasure can never
+    complete; entries without one are skipped (their removal is today's)."""
     import plugin_erasure
     from plugin_grants import plugin_tool_names, protected_map
-    from plugin_store import StoreError, manifest_erase_tool
+    from plugin_store import (StoreError, manifest_erase_data_only_tool,
+                              manifest_erase_tool)
     resolution = plugin_registry.resolve_all()
     by_name = {rp.name: rp for rp in getattr(resolution, "plugins", None) or []}
     protected = protected_map(resolution)
+
+    def _declared(fn, rp) -> str:
+        try:
+            return fn(rp.manifest) or ""
+        except StoreError:
+            return ""
+
+    def _eraser(rp, tool: str):
+        # A declared eraser with no MCP server to run it on still counts: the
+        # uninstall asks, and its erasure can never complete (not dispatched)
+        # — never silently an ordinary removal.
+        if not tool:
+            return (), False, None
+        names = plugin_tool_names(rp, tool)
+        summary = next((protected[n]["summary"] for n in names if n in protected),
+                       None)
+        return names, any(n in protected for n in names), summary
+
     specs = []
     for entry in entries:
         rp = by_name.get(entry.get("name"))
         if rp is None or rp.artifact_id != entry.get("artifact_id"):
             continue
-        try:
-            tool = manifest_erase_tool(rp.manifest)
-        except StoreError:
-            tool = None
-        if not tool:
+        tool = _declared(manifest_erase_tool, rp)
+        data_tool = _declared(manifest_erase_data_only_tool, rp)
+        if not tool and not data_tool:
             continue
-        # A declared eraser with no MCP server to run it on still counts: the
-        # uninstall asks, and its erasure can never complete (not dispatched)
-        # — never silently an ordinary removal.
-        names = plugin_tool_names(rp, tool)
-        summary = next((protected[n]["summary"] for n in names if n in protected),
-                       None)
+        names, prot, summary = _eraser(rp, tool)
+        d_names, d_prot, d_summary = _eraser(rp, data_tool)
         specs.append(plugin_erasure.EraseSpec(
             name=rp.name, artifact_id=rp.artifact_id,
             targets=tuple(entry.get("targets") or ()), tool_names=names,
-            protected=any(n in protected for n in names), tool=tool,
-            summary=summary))
+            protected=prot, tool=tool, summary=summary, data_tool=data_tool,
+            data_tool_names=d_names, data_protected=d_prot,
+            data_summary=d_summary))
     return specs
+
+
+def _offered_erase_choices(specs: list) -> "tuple[int, ...]":
+    """The question's buttons for *specs* (#1067): an erase option only when
+    EVERY erasing plugin declares that kind of eraser — a plugin lacking it
+    could honour neither "keep sign-ins" nor "everything"."""
+    import plugin_erase_consent as pec
+    import plugin_erasure
+    kinds = {pec.ERASE_DATA_ONLY: plugin_erasure.DATA_ONLY,
+             pec.ERASE: plugin_erasure.EVERYTHING}
+    return tuple(c for c in pec.DEFAULT_ORDER
+                 if c not in kinds or all(s.offers(kinds[c]) for s in specs))
+
+
+def _plugin_env_names(rp) -> "set[str]":
+    """Every plugin-env.conf name a resolved plugin uses (#1067): the names its
+    ``.mcp.json`` references, in either form, and its ``casa.setupProvides``
+    — a setup-provided value need not appear in the launch configuration."""
+    from pathlib import Path as _Path
+    import plugin_env_extractor
+    from plugin_store import StoreError, manifest_setup_provides
+    names: "set[str]" = set()
+    mcp_json = _Path(rp.path) / ".mcp.json"
+    if mcp_json.is_file():
+        try:
+            names |= plugin_env_extractor.extract_referenced_env_vars(mcp_json)
+        except Exception:  # noqa: BLE001 — a malformed tree uses no names
+            logger.debug("env-name extraction failed (%s)", mcp_json,
+                         exc_info=True)
+    try:
+        names |= set(manifest_setup_provides(rp.manifest or {}))
+    except StoreError:
+        pass
+    return names
+
+
+def _env_names_to_clear(erased: "set[str]") -> "list[str]":
+    """Under the mutation lock, before the removal: the plugin-env.conf names
+    the plugins in *erased* use and no other resolved plugin does. A name a
+    remaining plugin also uses is never cleared."""
+    mine: "set[str]" = set()
+    others: "set[str]" = set()
+    for rp in getattr(plugin_registry.resolve_all(), "plugins", None) or []:
+        (mine if rp.name in erased else others).update(_plugin_env_names(rp))
+    return sorted(mine - others)
+
+
+async def _clear_env_references(names: "list[str]") -> "tuple[list[str], list[str]]":
+    """Under the mutation lock, after a removal that followed an Erase
+    everything: delete *names*' plugin-env.conf lines. Returns ``(cleared,
+    failed)`` — the names that had a line and lost it, and, when the rewrite
+    failed, every name it was asked to clear. Never raises: the removal has
+    already committed, so a failure is reported, never hidden."""
+    if not names:
+        return [], []
+    import plugin_env_conf
+    try:
+        # Diff r1 (Astra S2): a thread cannot be cancelled, so a cancelled
+        # caller must not release the mutation lock while the rewrite still
+        # runs — a plugin installed meanwhile could lose a line it just wired
+        # to a name computed before it existed. Settle the rewrite first.
+        return await _settle_through_cancellation(asyncio.to_thread(
+            plugin_env_conf.remove_entries, names)), []
+    except Exception:  # noqa: BLE001 — the removal already committed
+        logger.exception("clearing plugin-env.conf references failed")
+        return [], list(names)
+
+
+async def _reload_plugin_env_after_clear() -> bool:
+    """After the mutation lock is released: the ``plugin_env`` reload that
+    drops the cleared names from the effective environment, entered the way
+    ``casa_reload`` enters it (the handler takes the plugin guard, so it
+    cannot run under the raw lock the removal held). True when it ran ok."""
+    try:
+        import agent as agent_mod
+        from reload import dispatch
+        runtime = getattr(agent_mod, "active_runtime", None)
+        if runtime is None:
+            return False
+        async with _plugin_tools_reload_guard("plugin_env"):
+            result = await dispatch("plugin_env", runtime=runtime, role=None,
+                                    include_env=False)
+        await _regenerate_plugin_health_after_reload("plugin_env", result)
+        return isinstance(result, dict) and result.get("status") == "ok"
+    except Exception:  # noqa: BLE001 — the removal already committed
+        logger.exception("plugin_env reload after clearing references failed")
+        return False
 
 
 def _owned_entries_now(slug: str) -> "list[dict]":
@@ -16293,8 +16433,9 @@ def _choice_continuation(tool: str, arg: str, name: str, choice: int) -> str:
     if choice == pec.KEEP:
         return (f"The operator chose Keep data. Call {_erase_call(tool, arg, name, False)} "
                 "now to uninstall and keep the data, then finish the recipe.")
-    if choice == pec.ERASE:
-        return (f"The operator chose Erase data. Call {_erase_call(tool, arg, name, True)} "
+    if choice in (pec.ERASE, pec.ERASE_DATA_ONLY):
+        label = pec.LABELS[choice]
+        return (f"The operator chose {label}. Call {_erase_call(tool, arg, name, True)} "
                 "now: it starts the plugin's eraser and removes nothing yet. Casa "
                 "then sends the eraser's result into this topic — wait for it.")
     return (f"The operator cancelled uninstalling {name!r}. Nothing was removed; "
@@ -16347,17 +16488,18 @@ _ERASE_TASKS: "set[asyncio.Task]" = set()
 
 
 def _take_complete_erasures(specs: list, question: str) -> "list | None":
-    """Under the mutation lock, immediately before a removal: the reports of a
-    complete erasure for EVERY erasing plugin at the artifact the registry
-    resolves now, run for the still-open *question*, consumed — or ``None``
-    (nothing consumed) when any is missing, or when no erasing plugin
-    remains."""
+    """Under the mutation lock, immediately before a removal: ``(plugin,
+    report, kind)`` of a complete erasure for EVERY erasing plugin at the
+    artifact the registry resolves now, run for the still-open *question*,
+    consumed — or ``None`` (nothing consumed) when any is missing, or when no
+    erasing plugin remains."""
     import plugin_erasure
     rows = [(f"plugin:{s.name}", s.artifact_id, question) for s in specs]
     if not rows or not all(plugin_erasure.RECORDS.has_complete(*r) for r in rows):
         return None
-    return [(s.name, plugin_erasure.RECORDS.take_complete(*r))
-            for s, r in zip(specs, rows)]
+    kinds = [plugin_erasure.RECORDS.complete_kind(*r) for r in rows]
+    return [(s.name, plugin_erasure.RECORDS.take_complete(*r), k)
+            for s, r, k in zip(specs, rows, kinds)]
 
 
 _ERASE_UNAVAILABLE = {
@@ -16415,8 +16557,14 @@ async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
         key = pec.EraseChoiceKey(operator_id=operator_id, chat_id=chat_id,
                                  subject=subject, artifacts=artifacts,
                                  question=question)
-        text = pec.render_erase_choice(
-            what, [(s.name, s.tool, s.summary) for s in specs])
+        choices = _offered_erase_choices(specs)
+        erasers = []
+        for s in specs:
+            if pec.ERASE_DATA_ONLY in choices:
+                erasers.append((s.name, s.data_tool, s.data_summary))
+            if pec.ERASE in choices:
+                erasers.append((s.name, s.tool, s.summary))
+        text = pec.render_erase_choice(what, erasers, choices)
 
         async def _continue(choice: int) -> bool:
             if choice in (pec.CANCEL, pec.KEEP):
@@ -16428,7 +16576,8 @@ async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
             handle = pec.prompt_erase_choice(
                 coordinator=CHALLENGES, channel=channel, key=key, text=text,
                 continue_cb=_continue,
-                inbound_reservation=_continuation_inbound_reservation(channel, eng))
+                inbound_reservation=_continuation_inbound_reservation(channel, eng),
+                choices=choices)
         except Exception as exc:  # noqa: BLE001 — structured, never a raise
             logger.exception("erase-choice prompt failed to post")
             return {"ok": False, "kind": "consent_prompt_failed",
@@ -16445,16 +16594,23 @@ async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
     key = pec.EraseChoiceKey(operator_id=operator_id, chat_id=chat_id,
                              subject=subject, artifacts=artifacts,
                              question=question or "")
-    if question is None or not pec.CHOICES.consume(key, pec.ERASE):
+    choice = pec.CHOICES.consume_erase(key) if question is not None else None
+    if choice is None:
         return {"ok": False, "kind": "erase_not_confirmed",
                 "detail": ("erase_data=true needs the operator's Erase tap on the "
                            "question Casa posts, for this exact version, and runs "
                            "once per tap — call again without erase_data to ask "
                            "them. Nothing was removed.")}, []
+    # #1067: the kind is the one the operator tapped, never the model's.
+    kind = (plugin_erasure.DATA_ONLY if choice == pec.ERASE_DATA_ONLY
+            else plugin_erasure.EVERYTHING)
+    if not all(s.offers(kind) for s in specs):
+        return dict(_ERASE_UNAVAILABLE), []
+    projected = [s.for_kind(kind) for s in specs]
 
     async def _run() -> None:
         outcomes = await plugin_erasure.run_erase_episode(
-            specs, (chat_id, operator_id), question, subject)
+            projected, (chat_id, operator_id), question, subject, kind=kind)
         await _deliver_erasure_outcome(tool, name, outcomes, deliver)
     task = asyncio.get_running_loop().create_task(_run())
     _ERASE_TASKS.add(task)
@@ -16465,26 +16621,50 @@ async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
                        "then follow what it says.")}, []
 
 
-def _apply_erasure_to_disclosure(payload: dict, reports: list) -> None:
+def _apply_erasure_to_disclosure(payload: dict, reports: list,
+                                 cleared: "list[str] | None" = None,
+                                 not_cleared: "list[str] | None" = None) -> None:
     """A removal that followed a complete erasure: the erased plugins are no
-    longer 'data may remain'; their reports are relayed."""
+    longer 'data may remain'; their reports are relayed. *reports* are
+    ``(plugin, report, kind)``; after an Erase everything, *cleared* names the
+    plugin-env.conf references Casa cleared (#1067) and *not_cleared* those a
+    failed rewrite left behind."""
     if not reports:
         return
-    erased = {n for n, _r in reports}
+    erased = {r[0] for r in reports}
+    everything = _erased_everything(reports)
     payload["erasure"] = "complete"
+    payload["erasure_kind"] = "everything" if everything else "data_only"
+    if everything:
+        payload["env_references_cleared"] = list(cleared or [])
+        note = _ERASED_EVERYTHING_NOTE
+        if not_cleared:
+            payload["env_references_not_cleared"] = list(not_cleared)
+            note = _ERASED_EVERYTHING_UNCLEARED_NOTE
+    else:
+        note = _ERASED_DATA_ONLY_NOTE
     if len(reports) == 1 and "slug" not in payload:
         payload["erase_report"] = reports[0][1]
     else:
-        payload["erase_reports"] = [{"name": n, "report": r} for n, r in reports]
+        payload["erase_reports"] = [{"name": r[0], "report": r[1]} for r in reports]
     remaining = [n for n in payload.get("plugin_data_plugins") or [] if n not in erased]
     if "plugin_data_plugins" in payload and remaining:
         payload["plugin_data_plugins"] = remaining
-        payload["erased_note"] = _ERASED_NOTE
+        payload["erased_note"] = note
         return
     for k in ("plugin_data_may_remain", "provider_revocation_performed",
               "plugin_data_plugins"):
         payload.pop(k, None)
-    payload["plugin_data_note"] = _ERASED_NOTE
+    payload["plugin_data_note"] = note
+
+
+def _erased_everything(reports: list) -> bool:
+    """Whether the erasures in *reports* — ``(plugin, report, kind)``, all of
+    one question and so of one kind — ran the plugins' casa.eraseTool."""
+    import plugin_erasure
+    return bool(reports) and all(
+        (r[2] if len(r) > 2 else plugin_erasure.EVERYTHING)
+        == plugin_erasure.EVERYTHING for r in reports)
 
 
 @tool(
@@ -16516,13 +16696,23 @@ async def plugin_remove(args: dict) -> dict:
                 specs=_erase_specs_for([entry]), erase=args.get("erase_data"))
             if gate is not None:
                 return _result(gate)
+        # #1067: after an Erase everything, the names to clear are computed
+        # before the removal (the resolved snapshot still holds the plugin)
+        # and cleared once it committed, both under this lock.
+        clear = (_env_names_to_clear({name})
+                 if reports and _erased_everything(reports) else [])
         result = await _plugin_remove_unit(args)
-        if reports:
-            payload = json.loads(result["content"][0]["text"])
-            if payload.get("ok") is True:
-                _apply_erasure_to_disclosure(payload, reports)
-                return _result(payload)
-        return result
+        if not reports:
+            return result
+        payload = json.loads(result["content"][0]["text"])
+        if payload.get("ok") is not True:
+            return result
+        cleared, not_cleared = await _clear_env_references(clear)
+    # The reload takes the plugin guard itself, so it runs after the lock.
+    if cleared and not await _reload_plugin_env_after_clear():
+        payload["env_reload_ok"] = False
+    _apply_erasure_to_disclosure(payload, reports, cleared, not_cleared)
+    return _result(payload)
 
 
 async def _plugin_remove_unit(args: dict) -> dict:
