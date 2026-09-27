@@ -17934,6 +17934,79 @@ async def get_item_fields(args: dict) -> dict:
     ))
 
 
+# #1047: the vault drop-off — the one vault WRITE an agent holds. It writes
+# only the Casa-titled item of a drop-off the named plugin declares
+# (vault_drop_off.item_title), and returns, logs and raises nothing that
+# carries the value.
+_DROP_OFF_STORED_NOTE = (
+    "Stored. Tell the agent that runs this plugin only that it is waiting, "
+    "and ask it to run its step now — never the value, in no brief, reply "
+    "or summary.")
+
+
+def _drop_off_target(plugin: str) -> "tuple[str | None, list[str], dict]":
+    """``(runtime name, declared drop-offs, error)`` for *plugin*, matched
+    against the current resolution by registry name or runtime name — the
+    name the plugin itself knows is its manifest name, which is what its
+    setup text tells an agent."""
+    from plugin_store import StoreError, manifest_drop_offs
+    resolution = plugin_registry.resolve_all()
+    hits = [rp for rp in getattr(resolution, "plugins", None) or []
+            if plugin in (rp.name, plugin_registry.runtime_name(rp))]
+    if len(hits) != 1:
+        return None, [], {"error": "unknown_plugin" if not hits
+                          else "ambiguous_plugin"}
+    rp = hits[0]
+    try:
+        declared = manifest_drop_offs(rp.manifest)
+    except StoreError:
+        declared = []
+    return plugin_registry.runtime_name(rp), declared, {}
+
+
+def _tool_vault_drop_off(*, plugin: str, drop_off: str, value: object) -> dict:
+    import vault_drop_off
+    runtime, declared, err = _drop_off_target(plugin)
+    if err:
+        return err
+    if drop_off not in declared:
+        return {"error": "unknown_drop_off", "declared": declared}
+    if not vault_drop_off.valid_value(value):
+        return {"error": "invalid_value"}
+    out = vault_drop_off.store(runtime, drop_off, value)  # type: ignore[arg-type]
+    if out.get("status") == "ok":
+        logger.info("vault drop-off stored: plugin=%s drop_off=%s",
+                    runtime, drop_off)
+        return {"status": "ok", "plugin": runtime, "drop_off": drop_off,
+                "note": _DROP_OFF_STORED_NOTE}
+    logger.warning("vault drop-off failed: plugin=%s drop_off=%s kind=%s",
+                   runtime, drop_off, out.get("error"))
+    return out
+
+
+@tool(
+    "vault_drop_off",
+    "Store a sign-in link or one-time code in the vault drop-off a plugin "
+    "declares, so the plugin redeems it itself and the value never travels "
+    "in a delegation brief. Use it for a link you read from a mailbox at the "
+    "operator's request or one the operator pasted to you. Writes only that "
+    "drop-off; returns no value. Afterwards tell the plugin's agent only that "
+    "it is waiting.",
+    {"type": "object",
+     "properties": {"plugin": {"type": "string"},
+                    "drop_off": {"type": "string"},
+                    "value": {"type": "string"}},
+     "required": ["plugin", "drop_off", "value"]},
+)
+async def vault_drop_off(args: dict) -> dict:
+    return _result(await asyncio.to_thread(
+        _tool_vault_drop_off,
+        plugin=str(args.get("plugin") or ""),
+        drop_off=str(args.get("drop_off") or ""),
+        value=args.get("value"),
+    ))
+
+
 # --- Personality Phase A, Task 8: resident persona swap / reset -------------
 #
 # Both tools STAGE a desired instance tuple (InstanceDir.stage_desired) rather
@@ -18371,6 +18444,7 @@ CASA_TOOLS: tuple = (
     remove_plugin_env_reference,   # v0.111.0 (#236) — removal counterpart
     list_vault_items,
     get_item_fields,
+    vault_drop_off,
     # Personality Phase A, Task 8 — configurator-only resident persona control.
     resident_persona_swap,
     resident_persona_reset,

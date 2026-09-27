@@ -43,9 +43,14 @@ def compose(entry: dict, base: str) -> "tuple[str | None, str]":
         return residents[0], base
     if specialists:
         sp = specialists[0]
+        # #1050: said to be Casa's, and sync by name. Unframed, the
+        # courier took the text for something the operator pasted; left to
+        # choose, it once picked mode='interactive', which the specialist's
+        # own open engagement refuses as busy.
         return "assistant", (
-            f"Delegate to the specialist '{sp}' with the instruction: {base} "
-            "Do not substitute another agent.")
+            "[casa system notice — not a message from the operator] "
+            f"Delegate to the specialist '{sp}' with mode='sync' and the "
+            f"instruction: {base} Do not substitute another agent.")
     return None, "no resident or specialist target"
 
 

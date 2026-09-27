@@ -160,6 +160,12 @@ that could render the value, and worker, sweep and removal diagnostics carry a p
 reason enum and an errno — never a hash, state, query, `meta` or raw `OSError`, whose text names
 the entry it failed on. The one hash casa composes for a human is the flow *handle* in the nudge
 text, which is not a log line — INV-CB-006's discipline extended to the attempt surface.
+The result-phase nudge says, as the terminal one does, that it is a casa system notice and not
+a message from the operator, and that the handle is casa's non-secret name for the flow, not a
+credential: unframed, it read as something the operator pasted, and the assistant refused to
+carry the handle in a delegation brief. A specialist-target nudge reaches the assistant through
+`plugin_dispatch.compose`, whose courier wrap is marked as a casa notice and names
+`mode='sync'` — the one mode the specialist's own open engagement does not refuse as busy.
 An accepted nudge dispatch emits exactly one INFO record naming the plugin, the phase
 (`result` or `outcome`), the outcome enum and the target role, and never the handle. It is
 emitted inside the branch that spends the budget unit, before the ledger write, so the count of

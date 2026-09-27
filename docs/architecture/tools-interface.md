@@ -304,6 +304,9 @@ described in [`inbound-files.md`](inbound-files.md).
 `share_inbound_file`, which copies one of those files into the plugin handoff folder and
 returns the path to pass to a plugin tool, is described in
 [`plugin-handoff.md`](plugin-handoff.md).
+`vault_drop_off`, the assistant's one vault write, which stores a sign-in link in the
+drop-off a plugin declares instead of a delegation brief, is described in
+[`vault-drop-off.md`](vault-drop-off.md).
 
 ## Extension points
 

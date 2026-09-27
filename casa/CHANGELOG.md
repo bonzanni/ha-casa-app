@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.330.0] - 2026-09-27
+
+### Added
+
+- A sign-in link a plugin needs back from you — the single-use "Sign in" link a
+  bank-feed setup emails you, say — now reaches it without travelling in any
+  message. Paste it to the assistant, or ask it to read that one email, and the
+  assistant stores it in a vault drop-off the plugin declares and tells the
+  specialist only that it is waiting; the plugin collects it and deletes it.
+  This replaces 0.328.6's behaviour of passing a pasted link to the specialist
+  in its brief. Plugin authors declare drop-offs as `casa.dropOffs`.
+
+### Fixed
+
+- When a bank or other provider sends an authorization back while you are still
+  talking to the specialist in its topic, the assistant now hands it to the
+  specialist at once. It used to refuse, mistaking Casa's own notice for
+  something pasted into the chat, and the authorization waited until you
+  stepped in.
+
 ## [0.329.0] - 2026-09-27
 
 ### Added

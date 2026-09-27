@@ -285,6 +285,8 @@
   doc: architecture/plugin-triggers.md
 - item: casa/rootfs/opt/casa/trigger_registry.py
   doc: architecture/triggers.md
+- item: casa/rootfs/opt/casa/vault_drop_off.py
+  doc: architecture/vault-drop-off.md
 - item: casa/rootfs/opt/casa/verdict_broker.py
   doc: architecture/telegram.md
 - item: casa/rootfs/opt/casa/voice_job_result.py
@@ -467,6 +469,8 @@
   doc: architecture/plugin-mutation-tools.md
 - item: tool:trigger_ack_revoke
   doc: architecture/tools-interface.md
+- item: tool:vault_drop_off
+  doc: architecture/vault-drop-off.md
 - item: tool:verify_plugin_secrets
   doc: architecture/plugin-mutation-tools.md
 - item: tool:verify_plugin_state

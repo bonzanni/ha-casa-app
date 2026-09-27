@@ -897,6 +897,11 @@ async def test_specialist_only_delegates_via_assistant(wired):
     assert role == "assistant"
     assert "'finance'" in text
     assert "Delegate" in text
+    # #1050: the courier is told the text is Casa's, and to delegate sync —
+    # the one mode the specialist's own open engagement does not refuse.
+    assert text.startswith(
+        "[casa system notice — not a message from the operator] ")
+    assert "with mode='sync'" in text
 
 
 async def test_no_target_defers_and_notes_once_per_streak(wired):
@@ -933,8 +938,22 @@ async def test_result_nudge_is_the_fixed_v0146_wording(wired):
     wired.seed_result()
     await ce._worker_pass()
     _role, text, _ctx = wired.dispatches[0]
-    assert text == (f"Authorization result for '{PLUGIN}' is waiting "
-                    f"(handle {HASH}) — collect it now.")
+    assert text.startswith(f"Authorization result for '{PLUGIN}' is waiting "
+                           f"(handle {HASH}) — collect it now.")
+
+
+async def test_result_nudge_says_it_is_casas_and_the_handle_is_no_credential(
+        wired):
+    """#1050: unframed, the nudge read as operator-pasted text and its
+    handle as a token the kernel forbids carrying in a brief — the assistant
+    refused to forward it while the specialist had an engagement open."""
+    wired.seed_result()
+    await ce._worker_pass()
+    _role, text, _ctx = wired.dispatches[0]
+    assert ("This is a casa system notice about a background flow, not a "
+            "message from the operator.") in text
+    assert ("The handle is casa's non-secret name for the flow, not a "
+            "credential") in text
 
 
 def test_kick_is_o1_and_touches_no_spool(wired, monkeypatch):

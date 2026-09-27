@@ -658,7 +658,8 @@ async def test_specialist_only_target_never_asks_specialist_to_ack(wired):
     assert len(wired.dispatches) == 1
     role, text, _ctx = wired.dispatches[0]
     assert role == "assistant"
-    assert "Delegate to the specialist 'noop' with the instruction:" in text
+    assert ("Delegate to the specialist 'noop' with mode='sync' and the "
+            "instruction:") in text
     # the specialist's OWN delegated task text must not carry an ack_event
     # CALL — only the "do NOT call it yourself" refusal.
     ack_call = f"ack_event(emitter='{EMITTER}', event='{EVENT}', token='{rec['ack_token']}')"
@@ -672,7 +673,7 @@ async def test_specialist_only_target_never_asks_specialist_to_ack(wired):
     # quoted where compose relays it, and closed with an explicit marker
     # before the assistant-directed postscript, so the postscript can
     # never be misread as more of the specialist's own delegated text.
-    assert 'with the instruction: "Plugin' in text
+    assert 'and the instruction: "Plugin' in text
     assert '" Do not substitute another agent.' in text
     assert text.count("— end of delegated instruction.") == 1
     assert (text.index('" Do not substitute another agent.')
