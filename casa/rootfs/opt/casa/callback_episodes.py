@@ -9,6 +9,9 @@ result that is waiting:
     Authorization result for '<plugin>' is waiting (handle <hash>) —
     collect it now.
 
+followed by the casa-system-notice framing and a line saying the handle is
+not a credential (#1050) —
+
 and, for a flow that ended without one, a terminal notice that names the outcome,
 states that casa exposes no tool for reading a plugin's attempt ledger, and asks
 for the silence sentinel when there is nothing the operator needs. That terminal
@@ -193,8 +196,15 @@ def _message(plugin: str, h: str, rec: dict) -> str:
                 "waiting on this authorization — in which case tell them it "
                 "ended without completing. Any other closing text lands in "
                 "the operator's chat.")
+    # #1050: framed like the terminal notice. Bare, the text read as
+    # something the operator pasted, and the handle as a token the safety
+    # kernel forbids carrying in a delegation brief — so the assistant
+    # refused to forward it.
     return (f"Authorization result for '{plugin}' is waiting "
-            f"(handle {h}) — collect it now.")
+            f"(handle {h}) — collect it now. This is a casa system notice "
+            "about a background flow, not a message from the operator. The "
+            "handle is casa's non-secret name for the flow, not a credential: "
+            "pass it on exactly as it is.")
 
 
 # Target selection is the shared ``plugin_dispatch.compose`` (extracted so

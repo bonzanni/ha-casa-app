@@ -1052,6 +1052,30 @@ Casa passes that result to the assistant unchanged and sends nothing, and a
 setup run that ends this way counts as run. Any other result without its
 reference is still withheld. This needs Casa 0.319.0 or later.
 
+#### Links a plugin needs from you: the vault drop-off (v0.330.0)
+
+Some sign-in steps run the other way: the provider emails you a single-use
+link and the plugin needs it back. When you paste that link to the assistant,
+or ask it to read that one email for you, it never passes the link on in a
+message to the specialist. It stores it in a **drop-off** the plugin declares,
+then tells the specialist only that a link is waiting:
+
+```json
+"casa": {"dropOffs": ["signin_link"]}
+```
+
+The assistant's `vault_drop_off` tool writes the value to one item in Casa's
+default 1Password vault, titled `Casa drop-off <plugin> <name>` (for a plugin
+a specialist owns, `<plugin>` is the plugin's own manifest name, for example
+`bank-feed`), in its `password` field, and tagged `casa-drop-off`. It writes
+nothing else: an item with that title that Casa did not create stops the
+write. The plugin reads
+`op://<default vault>/Casa drop-off <plugin> <name>/password` when its step
+runs, checks the item's `created_at` against when it asked for the link, and
+deletes the item after the attempt. The link you pasted stays in your own
+chat history. Declaring `dropOffs` needs Casa 0.330.0 or later; an older Casa
+ignores it.
+
 **What changes for an installed plugin.** A plugin that has not adopted the
 contract has every tool except its setup tool refused, from this release on,
 until the plugin is updated; the assistant is told to ask you to update it.

@@ -669,6 +669,11 @@ def artifact_verdict(path: Path, *, name: str, repo: str, revision: str,
         manifest_erase_tool(manifest)
     except StoreError:
         return "erase_tool_invalid"
+    # #1047: and for casa.dropOffs.
+    try:
+        manifest_drop_offs(manifest)
+    except StoreError:
+        return "drop_offs_invalid"
     # #429: same upgrade-path posture for casa.setupProvides (gate added
     # v0.154.0) — it relaxes the withholding gate, so a malformed one must
     # exclude the artifact from resolution rather than degrade to "no
@@ -1279,6 +1284,46 @@ def manifest_erase_tool(manifest: dict) -> str | None:
     return raw
 
 
+# #1047: a DROP-OFF is a vault slot the plugin redeems a value from — a sign-in
+# link the resident read from a mailbox or the operator pasted — so that the
+# value never travels in a delegation brief. The plugin declares only the
+# NAME; Casa builds the item's title from the plugin and that name
+# (vault_drop_off.item_title), so a declaration cannot aim the write at any
+# other vault item.
+_DROP_OFF_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_MAX_DROP_OFFS = 8
+
+
+def manifest_drop_offs(manifest: dict) -> list[str]:
+    """Guarded + STRICT ``casa.dropOffs`` extraction (#1047). ABSENT → ``[]``.
+    PRESENT-but-malformed (not a list, a member that is not a lowercase ASCII
+    name, a duplicate, or more than eight) raises
+    ``StoreError(reason_code="drop_offs_invalid")``, validated on every
+    artifact-verification path like ``casa.eraseTool``."""
+    casa = manifest.get("casa")
+    if not isinstance(casa, dict) or "dropOffs" not in casa:
+        return []
+    raw = casa.get("dropOffs")
+
+    def _invalid(why: str) -> StoreError:
+        return StoreError(f"casa.dropOffs invalid: {why}",
+                          reason_code="drop_offs_invalid")
+
+    if not isinstance(raw, list):
+        raise _invalid(f"must be a list of names, got {type(raw).__name__}")
+    if len(raw) > _MAX_DROP_OFFS:
+        raise _invalid(f"at most {_MAX_DROP_OFFS} names (got {len(raw)})")
+    out: list[str] = []
+    for item in raw:
+        if not isinstance(item, str) or not _DROP_OFF_NAME_RE.fullmatch(item):
+            raise _invalid("each name must be lowercase ASCII "
+                           f"(^[a-z][a-z0-9_]{{0,63}}$), got {item!r}")
+        if item in out:
+            raise _invalid(f"{item!r} declared twice")
+        out.append(item)
+    return out
+
+
 # #429: the namespace a plugin may declare in. A declared name is BOUND —
 # the session builder pins it to "" while it is unresolved, and that binding
 # is process-wide for the CLI subprocess, not scoped to the declaring plugin.
@@ -1753,6 +1798,8 @@ def validate_manifest(root: Path, expected_name: str, *,
     manifest_setup_tool(manifest)
     # #1046: likewise casa.eraseTool (strict; raises erase_tool_invalid).
     manifest_erase_tool(manifest)
+    # #1047: likewise casa.dropOffs (strict; raises drop_offs_invalid).
+    manifest_drop_offs(manifest)
     # #792: casa.resultContract is validated at install/update like the
     # declarations above (strict; raises result_contract_invalid).
     manifest_result_contract(manifest)

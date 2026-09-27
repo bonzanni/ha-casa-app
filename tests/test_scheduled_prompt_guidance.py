@@ -494,6 +494,7 @@ NOT_A_DELIVERY = {
     "tools.py::start_job",
     "tools.py::trigger_ack_revoke",
     "tools.py::verify_plugin_secrets",
+    "tools.py::vault_drop_off",
     "tools.py::verify_plugin_state",
     "tools.py::voice_job_status",
 }

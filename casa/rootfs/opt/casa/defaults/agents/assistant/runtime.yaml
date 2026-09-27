@@ -21,6 +21,9 @@ tools:
     - mcp__casa-framework__get_schedule
     - mcp__casa-framework__list_inbound_files
     - mcp__casa-framework__share_inbound_file
+    # #1047 — a sign-in link goes to the plugin's declared vault
+    # drop-off, never into a delegation brief.
+    - mcp__casa-framework__vault_drop_off
     # #555 — read-only plugin health + setup history. The plugin
     # MUTATION tools stay configurator-only; this is the read half,
     # so "why isn't that plugin working?" is answered in the turn

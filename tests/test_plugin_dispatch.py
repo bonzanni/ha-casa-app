@@ -31,8 +31,9 @@ def test_first_specialist_via_assistant_delegation():
     # Lexicographically first specialist chosen, delegation instruction
     # names it exactly and forbids substitution.
     assert instruction == (
-        "Delegate to the specialist 'finance' with the instruction: do the "
-        "thing Do not substitute another agent.")
+        "[casa system notice — not a message from the operator] "
+        "Delegate to the specialist 'finance' with mode='sync' and the "
+        "instruction: do the thing Do not substitute another agent.")
 
 
 def test_no_resident_or_specialist_target():

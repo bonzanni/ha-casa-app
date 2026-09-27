@@ -1110,25 +1110,31 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # paragraphs from the new compiled text gives the base text on every carrier
 # (one insert on restricted_webhook and voice, two on text); the six butler
 # and concierge carriers byte-identical. No retention claim anywhere.
+# MOVED 2026-09-27 (#1047), ALL NINE carriers. The kernel's credential line
+# gains one clause naming a plugin-declared vault drop-off as a consumer, on
+# every resident; the assistant's Core paragraph from #1048 is REPLACED by the
+# drop-off paragraph (a pasted link no longer rides in a brief). Measured:
+# replacing the new paragraph with the #1048 one and removing the clause gives
+# the base text on every carrier, byte for byte. No retention claim anywhere.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
-        "b3636bd481825bc3fa237f9a374479e7d293882293a9ad8a2734da010cfe87a9",
+        "6b448653f991d6f10cd0ad87fcfe4147bb1ab3411d0617afa6ebb8bd1df4b202",
     "assistant:text":
-        "426dcc219edf7f3f02574dfd5836903e7c72faf48a9cc8aa5de4381bbf55f026",
+        "6184c2eb1bb74fcb63f2cb4ce01d3103369c5702e29cc51f8fb1b173053bc9cc",
     "assistant:voice":
-        "456bc85eb6b7b47f20ce407db1796d0284f53bbed13784e1e466429fb64a5a49",
+        "c696b4c936e8d0010dfe47cd9245c3521c6d52fc0e19c2647d70a87d5282d4fa",
     "butler:restricted_webhook":
-        "63f746c67fa33c396267c125c11a7d6948d897e579d5cf0021626dd7d616501f",
+        "72684ce23f3aa2c41999930de39f583f2f2b52cf95cb0a38ba6be6b8a8bb30e3",
     "butler:text":
-        "45c1aa348c67c243f7f1a4deeb7b44375f7bb6cf848e1cf3ee3c5e9a4af2ad38",
+        "c6b2d6f5f546ace808b2e0f4492de5a6063f528e3fe8814fd544573727ee71df",
     "butler:voice":
-        "6325dfcea3037b1d15cea941e8f73e8000afd638191606196b6fc212e293666b",
+        "24378d8895fb34c119beec3c74bc57e2e7553e691f72f509c471f016b187aa3f",
     "concierge:restricted_webhook":
-        "4baf96c7443a5688e5c952532a0275eda8e906a8ef04548b54dd511d153d9124",
+        "20eaa4bac29d6149a4623b3c6b162d7645ab2e15f4e633f703aab615a4df3f12",
     "concierge:text":
-        "0128cf952c45901582c75b4acfbc5647f4499ba240442dc75674fc9d62446108",
+        "ddbea3a48cae0d0dab3266c2a51cd962e5d5f091c7222bed6cf214dd24751456",
     "concierge:voice":
-        "319a61259c3a302df90cc6554da15e962eedcbcc2c239aaadcab012c145a1cb2",
+        "21900b3787b24545667d9ca63cbf37c0ade418b8d29d6c819ae091b8dc760220",
 }
 
 
@@ -1403,14 +1409,28 @@ def test_plugin_status_description_leads_with_standing():
 # served carriers and nothing about the model obeying them.
 # ---------------------------------------------------------------------------
 
-_PASTED_LINK_DOCTRINE = (
-    "The rule on credential-bearing artifacts covers what a tool returns, and "
-    "anything you or a specialist read from a mailbox, a tool result or a "
-    "completion stays under it. A sign-in link or one-time code a person put "
-    "into their own message to you, so that a step can use it, is theirs to "
-    "hand over: pass it to the operation that consumes it — for a specialist's sign-in tool, in "
-    "the brief of a delegation to that specialist — instead of refusing it or "
-    "sending them elsewhere with it, and do not repeat it back in your reply."
+# #1047 supersedes #1048's telling (operator ruling on #1047): a pasted link
+# no longer rides in a delegation brief either — every sign-in link goes to
+# the consuming plugin's vault drop-off, and only the fact that it is waiting
+# reaches the specialist.
+_DROP_OFF_DOCTRINE = (
+    "A sign-in link or one-time code is under the rule on credential-bearing "
+    "artifacts wherever it came from: a tool result, a mailbox, a completion, "
+    "or a person's own message to you. It never goes into a reply, a "
+    "delegation brief or a completion summary. When the plugin that consumes "
+    "it declares a vault drop-off, store it there with `vault_drop_off`, then "
+    "tell that plugin's specialist only that it is waiting and ask it to run "
+    "its sign-in step. Read a mailbox for such a link only when the operator "
+    "asks, in this conversation, for that specific email. When no drop-off is "
+    "declared, tell the person the step cannot be finished through you: they "
+    "can give the link to the specialist directly, in the topic of an "
+    "interactive delegation you open for it."
+)
+
+_KERNEL_DROP_OFF_CLAUSE = (
+    "Pass it only to the operation designated to consume it — a tool that "
+    "takes it, or a vault drop-off its consuming plugin declares; if there is "
+    "none, stop and report that the step could not be completed."
 )
 
 _UNOPENED_TOPIC_DOCTRINE = (
@@ -1436,9 +1456,11 @@ def _assistant_doctrine_sections() -> tuple[str, str]:
     return core, text
 
 
-def test_a_pasted_signin_link_reaches_its_consumer_on_every_assistant_surface():
-    """RED pre-fix: the telling occurs zero times on every carrier."""
-    needle = _collapse_ws(_PASTED_LINK_DOCTRINE)
+def test_a_signin_link_goes_to_the_drop_off_on_every_assistant_surface():
+    """#1047: the telling is on every assistant carrier (Core, so all three
+    projections, and the legacy prompt) and on no other resident's; #1048's
+    brief-forwarding sentence is gone from every carrier."""
+    needle = _collapse_ws(_DROP_OFF_DOCTRINE)
     compiled = _compiled_resident_carriers()
     assert {name: _collapse_ws(body).count(needle)
             for name, body in compiled} == {
@@ -1451,6 +1473,21 @@ def test_a_pasted_signin_link_reaches_its_consumer_on_every_assistant_surface():
             _collapse_ws(text).count(needle)) == (1, 0)
     legacy = dict(_legacy_prompt_carriers())
     assert _collapse_ws(legacy["assistant"]).count(needle) == 1
+
+    superseded = "in the brief of a delegation to that specialist"
+    for name, body in [*compiled, *legacy.items()]:
+        assert superseded not in _collapse_ws(body), name
+
+
+def test_the_kernel_names_a_declared_drop_off_as_a_consumer():
+    """#1047: the kernel's "operation designated to consume it" names a
+    plugin-declared drop-off, on every resident carrier."""
+    needle = _collapse_ws(_KERNEL_DROP_OFF_CLAUSE)
+    assert {name: _collapse_ws(body).count(needle)
+            for name, body in _compiled_resident_carriers()} == {
+                f"{slot}:{surface}": 1
+                for slot in _RESIDENT_SLOTS
+                for surface in ("text", "voice", "restricted_webhook")}
 
 
 def test_the_assistant_never_points_to_an_unopened_engagement_topic():
