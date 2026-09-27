@@ -595,6 +595,7 @@ def make_plugin_admission_hook(
             # episode that already timed out and stopped waiting, another tool
             # — is refused before execution; an unprotected eraser meets no
             # grant check at all, so this is its only gate.
+            erase_admitted = False
             if _erase_turn() is not None:
                 import agent as agent_mod
                 from plugin_erasure import WATCH, erase_turn_question_open
@@ -603,6 +604,11 @@ def make_plugin_admission_hook(
                         or not erase_turn_question_open(
                             agent_mod.origin_var.get(None))):
                     return _deny(_DENY_ERASE_BINDING)
+                # The operator's Erase tap on the open question IS the approval
+                # of exactly this call, and the checks above bind it to this
+                # run: a protected eraser is admitted here, never through a
+                # grant an ordinary turn could consume.
+                erase_admitted = True
             # The exempt setup tool: declared absent or safe. A setup tool
             # declared as a CAPABILITY (#1015, it delivers its link) takes
             # the capability path like any other tool.
@@ -619,7 +625,8 @@ def make_plugin_admission_hook(
                     return _deny(_DENY_UNDECLARED)
 
             # Authorization for a protected tool — sequenced BEFORE arming.
-            if authz_hook is not None and tool_name in protected:
+            if (authz_hook is not None and tool_name in protected
+                    and not erase_admitted):
                 verdict = await authz_hook(input_data, tool_use_id, context)
                 if verdict:
                     return verdict

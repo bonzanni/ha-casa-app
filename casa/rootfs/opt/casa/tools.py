@@ -16419,7 +16419,9 @@ async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
             what, [(s.name, s.tool, s.summary) for s in specs])
 
         async def _continue(choice: int) -> bool:
-            if choice == pec.CANCEL:
+            if choice in (pec.CANCEL, pec.KEEP):
+                # Keep and Cancel answer the question now: an erase already
+                # approved and queued must not run behind them.
                 questions.close(subject, question)
             return await deliver(_choice_continuation(tool, arg, name, choice))
         try:

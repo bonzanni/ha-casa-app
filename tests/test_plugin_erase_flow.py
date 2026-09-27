@@ -528,3 +528,14 @@ async def test_an_older_run_cannot_finish_a_newer_question(flow):
     pe.RECORDS.put("plugin:probe", ART, "complete", "A finished", qid_a)
     out = await _remove(flow.tm, erase_data=True)
     assert out["kind"] == "erase_not_confirmed" and _still_registered(flow)
+
+
+
+@pytest.mark.asyncio
+async def test_a_keep_tap_closes_the_question_at_once(flow):
+    """Diff r6 (Terra S1): a Keep tap voids the question immediately, before the
+    configurator's erase_data=false call arrives."""
+    await _remove(flow.tm)
+    assert pe.QUESTIONS.current("plugin:probe") is not None
+    await flow.prompts[-1]["continue_cb"](pec.KEEP)
+    assert pe.QUESTIONS.current("plugin:probe") is None

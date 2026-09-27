@@ -235,3 +235,29 @@ async def test_an_erase_turn_of_a_voided_question_runs_nothing(watch, monkeypatc
         assert "erase" in _deny_reason(await admit(_pre(ERASE), "t", {}))
     with _Origin({**turn, "plugin_erase_question": ""}):         # no stamp
         assert "erase" in _deny_reason(await admit(_pre(ERASE), "t", {}))
+
+
+
+@pytest.mark.asyncio
+async def test_the_broker_admits_a_protected_eraser_only_on_its_own_run(watch):
+    """Diff r6 (Astra S1): the Erase tap is the approval, enforced by the
+    broker's own run checks — a protected eraser on its run's turn skips the
+    authorization challenge; the same tool on an ordinary turn still meets it."""
+    store, _ = _store()
+    calls = []
+
+    async def authz(input_data, tool_use_id, context):
+        calls.append(tool_use_id)
+        return {"hookSpecificOutput": {"hookEventName": "PreToolUse",
+                                       "permissionDecision": "deny",
+                                       "permissionDecisionReason": "challenge"}}
+    protected = {ERASE: {"artifact_id": ARTIFACT, "summary": None}}
+    admit = rb.make_plugin_admission_hook("finance", _map(), client_id="c1",
+                                          store=store, authz_hook=authz,
+                                          protected=protected)
+    watch.arm(RUN, ERASE)
+    with _Origin(ERASE_TURN):
+        assert await admit(_pre(ERASE), "erase-turn", {}) == {}
+    with _Origin(DM):
+        assert "challenge" in _deny_reason(await admit(_pre(ERASE), "dm", {}))
+    assert calls == ["dm"]

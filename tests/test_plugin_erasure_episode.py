@@ -77,33 +77,16 @@ async def test_a_courier_turn_carries_the_stamps_and_a_complete_result_is_record
 
 
 @pytest.mark.asyncio
-async def test_a_protected_eraser_is_pre_authorized_for_exactly_its_no_arg_call(fresh):
-    _w, _r, grants = fresh
-    seen = {}
-
-    async def dispatch(role, text, context):
-        key = GrantKey(operator_id=42, chat_id=42, enforcement_role="finance",
-                       artifact_id=ART, tool_name=TOOL,
-                       args_hash=canonical_args_hash({}), engagement_id="")
-        other_args = GrantKey(**{**key.__dict__, "args_hash": canonical_args_hash({"x": 1})})
-        seen["other"] = grants.consume(other_args)
-        seen["exact"] = grants.consume(key)
-        seen["again"] = grants.consume(key)
-        pe.turn_ended(context)
-        return True
-    pe.configure(dispatch=dispatch)
-    await pe.run_erase_episode([_spec()], operator=OP, question=Q, subject=SUBJ)
-    assert seen == {"other": False, "exact": True, "again": False}
-
-
-@pytest.mark.asyncio
-async def test_an_unprotected_eraser_mints_no_grant(fresh):
+async def test_the_episode_mints_no_grant(fresh):
+    """Diff r6 (Astra S1): no pre-issued grant exists for an erase — the broker
+    admits the eraser on its own run's turn — so nothing an ordinary turn could
+    consume is ever left in the grant store."""
     _w, _r, grants = fresh
     dispatch, _ = _dispatcher(json.dumps({"erasure": "complete", "report": "ok"}))
     pe.configure(dispatch=dispatch)
-    await pe.run_erase_episode([_spec(targets=("resident:assistant",),
-                                      protected=False)], operator=OP, question=Q, subject=SUBJ)
-    key = GrantKey(42, 42, "assistant", ART, TOOL, canonical_args_hash({}), "")
+    await pe.run_erase_episode([_spec(protected=True)], operator=OP, question=Q,
+                               subject=SUBJ)
+    key = GrantKey(42, 42, "finance", ART, TOOL, canonical_args_hash({}), "")
     assert grants.consume(key) is False
 
 
@@ -189,17 +172,3 @@ async def test_an_eraser_with_no_server_is_not_dispatched(fresh):
     spec = pe.EraseSpec("p", ART, ("resident:assistant",), (), False, tool="erase_all")
     [out] = await pe.run_erase_episode([spec], operator=OP, question=Q, subject=SUBJ)
     assert out.verdict == "not_dispatched" and sent == []
-
-
-
-@pytest.mark.asyncio
-async def test_a_pregrant_the_run_never_used_is_revoked_when_it_ends(fresh):
-    """Diff r5 (Terra): a protected eraser's pre-authorization lives only as
-    long as its run — a run that ended without the call leaves no grant a later
-    ordinary call could consume without the operator's challenge."""
-    _w, _r, grants = fresh
-    dispatch, _ = _dispatcher()                       # the turn ends, no call
-    pe.configure(dispatch=dispatch)
-    await pe.run_erase_episode([_spec()], operator=OP, question=Q, subject=SUBJ)
-    key = GrantKey(42, 42, "finance", ART, TOOL, canonical_args_hash({}), "")
-    assert grants.consume(key) is False

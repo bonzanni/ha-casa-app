@@ -46,8 +46,8 @@ providers, and returns as its text result a JSON object:
 verbatim and cut at 4000 characters with a ` [truncated]` marker. Anything else — prose,
 another value, a missing key, a non-string report, a tool error — is not a complete
 erasure, and its raw text becomes the report. A plugin may also list its eraser in
-`casa.protectedTools`; the question then shows the plugin's own summary for it, and Casa
-pre-authorizes exactly the one call (below). A plugin that declares an eraser but no MCP
+`casa.protectedTools`; the question then shows the plugin's own summary for it, and the
+operator's Erase tap is the approval of exactly the one call (below). A plugin that declares an eraser but no MCP
 server to call it on is still treated as declaring one: the uninstall asks, and an Erase
 choice can never complete (the episode is not dispatched), so it is never silently removed
 as an ordinary plugin.
@@ -81,7 +81,7 @@ under that lock too; the eraser itself runs afterwards, outside it.
 
 **Every tap, run and record belongs to one question.** Posting the question opens a new
 question id for the uninstall subject (`plugin_erasure.QUESTIONS`) and replaces any open
-one; a Keep removal (`erase_data=false`) and a Cancel tap close it. The Erase choice is
+one; a Keep or Cancel tap, and a Keep removal (`erase_data=false`), close it. The Erase choice is
 bound to that id, the episode it starts carries it, and every erasure record the episode
 writes is stamped with it; only the open question's choice starts an erasure and only its
 records finish an uninstall. So asking again voids everything an earlier question
@@ -109,13 +109,12 @@ plugin in turn (`plugin_erasure.run_erase_episode`):
   transport, so the turn's grant identity is gated exactly like a setup turn's, from one
   table of Casa plugin-turn markers (INV-PLUG-027), and it can delegate only in `sync`
   mode.
-- *Pre-authorization.* When the plugin declared its eraser protected, Casa mints, before
-  the dispatch, one grant per server name for the argument-free call, bound to the
-  operator, the executing role and the tapped artifact — single-use and TTL-bound like any
-  grant (INV-PLUG-004, INV-PLUG-005). The Erase tap was the operator's approval of exactly
-  this call, so no second challenge is posted. The grant lives only as long as the run: one
-  the eraser did not consume is revoked when the run ends. An unprotected eraser gets no
-  grant.
+- *Approval.* When the plugin declared its eraser protected, the Erase tap is the
+  operator's approval of exactly this call, so no second challenge is posted: the broker's
+  admission hook admits the eraser itself on its own run's turn once the checks below
+  pass, instead of consulting the authorization hook. No grant is minted for it, so
+  nothing an ordinary turn could consume is ever left in the grant store; on any other
+  turn the protected eraser meets the ordinary challenge (INV-PLUG-004).
 - *Binding check.* An erase-marked turn exists to run one eraser. On such a turn the result
   broker's admission hook refuses every plugin tool before it runs unless the turn's own run
   is waiting for that exact tool, the question the run answers is still the open one, and
@@ -173,7 +172,7 @@ Enforced by `plugin_erasure.parse_erase_result` and by the episode folding every
 outcome to a non-complete record. Reading anything looser as success would let a plugin's
 prose ("done, all erased") remove the one tool that could still finish the job.
 
-**INV-PLUG-036**: An uninstall that includes a plugin whose resolved artifact declares an eraser removes nothing until the operator answers Casa's DM question; only an Erase tap on the currently open question authorizes an erasure, recorded as a single-use choice bound to the operator, the uninstall subject, the erasing artifacts and that question and expiring after 300 s; posting a new question replaces the open one and a Keep removal or a Cancel tap closes it, voiding every earlier choice; and an `erase_data=true` call that finds no complete erasure to finish and cannot consume the open question's choice starts nothing and removes nothing.
+**INV-PLUG-036**: An uninstall that includes a plugin whose resolved artifact declares an eraser removes nothing until the operator answers Casa's DM question; only an Erase tap on the currently open question authorizes an erasure, recorded as a single-use choice bound to the operator, the uninstall subject, the erasing artifacts and that question and expiring after 300 s; posting a new question replaces the open one and a Keep or Cancel tap or a Keep removal closes it, voiding every earlier choice; and an `erase_data=true` call that finds no complete erasure to finish and cannot consume the open question's choice starts nothing and removes nothing.
 
 Enforced by `tools._erase_gate` in front of both removal tools and by
 `plugin_erase_consent`, whose tap hook records the choice in the Telegram callback's commit
@@ -187,10 +186,9 @@ Enforced in `tools._erase_gate`, which computes the erasing plugins from the reg
 the call and takes the records only when all are complete — a refused call spends none of
 them. A complete erasure of one version therefore never removes another.
 
-**INV-PLUG-038**: On an erase-marked turn, a plugin tool is refused before it runs unless the turn's own erase run is waiting for that exact tool, the uninstall question that run answers is still the open one, and the session's binding carries its plugin at the artifact the operator's tap named, and only the turn's own run is answered by its result or failure; a protected eraser is pre-authorized by exactly one single-use grant per server name for its argument-free call, bound to the executing role and that artifact and revoked when the run ends if unconsumed, and an unprotected one by none.
+**INV-PLUG-038**: On an erase-marked turn, a plugin tool is refused before it runs unless the turn's own erase run is waiting for that exact tool, the uninstall question that run answers is still the open one, and the session's binding carries its plugin at the artifact the operator's tap named, and only the turn's own run is answered by its result or failure; a protected eraser that passes these checks is admitted there without the authorization challenge, no grant is ever minted for an erasure, and on any other turn a protected eraser meets the ordinary challenge.
 
-Enforced by the result broker's admission, result and failure hooks and by the episode's
-grant mint. What it does not cover: an unmarked turn, which neither triggers the check nor
+Enforced by the result broker's admission, result and failure hooks. What it does not cover: an unmarked turn, which neither triggers the check nor
 answers the episode.
 
 **INV-PLUG-039**: An erase episode answers within its wait bound: an erase-marked turn that ends without its eraser's result resolves the episode as "no call" from the turn's `finally`, a turn that never reports is resolved as timed out after `ERASE_WAIT_S`, and several erasing plugins run one at a time, stopping at the first whose erasure did not complete.

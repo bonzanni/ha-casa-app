@@ -274,31 +274,6 @@ def _instruction(tool_name: str) -> str:
             "not call any other tool.")
 
 
-def _revoke_grants(keys: list) -> None:
-    import authz_grants
-    for key in keys:
-        authz_grants.GRANTS.consume(key)
-
-
-def _mint_grant(spec: EraseSpec, role: str, operator: tuple[int, int]) -> list:
-    """The operator's Erase tap is the authorization for exactly this call:
-    one grant per server name, for the no-argument call, bound to the
-    executing role and the tap's artifact. Single-use and TTL-bound like any
-    grant; the eraser consumes it and no challenge is posted."""
-    import authz_grants
-    chat_id, user_id = operator
-    args_hash = authz_grants.canonical_args_hash({})
-    keys = []
-    for tool_name in spec.tool_names:
-        key = authz_grants.GrantKey(
-            operator_id=user_id, chat_id=chat_id, enforcement_role=role,
-            artifact_id=spec.artifact_id, tool_name=tool_name,
-            args_hash=args_hash, engagement_id="")
-        authz_grants.GRANTS.mint(key)
-        keys.append(key)
-    return keys
-
-
 def _outcome(spec: EraseSpec, payload: dict | None) -> ErasureOutcome:
     if payload is None:
         return ErasureOutcome(spec.name, spec.artifact_id, "timed_out",
@@ -326,11 +301,8 @@ async def _erase_one(spec: EraseSpec, operator: tuple[int, int],
         return ErasureOutcome(spec.name, spec.artifact_id, "not_dispatched",
                               NOT_DISPATCHED_REPORT)
     run_id = uuid.uuid4().hex
-    minted: list = []
     futures = [WATCH.arm(run_id, t) for t in spec.tool_names]
     try:
-        if spec.protected:
-            minted = _mint_grant(spec, exec_role, operator)
         accepted = await _dispatch(role, instruction, {
             "synthetic": "plugin_erase", "plugin_erase_target": exec_role,
             "plugin_erase_artifact": spec.artifact_id,
@@ -349,9 +321,6 @@ async def _erase_one(spec: EraseSpec, operator: tuple[int, int],
     finally:
         for t in spec.tool_names:
             WATCH.disarm(run_id, t)
-        # The pre-authorization lives only as long as the run: one the eraser
-        # did not consume must not let a later call through unchallenged.
-        _revoke_grants(minted)
 
 
 async def run_erase_episode(specs: list[EraseSpec], operator: tuple[int, int],
