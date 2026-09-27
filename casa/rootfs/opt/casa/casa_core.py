@@ -5359,6 +5359,11 @@ async def main() -> None:
         import tools as _tools
         return _tools.declares_delegate(courier, specialist)
 
+    # #1046: the erase episode dispatches through the same seam — a
+    # Casa-authored turn addressed to the configured operator.
+    import plugin_erasure as _perase
+    _perase.configure(dispatch=_setup_dispatch)
+
     _pse.configure(
         dispatch=_setup_dispatch, notify_operator=_setup_notify,
         resolve_registry_entry=_setup_registry_entry,

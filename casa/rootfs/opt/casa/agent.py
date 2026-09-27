@@ -167,10 +167,15 @@ origin_var: ContextVar[dict | None] = ContextVar("origin_var", default=None)
 #   _scheduled_delivery        — #485 Casa's own schedule fired this turn
 #   _scheduled_epoch           — #573 the trigger-lifecycle epoch it fired under
 #   plugin_setup_target        — #1015 the role a plugin-setup dispatch is FOR
+#   plugin_erase_target / _artifact / _episode — #1046 the same for a
+#                                plugin-erase dispatch, the artifact the tap
+#                                named, and the erase run it belongs to
 COPIED_CONTEXT_MARKERS = (
     "synthetic", "button_answer", "_origin_route", "_origin_clearance",
     "_operator_turn", "_scheduled_delivery", "_scheduled_epoch",
     "plugin_setup_target",
+    "plugin_erase_target", "plugin_erase_artifact", "plugin_erase_episode",
+    "plugin_erase_subject", "plugin_erase_question",
     # #1038: the resolved disclosure a stored payload owes the turn that
     # sends it (stamped by the scheduler, the reminder sweep and delegation
     # synthesis; registered on the scope at mint as an InheritedNote).
@@ -2122,6 +2127,10 @@ class Agent:
             # cancelled one (role teardown cancels in-flight dispatches) all
             # report. Synchronous + never raises by contract.
             self._report_setup_outcome(msg, turn_state)
+            # #1046: an erase-marked turn that ends without its eraser's
+            # result answers the waiting episode now (same contract).
+            import plugin_erasure
+            plugin_erasure.turn_ended(msg.context)
             _explain_draft_var.reset(explain_token)
             origin_var.reset(origin_token)
 

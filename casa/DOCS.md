@@ -919,7 +919,9 @@ these tools:
   but is ignored — `plugin_list` shows it under `ignored_targets`, the plugin
   health report says so, and `plugin_unassign` clears it.
 - `plugin_remove(name)` — drop a plugin from the registry (its artifact is left
-  on disk for now; see disk usage).
+  on disk for now; see disk usage). The plugin's own data stays behind and a
+  reinstall picks it up again — unless the plugin can erase its data itself (see
+  "Erasing a plugin's data" below).
 - `plugin_list()` / `verify_plugin_state(name)` — inspect the registry and check
   that the running agents actually agree with it.
 
@@ -1307,6 +1309,17 @@ The same repository-driven flow covers **upgrading** to a newer version,
 **rolling back** to the previous one, and **uninstalling** a specialist —
 just ask Ellen (e.g. *"Upgrade the finance specialist"*, *"Roll back
 finance to the previous version"*, *"Uninstall the finance specialist"*).
+
+**Erasing a plugin's data.** Some plugins can erase everything they hold
+themselves — the finance specialist's bank feed, for example, erases its ledger
+and backups and withdraws your bank consents. When you uninstall such a plugin,
+or a specialist that bundles one, Casa asks you first in a DM: **Keep data**,
+**Erase data** or **Cancel**. Keep data uninstalls as before, and a reinstall
+picks the data up again. Erase data runs the plugin's own eraser first, and
+the uninstall goes ahead only if the plugin reports the erasure complete; if it
+does not (a bank would not confirm withdrawing its consent, say), nothing is
+removed and you get the plugin's own report, so you can try again or uninstall
+anyway. Home Assistant backups taken earlier still contain the data either way.
 You can also swap which persona an installed specialist uses (its bundled
 default, or another installed persona) by asking Ellen to apply a
 different persona to it.

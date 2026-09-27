@@ -11,6 +11,12 @@
    `targets` list names `specialist:<slug>`) is a DIFFERENT thing and is left alone — it is not
    removed, just left with a target nothing currently answers (surfaces as `pending_targets` the
    next time it is reloaded/verified).
+   If a bundled plugin declares an eraser, this call first answers
+   `kind: "erase_choice_pending"` and removes nothing: follow "A plugin that can
+   erase its own data" in `recipes/plugin/remove.md` with
+   `specialist_uninstall(slug=..., erase_data=...)` in place of `plugin_remove`.
+   The specialist is uninstalled only when every bundled eraser reported its
+   erasure complete; relay each report in `erase_reports` verbatim.
 3. If the result carries `plugin_data_note` (it does whenever step 2 cascaded
    owned plugins out) — on ANY outcome, including an `ok:false` result that
    carries no `state` at all — report it to the operator verbatim with the list in

@@ -664,6 +664,11 @@ def artifact_verdict(path: Path, *, name: str, repo: str, revision: str,
         manifest_setup_tool(manifest)
     except StoreError:
         return "setup_tool_invalid"
+    # #1046: same upgrade-path posture for casa.eraseTool.
+    try:
+        manifest_erase_tool(manifest)
+    except StoreError:
+        return "erase_tool_invalid"
     # #429: same upgrade-path posture for casa.setupProvides (gate added
     # v0.154.0) — it relaxes the withholding gate, so a malformed one must
     # exclude the artifact from resolution rather than degrade to "no
@@ -1233,6 +1238,47 @@ def manifest_setup_tool(manifest: dict) -> str | None:
     return raw
 
 
+_ERASE_TOOL_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+
+
+def manifest_erase_tool(manifest: dict) -> str | None:
+    """Guarded + STRICT ``casa.eraseTool`` extraction (#1046). ABSENT →
+    ``None``. The declared tool erases everything the plugin holds and
+    revokes what it can at its providers; it must be argument-free and
+    return ``{"erasure": "complete"|"incomplete", "report": str}``
+    (``docs/architecture/plugin-erasure.md``). Casa runs it only on the
+    operator's Erase tap at uninstall, before removing the plugin.
+
+    PRESENT-but-malformed raises ``StoreError(reason_code=
+    "erase_tool_invalid")``, validated on every artifact-verification path
+    like ``casa.setupTool``. Malformed means: not a lowercase ASCII tool name,
+    equal to the ``casa.setupTool``, or not declared ``safe`` in the plugin's
+    ``casa.resultContract`` — which the declaration therefore requires: the
+    result broker refuses every non-setup tool of a plugin that has not
+    adopted the contract, so an eraser there could never run."""
+    casa = manifest.get("casa")
+    if not isinstance(casa, dict) or "eraseTool" not in casa:
+        return None
+    raw = casa.get("eraseTool")
+
+    def _invalid(why: str) -> StoreError:
+        return StoreError(f"casa.eraseTool invalid: {why}",
+                          reason_code="erase_tool_invalid")
+
+    if not isinstance(raw, str) or not _ERASE_TOOL_RE.fullmatch(raw):
+        raise _invalid("must be a lowercase ASCII tool name "
+                       f"(^[a-z][a-z0-9_]{{0,63}}$), got {raw!r}")
+    if raw == casa.get("setupTool"):
+        raise _invalid(f"{raw!r} is also the casa.setupTool")
+    contract = casa.get("resultContract")
+    tools = contract.get("tools") if isinstance(contract, dict) else None
+    entry = tools.get(raw) if isinstance(tools, dict) else None
+    if not isinstance(entry, dict) or entry.get("result") != "safe":
+        raise _invalid(f"{raw!r} must be declared \"safe\" in "
+                       "casa.resultContract")
+    return raw
+
+
 # #429: the namespace a plugin may declare in. A declared name is BOUND —
 # the session builder pins it to "" while it is unresolved, and that binding
 # is process-wide for the CLI subprocess, not scoped to the declaring plugin.
@@ -1705,6 +1751,8 @@ def validate_manifest(root: Path, expected_name: str, *,
     # v0.112.0: a PRESENT-but-malformed casa.setupTool refuses the
     # install/update outright (strict; raises setup_tool_invalid).
     manifest_setup_tool(manifest)
+    # #1046: likewise casa.eraseTool (strict; raises erase_tool_invalid).
+    manifest_erase_tool(manifest)
     # #792: casa.resultContract is validated at install/update like the
     # declarations above (strict; raises result_contract_invalid).
     manifest_result_contract(manifest)

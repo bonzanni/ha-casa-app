@@ -46,7 +46,7 @@ protected tool the target calls be approved through the operator's keyboard.
 
 **INV-PLUG-024**: A specialist-target setup obligation, whose dispatched turn is a courier turn asking the assistant to delegate the setup to the specialist, rests consumed (`dispatched`) only when that courier turn produced a non-error `delegate_to_agent` result whose target, canonicalised as the delegation ACL resolves it, is the row's specialist — a delegation to any other agent, an errored one, and a listed but uncalled delegation tool all evidence nothing for a courier, whether or not the turn completed; a courier turn with no such result (including one that raised, was cancelled, or replied with silence) returns the obligation to `pending` with its released verdict intact, under the same bounded budget as a resident turn, and past the bound it fails with an operator note naming the delegation that could not be made; the delegation tool is recorded under its own key, never as the row's expected setup tool, so no ordinary turn's delegation result can settle a specialist-target row; and a `dispatched` row that carries neither an expected tool nor a courier key and no settlement mark — one no turn will ever report on — is retired by the next worker pass as `failed` with a reason naming the manual run and one operator note, never re-dispatched.
 
-**INV-PLUG-027**: An origin carrying Casa's `plugin_setup` marker yields a grant identity only when it is Telegram-shaped, addressed to the operator as configured at the time of the call, read on a direct or delegated turn, and its Casa-stamped `plugin_setup_target` equals the executing role; the same origin read from an engagement record yields none, at launch and on resume; every other synthetic marker yields none; the marker and the target cannot be supplied from outside Casa; and a turn carrying the marker can delegate only in `sync` mode, so no engagement is ever created from it.
+**INV-PLUG-027**: An origin carrying one of Casa's plugin-turn markers — `plugin_setup`, or the `plugin_erase` marker of an erase turn — yields a grant identity only when it is Telegram-shaped, addressed to the operator as configured at the time of the call, read on a direct or delegated turn, and its Casa-stamped target for that marker (`plugin_setup_target`, `plugin_erase_target`) equals the executing role; the same origin read from an engagement record yields none, at launch and on resume; every other synthetic marker yields none; the markers and the targets cannot be supplied from outside Casa; and a turn carrying either marker can delegate only in `sync` mode, so no engagement is ever created from it.
 
 The dispatched turn is addressed to the configured operator's own chat, and it now has
 the identity that lets a setup tool declared as a capability deposit a link and have it
@@ -69,6 +69,12 @@ chat, and the challenge still goes to them. The `sync`-only rule is enforced in 
 delegation tool's mode gate, before target resolution or any topic: an interactive launch
 would return a non-error pending result that the courier report counts as a delegation
 that went through, while the engagement's own setup tool is refused for identity.
+
+The two markers are one rule, not two: `provenance.CASA_PLUGIN_TURN_TARGETS` pairs each
+marker with its target key, and the identity derivation, the transport classification and
+both delegation mode gates read that table. The erase turn — Casa running a plugin's
+declared eraser on the operator's Erase tap — is
+[`plugin-erasure.md`](plugin-erasure.md)'s; this invariant is only its identity.
 
 What it does not cover: turns with no identity at all — voice, webhook, scheduled,
 callback-nudge and every other synthetic marker, and executor sessions — which refuse a
@@ -199,7 +205,8 @@ a row ends up consumed by a turn that did nothing.
 
 **A new session kind that may run a setup tool** must carry the marker and the stamp
 through to its origin and refuse the identity wherever it cannot prove the executing role
-is the stamped one.
+is the stamped one. A new kind of Casa-dispatched plugin turn joins the marker table with
+its own reserved target key rather than adding a marker check of its own.
 
 ## Source & test map
 

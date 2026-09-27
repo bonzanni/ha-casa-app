@@ -354,6 +354,18 @@ def withhold_env_unresolved(resolution, *, context: str, environ=None):
     return dataclasses.replace(resolution, plugins=loadable), withheld
 
 
+def plugin_tool_names(rp, tool: str) -> tuple:
+    """The full runtime names of a resolved plugin's bare *tool* — one per MCP
+    server it declares, namespaced exactly like :func:`protected_map` (#1046:
+    the eraser a Casa-dispatched erase turn calls). Empty when the plugin
+    declares no MCP server."""
+    servers = sorted(_mcp_servers(Path(rp.path) / ".mcp.json"))
+    plugin_seg = sanitize_segment(runtime_name(rp))
+    tool_seg = sanitize_segment(tool)
+    return tuple(f"mcp__plugin_{plugin_seg}_{sanitize_segment(s)}__{tool_seg}"
+                 for s in servers)
+
+
 def protected_map(resolution) -> dict[str, dict]:
     """Full-tool-name -> ``{"artifact_id": str, "summary": str | None}`` map
     for every ``casa.protectedTools`` entry across a RESOLVED

@@ -42,6 +42,19 @@ handler, because a handler's task can be cancelled while the thread it offloaded
 on; and it is taken after the plugin-tools lock and before the materialize lock, never
 nested, never on the event loop.
 
+**An uninstall may ask about erasure before any of this runs.** When an owned plugin
+declares an eraser, `specialist_uninstall` passes the erase step first, at the start of the
+transaction body — under the mutation lock, on the owned entries as the registry holds them
+there, before the journal is begun: it asks the operator Keep data / Erase data / Cancel,
+runs the plugins' erasers on an Erase tap, and lets the uninstall proceed only on a Keep
+choice (`erase_data=false`) or once every erasing plugin reported a complete erasure for the
+artifact installed now. An uninstall that answers `erase_choice_pending`, `erasure_running`,
+`erase_not_confirmed` or `erase_unavailable` has begun no journal and swapped nothing, so
+there is nothing to compensate; a transaction that fails after the step leaves the erased
+plugins installed. The step is
+[`plugin-erasure.md`](plugin-erasure.md)'s; a successful uninstall that followed it carries
+the plugins' reports as `erase_reports`.
+
 **The tuple pair and the sidecar pair rotate as one generation.** The commit that rotates
 the active tuple into the retained prior rotates the active owned-plugins sidecar into the
 prior sidecar in the same step, on the tuple's own no-op predicate — a byte-identical

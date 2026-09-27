@@ -88,6 +88,7 @@ EDIT_DM_MESSAGE_CALLERS = {
     ("callback_consent.py", "_finish"): {"plugin"},                # consent bodies are plugin-authored
     ("event_consent.py", "_finish"): {"plugin"},
     ("persona_install_consent.py", "_finish_inner"): {"plugin"},
+    ("plugin_erase_consent.py", "_finish_inner"): {"status"},      # #1046: fixed Keep/Erase/Cancel/expired statuses
     ("specialist_install_consent.py", "_finish_inner"): {"plugin"},
     ("trigger_consent.py", "_finish"): {"plugin"},
 }
