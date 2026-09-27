@@ -57,7 +57,9 @@ data / Cancel**. You never ask it and never choose for them.
   call returns `kind: "erasure_running"` — the plugin's eraser runs and
   nothing is removed yet; wait, Casa sends the eraser's result into this topic.
   `kind: "erase_not_confirmed"` means there was no Erase tap for this version:
-  call again without `erase_data` to ask.
+  call again without `erase_data` to ask. `kind: "erase_unavailable"` means the
+  plugin no longer declares an eraser (it was updated): call again without
+  `erase_data`.
 - When the eraser reports the erasure complete, Casa tells you to call
   `erase_data=true` again; that call removes the plugin and its result carries
   `erasure: "complete"` and the plugin's report (`erase_report`, or

@@ -43,16 +43,15 @@ on; and it is taken after the plugin-tools lock and before the materialize lock,
 nested, never on the event loop.
 
 **An uninstall may ask about erasure before any of this runs.** When an owned plugin
-declares an eraser, `specialist_uninstall` first passes the erase step in the tool handler:
-it asks the operator Keep data / Erase data / Cancel, runs the plugins' erasers on an Erase
-tap, and lets the transaction start only on a Keep choice (`erase_data=false`) or once every
-erasing plugin reported a complete erasure. That step takes none of these locks and writes no
-journal, so an uninstall that answers `erase_choice_pending`, `erasure_running` or
-`erase_not_confirmed` has opened no transaction and has nothing to compensate; a
-transaction that then fails leaves the erased plugins installed. The finishing call's
-records are re-read and consumed inside the transaction body, under its lock, so an owned
-plugin updated since the erasure refuses the uninstall (`erasure_changed`) before the swap.
-The step is
+declares an eraser, `specialist_uninstall` passes the erase step first, at the start of the
+transaction body — under the mutation lock, on the owned entries as the registry holds them
+there, before the journal is begun: it asks the operator Keep data / Erase data / Cancel,
+runs the plugins' erasers on an Erase tap, and lets the uninstall proceed only on a Keep
+choice (`erase_data=false`) or once every erasing plugin reported a complete erasure for the
+artifact installed now. An uninstall that answers `erase_choice_pending`, `erasure_running`,
+`erase_not_confirmed` or `erase_unavailable` has begun no journal and swapped nothing, so
+there is nothing to compensate; a transaction that fails after the step leaves the erased
+plugins installed. The step is
 [`plugin-erasure.md`](plugin-erasure.md)'s; a successful uninstall that followed it carries
 the plugins' reports as `erase_reports`.
 

@@ -143,6 +143,12 @@ class ErasureRecords:
         with self._lock:
             self._rows[(subject, artifact_id)] = (verdict, report)
 
+    def discard(self, subject: str) -> None:
+        """Forget every record of *subject*, whatever its artifact."""
+        with self._lock:
+            for key in [k for k in self._rows if k[0] == subject]:
+                del self._rows[key]
+
     def has_complete(self, subject: str, artifact_id: str) -> bool:
         with self._lock:
             row = self._rows.get((subject, artifact_id))

@@ -65,7 +65,23 @@ Every tap continues the configurator engagement with the exact call to make next
 DM message is edited to say what happens — including, when the engagement could not be
 resumed, that the operator has to ask the configurator to continue. The model can never
 assert "erase" on the operator's behalf: an `erase_data=true` call that neither finishes a
-complete erasure nor consumes that recorded choice returns `erase_not_confirmed`.
+complete erasure nor consumes that recorded choice returns `erase_not_confirmed`, and one on
+an uninstall that no longer includes an erasing plugin (an update dropped the eraser, say)
+returns `erase_unavailable`.
+
+**The step and the removal see one state.** The erase step runs under the plugin mutation
+lock the removal commits under — `plugin_remove` holds it across both, and a specialist's
+step runs inside its bundle transaction — on the registry as it stands under that lock. So
+an update cannot land between the decision and the removal: an eraser it adds is asked
+about, one it drops refuses `erase_data=true`, and an erased artifact it replaced is not
+the one a complete record names. Posting the question or starting the episode happens
+under that lock too; the eraser itself runs afterwards, outside it.
+
+**A question and a Keep forget earlier erasures.** Posting the question, and a removal with
+`erase_data=false`, discard every erasure record of the plugins concerned, so a record left
+by an earlier installation of the same artifact (erased, removed with Keep, reinstalled)
+never certifies the one being uninstalled now: only an erasure run for this question can
+finish it.
 
 **The erase episode runs in the background.** An `erase_data=true` call that consumes the
 choice starts the episode and returns `erasure_running`, removing nothing. For each erasing
@@ -117,10 +133,9 @@ or to uninstall anyway keeping what is left (`erase_data=false`).
 
 **The finishing call removes.** A second `erase_data=true` call finds a complete record for
 every erasing plugin at the artifact the registry resolves at that moment, consumes them,
-and runs the ordinary removal. The records are read and consumed under the plugin mutation
-lock the removal commits under — inside the bundle transaction for a specialist — so an
-update that lands while the call waits for the lock is seen: the erased artifact is no
-longer the installed one, nothing is removed, and the call returns `erasure_changed`. Its ok result carries `erasure: "complete"` and the reports
+and runs the ordinary removal, all under the mutation lock (above): an update that replaced
+the erased artifact leaves no complete record for the installed one, so nothing is removed.
+Its ok result carries `erasure: "complete"` and the reports
 — `erase_report` for a `plugin_remove`, `erase_reports` (name and report per plugin) for a
 specialist — and replaces the survival disclosure for the erased plugins with a
 `plugin_data_note` saying that the plugin's own eraser reported its data erased and that
@@ -151,7 +166,7 @@ step. With no reachable operator DM the gate refuses (`consent_channel_unavailab
 than removing. What it does not cover: a removal with `erase_data=false`, which is the
 ordinary removal and asks nothing.
 
-**INV-PLUG-037**: An `erase_data=true` call removes only when a complete erasure record exists for every erasing plugin at the artifact the registry resolves under the mutation lock the removal commits under, and it consumes those records there; an incomplete record, a record for another artifact (including one an update replaced while the call waited for the lock), or a missing one removes nothing.
+**INV-PLUG-037**: The erase step and the removal run under one hold of the mutation lock, on the registry as it stands there; an `erase_data=true` call removes only when a complete erasure record exists for every erasing plugin at the artifact the registry resolves under that lock, and it consumes those records there; an incomplete record, a record for another artifact (including one an update replaced while the call waited for the lock), a missing one, or an uninstall that includes no erasing plugin removes nothing; and posting the question or removing with `erase_data=false` discards every earlier erasure record of the plugins concerned.
 
 Enforced in `tools._erase_gate`, which computes the erasing plugins from the registry at
 the call and takes the records only when all are complete — a refused call spends none of

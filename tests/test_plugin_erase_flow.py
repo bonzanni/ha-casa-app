@@ -153,6 +153,9 @@ def flow(monkeypatch, tmp_path):
     tm = _wire(monkeypatch, tmp_path, st, publish=_pr())
     state = SimpleNamespace(st=st, tm=tm, prompts=[], episodes=[],
                             specs=[_spec()], delivered=[])
+    # A module asyncio.Lock binds to the first loop that contends it: give
+    # every test its own.
+    monkeypatch.setattr(tm, "_PLUGIN_TOOLS_LOCK", asyncio.Lock())
     def specs_for(entries):
         # the spec of an entry names the artifact the registry holds for it NOW
         out = []
@@ -377,25 +380,82 @@ async def test_an_update_while_the_finishing_call_waits_is_not_removed(flow):
         tm._PLUGIN_TOOLS_LOCK.release()
     out = await task
     assert out["ok"] is False and _still_registered(flow)
-    assert out["kind"] == "erasure_changed"
+    assert out["kind"] == "erase_not_confirmed"
 
 
 @pytest.mark.asyncio
-async def test_specialist_records_are_checked_inside_the_transaction(sflow, monkeypatch):
-    """The bundle's owned entries are re-read inside the transaction body: an
-    artifact that changed since the gate is not uninstalled."""
+async def test_specialist_erase_step_runs_inside_the_transaction(sflow, monkeypatch):
+    """The bundle's erasing plugins are read, and its records consumed, inside
+    the transaction body — which owns the mutation lock — so the decision and
+    the uninstall see one registry state."""
     tm = sflow.tm
     pe.RECORDS.put("plugin:fin.bank", "1" * 64, "complete", "bank gone")
-    owned_now = [{"name": "fin.bank", "artifact_id": "8" * 64,
-                  "targets": ["specialist:fin"], "owner": "specialist:fin"}]
-    calls = {"n": 0}
-    real = tm._owned_entries_now
+    in_txn = {"now": False, "reads": []}
+    real_owned = tm._owned_entries_now
 
     def owned(slug):
-        calls["n"] += 1
-        return real(slug) if calls["n"] == 1 else owned_now
+        in_txn["reads"].append(in_txn["now"])
+        return real_owned(slug)
     monkeypatch.setattr(tm, "_owned_entries_now", owned)
+    real_run = tm._run_bundle_transaction
 
+    async def run(body):
+        in_txn["now"] = True
+        try:
+            return await real_run(body)
+        finally:
+            in_txn["now"] = False
+    monkeypatch.setattr(tm, "_run_bundle_transaction", run)
     out = await _uninstall(tm, erase_data=True)
-    assert out["ok"] is False and out["kind"] == "erasure_changed"
-    assert sflow.uninstalled == []
+    assert out["ok"] is True and sflow.uninstalled == [True]
+    assert in_txn["reads"] == [True]
+
+
+@pytest.mark.asyncio
+async def test_erase_true_on_a_plugin_without_an_eraser_removes_nothing(flow):
+    """Diff r2 (Terra S2): an update that dropped the eraser after the Erase
+    tap must not turn erase_data=true into a plain removal."""
+    flow.specs = []
+    out = await _remove(flow.tm, erase_data=True)
+    assert out["ok"] is False and out["kind"] == "erase_unavailable"
+    assert _still_registered(flow)
+
+
+@pytest.mark.asyncio
+async def test_an_eraser_added_while_the_removal_waits_is_asked_about(flow):
+    """Diff r2 (Astra S2): the gate runs under the mutation lock, so an update
+    that introduces an eraser while a plain removal waits for the lock gets the
+    question instead of a removal."""
+    tm = flow.tm
+    real_specs = flow.specs
+    flow.specs = []                                   # no eraser at call time
+    await tm._PLUGIN_TOOLS_LOCK.acquire()
+    try:
+        task = asyncio.get_running_loop().create_task(_remove(tm))
+        await asyncio.sleep(0.01)
+        flow.specs = real_specs                       # the update adds one
+    finally:
+        tm._PLUGIN_TOOLS_LOCK.release()
+    out = await task
+    assert out["kind"] == "erase_choice_pending" and _still_registered(flow)
+
+
+@pytest.mark.asyncio
+async def test_a_fresh_question_discards_an_earlier_erasure_record(flow):
+    """Diff r2 (Astra S2): a record from an earlier installation of the same
+    artifact must not certify this one — asking again forgets it, so an Erase
+    tap runs the eraser again."""
+    pe.RECORDS.put("plugin:probe", ART, "complete", "an earlier installation")
+    out = await _remove(flow.tm)
+    assert out["kind"] == "erase_choice_pending"
+    pec.CHOICES.mint(pec.EraseChoiceKey(42, 42, "plugin:probe", (ART,)), pec.ERASE)
+    out = await _remove(flow.tm, erase_data=True)
+    assert out["kind"] == "erasure_running" and _still_registered(flow)
+
+
+@pytest.mark.asyncio
+async def test_a_keep_removal_discards_the_erasure_records(flow):
+    pe.RECORDS.put("plugin:probe", ART, "complete", "erased, then kept")
+    out = await _remove(flow.tm, erase_data=False)
+    assert out["ok"] is True
+    assert pe.RECORDS.has_complete("plugin:probe", ART) is False
