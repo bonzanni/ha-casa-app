@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.329.0] - 2026-09-27
+
+### Added
+
+- Uninstalling a plugin that can erase its own data — or a specialist that
+  bundles one, like the finance specialist's bank feed — now asks you first, in a
+  DM: Keep data, Erase data or Cancel. Keep data uninstalls as before. Erase data
+  runs the plugin's own eraser before anything is removed, and passes on what it
+  reports word for word. The uninstall goes ahead only when the plugin says the
+  erasure is complete; otherwise nothing is removed and you choose whether to
+  try again later or uninstall anyway. Home Assistant backups taken earlier
+  still contain the data. Plugin authors declare the eraser as `casa.eraseTool`.
+
 ## [0.328.6] - 2026-09-26
 
 ### Fixed
