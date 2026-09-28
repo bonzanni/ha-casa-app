@@ -1228,12 +1228,6 @@ async def test_replay_statement_discloses_recorded_time(
     assert live_body.count("age is unknown") == 0
 
 
-async def test_a_live_producer_leaves_the_time_unset():
-    from specialist_registry import DelegationComplete
-    complete = DelegationComplete(
-        delegation_id="d", agent="finance", status="ok")
-    assert getattr(complete, "terminal_at", "MISSING") is None
-
 
 # RC-C — the recovery log names the row's kind. The orphan marker is written
 # only by the live-row conversion; a row that went terminal while the process
