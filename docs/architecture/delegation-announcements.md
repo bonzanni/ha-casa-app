@@ -64,7 +64,11 @@ scope — a caption-less media send opens one too, and a synchronous delegate's 
 list — which only the sender's own positive evidence confirms: `DELIVERED` from the channel, a
 media send that returned, a keyboard post that returned a message id. A send that failed or
 whose outcome is unknown keeps the notice owed, so a turn that sent the news, saw it fail and
-then fell silent is announced again. A replayed orphan notice discharges the same way: a
+then fell silent is announced again. The decision is taken once, from what the record holds
+when the silent turn ends: a delegate launched synchronously counts even if its wait timed out
+and it went on as pending, up to that moment; an async delegate never counts, because its
+result is told by its own announcement; and nothing added or confirmed later revises the
+decision. A replayed orphan notice discharges the same way: a
 resident that stays silent about a job it lost track of leaves that loss untold, which is the
 cost of not replaying the notice forever.
 
