@@ -19,16 +19,25 @@ asked to rotate a secret on an already-installed plugin.
 - The operator asks to update an existing secret (1P field changed,
   vendor rotated the key, etc.).
 
-## First: is it a credential?
+## First: what is searched for
 
-The vault is searched only for a variable that holds a credential — a key, a
-token, a client id or secret, a password, an account email. A required
-variable the plugin documents as a plain setting — a vault name, a host, a
-region, an environment — is never mapped to a vault item: set it from the
-plugin's documentation with a literal `op_ref_or_value`, or ask the operator
-for it by what it means. When you cannot tell which it is, read the plugin's
-README or reference docs for that variable before searching; when they do not
-say, treat the variable as a credential and search for it.
+Search 1Password for every unresolved required variable not declared in
+`casa.setupProvides`, except a variable that configures how 1Password itself
+is used (which vault). `ONEPASSWORD_DEFAULT_VAULT` and
+`OP_SERVICE_ACCOUNT_TOKEN` come from app options, never from a vault item;
+the exception also covers a plugin's own vault-name variable. Any other value
+— a key, a token, but also a region, a host, an account or an email — can
+legitimately be stored in a 1Password item, alongside a secret or not, and is
+wired from an item that actually holds a field for it. A documented default
+does not bypass searching for a variable outside the 1Password-configuration
+exception.
+
+A variable whose name or documentation mentions a vault or 1Password counts
+as configuring 1Password unless the plugin's documentation says otherwise.
+When it is unclear whether a variable configures 1Password, never map it and
+ignore its candidate rows. The exploration below still searches for such a
+variable and lists what it found; set it only from the plugin's documentation
+or from the operator, as the last case below says for a non-secret variable.
 
 ## Discover the source — explore before asking
 
@@ -43,31 +52,50 @@ the field's id, its `role` (`client_id`, `client_secret`, `api_key`, `token`,
 `refresh_token`, `access_token`, `credential`, `username`, `password`, `email`,
 `hostname`, `url`, `account`, `region`, `other_known`, or null) and its type —
 never a label, a section or a value — and the variables still `unresolved`.
-Read it before anything else, and decide from it:
+Read it before anything else, and decide from it, one variable at a time. A
+candidate field for a variable is a field whose role matches it, or, when no
+found field's role matches it, a field with no role (null or `other_known`)
+on an item that could hold it. An item holding no candidate field for a
+variable is never put to the operator, even when its title matches. A
+`matched_query` says only that a search word is in the title, not that the
+item holds anything this plugin needs.
 
 - When exactly one item matches and every unresolved variable maps to exactly
   one field role, wire it (Set the entry below): the mapping is variable →
   role (`GMAIL_CLIENT_ID` → `client_id`, `GMAIL_USER_EMAIL` → `email`,
-  `ELEVENLABS_API_KEY` → `api_key`), the reference is
-  `op://<vault>/<item id>/<field id>`, one `set_plugin_env_reference` per
+  `ELEVENLABS_API_KEY` → `api_key`, `DEMO_REGION` → `region`), the reference
+  is `op://<vault>/<item id>/<field id>`, one `set_plugin_env_reference` per
   variable; then reload and verify, and name the item id and field roles you
-  used in your completion.
-- When several items match, or a variable has no field with a matching role
-  or two fields share the role, ask in the engagement topic, naming what you
-  found. Describe each item by its category and the roles of its fields —
-  what the operator can recognise — and never by its `matched_query`: two
+  used in your completion. Evaluate each variable separately: when an item
+  holds a clear field-role match for one variable, wire it even when another
+  variable has no candidate field.
+- When a variable's candidate fields do not settle it — several items each
+  hold a field with its role, one item holds two fields with its role, or its
+  only candidates are fields with no role — ask in the engagement topic,
+  naming what you found. Describe each item by its category and the roles of
+  its fields — what the operator can recognise — and never by its `matched_query`: two
   items with the same `matched_query` are two different items whose titles
   both contain that word, never two items with the same name ("two items
-  contain 'gmail': an API credential with a client id, a client secret and
-  an email, and a login with a username and a password — which one?"; "the
-  item has two fields I cannot place, ids f7 and f9 — which is
-  ELEVENLABS_API_KEY?"). Never ask the operator for a secret value; ask
-  which item or field it is.
-- When nothing matches (empty `items`), call `list_vault_items(query=...)`
-  once more with a different keyword if one is plausible (a product name from
-  the plugin's README, say); then report that vault, the queries tried, that
-  nothing matched, and which variables stay unwired. That report — not a
-  request for values — is your completion's job.
+  contain 'gmail', an API credential with a client id, a client secret and
+  an email, and a login with a username, a password and an email — which one
+  holds GMAIL_USER_EMAIL?"; "the item has two fields I cannot place, ids f7
+  and f9 — which is ELEVENLABS_API_KEY?"). Never ask the operator for a
+  secret value; ask which item or field it is.
+- When no found item holds a candidate field for a variable (empty `items`,
+  or only items without one), call `list_vault_items(query=...)` once more
+  with a different keyword if one is plausible (a product name from the
+  plugin's README, say). If nothing found holds a variable, use the plugin's
+  documentation or ask the operator for its value only for a non-secret
+  variable; report a secret unwired. A non-secret variable — a region, a
+  host, an environment, a plugin's vault name — is set from the plugin's
+  documentation with a literal `op_ref_or_value`, and when the documentation
+  gives no value, you ask for it in the engagement topic by what it means. A
+  secret — a key, a token, a password, a client secret — stays unwired: report
+  that vault, the queries tried, that nothing held it, and which variables
+  stay unwired. That report — not a request for values — is your
+  completion's job. If nothing found holds a variable and you cannot tell
+  whether it is a secret, treat it as a secret, never ask the operator for
+  its value, and report it unwired.
 - When the vault could not be read (`secret_candidates.error` is `op_failed`,
   `op_timeout` or `op_unreadable`), that is NOT "nothing matched": try
   `list_vault_items` once by hand; if it fails the same way, report that vault
@@ -78,7 +106,8 @@ The default vault is named in your world state (`Default vault:`); omit
 operator already gave a 1Password reference (`op://<vault>/<item id>/<field id>`;
 an operator may type names instead of ids, and the resolver accepts them,
 but you pass it through unchanged and never repeat it), skip to Set the
-entry below. For a manual search:
+entry below. An operator-supplied 1Password reference may skip discovery only
+for a variable that does not configure 1Password. For a manual search:
 
     list_vault_items(query="<vendor-or-plugin-keyword>")
     # → { items: [ { matched_query, id, category }, ... ] }   # the search term, never the title

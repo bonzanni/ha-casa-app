@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.332.3] - 2026-09-28
+
+### Fixed
+
+- When the configurator sets up a plugin, it now uses a value stored in your
+  1Password vault for any setting the plugin needs, such as a region, a host,
+  an account or an email, and no longer only for credentials. The only
+  exception is the setting that tells Casa which vault to use, which is never
+  taken from a vault item. If no item in your vault holds a value for a
+  setting, the configurator takes a non-secret value from the plugin's
+  documentation or asks you for it, and still never asks you for a secret
+  value. It no longer asks you to pick an item that only matched by name but
+  has no field for the setting. The vault search Casa runs when you install a
+  plugin has not changed.
+
 ## [0.332.2] - 2026-09-28
 
 ### Fixed

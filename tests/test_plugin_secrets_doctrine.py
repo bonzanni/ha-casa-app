@@ -71,11 +71,11 @@ def test_secrets_recipe_names_the_world_state_as_the_vault_source():
 
 def test_add_recipe_makes_wiring_a_required_stage():
     text = _read(_ADD)
-    # #1020: the vault-search account is owed for a CREDENTIAL; a plain setting
-    # is set from the plugin's documentation, never searched for.
-    assert ("A completion that leaves a required credential unwired without saying "
+    # #1077: the vault-search account is owed for every required variable (the
+    # #1020 credential-only scope is gone with the split).
+    assert ("A completion that leaves a required variable unwired without saying "
             "which vault was searched, for what, and what was found is a doctrine "
-            "violation") in text
+            "violation.") in text
     assert "secret_candidates" in text
 
 
@@ -160,29 +160,6 @@ def test_secrets_recipe_names_matched_query_and_asks_by_what_the_operator_recogn
     assert "ids abc123 and def456 — which one?" not in text
 
 
-def test_secrets_recipe_searches_the_vault_only_for_a_credential():
-    """#1020: a plain setting is set from the plugin's documentation or asked
-    by what it means, never mapped to a vault item."""
-    text = _read(_SECRETS)
-    assert "The vault is searched only for a variable that holds a credential" in text
-    assert ("A required variable the plugin documents as a plain setting — a vault "
-            "name, a host, a region, an environment — is never mapped to a vault item") in text
-    install = _read(_SPEC_INSTALL)
-    assert "search only for a credential" in install
-    # diff r1 (Astra S1): the install flow may ask a plain setting by meaning;
-    # the item-or-field-only rule is scoped to credentials.
-    assert "ask the operator for it by what it means" in install
-    assert "ask the operator only for an item or field name you could not settle" not in install
-    assert ("For a credential, the default vault is named in your world state, so "
-            "search it") in install
-    # diff r1 (Astra Q4): an undocumented variable is searched as a credential.
-    assert ("when they do not say, treat the variable as a credential and search "
-            "for it") in text
-    add = _read(_ADD)
-    assert "leaves a required credential unwired without saying which vault was searched" in add
-    assert "a required plain setting is set from the plugin's documentation" in add
-
-
 def test_a_setup_provided_value_is_the_configurators_to_wire():
     """#1021: nothing wires a casa.setupProvides value on its own; the setup
     tool reports it and the configurator wires it."""
@@ -205,29 +182,30 @@ _DEVDOC = (_DEFAULTS / "agents/executors/plugin-developer/doctrine/casa-conventi
 _USER_DOCS = _ROOT / "casa/DOCS.md"
 
 
-def test_the_user_docs_split_credentials_from_plain_settings():
+def test_the_user_docs_describe_the_secret_wiring_rule():
     """#1020 (diff round 4, Terra S1): the shipped user documentation is the
     fourth surface that described every required variable as a 1Password
-    reference the operator is asked for."""
+    reference the operator is asked for. #1077 replaced its credential/plain-
+    setting split with the single exception (pinned above)."""
     text = _read(_USER_DOCS)
     assert "asks for a 1Password reference (`op://…`) for each" not in text
-    assert "A **credential** is searched for in your default vault" in text
-    assert ("A **plain setting** — a vault name, a host, a region — is taken from the "
-            "plugin's documentation") in text
-    assert "is never mapped to a vault item" in text
+    assert "A vault name is never mapped to a vault item." in text
+    assert "never about an item that merely matched by title" in text
     assert "the setup run reports what to wire and the configurator wires it" in text
 
 
-def test_the_plugin_developer_doctrine_splits_credentials_from_plain_settings():
+def test_the_plugin_developer_doctrine_describes_the_secret_wiring_rule():
     """#1020 (diff round 3, Terra S1): the plugin author's own shipped guidance
     is a third surface that described every required variable as a 1Password
-    reference the user is asked for."""
+    reference the user is asked for. #1077 replaced its credential/plain-
+    setting split with the single exception (pinned above)."""
     text = _read(_DEVDOC)
     assert "the configurator asks the user for a 1P reference" not in text
-    assert "a CREDENTIAL is searched for in the default 1Password vault" in text
-    assert ("A PLAIN SETTING (a vault name, a host, a region) is set from your plugin's "
-            "documentation") in text
-    assert "it is never mapped to a vault item" in text
+    assert "A vault name is never mapped to a vault item" in text
+    assert ("a variable whose name or documentation mentions a vault or 1Password "
+            "counts as one unless your documentation says otherwise") in text
+    assert ("So document each variable: whether it is a secret, and the default of "
+            "each one that is not.") in text
     # #1021 on the same surface: a setup-provided value has a writer.
     assert "nothing fills it in by itself" in text
     assert "the configurator wires it" in text
@@ -265,3 +243,155 @@ def test_secrets_recipe_never_speaks_of_labels():
     assert "id-or-title" not in text
     assert "op://Casa/" not in text
     assert "op://<vault>/<item id>/<field id>" in text
+
+
+# --- #1077: one 1Password exception replaces the credential/plain-setting split ---
+#
+# The operator ruled (#1077) that the v0.320.0 split (#1020) generalised past its
+# incident: every unresolved required variable is searched for, except one that
+# configures how 1Password itself is used (which vault). Every surface that carried
+# the split changes together, so each old sentence is pinned absent by its exact
+# text and the replacement is pinned present, sentence by sentence.
+
+_CORPUS_EXPLORATION = _ROOT / "docs/architecture/plugin-secret-exploration.md"
+
+_SPLIT_SURFACES = {
+    "secrets": _SECRETS,
+    "add": _ADD,
+    "specialist-install": _SPEC_INSTALL,
+    "developer-conventions": _DEVDOC,
+    "user-docs": _USER_DOCS,
+    "corpus": _CORPUS_EXPLORATION,
+}
+
+_OLD_SPLIT_SENTENCES = [
+    ("secrets", "The vault is searched only for a variable that holds a credential — a key, "
+     "a token, a client id or secret, a password, an account email."),
+    ("secrets", "A required variable the plugin documents as a plain setting — a vault name, "
+     "a host, a region, an environment — is never mapped to a vault item: set it from the "
+     "plugin's documentation with a literal `op_ref_or_value`, or ask the operator for it "
+     "by what it means."),
+    ("secrets", "When you cannot tell which it is, read the plugin's README or reference docs "
+     "for that variable before searching; when they do not say, treat the variable as a "
+     "credential and search for it."),
+    ("add", "A completion that leaves a required credential unwired without saying which "
+     "vault was searched, for what, and what was found is a doctrine violation; a required "
+     "plain setting is set from the plugin's documentation, or asked of the operator by "
+     "what it means, and never searched for."),
+    ("specialist-install", "For each bundled plugin the inspection listed with a non-empty "
+     "`env_names` (mirrored as `required_env_vars` in the commit result, keyed by the SCOPED "
+     "registry name `<slug>.<plugin>` — use that exact key as the plugin identifier below), "
+     "run the `recipes/plugin/secrets.md` flow now — explore, then wire, then ask — and "
+     "search only for a credential; a variable the plugin documents as a plain setting (a "
+     "vault name, a host) is set from its documentation, never mapped to an item, and when "
+     "its documentation gives no value, ask the operator for it by what it means."),
+    ("developer-conventions", "What it does with one depends on what the variable holds: a "
+     "CREDENTIAL is searched for in the default 1Password vault and wired as a reference, "
+     "and the user is asked only which item or field it is when the search cannot settle "
+     "it — never for the value."),
+    ("developer-conventions", "A PLAIN SETTING (a vault name, a host, a region) is set from "
+     "your plugin's documentation, or the user is asked for it by what it means; it is "
+     "never mapped to a vault item, so document each such variable and its default."),
+    ("user-docs", "A **credential** is searched for in your default vault and wired as a "
+     "1Password reference (`op://…`); you are asked only which item or field it is when "
+     "the search cannot settle it, never for the value itself."),
+    ("user-docs", "A **plain setting** — a vault name, a host, a region — is taken from the "
+     "plugin's documentation, or you are asked for it by what it means, and is never "
+     "mapped to a vault item."),
+    ("corpus", "**What the recipe does with the result** (`recipes/plugin/secrets.md`): the "
+     "vault is searched only for a variable that holds a credential — a variable the "
+     "plugin documents as a plain setting, a vault name or a host, is set from the "
+     "plugin's documentation or asked by what it means, never mapped to an item."),
+]
+
+
+@pytest.mark.parametrize("surface,sentence", _OLD_SPLIT_SENTENCES,
+                         ids=[f"{s}-{i}" for i, (s, _) in enumerate(_OLD_SPLIT_SENTENCES)])
+def test_old_plugin_variable_split_is_absent(surface, sentence):
+    assert sentence not in _read(_SPLIT_SURFACES[surface]), sentence
+
+
+_SINGLE_EXCEPTION = ("Search 1Password for every unresolved required variable not declared "
+                     "in `casa.setupProvides`, except a variable that configures how "
+                     "1Password itself is used (which vault).")
+
+
+@pytest.mark.parametrize("surface", sorted(_SPLIT_SURFACES))
+def test_each_surface_states_the_single_exception(surface):
+    assert _SINGLE_EXCEPTION in _read(_SPLIT_SURFACES[surface]), surface
+
+
+_CANDIDATE_FIELD = ("A candidate field for a variable is a field whose role matches it, or, "
+                    "when no found field's role matches it, a field with no role (null or "
+                    "`other_known`) on an item that could hold it.")
+_NO_FIELDLESS_ITEM_QUESTION = ("An item holding no candidate field for a variable is never "
+                               "put to the operator, even when its title matches.")
+_NON_SECRET_FALLBACK = ("If nothing found holds a variable, use the plugin's documentation or "
+                        "ask the operator for its value only for a non-secret variable; "
+                        "report a secret unwired.")
+_CANNOT_TELL_DEFAULT = ("If nothing found holds a variable and you cannot tell whether it is "
+                        "a secret, treat it as a secret, never ask the operator for its "
+                        "value, and report it unwired.")
+
+_SECRETS_DECISION = [
+    ("`ONEPASSWORD_DEFAULT_VAULT` and `OP_SERVICE_ACCOUNT_TOKEN` come from app options, never "
+     "from a vault item; the exception also covers a plugin's own vault-name variable."),
+    ("A variable whose name or documentation mentions a vault or 1Password counts as "
+     "configuring 1Password unless the plugin's documentation says otherwise."),
+    ("When it is unclear whether a variable configures 1Password, never map it and ignore "
+     "its candidate rows."),
+    _CANDIDATE_FIELD,
+    _NO_FIELDLESS_ITEM_QUESTION,
+    ("Evaluate each variable separately: when an item holds a clear field-role match for "
+     "one variable, wire it even when another variable has no candidate field."),
+    _CANNOT_TELL_DEFAULT,
+    _NON_SECRET_FALLBACK,
+    ("A documented default does not bypass searching for a variable outside the "
+     "1Password-configuration exception."),
+    ("An operator-supplied 1Password reference may skip discovery only for a variable that "
+     "does not configure 1Password."),
+]
+
+
+@pytest.mark.parametrize("sentence", _SECRETS_DECISION)
+def test_secrets_recipe_pins_the_variable_decision(sentence):
+    assert sentence in _read(_SECRETS), sentence
+
+
+def test_the_cannot_tell_default_is_reworded_not_carried_over():
+    assert "treat the variable as a credential" not in _CANNOT_TELL_DEFAULT
+    assert "treat the variable as a credential" not in _read(_SECRETS)
+
+
+def test_missing_field_does_not_force_an_item_question():
+    assert "or a variable has no field with a matching role" not in _read(_SECRETS)
+
+
+@pytest.mark.parametrize("sentence", [_CANDIDATE_FIELD, _NO_FIELDLESS_ITEM_QUESTION])
+def test_corpus_defines_candidate_fields(sentence):
+    assert sentence in _read(_CORPUS_EXPLORATION), sentence
+
+
+@pytest.mark.parametrize("surface", ["developer-conventions", "user-docs"])
+def test_human_surfaces_qualify_value_requests(surface):
+    assert _NON_SECRET_FALLBACK in _read(_SPLIT_SURFACES[surface]), surface
+
+
+# --- #1077 regression: no configurator recipe offers an unqualified value ask ---
+
+_RECIPE_SURFACES = [_SECRETS, _ADD, _UPDATE, _SPEC_INSTALL]
+
+
+@pytest.mark.parametrize("path", _RECIPE_SURFACES, ids=lambda p: p.name)
+def test_no_recipe_sentence_asks_for_a_value_without_the_secret_qualifier(path):
+    """The ruling's fallback asks for a value; only a non-secret one may be
+    asked for. Any recipe sentence that asks and names a value must say
+    "non-secret" or be a prohibition — whatever verb form the ask takes."""
+    sentences = re.split(r"(?<=[.!?])\s+", _read(path))
+    violations = [
+        sentence for sentence in sentences
+        if re.search(r"\bask\w*\b", sentence, re.I)
+        and re.search(r"\bvalues?\b", sentence, re.I)
+        and not re.search(r"non-secret|\bnever\b|\bnot\b", sentence, re.I)
+    ]
+    assert len(violations) == 0, violations

@@ -928,15 +928,21 @@ these tools:
 ### Secrets
 
 A plugin declares required environment variables via `${VAR}` references in its
-`.mcp.json`, and the configurator writes them to `plugin-env.conf`. What it does
-with one depends on what the variable holds. A **credential** is searched for in
-your default vault and wired as a 1Password reference (`op://…`); you are asked
-only which item or field it is when the search cannot settle it, never for the
-value itself. A **plain setting** — a vault name, a host, a region — is taken
-from the plugin's documentation, or you are asked for it by what it means, and
-is never mapped to a vault item. A value the plugin's own setup tool creates
-(`casa.setupProvides`) is neither: the setup run reports what to wire and the
-configurator wires it. Secret values never appear in transcripts.
+`.mcp.json`, and the configurator writes them to `plugin-env.conf`. It follows
+one rule: "Search 1Password for every unresolved required variable not
+declared in `casa.setupProvides`, except a variable that configures how
+1Password itself is used (which vault)." A vault name is never mapped to a
+vault item. Any other value — an API key, but also a region, a host, an
+account or an email — is wired as a 1Password reference (`op://…`) when an
+item the search found actually holds a field for it; you are asked which item
+or field it is only when a found item holds a field the search cannot settle,
+never about an item that merely matched by title. When nothing found holds a
+variable, the rule is: "If nothing found holds a variable, use the plugin's
+documentation or ask the operator for its value only for a non-secret
+variable; report a secret unwired." A value the plugin's own setup tool
+creates (`casa.setupProvides`) is not searched for: the setup run reports what
+to wire and the configurator wires it. Secret values never appear in
+transcripts.
 
 ### Protected plugin tools (v0.76.0)
 
