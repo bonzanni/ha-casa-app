@@ -15539,8 +15539,9 @@ async def specialist_rollback(args: dict) -> dict:
     "specialist_uninstall",
     "Remove an installed specialist entirely (its binding, config, and legacy operational files). "
     "Does not affect a hand-authored (non-installed) specialist of the same name. When a bundled "
-    "plugin declares an eraser the operator is asked first (Keep data / Erase data / Cancel): "
-    "call without erase_data and wait for Casa to continue with their choice.",
+    "plugin declares an eraser the operator is asked first, in the DM, with the options Casa "
+    "offers for this uninstall: call without erase_data and wait for Casa to continue with "
+    "their choice.",
     {"type": "object", "properties": {
         "slug": {"type": "string"}, "erase_data": {"type": "boolean"}},
      "required": ["slug"]},
@@ -15557,6 +15558,17 @@ async def specialist_uninstall(args: dict) -> dict:
     not_cleared: list = []
 
     async def _txn() -> dict:
+        import plugin_erasure
+        held: list = []
+        try:
+            return await _txn_body(held)
+        finally:
+            # #1070: the transaction's own task — which a cancelled handler
+            # abandons but never cancels — settles the fence it held.
+            for token in held:
+                plugin_erasure.FENCE.settle(token)
+
+    async def _txn_body(held: list) -> dict:
         # #1046: the erase step runs inside the transaction, which owns the
         # mutation lock, on the bundle's erasing plugins as the registry holds
         # them under it — decision and uninstall see one state.
@@ -15564,7 +15576,7 @@ async def specialist_uninstall(args: dict) -> dict:
             tool="specialist_uninstall", arg="slug", name=slug,
             subject=f"specialist:{slug}", what=f"the specialist {slug}",
             specs=_erase_specs_for(_owned_entries_now(slug)),
-            erase=args.get("erase_data"))
+            erase=args.get("erase_data"), held=held)
         if gate is not None:
             return gate
         reports.extend(taken)
@@ -16226,7 +16238,7 @@ async def plugin_unassign(args: dict) -> dict:
 #
 # A plugin may declare the eraser (`casa.eraseTool`) that erases everything it
 # holds and revokes what it can at its providers. Uninstalling it asks ONE
-# Casa-owned question (plugin_erase_consent): Keep data / Erase data / Cancel.
+# Casa-owned question (plugin_erase_consent): Keep data / Erase everything / Cancel.
 # An Erase tap is the authorization; the eraser then runs in the background
 # (plugin_erasure) and its outcome continues the configurator engagement. The
 # plugin is removed only by a finishing call that finds a complete erasure for
@@ -16523,7 +16535,8 @@ _ERASE_UNAVAILABLE = {
 
 
 async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
-                      what: str, specs: list, erase) -> "tuple[dict | None, list]":
+                      what: str, specs: list, erase,
+                      held: "list | None" = None) -> "tuple[dict | None, list]":
     """The erase step in front of an uninstall. The caller holds the mutation
     lock the removal commits under, and computed *specs* from the registry
     under it, so what this decides is what the removal removes: no update can
@@ -16541,11 +16554,25 @@ async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
         questions.close(subject)
         return None, []
     if not specs:
-        return (dict(_ERASE_UNAVAILABLE), []) if erase is True else (None, [])
+        if erase is True:
+            # #1070: nothing can finish this question's erasure now.
+            plugin_erasure.FENCE.lift_completed(subject)
+            return dict(_ERASE_UNAVAILABLE), []
+        # An ordinary removal answers — and so closes — whatever question is
+        # open (#1070 diff r1: a complete erasure's fence must not survive
+        # into a reinstall).
+        questions.close(subject)
+        return None, []
     if erase is True:
         open_q = questions.current(subject)
         taken = _take_complete_erasures(specs, open_q) if open_q else None
         if taken is not None:
+            # #1070: the fence survives the close — the finishing call
+            # settles it, by this token, once the removal settled.
+            token = plugin_erasure.FENCE.hold(
+                [s.name for s in specs], subject, open_q)
+            if held is not None:
+                held.append(token)
             questions.close(subject, open_q)
             return None, taken
     channel = _channel_manager.get("telegram") if _channel_manager is not None else None
@@ -16607,6 +16634,10 @@ async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
                              question=question or "")
     choice = pec.CHOICES.consume_erase(key) if question is not None else None
     if choice is None:
+        # #1070: a complete erasure this call could not consume (the plugin
+        # changed under it) can no longer finish; an episode still running
+        # keeps its fence.
+        plugin_erasure.FENCE.lift_completed(subject)
         return {"ok": False, "kind": "erase_not_confirmed",
                 "detail": ("erase_data=true needs the operator's Erase tap on the "
                            "question Casa posts, for this exact version, and runs "
@@ -16616,12 +16647,28 @@ async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
     kind = (plugin_erasure.DATA_ONLY if choice == pec.ERASE_DATA_ONLY
             else plugin_erasure.EVERYTHING)
     if not all(s.offers(kind) for s in specs):
+        plugin_erasure.FENCE.lift_completed(subject)
         return dict(_ERASE_UNAVAILABLE), []
     projected = [s.for_kind(kind) for s in specs]
+    # #1070: from the dispatch until the uninstall removes them, or the
+    # erasure ends not complete, the erasing plugins' tools are refused on
+    # every turn but the episode's own eraser call.
+    fenced = [s.name for s in specs]
+    fence = plugin_erasure.FENCE
+    fence.raise_(fenced, subject, question)
 
     async def _run() -> None:
-        outcomes = await plugin_erasure.run_erase_episode(
-            projected, (chat_id, operator_id), question, subject, kind=kind)
+        complete = False
+        try:
+            outcomes = await plugin_erasure.run_erase_episode(
+                projected, (chat_id, operator_id), question, subject, kind=kind)
+            complete = bool(outcomes) and all(
+                o.verdict == "complete" for o in outcomes)
+            if complete:
+                fence.completed(fenced, question)
+        finally:
+            if not complete:
+                fence.lift(fenced, question)
         await _deliver_erasure_outcome(tool, name, outcomes, deliver)
     task = asyncio.get_running_loop().create_task(_run())
     _ERASE_TASKS.add(task)
@@ -16691,14 +16738,28 @@ def _erased_everything(reports: list) -> bool:
     "plugin's CLI-managed persistent data directory (CLAUDE_PLUGIN_DATA), which may hold stored "
     "authorizations such as OAuth tokens: that data survives and a reinstall re-attaches to it. "
     "Performs no provider-side revocation. A plugin that declares an eraser asks the operator "
-    "first (Keep data / Erase data / Cancel): call without erase_data and wait for Casa to "
-    "continue with their choice.",
+    "first, in the DM, with the options Casa offers for this uninstall: call without "
+    "erase_data and wait for Casa to continue with their choice.",
     {"type": "object", "properties": {
         "name": {"type": "string"},
         "erase_data": {"type": "boolean"}},
      "required": ["name"]},
 )
 async def plugin_remove(args: dict) -> dict:
+    import plugin_erasure
+    held: list = []
+    try:
+        return await _plugin_remove_erasing(args, held)
+    finally:
+        # #1070: the fence THIS call held settles once the removal did,
+        # whatever it returned — cancelled included: the commit is drained
+        # through cancellation, and a settled fence stays up while the
+        # committed registry lacks the plugin.
+        for token in held:
+            plugin_erasure.FENCE.settle(token)
+
+
+async def _plugin_remove_erasing(args: dict, held: list) -> dict:
     async with _PLUGIN_TOOLS_LOCK:
         # #1046: the erase step runs under the same lock as the removal, on the
         # registry as it stands under it — the decision and the removal see
@@ -16711,7 +16772,8 @@ async def plugin_remove(args: dict) -> dict:
             gate, reports = await _erase_gate(
                 tool="plugin_remove", arg="name", name=name,
                 subject=f"plugin:{name}", what=f"the plugin {name}",
-                specs=_erase_specs_for([entry]), erase=args.get("erase_data"))
+                specs=_erase_specs_for([entry]), erase=args.get("erase_data"),
+                held=held)
             if gate is not None:
                 return _result(gate)
         # #1067: after an Erase everything, the names to clear are computed

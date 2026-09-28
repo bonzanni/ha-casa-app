@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.332.1] - 2026-09-28
+
+### Fixed
+
+- While a plugin's data is being erased for an uninstall, no other
+  conversation, reminder or background job can use the plugin's tools any more.
+  Before, a call made in that window, for example a bank sync, could write new
+  data after the eraser had finished, and that data survived the uninstall you
+  chose to erase. The plugin becomes usable again if you keep it, cancel, or
+  the erasure does not complete.
+- The configurator no longer describes the uninstall question with outdated
+  button names; it now says Casa asks with the options that apply.
+
 ## [0.332.0] - 2026-09-28
 
 ### Changed
