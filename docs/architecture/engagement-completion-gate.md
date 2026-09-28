@@ -9,8 +9,9 @@ last_reviewed: 2026-08-23
 ## Scope
 
 The admission side of ending an engagement: what a *successful* completion is refused over,
-how "unread" and "in flight" differ and why the gate needs both, and what each driver counts.
-What a terminal outcome then discloses about the messages that died with the engagement is in
+how "unread" and "in flight" differ and why the gate needs both, and what each driver counts;
+and the reload a completed engagement owes for configuration it committed, which a plugin
+mutation's own persist commit does not owe. What a terminal outcome then discloses about the messages that died with the engagement is in
 [`architecture/engagement-inbound-disclosure.md`](engagement-inbound-disclosure.md). The terminal
 transition itself, the strictness that keeps the persisted and in-memory records agreeing, the
 finalization side effects behind the flip and topic output ordering are in
@@ -179,6 +180,27 @@ the terminal writer is already announcing, and settles the turn's admission tick
 — one bounded attempt to tell the operator their message was not delivered, then release, never
 a retry. Both halves of the invariant's last sentence are that one path.
 
+**INV-TOOL-011**: A `config_git_commit` that persists a successful plugin mutation arms no reload obligation when every path the commit changes is under `plugins/` — including while specialists are active and were re-materialized from unchanged inputs since the previous commit. The mutation's pre-activation credit is spent by the first non-empty commit after it, exempt or arming, so a later commit with no new activation arms.
+
+A completed engagement that committed configuration owes a reload before it finalizes. A
+non-empty `config_git_commit` arms that obligation for its engagement; a successful
+`casa_reload` or `casa_reload_triggers` drains it; and `emit_completion` with outcome
+`completed` finds it still armed and forces a `scope="full"` reload before finalizing, because
+models skip the reload the doctrine asks for. A plugin mutation tool reloads and verifies its
+own targets, and on full success credits the engagement, so the commit that merely persists
+the registry change it already activated is exempt — only when every changed path, read back
+from git, is under `plugins/`. A path read that fails yields no paths and arms. The credit is
+cleared when a new mutation starts and set again only if it succeeds, and the first non-empty
+commit spends it, so it can never exempt a later commit that no activation produced. An empty
+commit changes nothing and keeps it. The exemption is reachable at all because an unchanged
+re-materialization writes nothing (INV-SPEC-019, in
+[`architecture/specialist-lifecycle.md`](specialist-lifecycle.md)): without that, boot and
+every specialist-tier reload left specialist operational files in the next commit.
+
+What it does not cover: which scope drains the obligation — any successful reload does,
+whether or not it reloads what the commit changed. A commit that mixes plugin and other paths
+arms, even when the other paths are derived files that a changed input rewrote once.
+
 ## Failure behavior
 
 **Completion is refused for unread input.** The transition is vetoed, the record stays live,
@@ -223,6 +245,7 @@ scoped to what a driver can evidence, which is why the accessors are the seam.
 - `casa/rootfs/opt/casa/engagement_registry.py::TerminalPreconditionFailed`
 - `casa/rootfs/opt/casa/tools.py::_finalize_engagement`
 - `casa/rootfs/opt/casa/tools.py::emit_completion`
+- `casa/rootfs/opt/casa/tools.py::config_git_commit`
 - `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.inbound_unread_depth`
 - `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.inbound_in_flight_blocking`
 - `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.inbound_reservations`
@@ -241,6 +264,10 @@ scoped to what a driver can evidence, which is why the accessors are the seam.
 - `tests/test_c1_continuation_admission.py`
 - `tests/test_evicted_inbound_disclosure.py`
 - `tests/test_evicted_inbound_regressions.py`
+- `tests/test_plugin_persist_commit_real_repo.py`
+- `tests/test_plugin_persist_commit_regressions.py`
+- `tests/test_config_git_commit_tool.py`
+- `tests/test_emit_completion_defensive_reload.py`
 
 **Related**
 - [`architecture/engagement-inbound-disclosure.md`](../architecture/engagement-inbound-disclosure.md)
@@ -249,4 +276,6 @@ scoped to what a driver can evidence, which is why the accessors are the seam.
 - [`architecture/engagement-turn-admission.md`](../architecture/engagement-turn-admission.md)
 - [`architecture/telegram.md`](../architecture/telegram.md)
 - [`architecture/tools-interface.md`](../architecture/tools-interface.md)
+- [`architecture/plugin-mutation-tools.md`](../architecture/plugin-mutation-tools.md)
+- [`architecture/specialist-lifecycle.md`](../architecture/specialist-lifecycle.md)
 <!-- END SOURCEMAP -->
