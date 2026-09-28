@@ -16261,6 +16261,16 @@ _ERASED_DATA_ONLY_NOTE = (
     "(erase_report — relay it to the operator verbatim). Casa kept its "
     "plugin-env.conf references for the same reason. Home Assistant backups "
     "taken before now still contain the data; Casa did not delete them.")
+# #1073: appended to whichever note applies when an eraser that reported a
+# complete erasure named vault items it left because it cannot prove it
+# created them.
+_UNRECORDED_VAULT_ITEMS_NOTE = (
+    " The eraser left in place the vault items listed in "
+    "unrecorded_vault_items: nothing records the plugin creating them, so they "
+    "cannot be told apart from items the operator made. Tell the operator they "
+    "were left for deletion by hand (found=true: in the vault; found=null: the "
+    "vault could not be checked) — the plugin is not gone without a trace while "
+    "they remain.")
 
 
 def _erase_specs_for(entries: "list[dict]") -> "list":
@@ -16489,7 +16499,7 @@ _ERASE_TASKS: "set[asyncio.Task]" = set()
 
 def _take_complete_erasures(specs: list, question: str) -> "list | None":
     """Under the mutation lock, immediately before a removal: ``(plugin,
-    report, kind)`` of a complete erasure for EVERY erasing plugin at the
+    report, kind, unrecorded vault items)`` of a complete erasure for EVERY erasing plugin at the
     artifact the registry resolves now, run for the still-open *question*,
     consumed — or ``None`` (nothing consumed) when any is missing, or when no
     erasing plugin remains."""
@@ -16498,8 +16508,9 @@ def _take_complete_erasures(specs: list, question: str) -> "list | None":
     if not rows or not all(plugin_erasure.RECORDS.has_complete(*r) for r in rows):
         return None
     kinds = [plugin_erasure.RECORDS.complete_kind(*r) for r in rows]
-    return [(s.name, plugin_erasure.RECORDS.take_complete(*r), k)
-            for s, r, k in zip(specs, rows, kinds)]
+    taken = [plugin_erasure.RECORDS.take_complete(*r) for r in rows]
+    return [(s.name, report, k, unrecorded)
+            for s, (report, unrecorded), k in zip(specs, taken, kinds)]
 
 
 _ERASE_UNAVAILABLE = {
@@ -16518,8 +16529,8 @@ async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
     under it, so what this decides is what the removal removes: no update can
     land between the two. Returns ``(payload, reports)``: a payload is the
     refusal / pending result to return with nothing removed; ``None`` means
-    proceed, with *reports* ``[(plugin, report)]`` of the complete erasures it
-    consumed (empty when nothing was erased)."""
+    proceed, with *reports* ``[(plugin, report, kind, unrecorded)]`` of the
+    complete erasures it consumed (empty when nothing was erased)."""
     import plugin_erase_consent as pec
     import plugin_erasure
     import trigger_consent
@@ -16626,9 +16637,11 @@ def _apply_erasure_to_disclosure(payload: dict, reports: list,
                                  not_cleared: "list[str] | None" = None) -> None:
     """A removal that followed a complete erasure: the erased plugins are no
     longer 'data may remain'; their reports are relayed. *reports* are
-    ``(plugin, report, kind)``; after an Erase everything, *cleared* names the
-    plugin-env.conf references Casa cleared (#1067) and *not_cleared* those a
-    failed rewrite left behind."""
+    ``(plugin, report, kind, unrecorded vault items)``; after an Erase
+    everything, *cleared* names the plugin-env.conf references Casa cleared
+    (#1067) and *not_cleared* those a failed rewrite left behind. Vault items
+    an eraser left because it cannot prove it created them (#1073) are listed
+    and qualify the note, whichever kind ran."""
     if not reports:
         return
     erased = {r[0] for r in reports}
@@ -16643,6 +16656,11 @@ def _apply_erasure_to_disclosure(payload: dict, reports: list,
             note = _ERASED_EVERYTHING_UNCLEARED_NOTE
     else:
         note = _ERASED_DATA_ONLY_NOTE
+    unrecorded = [{"plugin": r[0], "title": title, "found": found}
+                  for r in reports if len(r) > 3 for title, found in r[3]]
+    if unrecorded:
+        payload["unrecorded_vault_items"] = unrecorded
+        note += _UNRECORDED_VAULT_ITEMS_NOTE
     if len(reports) == 1 and "slug" not in payload:
         payload["erase_report"] = reports[0][1]
     else:
@@ -16659,7 +16677,7 @@ def _apply_erasure_to_disclosure(payload: dict, reports: list,
 
 
 def _erased_everything(reports: list) -> bool:
-    """Whether the erasures in *reports* — ``(plugin, report, kind)``, all of
+    """Whether the erasures in *reports* — ``(plugin, report, kind, …)``, all of
     one question and so of one kind — ran the plugins' casa.eraseTool."""
     import plugin_erasure
     return bool(reports) and all(

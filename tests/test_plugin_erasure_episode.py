@@ -73,7 +73,22 @@ async def test_a_courier_turn_carries_the_stamps_and_a_complete_result_is_record
                    "plugin_erase_artifact": ART, "plugin_erase_subject": SUBJ,
                    "plugin_erase_question": Q}
     assert records.take_complete("plugin:finance.bank-feed", ART, "other-q") is None
-    assert records.take_complete("plugin:finance.bank-feed", ART, Q) == "gone"
+    assert records.take_complete("plugin:finance.bank-feed", ART, Q) == ("gone", ())
+
+
+@pytest.mark.asyncio
+async def test_the_vault_items_an_eraser_left_reach_its_record(fresh):
+    """#1073: the eraser's `unrecorded_vault_items` travel with its report."""
+    _watch, records, _grants = fresh
+    dispatch, _sent = _dispatcher(json.dumps({
+        "erasure": "complete", "report": "gone",
+        "unrecorded_vault_items": [{"title": "EnableBanking Key", "found": True},
+                                   {"title": "EnableBanking", "found": None}]}))
+    pe.configure(dispatch=dispatch)
+    [out] = await pe.run_erase_episode([_spec()], operator=OP, question=Q, subject=SUBJ)
+    items = (("EnableBanking Key", True), ("EnableBanking", None))
+    assert out.verdict == "complete" and out.unrecorded == items
+    assert records.take_complete("plugin:finance.bank-feed", ART, Q) == ("gone", items)
 
 
 @pytest.mark.asyncio

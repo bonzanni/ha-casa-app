@@ -28,6 +28,41 @@ ERASE_TURN = {**DM, "synthetic": "plugin_erase", "plugin_erase_target": "finance
               "plugin_erase_subject": "plugin:probe", "plugin_erase_question": QID}
 
 
+# --- parse_unrecorded_vault_items (#1073) ------------------------------------------
+
+def test_unrecorded_vault_items_are_read_as_title_and_found():
+    text = json.dumps({"erasure": "complete", "report": "r",
+                       "unrecorded_vault_items": [
+                           {"title": "EnableBanking Key", "found": True},
+                           {"title": "EnableBanking", "found": None}]})
+    assert pe.parse_unrecorded_vault_items(text) == (
+        ("EnableBanking Key", True), ("EnableBanking", None))
+    assert pe.parse_erase_result(text) == ("complete", "r")     # verdict unchanged
+
+
+@pytest.mark.parametrize("items", [
+    None, "EnableBanking", {"title": "x", "found": True},
+    [{"title": "absent", "found": False}], [{"title": "", "found": True}],
+    [{"title": 3, "found": True}], [{"title": "x", "found": "yes"}],
+    [{"title": "x"}], ["x"],
+])
+def test_a_missing_absent_or_malformed_item_is_not_listed(items):
+    body = {"erasure": "complete", "report": "r"}
+    if items is not None:
+        body["unrecorded_vault_items"] = items
+    assert pe.parse_unrecorded_vault_items(json.dumps(body)) == ()
+
+
+def test_unrecorded_vault_items_are_bounded():
+    many = [{"title": "t" * 500, "found": True}] * (pe.MAX_UNRECORDED_ITEMS + 5)
+    out = pe.parse_unrecorded_vault_items(json.dumps(
+        {"erasure": "complete", "report": "r", "unrecorded_vault_items": many}))
+    assert len(out) == pe.MAX_UNRECORDED_ITEMS
+    assert out[0] == ("t" * pe.MAX_TITLE_CHARS, True)
+    assert pe.parse_unrecorded_vault_items(None) == ()
+    assert pe.parse_unrecorded_vault_items("not json") == ()
+
+
 # --- parse_erase_result ------------------------------------------------------------
 
 def test_parse_complete_and_incomplete():
@@ -156,7 +191,7 @@ def test_records_take_complete_once_for_the_same_artifact():
     r.put("plugin:p", ARTIFACT, "complete", "gone", "q1")
     assert r.take_complete("plugin:p", OTHER_ARTIFACT, "q1") is None
     assert r.take_complete("plugin:p", ARTIFACT, "q2") is None     # other question
-    assert r.take_complete("plugin:p", ARTIFACT, "q1") == "gone"
+    assert r.take_complete("plugin:p", ARTIFACT, "q1") == ("gone", ())
     assert r.take_complete("plugin:p", ARTIFACT, "q1") is None
     r.put("plugin:p", ARTIFACT, "incomplete", "kept", "q1")
     assert r.take_complete("plugin:p", ARTIFACT, "q1") is None

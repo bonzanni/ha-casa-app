@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-27
+last_reviewed: 2026-09-28
 ---
 
 # Plugin data erasure at uninstall
@@ -49,7 +49,10 @@ verbatim and cut at 4000 characters with a ` [truncated]` marker. Anything else 
 another value, a missing key, a non-string report, a tool error — is not a complete
 erasure, and its raw text becomes the report. A plugin may also list its eraser in
 `casa.protectedTools`; the question then shows the plugin's own summary for it, and the
-operator's Erase tap is the approval of exactly the one call (below).
+operator's Erase tap is the approval of exactly the one call (below). An optional
+`unrecorded_vault_items`, a list of `{"title": str, "found": true|null}`, names vault items
+the eraser left because nothing records the plugin creating them (`null`: the vault could
+not be checked); it never changes the verdict.
 
 **A plugin may declare two erasers.** `casa.eraseTool` erases everything, sign-ins
 included. `casa.eraseDataOnlyTool` erases the data but keeps what a reinstall needs to
@@ -172,7 +175,9 @@ specialist — and replaces the survival disclosure for the erased plugins with 
 Home Assistant backups taken before still contain it. A specialist whose cascade also drops
 owned plugins without an eraser keeps the ordinary disclosure for those, naming only them,
 with the erased-plugins statement beside it as `erased_note`. `erasure_kind` says which
-eraser ran, and the note says what that kind kept.
+eraser ran, and the note says what that kind kept. When a complete erasure named
+unrecorded vault items, the result lists them as `unrecorded_vault_items` (plugin, title,
+found) and the note adds that they were left for deletion by hand.
 
 **After Erase everything, Casa clears the plugin's references.** Casa never touches
 1Password — deleting the vault items a plugin created is its eraser's job — but the
@@ -234,6 +239,12 @@ Enforced by `tools._env_names_to_clear` and `_clear_env_references`, both called
 mutation lock the removal holds, and by `plugin_env_conf._WRITE_LOCK`. What it does not
 cover: a name used only by a plugin that is not resolved at the call (a broken artifact),
 which counts as unused; and the vault items themselves.
+
+**INV-PLUG-041**: A finishing call whose complete erasures named unrecorded vault items lists each well-formed one (`found` exactly true or null, bounded) as `unrecorded_vault_items` with its plugin, and its note says they were left for deletion by hand, whichever eraser kind ran; a result that names none carries neither.
+
+Enforced by `plugin_erasure.parse_unrecorded_vault_items`, carried on the erasure record,
+and `tools._apply_erasure_to_disclosure`. What it does not cover: whether the items exist,
+which only the plugin checked.
 
 ## Failure behavior
 
