@@ -704,7 +704,8 @@ def make_path_scope_hook_v2(
                     f"writable prefixes {writable}"
                 )
         else:  # Read
-            if not _has_prefix(norm, readable):
+            if not (_has_prefix(norm, readable)
+                    or _is_own_tool_result(norm, input_data)):
                 return _deny(
                     f"path_scope: Read denied — {raw!r} outside "
                     f"readable prefixes {readable}"
@@ -712,6 +713,41 @@ def make_path_scope_hook_v2(
         return {}
 
     return _hook
+
+
+def _is_own_tool_result(norm: str, input_data: dict[str, Any]) -> bool:
+    """Is ``norm`` a file in the calling session's own ``tool-results/``?
+
+    #1082: Claude Code diverts an oversized tool result to
+    ``<claude home>/projects/<project>/<session>/tool-results/`` and tells the
+    model to Read it. The projects root comes from the ``transcript_path`` the
+    runtime reports on this very call (``<root>/<project>/<session>.jsonl``);
+    the session segment must be this session's own id — the ``session_id``
+    the runtime reports, or the transcript's stem. The project segment is left
+    free on purpose: a session resumed under another working directory writes
+    its results under that directory's project folder (review of #1082), and
+    re-deriving Claude Code's folder naming here would be a copy that drifts.
+    Nothing else in the private Claude home matches — not a transcript, not
+    another session's results, not the directory itself.
+    """
+    tp = input_data.get("transcript_path")
+    if not isinstance(tp, str) or not tp:
+        return False
+    tp = _normalize_path(tp)
+    if not tp.startswith("/") or not tp.endswith(".jsonl"):
+        return False
+    tp_parts = PurePosixPath(tp).parts
+    if len(tp_parts) < 3:
+        return False
+    root = tp_parts[:-2]
+    # A normalised segment is never empty, "." or "..", and never equals a
+    # non-string, so a malformed ``session_id`` simply matches nothing.
+    ids = (tp_parts[-1][: -len(".jsonl")], input_data.get("session_id"))
+    parts = PurePosixPath(norm).parts
+    return (len(parts) >= len(root) + 4
+            and parts[: len(root)] == root
+            and parts[len(root) + 1] in ids
+            and parts[len(root) + 2] == "tool-results")
 
 
 def _has_prefix(norm: str, prefixes: list[str]) -> bool:

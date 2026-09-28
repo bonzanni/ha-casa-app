@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.332.5] - 2026-09-28
+
+### Fixed
+
+- When a tool, such as a plugin's, returns a result too large to hand to the
+  assistant directly, Claude Code saves it to a file and tells the assistant to
+  read that file. Casa's file-access guard refused that read, so the result was
+  lost even though the tool had already run and made its changes. The
+  assistant, and every other agent, can now read the saved results of its own
+  current conversation, and nothing else in its private Claude folder.
+
 ## [0.332.4] - 2026-09-28
 
 ### Fixed

@@ -328,3 +328,114 @@ class TestHookNoopReturnsEmptyDict:
             None, {},
         )
         assert result == {}, f"expected empty dict, got {result!r}"
+
+
+class TestPathScopeToolResultsOverflow:
+    """#1082: an oversized tool result that Claude Code diverts to
+    ``<session>/tool-results/`` must stay readable by the session that
+    produced it — and by nothing else in the Claude home."""
+
+    HOME = "/data/claude/projects/-data-agents-assistant"
+    SID = "11111111-2222-3333-4444-555555555555"
+
+    def _read(self, path: str, **base) -> dict:
+        return {"tool_name": "Read", "tool_input": {"file_path": path},
+                **base}
+
+    def _hook(self):
+        from hooks import make_path_scope_hook_v2
+        return make_path_scope_hook_v2(
+            writable=["/data/agents/assistant"],
+            readable=["/data/agents/assistant"],
+        )
+
+    async def test_own_session_overflow_file_is_readable(self):
+        tp = f"{self.HOME}/{self.SID}.jsonl"
+        path = (f"{self.HOME}/{self.SID}/tool-results/"
+                "mcp-plugin_x_y-tool-1759000000000.txt")
+        assert await self._hook()(
+            self._read(path, transcript_path=tp), "tid", CTX) == {}
+
+    async def test_other_session_overflow_file_is_denied(self):
+        tp = f"{self.HOME}/{self.SID}.jsonl"
+        other = "99999999-2222-3333-4444-555555555555"
+        path = f"{self.HOME}/{other}/tool-results/r.txt"
+        result = await self._hook()(
+            self._read(path, transcript_path=tp), "tid", CTX)
+        assert _decision(result) == "deny"
+
+    async def test_the_transcript_and_the_session_dir_stay_denied(self):
+        tp = f"{self.HOME}/{self.SID}.jsonl"
+        for path in (tp, f"{self.HOME}/{self.SID}",
+                     f"{self.HOME}/{self.SID}/tool-results",
+                     f"{self.HOME}/{self.SID}/subagents/a.jsonl",
+                     f"{self.HOME}/{self.SID}/tool-results-x/r.txt",
+                     f"{self.HOME}/{self.SID}/tool-results/../x.jsonl"):
+            result = await self._hook()(
+                self._read(path, transcript_path=tp), "tid", CTX)
+            assert _decision(result) == "deny", path
+
+    async def test_no_grant_without_a_usable_transcript_path(self):
+        path = f"{self.HOME}/{self.SID}/tool-results/r.txt"
+        for base in ({}, {"transcript_path": ""},
+                     {"transcript_path": f"{self.HOME}/{self.SID}"},
+                     {"transcript_path": f"{self.SID}.jsonl"},
+                     {"transcript_path": "/.jsonl"},
+                     {"transcript_path": f"{self.HOME}/.jsonl"},
+                     {"transcript_path": None}):
+            result = await self._hook()(self._read(path, **base), "tid", CTX)
+            assert _decision(result) == "deny", base
+
+    async def test_writes_into_tool_results_stay_denied(self):
+        tp = f"{self.HOME}/{self.SID}.jsonl"
+        path = f"{self.HOME}/{self.SID}/tool-results/r.txt"
+        for tool in ("Write", "Edit"):
+            result = await self._hook()(
+                {"tool_name": tool, "tool_input": {"file_path": path},
+                 "transcript_path": tp}, "tid", CTX)
+            assert _decision(result) == "deny", tool
+
+    async def test_a_relative_transcript_grants_nothing(self):
+        # Kills the absolute-path check: a relative transcript and a relative
+        # target share every segment, so only that check refuses the pair.
+        rel = f"projects/-x/{self.SID}"
+        result = await self._hook()(
+            self._read(f"{rel}/tool-results/r.txt",
+                       transcript_path=f"{rel}.jsonl"), "tid", CTX)
+        assert _decision(result) == "deny"
+
+    async def test_resumed_under_another_project_folder_is_readable(self):
+        # Review of #1082: a session resumed under another working directory
+        # keeps reporting its old transcript, but Claude Code writes results
+        # under the new directory's project folder — same session id.
+        tp = f"{self.HOME}/{self.SID}.jsonl"
+        path = (f"/data/claude/projects/-config-agent-home-assistant/"
+                f"{self.SID}/tool-results/r.txt")
+        assert await self._hook()(
+            self._read(path, transcript_path=tp, session_id=self.SID),
+            "tid", CTX) == {}
+
+    async def test_the_reported_session_id_alone_is_enough(self):
+        new_sid = "aaaaaaaa-2222-3333-4444-555555555555"
+        tp = f"{self.HOME}/{self.SID}.jsonl"
+        path = f"{self.HOME}/{new_sid}/tool-results/r.txt"
+        assert await self._hook()(
+            self._read(path, transcript_path=tp, session_id=new_sid),
+            "tid", CTX) == {}
+
+    async def test_another_session_in_another_folder_is_denied(self):
+        tp = f"{self.HOME}/{self.SID}.jsonl"
+        other = "99999999-2222-3333-4444-555555555555"
+        for path in (f"/data/claude/projects/-elsewhere/{other}/tool-results/r.txt",
+                     f"/data/other/projects/-x/{self.SID}/tool-results/r.txt",
+                     f"/data/claude/{self.SID}/tool-results/r.txt"):
+            result = await self._hook()(
+                self._read(path, transcript_path=tp, session_id=self.SID),
+                "tid", CTX)
+            assert _decision(result) == "deny", path
+        for bad_sid in ("", ".", "..", "a/b", None, 7):
+            result = await self._hook()(
+                self._read(f"{self.HOME}/{bad_sid}/tool-results/r.txt",
+                           transcript_path=tp, session_id=bad_sid),
+                "tid", CTX)
+            assert _decision(result) == "deny", bad_sid
