@@ -1273,16 +1273,36 @@ class Agent:
                 plugin_health.forget_notice(self.config.role, health_notice)
             if delivered:
                 await self._ack_delivery(msg, error_kind)
-        elif channel is not None and hasattr(channel, "turn_finished"):
+        elif channel is not None:
             # L7 (v0.52.0): a turn that strips to empty / `<silent/>` never
             # calls send()/finalize_stream(), so give the channel a chance to
             # tear down per-turn state (e.g. the Telegram typing indicator).
             # hasattr-guarded so channels without the hook are unaffected;
             # teardown must never break the turn.
-            try:
-                await channel.turn_finished(msg.context)
-            except Exception:  # noqa: BLE001
-                logger.exception("channel.turn_finished failed")
+            if hasattr(channel, "turn_finished"):
+                try:
+                    await channel.turn_finished(msg.context)
+                except Exception:  # noqa: BLE001
+                    logger.exception("channel.turn_finished failed")
+            # #1079: a CLEAN CHOSEN SILENCE is the resident's complete answer
+            # to a durable announcement, so it discharges the obligation —
+            # after teardown, so a cancel there still retains. Clean means:
+            # the model emitted the sentinel (admission's fact — an empty text
+            # is not a choice); the turn did not fail (a narration turn has no
+            # `trusted_user_origin`, so #650 never turns a retry-tainted
+            # silence into an error here — the consumed retries are read
+            # directly, and a report without them retains); and every piece
+            # of model-authored content the turn committed to the operator
+            # was confirmed delivered.
+            if (
+                admitted is not None
+                and admitted.suppressed
+                and admitted.chosen_silence
+                and error_kind is None
+                and turn_report.get("retries") == []
+                and scope.operator_sends_delivered
+            ):
+                await self._ack_delivery(msg, error_kind)
 
         if not text and error_kind is None and msg.type != MessageType.REQUEST:
             return None
@@ -1317,7 +1337,10 @@ class Agent:
         later page raised) — the same seam #556 already uses, and for the same
         reason: a NORMAL return proves nothing, because every delivery method
         returns normally when the PTB app is absent, having made zero Bot API
-        calls.
+        calls — or (#1079) where the turn ended in a clean chosen silence: the
+        sentinel, no error, no consumed retry, and everything the turn
+        committed to the operator confirmed delivered. That silence is the
+        resident's answer to the announcement, not a lost one.
 
         Two refusals, both in the retain direction:
 

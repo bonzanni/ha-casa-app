@@ -26,12 +26,12 @@ from output_boundary import (
 
 try:
     from tests.test_chosen_silence_announcements import (
-        ROLE, _Counted, _Factory, _Hook, _TelegramStub, _handle, _live_notice,
+        _Counted, _Factory, _Hook, _TelegramStub, _handle, _live_notice,
         _make_agent, _mk_assistant,
     )
 except ImportError:  # pragma: no cover — run from inside tests/
     from test_chosen_silence_announcements import (
-        ROLE, _Counted, _Factory, _Hook, _TelegramStub, _handle, _live_notice,
+        _Counted, _Factory, _Hook, _TelegramStub, _handle, _live_notice,
         _make_agent, _mk_assistant,
     )
 

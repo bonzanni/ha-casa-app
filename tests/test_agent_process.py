@@ -3295,7 +3295,14 @@ class TestDeliveryAcknowledgedAnnouncements:
 
         assert acks == []
 
-    async def test_a_silent_turn_acknowledges_nothing(self, tmp_path):
+    async def test_a_silence_without_a_retry_report_acknowledges_nothing(
+        self, tmp_path,
+    ):
+        """#1079 made a CLEAN chosen silence a discharge — and "clean" is the
+        turn's own report that it consumed no retry. A turn whose `_process`
+        never wrote that report (this patched one) has not shown it is clean,
+        so the sentinel alone retains. The discharge itself is pinned through a
+        real scripted turn in tests/test_chosen_silence_announcements.py."""
         agent, stub = self._agent(tmp_path)
         acks: list = []
         msg = _msg("telegram", "123", "hi")

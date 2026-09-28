@@ -354,6 +354,11 @@ async def send_message(args: dict) -> dict:
         return _text_result(
             f"Error: the {channel} channel delivered nothing — the message "
             f"did NOT reach the operator.", is_error=True)
+    # #1079: only the channel's positive report confirms the commitment the
+    # admission recorded; UNKNOWN keeps today's tool result but leaves it
+    # unconfirmed, so a turn ending in silence after it stays owed.
+    if outcome is DeliveryOutcome.DELIVERED:
+        admitted.mark_delivered()
     # #1038 §6.5: the record the model builds on names the exact text Casa
     # added, so the transcript says what the operator saw.
     if admitted.annotations:
@@ -665,6 +670,14 @@ async def send_media(args: dict) -> dict:
             if len(caption) > _CAPTION_MAX:
                 head = str(caption)[:len(caption) - len(body)]
                 caption = caption.with_text(head + body[:max(_CAPTION_MAX - len(head), 0)])
+            _commitment = caption.send
+        else:
+            # #1079: a file the model chose is a commitment to the operator
+            # even with no text to admit — recorded the same way, on the
+            # scope this emission commits under.
+            _scope = _current_scope(origin)
+            _commitment = (_scope.open_send("media")
+                           if _scope is not None else None)
 
         # Containment stage 2 (Task 11): a uid-dropped claude_code engagement's
         # producer plugins can no longer write the SHARED outbox (it stays
@@ -716,6 +729,11 @@ async def send_media(args: dict) -> dict:
                     content = await asyncio.to_thread(outbox.capture, claim, kind)
                     payload = await _classify_send(
                         ch, content, kind, filename, origin, caption)
+                    # #1079: confirmed at the channel's normal return (its
+                    # failure contract is to raise) — before claim cleanup,
+                    # whose failure says nothing about what was delivered.
+                    if payload.get("status") == "ok" and _commitment is not None:
+                        _commitment.delivered = True
             except plugin_outbox.OutboxError as exc:
                 payload = {"status": "error", "kind_error": exc.kind,
                            "kind": kind, "message": str(exc)}
@@ -989,10 +1007,13 @@ async def _ask_user_scheduled(
         await store.put(record)
 
     async def _post():
-        return await channel.post_dm_keyboard(
+        mid = await channel.post_dm_keyboard(
             chat_id=chat_id, request_id=rid, text=body, options=list(options),
             short_labels=True,
         )
+        if isinstance(mid, int):        # the broker's own "posted" test
+            body.mark_delivered()       # #1079
+        return mid
 
     def _finish_factory(message_id: int):
         return scheduled_asks.make_finish_hook(
@@ -1173,10 +1194,13 @@ async def ask_user(args: dict) -> dict:
     )
 
     async def _post():
-        return await channel.post_dm_keyboard(
+        mid = await channel.post_dm_keyboard(
             chat_id=chat_id, request_id=rid, text=body, options=list(options),
             short_labels=True,
         )
+        if isinstance(mid, int):        # the broker's own "posted" test
+            body.mark_delivered()       # #1079
+        return mid
 
     def _finish_factory(message_id: int):
         async def _finish(outcome: dict) -> None:
