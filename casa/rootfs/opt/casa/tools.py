@@ -11721,7 +11721,8 @@ async def emit_completion(args: dict) -> dict:
         # An outstanding obligation means a non-empty config_git_commit in
         # this engagement that was NOT the plugins-only persist of a plugin
         # mutation already activated in process (#222, INV-TOOL-011), and no
-        # successful casa_reload / casa_reload_triggers has drained it since.
+        # successful casa_reload has drained it since (casa_reload_triggers
+        # does not drain it).
         # It may be any tracked change — agents/, policies/, bindings/,
         # schema/, specialist tuples, or a plugins/ edit no activation
         # produced. Specialist operational files re-materialised from

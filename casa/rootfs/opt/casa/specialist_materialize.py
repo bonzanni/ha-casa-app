@@ -376,7 +376,8 @@ def materialize_specialist_operational_files(
     # byte-identical content under a fresh name is a tracked change — and
     # every boot and specialist-tier reload re-materialises every active
     # slug. When what is ON DISK already equals what this call would write,
-    # write nothing. Rendered before any disk access, so a render failure
+    # write nothing. Rendered before any operational file is written (only the
+    # specialists directory above is created first), so a render failure
     # raises exactly as a write failure did (F5 unchanged); compared inside
     # this call, so under whatever lock the caller holds for the write.
     expected = _render_specialist_operational_files(slug=slug, role=role, persona=persona)
