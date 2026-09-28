@@ -349,6 +349,81 @@ async def test_a_specialist_clears_only_its_erased_plugins(sflow, conf, monkeypa
     assert out["env_references_cleared"] == ["PROBE_TOKEN"]
 
 
+# --- vault items an eraser left (#1073) ---------------------------------------------
+
+LEFT = (("EnableBanking Key", True), ("EnableBanking", None))
+
+
+@pytest.mark.asyncio
+async def test_an_everything_removal_names_the_vault_items_the_eraser_left(
+        flow, conf, reloads, monkeypatch):
+    monkeypatch.setattr(flow.tm, "_env_names_to_clear", lambda erased: ["PROBE_TOKEN"])
+    pe.RECORDS.put("plugin:probe", ART, "complete", "All gone but two items.",
+                   pe.QUESTIONS.open("plugin:probe"), pe.EVERYTHING, LEFT)
+    out = await _remove(flow.tm, erase_data=True)
+    assert out["ok"] is True and not _still_registered(flow)
+    assert out["erasure_kind"] == "everything"
+    assert out["unrecorded_vault_items"] == [
+        {"plugin": "probe", "title": "EnableBanking Key", "found": True},
+        {"plugin": "probe", "title": "EnableBanking", "found": None}]
+    note = out["plugin_data_note"]
+    assert note.startswith(flow.tm._ERASED_EVERYTHING_NOTE)
+    assert note.endswith(flow.tm._UNRECORDED_VAULT_ITEMS_NOTE)
+    assert "deletion by hand" in note
+
+
+@pytest.mark.asyncio
+async def test_an_eraser_that_left_nothing_keeps_the_plain_note(flow, conf, reloads,
+                                                                monkeypatch):
+    monkeypatch.setattr(flow.tm, "_env_names_to_clear", lambda erased: ["PROBE_TOKEN"])
+    pe.RECORDS.put("plugin:probe", ART, "complete", "All gone.",
+                   pe.QUESTIONS.open("plugin:probe"), pe.EVERYTHING)
+    out = await _remove(flow.tm, erase_data=True)
+    assert "unrecorded_vault_items" not in out
+    assert out["plugin_data_note"] == flow.tm._ERASED_EVERYTHING_NOTE
+
+
+@pytest.mark.asyncio
+async def test_a_data_only_removal_also_names_the_vault_items_left(flow, conf, reloads):
+    pe.RECORDS.put("plugin:probe", ART, "complete", "Ledger gone.",
+                   pe.QUESTIONS.open("plugin:probe"), pe.DATA_ONLY, LEFT[:1])
+    out = await _remove(flow.tm, erase_data=True)
+    assert out["unrecorded_vault_items"] == [
+        {"plugin": "probe", "title": "EnableBanking Key", "found": True}]
+    assert out["plugin_data_note"] == (flow.tm._ERASED_DATA_ONLY_NOTE
+                                       + flow.tm._UNRECORDED_VAULT_ITEMS_NOTE)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_clear_and_items_left_are_both_said(flow, conf, reloads,
+                                                           monkeypatch):
+    import plugin_env_conf
+
+    def boom(names):
+        raise PermissionError("read-only")
+    monkeypatch.setattr(plugin_env_conf, "remove_entries", boom)
+    monkeypatch.setattr(flow.tm, "_env_names_to_clear", lambda erased: ["PROBE_TOKEN"])
+    pe.RECORDS.put("plugin:probe", ART, "complete", "r",
+                   pe.QUESTIONS.open("plugin:probe"), pe.EVERYTHING, LEFT)
+    out = await _remove(flow.tm, erase_data=True)
+    assert out["env_references_not_cleared"] == ["PROBE_TOKEN"]
+    assert out["plugin_data_note"] == (flow.tm._ERASED_EVERYTHING_UNCLEARED_NOTE
+                                       + flow.tm._UNRECORDED_VAULT_ITEMS_NOTE)
+
+
+@pytest.mark.asyncio
+async def test_a_specialist_names_the_items_left_per_plugin(sflow, conf, monkeypatch):
+    monkeypatch.setattr(sflow.tm, "_env_names_to_clear", lambda erased: [])
+    pe.RECORDS.put("plugin:fin.bank", "1" * 64, "complete", "bank gone",
+                   pe.QUESTIONS.open("specialist:fin"), pe.EVERYTHING, LEFT[1:])
+    out = await _uninstall(sflow.tm, erase_data=True)
+    assert out["ok"] is True
+    assert out["unrecorded_vault_items"] == [
+        {"plugin": "fin.bank", "title": "EnableBanking", "found": None}]
+    note = out.get("plugin_data_note") or out["erased_note"]
+    assert note.endswith(sflow.tm._UNRECORDED_VAULT_ITEMS_NOTE)
+
+
 # --- the conf writer lock ------------------------------------------------------------
 
 def test_a_reference_set_during_a_clear_is_not_lost(conf, monkeypatch):

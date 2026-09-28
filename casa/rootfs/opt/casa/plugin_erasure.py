@@ -77,6 +77,36 @@ def parse_erase_result(text: str | None) -> tuple[Verdict, str]:
     return "unreadable", _bounded(text)
 
 
+# #1073: vault items an eraser left because nothing records the plugin
+# creating them, so they cannot be told from items the operator made. Each is
+# ``(title, found)``: ``True`` when the vault shows it, ``None`` when the vault
+# could not be checked. Bounded like the report, for the same reason.
+MAX_UNRECORDED_ITEMS = 50
+MAX_TITLE_CHARS = 200
+
+
+def parse_unrecorded_vault_items(text: str | None) -> tuple:
+    """The optional ``unrecorded_vault_items`` beside ``erasure`` and
+    ``report`` — a list of ``{"title": str, "found": true|null}`` — as
+    ``((title, found), ...)``. An entry of any other shape, or one the vault
+    says is absent (``found: false``), is left out; no key is ``()``."""
+    try:
+        parsed = json.loads(text) if text is not None else None
+    except ValueError:
+        return ()
+    items = parsed.get("unrecorded_vault_items") if isinstance(parsed, dict) else None
+    if not isinstance(items, list):
+        return ()
+    out = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        title, found = item.get("title"), item.get("found", False)
+        if isinstance(title, str) and title and (found is True or found is None):
+            out.append((title[:MAX_TITLE_CHARS], found))
+    return tuple(out[:MAX_UNRECORDED_ITEMS])
+
+
 class EraseWatch:
     """The erase results the episodes are waiting for, keyed by the exact
     ``(run id, full tool name)`` each run armed. A run id is unique to one
@@ -174,12 +204,15 @@ class ErasureRecords:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._rows: dict[tuple[str, str], tuple[Verdict, str, str, str]] = {}
+        self._rows: dict[tuple[str, str],
+                         tuple[Verdict, str, str, str, tuple]] = {}
 
     def put(self, subject: str, artifact_id: str, verdict: Verdict,
-            report: str, question: str, kind: Kind = EVERYTHING) -> None:
+            report: str, question: str, kind: Kind = EVERYTHING,
+            unrecorded: tuple = ()) -> None:
         with self._lock:
-            self._rows[(subject, artifact_id)] = (verdict, report, question, kind)
+            self._rows[(subject, artifact_id)] = (verdict, report, question, kind,
+                                                  unrecorded)
 
     def complete_kind(self, subject: str, artifact_id: str,
                       question: str) -> "Kind | None":
@@ -200,15 +233,16 @@ class ErasureRecords:
                     and row[2] == question)
 
     def take_complete(self, subject: str, artifact_id: str,
-                      question: str) -> str | None:
-        """The report of a complete erasure of *subject* at *artifact_id* for
-        *question*, consumed; ``None`` when there is none."""
+                      question: str) -> "tuple[str, tuple] | None":
+        """The report and the unrecorded vault items (#1073) of a complete
+        erasure of *subject* at *artifact_id* for *question*, consumed;
+        ``None`` when there is none."""
         with self._lock:
             row = self._rows.get((subject, artifact_id))
             if row is None or row[0] != "complete" or row[2] != question:
                 return None
             del self._rows[(subject, artifact_id)]
-            return row[1]
+            return row[1], row[4]
 
 
 WATCH = EraseWatch()
@@ -296,6 +330,7 @@ class ErasureOutcome:
     artifact_id: str
     verdict: Outcome
     report: str
+    unrecorded: tuple = ()
 
 
 _dispatch: "Callable[[str, str, dict], Awaitable[bool]] | None" = None
@@ -326,7 +361,8 @@ def _outcome(spec: EraseSpec, payload: dict | None) -> ErasureOutcome:
         return ErasureOutcome(spec.name, spec.artifact_id, "error",
                               _bounded(str(payload["error"])))
     verdict, report = parse_erase_result(payload.get("text"))
-    return ErasureOutcome(spec.name, spec.artifact_id, verdict, report)
+    return ErasureOutcome(spec.name, spec.artifact_id, verdict, report,
+                          parse_unrecorded_vault_items(payload.get("text")))
 
 
 async def _erase_one(spec: EraseSpec, operator: tuple[int, int],
@@ -380,7 +416,7 @@ async def run_erase_episode(specs: list[EraseSpec], operator: tuple[int, int],
         verdict = out.verdict if out.verdict in ("complete", "incomplete") \
             else "unreadable"
         RECORDS.put(f"plugin:{spec.name}", spec.artifact_id, verdict,
-                    out.report, question, kind)
+                    out.report, question, kind, out.unrecorded)
         outcomes.append(out)
         if out.verdict != "complete":
             break

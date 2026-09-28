@@ -1351,7 +1351,11 @@ you first in a DM, offering the choices the plugin supports:
 An erase runs the plugin's own eraser first, and the uninstall goes ahead only
 if the plugin reports the erasure complete. If it does not (a bank would not
 confirm withdrawing its consent, say), nothing is removed and you get the
-plugin's own report, so you can try again or uninstall anyway. Home Assistant
+plugin's own report, so you can try again or uninstall anyway. A plugin may
+also leave vault items it cannot prove it created — ones that could be yours,
+such as items from before it recorded what it creates. It does not delete
+them and does not hold up the uninstall for them; Casa names them when it
+reports the uninstall, so you can delete them by hand. Home Assistant
 backups taken earlier still contain the data either way.
 You can also swap which persona an installed specialist uses (its bundled
 default, or another installed persona) by asking Ellen to apply a

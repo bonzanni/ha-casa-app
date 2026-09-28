@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.332.0] - 2026-09-28
+
+### Changed
+
+- When a plugin's eraser finishes but leaves vault items it cannot prove it
+  created (they could be yours, so it never deletes them), the uninstall
+  result now names each one and says it was left for you to delete by hand.
+  Before, only the plugin's own report said so, and Casa's summary read as if
+  nothing was left. Plugin authors list them as `unrecorded_vault_items`
+  beside `erasure` and `report`.
+
 ## [0.331.0] - 2026-09-27
 
 ### Added
