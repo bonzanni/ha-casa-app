@@ -458,7 +458,10 @@ def _materialized_content_matches(
         if names != set(expected):
             return False
         for name, data in expected.items():
-            fd = os.open(content_dir / name, os.O_RDONLY | os.O_NOFOLLOW)
+            # NOFOLLOW: a symlinked file is refused, not read through;
+            # NONBLOCK: a FIFO planted here can never stall this call (and
+            # the MATERIALIZE_LOCK its caller holds) inside open().
+            fd = os.open(content_dir / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
             try:
                 if not stat.S_ISREG(os.fstat(fd).st_mode):
                     return False

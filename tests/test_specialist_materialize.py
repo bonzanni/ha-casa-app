@@ -668,3 +668,15 @@ def test_a_render_failure_touches_nothing(tmp_path: Path, monkeypatch) -> None:
     with pytest.raises(RuntimeError):
         _materialize_mtg(asd)
     assert _entry_identities(asd) == before
+
+
+def test_a_fifo_in_place_of_a_file_is_replaced_without_blocking(tmp_path: Path) -> None:
+    """A non-regular entry is never reused, and opening it can never block
+    the caller (which holds MATERIALIZE_LOCK)."""
+    asd = tmp_path / "asd"
+    _materialize_mtg(asd)
+    old = os.readlink(asd / "mtg")
+    (asd / old / "voice.yaml").unlink()
+    os.mkfifo(asd / old / "voice.yaml")
+    _materialize_mtg(asd)
+    _assert_replaced_with_expected(asd, old)
