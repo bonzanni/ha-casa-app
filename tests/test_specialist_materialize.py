@@ -441,3 +441,63 @@ def test_uninstall_with_cross_pointed_symlink_leaves_the_other_slugs_dir_intact(
     assert b_content.is_dir()  # B's live content survives
     assert (b_content / "runtime.yaml").is_file()
     _shutil.rmtree(agents_dir, ignore_errors=True)
+
+
+def _fixed_role_and_persona(archetype: str = "adjudicator"):
+    from role_slot import RoleSlot, ResolvedModel
+    from persona_pack import PersonaPack, PersonaManifest
+
+    role = RoleSlot(
+        role_id="specialist:mtg", kind="specialist", slot="mtg", mission="x",
+        resolved_model=ResolvedModel(source="fixed", effective="sonnet",
+                                      sdk_model="claude-sonnet-4-6", option=None),
+        normalized={"tools": {"allowed": ["Read"]}, "mcp_servers": ["mtg"]},
+        doctrine="Doctrine.\n", checksum="sha256:" + "1" * 64,
+    )
+    persona = PersonaPack(
+        persona_id="casa/judge", version="0.1.0", trait_schema_version=1,
+        identity={"display_name": "Judge", "pronouns": {
+            "subject": "they", "object": "them", "possessive_adjective": "their",
+            "possessive_pronoun": "theirs", "reflexive": "themself"}},
+        relationship_posture="established", archetype=archetype,
+        traits={"warmth": 2, "formality": 4, "candor": 5, "attunement": 3,
+                 "curiosity": 3, "levity": 1, "social_energy": 2, "optimism": 3},
+        quirks=(), markdown="# Core\n\nJudges rules.\n", examples=(),
+        manifest=PersonaManifest(files=(), checksum="sha256:" + "3" * 64),
+        checksum="sha256:" + "2" * 64,
+    )
+    return role, persona
+
+
+def _entry_identities(agents_specialists_dir: Path) -> dict:
+    """Every entry under the op-file root, with the identity a rewrite changes:
+    the link text for a symlink, (inode, mtime_ns) for a directory or file."""
+    out = {}
+    for dirpath, dirnames, filenames in os.walk(agents_specialists_dir):
+        for name in dirnames + filenames:
+            p = Path(dirpath) / name
+            st = os.lstat(p)
+            out[str(p.relative_to(agents_specialists_dir))] = (
+                os.readlink(p) if p.is_symlink() else (st.st_ino, st.st_mtime_ns))
+    return out
+
+
+def test_identical_materialization_preserves_target_without_mutation(tmp_path: Path) -> None:
+    """#1085, INV-SPEC-019: re-materialising from inputs whose rendered bytes
+    already sit under the slug's own contained target writes nothing — same
+    link, same content directory, same file inodes — so a boot or reload
+    reconcile leaves no tracked-path churn in the config repo."""
+    agents_specialists_dir = tmp_path / "agents-specialists"
+    role, persona = _fixed_role_and_persona()
+    kwargs = dict(agents_specialists_dir=agents_specialists_dir, slug="mtg", role=role,
+                  persona=persona, binding_digest="sha256:" + "d" * 64,
+                  component_root="specialist:acme/mtg@1.0.0:sha256:" + "e" * 64)
+    materialize_specialist_operational_files(**kwargs)
+    first = _entry_identities(agents_specialists_dir)
+    content_dirs = [k for k in first if k.startswith(".mtg.material-") and "/" not in k]
+    assert len(content_dirs) == 1
+    assert sum(k.startswith(content_dirs[0] + "/") for k in first) == 5
+
+    materialize_specialist_operational_files(**kwargs)
+    second = _entry_identities(agents_specialists_dir)
+    assert (len(second), sum(second[k] != first.get(k) for k in second)) == (len(first), 0)
