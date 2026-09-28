@@ -449,6 +449,7 @@ class PluginContract:
     artifact_id: str
     adopted: bool
     setup_tools: frozenset
+    name: str = ""          # the registry name, which the erase fence keys (#1070)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -518,7 +519,7 @@ def result_contract_map(resolution) -> ResultContractMap:
         adopted = contract is not None and bool(artifact_id)
         plugins[plugin_seg] = PluginContract(
             artifact_id=artifact_id, adopted=adopted,
-            setup_tools=frozenset(setup_names))
+            setup_tools=frozenset(setup_names), name=str(rp.name or ""))
         if not adopted:
             continue
         for name, entry in contract["tools"].items():

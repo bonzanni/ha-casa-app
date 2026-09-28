@@ -1,7 +1,7 @@
 """#1046: the uninstall question and the tool flow.
 
 Uninstalling a plugin (or a specialist bundling one) that declares an eraser
-asks ONE question, posted by Casa: Keep data / Erase data / Cancel. The tap is
+asks ONE question, posted by Casa: Keep data / Erase everything / Cancel. The tap is
 the authorization: ``erase_data=true`` runs only on a recorded Erase choice.
 The erase then runs in the background; the plugin is removed only by a
 finishing call that finds a complete erasure for the artifact the registry

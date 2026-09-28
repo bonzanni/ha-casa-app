@@ -95,7 +95,9 @@ operator's Erase tap named, and the result and failure
 hooks hand that eraser's outcome to the turn's own run — the result hook before the early
 return a `safe` tool takes, passing the result itself on unchanged. An eraser must be
 declared `safe`, so nothing here changes what the contract lets through; the rule is
-INV-PLUG-038, in [`plugin-erasure.md`](plugin-erasure.md).
+INV-PLUG-038, in [`plugin-erasure.md`](plugin-erasure.md). Until the uninstall settles, the
+same callback refuses the erasing plugin's tools, its setup tool included, on every other
+turn (INV-PLUG-042).
 
 ## Contracts & invariants
 
@@ -110,7 +112,8 @@ protected tool, then arming — because the SDK dispatches same-event matchers c
 and arming must follow the authorization decision, never race it.
 
 What it does not cover: executor sessions of either driver, and a plugin's setup
-tool declared absent or `safe`, which passes both hooks unchanged whoever calls it — the
+tool declared absent or `safe`, which passes both hooks unchanged whoever calls it, save
+while its plugin is being erased (INV-PLUG-042) — the
 manual re-run of a setup tool is a documented flow. A setup tool the plugin declares as a
 capability delivering its link is not exempt: it takes the capability path through both
 hooks (INV-PLUG-025), which is what lets a sign-in link produced at setup reach the

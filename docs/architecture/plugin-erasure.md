@@ -246,6 +246,11 @@ Enforced by `plugin_erasure.parse_unrecorded_vault_items`, carried on the erasur
 and `tools._apply_erasure_to_disclosure`. What it does not cover: whether the items exist,
 which only the plugin checked.
 
+**INV-PLUG-042**: From an erase episode's dispatch, any turn's call of an erasing plugin's tools but its own eraser call is refused before it runs until the episode ends incomplete, its question stops being open, or an `erase_data=true` call can no longer finish its erasure; a finishing call's fence is settled only by that call (a specialist's by its transaction), then stays while the registry file lacks it.
+
+Enforced by `plugin_erasure.EraseFence` (by name) and the broker's admission hook. Not
+covered: a call admitted before it rose; executors (bundled only).
+
 ## Failure behavior
 
 **Nothing is removed on any arm but a complete one.** A pending question, a running
@@ -277,7 +282,7 @@ did, and the recipe removes them by hand.
 **The reload after clearing fails.** The lines stay deleted and the removal stands; the
 result carries `env_reload_ok: false`, and the recipe runs `casa_reload(scope="plugin_env")`.
 
-**A restart mid-erasure.** The watch, the question ids, the choices and the records are all in process
+**A restart mid-erasure.** The watch, the question ids, the choices, the records and the fence are all in process
 memory. A restart loses them, which leaves the plugin installed — the safe side — and the
 next uninstall asks again.
 
@@ -318,6 +323,7 @@ the question and reports its data as surviving when it was erased, or the revers
 - `tests/test_plugin_erasure_episode.py`
 - `tests/test_plugin_erase_flow.py`
 - `tests/test_plugin_erase_kinds.py`
+- `tests/test_plugin_erase_fence.py`
 
 **Related**
 - [`architecture/plugin-mutation-tools.md`](../architecture/plugin-mutation-tools.md)

@@ -497,6 +497,17 @@ _DENY_ERASE_BINDING = (
     "waiting for its result — nothing was erased")
 
 
+_DENY_ERASING = (
+    "not executed: this plugin's data is being erased for an uninstall the "
+    "operator chose, so its tools are refused until the uninstall finishes or "
+    "the erasure stops. Tell the operator; do not retry.")
+
+
+def _erasing(name: str) -> bool:
+    from plugin_erasure import FENCE
+    return FENCE.fenced(name)
+
+
 def _erase_turn() -> "tuple[str, str] | None":
     """``(tapped artifact, run id)`` on an erase-marked turn (#1046), else
     None."""
@@ -609,6 +620,13 @@ def make_plugin_admission_hook(
                 # run: a protected eraser is admitted here, never through a
                 # grant an ordinary turn could consume.
                 erase_admitted = True
+            # #1070: while a plugin's erasure runs for an uninstall — until the
+            # uninstall removes it, or the erasure ends not complete — every
+            # other call of its tools, on any turn, is refused (its setup tool
+            # included): a write in that window would outlive the erasure.
+            if (not erase_admitted and plugin is not None and plugin.name
+                    and _erasing(plugin.name)):
+                return _deny(_DENY_ERASING)
             # The exempt setup tool: declared absent or safe. A setup tool
             # declared as a CAPABILITY (#1015, it delivers its link) takes
             # the capability path like any other tool.

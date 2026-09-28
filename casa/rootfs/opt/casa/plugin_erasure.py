@@ -245,9 +245,121 @@ class ErasureRecords:
             return row[1], row[4]
 
 
+class EraseFence:
+    """The plugins whose tools every turn is refused while their erasure runs
+    (#1070), keyed by registry plugin name — any version of the plugin writes
+    to the same data. A row is stamped with the question its Erase tap
+    answered and moves ``running`` (the episode was dispatched) → ``complete``
+    (every eraser reported complete; the finishing uninstall is owed) →
+    ``held`` (a finishing uninstall consumed the erasure and is removing the
+    plugin) → ``removed`` (that uninstall settled, however it ended).
+
+    ``running`` and ``complete`` fence while their question is the open one,
+    so Keep, Cancel or a fresh question lift them with no call of their own.
+    ``held`` fences unconditionally, and only the finishing call that holds it
+    — by the token :meth:`hold` returned — settles it. ``removed`` fences while
+    the committed registry holds no entry of that name: a removal that did not
+    commit, or a reinstall, lifts it, and a removal whose runtime reload was
+    abandoned stays fenced for the sessions that still carry the plugin."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        # name -> (subject, question, phase, token)
+        self._rows: dict[str, tuple[str, str, str, str]] = {}
+
+    def raise_(self, names, subject: str, question: str) -> None:
+        with self._lock:
+            for name in names:
+                self._rows[name] = (subject, question, "running", "")
+
+    def completed(self, names, question: str) -> None:
+        with self._lock:
+            for name in names:
+                row = self._rows.get(name)
+                if row is not None and row[1] == question and row[2] == "running":
+                    self._rows[name] = (row[0], row[1], "complete", "")
+
+    def lift(self, names, question: str) -> None:
+        """An episode ended not complete: lift *names*' rows still stamped
+        with *question* and not yet held, so a late lift never touches a
+        newer episode's fence or a finishing call's."""
+        with self._lock:
+            for name in names:
+                row = self._rows.get(name)
+                if row is not None and row[1] == question and row[2] in (
+                        "running", "complete"):
+                    del self._rows[name]
+
+    def hold(self, names, subject: str, question: str) -> str:
+        """A finishing uninstall consumed *question*'s erasures of *names*:
+        fence them until it settles. Returns the token that settles them."""
+        import uuid
+        token = uuid.uuid4().hex
+        with self._lock:
+            for name in names:
+                self._rows[name] = (subject, question, "held", token)
+        return token
+
+    def settle(self, token: str) -> None:
+        """The finishing uninstall holding *token* settled — removed, refused,
+        raised or cancelled: its rows fence from now on only while the
+        committed registry lacks the plugin."""
+        if not token:
+            return
+        with self._lock:
+            for name, row in list(self._rows.items()):
+                if row[2] == "held" and row[3] == token:
+                    self._rows[name] = (row[0], row[1], "removed", token)
+
+    def lift_completed(self, subject: str) -> None:
+        """An ``erase_data=true`` call the gate refused without consuming: a
+        ``complete`` erasure of *subject* can no longer finish this question
+        (the plugin changed under it), so its fence lifts — and its question
+        closes, voiding the erasure records, so writes made once the fence is
+        down can never be removed as erased (diff r2); an episode still
+        ``running`` keeps its own fence and question."""
+        with self._lock:
+            lifted = {(r[0], r[1]) for r in self._rows.values()
+                      if r[0] == subject and r[2] == "complete"}
+            for name in [n for n, r in self._rows.items()
+                         if (r[0], r[1]) in lifted and r[2] == "complete"]:
+                del self._rows[name]
+        for subj, question in lifted:
+            QUESTIONS.close(subj, question)
+
+    def fenced(self, name: str) -> bool:
+        with self._lock:
+            row = self._rows.get(name)
+        if row is None:
+            return False
+        subject, question, phase, _token = row
+        if phase == "held":
+            return True
+        if phase == "removed":
+            if _registered(name):
+                with self._lock:            # reinstalled, or never removed
+                    if self._rows.get(name) == row:
+                        del self._rows[name]
+                return False
+            return True
+        return QUESTIONS.current(subject) == question
+
+
+def _registered(name: str) -> bool:
+    """Whether the committed registry file holds an entry named *name* (not
+    the in-memory snapshot, which a removal refreshes only in its reload). An
+    unreadable registry counts as holding none — the fence stays up."""
+    import plugin_registry
+    data = plugin_registry.load_registry()
+    return bool(data.valid) and any(
+        isinstance(e, dict) and e.get("name") == name
+        for e in (data.raw.get("plugins") or []))
+
+
 WATCH = EraseWatch()
 QUESTIONS = QuestionIds()
 RECORDS = ErasureRecords()
+FENCE = EraseFence()
 
 
 def erase_turn(origin: dict | None) -> "tuple[str, str] | None":
