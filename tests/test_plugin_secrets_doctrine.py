@@ -71,11 +71,11 @@ def test_secrets_recipe_names_the_world_state_as_the_vault_source():
 
 def test_add_recipe_makes_wiring_a_required_stage():
     text = _read(_ADD)
-    # #1020: the vault-search account is owed for a CREDENTIAL; a plain setting
-    # is set from the plugin's documentation, never searched for.
-    assert ("A completion that leaves a required credential unwired without saying "
+    # #1077: the vault-search account is owed for every required variable (the
+    # #1020 credential-only scope is gone with the split).
+    assert ("A completion that leaves a required variable unwired without saying "
             "which vault was searched, for what, and what was found is a doctrine "
-            "violation") in text
+            "violation.") in text
     assert "secret_candidates" in text
 
 
@@ -160,29 +160,6 @@ def test_secrets_recipe_names_matched_query_and_asks_by_what_the_operator_recogn
     assert "ids abc123 and def456 — which one?" not in text
 
 
-def test_secrets_recipe_searches_the_vault_only_for_a_credential():
-    """#1020: a plain setting is set from the plugin's documentation or asked
-    by what it means, never mapped to a vault item."""
-    text = _read(_SECRETS)
-    assert "The vault is searched only for a variable that holds a credential" in text
-    assert ("A required variable the plugin documents as a plain setting — a vault "
-            "name, a host, a region, an environment — is never mapped to a vault item") in text
-    install = _read(_SPEC_INSTALL)
-    assert "search only for a credential" in install
-    # diff r1 (Astra S1): the install flow may ask a plain setting by meaning;
-    # the item-or-field-only rule is scoped to credentials.
-    assert "ask the operator for it by what it means" in install
-    assert "ask the operator only for an item or field name you could not settle" not in install
-    assert ("For a credential, the default vault is named in your world state, so "
-            "search it") in install
-    # diff r1 (Astra Q4): an undocumented variable is searched as a credential.
-    assert ("when they do not say, treat the variable as a credential and search "
-            "for it") in text
-    add = _read(_ADD)
-    assert "leaves a required credential unwired without saying which vault was searched" in add
-    assert "a required plain setting is set from the plugin's documentation" in add
-
-
 def test_a_setup_provided_value_is_the_configurators_to_wire():
     """#1021: nothing wires a casa.setupProvides value on its own; the setup
     tool reports it and the configurator wires it."""
@@ -205,29 +182,30 @@ _DEVDOC = (_DEFAULTS / "agents/executors/plugin-developer/doctrine/casa-conventi
 _USER_DOCS = _ROOT / "casa/DOCS.md"
 
 
-def test_the_user_docs_split_credentials_from_plain_settings():
+def test_the_user_docs_describe_the_secret_wiring_rule():
     """#1020 (diff round 4, Terra S1): the shipped user documentation is the
     fourth surface that described every required variable as a 1Password
-    reference the operator is asked for."""
+    reference the operator is asked for. #1077 replaced its credential/plain-
+    setting split with the single exception (pinned above)."""
     text = _read(_USER_DOCS)
     assert "asks for a 1Password reference (`op://…`) for each" not in text
-    assert "A **credential** is searched for in your default vault" in text
-    assert ("A **plain setting** — a vault name, a host, a region — is taken from the "
-            "plugin's documentation") in text
-    assert "is never mapped to a vault item" in text
+    assert "A vault name is never mapped to a vault item." in text
+    assert "never about an item that merely matched by title" in text
     assert "the setup run reports what to wire and the configurator wires it" in text
 
 
-def test_the_plugin_developer_doctrine_splits_credentials_from_plain_settings():
+def test_the_plugin_developer_doctrine_describes_the_secret_wiring_rule():
     """#1020 (diff round 3, Terra S1): the plugin author's own shipped guidance
     is a third surface that described every required variable as a 1Password
-    reference the user is asked for."""
+    reference the user is asked for. #1077 replaced its credential/plain-
+    setting split with the single exception (pinned above)."""
     text = _read(_DEVDOC)
     assert "the configurator asks the user for a 1P reference" not in text
-    assert "a CREDENTIAL is searched for in the default 1Password vault" in text
-    assert ("A PLAIN SETTING (a vault name, a host, a region) is set from your plugin's "
-            "documentation") in text
-    assert "it is never mapped to a vault item" in text
+    assert "A vault name is never mapped to a vault item" in text
+    assert ("a variable whose name or documentation mentions a vault or 1Password "
+            "counts as one unless your documentation says otherwise") in text
+    assert ("So document each variable: whether it is a secret, and the default of "
+            "each one that is not.") in text
     # #1021 on the same surface: a setup-provided value has a writer.
     assert "nothing fills it in by itself" in text
     assert "the configurator wires it" in text
@@ -397,3 +375,23 @@ def test_corpus_defines_candidate_fields(sentence):
 @pytest.mark.parametrize("surface", ["developer-conventions", "user-docs"])
 def test_human_surfaces_qualify_value_requests(surface):
     assert _NON_SECRET_FALLBACK in _read(_SPLIT_SURFACES[surface]), surface
+
+
+# --- #1077 regression: no configurator recipe offers an unqualified value ask ---
+
+_RECIPE_SURFACES = [_SECRETS, _ADD, _UPDATE, _SPEC_INSTALL]
+
+
+@pytest.mark.parametrize("path", _RECIPE_SURFACES, ids=lambda p: p.name)
+def test_no_recipe_sentence_asks_for_a_value_without_the_secret_qualifier(path):
+    """The ruling's fallback asks for a value; only a non-secret one may be
+    asked for. Any recipe sentence that asks and names a value must say
+    "non-secret" or be a prohibition — whatever verb form the ask takes."""
+    sentences = re.split(r"(?<=[.!?])\s+", _read(path))
+    violations = [
+        sentence for sentence in sentences
+        if re.search(r"\bask\w*\b", sentence, re.I)
+        and re.search(r"\bvalues?\b", sentence, re.I)
+        and not re.search(r"non-secret|\bnever\b|\bnot\b", sentence, re.I)
+    ]
+    assert len(violations) == 0, violations

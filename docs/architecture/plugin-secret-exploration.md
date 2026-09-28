@@ -24,7 +24,8 @@ install drives said "credentials are in 1Password" and passed; the operator's ow
 refused by a schema that demanded a vault name the deployment already held, and the install
 ended with the operator asked for values. A result field that is always present turns "did
 it think of searching?" into "did it read its own result?". The recipe then orders the
-decision — explore, then wire, then ask — and asking is for a name, never for a value.
+decision — explore, then wire, then ask — and asking is for a name, or for a non-secret
+value, never for a secret value.
 
 **Casa never repeats an operator-typed vault string.** Three review rounds tried to decide
 which metadata strings were safe to echo by comparing them against where secrets live — field
@@ -43,10 +44,10 @@ the same name, which is how an operator was once asked to choose between two ite
 named bank" that did not exist.
 Labels, sections, values, references and notes never reach a result by any path; the `op`
 CLI's own output never reaches one either: a failure is a fixed classification, because
-truncating stderr is not redaction. A field with no role is the operator's to name: the
-configurator asks which field is which by its id, and never for a value — which is the ruling
-this whole document implements. Wiring uses the ids: `op://<vault>/<item id>/<field id>` is a
-reference the resolver accepts.
+truncating stderr is not redaction. A field with no role is the operator's to name when no
+found field's role matches the variable: the configurator asks which field is which by its
+id, and never for a secret value — which is the ruling this whole document implements.
+Wiring uses the ids: `op://<vault>/<item id>/<field id>` is a reference the resolver accepts.
 
 ## Contracts & invariants
 
@@ -74,18 +75,30 @@ Schema objects: the SDK compiles the dict shorthand to required-all, which is ho
 handler-side fallback shipped without ever being reachable through the validator — the
 call the fallback was written for was refused before the handler ran.
 
-**What the recipe does with the result** (`recipes/plugin/secrets.md`): the vault is searched
-only for a variable that holds a credential — a variable the plugin documents as a plain
-setting, a vault name or a host, is set from the plugin's documentation or asked by what it
-means, never mapped to an item. Exactly one item whose field roles map one-to-one onto the
-unresolved variables is wired, one `set_plugin_env_reference` per variable, then reloaded and
-verified, and named in the completion; several items, or a variable with no field or two
-plausible fields, is a question asked in the engagement topic naming what was found — each
-item described by its category and the roles of its fields, which the operator can
-recognise, and never by its `matched_query`; nothing found is one more search with a
-different keyword if one is plausible, then a report naming the vault and the queries. A
-completion that leaves a required variable unwired without saying what was searched is a
-doctrine violation, pinned in prose tests like the liveness prohibition.
+**What the recipe does with the result** (`recipes/plugin/secrets.md`) is guidance the
+configurator model follows; the exploration above is unchanged by it and still lists what it
+found for every unresolved variable.
+Its rule is: "Search 1Password for every unresolved required variable not declared in
+`casa.setupProvides`, except a variable that configures how 1Password itself is used (which
+vault)." Casa's own vault and token options are never items, and a plugin's own vault-name
+variable — or one whose name or documentation mentions a vault or 1Password, unless the
+plugin's documentation says otherwise — is never mapped to an item, so the candidate rows the
+exploration still lists for it are ignored. Every other variable, a region or a host as much
+as a key, is decided one variable at a time over its candidate fields. A candidate field for a
+variable is a field whose role matches it, or, when no found field's role matches it, a field
+with no role (null or `other_known`) on an item that could hold it. An item holding no
+candidate field for a variable is never put to the operator, even when its title matches. A
+variable whose role matches exactly one field is wired, one `set_plugin_env_reference` per
+variable, then reloaded and verified, and named in the completion — even when another
+variable has no candidate field; a variable whose candidate fields do not settle it — several
+of them, or only fields with no role — is a question asked in the engagement topic naming what was found — each item described by its category and the roles of
+its fields, which the operator can recognise, and never by its `matched_query`. A variable no
+found item holds is one more search with a different keyword if one is plausible; then a
+non-secret value is taken from the plugin's documentation or asked of the operator, and a
+secret — or a variable that cannot be told apart from one — is reported unwired, naming the
+vault and the queries, and its value is never asked for. A completion that leaves a required
+variable unwired without saying what was searched is a doctrine violation, pinned in prose
+tests like the liveness prohibition.
 
 ## Failure behavior
 

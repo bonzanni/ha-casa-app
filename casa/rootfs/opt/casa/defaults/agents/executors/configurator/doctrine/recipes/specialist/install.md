@@ -104,13 +104,13 @@ call `plugin_add` for a specialist's declared plugin — see `recipes/plugin/add
    plugin the inspection listed with a non-empty `env_names` (mirrored as `required_env_vars` in
    the commit result, keyed by the SCOPED registry name `<slug>.<plugin>` — use that exact key as
    the plugin identifier below), run the `recipes/plugin/secrets.md` flow now — explore, then
-   wire, then ask — and search only for a credential; a variable the plugin documents as a
-   plain setting (a vault name, a host) is set from its documentation, never mapped to an
-   item, and when its documentation gives no value, ask the operator for it by what it means.
-   For a credential, the default vault is named in your world state, so search it
-   (`list_vault_items`, `get_item_fields`) before asking, and ask the operator only which item
-   or field it is — never for a secret value —
-   then `set_plugin_env_reference(plugin="<slug>.<plugin>", ...)` once per
+   wire, then ask. Search 1Password for every unresolved required variable not declared in
+   `casa.setupProvides`, except a variable that configures how 1Password itself is used (which
+   vault). That one is never mapped to an item, and the default vault is named in your world
+   state, so search it (`list_vault_items`, `get_item_fields`) before asking; ask the operator
+   which item or field it is only when a found item holds a candidate field you cannot settle
+   — never for a secret value — and handle a variable nothing found holds exactly as
+   `secrets.md` says; then `set_plugin_env_reference(plugin="<slug>.<plugin>", ...)` once per
    var, then `casa_reload(scope="plugin_env")`, and confirm via
    `verify_plugin_state(plugin_name="<slug>.<plugin>")` that no `secrets[*].status: unresolved`
    remains. An unresolved required var withholds the plugin from

@@ -107,13 +107,20 @@ Your plugin does NOT know about Casa. It's a plain CC plugin.
 ```
 
 When Configurator runs `plugin_add`, it reports every required `${VAR}`
-reference (minus CC built-ins) and writes `plugin-env.conf`. What it does with
-one depends on what the variable holds: a CREDENTIAL is searched for in the
-default 1Password vault and wired as a reference, and the user is asked only
-which item or field it is when the search cannot settle it — never for the
-value. A PLAIN SETTING (a vault name, a host, a region) is set from your
-plugin's documentation, or the user is asked for it by what it means; it is
-never mapped to a vault item, so document each such variable and its default.
+reference (minus CC built-ins) and writes `plugin-env.conf`. It follows one
+rule: "Search 1Password for every unresolved required variable not declared in
+`casa.setupProvides`, except a variable that configures how 1Password itself
+is used (which vault)." A vault name is never mapped to a vault item, and a
+variable whose name or documentation mentions a vault or 1Password counts as
+one unless your documentation says otherwise. Any other value — a key, but
+also a region, a host, an account or an email — is wired as a reference when
+an item the search found actually holds a field for it, and the user is asked
+which item or field it is only when a found item holds a field the search
+cannot settle; an item that merely matched by title is never put to them.
+When nothing found holds a variable, the rule is: "If nothing found holds a
+variable, use the plugin's documentation or ask the operator for its value
+only for a non-secret variable; report a secret unwired." So document each
+variable: whether it is a secret, and the default of each one that is not.
 Values never appear in transcripts.
 
 A variable your setup tool creates belongs in `casa.setupProvides`: it does
