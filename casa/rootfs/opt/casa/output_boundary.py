@@ -332,18 +332,24 @@ class TurnScope:
         return scope
 
     @classmethod
-    def for_child(cls, parent: "TurnScope", note: str) -> "TurnScope":
+    def for_child(cls, parent: "TurnScope", note: str, *,
+                  synchronous: bool = True) -> "TurnScope":
         """The view a delegated child runs under: the launcher's identity and
         markers, plus the launch-time note — never the parent's LIVE
         obligations, which a parent ``Read`` after launch would discharge
-        although the child's brief was written unread."""
+        although the child's brief was written unread.
+
+        #1079: a SYNCHRONOUS child also shares the launcher's record of what
+        was committed to the operator, since the launcher waits for it inside
+        its own turn. An async child does not: it runs past the launcher's
+        turn, and its result comes back as its own announcement."""
         child = cls(
             id=parent.id, cid=parent.cid, role=parent.role,
             display_name=parent.display_name, channel=parent.channel,
             message_type=parent.message_type, markers=dict(parent.markers),
             # #1079: the SAME list, not a copy — what a synchronous delegate
             # commits to the operator is part of what the launching turn did.
-            operator_sends=parent.operator_sends,
+            operator_sends=parent.operator_sends if synchronous else [],
         )
         if note.strip():
             child.arm(InheritedNote(note))

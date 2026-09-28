@@ -6371,7 +6371,8 @@ async def delegate_to_agent(args: dict) -> dict:
         import agent as _agent_mod
         _child_origin = dict(origin)
         if _launch_scope is not None:
-            _child_origin["turn_scope"] = TurnScope.for_child(_launch_scope, _note)
+            _child_origin["turn_scope"] = TurnScope.for_child(
+                _launch_scope, _note, synchronous=(mode != "async"))
         _ov_tok = _agent_mod.origin_var.set(_child_origin)
         try:
             task = asyncio.create_task(

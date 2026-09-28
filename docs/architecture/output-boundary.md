@@ -201,7 +201,8 @@ admission of model text the operator is meant to see outside the final reply —
 `CAPTION`, `KEYBOARD` — opens an `OperatorSend` record on the admitting scope
 (`TurnScope.operator_sends`), undelivered until the sender calls `mark_delivered()` on its own
 positive evidence; a caption-less `send_media` opens one with `open_send`, and
-`TurnScope.for_child` hands a delegate the launching scope's list itself. Because the channel
+`TurnScope.for_child` hands a synchronous delegate the launching scope's list itself (an
+async one, which outlives the launching turn, gets its own). Because the channel
 refuses model text that was not admitted, no model text reaches the transport without leaving
 a record. `handle_message` reads `TurnScope.operator_sends_delivered`, never the text.
 

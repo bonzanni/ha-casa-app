@@ -57,9 +57,9 @@ and read none, the record's origin carries the resolved note as the plain string
 result reports it as `casa_note` on either arm — async, or a synchronous wait that degraded. The
 child does not run under the parent's live scope: the launch binds the task's context to a
 frozen copy of the launcher's entry snapshot carrying `TurnScope.for_child` — the launcher's
-identity and markers plus the launch-time note, and the launcher's own list of what was
-committed to the operator, so a synchronous delegate's unconfirmed send keeps a narrating
-launcher's announcement owed (#1079, INV-JOB-010) — around `create_task`, the same pattern as
+identity and markers plus the launch-time note, and — for a synchronous delegate only — the
+launcher's own list of what was committed to the operator, so its unconfirmed send keeps a
+narrating launcher's announcement owed (#1079, INV-JOB-010) — around `create_task`, the same pattern as
 the delegation quota key, so the pooled holder's next-turn rewrite cannot reach it and a
 parent `Read` after launch cannot un-annotate a brief written unread (INV-OUT-004). An
 engagement's own DM sends mint their scope from its persisted record

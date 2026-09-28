@@ -295,3 +295,57 @@ async def test_a_cancel_during_teardown_retains(wired, monkeypatch):
                       monkeypatch)
 
     assert counted.count == 0
+
+
+@pytest.mark.parametrize("mode,shared", [("sync", 1), ("async", 0)])
+async def test_only_a_synchronous_delegate_shares_the_launchers_record(
+    tmp_path, monkeypatch, mode, shared,
+):
+    """Through the real ``delegate_to_agent``: the child's scope is built at
+    launch by ``TurnScope.for_child``. A synchronous child runs inside the
+    launcher's turn, so what it commits to the operator lands on the
+    launcher's record; an async child outlives that turn, and its result comes
+    back as its own announcement."""
+    import asyncio
+    import json
+
+    import agent as agent_mod
+    import tools
+    from specialist_registry import SpecialistRegistry
+    try:
+        from tests.test_delegate_to_agent import _caller_cfg, _specialist_cfg
+    except ImportError:  # pragma: no cover
+        from test_delegate_to_agent import _caller_cfg, _specialist_cfg
+
+    reg = SpecialistRegistry(str(tmp_path / "specs"),
+                             tombstone_path=str(tmp_path / "tombs.json"))
+    tools.init_tools(channel_manager=None, bus=None, specialist_registry=reg,
+                     mcp_registry=None,
+                     agent_role_map={"butler": _specialist_cfg(role="butler"),
+                                     "assistant": _caller_cfg(delegates=("butler",))})
+    monkeypatch.setattr(tools, "_attach_completion_callback",
+                        lambda task, record: None)
+    child_ran = asyncio.Event()
+
+    async def _child(cfg, task_text, context_text, resolution=None,
+                     output_format=None):
+        view = (agent_mod.origin_var.get(None) or {})["turn_scope"]
+        view.admit(IntentKind.DISCRETE, "the delegate's report")   # never delivered
+        child_ran.set()
+        return tools.DelegatedOutput(text="ok")
+
+    monkeypatch.setattr(tools, "_run_delegated_agent_bounded", _child)
+    launcher = _scope()
+    token = agent_mod.origin_var.set({
+        "role": "assistant", "channel": "telegram", "chat_id": "1",
+        "user_id": 1, "cid": "A", "user_text": "x", "turn_scope": launcher})
+    try:
+        res = await tools.delegate_to_agent.handler(
+            {"agent": "butler", "task": "check it", "context": "", "mode": mode})
+        await asyncio.wait_for(child_ran.wait(), 5)
+    finally:
+        agent_mod.origin_var.reset(token)
+
+    assert json.loads(res["content"][0]["text"])["status"] in ("ok", "pending")
+    assert len(launcher.operator_sends) == shared
+    assert launcher.operator_sends_delivered is (shared == 0)
