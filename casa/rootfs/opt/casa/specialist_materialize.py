@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import shutil
+import stat
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -176,12 +177,18 @@ def resolve_material_content_dir(link_path: Path, agents_specialists_dir: Path) 
     return content_dir
 
 
+def _binding_marker_bytes(
+    *, binding_digest: "str | None", component_root: "str | None",
+) -> bytes:
+    payload = {"binding_digest": binding_digest or "", "root": component_root or ""}
+    return (json.dumps(payload, sort_keys=True) + "\n").encode("utf-8")
+
+
 def _write_binding_marker(
     content_dir: Path, *, binding_digest: "str | None", component_root: "str | None",
 ) -> None:
-    payload = {"binding_digest": binding_digest or "", "root": component_root or ""}
-    (content_dir / _BINDING_MARKER_NAME).write_text(
-        json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    (content_dir / _BINDING_MARKER_NAME).write_bytes(_binding_marker_bytes(
+        binding_digest=binding_digest, component_root=component_root))
 
 
 def _read_binding_marker(slug_dir: Path) -> "dict | None":
@@ -319,8 +326,11 @@ def materialize_specialist_operational_files(
     directory that gets swapped — it is a **symlink** that gets
     *retargeted*. The actual files live in a uniquely-named content
     directory, `agents_specialists_dir / f".{slug}.material-<uuid4hex>"`,
-    that this call NEVER reuses (a fresh one every call, exactly like the
-    round-2 staging dir). Retargeting a symlink is swapping ONE directory
+    that this call NEVER reuses (a fresh one every call that writes, exactly
+    like the round-2 staging dir). #1085 (INV-SPEC-019): a call whose
+    rendered bytes — the four files plus the binding marker — already sit,
+    exactly, in the slug's own contained content directory writes nothing at
+    all and returns; see `_materialized_content_matches`. Retargeting a symlink is swapping ONE directory
     ENTRY — not a directory's contents — so `os.replace(new_symlink,
     slug_dir)` is unconditionally a single atomic syscall regardless of
     whether `slug_dir` already exists or what it currently points at (a
@@ -362,6 +372,20 @@ def materialize_specialist_operational_files(
     agents_specialists_dir = Path(agents_specialists_dir)
     agents_specialists_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     slug_dir = agents_specialists_dir / slug
+    # #1085 (INV-SPEC-019): the config repo tracks agents/**, so a rewrite of
+    # byte-identical content under a fresh name is a tracked change — and
+    # every boot and specialist-tier reload re-materialises every active
+    # slug. When what is ON DISK already equals what this call would write,
+    # write nothing. Rendered before any operational file is written (only the
+    # specialists directory above, with any missing parent, is created first),
+    # so a render failure propagates to the caller as a write failure does
+    # (F5 unchanged); compared inside this call, so under whatever lock the
+    # caller holds for the write.
+    expected = _render_specialist_operational_files(slug=slug, role=role, persona=persona)
+    expected[_BINDING_MARKER_NAME] = _binding_marker_bytes(
+        binding_digest=binding_digest, component_root=component_root)
+    if _materialized_content_matches(slug_dir, agents_specialists_dir, expected):
+        return
     content_dir_name = f".{slug}.material-{uuid.uuid4().hex}"
     content_dir = agents_specialists_dir / content_dir_name
     content_dir.mkdir(parents=True, mode=0o700)
@@ -411,6 +435,47 @@ def materialize_specialist_operational_files(
         os.replace(backup_dir, slug_dir)  # restore — slug_dir must never stay absent
         raise
     shutil.rmtree(backup_dir, ignore_errors=True)
+
+
+def _materialized_content_matches(
+    slug_dir: Path, agents_specialists_dir: Path, expected: "dict[str, bytes]",
+) -> bool:
+    """True only when *slug_dir* is a symlink to this slug's own contained
+    content directory (`resolve_material_content_dir`), that directory is a
+    real directory, and it holds EXACTLY the *expected* entries, each a
+    regular file with exactly the expected bytes. Anything else — an extra or
+    missing entry, a symlinked file or directory, a byte difference, an
+    OSError — is False, and the caller takes the fresh-directory path
+    (INV-SPEC-004): a new content directory and a retargeted link, the old
+    target removed only when it passes the containment gate."""
+    if not slug_dir.is_symlink():
+        return False  # absent, or the legacy real-directory layout
+    content_dir = resolve_material_content_dir(slug_dir, agents_specialists_dir)
+    if content_dir is None:
+        return False
+    try:
+        if not stat.S_ISDIR(os.lstat(content_dir).st_mode):
+            return False
+        with os.scandir(content_dir) as entries:
+            names = {entry.name for entry in entries}
+        if names != set(expected):
+            return False
+        for name, data in expected.items():
+            # NOFOLLOW: a symlinked file is refused, not read through;
+            # NONBLOCK: a FIFO planted here can never stall this call (and
+            # the MATERIALIZE_LOCK its caller holds) inside open().
+            fd = os.open(content_dir / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            try:
+                if not stat.S_ISREG(os.fstat(fd).st_mode):
+                    return False
+                with os.fdopen(fd, "rb", closefd=False) as fh:
+                    if fh.read() != data:
+                        return False
+            finally:
+                os.close(fd)
+    except OSError:
+        return False
+    return True
 
 
 def _map_session(session: dict) -> dict:
@@ -479,9 +544,13 @@ def _character_prompt(role: "RoleSlot") -> str:
     return role.doctrine
 
 
-def _write_specialist_operational_files(
-    slug_dir: Path, *, slug: str, role: "RoleSlot", persona: "PersonaPack",
-) -> None:
+def _render_specialist_operational_files(
+    *, slug: str, role: "RoleSlot", persona: "PersonaPack",
+) -> "dict[str, bytes]":
+    """The four operational files' exact bytes. The ONE definition of their
+    content: `_write_specialist_operational_files` writes these bytes and the
+    #1085 reuse check compares against them, so "unchanged" can never mean
+    anything but "a fresh write would produce the same bytes"."""
     normalized = role.normalized
     display_name = persona.identity.get("display_name", slug)
 
@@ -491,10 +560,10 @@ def _write_specialist_operational_files(
         "card": _character_card(persona, role, display_name),
         "prompt": _character_prompt(role),
     }
-    (slug_dir / "character.yaml").write_text(
-        yaml.safe_dump(character, sort_keys=False), encoding="utf-8")
-    (slug_dir / "voice.yaml").write_text(
-        yaml.safe_dump(_voice_from_persona(persona), sort_keys=False), encoding="utf-8")
+    files = {
+        "character.yaml": yaml.safe_dump(character, sort_keys=False),
+        "voice.yaml": yaml.safe_dump(_voice_from_persona(persona), sort_keys=False),
+    }
 
     response = normalized.get("response", {})
     response_shape = {
@@ -505,8 +574,7 @@ def _write_specialist_operational_files(
         "register": _map_response_register(response.get("text", {}).get("register", "written")),
         "format": "plain", "rules": [],
     }
-    (slug_dir / "response_shape.yaml").write_text(
-        yaml.safe_dump(response_shape, sort_keys=False), encoding="utf-8")
+    files["response_shape.yaml"] = yaml.safe_dump(response_shape, sort_keys=False)
 
     tts, voice_errors = _map_tts(dict(normalized.get("tts", {})))
     runtime = {
@@ -517,8 +585,16 @@ def _write_specialist_operational_files(
         "session": _map_session(dict(normalized.get("session", {}))), "tts": tts,
         "voice_errors": voice_errors, "cwd": "", "requires": dict(normalized.get("requires", {})),
     }
-    (slug_dir / "runtime.yaml").write_text(
-        yaml.safe_dump(runtime, sort_keys=False), encoding="utf-8")
+    files["runtime.yaml"] = yaml.safe_dump(runtime, sort_keys=False)
+    return {name: text.encode("utf-8") for name, text in files.items()}
+
+
+def _write_specialist_operational_files(
+    slug_dir: Path, *, slug: str, role: "RoleSlot", persona: "PersonaPack",
+) -> None:
+    for name, data in _render_specialist_operational_files(
+            slug=slug, role=role, persona=persona).items():
+        (slug_dir / name).write_bytes(data)
 
 
 def current_specialist_roles_dir(

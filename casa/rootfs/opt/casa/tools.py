@@ -7880,13 +7880,17 @@ async def config_git_commit(args: dict) -> dict:
                 # the plugin registry. A commit that also touches agents/ or
                 # policies/ genuinely owes a reload, so it still arms (the
                 # changed-paths probe fails safe to arming on any git error).
+                # #1085 (INV-TOOL-011): the credit is single-use — the first
+                # non-empty commit after the activation spends it whether it
+                # is exempt or arms, so it can never exempt a LATER commit
+                # (after a reload drained this one's obligation) that no
+                # activation produced.
                 preactivated = eng.id in _ENGAGEMENTS_PREACTIVATED
+                _ENGAGEMENTS_PREACTIVATED.discard(eng.id)
                 paths = config_git.changed_paths(config_dir, sha) if preactivated else []
                 plugins_only = bool(paths) and all(
                     p.startswith("plugins/") for p in paths)
-                if preactivated and plugins_only:
-                    _ENGAGEMENTS_PREACTIVATED.discard(eng.id)
-                else:
+                if not (preactivated and plugins_only):
                     _ENGAGEMENTS_PENDING_RELOAD.add(eng.id)
             return _result({"sha": sha, "message": message})
         # P-3 (v0.69.1): a bare {"sha": ""} left agents looping to reconcile
@@ -11714,10 +11718,15 @@ async def emit_completion(args: dict) -> dict:
     # so the bus message lands after the addon has been told to
     # restart, mirroring the doctrine's own commit-reload-emit order.
     if outcome == "completed" and engagement.id in _ENGAGEMENTS_PENDING_RELOAD:
-        # A plugin-registry persist commit whose change is already live in
-        # process no longer reaches here — config_git_commit declined to arm
-        # the obligation for it (#222). So an outstanding obligation means a
-        # committed config change (agents/policies) that was NOT reloaded.
+        # An outstanding obligation means a non-empty config_git_commit in
+        # this engagement that was NOT the plugins-only persist of a plugin
+        # mutation already activated in process (#222, INV-TOOL-011), and
+        # neither a successful casa_reload nor casa_restart_supervised has
+        # drained it since (casa_reload_triggers does not drain it).
+        # It may be any tracked change — for example under agents/,
+        # policies/, bindings/, schema/ or specialists/, or a plugins/ edit no
+        # activation produced. Specialist operational files re-materialised
+        # from unchanged inputs are no longer among them (#1085, INV-SPEC-019).
         logger.warning(
             "Engagement %s emit_completion called with outstanding "
             "reload obligation — config_git_commit landed but no "

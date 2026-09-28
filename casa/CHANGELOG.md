@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.332.7] - 2026-09-28
+
+### Fixed
+
+- A plugin install, update, assignment, unassignment or removal while a
+  specialist is active no longer ends the configurator's job with an extra
+  full reload of Casa when the job changed nothing but the plugin. The plugin
+  tools already reload and check what they change, but Casa rewrote every
+  active specialist's generated files under a new name each time it started
+  or reloaded them, even when nothing about them had changed. Saving the
+  plugin change therefore also saved those files, and Casa treated that as a
+  configuration change that still needed a reload, logging a warning about a
+  missing reload. Casa now leaves a specialist's generated files untouched
+  when their content would not change. So starting or reloading Casa no
+  longer leaves unchanged specialist files behind to be recorded in Casa's
+  configuration history.
+- A successful plugin change lets the commit that saves it skip the extra
+  reload, when that commit saves nothing but the plugin change. That
+  allowance is now used up by the first commit in the job that records any
+  change, whether or not that commit needed a reload. Before, a commit that
+  did need a reload left the allowance in place, so a later commit in the
+  same job could skip a reload it needed.
+
 ## [0.332.6] - 2026-09-28
 
 ### Fixed
