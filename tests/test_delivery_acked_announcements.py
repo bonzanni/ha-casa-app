@@ -975,3 +975,360 @@ async def test_completion_callback_forwards_the_bounded_answer_to_terminal_and_r
     assert retries[0] == ("d-1", bounded, True)
     assert len(notified) == 1
     assert notified[0].content.text == bounded
+
+
+# ---------------------------------------------------------------------------
+# #1084 — a replayed outcome says it is a replay on EVERY terminal arm, states
+# when Casa recorded it, and the boot log names the row's kind
+#
+# Red cases, specified by astra (redcase-specify, run 2026-09-28-c cluster B).
+# At the base only the retained-answer arm read `replayed_after_restart`; a
+# replayed failure, an answerless success and an orphan were byte-identical to
+# a live return, no replay carried a time, and the recovery log called every
+# replayed row an "Orphan". Expected wording is test-owned: never derived from
+# the production constants.
+# ---------------------------------------------------------------------------
+
+_OUTCOME_NOTICE_1084 = (
+    "This is a post-restart re-announcement. This outcome was reached before "
+    "a Casa restart, and its announcement to the user was never confirmed as "
+    "delivered. Tell the user it is an earlier result being reported after a "
+    "restart — do NOT present it as something that just happened. "
+)
+_ORPHAN_NOTICE_1084 = (
+    "This notice comes from Casa's restart recovery: the delegation was "
+    "already lost when Casa came back up, and Casa has not confirmed that the "
+    "user has been told. Do NOT present the loss as something that just "
+    "happened. "
+)
+_UNKNOWN_TIME_1084 = (
+    "Casa has no record of when this outcome was recorded, so its age is "
+    "unknown."
+)
+_ANSWER_1084 = "ZQX-answer-1084-sentinel"
+_OK_HEAD_1084 = (
+    "[System notification: your delegation to finance "
+    "(id job-1) has returned with status=ok]\n\n"
+)
+_UNCOMMITTED_1084 = (
+    "[System notification: the launch turn of your engagement with finance "
+    "(id job-1) ended, and its outcome could not be recorded]\n\n"
+    "The engagement is still open and can be resumed; it did not fail. Tell "
+    "the user that the first turn ended without a recorded outcome and that "
+    "the topic is still there — do NOT say the work failed or ended.\n"
+)
+
+
+def _live_1084(shape):
+    """The base-era live prompt for each shape, as a test-owned literal."""
+    if shape == "answer":
+        return (_OK_HEAD_1084 + "Result text from finance:\n" + _ANSWER_1084
+                + "\n" + _TAIL_926_GENERIC)
+    if shape == "answer-empty":
+        return (_OK_HEAD_1084 + "Result text from finance:\n\n"
+                + _TAIL_926_GENERIC)
+    base_key = {"noanswer": "legacy-no-answer", "error": "failed",
+                "orphan": "orphan"}[shape]
+    return _OTHER_ARMS_926[base_key][1] + _TAIL_926_GENERIC
+
+
+def _row_1084(shape, terminal_at, **extra):
+    """A durable row in the state boot recovery hands the replay producer."""
+    common = dict(task="q", terminal_at=terminal_at, **extra)
+    if shape in ("answer", "answer-empty"):
+        return make_job(
+            execution_state=ExecutionState.SUCCEEDED,
+            result=_ANSWER_1084 if shape == "answer" else "",
+            result_available=True, terminal_notification_pending=True,
+            **common)
+    if shape == "noanswer":
+        return make_job(
+            execution_state=ExecutionState.SUCCEEDED, result="",
+            result_available=False, terminal_notification_pending=True,
+            **common)
+    if shape == "error":
+        return make_job(
+            execution_state=ExecutionState.FAILED,
+            failure=JobFailure("timeout", "took too long"),
+            terminal_notification_pending=True, **common)
+    assert shape == "orphan"
+    return make_job(
+        execution_state=ExecutionState.ORPHANED,
+        failure=JobFailure("restart_orphan", "lost"),
+        orphan_notification_pending=True, **common)
+
+
+def _completion_1084(shape, replayed):
+    """The completion the synthesizer is handed, built by hand."""
+    from specialist_registry import DelegationComplete
+    fields = {
+        "answer": dict(status="ok", text=_ANSWER_1084),
+        "answer-empty": dict(status="ok", text=""),
+        "noanswer": dict(status="ok", result_available=False),
+        "error": dict(status="error", kind="timeout", message="took too long"),
+        "orphan": dict(status="error", kind="restart_orphan", message="lost"),
+    }[shape]
+    return DelegationComplete(
+        delegation_id="job-1", agent="finance", origin={"user_text": "q"},
+        replayed_after_restart=replayed, **fields,
+    )
+
+
+def _synth_1084(complete):
+    from unittest.mock import Mock
+    from agent import Agent
+    from bus import BusMessage, MessageType
+    msg = BusMessage(
+        type=MessageType.NOTIFICATION, source="finance", target="concierge",
+        content=complete, channel="telegram", context={},
+    )
+    return Agent._synthesize_delegation_turn(Mock(), msg).content
+
+
+async def _produce_1084(row):
+    from unittest.mock import Mock
+    from casa_core import _notify_recovered_delegations
+    bus = _BusProbe()
+    await _notify_recovered_delegations(
+        [row], Mock(), bus, assistant_role="concierge",
+    )
+    return bus.sent
+
+
+# RC-A1 — every terminal arm carries exactly one replay statement, placed
+# right after the header; removing it restores the live prompt byte-for-byte.
+@pytest.mark.parametrize("shape", ["error", "noanswer", "orphan"])
+async def test_boot_replay_statement_on_each_terminal_arm(shape):
+    sent = await _produce_1084(_row_1084(shape, None))
+    assert len(sent) == 1
+    assert sent[0].content.replayed_after_restart is True
+
+    replay_body = _synth_1084(sent[0].content)
+    live_body = _synth_1084(_completion_1084(shape, False))
+    assert live_body == _live_1084(shape)
+
+    notice = _ORPHAN_NOTICE_1084 if shape == "orphan" else _OUTCOME_NOTICE_1084
+    block = notice + _UNKNOWN_TIME_1084 + "\n\n"
+    head, sep, rest = live_body.partition("]\n\n")
+    assert sep
+    assert replay_body == head + sep + block + rest
+    assert replay_body.count(block) == 1
+    assert replay_body.replace(block, "", 1) == live_body
+    if shape == "orphan":
+        assert replay_body.count("outcome was reached before") == 0
+        assert replay_body.count("post-restart re-announcement") == 0
+    else:
+        assert replay_body.count("post-restart re-announcement") == 1
+
+
+# #1084 regression guard (green at the base; no receipt): the launch-outcome
+# arm is not terminal and renders its own prompt whatever the marker says.
+@pytest.mark.parametrize("marker", [False, True], ids=["live", "replay"])
+async def test_the_uncommitted_launch_arm_ignores_the_replay_marker(marker):
+    from specialist_registry import DelegationComplete
+    complete = DelegationComplete(
+        delegation_id="job-1", agent="finance", status="error",
+        kind="launch_outcome_uncommitted", message="m",
+        origin={"user_text": "q"}, replayed_after_restart=marker,
+    )
+    complete.terminal_at = 7200.0
+    assert _synth_1084(complete) == _UNCOMMITTED_1084 + _TAIL_926_GENERIC
+
+
+# RC-A2 — the producer carries the row's recorded terminal time, and a replay
+# statement discloses it (with an age read once from the synthesis clock); the
+# retained answer's single inserted block absorbs it; a live prompt never.
+_TIME_1084 = {
+    7200.0: ("1970-01-01T03:00:00+01:00", "30 minutes"),
+    0.0: ("1970-01-01T01:00:00+01:00", "2 hours"),
+}
+
+
+def _time_sentence_1084(shape, terminal_at):
+    if terminal_at is None:
+        return _UNKNOWN_TIME_1084
+    iso, age = _TIME_1084[terminal_at]
+    if shape == "orphan":
+        return (f"Casa recorded the loss at {iso} (about {age} ago); the work "
+                "may have stopped earlier.")
+    return f"Casa recorded this outcome at {iso} (about {age} ago)."
+
+
+@pytest.mark.parametrize("terminal_at", [7200.0, 0.0, None],
+                         ids=["t7200", "t0", "none"])
+@pytest.mark.parametrize("shape", ["answer", "noanswer", "error", "orphan"])
+async def test_boot_replay_carries_terminal_at(shape, terminal_at):
+    sent = await _produce_1084(_row_1084(
+        shape, terminal_at, started_at=55.0, created_at=50.0))
+    assert len(sent) == 1
+    assert getattr(sent[0].content, "terminal_at", "MISSING") == terminal_at
+    assert sent[0].content.elapsed_s == 0.0
+
+
+async def test_a_converted_orphan_carries_its_conversion_time(tmp_path):
+    registry = await _registry(tmp_path, make_job())
+    reloaded = JobRegistry(tmp_path / "jobs.json", clock=lambda: 7200.0)
+    await reloaded.load()
+    owed = await reloaded.recover_after_restart()
+    assert [j.id for j in owed] == ["job-1"]
+    assert owed[0].terminal_at == 7200.0
+    assert owed[0].orphan_notification_pending is True
+    sent = await _produce_1084(owed[0])
+    assert len(sent) == 1
+    assert getattr(sent[0].content, "terminal_at", "MISSING") == 7200.0
+
+
+@pytest.mark.parametrize("terminal_at", [7200.0, 0.0, None],
+                         ids=["t7200", "t0", "none"])
+@pytest.mark.parametrize(
+    "shape", ["answer", "answer-empty", "noanswer", "error", "orphan"])
+async def test_replay_statement_discloses_recorded_time(
+    monkeypatch, shape, terminal_at,
+):
+    from zoneinfo import ZoneInfo
+    import agent as agent_mod
+
+    reads = []
+
+    def _clock():
+        reads.append(1)
+        return 9000.0
+
+    monkeypatch.setattr(agent_mod, "_replay_clock", _clock, raising=False)
+    monkeypatch.setattr(
+        agent_mod, "resolve_tz", lambda: ZoneInfo("Europe/Amsterdam"))
+
+    complete = _completion_1084(shape, True)
+    complete.terminal_at = terminal_at
+    complete.elapsed_s = 123.0
+    body = _synth_1084(complete)
+    live = _live_1084(shape)
+    sentence = _time_sentence_1084(shape, terminal_at)
+
+    if shape in ("answer", "answer-empty"):
+        block = _REANNOUNCEMENT_926[:-2] + " " + sentence + "\n\n"
+    elif shape == "orphan":
+        block = _ORPHAN_NOTICE_1084 + sentence + "\n\n"
+    else:
+        block = _OUTCOME_NOTICE_1084 + sentence + "\n\n"
+    head, sep, rest = live.partition("]\n\n")
+    assert body == head + sep + block + rest
+    assert body.count(sentence) == 1
+    assert body.replace(block, "", 1) == live
+    if terminal_at is not None:
+        assert len(reads) == 1
+
+    # The same completion, live: the time field is present and ignored.
+    reads.clear()
+    live_complete = _completion_1084(shape, False)
+    live_complete.terminal_at = terminal_at
+    live_body = _synth_1084(live_complete)
+    assert live_body == live
+    assert live_body.count("Casa recorded") == 0
+    assert live_body.count("age is unknown") == 0
+
+
+async def test_a_live_producer_leaves_the_time_unset():
+    from specialist_registry import DelegationComplete
+    complete = DelegationComplete(
+        delegation_id="d", agent="finance", status="ok")
+    assert getattr(complete, "terminal_at", "MISSING") is None
+
+
+# RC-C — the recovery log names the row's kind. The orphan marker is written
+# only by the live-row conversion; a row that went terminal while the process
+# was up is not an orphan, and no line ever carries payload or exception text.
+class _RaisingBus:
+    queues = {"concierge": object()}
+
+    def __init__(self):
+        self.calls = 0
+
+    async def notify(self, message):
+        self.calls += 1
+        raise RuntimeError("EXCEPTION_PAYLOAD")
+
+
+class _CountingBus(_BusProbe):
+    def __init__(self, queues):
+        super().__init__()
+        self.queues = queues
+        self.calls = 0
+
+    async def notify(self, message):
+        self.calls += 1
+        await super().notify(message)
+
+
+_LOG_ROWS_1084 = {
+    "ok": dict(
+        execution_state=ExecutionState.SUCCEEDED, result="RESULT_SENTINEL",
+        result_available=True, terminal_notification_pending=True),
+    "timeout": dict(
+        execution_state=ExecutionState.FAILED,
+        failure=JobFailure("timeout", "FAILMSG_SENTINEL"),
+        terminal_notification_pending=True),
+    "orphan": dict(
+        execution_state=ExecutionState.ORPHANED,
+        failure=JobFailure("restart_orphan", "FAILMSG_SENTINEL"),
+        orphan_notification_pending=True),
+}
+_LOG_EXPECTED_1084 = {
+    "orphan": {
+        "unknown-role": "Orphan delegation job-1 targets unknown role "
+                        "'concierge' — retained for retry",
+        "notify-fails": "Orphan notification failed: id=job-1 phase=notify "
+                        "— retained",
+        "posted": "Orphan delegation recovered: id=job-1 agent=finance — "
+                  "NOTIFICATION posted",
+    },
+}
+for _kind, _status in (("ok", "ok"), ("timeout", "error")):
+    _LOG_EXPECTED_1084[_kind] = {
+        "unknown-role": f"Unannounced delegation outcome job-1 status={_status} "
+                        "targets unknown role 'concierge' — retained for retry",
+        "notify-fails": "Unannounced delegation outcome notification failed: "
+                        f"id=job-1 status={_status} phase=notify — retained",
+        "posted": "Unannounced delegation outcome replayed: id=job-1 "
+                  f"agent=finance status={_status} — NOTIFICATION posted",
+    }
+
+
+@pytest.mark.parametrize("path", ["unknown-role", "notify-fails", "posted"])
+@pytest.mark.parametrize("kind", ["ok", "timeout", "orphan"])
+async def test_recovery_log_wording_follows_pending_marker(caplog, kind, path):
+    import logging
+    from unittest.mock import Mock
+    from casa_core import _notify_recovered_delegations
+
+    row = make_job(task="TASK_SENTINEL", terminal_at=7200.0,
+                   **_LOG_ROWS_1084[kind])
+    if path == "unknown-role":
+        bus = _CountingBus({})
+    elif path == "notify-fails":
+        bus = _RaisingBus()
+    else:
+        bus = _CountingBus({"concierge": object()})
+
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG, logger="casa_core"):
+        await _notify_recovered_delegations(
+            [row], Mock(), bus, assistant_role="concierge",
+        )
+    records = [r for r in caplog.records if r.name == "casa_core"]
+    assert len(records) == 1
+    assert bus.calls == {"unknown-role": 0, "notify-fails": 1,
+                         "posted": 1}[path]
+    sent = getattr(bus, "sent", [])
+    assert len(sent) == {"unknown-role": 0, "notify-fails": 0,
+                         "posted": 1}[path]
+
+    line = records[0].getMessage()
+    assert line == _LOG_EXPECTED_1084[kind][path]
+    if kind != "orphan":
+        assert line.count("Orphan") == 0
+    for sentinel in ("TASK_SENTINEL", "RESULT_SENTINEL", "FAILMSG_SENTINEL",
+                     "EXCEPTION_PAYLOAD"):
+        assert sentinel not in line
+    assert records[0].exc_info is None
+    assert records[0].exc_text is None
