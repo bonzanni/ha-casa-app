@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.332.4] - 2026-09-28
+
+### Fixed
+
+- When a delegated task or an engagement finishes, Casa tells the assistant
+  that started it. If the assistant decides there is nothing to pass on and
+  deliberately stays silent, with its `<silent/>` marker, that notice is now
+  settled. Before, such a silence was never recorded as an answer, so the same
+  notice came back to the assistant after every restart. This applies to a
+  notice replayed after a restart as well, including one about a job Casa lost
+  track of. A notice stays owed, and comes back as before, when the silent turn
+  ended in an error or needed a retry, when a message the assistant sent you
+  during that turn failed or could not be confirmed as delivered, or when the
+  turn ended with no reply at all and no silence marker. Casa only checks the
+  messages, files and questions it sends you itself. It does not check what
+  other tools did during the turn, such as a Home Assistant service or a
+  plugin's own notifications.
+
 ## [0.332.3] - 2026-09-28
 
 ### Fixed

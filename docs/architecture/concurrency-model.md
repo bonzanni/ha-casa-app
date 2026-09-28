@@ -192,7 +192,7 @@ those dispatch tasks at shutdown — the stop counts them and says so, but it do
 for them (see below). A producer holding a durable obligation to announce
 something therefore cannot treat acceptance as delivery — it attaches a process-local
 acknowledgement to the message, which the consuming agent invokes once its channel reports
-the output reached the transport. The bus itself is unchanged by this: it neither invokes
+the output reached the transport, or once its turn ended in a clean chosen silence. The bus itself is unchanged by this: it neither invokes
 nor inspects the callback, and every other producer leaves it unset (INV-JOB-010).
 
 **The process is shutting down.** Once the shutdown gate is set, new requests fail

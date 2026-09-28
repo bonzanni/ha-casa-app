@@ -90,6 +90,11 @@ async def runtime(tmp_path, monkeypatch):
                      engagement_registry=registry, specialist_limiter=limiter,
                      agent_role_map={'assistant': caller, 'finance': cfg})
     monkeypatch.setattr(agent, 'active_engagement_driver', driver, raising=False)
+    # The plugin snapshot is a module global: a file that ran earlier on the
+    # same worker can leave one assigning a plugin to `specialist:finance`,
+    # and the job record then names that plugin instead of this job's.
+    import plugin_registry
+    monkeypatch.setattr(plugin_registry, '_snapshot', None)
     monkeypatch.setattr('drivers.in_casa_driver.ClaudeSDKClient', Client)
     monkeypatch.setattr(tools, 'ClaudeSDKClient', Client)
     monkeypatch.setattr(Client, 'instances', [])

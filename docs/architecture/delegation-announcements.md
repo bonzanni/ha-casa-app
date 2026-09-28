@@ -29,7 +29,7 @@ it, so a replay can quote it — and the replay says that it is a replay.
 
 ## Contracts & invariants
 
-**INV-JOB-010**: An announcement Casa owes a creator is durably owed until it has been DELIVERED — the row's pending marker is cleared only once the consuming resident's channel reports that its turn reached the transport, never when the bus accepted the notice for enqueue — so an announcement lost with the process is announced again at the next boot.
+**INV-JOB-010**: An announcement Casa owes a creator is durably owed until it has been DELIVERED or answered by a clean chosen silence — the row's pending marker is cleared only once the consuming resident's channel reports that its turn reached the transport, or once that turn ended in a clean chosen silence (a final text of nothing but one or more `<silent/>` sentinels, with no error, no consumed SDK retry, a channel present, and every piece of model-authored content the turn or a synchronous delegate committed to the operator through Casa's own send paths confirmed delivered), never when the bus accepted the notice for enqueue — so an announcement lost with the process is announced again at the next boot. A turn that ends with no text and no sentinel (an answer given only through tool use) is not a chosen silence and stays owed, and the effect of any other tool on the turn is not observed.
 
 Two markers carry it, and a row can only ever hold one. `orphan_notification_pending` is
 written where it always was, by the conversion of a *live* row at boot.
@@ -49,6 +49,28 @@ having made zero Bot API calls — and neither is a generic turn-failure reply, 
 the operator that something broke rather than what their delegation did. Every ambiguous
 answer keeps the obligation, because the cost of keeping it is one duplicate announcement
 and the cost of dropping it is silence.
+
+A **clean chosen silence** discharges it too (#1079). A resident that reads the notice and
+decides there is nothing to tell answers with `<silent/>`, and before this that answer was
+never acknowledged: the notice replayed at every boot, one resident turn each time, with the
+answer kept on the row. The discharge is narrow on purpose. The sentinel must be there — the
+admission records whether a suppressed final reply carried one, and an empty text is not a
+choice. The turn must not have failed, and a narration turn has no authored origin, so the
+retry-tainted-silence rule that turns such a turn into an error elsewhere never runs here: the
+turn's own report of consumed retries is read directly, and a turn that did not report retains.
+And anything the turn committed to the operator itself must have arrived. Every admission of
+model text for a message, a media caption or a question keyboard opens a record on the turn's
+scope — a caption-less media send opens one too, and a synchronous delegate's scope shares the
+list — which only the sender's own positive evidence confirms: `DELIVERED` from the channel, a
+media send that returned, a keyboard post that returned a message id. A send that failed or
+whose outcome is unknown keeps the notice owed, so a turn that sent the news, saw it fail and
+then fell silent is announced again. The decision is taken once, from what the record holds
+when the silent turn ends: a delegate launched synchronously counts even if its wait timed out
+and it went on as pending, up to that moment; an async delegate never counts, because its
+result is told by its own announcement; and nothing added or confirmed later revises the
+decision. A replayed orphan notice discharges the same way: a
+resident that stays silent about a job it lost track of leaves that loss untold, which is the
+cost of not replaying the notice forever.
 
 What it does **not** claim is that the resident's words describe the delegation. The
 acknowledgement is discharged by Casa's own output for that notification reaching the
@@ -94,7 +116,7 @@ above, which is why it is now told not to.
 
 **INV-JOB-016**: A retained answer replayed at boot is handed to the consuming resident as a post-restart re-announcement whose full delivery was not confirmed, with the instruction to relay the whole answer — a completion announced live is never so marked, and that statement is the only difference the replay introduces: for the same completion the two synthesized prompts differ in exactly that statement, except where the live prompt also carries an instruction that depends on in-process state.
 
-**INV-JOB-015**: A non-voice delegated answer is retained on the durable row exactly while its announcement is owed — it is written in the same snapshot that arms the obligation and only when the obligation is armed, and it is removed in the same snapshot that clears the obligation on DELIVERY — so an answer that was in hand when a delegation completed reaches its creator across a restart, and stops being retained once a delivery has been acknowledged.
+**INV-JOB-015**: A non-voice delegated answer is retained on the durable row exactly while its announcement is owed — it is written in the same snapshot that arms the obligation and only when the obligation is armed, and it is removed in the same snapshot that clears the obligation, on DELIVERY or on a clean chosen silence (INV-JOB-010) — so an answer that was in hand when a delegation completed reaches its creator across a restart, and stops being retained once the announcement has been acknowledged.
 
 One predicate decides both ends, and it is the one that already decides whether the
 announcement is owed at all: a terminal that owes no notice cannot store an answer, whatever

@@ -193,6 +193,19 @@ What it does not cover: `send_media` still requires a Telegram origin of its own
 webhook turn's media is refused before the binding matters; the #650 retry-tainted-silence
 reclassification runs before admission and is not an output decision.
 
+Two facts ride out of admission for the durable-announcement discharge (#1079,
+INV-JOB-010). A suppressed final reply says whether the silence was *chosen* —
+`Admitted.chosen_silence` is set in the same silence arm, on the same unannotated text, when
+at least one sentinel was there, so an empty answer is suppressed but not chosen. And every
+admission of model text the operator is meant to see outside the final reply — `DISCRETE`,
+`CAPTION`, `KEYBOARD` — opens an `OperatorSend` record on the admitting scope
+(`TurnScope.operator_sends`), undelivered until the sender calls `mark_delivered()` on its own
+positive evidence; a caption-less `send_media` opens one with `open_send`, and
+`TurnScope.for_child` hands a synchronous delegate the launching scope's list itself (an
+async one, which outlives the launching turn, gets its own). Because the channel
+refuses model text that was not admitted, no model text reaches the transport without leaving
+a record. `handle_message` reads `TurnScope.operator_sends_delivered`, never the text.
+
 ## Failure behavior
 
 **A bare string reaches a model-text method.** Refused with an `ERROR` log naming the
@@ -239,7 +252,10 @@ remedy decided together, and its wording owned by the scope.
 `tests/test_output_boundary_sites.py`; a new Casa notice is a recorded `casa_text` site. A
 template that interpolates model-supplied text is model text and goes through
 `TurnScope.admit`, not `casa_text` — the authorization challenge body, which interpolates
-the model's tool arguments, is the worked example.
+the model's tool arguments, is the worked example. A path that admits `DISCRETE`, `CAPTION`
+or `KEYBOARD` text confirms it with `mark_delivered()` only on its transport's positive
+evidence; one that never confirms keeps a narrating turn's announcement owed, the safe
+direction.
 
 **A new route that builds a scheduled trigger's spec** goes through `spec_from_entry`; the
 construction-site test refuses another `TriggerSpec(` call.

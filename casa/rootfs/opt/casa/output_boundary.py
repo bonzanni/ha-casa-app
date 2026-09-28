@@ -30,7 +30,15 @@ Obligations are a closed, Casa-owned set; the model can never add one.
   text that strips to nothing but ``<silent/>`` sentinels returns an empty,
   ``suppressed`` admission — tested on the UNANNOTATED text, so a silent turn is
   never turned into a visible line; prose after a sentinel is delivered whole
-  (the G-3 recant contract, INV-TURN-009).
+  (the G-3 recant contract, INV-TURN-009). A suppressed admission says whether
+  the model CHOSE the silence (``chosen_silence``: at least one sentinel) or
+  merely produced nothing (#1079).
+
+Every admission of model text the operator is meant to see outside the final
+reply (``DISCRETE``, ``CAPTION``, ``KEYBOARD``) also opens an
+:class:`OperatorSend` record on the admitting scope, promoted only when the
+sender confirms delivery (#1079) — so the turn knows whether everything it
+committed to the operator arrived.
 
 Nothing is held or withheld: the model's words are never suppressed here
 (operator ruling, #1036). Casa-composed text enters through :func:`casa_text`.
@@ -71,10 +79,14 @@ class Admitted(str):
     source: str
     note: str
     suppressed: bool
+    chosen_silence: bool
+    send: "OperatorSend | None"
 
     def __new__(cls, text: str, *, scope_id: str, kind: IntentKind | None,
                 annotations: tuple[str, ...] = (), source: str = "model",
-                note: str = "", suppressed: bool = False) -> "Admitted":
+                note: str = "", suppressed: bool = False,
+                chosen_silence: bool = False,
+                send: "OperatorSend | None" = None) -> "Admitted":
         obj = str.__new__(cls, text)
         obj.scope_id = scope_id
         obj.kind = kind
@@ -82,6 +94,8 @@ class Admitted(str):
         obj.source = source
         obj.note = note
         obj.suppressed = suppressed
+        obj.chosen_silence = chosen_silence
+        obj.send = send
         return obj
 
     @property
@@ -93,7 +107,15 @@ class Admitted(str):
         prepend that happens after admission (the plugin-health notice)."""
         return Admitted(text, scope_id=self.scope_id, kind=self.kind,
                         annotations=self.annotations, source=self.source,
-                        note=self.note, suppressed=self.suppressed)
+                        note=self.note, suppressed=self.suppressed,
+                        chosen_silence=self.chosen_silence, send=self.send)
+
+    def mark_delivered(self) -> None:
+        """#1079: the sender's confirmation that this text reached the
+        operator — called only on the sender's existing positive evidence.
+        A no-op for text that opened no record (Casa text, a final reply)."""
+        if self.send is not None:
+            self.send.delivered = True
 
     def __repr__(self) -> str:  # pragma: no cover — logging aid
         return (f"Admitted({str.__repr__(self)}, scope_id={self.scope_id!r}, "
@@ -187,6 +209,25 @@ def casa_text(text: str) -> Admitted:
 
 
 # ---------------------------------------------------------------------------
+# What the turn committed to the operator (#1079)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class OperatorSend:
+    """One piece of model-authored content committed to the operator outside
+    the final reply. Opened undelivered; only the sender's confirmation
+    promotes it, so an exit the sender never confirmed — a refusal, an unknown
+    outcome, a raise, a cancel — stays undelivered."""
+
+    intent: str
+    delivered: bool = False
+
+
+_SENT_INTENTS = frozenset({IntentKind.DISCRETE, IntentKind.CAPTION,
+                           IntentKind.KEYBOARD})
+
+
+# ---------------------------------------------------------------------------
 # Obligations
 # ---------------------------------------------------------------------------
 
@@ -256,6 +297,7 @@ class TurnScope:
     obligations: list[Obligation] = field(default_factory=list)
     evidence: Evidence = field(default_factory=Evidence)
     annotations_applied: list[str] = field(default_factory=list)
+    operator_sends: list[OperatorSend] = field(default_factory=list)
 
     # -- minting ------------------------------------------------------------
 
@@ -290,15 +332,24 @@ class TurnScope:
         return scope
 
     @classmethod
-    def for_child(cls, parent: "TurnScope", note: str) -> "TurnScope":
+    def for_child(cls, parent: "TurnScope", note: str, *,
+                  synchronous: bool = True) -> "TurnScope":
         """The view a delegated child runs under: the launcher's identity and
         markers, plus the launch-time note — never the parent's LIVE
         obligations, which a parent ``Read`` after launch would discharge
-        although the child's brief was written unread."""
+        although the child's brief was written unread.
+
+        #1079: a SYNCHRONOUS child also shares the launcher's record of what
+        was committed to the operator, since the launcher waits for it inside
+        its own turn. An async child does not: it runs past the launcher's
+        turn, and its result comes back as its own announcement."""
         child = cls(
             id=parent.id, cid=parent.cid, role=parent.role,
             display_name=parent.display_name, channel=parent.channel,
             message_type=parent.message_type, markers=dict(parent.markers),
+            # #1079: the SAME list, not a copy — what a synchronous delegate
+            # commits to the operator is part of what the launching turn did.
+            operator_sends=parent.operator_sends if synchronous else [],
         )
         if note.strip():
             child.arm(InheritedNote(note))
@@ -352,6 +403,20 @@ class TurnScope:
         """False when a :class:`NoStream` obligation is registered."""
         return not any(isinstance(ob, NoStream) for ob in self.obligations)
 
+    def open_send(self, intent: str) -> OperatorSend:
+        """#1079: record a commitment to the operator that carries no admitted
+        text (a caption-less ``send_media``). Admissions of the sent intents
+        record their own."""
+        record = OperatorSend(intent)
+        self.operator_sends.append(record)
+        return record
+
+    @property
+    def operator_sends_delivered(self) -> bool:
+        """True when every commitment recorded on this scope was confirmed
+        delivered — vacuously True when there was none."""
+        return all(r.delivered for r in self.operator_sends)
+
     def resolve_channel(self, requested: str) -> str:
         """The channel a discrete send actually goes to: the requested one,
         unless :class:`DestinationOperatorOnly` binds it to Telegram."""
@@ -380,9 +445,13 @@ class TurnScope:
         annotated. Order: silence (final replies only, on the UNANNOTATED
         text), then inherited notes, then today's line."""
         if kind is IntentKind.FINAL_REPLY and strips_to_silence(text):
-            return Admitted(text="", scope_id=self.id, kind=kind, suppressed=True)
+            return Admitted(text="", scope_id=self.id, kind=kind, suppressed=True,
+                            chosen_silence=SILENCE_SENTINEL in (text or ""))
+        send = None
+        if kind in _SENT_INTENTS:
+            send = self.open_send(kind.value)
         if not (text or "").strip():
-            return Admitted(text=text, scope_id=self.id, kind=kind)
+            return Admitted(text=text, scope_id=self.id, kind=kind, send=send)
         head: list[str] = [ob.text for ob in self.obligations
                            if isinstance(ob, InheritedNote)]
         stored_note: list[str] = list(head)
@@ -395,10 +464,10 @@ class TurnScope:
             return Admitted(text=text, scope_id=self.id, kind=kind,
                             annotations=tuple(stored_note), note=note)
         if not head:
-            return Admitted(text=text, scope_id=self.id, kind=kind)
+            return Admitted(text=text, scope_id=self.id, kind=kind, send=send)
         self.annotations_applied.extend(head)
         return Admitted(text="\n\n".join(head) + "\n\n" + text, scope_id=self.id,
-                        kind=kind, annotations=tuple(head))
+                        kind=kind, annotations=tuple(head), send=send)
 
     # -- wording ------------------------------------------------------------
 

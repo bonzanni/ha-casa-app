@@ -683,10 +683,15 @@ class ChallengeCoordinator:
         async def _post() -> Any:
             _body = (_scope.admit(IntentKind.KEYBOARD, challenge_text)
                      if _scope is not None else casa_text(challenge_text))
-            return await channel.post_dm_keyboard(
+            mid = await channel.post_dm_keyboard(
                 chat_id=chat_id, request_id=rid, text=_body,
                 options=options,
             )
+            # #1079: the admission recorded this body as committed to the
+            # operator; only the broker's own "posted" test confirms it.
+            if isinstance(mid, int):
+                _body.mark_delivered()
+            return mid
 
         def _finish_factory(message_id: int, _req: Any = req) -> Callable[[dict], Any]:
             if finish_factory is None:
