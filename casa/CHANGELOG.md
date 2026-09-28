@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.332.6] - 2026-09-28
+
+### Fixed
+
+- When a delegated task finishes and Casa cannot confirm that you were told
+  about it before a restart, Casa hands the result back to the assistant again
+  after the restart. Before, only a returned answer was marked as an earlier
+  result. A failed task, or one that finished without its answer being kept,
+  was passed on with nothing saying it came from before the restart, so the
+  assistant could report it as if it had just happened. Casa now tells the
+  assistant, for every such result, that it is an earlier result being
+  reported after a restart, and gives the time Casa recorded it, with a rough
+  age. For a delegation Casa lost track of in the restart, it gives the time
+  Casa recorded the loss when it came back up, and says the work may have
+  stopped earlier. If Casa has no recorded time, the assistant is told that
+  the age is unknown. Results of engagements are handed back as before.
+- Casa's startup log now reports a delegation as an orphan only when it was
+  still running when Casa stopped. A delegation that had already finished,
+  but whose result was never confirmed as delivered, is logged as an
+  unannounced outcome being replayed, together with its status.
+
 ## [0.332.5] - 2026-09-28
 
 ### Fixed
