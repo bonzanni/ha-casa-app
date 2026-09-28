@@ -14767,7 +14767,29 @@ def _secret_candidate_queries(name: str, unresolved: list[str]) -> list[str]:
     return queries[:_SECRET_CANDIDATE_MAX_QUERIES]
 
 
-def _secret_candidates(name: str, required_env_vars: list[str]) -> dict:
+def _declared_setup_provides(manifest) -> frozenset[str]:
+    """The ``casa.setupProvides`` names of ``manifest`` — the manifest the
+    mutation just published (#241), never the resolved snapshot, which can
+    still be the old artifact during a plugin_update. #1024: those names are
+    made by the plugin's own setup tool and wired from its report, so the
+    exploration neither searches for them nor lists them as unresolved.
+
+    Absent, not a mapping, or a declaration that does not parse → none: the
+    exploration then runs exactly as it would with no declaration, and never
+    fails the mutation (``artifact_verdict`` already refuses such an artifact;
+    this is the belt). Only the exception's class is logged."""
+    if not isinstance(manifest, dict):
+        return frozenset()
+    try:
+        return frozenset(plugin_store.manifest_setup_provides(manifest))
+    except Exception as exc:  # noqa: BLE001 — the exploration never fails the mutation
+        logger.warning("casa.setupProvides unreadable for secret exploration "
+                       "(%s) — treating it as absent", type(exc).__name__)
+        return frozenset()
+
+
+def _secret_candidates(name: str, required_env_vars: list[str], *,
+                       manifest: dict | None = None) -> dict:
     """Explore the configured default vault for a just-installed plugin's
     unresolved secrets and return what is there — per item the query term it
     matched and its id, per field its id, its role and its type; never a
@@ -14780,8 +14802,13 @@ def _secret_candidates(name: str, required_env_vars: list[str]) -> dict:
     default vault, or no 1Password token. A failed ``op`` is reported as the
     classified ``op_failed`` and never fails the mutation that called this.
     Runs AFTER the registry write and reload, so it cannot delay activation.
+
+    #1024: a name ``manifest`` declares in ``casa.setupProvides`` is neither
+    searched for nor listed as unresolved (:func:`_declared_setup_provides`).
     """
-    unresolved = [v for v in required_env_vars if not os.environ.get(v)]
+    declared = _declared_setup_provides(manifest)
+    unresolved = [v for v in required_env_vars
+                  if v not in declared and not os.environ.get(v)]
     vault = _default_vault()
     if not unresolved or not vault or not os.environ.get("OP_SERVICE_ACCOUNT_TOKEN"):
         return {}
@@ -14874,7 +14901,8 @@ async def plugin_add(args: dict) -> dict:
         # unresolved secrets; the configurator decides what to wire.
         core.update(await asyncio.to_thread(
             _secret_candidates, core["name"],
-            list(core.get("required_env_vars") or [])))
+            list(core.get("required_env_vars") or []),
+            manifest=published_manifest))
         return _result(core)
 
 
@@ -14922,7 +14950,8 @@ async def plugin_update(args: dict) -> dict:
         # unresolved secrets; the configurator decides what to wire.
         core.update(await asyncio.to_thread(
             _secret_candidates, core["name"],
-            list(core.get("required_env_vars") or [])))
+            list(core.get("required_env_vars") or []),
+            manifest=published_manifest))
         return _result(core)
 
 

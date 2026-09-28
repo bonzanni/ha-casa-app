@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.332.2] - 2026-09-28
+
+### Fixed
+
+- After you install or update a plugin, Casa's automatic search of your vault
+  no longer looks for the values the plugin's own setup tool provides (the
+  ones it declares as `casa.setupProvides`), and no longer lists them as still
+  to be found. Before, these values added a pointless search for "casa" and
+  appeared among the unresolved values, as if they had to be matched to a
+  vault item. A plugin whose only missing values are of this kind now causes
+  no vault search at all. Other settings are searched as before.
+
 ## [0.332.1] - 2026-09-28
 
 ### Fixed

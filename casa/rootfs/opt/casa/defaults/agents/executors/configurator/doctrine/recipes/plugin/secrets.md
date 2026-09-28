@@ -33,7 +33,8 @@ say, treat the variable as a credential and search for it.
 ## Discover the source — explore before asking
 
 `plugin_add` and `plugin_update` already searched the default vault for you:
-when a plugin declares required variables that are unresolved, their result
+when a plugin declares required variables that are unresolved (other than
+those in its `casa.setupProvides`, which its setup tool reports — below), their result
 carries `secret_candidates` — the vault searched, the queries tried (the
 plugin name, then each vendor stem of the variables), up to five matching
 items (each as `matched_query` — the search term its title contained, never

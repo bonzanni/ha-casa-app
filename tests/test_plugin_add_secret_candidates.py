@@ -428,3 +428,196 @@ def test_untrusted_ids_and_types_are_dropped():
         {"id": None, "role": "email", "type": None},
         {"id": None, "role": "email", "type": None},
     ]
+
+
+# --- #1024: names the published manifest declares in casa.setupProvides -----
+#
+# A casa.setupProvides name is produced by the plugin's own setup tool and wired
+# from its report (recipes/plugin/secrets.md), never mapped from a vault item.
+# Every declarable name is CASA_PLUGIN_*, so exploring one only added the
+# meaningless query "casa" and listed it as unresolved. The declaration is read
+# from the manifest the handler JUST published (#241): during plugin_update the
+# resolved snapshot can still be the OLD artifact, so the harness keeps it on a
+# v1 that declares nothing while the required list is v2's.
+
+_SP_DECLARED = "CASA_PLUGIN_PROBE_TOKEN"
+_SP_CREDENTIAL = "ELEVENLABS_API_KEY"
+_SP_RESOLVED = "OPENAI_KEY"
+_SP_V1 = {"name": "probe", "version": "1.0.0"}
+_SP_V2 = {"name": "probe", "version": "2.0.0",
+          "casa": {"setupTool": "setup_probe", "setupProvides": [_SP_DECLARED]}}
+
+
+def _sp_tools(monkeypatch, tmp_path, *, update: bool, required,
+              published=_SP_V2, snapshot=_SP_V1):
+    import plugin_registry as preg
+    from plugin_registry import ResolutionResult, ResolvedPlugin
+    st = _State()
+    if update:
+        st.raw["plugins"] = [_entry(name="probe", version="1.0.0")]
+    pub = _pr(name="probe", version="2.0.0")
+    pub.manifest.clear()
+    pub.manifest.update(published)
+    tools_mod = _wire(monkeypatch, tmp_path, st, publish=pub)
+    stale = ResolvedPlugin(name="probe", artifact_id="e" * 64,
+                           path=str(tmp_path / "v1"), version="1.0.0",
+                           manifest=dict(snapshot))
+    monkeypatch.setattr(preg, "resolve_all", lambda: ResolutionResult(
+        registry_valid=True, plugins=[stale]))
+    _observability(tools_mod, monkeypatch, required)
+    monkeypatch.setenv("ONEPASSWORD_DEFAULT_VAULT", "Casa")
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "ops_CANARY_TOKEN")
+    monkeypatch.delenv(_SP_DECLARED, raising=False)
+    monkeypatch.delenv(_SP_CREDENTIAL, raising=False)
+    monkeypatch.setenv(_SP_RESOLVED, "already-set")
+    return st, tools_mod
+
+
+async def _sp_run(tools_mod, *, update: bool, calls):
+    with patch.object(tools_mod.subprocess, "run", _fake_op([], {}, calls=calls)):
+        if update:
+            r = await tools_mod.plugin_update.handler(
+                {"name": "probe", "new_ref": "v2.0.0"})
+        else:
+            r = await tools_mod.plugin_add.handler({
+                "name": "probe", "repo": "o/r", "ref": "v2.0.0",
+                "targets": ["resident:assistant"]})
+    return json.loads(r["content"][0]["text"])
+
+
+def _sp_activated(st):
+    assert st.log.count("publish") == 1
+    assert st.log.count("save") == 1
+    assert len(st.raw["plugins"]) == 1
+    assert st.raw["plugins"][0]["version"] == "2.0.0"
+
+
+async def _sp_only_declared(monkeypatch, tmp_path, *, update: bool):
+    st, tools_mod = _sp_tools(monkeypatch, tmp_path, update=update,
+                              required=[_SP_DECLARED])
+    calls: list[list[str]] = []
+    payload = await _sp_run(tools_mod, update=update, calls=calls)
+    _sp_activated(st)
+    assert payload["required_env_vars"] == [_SP_DECLARED]
+    assert sum(k == "secret_candidates" for k in payload) == 0
+    assert len(calls) == 0
+
+
+async def _sp_mixed(monkeypatch, tmp_path, *, update: bool):
+    required = [_SP_DECLARED, _SP_CREDENTIAL, _SP_RESOLVED]
+    st, tools_mod = _sp_tools(monkeypatch, tmp_path, update=update,
+                              required=required)
+    calls: list[list[str]] = []
+    payload = await _sp_run(tools_mod, update=update, calls=calls)
+    _sp_activated(st)
+    assert payload["required_env_vars"] == required
+    assert sum(k == "secret_candidates" for k in payload) == 1
+    sc = payload["secret_candidates"]
+    assert sc["queries"] == ["probe", "elevenlabs"]
+    assert sc["unresolved"] == [_SP_CREDENTIAL]
+    assert len(sc["items"]) == 0
+    assert len(calls) == 2
+    assert sum(c[:3] == ["op", "item", "list"] for c in calls) == 2
+    assert sum(c[:3] == ["op", "item", "get"] for c in calls) == 0
+
+
+async def test_add_setup_provides_only_skips_vault(monkeypatch, tmp_path):
+    await _sp_only_declared(monkeypatch, tmp_path, update=False)
+
+
+async def test_update_setup_provides_only_uses_published_manifest(monkeypatch, tmp_path):
+    await _sp_only_declared(monkeypatch, tmp_path, update=True)
+
+
+async def test_add_setup_provides_filters_mixed_exploration(monkeypatch, tmp_path):
+    await _sp_mixed(monkeypatch, tmp_path, update=False)
+
+
+async def test_update_setup_provides_filters_mixed_exploration_from_published_manifest(
+        monkeypatch, tmp_path):
+    await _sp_mixed(monkeypatch, tmp_path, update=True)
+
+
+# Regression (green at the base): the base exploration is kept for every name
+# the PUBLISHED manifest does not declare — including one the stale snapshot's
+# manifest still declares — and a declaration that cannot be read counts as none.
+
+_SP_BASE_QUERIES = ["probe", "casa", "elevenlabs"]
+
+
+async def _sp_explored_as_base(monkeypatch, tmp_path, *, update: bool, **kw):
+    required = [_SP_DECLARED, _SP_CREDENTIAL, _SP_RESOLVED]
+    st, tools_mod = _sp_tools(monkeypatch, tmp_path, update=update,
+                              required=required, **kw)
+    calls: list[list[str]] = []
+    payload = await _sp_run(tools_mod, update=update, calls=calls)
+    _sp_activated(st)
+    assert payload["ok"] is True, payload
+    assert payload["required_env_vars"] == required
+    sc = payload["secret_candidates"]
+    assert sc["queries"] == _SP_BASE_QUERIES
+    assert sc["unresolved"] == [_SP_DECLARED, _SP_CREDENTIAL]
+    assert sum(c[:3] == ["op", "item", "list"] for c in calls) == 3
+    return tools_mod
+
+
+async def test_update_explores_a_name_v2_no_longer_declares(monkeypatch, tmp_path):
+    """v1 declared the name; v2 still references it but no longer declares
+    it (the artifact verdict admits that). v2 is authoritative: the name is an
+    ordinary requirement again, even while the snapshot still shows v1."""
+    v1_declaring = {"name": "probe", "version": "1.0.0",
+                    "casa": {"setupTool": "setup_probe",
+                             "setupProvides": [_SP_DECLARED]}}
+    v2_not = {"name": "probe", "version": "2.0.0",
+              "casa": {"setupTool": "setup_probe"}}
+    await _sp_explored_as_base(monkeypatch, tmp_path, update=True,
+                               published=v2_not, snapshot=v1_declaring)
+
+
+@pytest.mark.parametrize("update", [False, True])
+@pytest.mark.parametrize("casa", [
+    {"setupTool": "setup_probe", "setupProvides": _SP_DECLARED},
+    {"setupTool": "setup_probe", "setupProvides": [_SP_DECLARED, "lower_case"]},
+    {"setupTool": "setup_probe", "setupProvides": [_SP_DECLARED, _SP_DECLARED]},
+    {"setupProvides": [_SP_DECLARED]},
+    "not-a-mapping",
+], ids=["string", "one-bad-member", "duplicate", "no-setup-tool", "casa-not-dict"])
+async def test_an_unreadable_declaration_counts_as_none(monkeypatch, tmp_path,
+                                                        update, casa):
+    await _sp_explored_as_base(
+        monkeypatch, tmp_path, update=update,
+        published={"name": "probe", "version": "2.0.0", "casa": casa})
+
+
+@pytest.mark.parametrize("update", [False, True])
+async def test_no_published_manifest_counts_as_no_declaration(monkeypatch, tmp_path,
+                                                              update):
+    """A core result carrying no ``_published_manifest`` (the handler pops it
+    with a None default) explores exactly as the base did."""
+    import tools as tools_mod
+    sync = "_plugin_update_sync" if update else "_plugin_add_sync"
+    real = getattr(tools_mod, sync)
+
+    def _without_manifest(**kw):
+        core = real(**kw)
+        core.pop("_published_manifest", None)
+        return core
+
+    monkeypatch.setattr(tools_mod, sync, _without_manifest)
+    await _sp_explored_as_base(monkeypatch, tmp_path, update=update)
+
+
+async def test_a_foreign_declaration_error_is_none_and_logs_only_its_class(
+        monkeypatch, tmp_path, caplog):
+    tools_mod = None
+
+    def _boom(_manifest):
+        raise RuntimeError(f"declaration read failed {_CANARY}")
+
+    import plugin_store
+    monkeypatch.setattr(plugin_store, "manifest_setup_provides", _boom)
+    with caplog.at_level(logging.DEBUG):
+        tools_mod = await _sp_explored_as_base(monkeypatch, tmp_path,
+                                               update=False)
+    assert tools_mod is not None
+    assert _CANARY not in caplog.text
