@@ -30,7 +30,7 @@ merely having tried. Both directions fail toward telling again rather than towar
 
 ## Contracts & invariants
 
-**INV-ENG-018**: An engagement outcome committed by the finalization funnel carries, in the same durable write as its terminal status, the obligation to tell the party that asked for the work. That obligation is cleared only by the delivery acknowledgement of the notice that carries it, never by the bus accepting the message and never by another record's acknowledgement; a record still carrying it is exempt from terminal-retention expiry, so the obligation outlives the process. Casa's boot owner replays every record still owing one, addressed from that record's own persisted origin and reporting the FACT of the outcome, never a retained answer the record does not hold; startup awaits that owner unguarded, once the channels and the resident loops are running. A rolled-back transition owes nothing, a row written before the field existed owes nothing, and no other terminal writer arms it by default: the two that do — the detached launch owner's death report, which tells the engager over the bus, and the inline named-fault abort, whose returned envelope is the telling and whose return schedules the acknowledgement for a transition it won — opt in explicitly (INV-ENG-021).
+**INV-ENG-018**: An engagement outcome committed by the finalization funnel carries, in the same durable write as its terminal status, the obligation to tell the party that asked for the work. That obligation is cleared only by the delivery acknowledgement of the notice that carries it — the notice's narration reaching the transport, or that narration turn ending in a clean chosen silence as INV-JOB-010 defines it, while a turn that ends with no text and no sentinel stays owed — never by the bus accepting the message and never by another record's acknowledgement; a record still carrying it is exempt from terminal-retention expiry, so the obligation outlives the process. Casa's boot owner replays every record still owing one, addressed from that record's own persisted origin and reporting the FACT of the outcome, never a retained answer the record does not hold; startup awaits that owner unguarded, once the channels and the resident loops are running. A rolled-back transition owes nothing, a row written before the field existed owes nothing, and no other terminal writer arms it by default: the two that do — the detached launch owner's death report, which tells the engager over the bus, and the inline named-fault abort, whose returned envelope is the telling and whose return schedules the acknowledgement for a transition it won — opt in explicitly (INV-ENG-021).
 
 The obligation follows the WRITER, not the record. This funnel and the launch-death reporter
 reach the same registry method with the same outcome on the same kind of record, and whether
@@ -53,7 +53,11 @@ fail to reach the transport. None of those is a telling. The discharge is the sa
 delivery-acknowledgement seam every durable announcement uses, and it is deliberately
 generous in the retain direction — a turn that reported a generic failure rather than the
 engagement's news leaves the obligation owed, and so does an acknowledgement that itself
-raises. The cost of not clearing is one duplicate; the cost of clearing early is silence.
+raises. The cost of not clearing is one duplicate; the cost of clearing early is silence. A
+resident that reads the notice and answers with a clean `<silent/>` has told it all there
+was to tell, and that answer clears it through the same seam, on exactly the conditions
+[`delegation-announcements.md`](delegation-announcements.md) states for a delegation's
+notice (#1079).
 
 **INV-ENG-013**: A terminal engagement's topic is never marked with an outcome the topic was never told. The completion post counts as delivered only when the wire acknowledged it; an acknowledgement that did not come withholds the outcome mark and produces exactly one bounded plain disclosure in its place. A post that failed part-way is never replayed. The topic is closed exactly once either way, and no topic operation can strand the post-topic tail behind it.
 
