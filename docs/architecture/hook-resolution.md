@@ -205,6 +205,26 @@ replaces the snapshot for future emissions but does not retroactively touch a wo
 already provisioned from the one before it — boot replay's diff-and-cycle is the mechanism
 that reconciles a resumed session against the current snapshot, not the reload itself.
 
+**INV-MCP-012**: `path_scope` admits a Read of a file in the calling session's own `tool-results/` directory — the session the runtime names on that very call, under the projects root its reported transcript sits in, in any project folder — and nothing else outside its readable prefixes; it never widens `writable`.
+
+Claude Code does not hand an oversized tool result to the model: it writes it to
+`<claude home>/projects/<project>/<session>/tool-results/` and tells the model to Read that
+file. The Claude home is private, so a `path_scope` whose readable list is the agent's `cwd`
+denied that Read and the result was lost after the tool had already run. The hook now also
+admits a Read whose path is `<root>/<any project>/<session>/tool-results/<file>`, where
+`<root>` is the folder two levels above the reported `transcript_path`
+(`<root>/<project>/<session>.jsonl`) and `<session>` is the reported `session_id` or the
+transcript's own stem. The project folder is left free because a session resumed under
+another working directory writes its results under that directory's project folder; copying
+Claude Code's folder naming into Casa instead would drift. No usable transcript path (absent,
+empty, relative, not a `.jsonl`) grants nothing. A transcript, another session's results,
+the directory itself and any sibling directory stay denied, and Write/Edit are unaffected.
+The same callback serves both transports, because the hook shim forwards Claude Code's hook
+input verbatim as the resolver's payload.
+
+What it does not cover: whether Claude Code diverts a result at all, or how large one may
+be — Casa sets no MCP output limit, so the runtime's defaults decide.
+
 ## Failure behavior
 
 **The bridge service is unreachable.** The shim returns an allow decision. A hook that would
@@ -249,6 +269,7 @@ matchers (INV-MCP-008).
 - `tests/test_hook_proxy_endpoint.py`
 - `tests/test_hooks_policy_param_types.py`
 - `tests/test_hooks.py`
+- `tests/test_hooks_policies.py`
 - `tests/test_hook_bridge.py`
 
 **Related**

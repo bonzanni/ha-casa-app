@@ -93,7 +93,9 @@ lexical prefix check. This is not a sandbox against such a process.
 **INV-INBOX-002**: The inbound-file read grant is exactly the Telegram default agent's `ready/` directory, appended to the readable list of every `path_scope` entry that agent resolves — the default bundle and an explicit hooks file alike — and it never adds a writable prefix or reaches any other agent.
 
 `staging/`, `meta/`, the role directory itself and paths that climb out of `ready/` stay
-denied, as does every other path the agent could not read before. An inbox that fails to
+denied, as does every other path the agent could not read before — the one separate
+admission, a session's own oversized tool results, is INV-MCP-012 in
+[`hook-resolution.md`](hook-resolution.md) and is not part of this grant. An inbox that fails to
 provision grants nothing, and uploads are then answered with the storage refusal. The
 delegated-specialist and in-casa executor hook builds pass no grant at all.
 
