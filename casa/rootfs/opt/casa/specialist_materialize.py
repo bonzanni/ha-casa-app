@@ -377,9 +377,10 @@ def materialize_specialist_operational_files(
     # every boot and specialist-tier reload re-materialises every active
     # slug. When what is ON DISK already equals what this call would write,
     # write nothing. Rendered before any operational file is written (only the
-    # specialists directory above is created first), so a render failure
-    # raises exactly as a write failure did (F5 unchanged); compared inside
-    # this call, so under whatever lock the caller holds for the write.
+    # specialists directory above, with any missing parent, is created first),
+    # so a render failure propagates to the caller as a write failure does
+    # (F5 unchanged); compared inside this call, so under whatever lock the
+    # caller holds for the write.
     expected = _render_specialist_operational_files(slug=slug, role=role, persona=persona)
     expected[_BINDING_MARKER_NAME] = _binding_marker_bytes(
         binding_digest=binding_digest, component_root=component_root)
@@ -445,7 +446,8 @@ def _materialized_content_matches(
     regular file with exactly the expected bytes. Anything else — an extra or
     missing entry, a symlinked file or directory, a byte difference, an
     OSError — is False, and the caller takes the fresh-directory path
-    (INV-SPEC-004), which also removes whatever made it differ."""
+    (INV-SPEC-004): a new content directory and a retargeted link, the old
+    target removed only when it passes the containment gate."""
     if not slug_dir.is_symlink():
         return False  # absent, or the legacy real-directory layout
     content_dir = resolve_material_content_dir(slug_dir, agents_specialists_dir)

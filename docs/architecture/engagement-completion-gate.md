@@ -11,7 +11,7 @@ last_reviewed: 2026-08-23
 The admission side of ending an engagement: what a *successful* completion is refused over,
 how "unread" and "in flight" differ and why the gate needs both, and what each driver counts;
 and the reload a completed engagement owes for configuration it committed, which a plugin
-mutation's own persist commit does not owe. What a terminal outcome then discloses about the messages that died with the engagement is in
+mutation's plugins-only persist commit does not owe. What a terminal outcome then discloses about the messages that died with the engagement is in
 [`architecture/engagement-inbound-disclosure.md`](engagement-inbound-disclosure.md). The terminal
 transition itself, the strictness that keeps the persisted and in-memory records agreeing, the
 finalization side effects behind the flip and topic output ordering are in
@@ -180,18 +180,20 @@ the terminal writer is already announcing, and settles the turn's admission tick
 — one bounded attempt to tell the operator their message was not delivered, then release, never
 a retry. Both halves of the invariant's last sentence are that one path.
 
-**INV-TOOL-011**: A `config_git_commit` that persists a successful plugin mutation arms no reload obligation when every path the commit changes is under `plugins/` — including while specialists are active and were re-materialized from unchanged inputs since the previous commit. The mutation's pre-activation credit is spent by the first non-empty commit after it, exempt or arming, so a later commit with no new activation arms.
+**INV-TOOL-011**: A non-empty `config_git_commit` whose engagement holds a plugin mutation's pre-activation credit — set when that mutation's reload and verification fully succeed, cleared when a later mutation's begins — arms no reload obligation when every path the commit changes is under `plugins/`, including while specialists are active and were re-materialized from unchanged inputs since the previous commit. The first non-empty commit spends the credit, exempt or arming, so a later commit with no new activation arms.
 
-A completed engagement that committed configuration owes a reload before it finalizes. A
-non-empty `config_git_commit` arms that obligation for its engagement; a successful
-`casa_reload` drains it (`casa_reload_triggers` does not); and `emit_completion` with outcome
-`completed` finds it still armed and forces a `scope="full"` reload before finalizing, because
-models skip the reload the doctrine asks for. A plugin mutation tool reloads and verifies its
+An engagement can owe a reload for configuration it committed. A non-empty
+`config_git_commit` arms that obligation for its engagement unless the exemption below applies;
+a successful `casa_reload` drains it (`casa_reload_triggers` does not), and so does
+`casa_restart_supervised`, which defers a restart to finalization instead; and `emit_completion`
+with outcome `completed` that finds it still armed calls `casa_reload` with `scope="full"`
+before finalizing, because a model can skip the reload the doctrine asks for. A plugin mutation tool reloads and verifies its
 own targets, and on full success credits the engagement, so the commit that merely persists
 the registry change it already activated is exempt — only when every changed path, read back
 from git, is under `plugins/`. A path read that fails yields no paths and arms. The credit is
-cleared when a new mutation starts and set again only if it succeeds, and the first non-empty
-commit spends it, so it can never exempt a later commit that no activation produced. An empty
+cleared when a mutation's reload-and-verify step begins and set again only if that step fully
+succeeds (its postcondition holds and the trigger reconcile ran); finalizing the engagement
+clears it too; and the first non-empty commit spends it, so it can never exempt a later commit that no activation produced. An empty
 commit changes nothing and keeps it. The exemption is reachable at all because an unchanged
 re-materialization writes nothing (INV-SPEC-019, in
 [`architecture/specialist-lifecycle.md`](specialist-lifecycle.md)): without that, boot and

@@ -11720,13 +11720,13 @@ async def emit_completion(args: dict) -> dict:
     if outcome == "completed" and engagement.id in _ENGAGEMENTS_PENDING_RELOAD:
         # An outstanding obligation means a non-empty config_git_commit in
         # this engagement that was NOT the plugins-only persist of a plugin
-        # mutation already activated in process (#222, INV-TOOL-011), and no
-        # successful casa_reload has drained it since (casa_reload_triggers
-        # does not drain it).
-        # It may be any tracked change — agents/, policies/, bindings/,
-        # schema/, specialist tuples, or a plugins/ edit no activation
-        # produced. Specialist operational files re-materialised from
-        # unchanged inputs are no longer among them (#1085, INV-SPEC-019).
+        # mutation already activated in process (#222, INV-TOOL-011), and
+        # neither a successful casa_reload nor casa_restart_supervised has
+        # drained it since (casa_reload_triggers does not drain it).
+        # It may be any tracked change — for example under agents/,
+        # policies/, bindings/, schema/ or specialists/, or a plugins/ edit no
+        # activation produced. Specialist operational files re-materialised
+        # from unchanged inputs are no longer among them (#1085, INV-SPEC-019).
         logger.warning(
             "Engagement %s emit_completion called with outstanding "
             "reload obligation — config_git_commit landed but no "

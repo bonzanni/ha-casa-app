@@ -92,7 +92,7 @@ writes nothing at all (INV-SPEC-019).
 **INV-SPEC-019**: Re-materializing a specialist's operational files from inputs whose rendered bytes already sit — as exactly the four operational files and the binding marker, all regular files — in the slug's own contained content directory writes nothing: the link, the content directory and the files stay as they are. Any difference takes INV-SPEC-004's fresh-directory path.
 
 Enforced in the materializer, which renders the five files' bytes before writing any of
-them — only the specialists directory itself is created first, when absent — and compares them with what the link's target holds, inside the same call as the write and
+them — only the specialists directory, with any missing parent, is created first — and compares them with what the link's target holds, inside the same call as the write and
 so under the caller's `MATERIALIZE_LOCK`. The config repository tracks `agents/**`, and boot
 and every specialist-tier reload re-materialize every active specialist, so without this
 each of them left a tracked change behind that the next configurator commit swept in —
@@ -100,9 +100,10 @@ and the engagement-completion reload guard then forced a reload nobody needed
 (INV-TOOL-011).
 
 What it does not cover: an edit that lands after the comparison. The next re-materialization
-compares again and rewrites it, as a fresh write always did. A changed input — a new tuple,
-a persona override, a model option, a new image's mapping — is a real change and writes
-once.
+compares again and rewrites it, as a fresh write always did. A changed input writes a fresh
+content directory once only when it changes the bytes of one of the five files; one that does
+not writes nothing. A model option is such an input: `runtime.yaml` records the role's model
+policy, not the model it resolves to, so changing the option leaves all five files as they are.
 
 **INV-SPEC-005**: A receipt is integrity-checked on load — a malformed or tampered receipt reads as absent, never as attested.
 
