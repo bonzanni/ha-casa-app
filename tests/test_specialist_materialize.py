@@ -2,6 +2,7 @@
 import os
 from pathlib import Path
 
+import pytest
 import yaml
 
 from specialist_materialize import (
@@ -501,3 +502,169 @@ def test_identical_materialization_preserves_target_without_mutation(tmp_path: P
     materialize_specialist_operational_files(**kwargs)
     second = _entry_identities(agents_specialists_dir)
     assert (len(second), sum(second[k] != first.get(k) for k in second)) == (len(first), 0)
+
+
+_MTG_KWARGS_DIGEST = "sha256:" + "d" * 64
+_MTG_KWARGS_ROOT = "specialist:acme/mtg@1.0.0:sha256:" + "e" * 64
+
+
+def _materialize_mtg(agents_specialists_dir: Path, **overrides) -> None:
+    role, persona = _fixed_role_and_persona()
+    kwargs = dict(agents_specialists_dir=agents_specialists_dir, slug="mtg", role=role,
+                  persona=persona, binding_digest=_MTG_KWARGS_DIGEST,
+                  component_root=_MTG_KWARGS_ROOT)
+    kwargs.update(overrides)
+    materialize_specialist_operational_files(**kwargs)
+
+
+def _content_dir(agents_specialists_dir: Path, slug: str = "mtg") -> Path:
+    return agents_specialists_dir / os.readlink(agents_specialists_dir / slug)
+
+
+def _expected_bytes(**overrides) -> dict:
+    import specialist_materialize as sm
+    role, persona = _fixed_role_and_persona()
+    out = sm._render_specialist_operational_files(slug="mtg", role=role, persona=persona)
+    out[".binding-digest"] = sm._binding_marker_bytes(
+        binding_digest=overrides.get("binding_digest", _MTG_KWARGS_DIGEST),
+        component_root=overrides.get("component_root", _MTG_KWARGS_ROOT))
+    return out
+
+
+def _assert_replaced_with_expected(agents_specialists_dir: Path, old_target: str,
+                                   **overrides) -> None:
+    """One replacement: a new own-slug target, the old content dir GC'd, and
+    exactly the five expected regular files with the expected bytes."""
+    new_target = os.readlink(agents_specialists_dir / "mtg")
+    content = agents_specialists_dir / new_target
+    expected = _expected_bytes(**overrides)
+    assert (new_target != old_target, (agents_specialists_dir / old_target).exists(),
+            sorted(os.listdir(content))) == (True, False, sorted(expected))
+    for name, data in expected.items():
+        assert not (content / name).is_symlink()
+        assert (content / name).read_bytes() == data, name
+
+
+
+@pytest.mark.parametrize("name", ["character.yaml", "voice.yaml", "response_shape.yaml",
+                                  "runtime.yaml", ".binding-digest"])
+def test_a_changed_file_on_disk_is_replaced_not_reused(tmp_path: Path, name: str) -> None:
+    """#1085 / INV-SPEC-019 boundary: every one of the five files is compared —
+    a hand edit to any of them is rewritten at the next reconcile."""
+    asd = tmp_path / "asd"
+    _materialize_mtg(asd)
+    old = os.readlink(asd / "mtg")
+    (asd / old / name).write_bytes((asd / old / name).read_bytes() + b"# hand edit\n")
+    _materialize_mtg(asd)
+    _assert_replaced_with_expected(asd, old)
+
+
+@pytest.mark.parametrize("override", [
+    {"binding_digest": "sha256:" + "f" * 64},
+    {"component_root": "specialist:acme/mtg@2.0.0:sha256:" + "e" * 64},
+])
+def test_a_marker_field_change_is_replaced_not_reused(tmp_path: Path, override: dict) -> None:
+    asd = tmp_path / "asd"
+    _materialize_mtg(asd)
+    old = os.readlink(asd / "mtg")
+    _materialize_mtg(asd, **override)
+    _assert_replaced_with_expected(asd, old, **override)
+
+
+def test_an_empty_marker_field_is_reused_like_none(tmp_path: Path) -> None:
+    asd = tmp_path / "asd"
+    _materialize_mtg(asd, binding_digest=None, component_root=None)
+    old = os.readlink(asd / "mtg")
+    _materialize_mtg(asd, binding_digest="", component_root="")
+    assert os.readlink(asd / "mtg") == old
+
+
+def test_an_extra_entry_is_replaced_not_reused(tmp_path: Path) -> None:
+    asd = tmp_path / "asd"
+    _materialize_mtg(asd)
+    old = os.readlink(asd / "mtg")
+    (asd / old / "notes.md").write_text("stray\n", encoding="utf-8")
+    _materialize_mtg(asd)
+    _assert_replaced_with_expected(asd, old)
+
+
+def test_a_missing_entry_is_replaced_not_reused(tmp_path: Path) -> None:
+    asd = tmp_path / "asd"
+    _materialize_mtg(asd)
+    old = os.readlink(asd / "mtg")
+    (asd / old / "voice.yaml").unlink()
+    _materialize_mtg(asd)
+    _assert_replaced_with_expected(asd, old)
+
+
+def test_a_symlinked_file_with_identical_bytes_is_replaced(tmp_path: Path) -> None:
+    asd = tmp_path / "asd"
+    _materialize_mtg(asd)
+    old = os.readlink(asd / "mtg")
+    elsewhere = tmp_path / "runtime-copy.yaml"
+    elsewhere.write_bytes((asd / old / "runtime.yaml").read_bytes())
+    (asd / old / "runtime.yaml").unlink()
+    os.symlink(elsewhere, asd / old / "runtime.yaml")
+    _materialize_mtg(asd)
+    _assert_replaced_with_expected(asd, old)
+
+
+def test_a_content_dir_that_is_itself_a_symlink_is_replaced(tmp_path: Path) -> None:
+    """The own-shaped target name resolves, contained, to a real directory
+    with identical bytes — but through a symlink, so it is not reused."""
+    asd = tmp_path / "asd"
+    _materialize_mtg(asd)
+    real = os.readlink(asd / "mtg")
+    alias = ".mtg.material-" + "a" * 32
+    os.symlink(real, asd / alias)
+    os.symlink(alias, asd / ".mtg.tmp-link")
+    os.replace(asd / ".mtg.tmp-link", asd / "mtg")
+    _materialize_mtg(asd)
+    new_target = os.readlink(asd / "mtg")
+    assert new_target not in (alias, real)
+    assert not (asd / new_target).is_symlink()
+    assert sorted(os.listdir(asd / new_target)) == sorted(_expected_bytes())
+
+
+def test_a_cross_slug_target_with_matching_bytes_is_replaced_and_the_other_slug_untouched(
+    tmp_path: Path,
+) -> None:
+    asd = tmp_path / "asd"
+    _materialize_mtg(asd)
+    _materialize_mtg(asd, slug="other")
+    other_target = os.readlink(asd / "other")
+    before = {n: (asd / other_target / n).read_bytes() for n in os.listdir(asd / other_target)}
+    # Point mtg at other's content (its rendered files differ only by slug-free
+    # fields here, but the shape gate must refuse it regardless).
+    os.symlink(other_target, asd / ".mtg.tmp-link")
+    os.replace(asd / ".mtg.tmp-link", asd / "mtg")
+    _materialize_mtg(asd)
+    assert os.readlink(asd / "mtg").startswith(".mtg.material-")
+    assert os.readlink(asd / "other") == other_target
+    assert {n: (asd / other_target / n).read_bytes()
+            for n in os.listdir(asd / other_target)} == before
+
+
+def test_a_legacy_real_directory_is_migrated_not_reused(tmp_path: Path) -> None:
+    asd = tmp_path / "asd"
+    asd.mkdir()
+    (asd / "mtg").mkdir()
+    for name, data in _expected_bytes().items():
+        (asd / "mtg" / name).write_bytes(data)
+    _materialize_mtg(asd)
+    assert (asd / "mtg").is_symlink()
+
+
+def test_a_render_failure_touches_nothing(tmp_path: Path, monkeypatch) -> None:
+    import specialist_materialize as sm
+    asd = tmp_path / "asd"
+    _materialize_mtg(asd)
+    before = _entry_identities(asd)
+
+    def boom(**kwargs):
+        raise RuntimeError("render failed")
+
+    monkeypatch.setattr(sm, "_render_specialist_operational_files", boom)
+    with pytest.raises(RuntimeError):
+        _materialize_mtg(asd)
+    assert _entry_identities(asd) == before
