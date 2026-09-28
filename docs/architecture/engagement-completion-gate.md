@@ -184,7 +184,7 @@ a retry. Both halves of the invariant's last sentence are that one path.
 
 A completed engagement that committed configuration owes a reload before it finalizes. A
 non-empty `config_git_commit` arms that obligation for its engagement; a successful
-`casa_reload` or `casa_reload_triggers` drains it; and `emit_completion` with outcome
+`casa_reload` drains it (`casa_reload_triggers` does not); and `emit_completion` with outcome
 `completed` finds it still armed and forces a `scope="full"` reload before finalizing, because
 models skip the reload the doctrine asks for. A plugin mutation tool reloads and verifies its
 own targets, and on full success credits the engagement, so the commit that merely persists
@@ -197,8 +197,8 @@ re-materialization writes nothing (INV-SPEC-019, in
 [`architecture/specialist-lifecycle.md`](specialist-lifecycle.md)): without that, boot and
 every specialist-tier reload left specialist operational files in the next commit.
 
-What it does not cover: which scope drains the obligation — any successful reload does,
-whether or not it reloads what the commit changed. A commit that mixes plugin and other paths
+What it does not cover: which scope drains the obligation — any successful `casa_reload`
+does, whether or not it reloads what the commit changed. A commit that mixes plugin and other paths
 arms, even when the other paths are derived files that a changed input rewrote once.
 
 ## Failure behavior

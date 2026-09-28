@@ -91,8 +91,8 @@ writes nothing at all (INV-SPEC-019).
 
 **INV-SPEC-019**: Re-materializing a specialist's operational files from inputs whose rendered bytes already sit — as exactly the four operational files and the binding marker, all regular files — in the slug's own contained content directory writes nothing: the link, the content directory and the files stay as they are. Any difference takes INV-SPEC-004's fresh-directory path.
 
-Enforced in the materializer, which renders the five files' bytes before touching the disk
-and compares them with what the link's target holds, inside the same call as the write and
+Enforced in the materializer, which renders the five files' bytes before writing any of
+them — only the specialists directory itself is created first, when absent — and compares them with what the link's target holds, inside the same call as the write and
 so under the caller's `MATERIALIZE_LOCK`. The config repository tracks `agents/**`, and boot
 and every specialist-tier reload re-materialize every active specialist, so without this
 each of them left a tracked change behind that the next configurator commit swept in —
