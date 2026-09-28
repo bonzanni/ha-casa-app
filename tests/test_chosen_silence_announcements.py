@@ -442,6 +442,42 @@ async def test_replayed_terminal_chosen_silence_clears_marker_and_answer(
     assert await fresh.recover_after_restart() == []
 
 
+async def test_replayed_failure_chosen_silence_clears_marker_once(
+    resident, tmp_path, monkeypatch,
+):
+    """#1084 regression guard (green at the base; no receipt): the replay
+    statement the error arm now carries changes only what the resident is
+    told — a clean chosen silence on a replayed FAILURE still discharges the
+    obligation exactly once (INV-JOB-010, #1079 untouched)."""
+    from job_registry import JobFailure
+
+    agent, stub = resident
+    first = await _jobs(tmp_path, 200.0)
+    await first.create(_job())
+    await first.fail_compat(
+        "job-1079", JobFailure("timeout", "took too long"),
+        announce_creator=True)
+
+    registry = await _jobs(tmp_path, 300.0)
+    owed, bus = await _replay_jobs(registry)
+    assert [j.id for j in owed] == ["job-1079"]
+    assert len(bus.sent) == 1
+    notice = bus.sent[0]
+    assert notice.content.status == "error"
+    assert notice.content.replayed_after_restart is True
+
+    counted = _Counted(notice.on_delivery)
+    notice.on_delivery = counted
+    factory = _Factory([[_mk_assistant("<silent/>")]])
+    response, seen = await _handle(agent, notice, factory, monkeypatch)
+
+    _assert_one_silent_discharge(stub, response, seen, counted)
+    assert seen.synth[0].content.count("post-restart re-announcement") == 1
+    assert registry.get("job-1079").terminal_notification_pending is False
+    fresh = await _jobs(tmp_path, 400.0)
+    assert await fresh.recover_after_restart() == []
+
+
 def _driver_double():
     d = MagicMock()
     d.cancel = AsyncMock()

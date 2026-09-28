@@ -105,7 +105,24 @@ does instead is say what it is. The resident is told that this is a post-restart
 re-announcement whose full delivery was not confirmed — the interrupted relay may have shown
 the operator nothing, a partial streamed draft, or the whole answer with only its
 acknowledgement lost — and that the complete result is still owed; a live completion is never
-so marked, and that statement is the only difference the replay introduces. A live prompt can
+so marked, and that statement is the only difference the replay introduces.
+
+Every other terminal outcome a boot replays says what it is too. A failure, or a success whose
+answer the row did not keep, is announced as an earlier outcome reached before the restart whose
+announcement was never confirmed, with the instruction not to present it as something that just
+happened; without that, a failure replayed at boot read exactly like one that had just occurred.
+A converted orphan gets its own statement, because it reached no outcome before the restart: the
+boot that found it still running recorded the loss, so its notice says the delegation was already
+lost when Casa came back up. Each statement also gives the time Casa recorded the outcome — the
+row's terminal time, rendered in the zone and form of the turn's `<current_time>` block, with a
+rough age — and for an orphan that is when the loss was recorded, stated as such, since the work
+may have stopped earlier. A row with no recorded time says its age is unknown rather than borrowing
+another clock. The statement, time included, is one block inserted after the notice's header, so
+on every arm the live and replayed prompts still differ in exactly that block. The replay mark is
+the notice's own flag, set only by the delegation boot replay, never the presence of a time; an
+engagement outcome replayed at boot does not carry it and is worded exactly as before. The boot
+log names the same distinction: only a converted live row is logged as an orphan, and a row that
+went terminal before the restart is logged as an unannounced outcome being replayed. A live prompt can
 carry one more instruction that a replay cannot: the note telling the resident not to retry an
 action that stopped at an operator approval
 ([`plugin-authorization.md`](plugin-authorization.md), under INV-PLUG-004) is read from an in-process record, which no
@@ -114,7 +131,7 @@ operator may already have read is the price of never losing one, and a resident 
 the replay as a duplicate and narrated a fragment discharged the whole answer by the rule
 above, which is why it is now told not to.
 
-**INV-JOB-016**: A retained answer replayed at boot is handed to the consuming resident as a post-restart re-announcement whose full delivery was not confirmed, with the instruction to relay the whole answer — a completion announced live is never so marked, and that statement is the only difference the replay introduces: for the same completion the two synthesized prompts differ in exactly that statement, except where the live prompt also carries an instruction that depends on in-process state.
+**INV-JOB-016**: A delegation outcome replayed at boot is handed to the consuming resident with one replay statement after the notice's header — for a retained answer, a post-restart re-announcement whose full delivery was not confirmed, with the instruction to relay the whole answer; for a failure or an answerless success, a post-restart re-announcement of an earlier outcome; for a converted orphan, a notice that the delegation was already lost when Casa came back up — and that statement carries the time Casa recorded the outcome (for an orphan, when the loss was recorded), or says that time is unknown. A completion announced live is never so marked, and that statement is the only difference the replay introduces: for the same completion the two synthesized prompts differ in exactly that statement, except where the live prompt also carries an instruction that depends on in-process state.
 
 **INV-JOB-015**: A non-voice delegated answer is retained on the durable row exactly while its announcement is owed — it is written in the same snapshot that arms the obligation and only when the obligation is armed, and it is removed in the same snapshot that clears the obligation, on DELIVERY or on a clean chosen silence (INV-JOB-010) — so an answer that was in hand when a delegation completed reaches its creator across a restart, and stops being retained once the announcement has been acknowledged.
 

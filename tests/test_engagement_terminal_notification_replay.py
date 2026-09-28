@@ -552,4 +552,12 @@ async def test_the_engagement_outcome_replay_is_not_marked_as_a_delegation_repla
     for msg in bus.sent:
         assert msg.content.replayed_after_restart is False
         assert msg.content.result_available is False
-        assert _synth_body(msg).count("re-announcement") == 0
+        # #1084: engagements stay out of the delegation replay statement and
+        # its recorded time — no restart claim reaches an engagement prompt,
+        # the ok-without-answer arm included (its wording is neutral, #766).
+        assert msg.content.terminal_at is None
+        body = _synth_body(msg)
+        assert body.count("re-announcement") == 0
+        assert body.count("restart") == 0
+        assert body.count("Casa recorded") == 0
+        assert body.count("age is unknown") == 0

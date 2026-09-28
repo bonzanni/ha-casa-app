@@ -102,8 +102,15 @@ class DelegationComplete:
     # relay the restart interrupted may have shown the user nothing, a partial
     # streamed draft, or the whole answer whose acknowledgement was lost with
     # the process. The answer-carrying synthesis arm reads it to tell the
-    # resident that full delivery was not confirmed (INV-JOB-016).
+    # resident that full delivery was not confirmed (INV-JOB-016); since
+    # #1084 every terminal arm reads it and says the notice is a replay.
     replayed_after_restart: bool = False
+    # #1084: the time the job registry recorded the row terminal
+    # (`VoiceJob.terminal_at`) — for a converted orphan, the boot that
+    # converted it, so a lower bound on the loss's age. Set by the same one
+    # producer as `replayed_after_restart`, and read only when that flag is
+    # True: a timestamp on its own never marks a prompt.
+    terminal_at: float | None = None
 
 
 # ---------------------------------------------------------------------------
