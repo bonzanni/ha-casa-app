@@ -729,20 +729,34 @@ async def test_retained_answer_replay_adds_only_the_restart_reannouncement(
         assert notice.content.status == "ok"
         assert notice.content.result_available is True
 
+    # #1084: the replay statement now carries the time the registry recorded
+    # the row terminal (200.0 above), folded into the one inserted block; the
+    # synthesis clock and zone are frozen so the block is a literal.
+    from zoneinfo import ZoneInfo
+    import agent as agent_mod
+    monkeypatch.setattr(agent_mod, "_replay_clock", lambda: 2000.0)
+    monkeypatch.setattr(agent_mod, "resolve_tz", lambda: ZoneInfo("UTC"))
+    assert replay_notice.content.terminal_at == 200.0
+    assert getattr(live_notice.content, "terminal_at", None) is None
+    reannouncement = (
+        _REANNOUNCEMENT_926[:-2] + " Casa recorded this outcome at "
+        "1970-01-01T00:03:20+00:00 (about 30 minutes ago).\n\n"
+    )
+
     live_body = Agent._synthesize_delegation_turn(Mock(), live_notice).content
     replay_msg = Agent._synthesize_delegation_turn(Mock(), replay_notice)
     replay_body = replay_msg.content
 
     # THE PIN. At the base the first line fails: the bodies are byte-identical.
     assert replay_body != live_body
-    assert live_body.count(_REANNOUNCEMENT_926) == 0
-    assert replay_body.count(_REANNOUNCEMENT_926) == 1
-    assert replay_body.replace(_REANNOUNCEMENT_926, "", 1) == live_body
+    assert live_body.count(reannouncement) == 0
+    assert replay_body.count(reannouncement) == 1
+    assert replay_body.replace(reannouncement, "", 1) == live_body
 
     # Placement, and the live template preserved byte-for-byte.
     assert live_body == _HEAD_926 + _RESULT_926 + answer + "\n" + _TAIL_926
     assert replay_body == (
-        _HEAD_926 + _REANNOUNCEMENT_926 + _RESULT_926 + answer + "\n" + _TAIL_926
+        _HEAD_926 + reannouncement + _RESULT_926 + answer + "\n" + _TAIL_926
     )
 
     # Structural answer checks — the empty slot is pinned by partition, never
@@ -796,9 +810,10 @@ async def test_retained_answer_replay_adds_only_the_restart_reannouncement(
 
 
 # #926 regression guards (green at the base or not base-red; no receipt):
-# the marker is read by the answer-carrying arm ONLY, every other arm renders
-# its previous prompt byte-for-byte whatever the marker says, and two owed rows
-# acknowledge independently.
+# every other arm renders its previous prompt byte-for-byte when live, and two
+# owed rows acknowledge independently. #1084 amended the first: a REPLAYED
+# notice on these arms now adds exactly one replay statement after the header
+# (it used to be ignored there, which made a replayed failure read as fresh).
 
 _TAIL_926_GENERIC = (
     "\nThe original user question was: q\n\n"
@@ -839,7 +854,7 @@ _OTHER_ARMS_926 = {
 
 @pytest.mark.parametrize("shape", sorted(_OTHER_ARMS_926))
 @pytest.mark.parametrize("marker", [False, True], ids=["live", "replay"])
-async def test_every_other_arm_renders_its_previous_prompt_whatever_the_marker_says(
+async def test_every_other_arm_renders_its_previous_prompt_plus_one_replay_statement(
     shape, marker,
 ):
     from unittest.mock import Mock
@@ -857,8 +872,15 @@ async def test_every_other_arm_renders_its_previous_prompt_whatever_the_marker_s
         content=complete, channel="telegram", context={},
     )
     body = Agent._synthesize_delegation_turn(Mock(), msg).content
-    assert body == expected + _TAIL_926_GENERIC
-    assert body.count("re-announcement") == 0
+    if not marker:
+        assert body == expected + _TAIL_926_GENERIC
+        assert body.count("re-announcement") == 0
+        return
+    notice = (_ORPHAN_NOTICE_1084 if shape == "orphan"
+              else _OUTCOME_NOTICE_1084)
+    head, sep, rest = expected.partition("]\n\n")
+    assert body == (head + sep + notice + _UNKNOWN_TIME_1084 + "\n\n" + rest
+                    + _TAIL_926_GENERIC)
 
 
 async def test_two_owed_rows_replay_as_two_notices_and_acknowledge_apart(

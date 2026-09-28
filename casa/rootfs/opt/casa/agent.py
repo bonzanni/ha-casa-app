@@ -8,6 +8,7 @@ import dataclasses
 import hashlib
 import json
 import logging
+import math
 import time
 import weakref
 from contextvars import ContextVar
@@ -899,8 +900,88 @@ _REPLAY_REANNOUNCEMENT = (
     "answer. The complete result text below is still owed to them — relay "
     "all of it, even if it appears in your conversation history. Do not "
     "dismiss it as a duplicate, summarise it, or supply only an ending; keep "
-    "only your own framing concise.\n\n"
+    "only your own framing concise."
 )
+# #1084: the replay statement of the terminal arms that carry no answer. At
+# the base only the answer arm said it was a replay, so a failure replayed at
+# boot read exactly like one that had just happened.
+_REPLAY_OUTCOME_NOTICE = (
+    "This is a post-restart re-announcement. This outcome was reached before "
+    "a Casa restart, and its announcement to the user was never confirmed as "
+    "delivered. Tell the user it is an earlier result being reported after a "
+    "restart — do NOT present it as something that just happened."
+)
+# A converted orphan reached no outcome before the restart: the boot that
+# found it still running recorded the loss. Nor is its first notice a
+# RE-announcement, so it has its own statement.
+_REPLAY_ORPHAN_NOTICE = (
+    "This notice comes from Casa's restart recovery: the delegation was "
+    "already lost when Casa came back up, and Casa has not confirmed that the "
+    "user has been told. Do NOT present the loss as something that just "
+    "happened."
+)
+_REPLAY_TIME_UNKNOWN = (
+    "Casa has no record of when this outcome was recorded, so its age is "
+    "unknown."
+)
+
+# #1084: the synthesis clock a replay's age is measured against, read once per
+# replayed notice. A module seam so tests freeze it without patching `time`.
+_replay_clock = time.time
+
+
+def _approximate_age(seconds: float) -> str | None:
+    """A coarse, floor-rounded age; None when the clock is behind the record."""
+    if not math.isfinite(seconds) or seconds < 0:
+        return None
+    if seconds < 120:
+        return "a minute"
+    minutes = int(seconds // 60)
+    if minutes < 120:
+        return f"{minutes} minutes"
+    hours = int(seconds // 3600)
+    if hours < 48:
+        return f"{hours} hours"
+    return f"{int(seconds // 86400)} days"
+
+
+def _replay_time_sentence(complete: DelegationComplete, *, orphan: bool) -> str:
+    """When Casa recorded a replayed outcome, as recorded (#1084).
+
+    The time is the row's `terminal_at`: for a converted orphan that is the
+    boot that converted it, so the sentence says when the LOSS was recorded
+    and that the work may have stopped earlier. It is rendered in the zone and
+    form of the turn's `<current_time>` envelope so the two compare directly.
+    A missing or unusable time is said to be unknown — never replaced by
+    another clock — and 0.0 is a time like any other."""
+    recorded = complete.terminal_at
+    when = None
+    if (isinstance(recorded, (int, float)) and not isinstance(recorded, bool)
+            and math.isfinite(recorded)):
+        try:
+            when = datetime.fromtimestamp(recorded, resolve_tz())
+        except (OverflowError, OSError, ValueError):
+            when = None
+    if when is None:
+        return _REPLAY_TIME_UNKNOWN
+    age = _approximate_age(_replay_clock() - recorded)
+    sentence = (
+        f"Casa recorded {'the loss' if orphan else 'this outcome'} at "
+        f"{when.isoformat(timespec='seconds')}"
+    )
+    if age is not None:
+        sentence += f" (about {age} ago)"
+    if orphan:
+        return sentence + "; the work may have stopped earlier."
+    return sentence + "."
+
+
+def _replay_statement(statement: str, complete: DelegationComplete, *,
+                      orphan: bool = False) -> str:
+    """The ONE block a boot replay inserts after the notice's header — the
+    arm's statement with its recorded-time sentence folded in (INV-JOB-016)."""
+    return (statement + " "
+            + _replay_time_sentence(complete, orphan=orphan) + "\n\n")
 
 class Agent:
     """A Casa agent backed by the Claude Agent SDK."""
@@ -1401,10 +1482,19 @@ class Agent:
             # "the answer itself is gone" were both false on that arm, and told
             # the operator something untrue about durable state. What is true of
             # both producers is only that this NOTICE does not carry the answer.
+            #
+            # #1084: the replay statement is added only on a flagged notice,
+            # which only the DELEGATION boot replay builds — for which "reached
+            # before a Casa restart" is true. The engagement producer never
+            # sets the flag, so its prompt here stays exactly as neutral.
             body = (
                 f"[System notification: your delegation to {complete.agent} "
                 f"(id {short_id}) finished, and this recovery notice does not "
                 "carry its answer]\n\n"
+            )
+            if complete.replayed_after_restart:
+                body += _replay_statement(_REPLAY_OUTCOME_NOTICE, complete)
+            body += (
                 "The work finished. This notice carries the outcome only, not "
                 "the result text. Tell the user it completed, and offer to run "
                 "it again if they want the detail — do NOT promise to look the "
@@ -1422,13 +1512,19 @@ class Agent:
                 # discharged the whole answer (INV-JOB-010/015 are content
                 # blind by design, and stay so). Only what the resident is
                 # TOLD changes; the statement is the one difference between
-                # the two prompts (INV-JOB-016).
-                body += _REPLAY_REANNOUNCEMENT
+                # the two prompts (INV-JOB-016). #1084: the recorded time is
+                # folded into that one statement, never a separate line.
+                body += _replay_statement(_REPLAY_REANNOUNCEMENT, complete)
             body += f"Result text from {complete.agent}:\n{complete.text}\n"
         elif complete.kind == "restart_orphan":
             body = (
                 f"[System notification: your delegation to {complete.agent} "
                 f"(id {short_id}) was orphaned by a Casa restart]\n\n"
+            )
+            if complete.replayed_after_restart:
+                body += _replay_statement(
+                    _REPLAY_ORPHAN_NOTICE, complete, orphan=True)
+            body += (
                 "I lost track of this delegation during a Casa restart. "
                 "Tell the user and offer to retry.\n"
             )
@@ -1450,6 +1546,12 @@ class Agent:
             body = (
                 f"[System notification: your delegation to {complete.agent} "
                 f"(id {short_id}) has returned with status=error]\n\n"
+            )
+            if complete.replayed_after_restart:
+                # #1084: a failure replayed at boot otherwise reads exactly
+                # like one that just happened.
+                body += _replay_statement(_REPLAY_OUTCOME_NOTICE, complete)
+            body += (
                 f"Delegation failed ({complete.kind or 'unknown'}): "
                 f"{complete.message}\n"
             )

@@ -3781,12 +3781,26 @@ async def _notify_recovered_delegations(
         if not (job.orphan_notification_pending
                 or job.terminal_notification_pending):
             continue
+        # #1084: the log names the row's kind. The orphan marker is written
+        # only by the live-row conversion, and the two markers never share a
+        # row, so a terminal-marker row went terminal while the previous
+        # process was up — it is not an orphan. True orphans keep their
+        # historical lines; the terminal row carries its fixed status token.
+        is_orphan = bool(job.orphan_notification_pending)
+        row_status = "ok" if job.failure is None else "error"
         target_role = job.creating_role or assistant_role
         if target_role not in bus.queues:
-            logger.error(
-                "Orphan delegation %s targets unknown role %r — retained for retry",
-                job.id[:8], target_role,
-            )
+            if is_orphan:
+                logger.error(
+                    "Orphan delegation %s targets unknown role %r — retained for retry",
+                    job.id[:8], target_role,
+                )
+            else:
+                logger.error(
+                    "Unannounced delegation outcome %s status=%s targets "
+                    "unknown role %r — retained for retry",
+                    job.id[:8], row_status, target_role,
+                )
             continue
 
         # #688: the notice reports what the ROW holds, rather than a fixed
@@ -3813,6 +3827,10 @@ async def _notify_recovered_delegations(
             # so, on every shape it builds; which arm renders the fact is the
             # synthesizer's decision. A live producer never sets this.
             replayed_after_restart=True,
+            # #1084: when the registry recorded the row terminal, so the
+            # replay can say how old the outcome is (for an orphan, when the
+            # loss was recorded). Same producer rule as the flag above.
+            terminal_at=job.terminal_at,
             origin={
                 "role": job.creating_role,
                 "channel": job.creator_peer,
@@ -3851,16 +3869,30 @@ async def _notify_recovered_delegations(
             # Do not log exception text/tracebacks: connector failures can
             # include payload or credential material. The durable pending bit
             # retains enough state for the next boot to retry.
-            logger.error(
-                "Orphan notification failed: id=%s phase=notify — retained",
-                job.id[:8],
-            )
+            if is_orphan:
+                logger.error(
+                    "Orphan notification failed: id=%s phase=notify — retained",
+                    job.id[:8],
+                )
+            else:
+                logger.error(
+                    "Unannounced delegation outcome notification failed: "
+                    "id=%s status=%s phase=notify — retained",
+                    job.id[:8], row_status,
+                )
             continue
 
-        logger.warning(
-            "Orphan delegation recovered: id=%s agent=%s — NOTIFICATION posted",
-            job.id[:8], job.specialist_role,
-        )
+        if is_orphan:
+            logger.warning(
+                "Orphan delegation recovered: id=%s agent=%s — NOTIFICATION posted",
+                job.id[:8], job.specialist_role,
+            )
+        else:
+            logger.warning(
+                "Unannounced delegation outcome replayed: id=%s agent=%s "
+                "status=%s — NOTIFICATION posted",
+                job.id[:8], job.specialist_role, row_status,
+            )
 
 
 # §8: the password-typed app options, whose values may be an `op://` reference
