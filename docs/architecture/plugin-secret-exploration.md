@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-17
+last_reviewed: 2026-09-28
 ---
 
 # Plugin secret exploration
@@ -50,13 +50,19 @@ reference the resolver accepts.
 
 ## Contracts & invariants
 
-**INV-TOOL-009**: When `plugin_add` or `plugin_update` activates a plugin with required environment variables that are unresolved, and a default vault and a 1Password token are configured, the result carries `secret_candidates` — the vault searched, the queries tried, the matching items as the query term each matched and its op id with, per field, the op id, a role from Casa's closed set and a validated type, and the variables still unresolved — and never a title, a label, a section, a field value, a reference, a token or the `op` CLI's own output; a failed lookup is reported as a fixed classification — the exit code for a non-zero exit, `op_timeout` or `op_unreadable` for a call that did not return or returned something other than the expected JSON — and does not fail the mutation and logs no message of the failure's own; no operator-typed vault string is returned — an item is reported by the query term its title matched (the `matched_query` key, never a `name`) and its id, and a field by its id, its type and a role from Casa's closed set, never by its label or section; nothing is wired by it; and the two vault tools accept an omitted `vault`, fall back to the same default, and fail with the same classification.
+**INV-TOOL-009**: When `plugin_add` or `plugin_update` activates a plugin with required environment variables that are unresolved and not declared in the `casa.setupProvides` of the manifest that mutation just published, and a default vault and a 1Password token are configured, the result carries `secret_candidates` — the vault searched, the queries tried, the matching items as the query term each matched and its op id with, per field, the op id, a role from Casa's closed set and a validated type, and the variables still unresolved, none of them a name that manifest declares in `casa.setupProvides` — and never a title, a label, a section, a field value, a reference, a token or the `op` CLI's own output; a failed lookup is reported as a fixed classification — the exit code for a non-zero exit, `op_timeout` or `op_unreadable` for a call that did not return or returned something other than the expected JSON — and does not fail the mutation and logs no message of the failure's own; no operator-typed vault string is returned — an item is reported by the query term its title matched (the `matched_query` key, never a `name`) and its id, and a field by its id, its type and a role from Casa's closed set, never by its label or section; nothing is wired by it; and the two vault tools accept an omitted `vault`, fall back to the same default, and fail with the same classification.
 
 The exploration runs after the registry write and the reload, so it can neither delay nor
 fail activation. The queries are the plugin name and each vendor stem of the unresolved
 variables (`GMAIL_CLIENT_ID` → `gmail`), deduplicated, at most three; at most five items are
 returned, each with the fields `get_item_fields` would report for it (id, role, type). A variable already
-present in the effective environment is not listed as unresolved. The field is absent when
+present in the effective environment is not listed as unresolved. Neither is a name the plugin
+declares in `casa.setupProvides` (#1024): its own setup tool makes that value and reports it
+for wiring, so no vault item holds it — and since every declarable name is `CASA_PLUGIN_*`, its
+only query would have been `casa`. The declaration is read from the manifest the mutation just
+published, never from the resolved snapshot, which during an update can still be the old
+artifact: a name the new version stops declaring but still references is explored again. A
+declaration that cannot be read counts as none. The field is absent when
 there is nothing to explore for — no unresolved variable, no default vault, no token — so
 its absence is not a failure and its presence is not a promise that anything matched.
 
@@ -101,6 +107,10 @@ path.
 
 **A variable already resolved in the environment.** It is not listed as unresolved and does
 not widen the queries.
+
+**A variable the published manifest declares in `casa.setupProvides`.** The same: not listed,
+no query; a plugin whose only unresolved variables are declared ones carries no
+`secret_candidates` and no `op` call is made. `required_env_vars` still names it.
 
 ## Extension points
 
