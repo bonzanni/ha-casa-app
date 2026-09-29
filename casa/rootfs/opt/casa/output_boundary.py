@@ -152,24 +152,26 @@ def strips_to_silence(text: str | None) -> bool:
 
 
 def closing_silence_prefix(text: str | None, messages: Any) -> str | None:
-    """#1075: when *messages* — the text-bearing messages the final reply
-    *text* was joined from — end in a run of messages that each strip to
-    silence, contain ``<silent/>``, and follow earlier text, return the earlier
-    messages joined exactly as the reply joins them. ``None`` when the rule
-    does not apply: no per-message fact, a fact that is not THIS text's, a
-    last message with prose in it (the G-3 recant contract), or a trailing run
-    with no sentinel. Earlier messages are never inspected, so a mid-turn
-    recant stays verbatim."""
+    """#1075: when the LAST of *messages* — the text-bearing messages the final
+    reply *text* was joined from — strips to ``<silent/>`` (silence with at
+    least one sentinel in it), return the messages before the trailing run of
+    messages that each strip to silence, joined exactly as the reply joins
+    them. ``None`` when the rule does not apply: no per-message fact, a fact
+    that is not THIS text's, a last message with prose in it (the G-3 recant
+    contract), a last message with no sentinel — a whitespace-only one
+    included, whatever sentinel precedes it — or no earlier text. Earlier
+    messages are never inspected, so a mid-turn recant stays verbatim."""
     if (not isinstance(messages, (list, tuple)) or len(messages) < 2
             or not all(isinstance(m, str) for m in messages)
             or "\n\n".join(messages) != text):
         return None
+    last = messages[-1]
+    if SILENCE_SENTINEL not in last or not strips_to_silence(last):
+        return None
     k = len(messages)
     while k > 0 and strips_to_silence(messages[k - 1]):
         k -= 1
-    if k == 0 or k == len(messages):
-        return None
-    if not any(SILENCE_SENTINEL in m for m in messages[k:]):
+    if k == 0:
         return None
     return "\n\n".join(messages[:k])
 

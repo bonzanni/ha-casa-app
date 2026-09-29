@@ -10,7 +10,8 @@ delivery, and on ``TurnScope`` directly where it is a record:
   trailing run of several sentinels, a mid-turn recant, the disclosure line
   applied after the strip;
 * what does NOT change: a single message with its sentinel, prose after a
-  sentinel in the last message, a trailing whitespace message, a patched
+  sentinel in the last message, a trailing whitespace message (even after a
+  sentinel, with or without a confirmed send), a patched
   ``_process`` with no per-message fact, a streaming turn, the #1079
   discharge on a streaming announcement turn;
 * the record: ``closing_silence_earned`` is never vacuous, an in-flight or
@@ -161,6 +162,25 @@ async def test_endings_the_rule_does_not_read_are_delivered_as_before(
                                 + [_mk_assistant(t) for t in script_texts])
     assert len(stub.tool_sends()) == 1
     assert stub.final_texts() == [delivered]
+
+
+@pytest.mark.parametrize("make_msg", TURNS)
+@pytest.mark.parametrize("with_send", [True, False])
+async def test_a_trailing_whitespace_message_after_a_sentinel_is_not_a_closing_one(
+    tmp_path, monkeypatch, make_msg, with_send,
+):
+    """The ruling reads the turn's LAST message: here that is a whitespace
+    message, not a ``<silent/>``, so an earlier sentinel never makes it a
+    closing one — with a confirmed send the text is not dropped, without one
+    the trailing messages are not stripped. Delivered as before the ruling."""
+    results: list = []
+    script = ([_send(results)] if with_send else []) + [
+        _mk_assistant("Correction: pickup is tomorrow."),
+        _mk_assistant("<silent/>"), _mk_assistant("   ")]
+    stub, _ = await _deliveries(tmp_path, monkeypatch, make_msg, script)
+    assert len(stub.tool_sends()) == (1 if with_send else 0)
+    assert stub.final_texts() == [
+        "Correction: pickup is tomorrow.\n\n<silent/>\n\n   "]
 
 
 @pytest.mark.parametrize("make_msg", TURNS)

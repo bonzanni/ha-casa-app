@@ -199,14 +199,15 @@ The exception is the operator's ruling on #1075, for the turns that do not strea
 also reads the turn report `_process` fills: the winning attempt's text-bearing messages
 (`reply_messages`, from the same fold that joins them), the number of attempts that ran and
 the consumed retries. It acts only on a `NoStream` scope, only when those messages join to
-exactly the text being admitted, and only when a trailing run of them strips to silence and
-contains a sentinel (`closing_silence_prefix`). Rule 1 then needs one attempt, no retries
-and `TurnScope.closing_silence_earned`: at least one `OperatorSend`, every one delivered,
+exactly the text being admitted, and only when the LAST of them strips to silence and
+contains a sentinel (`closing_silence_prefix`); the closing run it drops is then every
+trailing message that strips to silence. Rule 1 then needs no error (only an error-free
+reply is admitted here), one attempt, no retries and `TurnScope.closing_silence_earned`: at least one `OperatorSend`, every one delivered,
 and every `SendAttempt` resolved `ok`. The reply is suppressed with `chosen_silence` left
 False, so the discharge below still reads only a reply of nothing but sentinels. Otherwise,
 rule 2 admits the earlier messages verbatim, and the disclosure line goes on after the
 strip. A single message carrying prose and a sentinel, prose in the last message, a trailing
-whitespace message, a streaming turn and a reply with no per-message fact are judged as
+whitespace message (even after a sentinel), a streaming turn and a reply with no per-message fact are judged as
 before. Rule 1 drops all the earlier text, and the operator accepted two residuals: no-send
 narration still arrives, untagged, and a real message written as plain text after a
 confirmed send is dropped. The verdict is taken at

@@ -116,8 +116,9 @@ message itself, and then the agent's own closing "Sent." to the same chat. Casa
 does not suppress that closing text on your behalf — a scheduled turn that has
 something real to say must still be heard — so the prompt is where you say it.
 If the turn's last message is the sentinel `<silent/>` after earlier text, Casa
-drops that text when every send the turn made was confirmed delivered, and
-otherwise delivers it without the sentinel.
+drops that text when the turn made at least one send, every send was confirmed
+delivered, and the turn finished on its first attempt with no error and no
+retry; otherwise it delivers that text without the sentinel.
 
 For interval/cron/date prompts whose turn delivers its own message, keep
 the send instruction first and unconditional, and end the prompt with:

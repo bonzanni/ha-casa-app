@@ -27,8 +27,9 @@ scheduled turn whose closing text is real text still delivers it exactly once, a
 decides is the operator's ruling on #1075 (INV-OUT-006 in
 [`output-boundary.md`](output-boundary.md)), which the trigger recipes and `casa/DOCS.md`
 state in the same words: If the turn's last message is the sentinel `<silent/>` after
-earlier text, Casa drops that text when every send the turn made was confirmed delivered,
-and otherwise delivers it without the sentinel. What closes the gap is therefore the
+earlier text, Casa drops that text when the turn made at least one send, every send was
+confirmed delivered, and the turn finished on its first attempt with no error and no retry;
+otherwise it delivers that text without the sentinel. What closes the gap is therefore the
 prompt, per prompt, and it is a convention — carried by the surfaces
 `tests/test_scheduled_prompt_guidance.py` enumerates (this document, `casa/DOCS.md`, and the
 configurator's `trigger/add`, `trigger/update` and `prompt/edit` recipes), and extended to a

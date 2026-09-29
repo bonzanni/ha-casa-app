@@ -8,8 +8,9 @@ send happens immediately and marks nothing the final-text path can read
 (``tools.py`` ``send_message``), and the turn's closing text is then delivered
 through ``send_response`` unless it strips to the silence sentinel exactly
 (``agent.py``) — or, since the operator's ruling on #1075, unless its LAST message
-is the sentinel after a turn whose every send was confirmed delivered (otherwise
-that earlier text is delivered without the tag; ``output_boundary.py``). Neither
+is the sentinel after a turn that made at least one send, every one confirmed
+delivered, on its first attempt with no error and no retry (otherwise that
+earlier text is delivered without the tag; ``output_boundary.py``). Neither
 half may be narrowed further — the imperative send stays first and unconditional
 (fail-noisy, never a lost reminder: the v0.132.0 morning-briefing lesson), and
 prose after a sentinel is still delivered (the G-3 recant contract). So the gap is closed PER PROMPT, in the prompt text, which is
@@ -88,10 +89,14 @@ def test_closing_silence_convention(path):
 # say it, and that the unconditional promises it falsified are gone.
 RULING = (
     "If the turn's last message is the sentinel `<silent/>` after earlier text, "
-    "Casa drops that text when every send the turn made was confirmed delivered, "
-    "and otherwise delivers it without the sentinel."
+    "Casa drops that text when the turn made at least one send, every send was "
+    "confirmed delivered, and the turn finished on its first attempt with no "
+    "error and no retry; otherwise it delivers that text without the sentinel."
 )
 FALSIFIED = (
+    # The unqualified rule 1: it promised suppression after a retried turn,
+    # and after a turn that made no send at all.
+    "drops that text when every send the turn made was confirmed delivered",
     "Casa never suppresses",
     "a correction after a send must reach the operator",
     "a correction after a send must still reach you",

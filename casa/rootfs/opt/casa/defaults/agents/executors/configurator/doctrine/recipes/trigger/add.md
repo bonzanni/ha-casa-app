@@ -30,8 +30,10 @@ the turn's own final text is then delivered to the same chat as a second
 message ("Sent."). Casa does not suppress that final text — a scheduled turn
 that legitimately has something to say must still be heard — so the prompt is
 what closes the gap. If the turn's last message is the sentinel `<silent/>`
-after earlier text, Casa drops that text when every send the turn made was
-confirmed delivered, and otherwise delivers it without the sentinel.
+after earlier text, Casa drops that text when the turn made at least one send,
+every send was confirmed delivered, and the turn finished on its first attempt
+with no error and no retry; otherwise it delivers that text without the
+sentinel.
 
 For interval/cron/date prompts whose turn delivers its own message, keep
 the send instruction first and unconditional, and end the prompt with:
