@@ -1244,7 +1244,17 @@ def test_reload_failure_keeps_table():
         ([{"unit": "", "detail": "x"}], "policies/disclosure.yaml", True),
         (["garbage"], "policies/disclosure.yaml", True),
         ("garbage", "policies/disclosure.yaml", True),
-        ([{"unit": "specialists", "detail": "x"}], "agents/specialists/a/b.yaml", False),
+        (finance, "agents/specialists/finance", True),
+        (finance, "agents/specialists/.finance.material-" + "a" * 32 + "/voice.yaml", True),
+        (finance, "agents/specialists/.finance.prior-" + "a" * 32 + "/voice.yaml", True),
+        (finance, "agents/specialists/.finance2.material-" + "a" * 32 + "/voice.yaml", False),
+        (finance, "agents/specialists/.finance.material-x/voice.yaml", False),
+        (finance, "agents/specialists/finance2", False),
+        ([{"unit": "specialists", "detail": "x"}], "policies/disclosure.yaml", True),
+        ([{"unit": "executors", "detail": "x"}], "policies/disclosure.yaml", True),
+        ([{"unit": "a/b", "detail": "x"}], "policies/disclosure.yaml", True),
+        ([{"unit": "..", "detail": "x"}], "policies/disclosure.yaml", True),
+        ([{"unit": 7, "detail": "x"}], "policies/disclosure.yaml", True),
     ]
     got = [(f, p, keeps(f, p)) for f, p, _ in cases]
     assert got == cases
@@ -1287,3 +1297,92 @@ async def test_role_map_personality_refresh_failure_keeps_the_commit_owed(
         {"unit": None, "detail": "refresh_personality_maps_failed"}]
     assert engagement.id in tools_mod._ENGAGEMENTS_PENDING_RELOAD
     assert _pending(engagement) == frozenset({"agents/assistant/character.yaml"})
+
+
+def _materialize_specialist(root: Path, slug: str) -> None:
+    """A pipeline install's directory as the real materializer writes it: the
+    link ``agents/specialists/<slug>`` and the ``.<slug>.material-<hex>``
+    content directory it points at — the paths the config repo records."""
+    from persona_pack import PersonaManifest, PersonaPack
+    from role_slot import ResolvedModel, RoleSlot
+    from specialist_materialize import materialize_specialist_operational_files
+
+    role = RoleSlot(
+        role_id=f"specialist:{slug}", kind="specialist", slot=slug, mission="x",
+        resolved_model=ResolvedModel(source="fixed", effective="sonnet",
+                                     sdk_model="claude-sonnet-4-6", option=None),
+        normalized={}, doctrine="Doctrine.\n", checksum="sha256:" + "1" * 64)
+    persona = PersonaPack(
+        persona_id="casa/judge", version="0.1.0", trait_schema_version=1,
+        identity={"display_name": "Judge", "pronouns": {
+            "subject": "they", "object": "them", "possessive_adjective": "their",
+            "possessive_pronoun": "theirs", "reflexive": "themself"}},
+        relationship_posture="established", archetype="adjudicator",
+        traits={"warmth": 2, "formality": 4, "candor": 5, "attunement": 3,
+                "curiosity": 3, "levity": 1, "social_energy": 2, "optimism": 3},
+        quirks=(), markdown="# Core\n", examples=(),
+        manifest=PersonaManifest(files=(), checksum="sha256:" + "3" * 64),
+        checksum="sha256:" + "2" * 64)
+    materialize_specialist_operational_files(
+        agents_specialists_dir=root / "agents" / "specialists", slug=slug,
+        role=role, persona=persona)
+
+
+@pytest.mark.parametrize("unit,installed,kept", [
+    ("finance", "plain", "own"),
+    ("finance", "materialized", "own"),
+    ("specialists", "plain", "all"),
+    ("executors", "plain", "all"),
+    ("other", "materialized", "none"),
+])
+async def test_specialist_failure_keeps_what_its_unit_could_concern(
+        world, completion, unit, installed, kept):
+    """#1096: an `agents` reload whose scan reports specialist ``unit`` failed,
+    over a commit of that specialist plus an unrelated one (`tax`). A slug the
+    rule maps keeps its own committed paths — as a plain directory, and as the
+    link + content directory a pipeline install commits — and nothing else; a
+    valid slug that names a directory of OTHER units (`specialists`,
+    `executors`) cannot be mapped, so it keeps every path (fail closed); a
+    previously installed specialist (`other`) failing keeps nothing of this
+    commit, and completion forces a `full` exactly when something is kept."""
+    import config_git
+    import tools as tools_mod
+
+    if unit == "other":
+        _materialize_specialist(world.root, "other")
+        assert config_git.commit_config(str(world.root), "other, before the engagement")
+    slug = "finance" if unit == "other" else unit
+    registry = _ScanningSpecialistRegistry([
+        ({}, [(unit, _PROBE_ERR)]),
+        ({slug: _specialist_cfg(slug), "tax": _specialist_cfg("tax")}, []),
+    ])
+    world.runtime.specialist_registry = registry
+
+    eng = await completion.start()
+    if installed == "materialized":
+        _materialize_specialist(world.root, slug)
+    else:
+        _w(world.root / "agents" / "specialists" / slug / "character.yaml",
+           f"name: {slug}\n")
+    tax = "agents/specialists/tax/character.yaml"
+    _w(world.root / tax, "name: tax\n")
+    owed = await _commit_owed(eng)
+    own = frozenset(owed - {tax})
+    assert tax in owed and own
+    if installed == "materialized":
+        assert f"agents/specialists/{slug}" in own and len(own) > 1
+        assert all(p == f"agents/specialists/{slug}"
+                   or p.startswith(f"agents/specialists/.{slug}.material-") for p in own)
+
+    r = _decode(await tools_mod.casa_reload.handler({"scope": "agents"}))
+    assert r["status"] == "ok"
+    assert r["failures"] == [{"unit": unit, "detail": f"failed:{unit}:{_PROBE_ERR}"}]
+    expected = {"own": own, "all": owed, "none": frozenset()}[kept]
+    assert (eng.id in tools_mod._ENGAGEMENTS_PENDING_RELOAD) == bool(expected)
+    assert _pending(eng) == expected
+
+    completion.observe_forced()
+    await completion.complete_twice()
+    assert completion.forced == ([{"scope": "full"}] if expected else [])
+    assert registry.loads == (2 if expected else 1)
+    assert eng.id not in tools_mod._ENGAGEMENTS_PENDING_RELOAD
