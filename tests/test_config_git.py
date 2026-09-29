@@ -645,3 +645,285 @@ class TestCasUndoPreservesLateStaging:
         ).decode()
         assert staged == "operator newer", (
             "the CAS undo erased the operator's post-refresh staging")
+
+
+# ---------------------------------------------------------------------------
+# #1097: the config repo's admitted set, measured through real git.
+# ---------------------------------------------------------------------------
+
+_C5_EXPECTED = {
+    ".gitignore",
+    "agents/probe/nested/config.txt",
+    "policies/probe/nested/config.txt",
+    "bindings/probe/nested/config.txt",
+    "schema/probe/nested/config.txt",
+    "plugins/registry.json",
+}
+_C5_SUMMARY = "agents/, policies/, bindings/, schema/, and plugins/registry.json"
+_C5_EXCLUDED = {
+    "specialists/registry.json",
+    "specialists/probe/active.yaml",
+    "specialists/probe/desired.yaml",
+    "specialists/probe/active.prior.yaml",
+    "specialists/.roles-overlay/probe/role.yaml",
+    "specialists/store/probe/component.yaml",
+    "specialists/.staging/probe/component.yaml",
+    "plugins/store/probe/component.json",
+    "plugins/.staging/probe/component.json",
+    "plugin-env.conf",
+    "unlisted.txt",
+}
+_C5_SENTINEL = b"C5_LEGACY_PLAINTEXT_SENTINEL"
+_C5_TUPLE_BYTES = b"config_snapshot:\n  password: " + _C5_SENTINEL + b"\n"
+_C5_TUPLES = (
+    "specialists/probe/active.yaml",
+    "specialists/probe/desired.yaml",
+    "specialists/probe/active.prior.yaml",
+)
+
+# The whitelist the config repo carried at 59ed58d8 — frozen here, never
+# derived from the candidate constant, so an existing install's reconcile is
+# exercised from the bytes it actually holds.
+_C5_BASE_WHITELIST = """\
+# Casa config repo — track configs only.
+*
+!agents/
+!agents/**
+!policies/
+!policies/**
+!bindings/
+!bindings/**
+!schema/
+!schema/**
+# Unified plugin architecture (v0.71.0): the registry is config — the single
+# plugin-assignment authority — and versioning it gives an audit trail.
+# ONLY registry.json: the artifact store and staging under plugins/ are
+# content-addressed binaries, never tracked.
+!plugins/
+!plugins/registry.json
+plugins/store/
+plugins/.staging/
+# Installed-specialist data model (Task 13): registry.json is config — same
+# audit-trail rationale as plugins/registry.json above. ONLY the per-slug
+# active/desired/prior tuples and the top-level registry are tracked; the
+# content-addressed component store and staging are binaries, never tracked.
+!specialists/
+!specialists/registry.json
+!specialists/*/active.yaml
+!specialists/*/desired.yaml
+!specialists/*/active.prior.yaml
+specialists/store/
+specialists/.staging/
+!.gitignore
+"""
+
+
+def _c5_git(root: Path, *args: str) -> bytes:
+    return subprocess.check_output(["git", "-C", str(root), *args])
+
+
+def _c5_nul_set(raw: bytes) -> list[str]:
+    return [p.decode() for p in raw.split(b"\0") if p]
+
+
+def _c5_count(root: Path) -> int:
+    return int(_c5_git(root, "rev-list", "--count", "HEAD").decode().strip())
+
+
+def _c5_index(root: Path) -> list[str]:
+    return _c5_nul_set(_c5_git(root, "ls-files", "-z"))
+
+
+def _c5_head(root: Path) -> list[str]:
+    return _c5_nul_set(_c5_git(root, "ls-tree", "-r", "--name-only", "-z", "HEAD"))
+
+
+def _c5_changed(root: Path, sha: str) -> list[str]:
+    return _c5_nul_set(_c5_git(
+        root, "diff-tree", "--no-commit-id", "--name-only", "-r", "-z", sha))
+
+
+def _c5_seed(root: Path, content: bytes) -> None:
+    for rel in (_C5_EXPECTED - {".gitignore"}) | _C5_EXCLUDED:
+        p = root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(content)
+
+
+def _c5_assert_tracked(root: Path) -> None:
+    index, head = _c5_index(root), _c5_head(root)
+    assert (len(index), len(head)) == (6, 6), (index, head)
+    assert set(index) == set(head) == _C5_EXPECTED
+
+
+def _c5_assert_positive_commit(root: Path, sha: str, count: int) -> None:
+    assert sha and sha == _c5_git(root, "rev-parse", "HEAD").decode().strip()
+    assert _c5_count(root) == count
+    changed = _c5_changed(root, sha)
+    assert len(changed) == 5, changed
+    assert set(changed) == _C5_EXPECTED - {".gitignore"}
+    _c5_assert_tracked(root)
+
+
+class TestConfigRepoAdmittedSet:
+    """#1097: the whitelist admits exactly the configuration it names — no
+    path under specialists/ — and the tracked-path summary says exactly
+    that. Pins INV-CFG-004 (declared scope: admission of untracked paths;
+    nothing here promises eviction of an already-tracked path)."""
+
+    def test_config_whitelist_admits_exact_literal_set_fresh(self, tmp_path):
+        from config_git import commit_config, init_repo, snapshot_manual_edits
+
+        root = tmp_path
+        _c5_seed(root, b"v1\n")
+        init_repo(str(root))
+        assert _c5_count(root) == 1
+        _c5_assert_tracked(root)
+
+        _c5_seed(root, b"v2\n")
+        sha = commit_config(str(root), "probe commit")
+        _c5_assert_positive_commit(root, sha, 2)
+
+        _c5_seed(root, b"v3\n")
+        sha = snapshot_manual_edits(str(root))
+        _c5_assert_positive_commit(root, sha, 3)
+
+    def test_config_whitelist_admits_exact_literal_set_after_reconcile(
+            self, tmp_path):
+        import config_git
+        from config_git import commit_config, init_repo, snapshot_manual_edits
+
+        root = tmp_path
+        _c5_git(root, "init", "-q")
+        _c5_git(root, "config", "user.email", "casa@local")
+        _c5_git(root, "config", "user.name", "Casa")
+        (root / ".gitignore").write_text(_C5_BASE_WHITELIST, encoding="utf-8")
+        _c5_git(root, "add", ".gitignore")
+        _c5_git(root, "commit", "-qm", "base whitelist")
+        assert _c5_count(root) == 1
+
+        init_repo(str(root))
+        n = _c5_count(root)
+        assert n == 1 + int(
+            config_git._GITIGNORE_CONTENT != _C5_BASE_WHITELIST)
+
+        _c5_seed(root, b"v1\n")
+        sha = commit_config(str(root), "probe add")
+        assert sha and _c5_count(root) == n + 1
+        added = _c5_changed(root, sha)
+        assert len(added) == 5, added
+        assert set(added) == _C5_EXPECTED - {".gitignore"}
+        _c5_assert_tracked(root)
+
+        _c5_seed(root, b"v2\n")
+        sha = commit_config(str(root), "probe commit")
+        _c5_assert_positive_commit(root, sha, n + 2)
+
+        _c5_seed(root, b"v3\n")
+        sha = snapshot_manual_edits(str(root))
+        _c5_assert_positive_commit(root, sha, n + 3)
+
+    async def test_config_git_summary_matches_literal_set_on_both_tool_surfaces(
+            self, tmp_path, monkeypatch):
+        import json
+
+        import agent as agent_mod
+        import config_git
+        import tools as tools_mod
+        from config_git import commit_config, init_repo
+
+        root = tmp_path
+        init_repo(str(root))
+        assert _c5_count(root) == 1
+        assert set(_c5_index(root)) == set(_c5_head(root)) == {".gitignore"}
+
+        tup = root / "specialists" / "probe" / "active.yaml"
+        tup.parent.mkdir(parents=True)
+        tup.write_bytes(_C5_TUPLE_BYTES)
+        assert commit_config(str(root), "tuple-only direct") == ""
+        assert _c5_count(root) == 1
+
+        real_checked = config_git.commit_config_checked
+        calls = []
+
+        def checked(config_dir, message, validate):
+            assert config_dir == "/config"
+            calls.append(message)
+            return real_checked(str(root), message, validate)
+
+        monkeypatch.setattr(config_git, "commit_config_checked", checked)
+        tok = agent_mod.origin_var.set({"role": "configurator"})
+        try:
+            result = await tools_mod.config_git_commit.handler(
+                {"message": "tuple-only tool"})
+        finally:
+            agent_mod.origin_var.reset(tok)
+        payload = json.loads(result["content"][0]["text"])
+
+        assert calls == ["tuple-only tool"]
+        assert payload["sha"] == ""
+        assert payload["message"] == "tuple-only tool"
+        assert _c5_count(root) == 1
+        assert set(_c5_index(root)) == set(_c5_head(root)) == {".gitignore"}
+
+        description = tools_mod.config_git_commit.description
+        assert config_git.TRACKED_PATHS_SUMMARY == _C5_SUMMARY
+        assert description.count(_C5_SUMMARY) == 1
+        assert payload["warning"].count(_C5_SUMMARY) == 1
+        assert description.count("specialists/") == 0
+        assert payload["warning"].count("specialists/") == 0
+
+    def test_base_whitelist_reconcile_never_records_plaintext_tuples(
+            self, tmp_path):
+        """Green at 59ed58d8 and after the fix — the safety pin: an existing
+        install's reconcile and boot snapshot never admit a tuple. Covers the
+        Python boot path; the shell fresh-init heredoc is bound to the same
+        constant by test_setup_configs_heredoc_matches_python_whitelist."""
+        import config_git
+        from config_git import init_repo, snapshot_manual_edits
+
+        root = tmp_path
+        for rel in _C5_EXPECTED - {".gitignore"}:
+            p = root / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(b"v1\n")
+        for rel in _C5_TUPLES:
+            p = root / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(_C5_TUPLE_BYTES)
+        _c5_git(root, "init", "-q")
+        _c5_git(root, "config", "user.email", "casa@local")
+        _c5_git(root, "config", "user.name", "Casa")
+        (root / ".gitignore").write_text(_C5_BASE_WHITELIST, encoding="utf-8")
+        _c5_git(root, "add", "-A")
+        _c5_git(root, "commit", "-qm", "base install")
+        assert _c5_count(root) == 1
+        _c5_assert_tracked(root)
+        base_head = _c5_git(root, "rev-parse", "HEAD").decode().strip()
+
+        delta = int(config_git._GITIGNORE_CONTENT != _C5_BASE_WHITELIST)
+        init_repo(str(root))
+        assert _c5_count(root) == 1 + delta
+        assert snapshot_manual_edits(str(root)) is None
+        assert _c5_count(root) == 1 + delta
+        init_repo(str(root))
+        assert _c5_count(root) == 1 + delta
+
+        new = _c5_git(root, "rev-list", f"{base_head}..HEAD").decode().split()
+        assert len(new) == delta
+        for sha in new:
+            assert _c5_changed(root, sha) == [".gitignore"]
+        _c5_assert_tracked(root)
+        for rel in _C5_TUPLES:
+            assert (root / rel).read_bytes() == _C5_TUPLE_BYTES
+
+        objects = _c5_git(root, "rev-list", "--objects", "--all").decode()
+        blobs = set()
+        for line in objects.splitlines():
+            oid = line.split()[0]
+            if _c5_git(root, "cat-file", "-t", oid).strip() == b"blob":
+                blobs.add(oid)
+        assert blobs
+        hits = [o for o in blobs
+                if _C5_SENTINEL in _c5_git(root, "cat-file", "blob", o)]
+        assert len(hits) == 0
