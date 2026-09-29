@@ -285,7 +285,7 @@ whole. The list sits beside the action rows and replaces none of them. A persona
 refresh that fails is a `refresh_personality_maps_failed` row, and a noted failure, both after a
 registry re-scan and inside the delegation-map refresh. What the configurator's reload
 obligation makes of the list is INV-TOOL-012, in
-[`architecture/engagement-completion-gate.md`](engagement-completion-gate.md).
+[`architecture/engagement-reload-obligation.md`](engagement-reload-obligation.md).
 
 ## Extension points
 
