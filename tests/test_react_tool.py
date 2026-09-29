@@ -22,6 +22,7 @@ from aiohttp.test_utils import TestClient, TestServer
 import tools
 from channels import ChannelManager
 from channels.telegram import TelegramChannel
+from module_source import module_function_source
 
 pytestmark = [pytest.mark.unit]
 
@@ -229,7 +230,8 @@ def test_react_doctrine_marks_non_decisional():
 def test_react_never_touches_ask_answer_seam():
     """Structural guarantee: react cannot consume/settle an open ask — it never
     references the answer-reservation / broker / ask-gate machinery."""
-    src = inspect.getsource(tools.react.handler)
+    # The tool's own body, not `.handler`, which is the fence wrapper (#1092).
+    src = module_function_source(tools, "react")
     for forbidden in ("reserve_answer", "rollback_answer", "settle",
                       "BROKER", "ASK_GATES", "answer_token"):
         assert forbidden not in src, f"react must not reference {forbidden!r}"
