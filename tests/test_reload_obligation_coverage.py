@@ -37,7 +37,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
+pytestmark = pytest.mark.unit
 
 _CODE_ROOT = Path(__file__).resolve().parent.parent / "casa" / "rootfs" / "opt" / "casa"
 
@@ -205,6 +205,8 @@ def world(tmp_path, monkeypatch, configurator_origin):
         w.constructed.append(cfg.role)
         a = MagicMock(name=f"agent:{cfg.role}")
         a.aclose = AsyncMock()
+        a.plugin_binding_snapshot = None          # an agent that resolves lazily
+        a._get_plugin_resolution = AsyncMock()
         return a
     monkeypatch.setattr(reload_mod, "_construct_agent", construct)
     monkeypatch.setattr(reload_mod, "_start_bus_loop", lambda runtime, role: None)
@@ -374,4 +376,418 @@ async def test_partial_reloads_accumulate_to_discharge(world, engagement):
 
     r = _decode(await tools_mod.casa_reload.handler({"scope": "agent", "role": "butler"}))
     assert r["status"] == "ok" and world.constructed == ["butler"]
+    assert engagement.id not in tools_mod._ENGAGEMENTS_PENDING_RELOAD
+
+
+# --- R5: a failed path read ---------------------------------------------------
+
+import config_git as _config_git_mod  # noqa: E402
+
+_REAL_CHANGED_PATHS = _config_git_mod.changed_paths
+
+
+async def test_unknown_obligation_survives_narrow_reload(
+        world, engagement, plugin_env_value, monkeypatch, tmp_path):
+    """R5 (#1086): when the commit's paths cannot be read, only `full` (or a
+    supervised restart) can know it covered them; a narrow reload does not."""
+    import config_git
+    import tools as tools_mod
+    not_a_repo = tmp_path / "not-a-repo"
+    not_a_repo.mkdir()
+    reads: list[str] = []
+
+    def changed(config_dir, sha):
+        assert config_dir == "/config"
+        reads.append(sha)
+        return _REAL_CHANGED_PATHS(str(not_a_repo), sha)   # a real git failure
+    monkeypatch.setattr(config_git, "changed_paths", changed)
+    # The credit makes the base read the paths too, so both sides take the
+    # same failed read (INV-TOOL-011: a failed read arms and spends it).
+    tools_mod._ENGAGEMENTS_PREACTIVATED.add(engagement.id)
+
+    _edit_card(world.agent_dir("assistant"), "Edited summary.")
+    sha = await world.commit(engagement, ["agents/assistant/character.yaml"])
+    assert reads == [sha]
+    assert engagement.id not in tools_mod._ENGAGEMENTS_PREACTIVATED
+
+    r = _decode(await tools_mod.casa_reload.handler({"scope": "plugin_env"}))
+    assert (r["status"], r["actions"][0]) == ("ok", "set_1_vars")
+    assert engagement.id in tools_mod._ENGAGEMENTS_PENDING_RELOAD
+    assert _pending(engagement) == {tools_mod.RELOAD_PATHS_UNKNOWN}
+
+    r = _decode(await tools_mod.casa_reload.handler({"scope": "agent", "role": "assistant"}))
+    assert r["status"] == "ok"
+    assert engagement.id in tools_mod._ENGAGEMENTS_PENDING_RELOAD
+
+    world.count_handler(monkeypatch, "full")
+    r = _decode(await tools_mod.casa_reload.handler({"scope": "full"}))
+    assert (r["status"], world.counted) == ("ok", ["full:None"])
+    assert engagement.id not in tools_mod._ENGAGEMENTS_PENDING_RELOAD
+
+
+# --- R6: a commit that lands while a reload is running ------------------------
+
+@pytest.mark.parametrize("later", ["new_prompt", "same_triggers_file"])
+async def test_commit_during_reload_survives(world, engagement, monkeypatch, later):
+    """R6 (#1086): a reload discharges only what was committed before it
+    began; a commit landing mid-reload (new path, or the same path again)
+    stays owed. Ordered by events, never by sleeps."""
+    import reload as reload_mod
+    import tools as tools_mod
+    d = world.agent_dir("assistant")
+    _write_triggers(d, ["probe-a", "probe-b"])
+    first = await world.commit(engagement, ["agents/assistant/triggers.yaml"])
+
+    real = reload_mod._HANDLERS["triggers"]
+    entered, release = asyncio.Event(), asyncio.Event()
+    calls: list[str] = []
+
+    async def gated(runtime, *, role=None):
+        calls.append(role)
+        entered.set()
+        await asyncio.wait_for(release.wait(), 30)
+        return await real(runtime, role=role)
+    monkeypatch.setitem(reload_mod._HANDLERS, "triggers", gated)
+
+    task = asyncio.create_task(tools_mod.casa_reload.handler(
+        {"scope": "triggers", "role": "assistant"}))
+    try:
+        await asyncio.wait_for(entered.wait(), 30)
+        if later == "new_prompt":
+            (d / "prompts").mkdir(exist_ok=True)
+            (d / "prompts" / "later.md").write_text("Later.\n", encoding="utf-8")
+            expected_later = "agents/assistant/prompts/later.md"
+        else:
+            _write_triggers(d, ["probe-a", "probe-b", "probe-c"])
+            expected_later = "agents/assistant/triggers.yaml"
+        second = await world.commit(engagement, [expected_later])
+        assert second != first
+        release.set()
+        r = _decode(await asyncio.wait_for(task, 30))
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+    assert (r["status"], calls) == ("ok", ["assistant"])
+    assert r["actions"].count("reregister_triggers") == 1
+
+    assert engagement.id in tools_mod._ENGAGEMENTS_PENDING_RELOAD
+    assert _pending(engagement) == {expected_later}
+
+    r = _decode(await tools_mod.casa_reload.handler(
+        {"scope": "triggers", "role": "assistant"}))
+    assert r["status"] == "ok"
+    assert engagement.id not in tools_mod._ENGAGEMENTS_PENDING_RELOAD
+
+
+# --- R8: the plugin registry ----------------------------------------------------
+
+def _edit_registry(world) -> None:
+    p = world.root / "plugins" / "registry.json"
+    raw = json.loads(p.read_text(encoding="utf-8"))
+    raw["seeded_defaults"] = ["edited"]
+    p.write_text(json.dumps(raw), encoding="utf-8")
+
+
+@pytest.mark.parametrize("scope", ["plugin_env", "policies"])
+async def test_registry_commit_survives_unrelated_scope(
+        world, engagement, plugin_env_value, scope):
+    """R8 (#1086): the registry is covered by the reloads the doctrine names
+    for a plugin change (`agent` for the target role, `agents` for a
+    specialist bundle, `full`) — not by plugin_env or policies."""
+    import tools as tools_mod
+    _edit_registry(world)
+    await world.commit(engagement, ["plugins/registry.json"])
+
+    r = _decode(await tools_mod.casa_reload.handler({"scope": scope}))
+    assert (r["status"], r["scope"]) == ("ok", scope)
+    if scope == "plugin_env":
+        assert r["actions"][0] == "set_1_vars"
+    else:
+        assert "reload_policy_lib" in r["actions"]
+        assert "cascaded_to_2_roles" in r["actions"]
+        assert sorted(world.constructed) == ["assistant", "butler"]
+
+    assert engagement.id in tools_mod._ENGAGEMENTS_PENDING_RELOAD
+    assert _pending(engagement) == {"plugins/registry.json"}
+
+
+async def test_registry_commit_discharged_by_target_agent_reload(world, engagement):
+    """R8's positive control, and the doctrine's install-origin secrets order
+    (`plugin_env`, then `agent` for the plugin's target role)."""
+    import tools as tools_mod
+    _edit_registry(world)
+    _edit_card(world.agent_dir("assistant"), "Edited summary.")
+    await world.commit(engagement, ["agents/assistant/character.yaml",
+                                    "plugins/registry.json"])
+    r = _decode(await tools_mod.casa_reload.handler({"scope": "agent", "role": "assistant"}))
+    assert r["status"] == "ok" and world.constructed == ["assistant"]
+    assert engagement.id not in tools_mod._ENGAGEMENTS_PENDING_RELOAD
+
+
+# --- R4: a tool's own reload -----------------------------------------------------
+
+async def test_plugin_assign_internal_agent_reload_keeps_other_role_commit(
+        world, engagement, monkeypatch, tmp_path):
+    """R4 (#1086): plugin_assign reloads its target through the real
+    sequencer (`_reload_and_verify_targets` -> `reload.dispatch("agent")` ->
+    `reload_agent`); that reload is the tool's own and discharges nothing, so
+    an earlier commit on ANOTHER role stays owed. Only the plugin transport is
+    doubled (tests/test_plugin_tools.py); dispatch and reload_agent are real."""
+    import agent as agent_mod
+    import reload as reload_mod
+    import tools as tools_mod
+    from test_plugin_tools import _State, _pr, _registered, _wire
+
+    _edit_card(world.agent_dir("butler"), "Edited summary.")
+    await world.commit(engagement, ["agents/butler/character.yaml"])
+
+    real_dispatch = reload_mod.dispatch
+    st = _State()
+    _registered(st, targets=[])
+    _wire(monkeypatch, tmp_path, st, publish=_pr())
+    monkeypatch.setattr(reload_mod, "dispatch", real_dispatch)
+    monkeypatch.setattr(agent_mod, "active_runtime", world.runtime, raising=False)
+    internal: list[tuple[str, str]] = []
+
+    async def observed(scope, *, runtime, role=None, include_env=False):
+        res = await real_dispatch(scope, runtime=runtime, role=role, include_env=include_env)
+        internal.append((f"{scope}:{role}", res.get("status")))
+        return res
+    monkeypatch.setattr(reload_mod, "dispatch", observed)
+
+    r = _decode(await tools_mod.plugin_assign.handler(
+        {"name": "probe", "target": "resident:assistant"}))
+    assert r["ok"] is True, json.dumps(r)[:3000]
+    assert st.raw["plugins"][0]["targets"] == ["resident:assistant"]
+    assert (st.log.count("save"), st.log.count("reload_snapshot")) == (1, 1)
+    assert internal == [("agent:assistant", "ok")]
+    assert world.constructed == ["assistant"]
+
+    assert engagement.id in tools_mod._ENGAGEMENTS_PENDING_RELOAD
+    assert _pending(engagement) == {"agents/butler/character.yaml"}
+
+    r = _decode(await tools_mod.casa_reload.handler({"scope": "agent", "role": "butler"}))
+    assert r["status"] == "ok" and world.constructed == ["assistant", "butler"]
+    assert engagement.id not in tools_mod._ENGAGEMENTS_PENDING_RELOAD
+
+
+# --- the single-mutator pin -----------------------------------------------------
+
+_OBLIGATION = "_ENGAGEMENTS_PENDING_RELOAD"
+
+# (owning function, operation) -> count, for every production use of the
+# obligation outside its own class. Reads are membership tests and `pending`.
+_AUTHORIZED = {
+    ("<module>", "declaration"): 1,
+    ("config_git_commit", "arm"): 1,
+    ("casa_reload", "discharge"): 1,
+    ("casa_reload_triggers", "discharge"): 1,
+    ("casa_restart_supervised", "discard"): 1,
+    ("_finalize_engagement_tail", "discard"): 1,
+    ("emit_completion", "discard"): 2,
+    ("emit_completion", "contains"): 1,
+    ("emit_completion", "pending"): 1,
+}
+
+
+def _obligation_uses(path: Path) -> list[tuple[str, str]]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    parents: dict[int, ast.AST] = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[id(child)] = node
+
+    def owner(node) -> str:
+        cur = parents.get(id(node))
+        while cur is not None:
+            if isinstance(cur, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                return cur.name
+            cur = parents.get(id(cur))
+        return "<module>"
+
+    uses: list[tuple[str, str]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            if any((a.asname or a.name).split(".")[-1] == _OBLIGATION or a.name == _OBLIGATION
+                   for a in node.names):
+                uses.append((owner(node), "import"))
+            continue
+        if not (isinstance(node, ast.Name) and node.id == _OBLIGATION) and not (
+                isinstance(node, ast.Attribute) and node.attr == _OBLIGATION):
+            continue
+        parent = parents.get(id(node))
+        op = "other"
+        if isinstance(parent, (ast.Assign, ast.AnnAssign)) and (
+                getattr(parent, "target", None) is node or node in getattr(parent, "targets", [])):
+            op = "declaration"
+        elif isinstance(parent, ast.Compare) and node in parent.comparators and all(
+                isinstance(o, (ast.In, ast.NotIn)) for o in parent.ops):
+            op = "contains"
+        elif isinstance(parent, ast.Attribute) and isinstance(parents.get(id(parent)), ast.Call) \
+                and parents[id(parent)].func is parent:
+            op = parent.attr
+        uses.append((owner(node), op))
+    return uses
+
+
+def test_reload_obligation_has_only_authorized_mutation_sites():
+    """#1086: the obligation is armed by config_git_commit, discharged ONLY by
+    casa_reload / casa_reload_triggers through the coverage table, handed to
+    the deferred restart by casa_restart_supervised, and dropped on the three
+    terminal paths. No reload handler touches it (reload.py does not reference
+    it at all), so no internal reload — and no handler body a test replaces —
+    can discharge it."""
+    found: dict[tuple[str, str], int] = {}
+    per_file: dict[str, int] = {}
+    for path in sorted(_CODE_ROOT.rglob("*.py")):
+        uses = _obligation_uses(path)
+        if uses:
+            per_file[path.relative_to(_CODE_ROOT).as_posix()] = len(uses)
+        if path.name == "tools.py" and path.parent == _CODE_ROOT:
+            for u in uses:
+                found[u] = found.get(u, 0) + 1
+    assert set(per_file) == {"tools.py"}, per_file
+    assert found == _AUTHORIZED
+
+
+# --- regression controls: each doctrine flow's own reload still discharges ------
+
+def _seed_specialist_files(world, slug: str) -> list[str]:
+    """The tracked shape a specialist install/upgrade persist commit carries
+    (materialised role dir + the specialist registry) — hook-managed in
+    production, written directly here; the classification is what is pinned.
+    (The per-slug tuple files under specialists/<slug>/ are not reached by the
+    config repo's whitelist: `*` excludes their directory.)"""
+    root = world.root
+    _w(root / "agents" / "specialists" / slug / "character.yaml", f"name: {slug}\n")
+    _w(root / "specialists" / "registry.json", json.dumps({"installed": [slug]}))
+    return [f"agents/specialists/{slug}/character.yaml", "specialists/registry.json"]
+
+
+async def test_specialist_bundle_commit_discharged_by_agents(world, engagement, monkeypatch):
+    """Specialist install/upgrade/rollback (doctrine: `agents`), including a
+    bundle whose owned plugins changed the registry."""
+    import tools as tools_mod
+    paths = _seed_specialist_files(world, "finance")
+    _edit_registry(world)
+    await world.commit(engagement, paths + ["plugins/registry.json"])
+    world.count_handler(monkeypatch, "agents")
+    r = _decode(await tools_mod.casa_reload.handler({"scope": "agents"}))
+    assert (r["status"], world.counted) == ("ok", ["agents:None"])
+    assert engagement.id not in tools_mod._ENGAGEMENTS_PENDING_RELOAD
+
+
+async def test_specialist_enabled_flip_discharged_by_agent(world, engagement, monkeypatch):
+    """Flip a specialist's `enabled` flag (doctrine: `agent` for that role)."""
+    import tools as tools_mod
+    _w(world.root / "agents" / "specialists" / "finance" / "runtime.yaml", "enabled: false\n")
+    await world.commit(engagement, ["agents/specialists/finance/runtime.yaml"])
+    world.count_handler(monkeypatch, "agent")
+    r = _decode(await tools_mod.casa_reload.handler(
+        {"scope": "agent", "role": "specialist:finance"}))
+    assert (r["status"], world.counted) == ("ok", ["agent:finance"])
+    assert engagement.id not in tools_mod._ENGAGEMENTS_PENDING_RELOAD
+
+
+async def test_policies_commit_discharged_by_policies_and_config_sync(
+        world, engagement, monkeypatch):
+    """`policies` for policies/disclosure.yaml; `config_sync` (whose cascade
+    is agents + policies) covers it too."""
+    import tools as tools_mod
+    p = world.root / "policies" / "disclosure.yaml"
+    p.write_text(p.read_text(encoding="utf-8").replace("private.", "kept private."),
+                 encoding="utf-8")
+    await world.commit(engagement, ["policies/disclosure.yaml"])
+    r = _decode(await tools_mod.casa_reload.handler({"scope": "policies"}))
+    assert r["status"] == "ok" and "reload_policy_lib" in r["actions"]
+    assert engagement.id not in tools_mod._ENGAGEMENTS_PENDING_RELOAD
+
+    p.write_text(p.read_text(encoding="utf-8").replace("kept private.", "private!"),
+                 encoding="utf-8")
+    await world.commit(engagement, ["policies/disclosure.yaml"])
+    world.count_handler(monkeypatch, "config_sync")
+    r = _decode(await tools_mod.casa_reload.handler({"scope": "config_sync"}))
+    assert (r["status"], world.counted) == ("ok", ["config_sync:None"])
+    assert engagement.id not in tools_mod._ENGAGEMENTS_PENDING_RELOAD
+
+
+async def test_executor_definition_discharged_by_executors(world, engagement, monkeypatch):
+    import tools as tools_mod
+    _w(world.root / "agents" / "executors" / "probe" / "definition.yaml", "enabled: true\n")
+    await world.commit(engagement, ["agents/executors/probe/definition.yaml"])
+    world.count_handler(monkeypatch, "executors")
+    r = _decode(await tools_mod.casa_reload.handler({"scope": "executors"}))
+    assert (r["status"], world.counted) == ("ok", ["executors:None"])
+    assert engagement.id not in tools_mod._ENGAGEMENTS_PENDING_RELOAD
+
+
+async def test_full_discharges_every_committed_path(world, engagement, monkeypatch):
+    import tools as tools_mod
+    _edit_card(world.agent_dir("assistant"), "Edited summary.")
+    _w(world.root / "bindings" / "resident-assistant" / "desired.yaml", "persona: x\n")
+    _w(world.root / "schema" / "probe.v1.json", "{}\n")
+    await world.commit(engagement, ["agents/assistant/character.yaml",
+                                    "bindings/resident-assistant/desired.yaml",
+                                    "schema/probe.v1.json"])
+    world.count_handler(monkeypatch, "full")
+    r = _decode(await tools_mod.casa_reload.handler({"scope": "full"}))
+    assert (r["status"], world.counted) == ("ok", ["full:None"])
+    assert engagement.id not in tools_mod._ENGAGEMENTS_PENDING_RELOAD
+
+
+async def test_restart_supervised_takes_over_the_obligation(world, engagement):
+    import tools as tools_mod
+    _edit_card(world.agent_dir("assistant"), "Edited summary.")
+    await world.commit(engagement, ["agents/assistant/character.yaml"])
+    try:
+        r = _decode(await tools_mod.casa_restart_supervised.handler({}))
+        assert r["deferred"] is True
+        assert engagement.id not in tools_mod._ENGAGEMENTS_PENDING_RELOAD
+        assert engagement.id in tools_mod._ENGAGEMENTS_DEFERRED_HARD_RELOAD
+    finally:
+        tools_mod._ENGAGEMENTS_DEFERRED_HARD_RELOAD.discard(engagement.id)
+
+
+async def test_plugin_secrets_recipe_arms_nothing(world, engagement, plugin_env_value):
+    """recipes/plugin/secrets.md: commit, then `plugin_env`. plugin-env.conf is
+    gitignored, so the commit is empty and nothing is owed."""
+    import tools as tools_mod
+    (world.root / "plugin-env.conf").write_text("CASA_D1086_PROBE=on\n", encoding="utf-8")
+    r = _decode(await tools_mod.config_git_commit.handler({"message": "wire var"}))
+    assert r["sha"] == "" and "warning" in r
+    assert engagement.id not in tools_mod._ENGAGEMENTS_PENDING_RELOAD
+    r = _decode(await tools_mod.casa_reload.handler({"scope": "plugin_env"}))
+    assert r["status"] == "ok"
+    assert engagement.id not in tools_mod._ENGAGEMENTS_PENDING_RELOAD
+
+
+async def test_bundle_sequencer_internal_agents_reload_discharges_nothing(
+        world, engagement, monkeypatch, tmp_path):
+    """R7 (regression, green at base: reload_agents never drained). The
+    specialist bundle sequencer's own `dispatch("agents")` (uninstall) is a
+    tool's internal reload: an earlier specialist commit stays owed until the
+    doctrine's explicit `agents` reload."""
+    import reload as reload_mod
+    import tools as tools_mod
+    from test_plugin_tools import _State, _pr, _wire
+
+    paths = _seed_specialist_files(world, "finance")
+    await world.commit(engagement, paths)
+
+    real_dispatch = reload_mod.dispatch
+    _wire(monkeypatch, tmp_path, _State(), publish=_pr())
+    monkeypatch.setattr(reload_mod, "dispatch", real_dispatch)
+    import agent as agent_mod
+    monkeypatch.setattr(agent_mod, "active_runtime", world.runtime, raising=False)
+    world.count_handler(monkeypatch, "agents")
+
+    seq = await tools_mod._bundle_reload_and_verify(
+        "alpha", removed_artifact_ids=[], targets_removed=["specialist:alpha"])
+    assert seq["reloaded"] == ["evicted:specialist:alpha"]
+    assert world.counted == ["agents:None"]
+    assert engagement.id in tools_mod._ENGAGEMENTS_PENDING_RELOAD
+
+    r = _decode(await tools_mod.casa_reload.handler({"scope": "agents"}))
+    assert r["status"] == "ok" and world.counted == ["agents:None", "agents:None"]
     assert engagement.id not in tools_mod._ENGAGEMENTS_PENDING_RELOAD
