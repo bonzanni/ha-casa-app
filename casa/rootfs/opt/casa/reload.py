@@ -222,6 +222,7 @@ async def _register_and_reconcile_async(
             "trigger %r on role=%s has no usable secret and could not be "
             "minted (%s); requests to it will be refused", name, role, reason)
         actions.append(f"trigger_secret_mint_failed_{name}")
+        _note_failure(role, f"trigger_secret_mint_failed_{name}")
 
 
 def _trigger_secret_snapshot(runtime: Any, role: str | None) -> Any:
@@ -316,6 +317,28 @@ def register_handler(scope: str, fn: HandlerFn) -> None:
     _HANDLERS[scope] = fn
 
 
+# #1096: the subordinate failures of THIS dispatch — a unit a handler caught
+# failing and carried on past (INV-CFG-012: one broken role never aborts a
+# sweep). `dispatch` binds a fresh list around its handler and reports it as the
+# ok envelope's `failures`; every cascade calls its sub-handlers directly in the
+# dispatching task, so a nested failure lands here whatever its caller does to
+# the action row (config_sync nests a whole sub-list in a repr). A handler
+# called outside `dispatch` notes into nothing. Each entry is
+# ``{"unit": <directory name> | None, "detail": str}``: ``unit`` names the ONE
+# resident, specialist or executor whose own files did not take effect, and is
+# None when the failure cannot be pinned on one unit (a collection-level scan
+# failure, a map refresh, a cascade that failed for a shared input). This module
+# only REPORTS; what a failure keeps owed is tools.py's (INV-TOOL-012).
+_RELOAD_FAILURES: contextvars.ContextVar["list[dict] | None"] = (
+    contextvars.ContextVar("casa_reload_failures", default=None))
+
+
+def _note_failure(unit: str | None, detail: str) -> None:
+    failures = _RELOAD_FAILURES.get()
+    if failures is not None:
+        failures.append({"unit": unit, "detail": detail})
+
+
 # Release B: reload scopes whose success can change what plugin triggers may
 # route (resident channels/triggers, the agent set, or everything) — dispatch
 # re-derives the plugin-trigger overlay after these succeed.
@@ -354,6 +377,8 @@ async def dispatch(
     # onto it, and a task spawned inside this one inherits it.
     ledger = _CloseLedger()
     ledger_token = _CLOSE_LEDGER.set(ledger)
+    failures: list[dict] = []
+    failures_token = _RELOAD_FAILURES.set(failures)
     try:
         rw = _global_rw()
         if scope == "full":
@@ -384,6 +409,7 @@ async def dispatch(
                             logger.warning(
                                 "plugin-trigger reconcile after reload failed",
                                 exc_info=True)
+                            _note_failure(None, "plugin_triggers_reconcile_failed")
                         # Pair the callback reconcile at the SAME
                         # scopes with the SAME runtime — a resident losing/gaining a
                         # role changes callback assignment (callback_no_target) just
@@ -396,6 +422,7 @@ async def dispatch(
                             logger.warning(
                                 "plugin-callback reconcile after reload failed",
                                 exc_info=True)
+                            _note_failure(None, "plugin_callbacks_reconcile_failed")
                         # Pair the EVENT reconcile at the SAME scopes with the
                         # SAME runtime — a resident losing/gaining a role changes
                         # a subscriber's own delivery target (event_no_target)
@@ -411,6 +438,7 @@ async def dispatch(
                             logger.warning(
                                 "plugin-event reconcile after reload failed",
                                 exc_info=True)
+                            _note_failure(None, "plugin_events_reconcile_failed")
                     # #423 r3 (Sol r2-3): ANY successful reload can change
                     # setup-episode readiness — plugin_env lands secrets,
                     # agent/agents/policies/full reconstruct agents (stale
@@ -432,6 +460,11 @@ async def dispatch(
                         "status": "ok", "scope": scope, "role": role,
                         "ms": ms, "actions": actions,
                     }
+                    # #1096: additive, and absent on a clean reload. A COPY —
+                    # a task spawned inside this dispatch that outlives it must
+                    # not be able to change a returned envelope.
+                    if failures:
+                        envelope["failures"] = list(failures)
                 except ReloadError as exc:
                     ms = int(time.monotonic() * 1000 - started_ms)
                     logger.warning(
@@ -474,6 +507,7 @@ async def dispatch(
         # before the caller resumes — before the entry points' post-dispatch
         # plugin-health regeneration, which then runs concurrently with the
         # drain — and none of them is cancelled by a cancellation here.
+        _RELOAD_FAILURES.reset(failures_token)
         _CLOSE_LEDGER.reset(ledger_token)
         ledger.flush()
 
@@ -1068,6 +1102,7 @@ def _refresh_personality_maps(
     except Exception as exc:  # noqa: BLE001 — log but don't fail the caller
         logger.warning("personality-map refresh failed (%s): %s", context, exc)
         actions.append("refresh_personality_maps_failed")
+        _note_failure(None, "refresh_personality_maps_failed")
 
 
 def _refresh_role_map(runtime: Any, *, context: str) -> list[str]:
@@ -1108,6 +1143,7 @@ def _refresh_role_map(runtime: Any, *, context: str) -> list[str]:
         # #786 (INV-CFG-012): a stale map still resolves a role the reload
         # just retired, so the failure is a ROW, not only a log line.
         actions.append("refresh_role_map_failed")
+        _note_failure(None, "refresh_role_map_failed")
         return actions
 
     after = _delegate_directory()
@@ -1171,6 +1207,7 @@ def _construct_agent(*, cfg, runtime, agent_registry=None):
         logger.warning(
             "provision_agent_home failed for role=%s: %s", cfg.role, exc,
         )
+        _note_failure(cfg.role, f"provision_agent_home_failed:{cfg.role}:{exc}")
 
     from agent import Agent
     return Agent(
@@ -1203,6 +1240,7 @@ def _start_bus_loop(runtime: Any, role: str) -> None:
         runtime.bus.start_agent_loop(role)
     except Exception as exc:  # noqa: BLE001 — never fail the swap on this
         logger.warning("start_agent_loop(%s) failed: %s", role, exc)
+        _note_failure(role, f"start_agent_loop_failed:{role}:{exc}")
 
 
 async def _teardown_role(runtime: Any, role: str) -> list[str]:
@@ -1332,6 +1370,7 @@ async def _teardown_disabled_specialist(
     failed += await _teardown_role(runtime, role)
     for step in failed:
         actions.append(f"teardown_incomplete_{step}{suffix}")
+        _note_failure(role, f"teardown_incomplete_{step}_{role}")
     _note_retirement_outcome(role, failed)
 
 
@@ -1783,6 +1822,9 @@ async def reload_policies(runtime: Any, *, role: str | None = None) -> list[str]
             # exception that carries no kind.
             actions.append(
                 f"failed:{r}:{getattr(exc, 'kind', None) or type(exc).__name__}")
+            # #1096: unattributed — `r` failing to rebuild leaves the SHARED
+            # committed input (the policy library) unapplied for it.
+            _note_failure(None, actions[-1])
     actions.append(f"cascaded_to_{len(role_list)}_roles")
 
     # #436: the cascade commits a fresh AgentConfig for every role it swaps
@@ -1996,6 +2038,7 @@ async def reload_agents(runtime: Any, *, role: str | None = None) -> list[str]:
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("reload_agents: failed to add %s: %s", r, exc)
+            _note_failure(r, f"add_resident_failed:{r}:{exc}")
             continue
         # A:§3.3/§3.4 (r2-B5 enumerated seam): purge+cancel BEFORE the
         # (re)constructed agent becomes dispatchable.
@@ -2032,6 +2075,7 @@ async def reload_agents(runtime: Any, *, role: str | None = None) -> list[str]:
                     "role=%s: %s", r, exc,
                 )
                 actions.append(f"trigger_register_failed_{r}")
+                _note_failure(r, f"trigger_register_failed_{r}")
                 # This sweep aggregates per role and returns ok; a refused
                 # secret retirement is named per slot here since no error
                 # envelope carries it (#620).
@@ -2060,6 +2104,7 @@ async def reload_agents(runtime: Any, *, role: str | None = None) -> list[str]:
         # base RAISED (the revoke was unguarded) into a green `evicted_<r>`.
         for step in incomplete:
             actions.append(f"teardown_incomplete_{step}_{r}")
+            _note_failure(r, f"teardown_incomplete_{step}_{r}")
 
     # ---- Specialists ----
     specialists_dir = os.path.join(agents_dir, "specialists")
@@ -2095,6 +2140,7 @@ async def reload_agents(runtime: Any, *, role: str | None = None) -> list[str]:
         # admitted from it — a stale "disabled" must not retire a role whose
         # file was meanwhile set back to enabled.
         actions.append("specialist_scan_failed")
+        _note_failure(None, "specialist_scan_failed")
 
     # #673: publish the generation this sweep just committed BEFORE the
     # rebuild, the backfill and the retirement teardowns below — the sweep's
@@ -2114,6 +2160,12 @@ async def reload_agents(runtime: Any, *, role: str | None = None) -> list[str]:
     try:
         for name, err in runtime.specialist_registry.load_failures():
             actions.append(f"failed:{name}:{err}")
+            # #1096: the registry's collection-level sentinel names no
+            # directory — nothing loaded, so no one unit is to blame. Read
+            # after the awaited scan: a concurrent `agent:<s>` re-scan can only
+            # replace this with a NEWER scan's truth, which it also published.
+            _note_failure(None if name == "(collection)" else name,
+                          f"failed:{name}:{err}")
     except AttributeError:
         # Pre-v0.37.9 registry mock without load_failures(); legacy path.
         pass
@@ -2181,6 +2233,7 @@ async def reload_agents(runtime: Any, *, role: str | None = None) -> list[str]:
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("reload_agents: failed to add specialist %s: %s", s, exc)
+            _note_failure(s, f"add_specialist_failed:{s}:{exc}")
             continue
         # A:§3.3/§3.4 (r2-B5 enumerated seam): purge+cancel BEFORE the
         # (re)constructed specialist becomes dispatchable.
@@ -2217,6 +2270,7 @@ async def reload_agents(runtime: Any, *, role: str | None = None) -> list[str]:
             actions.append(f"evicted_specialist_{s}")
         for step in incomplete:
             actions.append(f"teardown_incomplete_{step}_{s}")
+            _note_failure(s, f"teardown_incomplete_{step}_{s}")
 
     # #786 (INV-CFG-012): a specialist whose directory is still present but
     # whose fresh scan reports it DISABLED loses its runtime Agent too — the
@@ -2289,6 +2343,13 @@ async def reload_executors(
     except Exception as exc:  # noqa: BLE001
         raise ReloadError("load_error", f"executors: {exc}") from exc
     actions: list[str] = ["rebuild_executor_registry"]
+    # #1096: the registry catches a per-definition failure (and a
+    # collection-level one, publishing an EMPTY registry) and carries on; a
+    # NEW executor that failed leaves no row below, so report both here.
+    if getattr(runtime.executor_registry, "collection_failed", False) is True:
+        _note_failure(None, "executor_collection_load_failed")
+    for t in sorted(getattr(runtime.executor_registry, "failed_types", set()) or set()):
+        _note_failure(t, f"executor_load_failed:{t}")
 
     # #340: the /hooks/resolve handlers captured the executor hook-policy map
     # instance at boot (runtime.executor_cc_policies). Rebuild it from the
@@ -2303,6 +2364,13 @@ async def reload_executors(
             registry = runtime.executor_registry
             fresh = await asyncio.to_thread(
                 _build_executor_cc_hook_policies, registry)
+            # #1096: a definition that loaded but whose hooks.yaml did not
+            # build is a deny-all map — whether or not a pre-reload entry
+            # exists to keep below.
+            from hooks import DenyAllPolicyMap
+            for t, built in sorted(fresh.items()):
+                if isinstance(built, DenyAllPolicyMap):
+                    _note_failure(t, f"executor_hook_policies_build_failed:{t}")
             # Sol r1-1: an executor ABSENT from the fresh map is either
             # genuinely removed (drop its entry) or a load/build FAILURE —
             # and a failed executor's live engagements must keep their old
@@ -2336,6 +2404,7 @@ async def reload_executors(
                         "for its live engagements", t,
                     )
                     actions.append(f"executor_hook_policies_kept_stale:{t}")
+                    _note_failure(t, f"executor_hook_policies_kept_stale:{t}")
             shared_map.clear()
             shared_map.update(fresh)
             actions.append("rebuild_executor_hook_policies")
@@ -2345,6 +2414,7 @@ async def reload_executors(
                 "hook enforcement keeps the pre-reload policies: %s", exc,
             )
             actions.append(f"rebuild_executor_hook_policies_failed:{exc}")
+            _note_failure(None, actions[-1])
 
     for r in list(runtime.role_configs.keys()):
         try:
@@ -2356,8 +2426,12 @@ async def reload_executors(
             actions += [f"agent:{r}:{a}" for a in sub]
         except ReloadError as exc:
             actions.append(f"agent:{r}:failed:{exc.kind}:{exc.message}")
+            # #1096: unattributed — the SHARED executor definitions did not
+            # reach `r`'s cached <executors> block.
+            _note_failure(None, actions[-1])
         except Exception as exc:  # noqa: BLE001
             actions.append(f"agent:{r}:failed:{exc}")
+            _note_failure(None, actions[-1])
 
     # v0.71.1 (Sol Task-5): an executor enable/disable flip changes plugin
     # authorization (a disabled executor is dormant; enabling it makes its
@@ -2445,6 +2519,7 @@ async def reload_config_sync(runtime: Any, *, role: str | None = None) -> list[s
             # step's kind, exactly as the triggers arm below already does.
             kind = getattr(exc, "kind", None) or type(exc).__name__
             actions.append(f"{scope}:error:{kind}")
+            _note_failure(None, actions[-1])
 
     # Then the residents whose trigger file the pass changed (#620). An
     # `UNREADABLE` on EITHER side counts as changed: a transient read fault must
@@ -2464,6 +2539,7 @@ async def reload_config_sync(runtime: Any, *, role: str | None = None) -> list[s
             kind = getattr(exc, "kind", type(exc).__name__)
             logger.warning("config_sync cascade: triggers:%s failed: %s", r, exc)
             actions.append(f"triggers:{r}:error:{kind}")
+            _note_failure(None, actions[-1])
 
     return actions
 
