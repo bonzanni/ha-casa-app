@@ -208,9 +208,13 @@ a changed input rewrote once.
 **INV-TOOL-012**: Inside an engagement, the reload obligation is discharged path by path, only by the configurator's own successful `casa_reload` or `casa_reload_triggers`, and only for committed paths its scope covers that were committed before that call began: `triggers` covers the role's `triggers.yaml` and trigger prompts; `agent` the role's directory and the plugin registry; `policies` covers `policies/`; `agents` covers `agents/specialists/`, `specialists/` and the plugin registry; `executors` covers `agents/executors/`; `config_sync` covers what `agents` and `policies` do; `plugin_env` covers nothing. `full` discharges everything, including a commit whose paths could not be read, and a reload a tool runs internally discharges nothing.
 
 The table is the configurator doctrine's "What requires what" (`reload.md` under the
-configurator's doctrine), so an engagement that follows it owes nothing at completion, and one
-that picks a scope that does not cover its commit is force-reloaded. `casa_reload_triggers`
-therefore does discharge a commit confined to its role's trigger inputs — and only that: a
+configurator's doctrine), and an engagement that picks a scope that does not cover its commit is
+force-reloaded. Following that table does not always leave nothing owed: its rows that name no
+reload for a committed file — an executor's `prompt.md`, `observer.yaml` or `doctrine/` — still
+arm, and only `executors` or `full` covers them, so an engagement that follows those rows is
+force-reloaded at completion; and the plugin mutations' "none" row owes nothing only under
+INV-TOOL-011's exemption. On the `triggers` row, `casa_reload_triggers`
+does discharge a commit confined to its role's trigger inputs — and only that: a
 commit that also edited the role's `character.yaml` stays owed until an `agent` reload (or
 `full`) runs. The plugin registry sits on the `agent` and `agents` rows because those are the
 reloads the doctrine names after a plugin assignment on one role and after a specialist bundle
