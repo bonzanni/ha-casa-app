@@ -229,7 +229,7 @@ explicit reload the configurator calls is the one the rule reads. Only `casa_rel
 the ones the reload reports in its envelope's `failures` (configuration.md, "A reload handler
 catches a failure and carries on"). One that names a unit other than those two keeps owed only
 the paths above for that name, so a specialist that was already broken costs no forced reload for a commit that
-touches neither its directory nor the plugin registry.
+touches none of them.
 One that does not — a scan that failed as a whole, a role that could not rebuild inside a
 `policies` or `executors` cascade and so did not take the shared input, a map refresh, a plugin
 overlay reconcile — keeps the whole commit owed. The forced `full` is one retry: when its result
