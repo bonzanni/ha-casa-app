@@ -30,7 +30,7 @@ merely having tried. Both directions fail toward telling again rather than towar
 
 ## Contracts & invariants
 
-**INV-ENG-018**: An engagement outcome committed by the finalization funnel carries, in the same durable write as its terminal status, the obligation to tell the party that asked for the work. That obligation is cleared only by the delivery acknowledgement of the notice that carries it — the notice's narration reaching the transport, or that narration turn ending in a clean chosen silence as INV-JOB-010 defines it, while a turn that ends with no text and no sentinel stays owed — never by the bus accepting the message and never by another record's acknowledgement; a record still carrying it is exempt from terminal-retention expiry, so the obligation outlives the process. Casa's boot owner replays every record still owing one, addressed from that record's own persisted origin and reporting the FACT of the outcome, never a retained answer the record does not hold; startup awaits that owner unguarded, once the channels and the resident loops are running. A replayed notice says so: it carries one replay statement after its header — an earlier outcome, reached before a Casa restart, whose announcement was never confirmed as delivered — with the time the record was committed terminal, or says that time is unknown; a missing or unusable recorded time never stops the notice from becoming a prompt, and a notice sent live is never so marked. A rolled-back transition owes nothing, a row written before the field existed owes nothing, and no other terminal writer arms it by default: the two that do — the detached launch owner's death report, which tells the engager over the bus, and the inline named-fault abort, whose returned envelope is the telling and whose return schedules the acknowledgement for a transition it won — opt in explicitly (INV-ENG-021).
+**INV-ENG-018**: An engagement outcome committed by the finalization funnel carries, in the same durable write as its terminal status, the obligation to tell the party that asked for the work. That obligation is cleared only by the delivery acknowledgement of the notice that carries it — the notice's narration reaching the transport, or that narration turn ending in a clean chosen silence as INV-JOB-010 defines it, while a turn that ends with no text and no sentinel stays owed — never by the bus accepting the message and never by another record's acknowledgement; a record still carrying it is exempt from terminal-retention expiry, so the obligation outlives the process. Casa's boot owner replays every record that owed one when this process loaded its records and still owes it when the replay reaches it — never one this process armed, which it told live and which, if that notice is never delivered, the next boot replays — addressed from that record's own persisted origin and reporting the FACT of the outcome, never a retained answer the record does not hold; startup awaits that owner unguarded, once the channels and the resident loops are running. A replayed notice says so: it carries one replay statement after its header — an earlier outcome, reached before a Casa restart, whose announcement was never confirmed as delivered — with the time the record was committed terminal, or says that time is unknown; a missing or unusable recorded time never stops the notice from becoming a prompt and never makes a tombstone write fail, a recorded time that is not a finite number never ages the record out, and a notice sent live is never so marked. A rolled-back transition owes nothing, a row written before the field existed owes nothing, and no other terminal writer arms it by default: the two that do — the detached launch owner's death report, which tells the engager over the bus, and the inline named-fault abort, whose returned envelope is the telling and whose return schedules the acknowledgement for a transition it won — opt in explicitly (INV-ENG-021).
 
 The obligation follows the WRITER, not the record. This funnel and the launch-death reporter
 reach the same registry method with the same outcome on the same kind of record, and whether
@@ -67,10 +67,20 @@ outcome reached before a Casa restart, whose announcement was never confirmed, t
 and not as something that just happened, with when Casa recorded it and roughly how long ago.
 The time is carried exactly as the tombstone holds it; one that is missing or is not a usable
 number is stated as unknown, never replaced by another clock and never allowed to stop the
-notice becoming a prompt. The statement is true of every record that was already owed when
-the boot began. A record that goes terminal live in the short window between the resident
-loops starting and the replay reading the owed records can be announced twice, and its
-second copy then carries the statement although the outcome is from this boot.
+notice becoming a prompt. Retention reads the same value almost the same way: a terminal
+record whose time is not a finite number has no known age, so it is kept rather than aged
+out, and no recorded time can make a tombstone write fail. The one difference is a number
+beyond the range of dates but within floating-point range, which the notice states as unknown
+and retention compares with its cutoff as the number it is.
+
+The statement is true of every record the replay reaches, because the replay reaches only
+what the previous process left owed. The owed records are captured when the registry is
+loaded — before the internal socket, the channels or the resident loops can finalize
+anything — and each is told only if it still owes when the walk reaches it. An engagement
+that ends in this process before the replay runs was told live and is not replayed; if that
+live notice is never delivered, its obligation is still on disk and the next boot replays
+it. A hand-edited row that owed a telling without being terminal, and whose status changed
+during this boot, is likewise left to the next boot.
 
 **INV-ENG-013**: A terminal engagement's topic is never marked with an outcome the topic was never told. The completion post counts as delivered only when the wire acknowledged it; an acknowledgement that did not come withholds the outcome mark and produces exactly one bounded plain disclosure in its place. A post that failed part-way is never replayed. The topic is closed exactly once either way, and no topic operation can strand the post-topic tail behind it.
 
@@ -158,6 +168,8 @@ not the record, and no predicate over a record can infer it.
 - `casa/rootfs/opt/casa/tools.py::_finalize_engagement_tail`
 - `casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.try_transition_terminal`
 - `casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.records_owing_terminal_notification`
+- `casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.records_owed_at_load`
+- `casa/rootfs/opt/casa/engagement_registry.py::_usable_time`
 - `casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.ack_terminal_notification`
 - `casa/rootfs/opt/casa/casa_core.py::_notify_recovered_engagement_outcomes`
 

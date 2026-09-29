@@ -193,12 +193,15 @@ that runs a background job is continued once channels and residents are up, as
 **A restart replays an outcome nobody was told.** A terminal record is not only state to be
 tidied: if the finalization funnel committed it, somebody is still owed the news (INV-ENG-018,
 in [`architecture/engagement-terminal-telling.md`](engagement-terminal-telling.md)). Startup walks the
-records still carrying that obligation and enqueues one notice each, addressed from the
+records that already carried that obligation when it loaded them and still carry it, and
+enqueues one notice each, addressed from the
 record's own persisted origin — the role that asked, on the channel it asked from, quoting the
 request. It runs once the channels and the resident loops are up, because a notice enqueued
 before a resident can consume it is not a telling; and it does not wait for delivery, because
 a resident turn can take minutes and boot cannot. An unroutable role is logged and RETAINED
-for the next boot rather than dropped.
+for the next boot rather than dropped. An engagement that ends during this boot, before the
+walk, was told live and is not walked; only if that telling is never delivered does the next
+boot replay it.
 
 What such a notice can say is bounded by what the tombstone keeps, which is less than the live
 path has. There is no completion text, no artifacts and no next steps on the record — no such

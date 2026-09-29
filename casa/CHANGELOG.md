@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.332.11] - 2026-09-29
+
+### Fixed
+
+- An engagement that ended while Casa was starting up could be announced
+  twice. It was announced once when it ended. If that announcement had not
+  yet been confirmed as delivered when the startup re-announcement of
+  unconfirmed outcomes began, it was announced again, and the second
+  announcement also told the assistant that the outcome came from before the
+  restart. The startup re-announcement now covers only the outcomes that were
+  still owed from before the restart. An engagement that ends during startup
+  is announced once, when it ends, and it is re-announced only at the next
+  restart, and only if that announcement was never confirmed as delivered.
+- If a finished engagement's completion time in `engagements.json` was text,
+  a list or an object (for example after a hand edit), every save of the
+  engagement records failed. Casa also failed to start whenever an engagement
+  had still been running when Casa stopped. Such a record is now kept exactly
+  as it is, and it no longer makes saves or startup fail. Because its age is
+  unknown, it is not removed after the usual 30 days.
+
 ## [0.332.10] - 2026-09-29
 
 ### Fixed
