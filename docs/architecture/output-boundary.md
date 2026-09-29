@@ -178,7 +178,7 @@ line was added; `delegate_to_agent` reports the brief's note as `casa_note` on e
 pending result — the async one and a synchronous wait that degraded to pending. The
 transcript the model builds on therefore says what the operator saw.
 
-**INV-OUT-006**: Whether a turn streams, whether its final reply is closing silence, and where an untrusted webhook turn's discrete send goes are properties of its scope — the first and third registered at mint from the message's own facts, the second intrinsic to final-reply admission: a scheduled turn or an event wake never receives a token callback, a final reply that strips to nothing but `<silent/>` sentinels is suppressed by admission while prose after a sentinel is delivered whole, and an untrusted webhook turn's `send_message` is bound to Telegram whatever channel it named.
+**INV-OUT-006**: Whether a turn streams, whether its final reply is closing silence, and where an untrusted webhook turn's discrete send goes are properties of its scope — the first and third registered at mint from the message's own facts, the second intrinsic to final-reply admission: a scheduled turn or an event wake never receives a token callback, a final reply that strips to nothing but `<silent/>` sentinels is suppressed by admission while prose after a sentinel is delivered whole — except that when a scheduled turn's or an event wake's last text-bearing message strips to a `<silent/>` after earlier text, the reply is suppressed if the turn made at least one Casa send, every one confirmed delivered, every send call resolved without failure, and exactly one attempt ran with no retry, and is otherwise the earlier messages without the closing ones — and an untrusted webhook turn's `send_message` is bound to Telegram whatever channel it named.
 
 The three used to be inline checks — the two-clause callback condition and the sentinel
 gate in `handle_message`, the egress clamp in `send_message` — and are now `NoStream`
@@ -193,6 +193,26 @@ What it does not cover: `send_media` still requires a Telegram origin of its own
 webhook turn's media is refused before the binding matters; the #650 retry-tainted-silence
 reclassification runs before admission and is not an output decision.
 
+The exception is the operator's ruling on #1075, for the turns that do not stream. A closing
+`<silent/>` in its own message after the turn's narration used to reach the operator as
+`Done.\n\n<silent/>`, because silence was judged only on the joined text. Admission now
+also reads the turn report `_process` fills: the winning attempt's text-bearing messages
+(`reply_messages`, from the same fold that joins them), the number of attempts that ran and
+the consumed retries. It acts only on a `NoStream` scope, only when those messages join to
+exactly the text being admitted, and only when a trailing run of them strips to silence and
+contains a sentinel (`closing_silence_prefix`). Rule 1 then needs one attempt, no retries
+and `TurnScope.closing_silence_earned`: at least one `OperatorSend`, every one delivered,
+and every `SendAttempt` resolved `ok`. The reply is suppressed with `chosen_silence` left
+False, so the discharge below still reads only a reply of nothing but sentinels. Otherwise,
+rule 2 admits the earlier messages verbatim, and the disclosure line goes on after the
+strip. A single message carrying prose and a sentinel, prose in the last message, a trailing
+whitespace message, a streaming turn and a reply with no per-message fact are judged as
+before. Rule 1 drops all the earlier text, and the operator accepted two residuals: no-send
+narration still arrives, untagged, and a real message written as plain text after a
+confirmed send is dropped. The verdict is taken at
+admission: a synchronous delegate that timed out and sends later belongs to its own
+completion notice.
+
 Two facts ride out of admission for the durable-announcement discharge (#1079,
 INV-JOB-010). A suppressed final reply says whether the silence was *chosen* —
 `Admitted.chosen_silence` is set in the same silence arm, on the same unannotated text, when
@@ -204,7 +224,12 @@ positive evidence; a caption-less `send_media` opens one with `open_send`, and
 `TurnScope.for_child` hands a synchronous delegate the launching scope's list itself (an
 async one, which outlives the launching turn, gets its own). Because the channel
 refuses model text that was not admitted, no model text reaches the transport without leaving
-a record. `handle_message` reads `TurnScope.operator_sends_delivered`, never the text.
+a record. `handle_message` reads `TurnScope.operator_sends_delivered`, never the text. A send
+refused before admission leaves no `OperatorSend`, so every call of `send_message`,
+`send_media` or `ask_user` also opens a `SendAttempt` (`TurnScope.send_attempts`) through
+one wrapper outside the registered handler: `open` at entry, then `failed` on an error
+result or a raise and `ok` otherwise. It is shared exactly as `operator_sends` is and read
+only by the #1075 rule, so the discharge's meaning is unchanged on every turn.
 
 ## Failure behavior
 

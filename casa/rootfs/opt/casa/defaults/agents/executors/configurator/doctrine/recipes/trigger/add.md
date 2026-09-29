@@ -27,9 +27,11 @@ Triggers are per-agent scheduled or webhook-driven events. Residents only (speci
 A scheduled turn delivers TWICE when its prompt tells the agent to send a
 message and says nothing about the closing text: the send goes out at once, and
 the turn's own final text is then delivered to the same chat as a second
-message ("Sent."). Casa never suppresses that final text — a scheduled turn
-that legitimately has something to say must still be heard, and a correction
-after a send must reach the operator — so the prompt is what closes the gap.
+message ("Sent."). Casa does not suppress that final text — a scheduled turn
+that legitimately has something to say must still be heard — so the prompt is
+what closes the gap. If the turn's last message is the sentinel `<silent/>`
+after earlier text, Casa drops that text when every send the turn made was
+confirmed delivered, and otherwise delivers it without the sentinel.
 
 For interval/cron/date prompts whose turn delivers its own message, keep
 the send instruction first and unconditional, and end the prompt with:

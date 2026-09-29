@@ -109,13 +109,15 @@ setting by hand:
 
 ### Writing a scheduled trigger prompt by hand
 
-A scheduled turn delivers whatever the agent says at the end of it. So a prompt
-that tells the agent to send you a message, and says nothing about how the turn
-ends, costs you two messages: the message itself, and then the agent's own
-closing "Sent." to the same chat. Casa does not suppress that closing text on
-your behalf — a scheduled turn that has something real to say must still be
-heard, and a correction after a send must still reach you — so the prompt is
-where you say it.
+A scheduled turn delivers whatever the agent says at the end of it, unless it
+ends with the silence sentinel. So a prompt that tells the agent to send you a
+message, and says nothing about how the turn ends, costs you two messages: the
+message itself, and then the agent's own closing "Sent." to the same chat. Casa
+does not suppress that closing text on your behalf — a scheduled turn that has
+something real to say must still be heard — so the prompt is where you say it.
+If the turn's last message is the sentinel `<silent/>` after earlier text, Casa
+drops that text when every send the turn made was confirmed delivered, and
+otherwise delivers it without the sentinel.
 
 For interval/cron/date prompts whose turn delivers its own message, keep
 the send instruction first and unconditional, and end the prompt with:

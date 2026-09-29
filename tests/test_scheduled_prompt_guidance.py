@@ -7,10 +7,12 @@ ends with ordinary prose delivers TWO messages to the same operator chat: the
 send happens immediately and marks nothing the final-text path can read
 (``tools.py`` ``send_message``), and the turn's closing text is then delivered
 through ``send_response`` unless it strips to the silence sentinel exactly
-(``agent.py``). Neither half may be narrowed — the imperative send stays first
-and unconditional (fail-noisy, never a lost reminder: the v0.132.0
-morning-briefing lesson), and prose after a sentinel is still delivered (the G-3
-recant contract). So the gap is closed PER PROMPT, in the prompt text, which is
+(``agent.py``) — or, since the operator's ruling on #1075, unless its LAST message
+is the sentinel after a turn whose every send was confirmed delivered (otherwise
+that earlier text is delivered without the tag; ``output_boundary.py``). Neither
+half may be narrowed further — the imperative send stays first and unconditional
+(fail-noisy, never a lost reminder: the v0.132.0 morning-briefing lesson), and
+prose after a sentinel is still delivered (the G-3 recant contract). So the gap is closed PER PROMPT, in the prompt text, which is
 what ``set_reminder`` and the event wakes already do for the prompts Casa
 authors itself (#511, #534).
 
@@ -77,6 +79,31 @@ def _normalized(path: Path) -> str:
 @pytest.mark.parametrize("path", SURFACES, ids=lambda p: p.name)
 def test_closing_silence_convention(path):
     assert _normalized(path).count(CONVENTION) == 1
+
+
+# #1075: the one closing Casa decides itself, in one wording on every surface
+# that says Casa does not suppress closing text. The behaviour it states is
+# pinned by tests/test_buffered_closing_silence.py (rows 1-3 of the ruling) and
+# tests/test_buffered_closing_silence_pins.py; this pins only that the surfaces
+# say it, and that the unconditional promises it falsified are gone.
+RULING = (
+    "If the turn's last message is the sentinel `<silent/>` after earlier text, "
+    "Casa drops that text when every send the turn made was confirmed delivered, "
+    "and otherwise delivers it without the sentinel."
+)
+FALSIFIED = (
+    "Casa never suppresses",
+    "a correction after a send must reach the operator",
+    "a correction after a send must still reach you",
+    "leaves no mark the final-text path can read",
+)
+
+
+@pytest.mark.parametrize("path", SURFACES, ids=lambda p: p.name)
+def test_the_closing_silence_ruling_is_stated(path):
+    text = _normalized(path)
+    assert text.count(RULING) == 1
+    assert [f for f in FALSIFIED if f in text] == []
 
 
 def test_the_webhook_route_is_not_told_to_carry_a_prompt():
