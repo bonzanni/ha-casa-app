@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.332.12] - 2026-09-29
+
+### Fixed
+
+- After a Home Assistant upgrade renamed its tools (Home Assistant 2026.9 adds
+  a `homeassistant__` prefix to each one), Tina kept calling the old names and
+  her requests to control the house failed. Casa did not read Home
+  Assistant's tool list again when it was told a tool did not exist, and even
+  when it had the new list, her ongoing conversation could keep repeating the
+  old names. Now, when Home Assistant answers one of her calls by saying that
+  the tool she called was not found, Casa reads Home Assistant's tool list
+  again in the background. Once it has a list with different tool names, her
+  next request starts a new conversation that is offered the new names,
+  instead of continuing the one that keeps calling the old ones. The earlier
+  conversation is kept, the same way Casa keeps a conversation that has gone
+  stale. The request that ran into the missing tool still gets Home
+  Assistant's own error.
+- When Home Assistant returns an error for a tool call, Casa's log line for
+  that call now includes the start of Home Assistant's error text, on one
+  line and limited to 200 characters. The log line for a successful call is
+  unchanged and still includes nothing of the result.
+
+### Changed
+
+- The first time a conversation of Tina's from before this update is
+  continued, it starts afresh once instead, with the earlier conversation
+  kept. This happens only when Casa has read Home Assistant's tool list for
+  her. After that, whenever Casa reads a tool list from Home Assistant in
+  which a tool name was added, removed or renamed, her next request starts a
+  new conversation once, in the same way. A change only to a tool's
+  description or parameters does not.
+
 ## [0.332.11] - 2026-09-29
 
 ### Fixed
