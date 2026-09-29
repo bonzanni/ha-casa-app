@@ -488,9 +488,9 @@ class TestTheReplayOwnerCannotStopBootOrLie:
 
 
 # ---------------------------------------------------------------------------
-# #926 regression guards: neither the live engagement finalization nor the
-# engagement-outcome replay marks its notice as a delegation boot replay, and
-# neither prompt carries the delegation re-announcement statement.
+# #926 regression guard: the live engagement finalization never marks its
+# notice as a boot replay, and its prompt carries no replay statement. The
+# engagement boot replay DOES mark its own notices (#1087), below.
 # ---------------------------------------------------------------------------
 
 
@@ -539,25 +539,145 @@ async def test_live_engagement_finalization_is_not_marked_as_a_boot_replay(
     assert body.count("Result text from finance:\nthe plan\n") == 1
 
 
-async def test_the_engagement_outcome_replay_is_not_marked_as_a_delegation_replay(
-    tmp_path,
-):
-    import casa_core
 
-    reg, _tombstone, _a, _b, _c, _told = await _owing_records(tmp_path)
+
+# ---------------------------------------------------------------------------
+# #1087 red cases — INV-ENG-018's replay clause: an engagement outcome replayed
+# at boot says it is an earlier outcome reported after a restart, and when its
+# record went terminal (or that the time is unknown).
+#
+# Specified by **astra** in the drive redcase round (MODE: SPECIFY) against
+# ``17bd039afdf3710c3dd3ddee902420c9991e58f5``. They replace the pin that
+# asserted the defect (``..._is_not_marked_as_a_delegation_replay``). The
+# expected statement is written out literally here — never derived from the
+# production constant or time helper — so a change to either is caught.
+# ---------------------------------------------------------------------------
+
+_OUTCOME_STATEMENT_1087 = (
+    "This is a post-restart re-announcement. This outcome was reached before "
+    "a Casa restart, and its announcement to the user was never confirmed as "
+    "delivered. Tell the user it is an earlier result being reported after a "
+    "restart — do NOT present it as something that just happened."
+)
+_UNKNOWN_TIME_1087 = (
+    "Casa has no record of when this outcome was recorded, so its age is "
+    "unknown."
+)
+_RECORDED_AT_1087 = 1790596800          # 2026-09-28T12:00:00+00:00
+_CLOCK_1087 = 1790604000                # two hours later
+
+
+async def _replay_with_completed_at(tmp_path, values):
+    """The fixture's three owing rows, their ``completed_at`` rewritten on
+    disk to ``values`` (A, B, C) and RELOADED, then replayed by the real owner.
+    """
+    import casa_core
+    from engagement_registry import EngagementRegistry
+
+    _reg, tombstone, a_id, b_id, c_id, told_id = await _owing_records(tmp_path)
+    by_id = dict(zip((a_id, b_id, c_id), values))
+    rows = _rows(tombstone)
+    for r in rows:
+        if r["id"] in by_id:
+            r["completed_at"] = by_id[r["id"]]
+    tombstone.write_text(json.dumps(rows))
+
+    reg = EngagementRegistry(tombstone_path=str(tombstone), bus=None)
+    await reg.load()
     bus = _RecordingBus()
     await casa_core._notify_recovered_engagement_outcomes(
         reg, bus, assistant_role="assistant")
+    return reg, tombstone, bus, (a_id, b_id, c_id), told_id, by_id
+
+
+def _freeze_replay_clock(monkeypatch):
+    from datetime import timezone
+
+    import agent as agent_mod
+    monkeypatch.setattr(agent_mod, "_replay_clock", lambda: _CLOCK_1087)
+    monkeypatch.setattr(agent_mod, "resolve_tz", lambda: timezone.utc)
+
+
+def _assert_one_block_after_header(msg, block):
+    """The replayed prompt is the same notice synthesized unflagged, with
+    exactly ``block`` inserted right after the header."""
+    import copy
+    import dataclasses
+
+    body = _synth_body(msg)
+    unflagged = copy.copy(msg)
+    unflagged.content = dataclasses.replace(
+        msg.content, replayed_after_restart=False)
+    plain = _synth_body(unflagged)
+    head, sep, rest = plain.partition("]\n\n")
+    assert sep, plain
+    assert body == head + sep + block + rest, body
+    assert body.count(_OUTCOME_STATEMENT_1087) == 1, body
+    return body
+
+
+async def test_replayed_engagement_outcomes_carry_one_timed_replay_block(
+    tmp_path, monkeypatch,
+):
+    _freeze_replay_clock(monkeypatch)
+    reg, tombstone, bus, ids, told_id, _ = await _replay_with_completed_at(
+        tmp_path, [_RECORDED_AT_1087] * 3)
+    a_id, b_id, c_id = ids
+
     assert len(bus.sent) == 3
+    by_id = {m.content.delegation_id: m for m in bus.sent}
+    assert set(by_id) == {a_id, b_id, c_id}
+    assert told_id not in by_id
+
+    expected = {
+        a_id: ("ok", ""), b_id: ("error", "cancelled"), c_id: ("error", "error"),
+    }
+    block = (
+        _OUTCOME_STATEMENT_1087 + " Casa recorded this outcome at "
+        "2026-09-28T12:00:00+00:00 (about 2 hours ago).\n\n"
+    )
+    for eid, msg in by_id.items():
+        c = msg.content
+        assert c.replayed_after_restart is True
+        assert c.terminal_at == _RECORDED_AT_1087
+        assert (c.status, c.kind) == expected[eid]
+        assert c.result_available is False
+        body = _assert_one_block_after_header(msg, block)
+        # #766: the answerless wording stays timing- and storage-neutral.
+        assert "during a Casa restart" not in body
+        assert "the answer itself is gone" not in body
+
+    # Enqueueing is not a telling: all three are still owed, in memory and
+    # on disk.
+    assert {r.id for r in reg.records_owing_terminal_notification()} == {
+        a_id, b_id, c_id}
+    for eid in ids:
+        assert _row(tombstone, eid)["terminal_notification_pending"] is True
+
+
+@pytest.mark.parametrize("values", [
+    [None, "yesterday", True],
+    [10**400, None, True],
+], ids=["none-string-bool", "oversized-int"])
+async def test_replayed_engagement_outcomes_with_unusable_times_still_become_prompts(
+    tmp_path, monkeypatch, values,
+):
+    _freeze_replay_clock(monkeypatch)
+    _reg, _tombstone, bus, ids, _told, by_id = await _replay_with_completed_at(
+        tmp_path, values)
+
+    assert len(bus.sent) == 3
+    assert {m.content.delegation_id for m in bus.sent} == set(ids)
+    block = _OUTCOME_STATEMENT_1087 + " " + _UNKNOWN_TIME_1087 + "\n\n"
+    prompts = 0
     for msg in bus.sent:
-        assert msg.content.replayed_after_restart is False
-        assert msg.content.result_available is False
-        # #1084: engagements stay out of the delegation replay statement and
-        # its recorded time — no restart claim reaches an engagement prompt,
-        # the ok-without-answer arm included (its wording is neutral, #766).
-        assert msg.content.terminal_at is None
-        body = _synth_body(msg)
-        assert body.count("re-announcement") == 0
-        assert body.count("restart") == 0
+        c = msg.content
+        persisted = by_id[c.delegation_id]
+        assert c.replayed_after_restart is True
+        assert type(c.terminal_at) is type(persisted)
+        assert c.terminal_at == persisted
+        body = _assert_one_block_after_header(msg, block)
+        assert body.count(_UNKNOWN_TIME_1087) == 1
         assert body.count("Casa recorded") == 0
-        assert body.count("age is unknown") == 0
+        prompts += 1
+    assert prompts == 3
