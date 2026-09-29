@@ -1258,6 +1258,11 @@ class Agent:
         # admission tests it on the UNANNOTATED text, so a silent turn is
         # never turned into a visible line, and the #650 reclassification
         # above uses the same definition.
+        # #1075 (operator ruling): on a BUFFERED turn whose LAST message is a
+        # closing sentinel after earlier text, admission also reads the turn
+        # report — silent after a confirmed send, otherwise the earlier text
+        # without the tag. A single message with prose after its sentinel is
+        # still delivered whole, and a streaming turn is judged as before.
 
         # #1038: admission. The model's final text passes through the turn's
         # scope — obligations applied against the evidence the turn gathered,
@@ -1267,7 +1272,8 @@ class Agent:
         # text, and delivery below is skipped exactly as before.
         admitted: Admitted | None = None
         if text:
-            admitted = (scope.admit(IntentKind.FINAL_REPLY, text)
+            admitted = (scope.admit(IntentKind.FINAL_REPLY, text,
+                                    report=turn_report)
                         if error_kind is None else casa_text(text))
             text = "" if admitted.suppressed else admitted
 
@@ -1903,6 +1909,7 @@ class Agent:
                 return (
                     state["text"], result.sid, state["usage"],
                     result.resume_sid, session_published,
+                    tuple(state["messages"]),
                 )
 
             async def _attempt_bypass_turn():
@@ -1983,7 +1990,8 @@ class Agent:
                         )
                 finally:
                     await client.aclose()
-                return state["text"], sid, state["usage"], resume_sid, False
+                return (state["text"], sid, state["usage"], resume_sid, False,
+                        tuple(state["messages"]))
 
             # Retry transient faults (spec 5.2 §3). The pooled path may raise
             # PoolUnavailable (pool closing / entry unstable) — fall to the
@@ -2107,7 +2115,7 @@ class Agent:
                 try:
                     try:
                         response_text, sdk_session_id, usage, used_resume, \
-                            session_published = \
+                            session_published, reply_messages = \
                             await _attempt_with_stale_recovery(attempt)
                     except PoolUnavailable as _refusal:
                         # #882: a refusal that means THIS POOL IS CLOSING, once
@@ -2143,7 +2151,7 @@ class Agent:
                         # so falling through to the bypass — which re-derives its
                         # resume decision from the registry — is correct either way).
                         response_text, sdk_session_id, usage, used_resume, \
-                            session_published = \
+                            session_published, reply_messages = \
                             await _attempt_with_stale_recovery(_attempt_bypass_turn)
                 except asyncio.CancelledError:
                     raise  # a cancelled turn is not health evidence
@@ -2157,6 +2165,14 @@ class Agent:
                         terminal_kind=_classify_error(exc), final_text=None,
                     )
                     raise
+
+                # #1075: the WINNING attempt's message boundaries, and how many
+                # attempts ran — every attempt closure (pooled, bypass, a
+                # stale-resume re-run, a pool fallback) keeps one state, and a
+                # re-run is not always a consumed retry. The final-reply
+                # admission reads both on a buffered turn.
+                report["reply_messages"] = reply_messages
+                report["attempts"] = len(turn_state.get("states") or ())
 
                 # 9. SessionRegistry — record the SDK session id for resume +
                 # save. Inside the gate; see the note above.
@@ -2946,6 +2962,9 @@ class Agent:
         computed cumulative actually changed (AR-A/AR-B)."""
         state: dict[str, Any] = {
             "text": "",
+            # #1075: the same fold, one entry per text-bearing message — the
+            # only place message boundaries exist. ``text`` is their join.
+            "messages": [],
             "usage": {},
             "idx": 0,
             "started_ms": time.monotonic() * 1000,
@@ -3161,6 +3180,7 @@ class Agent:
                         if state["text"]:
                             state["text"] += "\n\n"
                         state["text"] += msg_text
+                        state["messages"].append(msg_text)
                     # The canonical fold supersedes any in-flight partial for
                     # this message (AR-A/AR-B): reset before computing the
                     # cumulative so a stale partial never bleeds into message
