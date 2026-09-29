@@ -1073,3 +1073,178 @@ async def test_forced_full_reported_failure_warns_and_clears_obligation(
     assert results[0].levelno == logging.WARNING
     assert results[0].getMessage().endswith(
         " (FAILED — artifact may remain INERT until manual reload)")
+
+
+# --- #1096 regression tests: the producers the red cases do not reach ----------
+
+async def _commit_owed(eng) -> frozenset:
+    """Commit whatever is dirty through the real tool; return what it owes."""
+    import tools as tools_mod
+    r = _decode(await tools_mod.config_git_commit.handler({"message": "edit"}))
+    assert r["sha"]
+    assert eng.id in tools_mod._ENGAGEMENTS_PENDING_RELOAD
+    return _pending(eng)
+
+
+async def test_resident_add_failure_keeps_its_paths_owed(world, completion, monkeypatch):
+    """A new resident whose construction fails is skipped by the sweep with
+    no action row; its committed directory stays owed, nothing else does."""
+    import reload as reload_mod
+    import tools as tools_mod
+
+    world.runtime.specialist_registry = _ScanningSpecialistRegistry([({}, [])])
+    real = reload_mod._construct_agent
+
+    def construct(*, cfg, runtime, agent_registry=None):
+        if cfg.role == "cook":
+            raise OSError("probe construct error")
+        return real(cfg=cfg, runtime=runtime, agent_registry=agent_registry)
+    monkeypatch.setattr(reload_mod, "_construct_agent", construct)
+
+    eng = await completion.start()
+    _seed_resident(world.root / "agents", "cook", "Cook")
+    _seed_specialist_files(world, "finance")
+    owed = await _commit_owed(eng)
+    cook = {p for p in owed if p.startswith("agents/cook/")}
+    assert cook and len(owed) > len(cook)
+
+    r = _decode(await tools_mod.casa_reload.handler({"scope": "agents"}))
+    assert r["status"] == "ok" and not any("cook" in a for a in r["actions"])
+    assert eng.id in tools_mod._ENGAGEMENTS_PENDING_RELOAD
+    assert _pending(eng) == frozenset(cook)
+    assert [f["unit"] for f in r["failures"]] == ["cook"]
+
+
+class _ExecutorRegistryDouble:
+    def __init__(self, *, failed=(), collection_failed=False):
+        self.failed_types = set(failed)
+        self.collection_failed = collection_failed
+        self.loads = 0
+
+    def load(self):
+        self.loads += 1
+
+    def definition_any(self, t):
+        return None
+
+
+def _seed_executors(world, *types_) -> list[str]:
+    paths = []
+    for t in types_:
+        _w(world.root / "agents" / "executors" / t / "definition.yaml", f"type: {t}\n")
+        paths.append(f"agents/executors/{t}/definition.yaml")
+    return paths
+
+
+@pytest.mark.parametrize("fault", ["definition", "collection", "hooks"])
+async def test_executor_failures_keep_their_paths_owed(
+        world, completion, monkeypatch, fault):
+    """`executors` with a definition that failed to load (a NEW type: no
+    kept-stale row), a collection-level load failure (an empty registry and no
+    failed type), and a loaded definition whose hooks.yaml built only a
+    deny-all map (again with no pre-reload entry to keep)."""
+    import casa_core
+    import reload as reload_mod
+    import tools as tools_mod
+    from hooks import DenyAllPolicyMap
+
+    monkeypatch.setitem(reload_mod._HANDLERS, "executors", reload_mod.reload_executors)
+    registry = _ExecutorRegistryDouble(
+        failed={"probe"} if fault == "definition" else (),
+        collection_failed=fault == "collection")
+    world.runtime.executor_registry = registry
+    world.runtime.executor_cc_policies = {} if fault == "hooks" else None
+    monkeypatch.setattr(casa_core, "_build_executor_cc_hook_policies",
+                        lambda reg: {"probe": DenyAllPolicyMap()})
+
+    eng = await completion.start()
+    paths = _seed_executors(world, "probe", "other")
+    await world.commit(eng, paths)
+
+    r = _decode(await tools_mod.casa_reload.handler({"scope": "executors"}))
+    assert r["status"] == "ok" and registry.loads == 1
+    assert eng.id in tools_mod._ENGAGEMENTS_PENDING_RELOAD
+    expected = set(paths) if fault == "collection" else {"agents/executors/probe/definition.yaml"}
+    assert _pending(eng) == frozenset(expected)
+    assert len(r["failures"]) == 1
+
+
+async def test_policies_cascade_role_failure_keeps_the_policy_owed(
+        world, completion, monkeypatch):
+    """A role that fails to rebuild in the policies cascade has not taken the
+    SHARED committed input, so the failure is unattributed and the policy
+    library stays owed (a role-scoped rule would have discharged it)."""
+    import reload as reload_mod
+    import tools as tools_mod
+
+    monkeypatch.setitem(reload_mod._HANDLERS, "policies", reload_mod.reload_policies)
+    world.runtime.specialist_registry = _ScanningSpecialistRegistry([({}, [])])
+    real = reload_mod._reload_role_after_policies
+
+    async def rebuild(runtime, role, *, rows=None):
+        if role == "assistant":
+            raise reload_mod.ReloadError("construct_failed", "probe")
+        return await real(runtime, role, rows=rows)
+    monkeypatch.setattr(reload_mod, "_reload_role_after_policies", rebuild)
+
+    eng = await completion.start()
+    p = world.root / "policies" / "disclosure.yaml"
+    p.write_text(p.read_text(encoding="utf-8").replace("private.", "kept private."),
+                 encoding="utf-8")
+    await world.commit(eng, ["policies/disclosure.yaml"])
+
+    r = _decode(await tools_mod.casa_reload.handler({"scope": "policies"}))
+    assert r["status"] == "ok"
+    assert r["actions"].count("failed:assistant:construct_failed") == 1
+    assert eng.id in tools_mod._ENGAGEMENTS_PENDING_RELOAD
+    assert _pending(eng) == frozenset({"policies/disclosure.yaml"})
+    assert r["failures"] == [{"unit": None, "detail": "failed:assistant:construct_failed"}]
+
+
+async def test_dispatch_reconcile_failure_keeps_everything_owed(
+        world, completion, monkeypatch):
+    """dispatch's own post-handler plugin-trigger reconcile failing is a
+    global overlay left stale: unattributed, nothing is discharged."""
+    import trigger_reconcile
+    import tools as tools_mod
+
+    monkeypatch.setattr(trigger_reconcile, "reconcile_from_runtime",
+                        AsyncMock(side_effect=RuntimeError("probe")))
+    eng = await completion.start()
+    _edit_card(world.agent_dir("assistant"), "Edited summary.")
+    await world.commit(eng, ["agents/assistant/character.yaml"])
+
+    r = _decode(await tools_mod.casa_reload.handler(
+        {"scope": "agent", "role": "assistant"}))
+    assert r["status"] == "ok" and world.counted[-1] == "agent:assistant"
+    assert eng.id in tools_mod._ENGAGEMENTS_PENDING_RELOAD
+    assert _pending(eng) == frozenset({"agents/assistant/character.yaml"})
+
+
+def test_reload_failure_keeps_table():
+    """The filter itself: what one reported failure keeps owed."""
+    from tools import RELOAD_PATHS_UNKNOWN, _reload_failure_keeps as keeps
+
+    finance = [{"unit": "finance", "detail": "x"}]
+    probe = [{"unit": "probe", "detail": "x"}]
+    cases = [
+        (None, "agents/assistant/character.yaml", False),
+        ([], "agents/assistant/character.yaml", False),
+        (finance, "agents/specialists/finance/character.yaml", True),
+        (finance, "agents/finance/character.yaml", True),
+        (finance, "plugins/registry.json", True),
+        (finance, "agents/specialists/finance2/character.yaml", False),
+        (finance, "agents/specialists/other/character.yaml", False),
+        (finance, "specialists/registry.json", False),
+        (finance, "policies/disclosure.yaml", False),
+        (finance, RELOAD_PATHS_UNKNOWN, True),
+        (probe, "agents/executors/probe/prompt.md", True),
+        (probe, "agents/executors/probe2/prompt.md", False),
+        ([{"unit": None, "detail": "x"}], "policies/disclosure.yaml", True),
+        ([{"unit": "", "detail": "x"}], "policies/disclosure.yaml", True),
+        (["garbage"], "policies/disclosure.yaml", True),
+        ("garbage", "policies/disclosure.yaml", True),
+        ([{"unit": "specialists", "detail": "x"}], "agents/specialists/a/b.yaml", False),
+    ]
+    got = [(f, p, keeps(f, p)) for f, p, _ in cases]
+    assert got == cases
