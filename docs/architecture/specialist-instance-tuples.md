@@ -81,7 +81,7 @@ of being journalled as an emptiness the compensation would then write back
 What it does not cover: the config git repository's *history* for a tuple path that is
 already tracked there. The repository's whitelist admits nothing under the specialists
 directory (INV-CFG-004), so Casa never adds a tuple file to it; but a tuple an operator
-force-added stays tracked, and every snapshot keeps committing it — the
+force-added stays tracked, and every snapshot keeps committing its changes — the
 `init-setup-configs` oneshot's boot snapshot included, which runs before the scrub — so
 its history can hold pre-guard digests and plaintext; remediation for such an install is
 secret rotation. A slug whose tuple was
