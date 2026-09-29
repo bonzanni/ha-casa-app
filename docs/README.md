@@ -45,6 +45,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | authorization grants, the protected-tool challenge, who may approve a protected call, or what a finished engagement does to its challenges | [`architecture/plugin-authorization.md`](architecture/plugin-authorization.md) |
 | bundle-transaction failure behaviour, the compensation a failed sync phase or sequencer runs, boot reconciliation of bundle journals, or the consent-receipt and staging age sweeps | [`architecture/specialist-bundle-recovery.md`](architecture/specialist-bundle-recovery.md) |
 | config-tree reconciliation, the entry-level merge, or `${VAR}` placeholder resolution | [`architecture/config-reconciliation.md`](architecture/config-reconciliation.md) |
+| config_git_commit's reload obligation, which reload scope discharges which committed path, its plugins-only exemption and the pre-activation credit | [`architecture/engagement-reload-obligation.md`](architecture/engagement-reload-obligation.md) |
 | engagement lifecycle, engagement launch, or the driver protocol | [`architecture/engagements.md`](architecture/engagements.md) |
 | hook resolution or authentication, hook policy parameters or fallbacks, or the containment-floor snapshot | [`architecture/hook-resolution.md`](architecture/hook-resolution.md) |
 | how a deferred answer reaches a device, the delivery frame protocol, leases or TTLs, per-device ordering, or what a voice result may disclose | [`architecture/voice-delivery.md`](architecture/voice-delivery.md) |
@@ -65,7 +66,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | the callback route, callback consent or reconciliation, or the validated redirect base URL | [`architecture/callbacks.md`](architecture/callbacks.md) |
 | the callback spool protocol, the attempt ledger or its ack protocol, or the delivery worker | [`architecture/callback-delivery.md`](architecture/callback-delivery.md) |
 | the closing-silence convention, which tool calls count as a scheduled turn's delivery, or the surfaces that state either | [`architecture/scheduled-prompt-endings.md`](architecture/scheduled-prompt-endings.md) |
-| the completion gate, or a driver's inbound count accessors — its unread depth, its in-flight blocking answer, its reservation count; or config_git_commit's reload obligation, which reload scope discharges which committed path, its plugins-only exemption and the pre-activation credit | [`architecture/engagement-completion-gate.md`](architecture/engagement-completion-gate.md) |
+| the completion gate, or a driver's inbound count accessors — its unread depth, its in-flight blocking answer, its reservation count | [`architecture/engagement-completion-gate.md`](architecture/engagement-completion-gate.md) |
 | the contribution rules, the verification discipline, or how documentation is kept honest | [`doctrine/working-on-casa.md`](doctrine/working-on-casa.md) |
 | the delegation ACL or alias resolution, the delegates block, the delegation depth cap, or the agent-spawn cap | [`architecture/delegation.md`](architecture/delegation.md) |
 | the documentation rules themselves, or adding a document to the corpus | [`contributing/doc-contract.md`](contributing/doc-contract.md) |
