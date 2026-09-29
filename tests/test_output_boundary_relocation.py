@@ -116,9 +116,12 @@ def test_the_inline_checks_are_gone():
     import inspect
     import agent
     import tools
+    from module_source import module_function_source
     hm = inspect.getsource(agent.Agent.handle_message)
     assert 'msg.type != MessageType.SCHEDULED' not in hm
     assert '.get("synthetic") != "event_wake"' not in hm
     assert "if text and _strips_to_silence(text):" not in hm
-    sm = inspect.getsource(tools.send_message.handler)
+    # The tool's own body, not `.handler`: that is the send-accounting
+    # wrapper around the fence, and reads neither (#1092).
+    sm = module_function_source(tools, "send_message")
     assert '_origin_route") != "invoke"' not in sm
