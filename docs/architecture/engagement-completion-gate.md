@@ -10,8 +10,9 @@ last_reviewed: 2026-08-23
 
 The admission side of ending an engagement: what a *successful* completion is refused over,
 how "unread" and "in flight" differ and why the gate needs both, and what each driver counts;
-and the reload a completed engagement owes for configuration it committed, which a plugin
-mutation's plugins-only persist commit does not owe. What a terminal outcome then discloses about the messages that died with the engagement is in
+and the reload a completed engagement owes for configuration it committed, which reload
+discharges which committed path, and why a plugin mutation's plugins-only persist commit owes
+none. What a terminal outcome then discloses about the messages that died with the engagement is in
 [`architecture/engagement-inbound-disclosure.md`](engagement-inbound-disclosure.md). The terminal
 transition itself, the strictness that keeps the persisted and in-memory records agreeing, the
 finalization side effects behind the flip and topic output ordering are in
@@ -184,10 +185,11 @@ a retry. Both halves of the invariant's last sentence are that one path.
 
 An engagement can owe a reload for configuration it committed. A non-empty
 `config_git_commit` arms that obligation for its engagement unless the exemption below applies;
-a successful `casa_reload` drains it (`casa_reload_triggers` does not), and so does
-`casa_restart_supervised`, which defers a restart to finalization instead; and `emit_completion`
-with outcome `completed` that finds it still armed calls `casa_reload` with `scope="full"`
-before finalizing, because a model can skip the reload the doctrine asks for. A plugin mutation tool reloads and verifies its
+a successful reload discharges the committed paths its scope covers (INV-TOOL-012, below), and
+`casa_restart_supervised` takes the whole obligation over, deferring a restart to finalization
+instead; and `emit_completion` with outcome `completed` that finds any path still owed calls
+`casa_reload` with `scope="full"` before finalizing, because a model can skip, or mis-scope, the
+reload the doctrine asks for. A plugin mutation tool reloads and verifies its
 own targets, and on full success credits the engagement, so the commit that merely persists
 the registry change it already activated is exempt — only when every changed path, read back
 from git, is under `plugins/`. A path read that fails yields no paths and arms. The credit is
@@ -199,9 +201,32 @@ re-materialization writes nothing (INV-SPEC-019, in
 [`architecture/specialist-lifecycle.md`](specialist-lifecycle.md)): without that, boot and
 every specialist-tier reload left specialist operational files in the next commit.
 
-What it does not cover: which scope drains the obligation — any successful `casa_reload`
-does, whether or not it reloads what the commit changed. A commit that mixes plugin and other paths
-arms, even when the other paths are derived files that a changed input rewrote once.
+What it does not cover: which reload discharges the obligation — that is INV-TOOL-012. A
+commit that mixes plugin and other paths arms, even when the other paths are derived files that
+a changed input rewrote once.
+
+**INV-TOOL-012**: Inside an engagement, the reload obligation is discharged path by path, only by the configurator's own successful `casa_reload` or `casa_reload_triggers`, and only for committed paths its scope covers that were committed before that call began: `triggers` covers the role's `triggers.yaml` and trigger prompts; `agent` the role's directory and the plugin registry; `policies` covers `policies/`; `agents` covers `agents/specialists/`, `specialists/` and the plugin registry; `executors` covers `agents/executors/`; `config_sync` covers what `agents` and `policies` do; `plugin_env` covers nothing. `full` discharges everything, including a commit whose paths could not be read, and a reload a tool runs internally discharges nothing.
+
+The table is the configurator doctrine's "What requires what" (`reload.md` under the
+configurator's doctrine), so an engagement that follows it owes nothing at completion, and one
+that picks a scope that does not cover its commit is force-reloaded. `casa_reload_triggers`
+therefore does discharge a commit confined to its role's trigger inputs — and only that: a
+commit that also edited the role's `character.yaml` stays owed until an `agent` reload (or
+`full`) runs. The plugin registry sits on the `agent` and `agents` rows because those are the
+reloads the doctrine names after a plugin assignment on one role and after a specialist bundle
+whose plugins changed. Each committed path is recorded with a sequence number, so a commit that
+lands while a reload is running — a new path, or the same path again — stays owed; and a path
+read that fails records an entry only `full` discharges. The reloads a plugin or specialist
+mutation runs for its own targets, and the reloads a `full`, `executors` or `config_sync` cascade
+composes, discharge nothing of their own: the tool's persist commit follows its reload, and the
+explicit reload the configurator calls is the one the rule reads. Only `casa_reload` and
+`casa_reload_triggers` discharge; no reload handler touches the obligation.
+
+What it does not cover: that a reload which returned `ok` applied everything its scope covers.
+A scope that swallows a subordinate failure (a specialist that failed to load in an `agents`
+sweep, a transient read error inside `full`) still discharges its rows, as every successful
+reload did before; and `agents` re-scans a live specialist without rebuilding it, so its row
+claims the reload the doctrine names, not that the specialist runs the new files.
 
 ## Failure behavior
 
@@ -248,6 +273,11 @@ scoped to what a driver can evidence, which is why the accessors are the seam.
 - `casa/rootfs/opt/casa/tools.py::_finalize_engagement`
 - `casa/rootfs/opt/casa/tools.py::emit_completion`
 - `casa/rootfs/opt/casa/tools.py::config_git_commit`
+- `casa/rootfs/opt/casa/tools.py::_reload_scope_covers`
+- `casa/rootfs/opt/casa/tools.py::_ReloadObligations`
+- `casa/rootfs/opt/casa/tools.py::casa_reload`
+- `casa/rootfs/opt/casa/tools.py::casa_reload_triggers`
+- `casa/rootfs/opt/casa/config_git.py::changed_paths`
 - `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.inbound_unread_depth`
 - `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.inbound_in_flight_blocking`
 - `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.inbound_reservations`
@@ -270,6 +300,7 @@ scoped to what a driver can evidence, which is why the accessors are the seam.
 - `tests/test_plugin_persist_commit_regressions.py`
 - `tests/test_config_git_commit_tool.py`
 - `tests/test_emit_completion_defensive_reload.py`
+- `tests/test_reload_obligation_coverage.py`
 
 **Related**
 - [`architecture/engagement-inbound-disclosure.md`](../architecture/engagement-inbound-disclosure.md)
