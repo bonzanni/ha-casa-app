@@ -1248,3 +1248,42 @@ def test_reload_failure_keeps_table():
     ]
     got = [(f, p, keeps(f, p)) for f, p, _ in cases]
     assert got == cases
+
+
+
+import reload as _reload_mod  # noqa: E402
+
+_REAL_REFRESH_ROLE_MAP = _reload_mod._refresh_role_map  # before `world` stubs it
+
+
+async def test_role_map_personality_refresh_failure_keeps_the_commit_owed(
+        world, engagement, monkeypatch):
+    """The personality-map reconciliation inside ``_refresh_role_map`` is a
+    caught failure like the one in ``_refresh_personality_maps``: a resident
+    reload whose swap-time refresh succeeded but whose role-map pass raised
+    leaves the maps stale, so the failure is a row and the committed card
+    stays owed (unattributed: the maps are shared by every role)."""
+    import tools as tools_mod
+
+    monkeypatch.setattr(_reload_mod, "_refresh_role_map", _REAL_REFRESH_ROLE_MAP)
+    calls: list[int] = []
+
+    def refresh():
+        calls.append(1)
+        if len(calls) == 2:
+            raise RuntimeError("probe personality-map error")
+    monkeypatch.setattr(world.runtime, "refresh_personality_maps", refresh,
+                        raising=False)
+
+    _edit_card(world.agent_dir("assistant"), "Edited summary.")
+    await world.commit(engagement, ["agents/assistant/character.yaml"])
+
+    r = _decode(await tools_mod.casa_reload.handler(
+        {"scope": "agent", "role": "assistant"}))
+    assert (r["status"], r["role"]) == ("ok", "assistant")
+    assert len(calls) == 2 and "refresh_role_map" in r["actions"]
+    assert r["actions"].count("refresh_personality_maps_failed") == 1
+    assert r["failures"] == [
+        {"unit": None, "detail": "refresh_personality_maps_failed"}]
+    assert engagement.id in tools_mod._ENGAGEMENTS_PENDING_RELOAD
+    assert _pending(engagement) == frozenset({"agents/assistant/character.yaml"})

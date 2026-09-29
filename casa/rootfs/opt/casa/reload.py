@@ -1130,10 +1130,13 @@ def _refresh_role_map(runtime: Any, *, context: str) -> list[str]:
     # forgets, and runs BEFORE (independent of) the role-map try below so a
     # sync_agent_role_map failure can never skip it. Pure in-memory
     # derivation, but guarded log-don't-fail like the rest of this helper.
+    # #1096: a row as in _refresh_personality_maps — the maps are left stale.
     try:
         runtime.refresh_personality_maps()
     except Exception as exc:  # noqa: BLE001 — log but don't fail the caller
         logger.warning("personality-map refresh failed (%s): %s", context, exc)
+        actions.append("refresh_personality_maps_failed")
+        _note_failure(None, "refresh_personality_maps_failed")
     try:
         from tools import sync_agent_role_map
         sync_agent_role_map(runtime)
