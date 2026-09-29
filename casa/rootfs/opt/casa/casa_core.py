@@ -4131,8 +4131,10 @@ async def main() -> None:
 
     # 5b. Config git repo — initialise (idempotent) and snapshot any
     # manual edits that landed between boots. #337 (Sol r2): scrub legacy
-    # plaintext secret keys from persisted specialist tuple snapshots FIRST,
-    # so the boot snapshot below can never commit them to the config repo.
+    # plaintext secret keys from persisted specialist tuple snapshots FIRST.
+    # The config repo's whitelist admits no tuple file (#1097), so the boot
+    # snapshot below commits none; the scrub heals the live files and does
+    # not clean history for a tuple path an operator force-added.
     try:
         from specialist_install import sanitize_specialist_snapshots
         sanitize_specialist_snapshots()

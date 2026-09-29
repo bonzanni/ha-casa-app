@@ -655,14 +655,12 @@ def test_reload_obligation_has_only_authorized_mutation_sites():
 
 def _seed_specialist_files(world, slug: str) -> list[str]:
     """The tracked shape a specialist install/upgrade persist commit carries
-    (materialised role dir + the specialist registry) — hook-managed in
-    production, written directly here; the classification is what is pinned.
-    (The per-slug tuple files under specialists/<slug>/ are not reached by the
-    config repo's whitelist: `*` excludes their directory.)"""
+    (the materialised role dir) — hook-managed in production, written
+    directly here; the classification is what is pinned. (Nothing under
+    specialists/ is tracked by the config repo's whitelist, #1097.)"""
     root = world.root
     _w(root / "agents" / "specialists" / slug / "character.yaml", f"name: {slug}\n")
-    _w(root / "specialists" / "registry.json", json.dumps({"installed": [slug]}))
-    return [f"agents/specialists/{slug}/character.yaml", "specialists/registry.json"]
+    return [f"agents/specialists/{slug}/character.yaml"]
 
 
 async def test_specialist_bundle_commit_discharged_by_agents(world, engagement, monkeypatch):
@@ -1031,7 +1029,7 @@ async def test_collection_failure_retains_every_covered_path(world, completion):
     r = _decode(await tools_mod.casa_reload.handler({"scope": "agents"}))
     assert r["status"] == "ok"
     assert eng.id in tools_mod._ENGAGEMENTS_PENDING_RELOAD
-    assert _pending(eng) == frozenset(paths) and len(paths) == 3
+    assert _pending(eng) == frozenset(paths) and len(paths) == 2
     assert (registry.loads, registry.failures_reported) == (1, 1)
     assert sum(row.count(f"failed:(collection):{_PROBE_ERR}") for row in r["actions"]) == 1
     assert registry.all_configs() == {}
@@ -1056,7 +1054,7 @@ async def test_forced_full_reported_failure_warns_and_clears_obligation(
     r = await reload_mod.dispatch("agents", runtime=world.runtime)
     assert r["status"] == "ok"
     assert eng.id in tools_mod._ENGAGEMENTS_PENDING_RELOAD
-    assert len(_pending(eng)) == 2
+    assert _pending(eng) == frozenset(paths) and len(paths) == 1
 
     completion.observe_forced()
     with caplog.at_level(logging.INFO, logger="tools"):

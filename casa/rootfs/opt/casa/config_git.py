@@ -55,32 +55,24 @@ _GITIGNORE_CONTENT = """\
 !plugins/registry.json
 plugins/store/
 plugins/.staging/
-# Installed-specialist data model (Task 13): registry.json is config — same
-# audit-trail rationale as plugins/registry.json above. ONLY the per-slug
-# active/desired/prior tuples and the top-level registry are tracked; the
-# content-addressed component store and staging are binaries, never tracked.
-!specialists/
-!specialists/registry.json
-!specialists/*/active.yaml
-!specialists/*/desired.yaml
-!specialists/*/active.prior.yaml
-specialists/store/
-specialists/.staging/
+# Nothing under specialists/ is tracked (#1097): an instance tuple can hold
+# legacy plaintext the boot scrub has not yet removed, or a value a later
+# upgrade reclassifies secret, and history is irreversible. An install,
+# upgrade or rollback commit records agents/specialists/<slug>/ and
+# plugins/registry.json instead.
 !.gitignore
 """
 
 
 # #278: single source of truth for the human-readable tracked-path summary
 # used by config_git_commit's tool description and its no-op warning. Must
-# stay in step with _GITIGNORE_CONTENT above — the pinning test parses the
-# whitelist and asserts every tracked top-level path is named here (the
-# pre-fix strings had drifted: bindings/ (v0.100.0) and the specialists/
-# tracked set were missing, sending agents that wrote there hunting for a
-# nonexistent gitignore rule when they got an empty SHA).
+# stay in step with _GITIGNORE_CONTENT above — the pinning tests parse the
+# whitelist and measure the admitted set through real git (the pre-fix
+# strings had drifted: bindings/ (v0.100.0) was missing, sending agents that
+# wrote there hunting for a nonexistent gitignore rule when they got an empty
+# SHA; #1097: the specialists/ tuples it once named were never admitted).
 TRACKED_PATHS_SUMMARY = (
-    "agents/, policies/, bindings/, schema/, plugins/registry.json, and "
-    "under specialists/ the registry.json + per-slug "
-    "active/desired/active.prior tuples"
+    "agents/, policies/, bindings/, schema/, and plugins/registry.json"
 )
 
 
@@ -99,8 +91,8 @@ def init_repo(config_dir: str) -> None:
 
     Idempotent: on an already-initialized repo the only action is the
     ``.gitignore`` reconcile below. Writes ``.gitignore`` to restrict
-    tracking to ``agents/``, ``policies/``, ``schema/``, and the user
-    marketplace manifest. Makes one initial commit so ``HEAD`` resolves.
+    tracking to ``TRACKED_PATHS_SUMMARY``'s set. Makes one initial commit so
+    ``HEAD`` resolves.
     """
     gitignore = os.path.join(config_dir, ".gitignore")
 

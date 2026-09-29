@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.332.14] - 2026-09-29
+
+### Fixed
+
+- The configurator's commit tool said that the config repository
+  version-controls each installed specialist's instance files (its active,
+  desired and prior settings). It did not: the repository's ignore rules left
+  those files out. The tool's description and its "no tracked changes"
+  warning now list the paths the ignore rules admit, apart from the ignore
+  file itself: `agents/`, `policies/`, `bindings/`, `schema/` and
+  `plugins/registry.json`. The ignore rules no longer have entries for
+  `specialists/`. The config repository does not keep a history of a
+  specialist's settings.
+- On the first start after the update, Casa adds an "update .gitignore
+  whitelist" commit to an existing install's config repository. That start
+  can record other commits as well, such as the usual snapshot of
+  uncommitted edits, which runs first.
+- If you added a specialist's instance file to the config repository by hand
+  (`git add -f`), it stays tracked, and later commits keep recording its
+  changes. That includes the snapshot taken at startup, which runs before
+  Casa removes plaintext secrets left by older versions from those files. The
+  repository's history can therefore hold such a secret. If this applies to
+  you, rotate it.
+
 ## [0.332.13] - 2026-09-29
 
 ### Fixed
