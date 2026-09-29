@@ -956,10 +956,13 @@ def _replay_time_sentence(complete: DelegationComplete, *, orphan: bool) -> str:
     another clock — and 0.0 is a time like any other."""
     recorded = complete.terminal_at
     when = None
-    if (isinstance(recorded, (int, float)) and not isinstance(recorded, bool)
-            and math.isfinite(recorded)):
+    if isinstance(recorded, (int, float)) and not isinstance(recorded, bool):
+        # #1087: the finiteness test is inside the guard too — an int too
+        # large for a float (a persisted `10**400`) raises OverflowError
+        # there, and a raise here would stop the notice becoming a prompt.
         try:
-            when = datetime.fromtimestamp(recorded, resolve_tz())
+            if math.isfinite(recorded):
+                when = datetime.fromtimestamp(recorded, resolve_tz())
         except (OverflowError, OSError, ValueError):
             when = None
     if when is None:
@@ -1489,10 +1492,13 @@ class Agent:
             # the operator something untrue about durable state. What is true of
             # both producers is only that this NOTICE does not carry the answer.
             #
-            # #1084: the replay statement is added only on a flagged notice,
-            # which only the DELEGATION boot replay builds — for which "reached
-            # before a Casa restart" is true. The engagement producer never
-            # sets the flag, so its prompt here stays exactly as neutral.
+            # #1084/#1087: the replay statement is added only on a flagged
+            # notice, which only the two BOOT replays build — the delegation
+            # replay and the engagement replay, each of an outcome still owed
+            # when the boot began. It says the outcome was reached before a
+            # Casa restart, never that it finished DURING one, and makes no
+            # claim about what was stored, so the neutrality above holds on
+            # both. A live notice is never flagged.
             body = (
                 f"[System notification: your delegation to {complete.agent} "
                 f"(id {short_id}) finished, and this recovery notice does not "

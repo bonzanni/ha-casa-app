@@ -3730,10 +3730,19 @@ async def _replay_one_engagement_outcome(
         result_available=False,
         origin=origin,
         elapsed_s=0.0,
+        # #1087: this is a boot replay, so it says so, with the time the
+        # record went terminal — the synthesizer renders the same outcome
+        # statement and recorded time as for a delegation replay (#1084). The
+        # value is passed as persisted: the synthesizer renders anything that
+        # is not a usable time as unknown, and nothing here can raise on it.
+        # Only this producer sets them; the shared envelope below and every
+        # live engagement notice leave both at their defaults.
+        replayed_after_restart=True,
+        terminal_at=rec.completed_at,
     )
     # §2.A: the ONE bus envelope for an engagement outcome (routing only;
-    # this payload — no text, result_available=False, elapsed 0 — is the
-    # replay's own and stays byte-identical).
+    # this payload — no text, result_available=False, elapsed 0, and the
+    # replay mark above — is the replay's own).
     import tools as _tools_mod
     await _tools_mod.send_engagement_outcome(
         bus, complete=synthetic, origin=origin,
