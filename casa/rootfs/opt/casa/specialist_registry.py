@@ -96,8 +96,10 @@ class DelegationComplete:
     # carries the text, so this states a fact about the notice rather than a
     # retention posture.
     result_available: bool = True
-    # #926: True only on a notice the BOOT REPLAY of a delegation row built
-    # (`casa_core._notify_recovered_delegations`); no live producer sets it.
+    # #926: True only on a notice a BOOT REPLAY built — of a delegation row
+    # (`casa_core._notify_recovered_delegations`) or, since #1087, of an
+    # engagement record still owing its outcome
+    # (`casa_core._replay_one_engagement_outcome`); no live producer sets it.
     # It states where the notice came from, not what reached the screen: the
     # relay the restart interrupted may have shown the user nothing, a partial
     # streamed draft, or the whole answer whose acknowledgement was lost with
@@ -105,11 +107,13 @@ class DelegationComplete:
     # resident that full delivery was not confirmed (INV-JOB-016); since
     # #1084 every terminal arm reads it and says the notice is a replay.
     replayed_after_restart: bool = False
-    # #1084: the time the job registry recorded the row terminal
-    # (`VoiceJob.terminal_at`) — for a converted orphan, the boot that
-    # converted it, so a lower bound on the loss's age. Set by the same one
-    # producer as `replayed_after_restart`, and read only when that flag is
-    # True: a timestamp on its own never marks a prompt.
+    # #1084: the time the registry recorded the outcome terminal — for a
+    # delegation row `VoiceJob.terminal_at` (for a converted orphan, the boot
+    # that converted it, so a lower bound on the loss's age); for an
+    # engagement (#1087) `EngagementRecord.completed_at`, carried as
+    # persisted. Set by the same producers as `replayed_after_restart`, and
+    # read only when that flag is True: a timestamp on its own never marks a
+    # prompt.
     terminal_at: float | None = None
 
 
