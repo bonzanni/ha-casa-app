@@ -1029,7 +1029,7 @@ async def test_collection_failure_retains_every_covered_path(world, completion):
     r = _decode(await tools_mod.casa_reload.handler({"scope": "agents"}))
     assert r["status"] == "ok"
     assert eng.id in tools_mod._ENGAGEMENTS_PENDING_RELOAD
-    assert _pending(eng) == frozenset(paths) and len(paths) == 3
+    assert _pending(eng) == frozenset(paths) and len(paths) == 2
     assert (registry.loads, registry.failures_reported) == (1, 1)
     assert sum(row.count(f"failed:(collection):{_PROBE_ERR}") for row in r["actions"]) == 1
     assert registry.all_configs() == {}
@@ -1054,7 +1054,7 @@ async def test_forced_full_reported_failure_warns_and_clears_obligation(
     r = await reload_mod.dispatch("agents", runtime=world.runtime)
     assert r["status"] == "ok"
     assert eng.id in tools_mod._ENGAGEMENTS_PENDING_RELOAD
-    assert len(_pending(eng)) == 2
+    assert _pending(eng) == frozenset(paths) and len(paths) == 1
 
     completion.observe_forced()
     with caplog.at_level(logging.INFO, logger="tools"):
