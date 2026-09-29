@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.332.10] - 2026-09-29
+
+### Fixed
+
+- When an engagement has ended (completed, cancelled or failed) and Casa could
+  not confirm before a restart that you were told, Casa re-announces the
+  outcome to the assistant after the restart. Since 0.332.6 a delegated task's
+  result re-announced this way has been marked as coming from before the
+  restart, but an engagement's outcome was not, so the assistant could report
+  it as if it had just happened. Casa now tells the assistant that a
+  re-announced engagement outcome is an earlier result being reported after a
+  restart, and gives the time Casa recorded it, with a rough age unless that
+  time is later than Casa's clock. If Casa has no usable recorded time, the
+  assistant is told that the age is unknown, and the outcome is still
+  re-announced.
+- One exception remains: an engagement that ends while Casa is still starting
+  up, before it has checked which outcomes are owed, can be announced twice,
+  and the second announcement then tells the assistant it is an earlier result
+  from before the restart (tracked in #1093).
+
 ## [0.332.9] - 2026-09-29
 
 ### Fixed
