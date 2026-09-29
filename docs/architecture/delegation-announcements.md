@@ -119,8 +119,11 @@ rough age — and for an orphan that is when the loss was recorded, stated as su
 may have stopped earlier. A row with no recorded time says its age is unknown rather than borrowing
 another clock. The statement, time included, is one block inserted after the notice's header, so
 on every arm the live and replayed prompts still differ in exactly that block. The replay mark is
-the notice's own flag, set only by the delegation boot replay, never the presence of a time; an
-engagement outcome replayed at boot does not carry it and is worded exactly as before. The boot
+the notice's own flag, set only by a boot replay, never the presence of a time. An engagement
+outcome replayed at boot carries the same flag with its record's completion time, and so gets
+the same outcome statement and time on the answerless-success and failure arms; that is stated
+with INV-ENG-018 in [`engagement-terminal-telling.md`](engagement-terminal-telling.md), since an
+engagement replay differs from its live notice in more than the statement. The boot
 log names the same distinction: only a converted live row is logged as an orphan, and a row that
 went terminal before the restart is logged as an unannounced outcome being replayed. A live prompt can
 carry one more instruction that a replay cannot: the note telling the resident not to retry an

@@ -206,7 +206,9 @@ fields exist — so the replay reports the FACT of the outcome and says plainly 
 does not carry the report. It does not say the report is GONE, which would be a claim about
 storage this path cannot make: a finished engagement's structured summary may well have been
 retained on the shared bank. It never reconstructs an answer from the task or from a stale
-summary message id.
+summary message id. It does say that it is a replay: the notice tells the resident this is an
+earlier outcome reached before the restart, whose announcement was never confirmed, and gives
+the time the record went terminal, or says that time is unknown (INV-ENG-018).
 
 Background-job continuation uses the periodic recovery and finalize paths described in
 [`background-jobs.md`](background-jobs.md); the interactive two-strike resume rule does
