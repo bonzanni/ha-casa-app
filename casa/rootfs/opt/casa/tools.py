@@ -1505,7 +1505,111 @@ _VOICE_TEARDOWN_BOUND_S: float = 2.0
 # pending, force-call ``casa_reload`` (the safe-default — hard reload
 # is always correct, just slower than soft for triggers-only changes)
 # and emit a WARNING citing the engagement id.
-_ENGAGEMENTS_PENDING_RELOAD: set[str] = set()
+#
+# #1086: the obligation records WHAT was committed — each path, stamped with
+# the arm sequence number of the commit that last carried it — and a reload
+# discharges only the paths its scope covers (`_reload_scope_covers`, the
+# configurator doctrine's "What requires what" table) that were committed
+# before the reload began. Only the configurator's own `casa_reload` /
+# `casa_reload_triggers` discharge; a reload a tool runs internally (plugin and
+# specialist sequencers, nested cascades) discharges nothing, so reload.py does
+# not touch this object at all.
+RELOAD_PATHS_UNKNOWN = "<paths unknown>"
+
+
+def _reload_scope_covers(scope: str, role: "str | None", path: str) -> bool:
+    """Whether a successful reload of ``scope`` (``role`` = the canonical
+    directory name) covers the committed ``path``. The doctrine's table
+    (defaults/.../configurator/doctrine/reload.md): a trigger or trigger-prompt
+    edit → ``triggers``; the role's other files, and a plugin (un)assignment on
+    it → ``agent``; ``policies/`` → ``policies``; a specialist install,
+    uninstall or upgrade (its bundle's plugins included) → ``agents``; an
+    executor → ``executors``; anything, and a commit whose paths could not be
+    read → ``full`` only. ``config_sync``'s cascade is ``agents`` + ``policies``;
+    ``plugin_env`` covers no tracked path (plugin-env.conf is gitignored)."""
+    if scope == "full":
+        return True
+    if path == RELOAD_PATHS_UNKNOWN:
+        return False
+    if scope == "config_sync":
+        return (_reload_scope_covers("agents", None, path)
+                or _reload_scope_covers("policies", None, path))
+    if scope == "policies":
+        return path.startswith("policies/")
+    if scope == "agents":
+        return (path == "plugins/registry.json"
+                or path.startswith(("agents/specialists/", "specialists/")))
+    if scope == "executors":
+        return path.startswith("agents/executors/")
+    if scope not in ("agent", "triggers"):
+        return False
+    if (not role or "/" in role or "\\" in role
+            or role in (".", "..", "specialists", "executors")):
+        return False
+    role_dirs = (f"agents/{role}/", f"agents/specialists/{role}/")
+    if scope == "agent":
+        return path == "plugins/registry.json" or path.startswith(role_dirs)
+    for role_dir in role_dirs:
+        if path.startswith(role_dir):
+            rest = path[len(role_dir):]
+            prompt = rest[len("prompts/"):] if rest.startswith("prompts/") else ""
+            return rest == "triggers.yaml" or (
+                prompt.endswith(".md") and "/" not in prompt
+                and prompt != "system.md")
+    return False
+
+
+class _ReloadObligations:
+    """engagement id → {committed path: arm sequence number}. Set-compatible
+    for ``in`` / ``discard`` / ``clear``; ``add(id)`` arms an entry whose paths
+    are unknown (what a failed path read arms), which only ``full`` or
+    ``casa_restart_supervised`` can discharge."""
+
+    _seq = 0
+
+    def __init__(self) -> None:
+        self._owed: dict[str, dict[str, int]] = {}
+
+    @classmethod
+    def mark(cls) -> int:
+        """The sequence number of the latest arm. A reload that takes this
+        before it starts discharges nothing committed after it."""
+        return cls._seq
+
+    def arm(self, eng_id: str, paths: "list[str]") -> None:
+        owed = self._owed.setdefault(eng_id, {})
+        for path in (paths or [RELOAD_PATHS_UNKNOWN]):
+            type(self)._seq += 1
+            owed[path] = type(self)._seq      # a re-commit re-stamps the path
+
+    def add(self, eng_id: str) -> None:
+        self.arm(eng_id, [])
+
+    def discharge(self, eng_id: str, scope: str, role: "str | None", *,
+                  since: int) -> None:
+        owed = self._owed.get(eng_id)
+        if not owed:
+            return
+        for path, seq in list(owed.items()):
+            if seq <= since and _reload_scope_covers(scope, role, path):
+                del owed[path]
+        if not owed:
+            del self._owed[eng_id]
+
+    def pending(self, eng_id: str) -> "frozenset[str]":
+        return frozenset(self._owed.get(eng_id, ()))
+
+    def discard(self, eng_id: str) -> None:
+        self._owed.pop(eng_id, None)
+
+    def clear(self) -> None:
+        self._owed.clear()
+
+    def __contains__(self, eng_id: object) -> bool:
+        return eng_id in self._owed
+
+
+_ENGAGEMENTS_PENDING_RELOAD = _ReloadObligations()
 
 # #231/#222 (v0.114.0): plugin mutations (plugin_add/update/remove/assign/
 # unassign) activate their change IN-PROCESS via _reload_and_verify_targets
@@ -7865,8 +7969,9 @@ async def config_git_commit(args: dict) -> dict:
                 "errors": errors,
             })
         # G-2 hotfix (v0.33.1): mark this engagement as needing a
-        # reload before emit_completion. Drained by casa_reload /
-        # casa_reload_triggers; force-honored by emit_completion.
+        # reload before emit_completion. Discharged path by path by a
+        # casa_reload / casa_reload_triggers whose scope covers each path
+        # (#1086); force-honored by emit_completion.
         # `sha` is empty string when nothing actually changed (no-op
         # commit) — only register the pending state when a real commit
         # landed.
@@ -7885,13 +7990,17 @@ async def config_git_commit(args: dict) -> dict:
                 # is exempt or arms, so it can never exempt a LATER commit
                 # (after a reload drained this one's obligation) that no
                 # activation produced.
+                # #1086: the paths are read for every arming commit now, and
+                # recorded on the obligation — an empty read (a git failure)
+                # arms an entry only full or a supervised restart discharges.
                 preactivated = eng.id in _ENGAGEMENTS_PREACTIVATED
                 _ENGAGEMENTS_PREACTIVATED.discard(eng.id)
-                paths = config_git.changed_paths(config_dir, sha) if preactivated else []
+                paths = await asyncio.to_thread(
+                    config_git.changed_paths, config_dir, sha)
                 plugins_only = bool(paths) and all(
                     p.startswith("plugins/") for p in paths)
                 if not (preactivated and plugins_only):
-                    _ENGAGEMENTS_PENDING_RELOAD.add(eng.id)
+                    _ENGAGEMENTS_PENDING_RELOAD.arm(eng.id, paths)
             return _result({"sha": sha, "message": message})
         # P-3 (v0.69.1): a bare {"sha": ""} left agents looping to reconcile
         # "committed ok" against "file still untracked" when their writes
@@ -8004,6 +8113,9 @@ async def casa_reload(args: dict) -> dict:
     # order. _plugin_tools_reload_guard owns that classification for both entry
     # points.
     async with _plugin_tools_reload_guard(scope):
+        # #1086: taken before the reload reads anything — a commit that lands
+        # while it runs is not discharged by it.
+        since = _ReloadObligations.mark()
         result = await dispatch(
             scope, runtime=runtime, role=role, include_env=include_env)
     # #824: AFTER the fence, not inside it. Dispatch released the reload RW lock
@@ -8015,10 +8127,10 @@ async def casa_reload(args: dict) -> dict:
     # the same guard, so whichever runs second computes from the fresher state.
     await _regenerate_plugin_health_after_reload(scope, result)
 
-    # Drain pending-reload guard if engagement-bound.
+    # #1086: discharge only the committed paths this scope covers.
     eng = engagement_var.get(None)
     if eng is not None and result.get("status") == "ok":
-        _ENGAGEMENTS_PENDING_RELOAD.discard(eng.id)
+        _ENGAGEMENTS_PENDING_RELOAD.discharge(eng.id, scope, role, since=since)
 
     return _result(result)
 
@@ -11720,11 +11832,12 @@ async def emit_completion(args: dict) -> dict:
     if outcome == "completed" and engagement.id in _ENGAGEMENTS_PENDING_RELOAD:
         # An outstanding obligation means a non-empty config_git_commit in
         # this engagement that was NOT the plugins-only persist of a plugin
-        # mutation already activated in process (#222, INV-TOOL-011), and
-        # neither a successful casa_reload nor casa_restart_supervised has
-        # drained it since (casa_reload_triggers does not drain it).
-        # It may be any tracked change — for example under agents/,
-        # policies/, bindings/, schema/ or specialists/, or a plugins/ edit no
+        # mutation already activated in process (#222, INV-TOOL-011), with at
+        # least one committed path that no successful casa_reload or
+        # casa_reload_triggers of a scope covering it has discharged since,
+        # and no casa_restart_supervised took over (#1086, INV-TOOL-012). It
+        # may be any tracked change — for example under agents/, policies/,
+        # bindings/, schema/ or specialists/, or a plugins/ edit no
         # activation produced. Specialist operational files re-materialised
         # from unchanged inputs are no longer among them (#1085, INV-SPEC-019).
         logger.warning(
@@ -11732,14 +11845,16 @@ async def emit_completion(args: dict) -> dict:
             "reload obligation — config_git_commit landed but no "
             "casa_reload(_triggers) was invoked. Force-calling "
             "casa_reload to honor the post-commit activation contract "
-            "(G-2 v0.33.1 defensive guard).",
+            "(G-2 v0.33.1 defensive guard). Paths no reload covered: %s",
             engagement.id[:8],
+            sorted(_ENGAGEMENTS_PENDING_RELOAD.pending(engagement.id)),
         )
         try:
             # casa_reload is wrapped by @tool — call the underlying handler so
             # we don't pay the SDK envelope-decoding round trip from inside
-            # Casa's own code path. scope='full' is the documented catch-all:
-            # the guard cannot know what was committed, and a scopeless call
+            # Casa's own code path. scope='full' is the documented catch-all
+            # and the one scope that covers every committed path — including
+            # one a failed read could not name (#1086) — and a scopeless call
             # fails with scope_required (#231) — a no-op exactly when the guard
             # must activate.
             forced = await casa_reload.handler({"scope": "full"})
@@ -12423,7 +12538,13 @@ async def casa_reload_triggers(args: dict) -> dict:
         })
 
     from reload import dispatch
+    since = _ReloadObligations.mark()          # #1086, as casa_reload
     result = await dispatch("triggers", runtime=runtime, role=role)
+    # #1086/#1089: the doctrine's reload after a trigger or trigger-prompt
+    # edit — it discharges those paths of the role's, and nothing else.
+    eng = engagement_var.get(None)
+    if eng is not None and result.get("status") == "ok":
+        _ENGAGEMENTS_PENDING_RELOAD.discharge(eng.id, "triggers", role, since=since)
     # #824: the THIRD reload entry point, and the one the configurator doctrine
     # names after every trigger or prompt edit. It dispatches an unfenced
     # trigger-reconcile scope with no plugin lock of its own, so the helper's

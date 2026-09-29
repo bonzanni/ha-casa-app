@@ -44,9 +44,12 @@ casa always boots — but the operator's previous version is preserved first:
    removed.
 
 5. **Validate + reload:** after edits, the standard config-commit gate runs schema
-   validation; then `casa_reload(scope=...)` (or `scope=config_sync` to re-run the full
-   sync + cascade). Never restore content that fails validation — that is exactly what the
-   backstop overwrote to keep casa booting.
+   validation; then run the reload each edit recipe you re-applied through names (see
+   `reload.md` "What requires what" — e.g. `agent` for a voice edit, `triggers` for a
+   trigger prompt, `executors` for an executor definition). `scope=config_sync` re-runs the
+   sync with its own `agents` + `policies` cascade; it does not stand in for those reloads,
+   and an edit it does not cover is force-reloaded at completion. Never restore content that
+   fails validation — that is exactly what the backstop overwrote to keep casa booting.
 
 6. **Report leftovers:** you cannot delete files. List any `<file>.casabak` sidecars you
    reconciled and tell the operator they can be removed manually (or left — the git
