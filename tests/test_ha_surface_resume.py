@@ -338,9 +338,9 @@ async def test_missing_tool_results_in_one_generation_request_one_rediscovery():
         await facade._lock.acquire()
         try:
             for _ in range(3):
-                await invoke_sdk_tool(
+                await asyncio.wait_for(invoke_sdk_tool(
                     facade.server_config, "HassTurnOn", {"name": "kitchen"},
-                )
+                ), timeout=5)
                 for _ in range(5):
                     await asyncio.sleep(0)
         finally:
@@ -370,7 +370,7 @@ async def test_a_late_missing_tool_result_from_a_replaced_connection_asks_nothin
         await facade.refresh()
         assert sessions.open_count == 2
         stale.release.set()
-        result = await call
+        result = await asyncio.wait_for(call, timeout=5)
         await _drain_refresh(facade)
         assert result["content"][0]["text"] == MISSING_TOOL_TEXT
         assert sessions.open_count == 2
