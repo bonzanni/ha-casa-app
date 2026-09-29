@@ -3445,9 +3445,11 @@ def sanitize_specialist_snapshots(
     pre-guard install keeps its plaintext until that slug's next
     upgrade/rollback, and the upgrade's post-commit prior sanitization has a
     crash window — both are healed in the live files at the next boot, before
-    ``casa_core``'s Python config-git snapshot. It does NOT keep a boot's
-    bytes out of config history: the ``init-setup-configs`` oneshot commits
-    the same tuple whitelist earlier in every boot (``setup-configs.sh``).
+    ``casa_core``'s Python config-git snapshot. The config repo's whitelist
+    admits no tuple file (#1097), so no snapshot commits one; the scrub does
+    not clean history for a tuple path an operator force-added — the
+    ``init-setup-configs`` oneshot's boot snapshot commits such a path before
+    this runs.
 
     Works on the raw YAML payload (so ``desired.error.yaml``'s extra
     ``_error_reason`` and a pending ``.rollback-tmp`` are handled uniformly)

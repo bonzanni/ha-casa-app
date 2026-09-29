@@ -20,9 +20,9 @@ configuration and installed content. The other is application-private runtime st
 registries, ledgers, secrets, workspaces, queues and reports.
 
 **Operator-visible does not mean version-controlled.** Only a whitelist of the mapped root is
-tracked — agents, policies, bindings, schema, and specific registry files. Personas,
-receipts, installed stores, staging areas, agent homes and the environment file are all
-present, all operator-visible, and none of them tracked. If you are relying on git history to
+tracked — agents, policies, bindings, schema, and the plugin registry. Personas,
+receipts, specialist instance tuples, installed stores, staging areas, agent homes and the
+environment file are all present, all operator-visible, and none of them tracked. If you are relying on git history to
 recover something there, check the whitelist first.
 
 **A missing file is usually a valid empty state, not an error.** Most loaders treat absence

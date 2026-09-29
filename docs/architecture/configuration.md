@@ -167,7 +167,12 @@ Enforced by the ignore file the repository is initialised with, reconciled on ev
 mirrored by the boot script.
 
 What it does not cover: the version-controlled set and the set the reconciler owns are
-*different*. A path can be tracked without being reconciled, and vice versa.
+*different*. A path can be tracked without being reconciled, and vice versa. Nothing under
+the specialists directory is admitted either — its instance tuples can hold legacy plaintext
+the boot scrub has not yet removed, or a value a later upgrade reclassifies secret — so the
+repository is no audit trail of a specialist's tuples: an install, upgrade or rollback
+commit records the materialised agent files and the plugin registry. The tracked-path
+summary the commit tool quotes names exactly the admitted set.
 
 **INV-CFG-011**: A reload scope whose handler takes the plugin-mutation lock acquires that lock at the entry point, before the reload read/write lock — never underneath it.
 

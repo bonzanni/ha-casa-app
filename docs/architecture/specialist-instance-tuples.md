@@ -78,11 +78,13 @@ the journal itself, and a declaration that cannot be obtained refuses the upgrad
 of being journalled as an emptiness the compensation would then write back
 ([`specialist-bundle-transactions.md`](specialist-bundle-transactions.md)).
 
-What it does not cover: the config git repository's *history* — commits that predate the
-guard may retain pre-guard digests and plaintext, and the boot scrub does not keep a boot's
-tuple bytes out of it either: the `init-setup-configs` oneshot commits the tracked tuples
-earlier in every boot than the scrub runs; remediation for an affected install is secret
-rotation. A slug whose tuple was
+What it does not cover: the config git repository's *history* for a tuple path that is
+already tracked there. The repository's whitelist admits nothing under the specialists
+directory (INV-CFG-004), so Casa never adds a tuple file to it; but a tuple an operator
+force-added stays tracked, and every snapshot keeps committing it — the
+`init-setup-configs` oneshot's boot snapshot included, which runs before the scrub — so
+its history can hold pre-guard digests and plaintext; remediation for such an install is
+secret rotation. A slug whose tuple was
 tombstoned surfaces as an error-state instance, and nothing in Casa adopts that tuple back:
 its digest no longer attests the snapshot beside it. The tombstone rewrites the two digest
 fields in place rather than deleting the file, so whatever settings the snapshot still holds

@@ -655,14 +655,12 @@ def test_reload_obligation_has_only_authorized_mutation_sites():
 
 def _seed_specialist_files(world, slug: str) -> list[str]:
     """The tracked shape a specialist install/upgrade persist commit carries
-    (materialised role dir + the specialist registry) — hook-managed in
-    production, written directly here; the classification is what is pinned.
-    (The per-slug tuple files under specialists/<slug>/ are not reached by the
-    config repo's whitelist: `*` excludes their directory.)"""
+    (the materialised role dir) — hook-managed in production, written
+    directly here; the classification is what is pinned. (Nothing under
+    specialists/ is tracked by the config repo's whitelist, #1097.)"""
     root = world.root
     _w(root / "agents" / "specialists" / slug / "character.yaml", f"name: {slug}\n")
-    _w(root / "specialists" / "registry.json", json.dumps({"installed": [slug]}))
-    return [f"agents/specialists/{slug}/character.yaml", "specialists/registry.json"]
+    return [f"agents/specialists/{slug}/character.yaml"]
 
 
 async def test_specialist_bundle_commit_discharged_by_agents(world, engagement, monkeypatch):

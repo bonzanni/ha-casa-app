@@ -96,17 +96,11 @@ elif [ ! -d "$CONFIG_DIR/.git" ]; then
 !plugins/registry.json
 plugins/store/
 plugins/.staging/
-# Installed-specialist data model (Task 13): registry.json is config — same
-# audit-trail rationale as plugins/registry.json above. ONLY the per-slug
-# active/desired/prior tuples and the top-level registry are tracked; the
-# content-addressed component store and staging are binaries, never tracked.
-!specialists/
-!specialists/registry.json
-!specialists/*/active.yaml
-!specialists/*/desired.yaml
-!specialists/*/active.prior.yaml
-specialists/store/
-specialists/.staging/
+# Nothing under specialists/ is tracked (#1097): an instance tuple can hold
+# legacy plaintext the boot scrub has not yet removed, or a value a later
+# upgrade reclassifies secret, and history is irreversible. An install,
+# upgrade or rollback commit records agents/specialists/<slug>/ and
+# plugins/registry.json instead.
 !.gitignore
 EOF
     git add -A 2>/dev/null || true
