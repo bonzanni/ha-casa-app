@@ -267,9 +267,10 @@ could not read on either side counts as changed — and one resident's refusal i
 in the envelope without aborting another's.
 
 **A reload handler catches a failure and carries on.** The envelope stays `status: ok` — the
-handler returned — and carries an additive `failures` list, absent on a clean reload: one
-`{"unit", "detail"}` entry per subordinate failure, `unit` naming the resident, specialist or
-executor whose own files did not take effect, or null when no one unit is to blame. The
+handler returned — and carries an additive `failures` list, absent when nothing was noted: one
+`{"unit", "detail"}` entry per subordinate failure a handler notes (not every best-effort step
+notes one — INV-TOOL-012's "What it does not cover" names those), `unit` naming the resident,
+specialist or executor the failure belongs to, or null when no one unit is to blame. The
 dispatcher collects them for the whole dispatch, so a failure inside a composed scope (`full`,
 `config_sync`, the `policies` and `executors` cascades) is reported however its row was folded,
 and so are failures that write no row: a new resident or a specialist's agent that could not be
