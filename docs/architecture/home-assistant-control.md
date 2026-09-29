@@ -36,7 +36,9 @@ adding the first one.
 filter what comes *back*, and it does not authorize writes. The curation is dynamic, not an allowlist: the facade
 mirrors every upstream tool that carries a valid object schema, skipping malformed ones
 individually and substituting only the live-context tool's schema — there is no manual
-mapping to add a tool to.
+mapping to add a tool to. Tool names are Home Assistant's own, forwarded as listed: since
+Home Assistant 2026.9 they carry a domain prefix (`homeassistant__HassTurnOn`), and the
+live-context special case recognises `GetLiveContext` bare or behind any `__` prefix.
 
 **Two environment switches shape the integration itself.** `CASA_HA_MCP_URL` redirects the
 Home Assistant MCP endpoint that both the raw registration and the facade connect to — the
@@ -55,10 +57,19 @@ registered separately and earlier — so a facade that fails or does not apply l
 path in place rather than removing access. Degradation here means *less curation*, not less
 capability.
 
-**The facade's tool cache has no expiry.** It holds until an explicit refresh or a recovery
-after a transport failure. Staleness therefore means newly added tools are invisible and
+**The facade's tool cache has no expiry.** It holds until an explicit refresh, a recovery
+after a transport failure, or Home Assistant answering a call with "tool *name* not found"
+for the tool that was called. Staleness therefore means newly added tools are invisible and
 removed ones are still offered — it is a cache of the *tool surface*, not of house state, so
 a stale cache does not mean stale readings.
+
+**A changed tool surface is published with its identity.** A refresh that finds a different
+surface re-registers the butler's facade server together with a digest of the tool *names*
+(sorted, so upstream order never matters), then drops the butler's pooled clients. The
+digest joins the butler's resume identity (INV-TURN-012, `architecture/turn-loop.md`): a
+conversation registered against other names is not resumed — its own history would keep
+calling tools that no longer exist — but starts fresh with the old one retained. A reconnect
+to the same names retires nothing.
 
 ## Contracts & invariants
 
@@ -80,7 +91,21 @@ there genuinely is no HA access.
 
 **INV-HA-003**: The facade's cached tool surface has no time-based expiry.
 
-Refresh happens explicitly or on recovery. Nothing ages it out.
+Refresh happens explicitly, on recovery, or on an observed "tool not found" result
+(INV-HA-004). Nothing ages it out.
+
+**INV-HA-004**: A "tool *name* not found" error result for the called tool, on the facade's current connection, schedules one coalesced rediscovery through the facade's refresh worker without the call awaiting it; no other result does.
+
+The call still returns Home Assistant's error to the model unchanged, and the healthy
+connection is not torn down — the refresh reconnects on its own. Scheduling rather than
+awaiting is required, not a preference: the publication a changed surface triggers waits for
+the calling turn to end. A late result from a connection a refresh has since replaced asks for
+nothing, and one connection asks at most once, so a model repeating a vanished name costs one
+rediscovery, not one per call.
+
+What it does not cover: an unknown *entity* ("entity not found") or any other intent error
+never triggers it; nor does the CLI's own refusal of a name that is no longer offered, which
+never reaches the facade — that case is what the published identity above resolves.
 
 ## Failure behavior
 
@@ -92,8 +117,11 @@ refresh runs. Note there is no backoff and no retry timer — if that attempt fa
 retries until another call triggers recovery.
 
 **Home Assistant refuses an action.** The refusal comes back from upstream. Casa did not
-prevent it and does not distinguish it from any other upstream error, so read the returned
-payload rather than assuming a Casa-side check ran.
+prevent it, and apart from a "tool not found" result (INV-HA-004) does not distinguish it
+from any other upstream error, so read the returned payload rather than assuming a Casa-side
+check ran. The facade's call log line for an error result carries a bounded, single-line
+excerpt of Home Assistant's text; a successful result's body and the call's arguments are
+never logged.
 
 ## Extension points
 
@@ -103,7 +131,8 @@ extend, and it would need to sit where action arguments are forwarded.
 
 **Adding a tool to the curated surface** happens upstream: the facade mirrors whatever Home
 Assistant offers with a valid schema, so a new upstream tool appears on its own — after a
-refresh. Remember the cache: an addition is invisible until one runs.
+refresh. Remember the cache: an addition is invisible until one runs. A rename or removal
+recovers by itself on the first call to a vanished name.
 
 **Anything relying on cache freshness** needs an explicit refresh, since none happens on a
 timer.
@@ -121,8 +150,10 @@ timer.
 - `tests/test_ha_mcp_facade.py`
 - `tests/test_ha_mcp_url_override.py`
 - `tests/test_mock_ha_mcp.py`
+- `tests/test_ha_surface_resume.py`
 
 **Related**
 - [`architecture/mcp-and-tools.md`](../architecture/mcp-and-tools.md)
 - [`architecture/overview.md`](../architecture/overview.md)
+- [`architecture/turn-loop.md`](../architecture/turn-loop.md)
 <!-- END SOURCEMAP -->
