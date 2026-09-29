@@ -3645,8 +3645,14 @@ async def _notify_recovered_engagement_outcomes(
     returns as soon as the last message is enqueued. And enqueueing is not
     telling — the obligation is cleared by ``on_delivery`` alone, so a message
     this boot never delivers is replayed by the next one.
+
+    #1093: it walks what the PREVIOUS process left owed — the records owed
+    when this process loaded the registry, still owed as each is reached —
+    never what is owed when it runs. An engagement that ends in this process
+    before the walk was told live, and replaying it too told it twice, the
+    second copy claiming an outcome reached before a restart.
     """
-    for rec in list(registry.records_owing_terminal_notification()):
+    for rec in registry.records_owed_at_load():
         try:
             await _replay_one_engagement_outcome(
                 registry, bus, rec, assistant_role=assistant_role)

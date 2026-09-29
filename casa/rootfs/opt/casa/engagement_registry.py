@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import secrets
 import time
@@ -47,6 +48,26 @@ _IDLE_SWEEP_CRON = "0 8 * * *"            # daily 08:00 user TZ
 # the snapshot on the next write — bounds the file while keeping the P32
 # duplicate-task guard and post-mortems working across restarts.
 _TERMINAL_RETENTION_DAYS = 30
+
+
+def _usable_time(value: object) -> bool:
+    """#1094: whether a persisted ``completed_at`` is a time retention can age.
+
+    ``load()`` carries ``completed_at`` exactly as the tombstone holds it
+    (INV-ENG-018), so it can be anything JSON decodes to. This is the test
+    ``agent._replay_time_sentence`` applies to the same value — an int or
+    float, not a bool, and finite — mirrored rather than imported, because
+    ``agent`` imports this module; a test pins that the two agree. Unlike the
+    renderer, it does not also require ``datetime.fromtimestamp`` to accept
+    the number: a finite value outside that range still orders correctly
+    against the cutoff, so retention uses it as the number it is.
+    """
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:       # an int too large for a float, e.g. 10**400
+        return False
 
 # v0.79.0 (§3): sentinel for the strict terminal transition's full-field
 # snapshot — distinguishes "origin had no such key" from "key was None" so the
@@ -439,6 +460,10 @@ class EngagementRegistry:
         # loop cannot drop one mid-kill and so the finalize funnel can await the
         # one its own transition scheduled.
         self._quiesce_tasks: dict[str, Any] = {}
+        # #1093: the records THIS process loaded owing a telling, each with
+        # the status it was loaded with — what the boot replay may claim. Set
+        # by ``load()`` only and never persisted; see ``records_owed_at_load``.
+        self._owed_at_load: tuple[tuple[EngagementRecord, str], ...] = ()
 
     async def load(self) -> None:
         """Read the tombstone into memory. Called once at startup."""
@@ -470,6 +495,9 @@ class EngagementRegistry:
                 pass
             return
         reconciled_any = False
+        # Keyed exactly like ``self._records``, so a duplicated id resolves to
+        # the same surviving record here as there.
+        loaded: dict[Any, EngagementRecord] = {}
         for row in raw:
             try:
                 rec = EngagementRecord(
@@ -556,8 +584,15 @@ class EngagementRegistry:
                     and rec.origin.get("_agent_spawned")):
                 rec.agent_spawn_permit = self._agent_spawn_limiter.restore()
             self._records[rec.id] = rec
+            loaded[rec.id] = rec
             if rec.topic_id is not None:
                 self._topic_index[rec.topic_id] = rec.id
+
+        # #1093: what the previous process left owed, captured here — before
+        # any path that can arm an obligation in this process is reachable.
+        self._owed_at_load = tuple(
+            (r, r.status) for r in loaded.values()
+            if r.terminal_notification_pending)
 
         # v0.69.6: persist the reconcile so the on-disk tombstone matches the
         # in-memory state immediately after boot. Without this the file kept
@@ -734,7 +769,14 @@ class EngagementRegistry:
         snapshot = []
         for rec in self._records.values():
             if (rec.status in ("completed", "cancelled", "error")
-                    and rec.completed_at is not None
+                    # #1094: only a usable time is compared. The value is
+                    # carried as persisted, and a string, list or dict here
+                    # raised TypeError while the snapshot was being built —
+                    # before the write's own failure handling — so every
+                    # write failed, best-effort ones included. A record whose
+                    # time is not usable has no known age and is RETAINED,
+                    # as None, NaN and 10**400 always were.
+                    and _usable_time(rec.completed_at)
                     and rec.completed_at < cutoff
                     # #599: a record still owing a uid quiesce is NEVER expired.
                     # Dropping it would delete the obligation AND the
@@ -1257,6 +1299,24 @@ class EngagementRegistry:
         the boot replay owner's work list."""
         return [r for r in self._records.values()
                 if r.terminal_notification_pending]
+
+    def records_owed_at_load(self):
+        """#1093: the boot replay's work list — each record this process
+        LOADED owing a telling that, as it is yielded, still owes it and still
+        has the status it was loaded with.
+
+        A record armed by this process is not in it: that process told it
+        live, and if that notice is never delivered the obligation is still on
+        disk for the NEXT boot's load. The status test covers the one loaded
+        record that can change status — an owed row that is not terminal, a
+        corrupt shape — so a live finalization of it is not re-announced as a
+        pre-restart outcome; such a row whose status changed during this boot
+        is left to the next boot. Lazy: the tests run per record as the
+        replay reaches it, so an acknowledgement landing mid-walk is seen.
+        """
+        for rec, status in self._owed_at_load:
+            if rec.terminal_notification_pending and rec.status == status:
+                yield rec
 
     async def ack_terminal_notification(self, engagement_id: str) -> None:
         """#766: discharge the obligation — ONLY once a telling was delivered.
