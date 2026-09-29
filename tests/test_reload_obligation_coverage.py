@@ -722,6 +722,37 @@ async def test_executor_definition_discharged_by_executors(world, engagement, mo
     assert engagement.id not in tools_mod._ENGAGEMENTS_PENDING_RELOAD
 
 
+@pytest.mark.parametrize("rel", ["prompt.md", "observer.yaml", "doctrine/probe.md"])
+async def test_executor_none_row_edit_stays_owed_until_executors(
+        world, engagement, monkeypatch, rel):
+    """The doctrine's table names NO reload for an executor's prompt.md,
+    observer.yaml or doctrine/ edit, but the commit still arms: an engagement
+    that follows those rows owes the obligation at completion (and is
+    force-reloaded there). No other scope's reload discharges it — the real
+    casa_reload_triggers, and the other scopes' classification through the
+    real casa_reload — only `executors` (or `full`)."""
+    import tools as tools_mod
+    path = f"agents/executors/probe/{rel}"
+    _w(world.root / path, "probe\n")
+    await world.commit(engagement, [path])
+
+    r = _decode(await tools_mod.casa_reload_triggers.handler({"role": "resident:assistant"}))
+    assert r["status"] == "ok"
+    assert engagement.id in tools_mod._ENGAGEMENTS_PENDING_RELOAD
+    for scope, extra in (("agent", {"role": "assistant"}), ("agents", {}),
+                         ("policies", {}), ("config_sync", {})):
+        world.count_handler(monkeypatch, scope)
+        r = _decode(await tools_mod.casa_reload.handler({"scope": scope, **extra}))
+        assert r["status"] == "ok", (scope, r)
+        assert engagement.id in tools_mod._ENGAGEMENTS_PENDING_RELOAD, scope
+        assert _pending(engagement) == {path}, scope
+
+    world.count_handler(monkeypatch, "executors")
+    r = _decode(await tools_mod.casa_reload.handler({"scope": "executors"}))
+    assert (r["status"], world.counted[-1]) == ("ok", "executors:None")
+    assert engagement.id not in tools_mod._ENGAGEMENTS_PENDING_RELOAD
+
+
 async def test_full_discharges_every_committed_path(world, engagement, monkeypatch):
     import tools as tools_mod
     _edit_card(world.agent_dir("assistant"), "Edited summary.")
