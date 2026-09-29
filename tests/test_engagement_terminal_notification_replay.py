@@ -681,3 +681,188 @@ async def test_replayed_engagement_outcomes_with_unusable_times_still_become_pro
         assert body.count("Casa recorded") == 0
         prompts += 1
     assert prompts == 3
+
+
+# ---------------------------------------------------------------------------
+# #1093 + #1094 red cases — INV-ENG-018. Specified by **astra** in the drive
+# redcase round (MODE: SPECIFY) against
+# ``59ed58d8cff57ac9c0961fc8ee15166d6b2186e3``.
+#
+# #1093: the boot replay tells only what the previous process left owed. A
+# record finalized live in THIS process before the replay runs is told once,
+# live, and never as a pre-restart outcome; left undelivered, it is the NEXT
+# boot's to replay.
+#
+# #1094: a terminal row whose persisted ``completed_at`` is not a usable number
+# never makes a registry write raise — the owed-notice ack persists, and load()'s
+# reconcile write does not fail — and the value is kept exactly as persisted.
+# ---------------------------------------------------------------------------
+
+
+async def _one_owed_previous_process_row(tmp_path):
+    """The fixture's completed ``a_id`` row alone: a real funnel-finalized
+    outcome from a previous process, still owing its telling."""
+    _reg, tombstone, a_id, _b, _c, _told = await _owing_records(tmp_path)
+    tombstone.write_text(json.dumps([_row(tombstone, a_id)]))
+    return tombstone, a_id
+
+
+def _live_tools(reg):
+    from tools import init_tools
+
+    channel = MagicMock()
+    channel.send_to_topic = AsyncMock()
+    channel.send_response_to_topic = AsyncMock()
+    channel.close_topic = AsyncMock()
+    channel.update_topic_state = AsyncMock()
+    cm = MagicMock()
+    cm.get.return_value = channel
+    bus = _RecordingBus()
+    init_tools(
+        channel_manager=cm, bus=bus,
+        specialist_registry=MagicMock(), mcp_registry=MagicMock(),
+        trigger_registry=MagicMock(), engagement_registry=reg,
+    )
+    return bus
+
+
+def _notice_counts(messages):
+    from collections import Counter
+    return Counter(
+        (m.content.delegation_id, m.content.replayed_after_restart)
+        for m in messages
+    )
+
+
+async def test_boot_replays_loaded_owed_outcome_but_defers_live_outcome(
+    tmp_path,
+):
+    from collections import Counter
+
+    import casa_core
+    from engagement_registry import EngagementRegistry
+    from tools import _finalize_engagement
+
+    tombstone, old_id = await _one_owed_previous_process_row(tmp_path)
+    reg = EngagementRegistry(tombstone_path=str(tombstone), bus=None)
+    await reg.load()
+    bus = _live_tools(reg)
+
+    # After load() returns and before the replay runs: an engagement ends in
+    # THIS process, through the live funnel.
+    live = await reg.create(
+        kind="specialist", role_or_type="finance", driver="in_casa",
+        task="live task", topic_id=None,
+        origin={"role": "assistant", "channel": "telegram",
+                "chat_id": "live-chat", "cid": "live-route",
+                "user_text": "live task"})
+    await _finalize_engagement(
+        live, outcome="completed", text="live result", artifacts=[],
+        next_steps=[], driver=_driver_double())
+    assert _notice_counts(bus.sent) == Counter({(live.id, False): 1})
+
+    await casa_core._notify_recovered_engagement_outcomes(
+        reg, bus, assistant_role="assistant")
+    first = _notice_counts(bus.sent)
+
+    # No delivery callback and no acknowledgement ran: both are still owed.
+    assert len(_rows(tombstone)) == 2
+    assert sum(
+        r["terminal_notification_pending"] is True
+        for r in _rows(tombstone)
+    ) == 2
+
+    restarted = EngagementRegistry(tombstone_path=str(tombstone), bus=None)
+    await restarted.load()
+    second = _RecordingBus()
+    await casa_core._notify_recovered_engagement_outcomes(
+        restarted, second, assistant_role="assistant")
+
+    assert first == Counter({
+        (old_id, True): 1,
+        (live.id, False): 1,
+    })
+    assert _notice_counts(second.sent) == Counter({
+        (old_id, True): 1,
+        (live.id, True): 1,
+    })
+
+
+_UNUSABLE_COMPLETED_AT = pytest.mark.parametrize(
+    "value",
+    ["yesterday", ["yesterday"], {"when": "yesterday"}],
+    ids=["string", "list", "dict"],
+)
+
+
+@_UNUSABLE_COMPLETED_AT
+async def test_ack_persists_with_unusable_completed_at_unchanged(
+    tmp_path, value,
+):
+    from engagement_registry import EngagementRegistry
+
+    tombstone, a_id = await _one_owed_previous_process_row(tmp_path)
+    rows = _rows(tombstone)
+    rows[0]["completed_at"] = value
+    tombstone.write_text(json.dumps(rows))
+
+    reg = EngagementRegistry(tombstone_path=str(tombstone), bus=None)
+    await reg.load()
+    assert len(reg.records_owing_terminal_notification()) == 1
+
+    await reg.ack_terminal_notification(a_id)    # must return without raising
+
+    assert len(_rows(tombstone)) == 1
+    row = _row(tombstone, a_id)
+    assert row["terminal_notification_pending"] is False
+    assert type(row["completed_at"]) is type(value)
+    assert row["completed_at"] == value
+
+    restarted = EngagementRegistry(tombstone_path=str(tombstone), bus=None)
+    await restarted.load()
+    assert len(restarted.terminal_records()) == 1
+    assert len(restarted.records_owing_terminal_notification()) == 0
+
+
+@_UNUSABLE_COMPLETED_AT
+async def test_load_persists_reconcile_and_retains_unusable_terminal_time(
+    tmp_path, value,
+):
+    from collections import Counter
+
+    from engagement_registry import EngagementRegistry
+
+    tombstone, a_id = await _one_owed_previous_process_row(tmp_path)
+    seeded = EngagementRegistry(tombstone_path=str(tombstone), bus=None)
+    await seeded.load()
+    active = await seeded.create(
+        kind="specialist", role_or_type="finance", driver="in_casa",
+        task="unfinished", origin={}, topic_id=None)
+
+    # The cleared bit is deliberate: retention of an unusable time must hold
+    # independently of the owed-telling exemption.
+    rows = _rows(tombstone)
+    for r in rows:
+        if r["id"] == a_id:
+            r["completed_at"] = value
+            r["terminal_notification_pending"] = False
+    assert sum(r["status"] == "active" for r in rows) == 1
+    tombstone.write_text(json.dumps(rows))
+
+    restarted = EngagementRegistry(tombstone_path=str(tombstone), bus=None)
+    await restarted.load()
+
+    disk = _rows(tombstone)
+    assert len(disk) == 2
+    assert Counter(r["id"] for r in disk) == Counter({
+        a_id: 1, active.id: 1,
+    })
+    assert sum(r["status"] == "active" for r in disk) == 0
+    assert sum(r["status"] == "idle" for r in disk) == 1
+    assert _row(tombstone, active.id)["status"] == "idle"
+
+    row = _row(tombstone, a_id)
+    assert type(row["completed_at"]) is type(value)
+    assert row["completed_at"] == value
+    assert len(restarted.terminal_records()) == 1
+    assert len(restarted.active_and_idle()) == 1
