@@ -53,7 +53,7 @@ async def test_wire_ha_facade_publishes_before_invalidating_only_butler():
 
     await wire_tina_ha_facade(
         registry,
-        type("Facade", (), {"server_config": new_config})(),
+        type("Facade", (), {"server_config": new_config, "surface_digest": ""})(),
         {"butler": butler, "assistant": assistant},
         tina_role="butler",
     )

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 import json
 import logging
+import re
 import time
 from contextlib import AsyncExitStack
 from typing import Any, AsyncContextManager, Callable, Protocol
@@ -32,6 +34,8 @@ LIVE_CONTEXT_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 UNAVAILABLE_TEXT = "Home Assistant is temporarily unavailable."
+# #1091: bound on the error excerpt an isError result adds to its call line.
+ERROR_EXCERPT_CHARS = 200
 
 SurfaceDescriptor = tuple[tuple[str, str, str], ...]
 
@@ -92,6 +96,9 @@ class HomeAssistantFacade:
         # on_schema_change publication has not yet SUCCEEDED — the next
         # refresh must republish even though the descriptor is unchanged.
         self._publish_pending = False
+        # #1091: the connection generation a "tool not found" result last
+        # requested a rediscovery for — one request per generation.
+        self._missing_tool_generation = -1
         self._closed = False
 
     @property
@@ -102,6 +109,20 @@ class HomeAssistantFacade:
     @property
     def tool_names(self) -> tuple[str, ...]:
         return tuple(candidate.name for candidate in self._tools)
+
+    @property
+    def surface_digest(self) -> str:
+        """Identity of the committed tool NAMES, independent of their order.
+
+        Names only (#1091): what strands a resumed conversation is a history
+        holding names that no longer exist. Descriptions and schemas reach a
+        resumed session through the tool list it is connected with, so
+        digesting them would retire the butler's conversation on upstream text
+        churn that strands nothing. ``""`` before the first discovery."""
+        if self._server_config is None:
+            return ""
+        names = "\n".join(sorted(set(self.tool_names)))
+        return "sha256:" + hashlib.sha256(names.encode("utf-8")).hexdigest()
 
     @property
     def server_config(self) -> dict[str, Any]:
@@ -258,7 +279,7 @@ class HomeAssistantFacade:
             self._ensure_refresh_worker()
             return _unavailable_result()
 
-        upstream_arguments = {} if name == LIVE_CONTEXT_TOOL else arguments
+        upstream_arguments = {} if _is_live_context(name) else arguments
         started_ms = self._monotonic() * 1000
         try:
             result = await self._call_upstream(
@@ -284,16 +305,53 @@ class HomeAssistantFacade:
             )
             return _unavailable_result()
         elapsed = int(self._monotonic() * 1000 - started_ms)
-        logger.info(
-            "ha_facade_call tool=%s ok=%s ms=%d",
-            name,
-            not bool(getattr(result, "isError", False)),
-            elapsed,
-        )
+        if getattr(result, "isError", False):
+            # #1091: an error result carries HA's own reason; a bounded,
+            # single-line excerpt of it only — never a success body, never
+            # the arguments.
+            logger.info(
+                "ha_facade_call tool=%s ok=False ms=%d error=%r",
+                name,
+                elapsed,
+                _error_excerpt(result),
+            )
+            if _is_missing_tool_result(result, name):
+                self._request_missing_tool_refresh(session, session_generation)
+        else:
+            logger.info(
+                "ha_facade_call tool=%s ok=True ms=%d",
+                name,
+                elapsed,
+            )
         payload = _sdk_result(result)
-        if name == LIVE_CONTEXT_TOOL and arguments.get("domain"):
+        if _is_live_context(name) and arguments.get("domain"):
             _log_live_context_shape(payload)
         return payload
+
+    def _request_missing_tool_refresh(
+        self,
+        session: _UpstreamSession,
+        session_generation: int,
+    ) -> None:
+        """Schedule a rediscovery after HA said a listed tool does not exist.
+
+        #1091: HA renames its tools on upgrade and answers a vanished name
+        with an error RESULT, which is not a transport failure — the healthy
+        connection is kept and the ordinary coalesced worker re-lists. Never
+        awaited: the call is running inside the CLI's tool call, and the
+        publication a changed surface triggers invalidates that turn's pooled
+        client, which waits for the turn to end. A response from a connection
+        that has since been replaced asks for nothing (its refresh already
+        happened), and one generation asks at most once."""
+        if (
+            self._closed
+            or self._session is not session
+            or self._session_generation != session_generation
+            or self._missing_tool_generation == session_generation
+        ):
+            return
+        self._missing_tool_generation = session_generation
+        self._request_follow_up_refresh()
 
     async def _call_upstream(
         self,
@@ -369,8 +427,45 @@ class HomeAssistantFacade:
                 return
 
 
+def _is_live_context(name: str) -> bool:
+    """HA's live-context tool, bare or namespaced (``homeassistant__…``).
+
+    #1091: Home Assistant 2026.9 prefixes every tool with its domain; the
+    ``__`` boundary is required so an unrelated ``OtherGetLiveContext`` is
+    not treated as it."""
+    return name == LIVE_CONTEXT_TOOL or name.endswith("__" + LIVE_CONTEXT_TOOL)
+
+
+def _is_missing_tool_result(result: Any, name: str) -> bool:
+    """True for HA's "tool <name> not found" error result for *name*.
+
+    The phrase must name the called tool, so an intent error such as an
+    unknown entity never triggers a rediscovery."""
+    if not getattr(result, "isError", False):
+        return False
+    pattern = re.compile(
+        r"\btool\s+[\"'`]?" + re.escape(name)
+        + r"[\"'`]?\s+(?:was\s+)?not\s+found\b",
+        re.IGNORECASE,
+    )
+    for item in getattr(result, "content", None) or ():
+        text = getattr(item, "text", None)
+        if isinstance(text, str) and pattern.search(text):
+            return True
+    return False
+
+
+def _error_excerpt(result: Any) -> str:
+    """The first text item of an error result, on one line, bounded."""
+    for item in getattr(result, "content", None) or ():
+        text = getattr(item, "text", None)
+        if isinstance(text, str):
+            return " ".join(text.split())[:ERROR_EXCERPT_CHARS]
+    return ""
+
+
 def _schema_for(tool_spec: Any) -> dict[str, Any]:
-    if tool_spec.name == LIVE_CONTEXT_TOOL:
+    if _is_live_context(tool_spec.name):
         return {
             **LIVE_CONTEXT_SCHEMA,
             "properties": dict(LIVE_CONTEXT_SCHEMA["properties"]),

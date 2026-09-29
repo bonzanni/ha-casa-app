@@ -394,15 +394,28 @@ class PromptSurface:
     alternative: the surface read at the decision and the surface rendered after
     the options build's first await can differ (a reload lands between them), so
     a second render would store a digest describing a prompt the session never
-    had, and retire it again on the next turn."""
+    had, and retire it again on the next turn.
+
+    ``tool_servers`` (#1091) extends the same rule to the one tool surface
+    that changes under a running Casa: Home Assistant's, whose tools were
+    renamed by an HA upgrade. A resumed session keeps calling the names in its
+    own history, so a published change of tool NAMES must retire it. The
+    triples are ``(server name, server config, surface digest)`` captured from
+    the MCP registry when the turn is armed; their digests join the surface
+    digest, and ``_build_options`` connects with exactly these configs, so a
+    publication landing mid-turn never pairs new tools with an old identity.
+    Empty for every role with no published surface, whose digest is then
+    byte-identical to one computed without this field."""
     delegates: str
     jobs: str
     executors: str
     digest: str
+    tool_servers: tuple = ()
 
 
 def _render_prompt_surface(caller_role, delegates, registry, *, live_names=None,
-                           allowed_tools=None, executors=()) -> PromptSurface:
+                           allowed_tools=None, executors=(),
+                           tool_servers=()) -> PromptSurface:
     """Render the structural blocks and digest them as one immutable unit."""
     delegates_block = _render_delegates_block(
         delegates, registry, live_names=live_names,
@@ -412,13 +425,19 @@ def _render_prompt_surface(caller_role, delegates, registry, *, live_names=None,
         allowed_tools=allowed_tools,
     )
     executors_block = _render_executors_block(executors)
+    tool_servers = tuple(tool_servers)
+    parts = [delegates_block, jobs_block, executors_block]
+    if tool_servers:
+        parts.append("\x1e".join(
+            f"{name}={surface}" for name, _config, surface in tool_servers
+        ))
     digest = "sha256:" + hashlib.sha256(
-        "\x1f".join((delegates_block, jobs_block, executors_block))
-        .encode("utf-8")
+        "\x1f".join(parts).encode("utf-8")
     ).hexdigest()
     return PromptSurface(
         delegates=delegates_block, jobs=jobs_block,
         executors=executors_block, digest=digest,
+        tool_servers=tool_servers,
     )
 
 
@@ -2510,6 +2529,9 @@ class Agent:
                 live_names=_live_agent_directory(),
                 allowed_tools=self.config.tools.allowed,
                 executors=self.config.executors,
+                tool_servers=self._mcp_registry.role_surfaces(
+                    self.config.mcp_server_names, role=self.config.role,
+                ),
             )
         )
         try:
@@ -2889,6 +2911,12 @@ class Agent:
             role=self.config.role,
             allowed_tools=allowed_tools,
         )
+        # #1091: connect with the published tool surfaces the turn's resume
+        # decision gated on, not whatever a publication since has registered.
+        armed = _prompt_surface_var.get()
+        if armed is not None:
+            for name, config, _surface in armed.tool_servers:
+                mcp_servers[name] = config
         skills = (
             "all" if getattr(self.config.tools, "skills", "all") == "all"
             else None

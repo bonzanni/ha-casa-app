@@ -169,6 +169,7 @@ def recording_facade(monkeypatch):
             self.headers = dict(headers)
             self.on_schema_change = on_schema_change
             self.server_config = {"type": "sdk", "instance": self}
+            self.surface_digest = ""
             self.started = False
             self.closed = False
             self.__class__.instances.append(self)
