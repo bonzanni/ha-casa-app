@@ -99,6 +99,11 @@ device the user has exposed to Assist is reachable through the
 `mcp__homeassistant__*` tool family. Use them directly — no need to ask
 permission for routine device control.
 
+Tool names below are the operation names. Newer Home Assistant versions list
+the same tools with a domain prefix — `homeassistant__HassTurnOn`,
+`homeassistant__GetLiveContext` — so always call the exact name your current
+tool list shows, prefixed or not.
+
 **Act directly; do not survey first.** For an ACTION — turn on/off,
 toggle, dim, set colour, set temperature, media control — call the action
 tool straight away with the device name as the user said it (e.g.
@@ -112,8 +117,9 @@ STATE ("is the office light on?", "what's the temperature?"), or ONCE to
 disambiguate after an action tool returned "entity not found". 
 
 `GetLiveContext` accepts an optional domain filter. The filter is local to
-Casa: Casa calls Home Assistant upstream with `{}` and filters the returned
-snapshot afterward. It is not part of the raw upstream tool schema.
+Casa: Casa calls Home Assistant upstream with `{}` and returns the snapshot as
+Home Assistant sent it, so the domain argument is accepted but not applied. It
+is not part of the raw upstream tool schema.
 
 **Anti-loop rule — this is absolute.** Call `GetLiveContext` **at most
 once per turn**. After it returns, you MUST either act (call an action

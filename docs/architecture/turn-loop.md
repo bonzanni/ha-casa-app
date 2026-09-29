@@ -171,7 +171,7 @@ Its return value stays the joined text. Only a buffered turn's final-reply admis
 them, for the #1075 closing-silence rule (INV-OUT-006 in
 [`output-boundary.md`](output-boundary.md)); the stream and this hold are unchanged.
 
-**INV-TURN-012**: A conversation is resumed only while the structural surface of its system prompt — the delegates, background jobs and executors the agent can reach — still digests to what the session was registered with. A surface that differs, or a session that never recorded one, starts a fresh session with the old one retained. The surface is rendered once per turn and the same render is what the resume decision gates on, what the prompt carries, and what the registration stores.
+**INV-TURN-012**: A conversation is resumed only while the structural surface of its system prompt — the delegates, background jobs and executors the agent can reach, and, for a role whose Home Assistant tools the facade publishes, the names of the tools last published — still digests to what the session was registered with. A surface that differs, or a session that never recorded one, starts a fresh session with the old one retained. The surface is rendered once per turn and the same render is what the resume decision gates on, what the prompt carries, the published tool servers the session connects with, and what the registration stores.
 
 The CLI pins a session's system prompt when the session is created. Rebuilding options on a
 cold connect therefore does not reach a conversation that is being resumed: the prompt is
@@ -199,6 +199,17 @@ the surface: rendering at both points lets a session be created carrying one pro
 digest describing a different one is stored against it, which retires it again on the next
 turn. Rendering once and carrying that result through the decision, the prompt and the
 registration removes the second read rather than trying to order the two.
+
+The Home Assistant tool names are the one part of the surface that changes under a running
+Casa: an upgrade of Home Assistant renamed every tool (#1091). They are not in the prompt, but
+a resumed conversation's own history keeps calling the old names, and the CLI refuses them.
+So the facade's publication carries a digest of the published names — sorted, so a different
+upstream order moves nothing — and the turn captures each published server together with
+that digest when it arms its surface. The digest joins the surface's, and the options build
+connects with exactly the captured servers, so a publication landing mid-turn never pairs
+new tools with the old identity; the next turn picks it up. A role with no published tool
+surface digests exactly as before, so its conversations are not retired by this. The butler's
+conversations restart once, retained, on the upgrade that introduces it.
 
 ## Failure behavior
 

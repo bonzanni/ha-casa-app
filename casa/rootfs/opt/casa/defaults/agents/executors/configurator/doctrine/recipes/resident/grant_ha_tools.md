@@ -52,13 +52,18 @@ the way it does — but there is nowhere to write it, and that is the point of t
 section below.
 
 `GetLiveContext` accepts an optional domain filter, and that filter is **local
-to Casa**: Casa sends `{}` upstream and filters the returned snapshot
-afterwards. It is a state-query tool, not a prerequisite for action — action
-tools (`HassTurnOn`, `HassTurnOff`, `HassLightSet`,
+to Casa**: Casa sends `{}` upstream and returns the snapshot as Home Assistant
+sent it, so the domain argument is accepted but not applied. It is a
+state-query tool, not a prerequisite for action — action tools (`HassTurnOn`, `HassTurnOff`, `HassLightSet`,
 `HassClimateSetTemperature`, …) are called directly. Casa's shipped resident
 doctrine bounds `GetLiveContext` to **at most once per turn**, then requires the
 resident to act or answer, because framing it as a prerequisite once produced a
 delegated turn that looped on it without ever acting.
+
+Those are operation names. Newer Home Assistant versions list the same tools
+with a domain prefix (`homeassistant__HassTurnOn`, `homeassistant__GetLiveContext`);
+the resident calls whichever name its tool list shows, and the bare
+`mcp__homeassistant` grant covers both.
 
 ## Step 4 — there is no step 4
 
@@ -79,7 +84,9 @@ than writing a file that reaches nobody.
 /ha-prod-console:restart 91d4d4c8_casa
 ```
 
-Then ask the resident a control question via its primary channel ("turn off the kitchen lights"). Check the addon logs for an `mcp__homeassistant__HassTurnOff` call.
+Then ask the resident a control question via its primary channel ("turn off the kitchen lights"). Check the addon logs for an `mcp__homeassistant__HassTurnOff` call — or
+`mcp__homeassistant__homeassistant__HassTurnOff` on a Home Assistant that
+prefixes its tool names.
 
 ## Common pitfalls
 

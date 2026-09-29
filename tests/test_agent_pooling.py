@@ -581,7 +581,7 @@ async def test_facade_schema_refresh_reconnects_only_butler_with_new_config(
         assert assistant_client.options.mcp_servers["homeassistant"] == raw_config
 
         facade = type(
-            "Facade", (), {"server_config": new_facade_config},
+            "Facade", (), {"server_config": new_facade_config, "surface_digest": ""},
         )()
         await wire_tina_ha_facade(
             registry,

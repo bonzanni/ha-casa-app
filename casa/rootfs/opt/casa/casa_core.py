@@ -2221,9 +2221,14 @@ async def wire_tina_ha_facade(
     *,
     tina_role: str = "butler",
 ) -> None:
-    """Publish Tina's eager HA schema and retire her stale SDK clients."""
+    """Publish Tina's eager HA schema and retire her stale SDK clients.
+
+    The config and its surface digest are read together, with no await
+    between them, so the registry pairs them from one facade commit (#1091):
+    a turn armed after this publication gates its resume on these tools."""
     mcp_registry.register_role_sdk(
         "homeassistant", tina_role, facade.server_config,
+        surface_digest=facade.surface_digest,
     )
     agent = agents.get(tina_role)
     if agent is not None:

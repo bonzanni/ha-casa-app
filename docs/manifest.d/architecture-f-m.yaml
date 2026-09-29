@@ -11,12 +11,14 @@
     - tests/test_ha_mcp_facade.py
     - tests/test_ha_mcp_url_override.py
     - tests/test_mock_ha_mcp.py
-  related: [architecture/mcp-and-tools.md, architecture/overview.md]
-  defines_invariants: [INV-HA-001, INV-HA-002, INV-HA-003]
+    - tests/test_ha_surface_resume.py
+  related: [architecture/mcp-and-tools.md, architecture/overview.md, architecture/turn-loop.md]
+  defines_invariants: [INV-HA-001, INV-HA-002, INV-HA-003, INV-HA-004]
   invariant_tests:
     INV-HA-001: [tests/test_ha_mcp_facade.py::test_pin_inv_ha_001_action_arguments_pass_through_unchanged]
     INV-HA-002: [tests/test_ha_mcp_url_override.py::test_tina_facade_initial_discovery_failure_is_sanitized_degraded]
     INV-HA-003: [tests/test_ha_mcp_facade.py::test_pin_inv_ha_003_tool_cache_has_no_time_expiry]
+    INV-HA-004: [tests/test_ha_surface_resume.py::test_missing_tool_refreshes_and_retires_previous_surface, tests/test_ha_surface_resume.py::test_only_a_missing_tool_result_for_the_called_name_rediscovers, tests/test_ha_surface_resume.py::test_missing_tool_results_in_one_generation_request_one_rediscovery, tests/test_ha_surface_resume.py::test_a_late_missing_tool_result_from_a_replaced_connection_asks_nothing, tests/test_ha_surface_resume.py::test_a_missing_tool_rediscovery_is_not_awaited_by_the_call]
 
 - doc: architecture/http-surface.md
   summary: The two HTTP servers, what each exposes, and how an inbound request is authenticated.
