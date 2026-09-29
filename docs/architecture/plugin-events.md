@@ -54,7 +54,10 @@ directly (the first subscriber is skill-only, with no other way to signal comple
 wake instruction asks the agent to process the event and call `ack_event` with the given
 token, then close the turn with the `<silent/>` sentinel — an event wake is a background
 turn, so its tokens are buffered rather than streamed (the reminder-delivery convention)
-and a narration-only close is suppressed instead of landing in the operator's chat. If
+and a close of the sentinel alone is suppressed instead of landing in the operator's chat.
+Narration written before that closing sentinel on a wake that sent nothing still arrives,
+without the tag: `ack_event` is bookkeeping, not a send (INV-OUT-006, the ruling on
+#1075). If
 the agent never acks — a crash, a bug, a forgetful agent — the ladder simply
 exhausts after six accepted dispatches instead of hanging forever, and the exhaustion note
 tells the operator so. The trade-off is accepted because a missed ack costs promptness,

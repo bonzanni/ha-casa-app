@@ -76,11 +76,12 @@ reconciler and the in-Casa writers now serialize against each other rather than 
 
 **A scheduled turn's closing text is delivered, so the prompt is where silence is asked
 for.** A scheduled turn that sends a message with a tool and then ends with ordinary prose
-delivers twice to the same chat: the tool send happens immediately and leaves no mark the
-final-text path can read, and the turn's own closing text then rides the ordinary reply path.
-What closes that gap is the prompt, per prompt, and it is a convention rather than a runtime
-rail — which prompts carry the clause, what it says, and how the tools a turn calls decide
-the question are
+delivers twice to the same chat: the tool send happens immediately, and the turn's own
+closing text then rides the ordinary reply path. What closes that gap is the prompt, per
+prompt, and it is a convention rather than a runtime rail; the one closing Casa decides
+itself — a last message that is the sentinel after earlier text — is the operator's ruling
+on #1075 (INV-OUT-006 in [`output-boundary.md`](output-boundary.md)). Which prompts carry
+the clause, what it says, and how the tools a turn calls decide the question are
 [`architecture/scheduled-prompt-endings.md`](scheduled-prompt-endings.md)'s. A webhook
 trigger carries no prompt at all (INV-TRIG-013), so the convention does not reach it.
 

@@ -20,12 +20,17 @@ prompt is [`architecture/reminders.md`](reminders.md)'s.
 
 **A scheduled turn's closing text is delivered, so the prompt is where silence is asked
 for.** A scheduled turn that sends a message with a tool and then ends with ordinary prose
-delivers twice to the same chat: the tool send happens immediately and leaves no mark the
-final-text path can read, and the turn's own closing text then rides the ordinary reply path.
-Neither half is narrowed, and both refusals are pinned: a scheduled turn with real text still
-delivers it exactly once, and prose *after* the silence sentinel is still delivered (the
-recant contract — a correction after a send must reach the operator). What closes the gap is
-therefore the prompt, per prompt, and it is a convention — carried by the surfaces
+delivers twice to the same chat: the tool send happens immediately, and the turn's own
+closing text then rides the ordinary reply path. Casa narrows neither half on its own: a
+scheduled turn whose closing text is real text still delivers it exactly once, and prose
+*after* the silence sentinel is still delivered (the recant contract). The one ending Casa
+decides is the operator's ruling on #1075 (INV-OUT-006 in
+[`output-boundary.md`](output-boundary.md)), which the trigger recipes and `casa/DOCS.md`
+state in the same words: If the turn's last message is the sentinel `<silent/>` after
+earlier text, Casa drops that text when the turn made at least one send, every send was
+confirmed delivered, and the turn finished on its first attempt with no error and no retry;
+otherwise it delivers that text without the sentinel. What closes the gap is therefore the
+prompt, per prompt, and it is a convention — carried by the surfaces
 `tests/test_scheduled_prompt_guidance.py` enumerates (this document, `casa/DOCS.md`, and the
 configurator's `trigger/add`, `trigger/update` and `prompt/edit` recipes), and extended to a
 new surface by adding it there.
@@ -110,9 +115,10 @@ prompt, so this is the failure the convention exists to prevent and cannot itsel
 sentinel becomes the turn's whole final text, and the operator gets nothing.
 
 **A delivery tool reports a failure and the turn emits the sentinel anyway.** The rules
-above are what an author writes into the prompt; a model that ignores them still ends the
-turn silently, and the operator receives nothing. The runtime reports honestly; it does not
-enforce what the turn then does.
+above are what an author writes into the prompt; a model that ignores them and outputs
+nothing but the sentinel still ends the turn silently, and the operator receives nothing.
+Text it wrote before a closing sentinel does arrive, without the tag, because a failed send
+keeps it. The runtime reports honestly; it does not enforce what the turn then does.
 
 ## Extension points
 

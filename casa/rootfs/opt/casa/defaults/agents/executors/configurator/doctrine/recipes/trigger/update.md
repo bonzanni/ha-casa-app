@@ -28,8 +28,12 @@ Per-trigger prompt in prompts/<trigger_name>.md — that one IS an ordinary edit
 
 The same convention `recipes/trigger/add.md` states, and it applies whenever you
 rewrite a prompt here: a scheduled turn that sends a message and then narrates
-delivers the narration as a SECOND message to the same chat, because Casa never
-suppresses a turn's closing text.
+delivers the narration as a SECOND message to the same chat, because Casa does not
+suppress a turn's closing text on its own. If the turn's last message is the
+sentinel `<silent/>` after earlier text, Casa drops that text when the turn made
+at least one send, every send was confirmed delivered, and the turn finished on
+its first attempt with no error and no retry; otherwise it delivers that text
+without the sentinel.
 
 For interval/cron/date prompts whose turn delivers its own message, keep
 the send instruction first and unconditional, and end the prompt with:

@@ -163,6 +163,14 @@ something the gate would deliver. Nothing records a held cumulative, so a hold c
 suppress its own release. On a held turn the teardown hook is the only thing that stops
 the typing indicator, since the first-token teardown never runs.
 
+The fold also keeps each text-bearing message apart (`state["messages"]`, beside the joined
+`state["text"]`). `_process` publishes the winning attempt's tuple as
+`turn_report["reply_messages"]` and the number of attempts that ran as
+`turn_report["attempts"]`; a stale-resume re-run consumes no retry but is still an attempt.
+Its return value stays the joined text. Only a buffered turn's final-reply admission reads
+them, for the #1075 closing-silence rule (INV-OUT-006 in
+[`output-boundary.md`](output-boundary.md)); the stream and this hold are unchanged.
+
 **INV-TURN-012**: A conversation is resumed only while the structural surface of its system prompt — the delegates, background jobs and executors the agent can reach — still digests to what the session was registered with. A surface that differs, or a session that never recorded one, starts a fresh session with the old one retained. The surface is rendered once per turn and the same render is what the resume decision gates on, what the prompt carries, and what the registration stores.
 
 The CLI pins a session's system prompt when the session is created. Rebuilding options on a

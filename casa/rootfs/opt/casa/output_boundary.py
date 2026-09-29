@@ -32,22 +32,32 @@ Obligations are a closed, Casa-owned set; the model can never add one.
   never turned into a visible line; prose after a sentinel is delivered whole
   (the G-3 recant contract, INV-TURN-009). A suppressed admission says whether
   the model CHOSE the silence (``chosen_silence``: at least one sentinel) or
-  merely produced nothing (#1079).
+  merely produced nothing (#1079). On a buffered (``NoStream``) turn, a final
+  reply whose LAST message is a closing ``<silent/>`` after earlier text is the
+  operator's ruling on #1075: silent after a confirmed send, else the earlier
+  text without the tag (:meth:`TurnScope.admit`).
 
 Every admission of model text the operator is meant to see outside the final
 reply (``DISCRETE``, ``CAPTION``, ``KEYBOARD``) also opens an
 :class:`OperatorSend` record on the admitting scope, promoted only when the
 sender confirms delivery (#1079) — so the turn knows whether everything it
-committed to the operator arrived.
+committed to the operator arrived. Every CALL of a send tool also leaves a
+:class:`SendAttempt` (#1075), so a send refused before it was ever admitted is
+on the record too.
 
 Nothing is held or withheld: the model's words are never suppressed here
-(operator ruling, #1036). Casa-composed text enters through :func:`casa_text`.
+(operator ruling, #1036) — beyond closing silence, whose one case that drops
+earlier words is the #1075 ruling above. Casa-composed text enters through
+:func:`casa_text`.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class IntentKind(Enum):
@@ -141,6 +151,31 @@ def strips_to_silence(text: str | None) -> bool:
     return not stripped or not stripped.replace(SILENCE_SENTINEL, "").strip()
 
 
+def closing_silence_prefix(text: str | None, messages: Any) -> str | None:
+    """#1075: when the LAST of *messages* — the text-bearing messages the final
+    reply *text* was joined from — strips to ``<silent/>`` (silence with at
+    least one sentinel in it), return the messages before the trailing run of
+    messages that each strip to silence, joined exactly as the reply joins
+    them. ``None`` when the rule does not apply: no per-message fact, a fact
+    that is not THIS text's, a last message with prose in it (the G-3 recant
+    contract), a last message with no sentinel — a whitespace-only one
+    included, whatever sentinel precedes it — or no earlier text. Earlier
+    messages are never inspected, so a mid-turn recant stays verbatim."""
+    if (not isinstance(messages, (list, tuple)) or len(messages) < 2
+            or not all(isinstance(m, str) for m in messages)
+            or "\n\n".join(messages) != text):
+        return None
+    last = messages[-1]
+    if SILENCE_SENTINEL not in last or not strips_to_silence(last):
+        return None
+    k = len(messages)
+    while k > 0 and strips_to_silence(messages[k - 1]):
+        k -= 1
+    if k == 0:
+        return None
+    return "\n\n".join(messages[:k])
+
+
 def may_still_be_silence(text: str | None) -> bool:
     """True when *text* is silence today, or could still BECOME silence as more
     deltas arrive: what remains after consuming leading complete sentinels and
@@ -227,6 +262,18 @@ _SENT_INTENTS = frozenset({IntentKind.DISCRETE, IntentKind.CAPTION,
                            IntentKind.KEYBOARD})
 
 
+@dataclass
+class SendAttempt:
+    """One call of a send tool (#1075), opened when the call begins and
+    resolved when it returns: ``ok`` for a normal result, ``failed`` for an
+    error result or a raise. It records the calls an :class:`OperatorSend`
+    cannot — a send refused BEFORE admission opens no commitment at all — and
+    one still ``open`` is a send whose outcome is not known yet."""
+
+    tool: str
+    state: str = "open"
+
+
 # ---------------------------------------------------------------------------
 # Obligations
 # ---------------------------------------------------------------------------
@@ -298,6 +345,7 @@ class TurnScope:
     evidence: Evidence = field(default_factory=Evidence)
     annotations_applied: list[str] = field(default_factory=list)
     operator_sends: list[OperatorSend] = field(default_factory=list)
+    send_attempts: list[SendAttempt] = field(default_factory=list)
 
     # -- minting ------------------------------------------------------------
 
@@ -350,6 +398,8 @@ class TurnScope:
             # #1079: the SAME list, not a copy — what a synchronous delegate
             # commits to the operator is part of what the launching turn did.
             operator_sends=parent.operator_sends if synchronous else [],
+            # #1075: and so is every send it TRIED, refused ones included.
+            send_attempts=parent.send_attempts if synchronous else [],
         )
         if note.strip():
             child.arm(InheritedNote(note))
@@ -417,6 +467,24 @@ class TurnScope:
         delivered — vacuously True when there was none."""
         return all(r.delivered for r in self.operator_sends)
 
+    def open_attempt(self, tool: str) -> SendAttempt:
+        """#1075: record one send-tool call as it begins (see
+        ``tools._account_send_attempts``)."""
+        attempt = SendAttempt(tool)
+        self.send_attempts.append(attempt)
+        return attempt
+
+    @property
+    def closing_silence_earned(self) -> bool:
+        """#1075 rule 1, the record half: at least one commitment, every one
+        confirmed delivered, and every send-tool call resolved ``ok`` — none
+        refused, failed or still in flight. Never vacuous, unlike
+        :attr:`operator_sends_delivered`: a turn with no send has earned
+        nothing."""
+        return (bool(self.operator_sends)
+                and self.operator_sends_delivered
+                and all(a.state == "ok" for a in self.send_attempts))
+
     def resolve_channel(self, requested: str) -> str:
         """The channel a discrete send actually goes to: the requested one,
         unless :class:`DestinationOperatorOnly` binds it to Telegram."""
@@ -440,13 +508,43 @@ class TurnScope:
 
     # -- admission ----------------------------------------------------------
 
-    def admit(self, kind: IntentKind, text: str) -> Admitted:
+    def admit(self, kind: IntentKind, text: str, *,
+              report: dict[str, Any] | None = None) -> Admitted:
         """Apply every obligation to *text* at this moment. Empty text is never
         annotated. Order: silence (final replies only, on the UNANNOTATED
-        text), then inherited notes, then today's line."""
+        text), then inherited notes, then today's line.
+
+        *report* is the turn report ``_process`` filled (final replies only):
+        on a buffered turn it carries the facts the #1075 closing-silence rule
+        reads — the winning attempt's text-bearing messages, the attempt count
+        and the consumed retries. Without it, today's whole-text rule."""
         if kind is IntentKind.FINAL_REPLY and strips_to_silence(text):
             return Admitted(text="", scope_id=self.id, kind=kind, suppressed=True,
                             chosen_silence=SILENCE_SENTINEL in (text or ""))
+        if (kind is IntentKind.FINAL_REPLY and report is not None
+                and not self.streaming_allowed):
+            kept = closing_silence_prefix(text, report.get("reply_messages"))
+            if kept is not None:
+                # #1075 (operator ruling): the LAST message is a closing
+                # sentinel after earlier text. Rule 1 — the same conditions as
+                # the #1079 acknowledgement (no error: only an error-free reply
+                # is admitted here; no retries, and exactly one attempt, so
+                # every record below is the winning attempt's), plus at least
+                # one send — makes the turn silent. Not a CHOSEN silence: that
+                # stays a final text of nothing but sentinels (INV-JOB-010).
+                if (report.get("retries") == []
+                        and report.get("attempts") == 1
+                        and self.closing_silence_earned):
+                    logger.info(
+                        "closing silence after confirmed sends: role=%s "
+                        "cid=%s — earlier text dropped", self.role, self.cid)
+                    return Admitted(text="", scope_id=self.id, kind=kind,
+                                    suppressed=True)
+                # Rule 2: keep the earlier text, drop the closing tag.
+                logger.info(
+                    "closing silence without confirmed sends: role=%s cid=%s "
+                    "— earlier text kept, tag dropped", self.role, self.cid)
+                text = kept
         send = None
         if kind in _SENT_INTENTS:
             send = self.open_send(kind.value)

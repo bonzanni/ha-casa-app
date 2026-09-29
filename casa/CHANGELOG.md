@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.332.8] - 2026-09-29
+
+### Fixed
+
+- A scheduled turn (a scheduled trigger, a reminder, a webhook trigger, or the
+  turn that continues a scheduled question after you answer it) or an event
+  wake whose last message is nothing but `<silent/>`, after earlier text, no
+  longer delivers that text to you with the literal `<silent/>` attached. It
+  now follows the rule chosen on #1075:
+  - **After confirmed sends, the turn stays silent.** If the turn sent you
+    something through Casa (for example a message, a question with buttons,
+    or a photo or file, with or without a caption, including a send made by a
+    helper agent the turn waited for), every one of those sends was confirmed
+    delivered, none failed or was refused, and the turn finished on its first
+    attempt, then all of its earlier text is dropped and you get only what it
+    sent.
+  - **Otherwise you get the text without the tag.** A turn that sent nothing,
+    had a send that failed, was refused or had no confirmed outcome yet, or
+    needed a second attempt delivers its earlier text without the closing
+    `<silent/>`. That includes a turn whose only delivery was a Home Assistant
+    notification or a plugin, because Casa does not record those as sends.
+
+  Direct chats and voice are unchanged. A turn whose last message has other
+  text in it besides `<silent/>` is delivered as before, a turn whose whole
+  output is `<silent/>` stays silent, and text written after `<silent/>` in the
+  last message is still delivered in full.
+
+  Two effects were accepted when the rule was chosen. A turn that sends nothing
+  still delivers its narration before a closing `<silent/>`, now without the
+  tag. And after a confirmed send, text the agent wrote as a plain reply
+  instead of sending it is dropped along with the rest of the earlier text.
+
 ## [0.332.7] - 2026-09-28
 
 ### Fixed

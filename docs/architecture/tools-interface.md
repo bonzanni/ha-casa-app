@@ -113,7 +113,9 @@ unchanged and reports it as `note`; `list_inbound_files` arms the obligation fro
 it lists; `delegate_to_agent` resolves the brief's note at every launch and reports it as
 `casa_note` on either pending result; and
 `wipe_memory`'s consent keyboard is Casa's own text. The rules are INV-OUT-002 to
-INV-OUT-005 in [`output-boundary.md`](output-boundary.md).
+INV-OUT-005 in [`output-boundary.md`](output-boundary.md). Each call of `send_message`,
+`send_media` or `ask_user` is also recorded as a send attempt on that scope, refusals
+included, by a wrapper outside the registered handler that changes no result (#1075).
 
 **Engagement mutation is a funnel, not parallel paths.** Completion and cancellation
 converge on one finalize path whose strict registry transition picks a single winner

@@ -18873,6 +18873,53 @@ for _tool_obj in CASA_TOOLS:
 del _tool_obj
 
 
+# #1075: the tools that send model text to the operator. Every CALL leaves a
+# SendAttempt on the scope it commits under, because a send refused before
+# admission opens no OperatorSend at all — and a buffered turn that closes in
+# `<silent/>` may drop its earlier text only when every send it tried went out.
+_ACCOUNTED_SENDS = frozenset({"send_message", "send_media", "ask_user"})
+
+
+def _account_send_attempts(tool_obj) -> None:
+    """Wrap a send tool's REGISTERED handler, outermost (outside the fence
+    above, so every refusal the entry point returns is seen): open an attempt
+    at entry, on the scope the handler's entry snapshot resolves to (the same
+    resolution the body uses — an engagement's, else the turn's), and resolve
+    it from the tool's own error flag. Nothing here changes a result, and
+    accounting never fails a send."""
+    inner = tool_obj.handler
+    _name = tool_obj.name
+
+    async def accounted(args: dict) -> dict:
+        attempt = None
+        try:
+            scope = _current_scope(_snapshot_origin())
+            if scope is not None:
+                attempt = scope.open_attempt(_name)
+        except Exception:  # noqa: BLE001 — accounting never breaks a send
+            logger.warning("send accounting failed for %s", _name,
+                           exc_info=True)
+        try:
+            result = await inner(args)
+        except BaseException:
+            if attempt is not None:
+                attempt.state = "failed"
+            raise
+        if attempt is not None:
+            attempt.state = ("failed" if isinstance(result, dict)
+                             and result.get("is_error") else "ok")
+        return result
+
+    accounted.__name__ = getattr(inner, "__name__", _name)
+    tool_obj.handler = accounted
+
+
+for _tool_obj in CASA_TOOLS:
+    if _tool_obj.name in _ACCOUNTED_SENDS:
+        _account_send_attempts(_tool_obj)
+del _tool_obj
+
+
 def select_casa_tools(
     allowed_tools: frozenset[str] | None = None,
 ) -> tuple[SdkMcpTool, ...]:
