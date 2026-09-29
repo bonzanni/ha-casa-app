@@ -323,16 +323,19 @@ def changed_paths(config_dir: str, sha: str) -> list[str]:
 
     Used by the G-2 reload guard (#231/#222) to tell a plugin-registry-only
     persist commit — already activated in-process — from a commit that also
-    edits agents/ or policies/ and therefore genuinely owes a reload. Returns
-    an empty list on any git error (fail-safe: the caller then arms the reload
-    obligation as usual rather than wrongly suppressing it).
+    edits agents/ or policies/ and therefore genuinely owes a reload, and
+    (#1086) to record which paths the obligation owes. Returns an empty list
+    on any git error (fail-safe: the caller then arms the reload obligation
+    as usual rather than wrongly suppressing it). NUL-separated (``-z``) so a
+    name git would C-quote (non-ASCII, a quote, a newline) comes back
+    literally, as the path the reload scopes know it by.
     """
     try:
         out = _run(config_dir,
-                   ["diff-tree", "--no-commit-id", "--name-only", "-r", sha])
+                   ["diff-tree", "-z", "--no-commit-id", "--name-only", "-r", sha])
     except Exception:  # noqa: BLE001 — never let a git hiccup break a commit
         return []
-    return [line for line in out.splitlines() if line.strip()]
+    return [p for p in out.split("\0") if p.strip()]
 
 
 def snapshot_manual_edits(config_dir: str) -> str | None:

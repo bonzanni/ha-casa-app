@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.332.9] - 2026-09-29
+
+### Fixed
+
+- When the configurator saves a configuration change, it owes a reload that
+  puts the change into effect, and Casa runs a full reload at the end of the
+  job if that reload never happened. Until now a successful reload in the job
+  counted even when it did not cover what was saved — for example a
+  plugin-environment reload after an agent's character was edited, or the
+  agent reload a plugin assignment runs for a different agent. The full reload at the end
+  was then skipped, and the saved change could stay out of effect. Now each
+  saved file counts as reloaded only when the job's own reload covers it,
+  following the configurator's reload guide (for example, a trigger reload
+  covers that agent's triggers and trigger prompts, an agent reload covers
+  that agent's files). Anything still uncovered when the job completes gets
+  the full reload, and the warning Casa logs then lists what no reload
+  covered.
+- A reload that one of Casa's tools runs internally — for example the agent
+  reload a plugin assignment performs — does not count as the job's reload;
+  before, some did. A change saved earlier in the job therefore stays owed
+  until the configurator runs the reload that covers it (or a supervised
+  restart), or until the full reload at the end of the job.
+- The documentation said that `casa_reload_triggers` does not count as the
+  owed reload. It does, for the agent's trigger and trigger-prompt changes,
+  and the documentation now says so.
+- The configurator's guide for re-applying edits after a defaults reset no
+  longer offers the configuration sync as a substitute for the reload each
+  re-applied edit needs.
+
 ## [0.332.8] - 2026-09-29
 
 ### Fixed

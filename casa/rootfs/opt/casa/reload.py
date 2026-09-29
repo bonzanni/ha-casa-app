@@ -793,15 +793,10 @@ async def _reload_triggers_locked(runtime: Any, *, role: str) -> list[str]:
         _refresh_personality_maps(
             runtime, secret_actions, context=f"triggers role={role}")
 
-    # G-2 hotfix carry-forward: drain pending-reload guard if any.
-    try:
-        from tools import _ENGAGEMENTS_PENDING_RELOAD, engagement_var
-        eng = engagement_var.get(None)
-        if eng is not None:
-            _ENGAGEMENTS_PENDING_RELOAD.discard(eng.id)
-    except Exception:  # noqa: BLE001 — best-effort
-        pass
-
+    # #1086: no handler discharges the G-2 reload obligation — the
+    # configurator's own casa_reload / casa_reload_triggers do, for the paths
+    # their scope covers (tools._reload_scope_covers); a reload a tool runs
+    # internally, or a cascade composes, discharges nothing.
     return ["reregister_triggers", *secret_actions]
 
 
@@ -1636,14 +1631,8 @@ async def reload_agent(runtime: Any, *, role: str | None = None) -> list[str]:
             f"live: {exc}",
         ) from exc
 
-    # Drain pending-reload guard if any.
-    try:
-        from tools import _ENGAGEMENTS_PENDING_RELOAD, engagement_var
-        eng = engagement_var.get(None)
-        if eng is not None:
-            _ENGAGEMENTS_PENDING_RELOAD.discard(eng.id)
-    except Exception:  # noqa: BLE001
-        pass
+    # #1086: the G-2 reload obligation is not discharged here (see
+    # reload_triggers' tail).
 
     # #423 r2: a setup episode held on "waiting for target agent reload"
     # becomes dispatchable now — the wake arrives via the trigger
