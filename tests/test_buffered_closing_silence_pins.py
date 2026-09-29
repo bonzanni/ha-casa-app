@@ -356,3 +356,39 @@ def test_attempts_are_shared_exactly_like_the_send_record():
     assert s.closing_silence_earned is True
     sync_child.open_attempt("send_message").state = "failed"
     assert s.closing_silence_earned is False
+
+
+async def test_the_report_carries_the_winning_attempt_and_the_attempt_count(
+    tmp_path, monkeypatch,
+):
+    """The per-message fact is the WINNING attempt's, never an accumulation:
+    a failed attempt whose text differs is not in it, and the report counts
+    both attempts — the fact rule 1's one-attempt condition reads."""
+    try:
+        from tests.test_buffered_closing_silence import _scheduled
+    except ImportError:  # pragma: no cover
+        from test_buffered_closing_silence import _scheduled
+    retryable = type("CLIConnectionError", (RuntimeError,), {})
+    agent, stub = await _resident(tmp_path)
+    reports: list = []
+    real_process = agent._process
+
+    async def _observed(msg, on_token=None, turn_report=None):
+        text = await real_process(msg, on_token=on_token, turn_report=turn_report)
+        reports.append(dict(turn_report))
+        return text
+
+    factory = _Factory([
+        [_mk_assistant("Stale narration."), _mk_assistant("<silent/>"),
+         retryable("upstream reset")],
+        [_mk_assistant("Done."), _mk_assistant("<silent/>")]])
+    try:
+        with patch.object(agent, "_process", _observed):
+            await _run(agent, _scheduled(), factory, monkeypatch)
+    finally:
+        await agent.aclose()
+    (report,) = reports
+    assert report["reply_messages"] == ("Done.", "<silent/>")
+    assert report["attempts"] == 2
+    assert len(report["retries"]) == 1
+    assert stub.final_texts() == ["Done."]
