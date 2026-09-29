@@ -63,7 +63,7 @@ has no rollback — stopping an in-flight turn is the finalize path's driver tea
 suspends a live session after a day idle and posts recurring idle reminders (three days for
 a specialist record, seven for every other kind, refiring weekly); terminal tombstones age
 out after thirty days, bounding duplicate-task protection (one whose completion time is not a
-usable number has no known age and is kept). Separately, an observer watches
+finite number has no known age and is kept). Separately, an observer watches
 engagement events and may post a bounded LLM interjection into the resident chat — capped
 at three per engagement and suppressible with `/silent`. The cap holds under concurrent dispatch: a
 budget slot is reserved before evaluation and returned if nothing is posted.
