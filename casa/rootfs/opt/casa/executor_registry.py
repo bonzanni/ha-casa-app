@@ -38,6 +38,10 @@ class ExecutorRegistry:
     def __init__(self, executors_dir: str) -> None:
         self._dir = executors_dir
         self._state = _RegistryState({}, set(), {}, set())
+        # #1096: whether the most recent load() failed at COLLECTION level —
+        # it then publishes an empty registry and records no failed type, so a
+        # reload could not otherwise tell it from "no executors".
+        self.collection_failed = False
 
     # Legacy views (tests poke collection CONTENTS through these; rebinding
     # goes through _state):
@@ -96,12 +100,14 @@ class ExecutorRegistry:
         failed_types: set[str] = set()
 
         base = os.path.dirname(self._dir)
+        collection_failed = False
         try:
             found, failed = load_all_executors(base)
         except LoadError as exc:
             # Collection-level error (e.g. executors_root unreadable).
             logger.error("Executor load failed at collection level: %s", exc)
             found, failed = {}, []
+            collection_failed = True
 
         # v0.37.1 B-1b: per-file failures don't poison siblings.
         for name, err in failed:
@@ -127,6 +133,7 @@ class ExecutorRegistry:
         # together — no torn cross-collection read from the loop thread.
         self._state = _RegistryState(defs, disabled, disabled_defs,
                                      failed_types)
+        self.collection_failed = collection_failed
 
         logger.info(
             "Executors: loaded=%s failed=%s disabled=%s",

@@ -1517,6 +1517,17 @@ _VOICE_TEARDOWN_BOUND_S: float = 2.0
 RELOAD_PATHS_UNKNOWN = "<paths unknown>"
 
 
+def _reload_unit_name_ok(name: object) -> bool:
+    """Whether ``name`` can be one unit's own directory name: a resident role,
+    a specialist slug or an executor type, never a separator, a dot entry, or
+    a directory that holds OTHER units (``agents/specialists/``,
+    ``agents/executors/``) — a slug may be ``specialists`` or ``executors``, but
+    ``agents/<that>/`` is then every specialist or executor."""
+    return (isinstance(name, str) and bool(name) and "/" not in name
+            and "\\" not in name
+            and name not in (".", "..", "specialists", "executors"))
+
+
 def _reload_scope_covers(scope: str, role: "str | None", path: str) -> bool:
     """Whether a successful reload of ``scope`` (``role`` = the canonical
     directory name) covers the committed ``path``. The doctrine's table
@@ -1543,8 +1554,7 @@ def _reload_scope_covers(scope: str, role: "str | None", path: str) -> bool:
         return path.startswith("agents/executors/")
     if scope not in ("agent", "triggers"):
         return False
-    if (not role or "/" in role or "\\" in role
-            or role in (".", "..", "specialists", "executors")):
+    if not _reload_unit_name_ok(role):
         return False
     role_dirs = (f"agents/{role}/", f"agents/specialists/{role}/")
     if scope == "agent":
@@ -1557,6 +1567,46 @@ def _reload_scope_covers(scope: str, role: "str | None", path: str) -> bool:
                 prompt.endswith(".md") and "/" not in prompt
                 and prompt != "system.md")
     return False
+
+
+def _reload_failure_keeps(failures: object, path: str) -> bool:
+    """#1096: whether a failure a reload REPORTED (its envelope's
+    ``failures``, reload.py's ``_note_failure``) keeps ``path`` owed. A failure
+    names a unit, and keeps owed every committed path that unit's failure could
+    concern (``_reload_unit_paths``); a failure whose unit this cannot map to
+    paths — no unit, evidence it cannot read, or a name that is not one unit's
+    own directory (``_reload_unit_name_ok``) — keeps every path, fail closed;
+    and any failure keeps a commit whose paths could not be read, which may be
+    the failed unit's."""
+    if not failures:
+        return False
+    if not isinstance(failures, list) or path == RELOAD_PATHS_UNKNOWN:
+        return True
+    for failure in failures:
+        unit = failure.get("unit") if isinstance(failure, dict) else None
+        if not _reload_unit_name_ok(unit) or _reload_unit_paths(unit, path):
+            return True
+    return False
+
+
+def _reload_unit_paths(unit: str, path: str) -> bool:
+    """Whether committed ``path`` is one a failure of ``unit`` could concern:
+    what an ``agent`` reload of that name covers (its resident directory, its
+    specialist directory, the plugin registry), its executor directory, and a
+    pipeline-installed specialist's directory as the config repo records it —
+    the link ``agents/specialists/<unit>`` itself and the content directories
+    specialist_materialize names ``.<unit>.material-<hex>`` (and its transient
+    ``.link-`` / ``.prior-`` siblings), which the link points at."""
+    if (_reload_scope_covers("agent", unit, path)
+            or path.startswith(f"agents/executors/{unit}/")
+            or path == f"agents/specialists/{unit}"):
+        return True
+    if not path.startswith("agents/specialists/."):
+        return False
+    entry = path[len("agents/specialists/"):].split("/", 1)[0]
+    return re.fullmatch(
+        rf"\.{re.escape(unit)}\.(?:material|link|prior)-[0-9a-f]{{32}}",
+        entry) is not None
 
 
 class _ReloadObligations:
@@ -1586,12 +1636,13 @@ class _ReloadObligations:
         self.arm(eng_id, [])
 
     def discharge(self, eng_id: str, scope: str, role: "str | None", *,
-                  since: int) -> None:
+                  since: int, failures: object = None) -> None:
         owed = self._owed.get(eng_id)
         if not owed:
             return
         for path, seq in list(owed.items()):
-            if seq <= since and _reload_scope_covers(scope, role, path):
+            if (seq <= since and _reload_scope_covers(scope, role, path)
+                    and not _reload_failure_keeps(failures, path)):
                 del owed[path]
         if not owed:
             del self._owed[eng_id]
@@ -8127,10 +8178,12 @@ async def casa_reload(args: dict) -> dict:
     # the same guard, so whichever runs second computes from the fresher state.
     await _regenerate_plugin_health_after_reload(scope, result)
 
-    # #1086: discharge only the committed paths this scope covers.
+    # #1086: discharge only the committed paths this scope covers — #1096: and
+    # that no subordinate failure the reload reported keeps owed.
     eng = engagement_var.get(None)
     if eng is not None and result.get("status") == "ok":
-        _ENGAGEMENTS_PENDING_RELOAD.discharge(eng.id, scope, role, since=since)
+        _ENGAGEMENTS_PENDING_RELOAD.discharge(
+            eng.id, scope, role, since=since, failures=result.get("failures"))
 
     return _result(result)
 
@@ -11843,9 +11896,10 @@ async def emit_completion(args: dict) -> dict:
         logger.warning(
             "Engagement %s emit_completion called with outstanding "
             "reload obligation — config_git_commit landed but no "
-            "casa_reload(_triggers) was invoked. Force-calling "
-            "casa_reload to honor the post-commit activation contract "
-            "(G-2 v0.33.1 defensive guard). Paths no reload covered: %s",
+            "casa_reload(_triggers) discharged it (none was invoked, its "
+            "scope did not cover the change, or it reported a failure). "
+            "Force-calling casa_reload to honor the post-commit activation "
+            "contract (G-2 v0.33.1 defensive guard). Paths still owed: %s",
             engagement.id[:8],
             sorted(_ENGAGEMENTS_PENDING_RELOAD.pending(engagement.id)),
         )
@@ -11868,10 +11922,15 @@ async def emit_completion(args: dict) -> dict:
             # Terra review: casa_reload can return is_error (e.g.
             # not_initialized) WITHOUT raising — surface that at WARNING so a
             # failed forced reload isn't silently swallowed at INFO.
+            # #1096: and a forced reload that returned ok but REPORTED a
+            # subordinate failure — a persistent one fails the same way on
+            # this retry, and the obligation is discarded below regardless.
             forced_failed = (
                 isinstance(forced, dict) and forced.get("is_error") is True
             ) or (
                 isinstance(decoded, dict) and decoded.get("status") == "error"
+            ) or (
+                isinstance(decoded, dict) and bool(decoded.get("failures"))
             )
             logger.log(
                 logging.WARNING if forced_failed else logging.INFO,
@@ -12544,7 +12603,8 @@ async def casa_reload_triggers(args: dict) -> dict:
     # edit — it discharges those paths of the role's, and nothing else.
     eng = engagement_var.get(None)
     if eng is not None and result.get("status") == "ok":
-        _ENGAGEMENTS_PENDING_RELOAD.discharge(eng.id, "triggers", role, since=since)
+        _ENGAGEMENTS_PENDING_RELOAD.discharge(
+            eng.id, "triggers", role, since=since, failures=result.get("failures"))
     # #824: the THIRD reload entry point, and the one the configurator doctrine
     # names after every trigger or prompt edit. It dispatches an unfenced
     # trigger-reconcile scope with no plugin lock of its own, so the helper's

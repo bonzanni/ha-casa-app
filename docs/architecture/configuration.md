@@ -266,6 +266,21 @@ under its own `triggers` lock after the `agents` and `policies` cascades — a f
 could not read on either side counts as changed — and one resident's refusal is reported
 in the envelope without aborting another's.
 
+**A reload handler catches a failure and carries on.** The envelope stays `status: ok` — the
+handler returned — and carries an additive `failures` list, absent when nothing was noted: one
+`{"unit", "detail"}` entry per subordinate failure a handler notes (not every best-effort step
+notes one — INV-TOOL-012's "What it does not cover" names those), `unit` naming the resident,
+specialist or executor the failure belongs to, or null when no one unit is to blame. The
+dispatcher collects them for the whole dispatch, so a failure inside a composed scope (`full`,
+`config_sync`, the `policies` and `executors` cascades) is reported however its row was folded,
+and so are failures that write no row: a new resident or a specialist's agent that could not be
+constructed, an executor whose definition or hook policies did not load, a scan that failed as a
+whole. The list sits beside the action rows and replaces none of them. A personality-map
+refresh that fails is a `refresh_personality_maps_failed` row, and a noted failure, both after a
+registry re-scan and inside the delegation-map refresh. What the configurator's reload
+obligation makes of the list is INV-TOOL-012, in
+[`architecture/engagement-completion-gate.md`](engagement-completion-gate.md).
+
 ## Extension points
 
 **A new option** means the manifest options block, its schema entry, the translations entry,

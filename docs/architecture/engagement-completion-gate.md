@@ -185,7 +185,8 @@ a retry. Both halves of the invariant's last sentence are that one path.
 
 An engagement can owe a reload for configuration it committed. A non-empty
 `config_git_commit` arms that obligation for its engagement unless the exemption below applies;
-a successful reload discharges the committed paths its scope covers (INV-TOOL-012, below), and
+a successful reload discharges the committed paths its scope covers and no failure it reports
+keeps owed (INV-TOOL-012, below), and
 `casa_restart_supervised` takes the whole obligation over, deferring a restart to finalization
 instead; and `emit_completion` with outcome `completed` that finds any path still owed calls
 `casa_reload` with `scope="full"` before finalizing, because a model can skip, or mis-scope, the
@@ -205,7 +206,7 @@ What it does not cover: which reload discharges the obligation — that is INV-T
 commit that mixes plugin and other paths arms, even when the other paths are derived files that
 a changed input rewrote once.
 
-**INV-TOOL-012**: Inside an engagement, the reload obligation is discharged path by path, only by the configurator's own successful `casa_reload` or `casa_reload_triggers`, and only for committed paths its scope covers that were committed before that call began: `triggers` covers the role's `triggers.yaml` and trigger prompts; `agent` the role's directory and the plugin registry; `policies` covers `policies/`; `agents` covers `agents/specialists/`, `specialists/` and the plugin registry; `executors` covers `agents/executors/`; `config_sync` covers what `agents` and `policies` do; `plugin_env` covers nothing. `full` discharges everything, including a commit whose paths could not be read, and a reload a tool runs internally discharges nothing.
+**INV-TOOL-012**: Inside an engagement, the reload obligation is discharged path by path, only by the configurator's own successful `casa_reload` or `casa_reload_triggers`, and only for committed paths its scope covers, that were committed before that call began, and that no subordinate failure it reports keeps owed: `triggers` covers the role's `triggers.yaml` and trigger prompts; `agent` the role's directory and the plugin registry; `policies` covers `policies/`; `agents` covers `agents/specialists/`, `specialists/` and the plugin registry; `executors` covers `agents/executors/`; `config_sync` covers what `agents` and `policies` do; `plugin_env` covers nothing. `full` covers everything, including a commit whose paths could not be read, and a reload a tool runs internally discharges nothing. A failure the reload names for one resident, specialist or executor keeps owed the resident or specialist directory of that name (for an installed specialist, its link and the content directories named for it), the plugin registry and the executor directory of that name; a failure it cannot pin on one unit, or whose unit is `specialists` or `executors` (the directory of every specialist or executor), keeps every path owed; and any failure keeps a commit whose paths could not be read.
 
 The table is the configurator doctrine's "What requires what" (`reload.md` under the
 configurator's doctrine), and an engagement that picks a scope that does not cover its commit is
@@ -224,13 +225,25 @@ read that fails records an entry only `full` discharges. The reloads a plugin or
 mutation runs for its own targets, and the reloads a `full`, `executors` or `config_sync` cascade
 composes, discharge nothing of their own: the tool's persist commit follows its reload, and the
 explicit reload the configurator calls is the one the rule reads. Only `casa_reload` and
-`casa_reload_triggers` discharge; no reload handler touches the obligation.
+`casa_reload_triggers` discharge; no reload handler touches the obligation. The failures are
+the ones the reload reports in its envelope's `failures` (configuration.md, "A reload handler
+catches a failure and carries on"). One that names a unit other than those two keeps owed only
+the paths above for that name, so a specialist that was already broken costs no forced reload for a commit that
+touches none of them.
+One that does not — a scan that failed as a whole, a role that could not rebuild inside a
+`policies` or `executors` cascade and so did not take the shared input, a map refresh, a plugin
+overlay reconcile — keeps the whole commit owed. The forced `full` is one retry: when its result
+still reports a failure, the guard logs that result at WARNING, and the obligation still ends at
+completion.
 
-What it does not cover: that a reload which returned `ok` applied everything its scope covers.
-A scope that swallows a subordinate failure (a specialist that failed to load in an `agents`
-sweep, a transient read error inside `full`) still discharges its rows, as every successful
-reload did before; and `agents` re-scans a live specialist without rebuilding it, so its row
-claims the reload the doctrine names, not that the specialist runs the new files.
+What it does not cover: discharge certifies that the explicit reload ran and that no failure it
+reported keeps the discharged paths owed, and nothing more. A failure the reload treats as
+best effort and does not report is not seen: closing a replaced agent, scheduling a prompt
+refresh, regenerating plugin health, the setup-episode kick, an unresolved plugin-environment
+reference (that scope covers no path), and a defaults reconcile that failed inside
+`config_sync`, whose cascades still apply the committed files. A failure that persists is
+retried once, by the forced `full`, and then left, with the guard's WARNING as its record. And
+the obligation certifies nothing about an engagement that was already open when the change was committed.
 
 ## Failure behavior
 

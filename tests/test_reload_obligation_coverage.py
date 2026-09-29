@@ -822,3 +822,567 @@ async def test_bundle_sequencer_internal_agents_reload_discharges_nothing(
     r = _decode(await tools_mod.casa_reload.handler({"scope": "agents"}))
     assert r["status"] == "ok" and world.counted == ["agents:None", "agents:None"]
     assert engagement.id not in tools_mod._ENGAGEMENTS_PENDING_RELOAD
+
+
+# --- #1096: a reload that REPORTS a subordinate failure ------------------------
+#
+# The fault is injected at a leaf — the specialist registry's own scan (its
+# published configs and `load_failures()`) — never by replacing a reload handler
+# with a prepared failure list: `reload_agents`, `reload_full` and
+# `reload_config_sync` run for real, so whatever carries the failure out of the
+# sweep is production code. Completion runs through the real `emit_completion`
+# on a real engagement record, with an observer forwarding to the REAL
+# `casa_reload.handler` to count the guard's forced reloads.
+
+class _ScanningSpecialistRegistry:
+    """A specialist registry whose Nth `load` publishes scans[N] (the last one
+    repeats): `(configs, failures)`. Counts scans; no role is disabled."""
+
+    def __init__(self, scans):
+        self._scans = list(scans)
+        self.loads = 0
+        self.failures_reported = 0
+        self._configs: dict = {}
+        self._failures: list = []
+
+    def load(self, roles_dir=None, **_kw):
+        configs, failures = self._scans[min(self.loads, len(self._scans) - 1)]
+        self.loads += 1
+        self.failures_reported += len(failures)
+        self._configs = dict(configs)
+        self._failures = list(failures)
+
+    def all_configs(self):
+        return dict(self._configs)
+
+    def load_failures(self):
+        return list(self._failures)
+
+    def disabled_roles(self):
+        return set()
+
+    def is_disabled(self, role):
+        return False
+
+
+def _specialist_cfg(slug: str):
+    return types.SimpleNamespace(
+        role=slug, enabled=True, binding=None, role_slot=None, delegates=[],
+        triggers=[], channels=[],
+        character=types.SimpleNamespace(name=slug.title(), card=f"{slug} card"))
+
+
+_PROBE_ERR = "probe read error"
+
+
+@pytest.fixture
+def completion(world, monkeypatch, tmp_path):
+    """A real configurator engagement record bound as the current engagement,
+    the specialist-scan leaves stubbed, and an observer on the guard's forced
+    reloads that forwards to the real handler."""
+    import agent_home
+    import plugin_registry
+    import reload as reload_mod
+    import tools as tools_mod
+    from engagement_registry import EngagementRegistry
+
+    monkeypatch.setattr(reload_mod, "_specialist_roles_dir",
+                        AsyncMock(return_value=str(tmp_path / "roles")))
+    monkeypatch.setattr(agent_home, "provision_agent_home", lambda **kw: None)
+    monkeypatch.setattr(plugin_registry, "reload_snapshot", lambda *a, **kw: None)
+    monkeypatch.setattr(world.runtime, "refresh_personality_maps", lambda: None,
+                        raising=False)
+    for scope in ("policies", "executors", "agent"):
+        world.count_handler(monkeypatch, scope)
+
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+    ns = types.SimpleNamespace(reg=reg, forced=[], world=world)
+
+    async def start():
+        ns.rec = await reg.create(
+            kind="executor", role_or_type="configurator", driver="in_casa", task="t",
+            origin={"role": "assistant", "channel": "telegram", "chat_id": "1"},
+            topic_id=None)
+        tools_mod.init_tools(
+            channel_manager=None, bus=None, specialist_registry=MagicMock(),
+            mcp_registry=MagicMock(), trigger_registry=MagicMock(),
+            engagement_registry=reg)
+        tools_mod._ENGAGEMENTS_PENDING_RELOAD.discard(ns.rec.id)
+        # Set inside the test's own task context, which ends with the test.
+        tools_mod.engagement_var.set(ns.rec)
+        return ns.rec
+
+    def observe_forced():
+        real = tools_mod.casa_reload.handler
+
+        async def observer(args):
+            ns.forced.append(dict(args))
+            return await real(args)
+        monkeypatch.setattr(tools_mod.casa_reload, "handler", observer)
+
+    async def complete_twice():
+        for _ in range(2):
+            await tools_mod.emit_completion.handler({
+                "status": "ok", "text": "done", "artifacts": [], "next_steps": []})
+
+    ns.start, ns.observe_forced, ns.complete_twice = start, observe_forced, complete_twice
+    yield ns
+    if getattr(ns, "rec", None) is not None:
+        tools_mod._ENGAGEMENTS_PENDING_RELOAD.discard(ns.rec.id)
+
+
+def _finance_constructions(world) -> tuple[int, int]:
+    registered = sum(1 for c in world.runtime.bus.register.call_args_list
+                     if c.args and c.args[0] == "finance")
+    return world.constructed.count("finance"), registered
+
+
+@pytest.mark.parametrize("scope", ["agents", "full", "config_sync"])
+async def test_reported_specialist_failure_retains_until_completion(
+        world, completion, monkeypatch, scope):
+    """#1096 R1–R3: a specialist install whose explicit reload reports the
+    new specialist failed to load (a transient read error) keeps that
+    specialist's committed path owed, so completion's forced `full` runs — once
+    — and loads it. Through `agents`, through `full` (row
+    `agents:failed:finance:…`), and through `config_sync` (the row nested in a
+    repr)."""
+    import config_sync
+    import tools as tools_mod
+
+    registry = _ScanningSpecialistRegistry([
+        ({}, [("finance", _PROBE_ERR)]),
+        ({"finance": _specialist_cfg("finance")}, []),
+    ])
+    world.runtime.specialist_registry = registry
+    runs: list[int] = []
+    monkeypatch.setattr(config_sync, "run", lambda **kw: runs.append(1) or 0)
+
+    eng = await completion.start()
+    character = "agents/specialists/finance/character.yaml"
+    paths = _seed_specialist_files(world, "finance")
+    await world.commit(eng, paths)
+
+    r = _decode(await tools_mod.casa_reload.handler({"scope": scope}))
+    assert r["status"] == "ok"
+    assert eng.id in tools_mod._ENGAGEMENTS_PENDING_RELOAD
+    assert _pending(eng) & {character} == {character}
+    assert (registry.loads, registry.failures_reported) == (1, 1)
+    assert "finance" not in registry.all_configs()
+    assert sum(row.count(f"failed:finance:{_PROBE_ERR}") for row in r["actions"]) == 1
+    if scope == "config_sync":
+        assert len(runs) == 1
+
+    completion.observe_forced()
+    await completion.complete_twice()
+
+    assert completion.forced == [{"scope": "full"}]
+    assert (registry.loads, registry.failures_reported) == (2, 1)
+    assert list(registry.all_configs()) == ["finance"]
+    assert _finance_constructions(world) == (1, 1)
+    assert eng.id not in tools_mod._ENGAGEMENTS_PENDING_RELOAD
+
+
+async def test_unrelated_specialist_failure_discharges_finance(world, completion):
+    """#1096 R4 (regression control, green at base): a specialist that was
+    already broken and that the commit does not touch keeps nothing owed — a
+    finance-only commit is discharged by the explicit `agents` reload and
+    completion forces no reload."""
+    import config_git
+    import tools as tools_mod
+
+    _w(world.root / "agents" / "specialists" / "other" / "character.yaml", "name: other\n")
+    assert config_git.commit_config(str(world.root), "broken other, before the engagement")
+    registry = _ScanningSpecialistRegistry([
+        ({"finance": _specialist_cfg("finance")}, [("other", _PROBE_ERR)]),
+    ])
+    world.runtime.specialist_registry = registry
+
+    eng = await completion.start()
+    _w(world.root / "agents" / "specialists" / "finance" / "character.yaml", "name: finance\n")
+    await world.commit(eng, ["agents/specialists/finance/character.yaml"])
+
+    r = _decode(await tools_mod.casa_reload.handler({"scope": "agents"}))
+    assert r["status"] == "ok"
+    assert eng.id not in tools_mod._ENGAGEMENTS_PENDING_RELOAD
+    assert (registry.loads, registry.failures_reported) == (1, 1)
+    assert _finance_constructions(world) == (1, 1)
+
+    completion.observe_forced()
+    await completion.complete_twice()
+    assert completion.forced == []
+    assert registry.loads == 1
+
+
+async def test_collection_failure_retains_every_covered_path(world, completion):
+    """#1096 R5: a scan that failed at collection level (the registry's
+    `(collection)` sentinel: nothing loaded, no unit to blame) keeps every path
+    the scope covers owed."""
+    import tools as tools_mod
+
+    registry = _ScanningSpecialistRegistry([({}, [("(collection)", _PROBE_ERR)])])
+    world.runtime.specialist_registry = registry
+
+    eng = await completion.start()
+    paths = _seed_specialist_files(world, "finance")
+    _w(world.root / "agents" / "specialists" / "tax" / "character.yaml", "name: tax\n")
+    paths.append("agents/specialists/tax/character.yaml")
+    await world.commit(eng, paths)
+
+    r = _decode(await tools_mod.casa_reload.handler({"scope": "agents"}))
+    assert r["status"] == "ok"
+    assert eng.id in tools_mod._ENGAGEMENTS_PENDING_RELOAD
+    assert _pending(eng) == frozenset(paths) and len(paths) == 3
+    assert (registry.loads, registry.failures_reported) == (1, 1)
+    assert sum(row.count(f"failed:(collection):{_PROBE_ERR}") for row in r["actions"]) == 1
+    assert registry.all_configs() == {}
+
+
+async def test_forced_full_reported_failure_warns_and_clears_obligation(
+        world, completion, caplog):
+    """#1096 R6: a failure that survives the guard's forced `full` is logged at
+    WARNING with the INERT suffix, not INFO; the obligation still ends at
+    completion. The first scan is an INTERNAL dispatch (discharges nothing),
+    so this isolates the forced-result classification."""
+    import logging
+    import reload as reload_mod
+    import tools as tools_mod
+
+    registry = _ScanningSpecialistRegistry([({}, [("finance", _PROBE_ERR)])])
+    world.runtime.specialist_registry = registry
+
+    eng = await completion.start()
+    paths = _seed_specialist_files(world, "finance")
+    await world.commit(eng, paths)
+    r = await reload_mod.dispatch("agents", runtime=world.runtime)
+    assert r["status"] == "ok"
+    assert eng.id in tools_mod._ENGAGEMENTS_PENDING_RELOAD
+    assert len(_pending(eng)) == 2
+
+    completion.observe_forced()
+    with caplog.at_level(logging.INFO, logger="tools"):
+        await completion.complete_twice()
+
+    assert completion.forced == [{"scope": "full"}]
+    assert (registry.loads, registry.failures_reported) == (2, 2)
+    assert _finance_constructions(world) == (0, 0)
+    assert eng.id not in tools_mod._ENGAGEMENTS_PENDING_RELOAD
+    results = [rec for rec in caplog.records
+               if rec.name == "tools" and eng.id[:8] in rec.getMessage()
+               and "forced casa_reload result:" in rec.getMessage()]
+    assert len(results) == 1
+    assert results[0].levelno == logging.WARNING
+    assert results[0].getMessage().endswith(
+        " (FAILED — artifact may remain INERT until manual reload)")
+
+
+# --- #1096 regression tests: the producers the red cases do not reach ----------
+
+async def _commit_owed(eng) -> frozenset:
+    """Commit whatever is dirty through the real tool; return what it owes."""
+    import tools as tools_mod
+    r = _decode(await tools_mod.config_git_commit.handler({"message": "edit"}))
+    assert r["sha"]
+    assert eng.id in tools_mod._ENGAGEMENTS_PENDING_RELOAD
+    return _pending(eng)
+
+
+async def test_resident_add_failure_keeps_its_paths_owed(world, completion, monkeypatch):
+    """A new resident whose construction fails is skipped by the sweep with
+    no action row; its committed directory stays owed, nothing else does."""
+    import reload as reload_mod
+    import tools as tools_mod
+
+    world.runtime.specialist_registry = _ScanningSpecialistRegistry([({}, [])])
+    real = reload_mod._construct_agent
+
+    def construct(*, cfg, runtime, agent_registry=None):
+        if cfg.role == "cook":
+            raise OSError("probe construct error")
+        return real(cfg=cfg, runtime=runtime, agent_registry=agent_registry)
+    monkeypatch.setattr(reload_mod, "_construct_agent", construct)
+
+    eng = await completion.start()
+    _seed_resident(world.root / "agents", "cook", "Cook")
+    _seed_specialist_files(world, "finance")
+    owed = await _commit_owed(eng)
+    cook = {p for p in owed if p.startswith("agents/cook/")}
+    assert cook and len(owed) > len(cook)
+
+    r = _decode(await tools_mod.casa_reload.handler({"scope": "agents"}))
+    assert r["status"] == "ok" and not any("cook" in a for a in r["actions"])
+    assert eng.id in tools_mod._ENGAGEMENTS_PENDING_RELOAD
+    assert _pending(eng) == frozenset(cook)
+    assert [f["unit"] for f in r["failures"]] == ["cook"]
+
+
+class _ExecutorRegistryDouble:
+    def __init__(self, *, failed=(), collection_failed=False):
+        self.failed_types = set(failed)
+        self.collection_failed = collection_failed
+        self.loads = 0
+
+    def load(self):
+        self.loads += 1
+
+    def definition_any(self, t):
+        return None
+
+
+def _seed_executors(world, *types_) -> list[str]:
+    paths = []
+    for t in types_:
+        _w(world.root / "agents" / "executors" / t / "definition.yaml", f"type: {t}\n")
+        paths.append(f"agents/executors/{t}/definition.yaml")
+    return paths
+
+
+@pytest.mark.parametrize("fault", ["definition", "collection", "hooks"])
+async def test_executor_failures_keep_their_paths_owed(
+        world, completion, monkeypatch, fault):
+    """`executors` with a definition that failed to load (a NEW type: no
+    kept-stale row), a collection-level load failure (an empty registry and no
+    failed type), and a loaded definition whose hooks.yaml built only a
+    deny-all map (again with no pre-reload entry to keep)."""
+    import casa_core
+    import reload as reload_mod
+    import tools as tools_mod
+    from hooks import DenyAllPolicyMap
+
+    monkeypatch.setitem(reload_mod._HANDLERS, "executors", reload_mod.reload_executors)
+    registry = _ExecutorRegistryDouble(
+        failed={"probe"} if fault == "definition" else (),
+        collection_failed=fault == "collection")
+    world.runtime.executor_registry = registry
+    world.runtime.executor_cc_policies = {} if fault == "hooks" else None
+    monkeypatch.setattr(casa_core, "_build_executor_cc_hook_policies",
+                        lambda reg: {"probe": DenyAllPolicyMap()})
+
+    eng = await completion.start()
+    paths = _seed_executors(world, "probe", "other")
+    await world.commit(eng, paths)
+
+    r = _decode(await tools_mod.casa_reload.handler({"scope": "executors"}))
+    assert r["status"] == "ok" and registry.loads == 1
+    assert eng.id in tools_mod._ENGAGEMENTS_PENDING_RELOAD
+    expected = set(paths) if fault == "collection" else {"agents/executors/probe/definition.yaml"}
+    assert _pending(eng) == frozenset(expected)
+    assert len(r["failures"]) == 1
+
+
+async def test_policies_cascade_role_failure_keeps_the_policy_owed(
+        world, completion, monkeypatch):
+    """A role that fails to rebuild in the policies cascade has not taken the
+    SHARED committed input, so the failure is unattributed and the policy
+    library stays owed (a role-scoped rule would have discharged it)."""
+    import reload as reload_mod
+    import tools as tools_mod
+
+    monkeypatch.setitem(reload_mod._HANDLERS, "policies", reload_mod.reload_policies)
+    world.runtime.specialist_registry = _ScanningSpecialistRegistry([({}, [])])
+    real = reload_mod._reload_role_after_policies
+
+    async def rebuild(runtime, role, *, rows=None):
+        if role == "assistant":
+            raise reload_mod.ReloadError("construct_failed", "probe")
+        return await real(runtime, role, rows=rows)
+    monkeypatch.setattr(reload_mod, "_reload_role_after_policies", rebuild)
+
+    eng = await completion.start()
+    p = world.root / "policies" / "disclosure.yaml"
+    p.write_text(p.read_text(encoding="utf-8").replace("private.", "kept private."),
+                 encoding="utf-8")
+    await world.commit(eng, ["policies/disclosure.yaml"])
+
+    r = _decode(await tools_mod.casa_reload.handler({"scope": "policies"}))
+    assert r["status"] == "ok"
+    assert r["actions"].count("failed:assistant:construct_failed") == 1
+    assert eng.id in tools_mod._ENGAGEMENTS_PENDING_RELOAD
+    assert _pending(eng) == frozenset({"policies/disclosure.yaml"})
+    assert r["failures"] == [{"unit": None, "detail": "failed:assistant:construct_failed"}]
+
+
+async def test_dispatch_reconcile_failure_keeps_everything_owed(
+        world, completion, monkeypatch):
+    """dispatch's own post-handler plugin-trigger reconcile failing is a
+    global overlay left stale: unattributed, nothing is discharged."""
+    import trigger_reconcile
+    import tools as tools_mod
+
+    monkeypatch.setattr(trigger_reconcile, "reconcile_from_runtime",
+                        AsyncMock(side_effect=RuntimeError("probe")))
+    eng = await completion.start()
+    _edit_card(world.agent_dir("assistant"), "Edited summary.")
+    await world.commit(eng, ["agents/assistant/character.yaml"])
+
+    r = _decode(await tools_mod.casa_reload.handler(
+        {"scope": "agent", "role": "assistant"}))
+    assert r["status"] == "ok" and world.counted[-1] == "agent:assistant"
+    assert eng.id in tools_mod._ENGAGEMENTS_PENDING_RELOAD
+    assert _pending(eng) == frozenset({"agents/assistant/character.yaml"})
+
+
+def test_reload_failure_keeps_table():
+    """The filter itself: what one reported failure keeps owed."""
+    from tools import RELOAD_PATHS_UNKNOWN, _reload_failure_keeps as keeps
+
+    finance = [{"unit": "finance", "detail": "x"}]
+    probe = [{"unit": "probe", "detail": "x"}]
+    cases = [
+        (None, "agents/assistant/character.yaml", False),
+        ([], "agents/assistant/character.yaml", False),
+        (finance, "agents/specialists/finance/character.yaml", True),
+        (finance, "agents/finance/character.yaml", True),
+        (finance, "plugins/registry.json", True),
+        (finance, "agents/specialists/finance2/character.yaml", False),
+        (finance, "agents/specialists/other/character.yaml", False),
+        (finance, "specialists/registry.json", False),
+        (finance, "policies/disclosure.yaml", False),
+        (finance, RELOAD_PATHS_UNKNOWN, True),
+        (probe, "agents/executors/probe/prompt.md", True),
+        (probe, "agents/executors/probe2/prompt.md", False),
+        ([{"unit": None, "detail": "x"}], "policies/disclosure.yaml", True),
+        ([{"unit": "", "detail": "x"}], "policies/disclosure.yaml", True),
+        (["garbage"], "policies/disclosure.yaml", True),
+        ("garbage", "policies/disclosure.yaml", True),
+        (finance, "agents/specialists/finance", True),
+        (finance, "agents/specialists/.finance.material-" + "a" * 32 + "/voice.yaml", True),
+        (finance, "agents/specialists/.finance.prior-" + "a" * 32 + "/voice.yaml", True),
+        (finance, "agents/specialists/.finance2.material-" + "a" * 32 + "/voice.yaml", False),
+        (finance, "agents/specialists/.finance.material-x/voice.yaml", False),
+        (finance, "agents/specialists/finance2", False),
+        ([{"unit": "specialists", "detail": "x"}], "policies/disclosure.yaml", True),
+        ([{"unit": "executors", "detail": "x"}], "policies/disclosure.yaml", True),
+        ([{"unit": "a/b", "detail": "x"}], "policies/disclosure.yaml", True),
+        ([{"unit": "..", "detail": "x"}], "policies/disclosure.yaml", True),
+        ([{"unit": 7, "detail": "x"}], "policies/disclosure.yaml", True),
+    ]
+    got = [(f, p, keeps(f, p)) for f, p, _ in cases]
+    assert got == cases
+
+
+
+import reload as _reload_mod  # noqa: E402
+
+_REAL_REFRESH_ROLE_MAP = _reload_mod._refresh_role_map  # before `world` stubs it
+
+
+async def test_role_map_personality_refresh_failure_keeps_the_commit_owed(
+        world, engagement, monkeypatch):
+    """The personality-map reconciliation inside ``_refresh_role_map`` is a
+    caught failure like the one in ``_refresh_personality_maps``: a resident
+    reload whose swap-time refresh succeeded but whose role-map pass raised
+    leaves the maps stale, so the failure is a row and the committed card
+    stays owed (unattributed: the maps are shared by every role)."""
+    import tools as tools_mod
+
+    monkeypatch.setattr(_reload_mod, "_refresh_role_map", _REAL_REFRESH_ROLE_MAP)
+    calls: list[int] = []
+
+    def refresh():
+        calls.append(1)
+        if len(calls) == 2:
+            raise RuntimeError("probe personality-map error")
+    monkeypatch.setattr(world.runtime, "refresh_personality_maps", refresh,
+                        raising=False)
+
+    _edit_card(world.agent_dir("assistant"), "Edited summary.")
+    await world.commit(engagement, ["agents/assistant/character.yaml"])
+
+    r = _decode(await tools_mod.casa_reload.handler(
+        {"scope": "agent", "role": "assistant"}))
+    assert (r["status"], r["role"]) == ("ok", "assistant")
+    assert len(calls) == 2 and "refresh_role_map" in r["actions"]
+    assert r["actions"].count("refresh_personality_maps_failed") == 1
+    assert r["failures"] == [
+        {"unit": None, "detail": "refresh_personality_maps_failed"}]
+    assert engagement.id in tools_mod._ENGAGEMENTS_PENDING_RELOAD
+    assert _pending(engagement) == frozenset({"agents/assistant/character.yaml"})
+
+
+def _materialize_specialist(root: Path, slug: str) -> None:
+    """A pipeline install's directory as the real materializer writes it: the
+    link ``agents/specialists/<slug>`` and the ``.<slug>.material-<hex>``
+    content directory it points at — the paths the config repo records."""
+    from persona_pack import PersonaManifest, PersonaPack
+    from role_slot import ResolvedModel, RoleSlot
+    from specialist_materialize import materialize_specialist_operational_files
+
+    role = RoleSlot(
+        role_id=f"specialist:{slug}", kind="specialist", slot=slug, mission="x",
+        resolved_model=ResolvedModel(source="fixed", effective="sonnet",
+                                     sdk_model="claude-sonnet-4-6", option=None),
+        normalized={}, doctrine="Doctrine.\n", checksum="sha256:" + "1" * 64)
+    persona = PersonaPack(
+        persona_id="casa/judge", version="0.1.0", trait_schema_version=1,
+        identity={"display_name": "Judge", "pronouns": {
+            "subject": "they", "object": "them", "possessive_adjective": "their",
+            "possessive_pronoun": "theirs", "reflexive": "themself"}},
+        relationship_posture="established", archetype="adjudicator",
+        traits={"warmth": 2, "formality": 4, "candor": 5, "attunement": 3,
+                "curiosity": 3, "levity": 1, "social_energy": 2, "optimism": 3},
+        quirks=(), markdown="# Core\n", examples=(),
+        manifest=PersonaManifest(files=(), checksum="sha256:" + "3" * 64),
+        checksum="sha256:" + "2" * 64)
+    materialize_specialist_operational_files(
+        agents_specialists_dir=root / "agents" / "specialists", slug=slug,
+        role=role, persona=persona)
+
+
+@pytest.mark.parametrize("unit,installed,kept", [
+    ("finance", "plain", "own"),
+    ("finance", "materialized", "own"),
+    ("specialists", "plain", "all"),
+    ("executors", "plain", "all"),
+    ("other", "materialized", "none"),
+])
+async def test_specialist_failure_keeps_what_its_unit_could_concern(
+        world, completion, unit, installed, kept):
+    """#1096: an `agents` reload whose scan reports specialist ``unit`` failed,
+    over a commit of that specialist plus an unrelated one (`tax`). A slug the
+    rule maps keeps its own committed paths — as a plain directory, and as the
+    link + content directory a pipeline install commits — and nothing else; a
+    valid slug that names a directory of OTHER units (`specialists`,
+    `executors`) cannot be mapped, so it keeps every path (fail closed); a
+    previously installed specialist (`other`) failing keeps nothing of this
+    commit, and completion forces a `full` exactly when something is kept."""
+    import config_git
+    import tools as tools_mod
+
+    if unit == "other":
+        _materialize_specialist(world.root, "other")
+        assert config_git.commit_config(str(world.root), "other, before the engagement")
+    slug = "finance" if unit == "other" else unit
+    registry = _ScanningSpecialistRegistry([
+        ({}, [(unit, _PROBE_ERR)]),
+        ({slug: _specialist_cfg(slug), "tax": _specialist_cfg("tax")}, []),
+    ])
+    world.runtime.specialist_registry = registry
+
+    eng = await completion.start()
+    if installed == "materialized":
+        _materialize_specialist(world.root, slug)
+    else:
+        _w(world.root / "agents" / "specialists" / slug / "character.yaml",
+           f"name: {slug}\n")
+    tax = "agents/specialists/tax/character.yaml"
+    _w(world.root / tax, "name: tax\n")
+    owed = await _commit_owed(eng)
+    own = frozenset(owed - {tax})
+    assert tax in owed and own
+    if installed == "materialized":
+        assert f"agents/specialists/{slug}" in own and len(own) > 1
+        assert all(p == f"agents/specialists/{slug}"
+                   or p.startswith(f"agents/specialists/.{slug}.material-") for p in own)
+
+    r = _decode(await tools_mod.casa_reload.handler({"scope": "agents"}))
+    assert r["status"] == "ok"
+    assert r["failures"] == [{"unit": unit, "detail": f"failed:{unit}:{_PROBE_ERR}"}]
+    expected = {"own": own, "all": owed, "none": frozenset()}[kept]
+    assert (eng.id in tools_mod._ENGAGEMENTS_PENDING_RELOAD) == bool(expected)
+    assert _pending(eng) == expected
+
+    completion.observe_forced()
+    await completion.complete_twice()
+    assert completion.forced == ([{"scope": "full"}] if expected else [])
+    assert registry.loads == (2 if expected else 1)
+    assert eng.id not in tools_mod._ENGAGEMENTS_PENDING_RELOAD

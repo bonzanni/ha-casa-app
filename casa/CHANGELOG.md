@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.332.13] - 2026-09-29
+
+### Fixed
+
+- The configurator reloads a configuration change after committing it. If that
+  reload caught a failure partway through and carried on (for example, a newly
+  installed specialist that failed to load), the change still counted as
+  reloaded. So when the configurator completed its task, the change did not
+  trigger the extra full reload that Casa runs for committed changes that were
+  never reloaded. Now, when a reload lists a failure in its result, the change
+  it affects stays counted as not yet reloaded. If it is still counted that
+  way when the configurator completes its task, Casa runs that full reload.
+  When the failure names one specialist, resident or executor, the files that
+  stay counted are those in the folders under that name, the link and hidden
+  content folders Casa writes when it installs a specialist of that name, and
+  the plugin registry. When the failure names no single one, or names one
+  whose name cannot stand for a single folder (a specialist or executor called
+  `specialists` or `executors`, for example), the whole change stays counted.
+  So while a specialist or executor with one of those two names is broken, a
+  reload that lists its failure leaves the configurator's committed change
+  counted as not yet reloaded, even when the change is unrelated to it, and
+  the task then ends with the extra full reload unless a later reload that
+  lists no failure covers the change. If the full reload also lists any
+  failure, Casa now logs its result as a warning instead of an informational
+  message, and it does not retry again.
+
 ## [0.332.12] - 2026-09-29
 
 ### Fixed
