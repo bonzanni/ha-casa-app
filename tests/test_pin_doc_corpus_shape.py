@@ -531,6 +531,42 @@ def test_the_completion_veto_and_the_inbound_disclosure_declare_from_two_documen
             != _declaring_document("INV-ENG-017"))
 
 
+def test_the_completion_gate_and_committed_configuration_reload_declare_from_separate_documents():
+    """#1106: the completion gate and committed-configuration reload
+    obligation have separate declaring documents, keeping each subject's
+    two invariants together.
+
+    DECLARED ownership split: the change establishes this partition.
+    This pins ownership only, not prose correctness, one-hop sufficiency,
+    or byte-identical payload movement; doc-contract assigns those checks
+    to reviewers.
+
+    The seam is the one the document names itself at 876ce50d:
+    ``docs/architecture/engagement-completion-gate.md:11-15`` joins the
+    admission side of ending an engagement and the reload a completed
+    engagement owes for committed configuration with "and"; its manifest
+    row's ``when_changing`` (``docs/manifest.d/architecture-e.yaml:6``)
+    routes both, and ``defines_invariants`` (``:41``) lists the gate's
+    INV-ENG-003/016 beside the obligation's INV-TOOL-011/012. INV-DOC-007
+    (``docs/contributing/doc-contract.md:75``) owes the split.
+
+    Red case at 876ce50d: all four invariants have one declaring document,
+    yielding (1, 1, 1) instead of (1, 1, 2).
+
+    Specified by **astra** in the drive red-case round.
+    """
+    gate = {
+        _declaring_document(inv)
+        for inv in ("INV-ENG-003", "INV-ENG-016")
+    }
+    reload = {
+        _declaring_document(inv)
+        for inv in ("INV-TOOL-011", "INV-TOOL-012")
+    }
+    counts = (len(gate), len(reload), len(gate | reload))
+    assert counts == (1, 1, 2), (counts, gate, reload)
+
+
 def test_turn_conduct_and_warm_client_life_have_distinct_owners():
     """#899: the conduct of one turn and the life of the warm client that turn
     runs on are two subjects, so INV-TURN-004 and INV-TURN-001 are declared by
