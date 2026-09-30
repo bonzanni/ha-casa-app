@@ -174,7 +174,9 @@ transaction records the dropped NAMES at the moment its swap is authoritative ra
 leaving the payload to re-derive them from the pre-swap set, which for an upgrade or a rollback
 mostly names plugins that very operation re-published. A successful swap needs no read-back to
 confirm it: it is atomic, it saved, its sequencer then succeeded and its journal completed, all
-inside the plugin-tools mutation lock. The one `ok:false` envelope whose registry mutation can persist, the
+inside the plugin-tools mutation lock. A reclassifying upgrade kept after its new version is
+already active (`kept_new_version`, INV-SPEC-021) rolls nothing back, so it discloses what its
+swap dropped exactly as a success does. The one other `ok:false` envelope whose registry mutation can persist, the
 `compensation_failed` arm of a failed bundle sequencer, discloses on measurement rather
 than on the flag: a failed compensation does not establish that the removal survived, because
 the rollback restores the registry in its first step and then does fallible work, so the arm

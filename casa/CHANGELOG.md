@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.332.15] - 2026-09-30
+
+### Fixed
+
+- A specialist install, upgrade, rollback or persona override that was refused
+  or failed partway could write a copy of the specialist's saved settings,
+  with values removed, back over settings files the change had not modified.
+  The specialist could then stop loading. Now Casa refuses such a change
+  before it changes anything when it cannot record the saved settings without
+  losing a value. That happens when the component a saved setting belongs to
+  can no longer be read back, when you install over a specialist that is
+  already installed and active (an installed specialist changes version
+  through an upgrade), when you roll back a specialist that has no previous
+  version kept, or when the incoming version would drop a plain saved value
+  outside the upgrade described below. None of these refusals suggests
+  uninstalling.
+- Uninstalling a specialist is never refused this way, and it behaves as
+  before.
+- An upgrade whose new version declares secret a setting the installed
+  version keeps as a plain value still works in one step. If it fails before
+  the new version is active, for example because the value was passed as plain
+  configuration, the installed version is left as it was, with its saved
+  settings, and the corrected retry works. If it fails after the new version is active,
+  Casa keeps the new version and reports that nothing was rolled back, because
+  the version it replaced can no longer be restored whole. When that failure
+  comes before the new version's bundled plugins replace the previous
+  version's, the new version runs with the previous version's bundled plugins
+  until you run the same upgrade again, which finishes it.
+- If Casa restarts in the middle of a change started on this version, the
+  recovery at startup follows the same rules. If it cannot tell whether an
+  upgrade's new version became active, it restores nothing and decides at the
+  next start. Until then, further changes to that specialist are refused.
+
 ## [0.332.14] - 2026-09-29
 
 ### Fixed

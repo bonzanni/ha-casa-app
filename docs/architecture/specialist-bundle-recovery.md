@@ -38,20 +38,38 @@ transactions themselves: INV-SPEC-003 (an upgrade failure retains the complete p
 tuple), INV-SPEC-011 (one generation at every lock release), INV-SPEC-012 (rollback after a
 model change), INV-SPEC-013 (a dispatched handler runs to a terminal journal disposition),
 and INV-SPEC-014 (a writer refuses while standing recovery debt would be replayed over it).
-Nothing is declared here; this document says what the code does when it fails, and the
-document next door says what that is required to guarantee.
+The two declared here are about the recorded before-state itself, which every restore below
+replays.
 
-**INV-SPEC-003 has a known arm it does not hold on, and this is the document a reader holding
-recovery work lands on, so it says so here.** Every restore described below replays the
-before-state the journal recorded, and recording it re-runs the capture sanitizer: a captured
-snapshot's keys are dropped when some component declares them secret, so a restore can write
-back a snapshot emptier than the tuple it overwrites — a document the failed call never opened.
-That is a separate defect class, tracked as **#975**, and it is open. The preflight refusals
-listed first below are outside it, because they raise before a journal exists and compensate
-nothing. `specialist-bundle-transactions.md` states the bound in full, next to the sanitizer it
-belongs to; do not read the compensations below as lossless.
+A journal never holds a secret's value, so the capture is sanitized before it is recorded: a
+captured snapshot's keys are dropped when a component declares them secret. That can lose a
+saved setting two ways — the file's own component cannot be read back, so every key is treated
+as secret; or, on an install or an upgrade, the incoming component declares secret a key the
+file's own component keeps as a plain value. Written back, such a capture would leave a tuple
+the loader refuses.
+
+**INV-SPEC-020**: An install, upgrade, rollback or specialist persona override — never an uninstall — is refused before its journal exists when a root its capture holds saved settings for cannot be classified, when an install finds an active occupant, when a rollback has no retained prior, or when the capture would lose a saved setting outside INV-SPEC-021's reclassifying upgrade; every transaction admitted carries the declarations it classified, so its compensation reads no component store.
+
+**INV-SPEC-021**: A captured tuple file whose journalled copy lost a saved setting to the incoming component's secret declarations is never written back by a compensation or a boot replay; a reclassifying upgrade that fails after its new version is active keeps that version, finishes the retained prior's rotation and sanitization, completes its journal and reports.
+
+Removal stays outside the first: an uninstall is never refused by it, and a failed uninstall's
+compensation keeps its accepted behaviour. The second is the one shape that may carry a lossy
+capture at all — an upgrade that makes secret a setting the installed version keeps as a plain
+value, with the loss confined to the installed tuple and its retained prior and the installed
+root differing from the incoming one. Its scope clause on INV-SPEC-003 is stated there.
 
 ## Failure behavior
+
+**A capture cannot be recorded without loss** (INV-SPEC-020). The install, upgrade, rollback
+and persona override each classify, before their journal exists, every component root their
+capture holds saved settings for, and refuse `prior_schema_unreadable` when one cannot be
+read back; an install into an already-active slug refuses `active_present`, a rollback with
+nothing retained refuses `no_prior_tuple`, and a capture the incoming component would empty
+of a plain value refuses `capture_lossy` unless it is the reclassifying upgrade below. A slug
+with no saved settings classifies nothing and is never refused this way. What was classified
+is carried into the journal and every transaction built from it, so a compensation that runs
+while the store has become unreadable still restores exactly what was recorded. None of these
+refusals proposes an uninstall.
 
 **A bundle upgrade's preflight refuses.** No approval on record, a receipt that does not
 match the approved inspection, an unreadable active tuple, no active tuple, an incoming
@@ -61,6 +79,26 @@ be read: all of these raise before the journal is created. Nothing is recorded a
 is compensated, so the persisted tuple files are exactly as the call found them. The
 pending read's result is carried into the transaction rather than taken again afterwards,
 so the arm has no second chance to fail at it once a journal exists.
+
+**A reclassifying upgrade fails** (INV-SPEC-021). The upgrade that makes secret a setting
+the installed version keeps as a plain value is allowed, and its journal names, by filename
+only, the captured files whose copy lost that value — the installed tuple, and the retained
+prior when it holds the value too. No restore writes those files. Before the new version is
+active the upgrade writes neither of them (it completes any rotation an earlier commit left
+pending before it records anything), so a failure there — a refused plain value, a failed
+compile, any step before the commit — leaves them exactly as they were, and the corrected
+retry works. Whether the new version is active is read off the root recorded in
+`active.yaml`, the file its commit replaces, so the answer is right after a crash at any
+point; when that file cannot be read, or names neither version, nothing is restored at all
+and the journal stays for the next boot (`activation_unknown` in the boot report,
+`upgrade_outcome_unknown` from the library) — after activation the restore would remove a
+retained prior the capture recorded as absent. Once it is active, the version it replaced cannot be restored whole, so nothing is rolled
+back: the retained prior's pending rotation is finished and the prior stripped of the
+reclassified value per file, the journal is completed, and the failure is reported —
+`upgrade_kept_new_version` from the library, `kept_new_version: true` on a failed
+reload-and-verify. A failure between the commit and the owned-plugin swap leaves the new
+version running with the previous version's owned plugins, and says so; re-running the same
+upgrade finishes it. A successful upgrade finishes the prior the same way before it returns.
 
 **A bundle sync phase fails.** The journal rolls the recorded pre-state back; if rollback
 itself fails, the journal stays in progress for boot to finish, and that slug refuses
@@ -82,7 +120,9 @@ a missing system-requirement binary, or a `casa.setupProvides` variable still
 unprovisioned on a fresh install — is a verified-legal terminal state and never triggers
 compensation.
 
-**Boot finds journals.** Complete ones are pruned, valid in-progress ones rolled back,
+**Boot finds journals.** Complete ones are pruned, valid in-progress ones rolled back — or,
+for a reclassifying upgrade whose new version is already active, kept and finished forward,
+reported as `kept_activated` (a finish that fails keeps the journal for the next boot) —
 corrupt or unrollbackable ones quarantined — a filename that cannot be parsed quarantines
 every owned entry rather than guessing. **That journal work runs first, and the age
 sweeps follow it in the same boot pass**, because the sweeps have to reason about the
@@ -171,8 +211,17 @@ the journal opens belongs in the preflight instead, where there is nothing to un
 <!-- BEGIN SOURCEMAP -->
 <!-- generated by scripts/verify_docs.py --write-nav; do not hand-edit -->
 
+**Source**
+- `casa/rootfs/opt/casa/specialist_install.py::_declarations_for_capture`
+- `casa/rootfs/opt/casa/specialist_install.py::_admit_lossy_capture`
+- `casa/rootfs/opt/casa/specialist_bundle_journal.py::lossy_capture_files`
+- `casa/rootfs/opt/casa/specialist_bundle_journal.py::BundleTxn.activation_kept`
+- `casa/rootfs/opt/casa/specialist_bundle_journal.py::BundleTxn.finish_forward`
+
 **Tests**
 - `tests/test_specialist_bundle_journal.py`
+- `tests/test_specialist_capture_admission.py`
+- `tests/test_specialist_reclassifying_upgrade.py`
 
 **Related**
 - [`architecture/specialist-bundle-transactions.md`](../architecture/specialist-bundle-transactions.md)

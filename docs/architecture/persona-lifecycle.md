@@ -24,7 +24,9 @@ same `persona_id@version` with different bytes is refused rather than replaced, 
 applying an override to a specialist preserves its component root and configuration — and
 is a specialist-generation transaction like an upgrade: it rotates the tuple and its
 owned-plugin sidecar into the retained prior together, under the lifecycle lock, journaled
-when made through the tool (INV-SPEC-011). Boot reconciliation holds the same line: an override is reloaded by `persona_id@version` and the
+when made through the tool (INV-SPEC-011) — and refused before that journal exists when a
+component its capture holds saved settings for, the retained prior's included, cannot be read
+back (INV-SPEC-020, `architecture/specialist-bundle-recovery.md`). Boot reconciliation holds the same line: an override is reloaded by `persona_id@version` and the
 bytes found on disk must match the binding's pinned checksum — changed bytes under a pinned
 version are refused, never silently re-materialized into a fresh binding. Inspection
 staging under the personas root is reclaimed on rejection and consumed by a successful

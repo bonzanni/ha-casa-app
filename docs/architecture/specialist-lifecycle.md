@@ -214,7 +214,11 @@ unavailable, a secret value in the plain config channel, an undeclared secret na
 secret channel (INV-SPEC-006), and a slug whose earlier bundle transaction still owes boot
 recovery (INV-SPEC-014, `architecture/specialist-bundle-transactions.md`) — a commit there
 would be undone by the next boot, so the install is refused before the component store is
-written to at all. Sourced plugin dependencies are additionally refused categorically when they
+written to at all. The bundle commit's own door follows the component's verification and
+precedes its journal (INV-SPEC-020, `architecture/specialist-bundle-recovery.md`): an
+already-active slug refuses `active_present` — an installed specialist changes version through
+the upgrade — and a capture it could not record without losing a saved setting refuses too.
+Sourced plugin dependencies are additionally refused categorically when they
 declare system requirements or triggers of their own, or when an environment name they
 reference — in either expansion form — collides with another installed plugin's —
 otherwise-valid bundles fail with dedicated error kinds the dependency model alone would

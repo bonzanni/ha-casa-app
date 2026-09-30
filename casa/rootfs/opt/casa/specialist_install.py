@@ -2281,29 +2281,50 @@ def commit_specialist_install(
             # below. The tool layer (holding _PLUGIN_TOOLS_LOCK) owns the
             # post-mutation sequencer + journal-complete via the returned txn.
             slug_dir = specialists_dir / inspection.slug
+            # #975: the door (the operator's 2026-09-27 ruling). An install into
+            # a slug that is already active is refused by the in-lock guard
+            # below in every case — but after the journal exists, and the
+            # incoming component's declarations empty the capture of the active
+            # tuple it never opened. So an active occupant is refused here
+            # first, read-only; the in-lock guard stays the authority against
+            # a writer that races in afterwards.
+            if (slug_dir / "active.yaml").exists():
+                raise SpecialistInstallError(
+                    "active_present",
+                    f"{inspection.slug!r} is already installed and active; an "
+                    f"installed specialist changes version through "
+                    f"specialist_upgrade — nothing was changed")
             _reg = plugin_registry.load_registry(registry_path)
             before_owned = plugin_registry.owned_entries_for(inspection.slug, _reg)
             before_tuple_files = _tuple_files_snapshot(slug_dir)
             ack_records = acks.snapshot_slug(inspection.slug)
+            _install_root = component_root_string(
+                component_id=inspection.component_id, version=inspection.version,
+                component_checksum=inspection.root_digest)
+            declared_secret_names = _declarations_for_capture(
+                before_tuple_files, target_root=_install_root,
+                incoming_names=component.config_schema.get("secret_names", []) or [],
+                specialists_dir=specialists_dir, slug=inspection.slug)
+            _admit_lossy_capture(
+                before_tuple_files, op="install", target_root=_install_root,
+                declared=declared_secret_names, slug=inspection.slug)
             journal = specialist_bundle_journal.begin(
                 "install", inspection.slug, before_entries=before_owned,
                 before_tuple_files=before_tuple_files, ack_records=ack_records,
                 receipt_digest=receipt.receipt_digest, consent_identity=identity,
-                target_root=component_root_string(
-                    component_id=inspection.component_id, version=inspection.version,
-                    component_checksum=inspection.root_digest),
+                target_root=_install_root,
                 # #966: the capture is classified against the tree this
                 # transaction — and its own restore — actually uses, not the
                 # module default.
                 specialists_dir=specialists_dir,
+                declared_secret_names=declared_secret_names,
                 ops_dir=ops_dir)
             rollback_txn = BundleTxn(
                 journal_path=journal, slug=inspection.slug,
                 before_entries=before_owned, before_tuple_files=before_tuple_files,
                 ack_records=ack_records, op="install",
-                target_root=component_root_string(
-                    component_id=inspection.component_id, version=inspection.version,
-                    component_checksum=inspection.root_digest),
+                target_root=_install_root,
+                declared_secret_names=declared_secret_names,
                 registry_path=registry_path,
                 specialists_dir=specialists_dir, acks_path=acks.path,
                 agents_specialists_dir=agents_specialists_dir)
@@ -2337,9 +2358,8 @@ def commit_specialist_install(
                     op="install", owned_swap_committed=True,
                     removed_owned_names=_removed_owned_names(
                         before_entries, new_entries),
-                    target_root=component_root_string(
-                        component_id=inspection.component_id, version=inspection.version,
-                        component_checksum=inspection.root_digest),
+                    target_root=_install_root,
+                    declared_secret_names=declared_secret_names,
                     registry_path=registry_path, specialists_dir=specialists_dir,
                     acks_path=acks.path,
                     agents_specialists_dir=agents_specialists_dir)
@@ -2687,6 +2707,21 @@ def upgrade_specialist(
                 f"candidate, its saved configuration, and the receipt and staging "
                 f"tree needed to resume; resolve the read error and retry") from exc
 
+        # #975: complete a prior rotation an earlier commit left pending BEFORE
+        # the capture, exactly as `rollback_specialist` does (#810 F1). The
+        # commit below would complete it anyway as its first step — but inside
+        # the journal window, where it rewrites `active.prior.yaml` before the
+        # new version is active, and that is one of the two files a
+        # reclassifying upgrade's restore must be able to leave alone.
+        with specialist_materialize.MATERIALIZE_LOCK:
+            try:
+                _instance_dir.complete_pending_rotation()
+            except OSError as exc:
+                raise SpecialistInstallError(
+                    "pending_rotation_failed",
+                    f"{slug!r}: a pending prior rotation could not be completed "
+                    f"({exc}); nothing was changed — retry the upgrade") from exc
+
         _reg = plugin_registry.load_registry(registry_path)
         before_owned = plugin_registry.owned_entries_for(slug, _reg)
         before_tuple_files = _tuple_files_snapshot(slug_dir)
@@ -2695,8 +2730,12 @@ def upgrade_specialist(
             component_id=inspection.component_id, version=inspection.version,
             component_checksum=inspection.root_digest)
         declared_secret_names = _declarations_for_capture(
-            before_tuple_files, target_root=target_root, verified=verified,
+            before_tuple_files, target_root=target_root,
+            incoming_names=verified.component.config_schema.get("secret_names", []) or [],
             specialists_dir=specialists_dir, slug=slug)
+        lossy = _admit_lossy_capture(
+            before_tuple_files, op="upgrade", target_root=target_root,
+            declared=declared_secret_names, slug=slug)
         journal = specialist_bundle_journal.begin(
             "upgrade", slug, before_entries=before_owned,
             before_tuple_files=before_tuple_files, ack_records=ack_records,
@@ -2715,15 +2754,24 @@ def upgrade_specialist(
             op="upgrade",
             target_root=target_root,
             declared_secret_names=declared_secret_names,
+            lossy_tuple_files=lossy,
             registry_path=registry_path, specialists_dir=specialists_dir,
             acks_path=acks.path,
             agents_specialists_dir=agents_specialists_dir)
+        dropped_names: "tuple[str, ...]" = ()
         try:
             instance = _upgrade_core(
                 slug=slug, inspection=eff_inspection, config=config,
                 secret_names_provided=secret_names_provided, acks=acks,
                 specialists_dir=specialists_dir, agents_specialists_dir=agents_specialists_dir,
                 receipt=receipt, _pending_before=_pending_before)
+            if instance.state == "active" and lossy:
+                # #975: the commit logs rather than raises when its prior
+                # promotion fails, leaving the outgoing version — with the
+                # reclassified setting as a plain value — in the rollback
+                # temporary. Finish that here, on the success path too, so no
+                # completed journal can leave a plain copy behind.
+                rollback_txn.finish_forward()
             if instance.state == "active":
                 published = _publish_owned_plugins(
                     slug, receipt, tree_paths, store_root=plugin_store_root)
@@ -2735,6 +2783,9 @@ def upgrade_specialist(
                 new_entries = [_owned_entry_for(slug, row, res) for row, res in published]
                 before_entries, _ = plugin_registry.apply_owned_swap(
                     slug=slug, new_entries=new_entries, registry_path=registry_path)
+                # #975: a kept upgrade that fails after this point has
+                # committed this removal; its report owes the disclosure.
+                dropped_names = _removed_owned_names(before_entries, new_entries)
                 new_artifact_ids = {res.artifact_id for _, res in published}
                 removed = _removed_artifact_ids(before_entries, new_artifact_ids)
                 sidecar_doc = _owned_sidecar_doc(slug, receipt, published)
@@ -2761,10 +2812,32 @@ def upgrade_specialist(
                     before_entries, new_entries) if swapped else (),
                 target_root=target_root,
                 declared_secret_names=declared_secret_names,
+                lossy_tuple_files=lossy,
                 registry_path=registry_path, specialists_dir=specialists_dir,
                 acks_path=acks.path,
                 agents_specialists_dir=agents_specialists_dir)
-        except BaseException:
+        except BaseException as exc:
+            try:
+                kept = rollback_txn.activation_kept()
+            except specialist_bundle_journal.ActivationUnknown as unknown:
+                # #975: whether the new version is active cannot be read back,
+                # and either guess can lose a setting — undo nothing and leave
+                # the journal for boot, which asks again.
+                raise SpecialistInstallError(
+                    "upgrade_outcome_unknown",
+                    f"{slug!r}: the upgrade failed ({type(exc).__name__}: {exc}) and "
+                    f"whether its new version became active cannot be read back "
+                    f"({unknown}); nothing was undone and its undo record is kept, "
+                    f"so further changes to this specialist are refused until Casa "
+                    f"restarts and boot settles it. Nothing was deleted") from exc
+            if kept:
+                # #975 (the operator's 2026-09-29 ruling): the new version is
+                # already active and the one it replaced cannot be restored
+                # whole — keep the new version and report. Its owned-plugin
+                # swap may not have happened; re-running the same upgrade
+                # finishes it (the tuple commit is then a no-op).
+                raise _kept_new_version(
+                    rollback_txn, journal, slug, exc, dropped_names) from exc
             # P1-1: complete the journal ONLY after a SUCCESSFUL rollback. A
             # rollback that raises leaves the in-progress journal on disk so boot
             # reconciliation re-runs it (or quarantines the slug) — completing here
@@ -2780,6 +2853,46 @@ def upgrade_specialist(
     return instance, txn
 
 
+def _kept_new_version(txn, journal, slug: str, exc: BaseException,
+                      dropped_names: "tuple[str, ...]" = ()) -> "SpecialistInstallError":
+    """#975: finish a kept reclassifying upgrade and build its report. The
+    retained prior's rotation and sanitization are finished and the journal
+    completed; if that cleanup itself fails the journal is LEFT, so boot
+    finishes it (never restores the old version), and the report says so.
+    `dropped_names` are the owned plugins its registry swap already removed —
+    a committed removal the tool layer discloses (INV-TOOL-007); the error
+    carries them as `dropped_owned_names`."""
+    err = _kept_new_version_error(txn, journal, slug, exc)
+    err.dropped_owned_names = tuple(dropped_names)
+    return err
+
+
+def _kept_new_version_error(txn, journal, slug: str,
+                            exc: BaseException) -> "SpecialistInstallError":
+    import specialist_bundle_journal
+
+    step = f"{type(exc).__name__}: {exc}"
+    try:
+        txn.finish_forward()
+        specialist_bundle_journal.complete(journal)
+    except Exception as cleanup_exc:  # noqa: BLE001 — reported, boot retries
+        return SpecialistInstallError(
+            "upgrade_kept_new_version",
+            f"{slug!r}: the new version is active and stays active — the version "
+            f"it replaced cannot be restored whole, because a setting it kept as a "
+            f"plain value is now secret. The upgrade then failed ({step}), and "
+            f"finishing the retained prior failed too ({cleanup_exc}); its undo "
+            f"record is kept, so further changes to this specialist are refused "
+            f"until Casa restarts and finishes it. Nothing was deleted")
+    return SpecialistInstallError(
+        "upgrade_kept_new_version",
+        f"{slug!r}: the new version is active and stays active — the version it "
+        f"replaced cannot be restored whole, because a setting it kept as a plain "
+        f"value is now secret. The upgrade then failed ({step}); its owned plugins "
+        f"may still be the previous version's. Re-run the same upgrade to finish "
+        f"it. Nothing was deleted")
+
+
 @dataclass(frozen=True)
 class _VerifiedComponent:
     """#966: the incoming component, published and fully verified, as one
@@ -2791,8 +2904,9 @@ class _VerifiedComponent:
 
 
 def _declarations_for_capture(
-    before_tuple_files: "dict[str, str | None]", *, target_root: str,
-    verified: "_VerifiedComponent", specialists_dir: Path, slug: str,
+    before_tuple_files: "dict[str, str | None]", *, target_root: str = "",
+    incoming_names: "Iterable[str] | None" = None, specialists_dir: Path,
+    slug: str,
 ) -> "dict[str, list[str]]":
     """#966: resolve, once and before the journal opens, the declared secret
     names for every component root this capture will be sanitized against.
@@ -2824,22 +2938,28 @@ def _declarations_for_capture(
     is a determination — it gets the sentinel tombstone — not an uncertainty).
     So a slug carrying no saved settings can never be refused by this.
 
-    Scope, stated because the omission is deliberate: this is the receipt-
-    bearing upgrade's preflight. `_rollback_core`, `uninstall_specialist` and
-    the persona override keep the existing fail-closed tombstone when a
-    captured root is unresolvable, because refusing to UNINSTALL a broken
-    install is worse than the tombstone.
+    #975 (the operator's 2026-09-27 ruling — refuse at the door any change
+    whose before-state cannot be recorded without loss, removal excepted):
+    this is the door of every journaled change EXCEPT removal — the install,
+    the upgrade, the rollback and the persona override each call it after
+    `require_no_recovery_debt` and before `begin`, and carry what it returns
+    into `begin` and into every `BundleTxn` they build, so no compensation of a
+    transaction it admitted reads the store. `uninstall_specialist` never
+    calls it: removal stays unconditional, and its accepted erasure with it.
+    `incoming_names` is the declaration of the root an install or upgrade is
+    landing (`target_root`), read off the component the caller has already
+    loaded and verified; a rollback or an override lands no new root and
+    passes neither.
     """
     from specialist_bundle_journal import _CAPTURED_TUPLE_FILES
 
-    declarations: "dict[str, list[str]]" = {
-        # The incoming root's declaration comes off the component
-        # `_resolve_verified_component` just checked the root-digest equation
-        # of — the same bytes `_declared_secret_names_for_root` would read, but
-        # read at a point where they are certainly there.
-        target_root: sorted(
-            set(verified.component.config_schema.get("secret_names", []) or [])),
-    }
+    declarations: "dict[str, list[str]]" = {}
+    if target_root and incoming_names is not None:
+        # The incoming root's declaration comes off the component the caller
+        # just checked the root-digest equation of — the same bytes
+        # `_declared_secret_names_for_root` would read, but read at a point
+        # where they are certainly there.
+        declarations[target_root] = sorted(set(incoming_names))
     for filename, content in before_tuple_files.items():
         if content is None or filename not in _CAPTURED_TUPLE_FILES:
             continue
@@ -2870,6 +2990,52 @@ def _declarations_for_capture(
                 f"transaction whose before-state could only be recorded as empty")
         declarations[root] = sorted(names)
     return declarations
+
+
+_R2_LOSSY_FILES = frozenset({"active.yaml", "active.prior.yaml"})
+
+
+def _admit_lossy_capture(
+    before_tuple_files: "dict[str, str | None]", *, op: str, target_root: str,
+    declared: "dict[str, list[str]]", slug: str,
+) -> "tuple[str, ...]":
+    """#975: the second half of the door. Returns the captured files whose
+    journalled copy would lose a saved setting (`lossy_capture_files`) when the
+    transaction may carry them, and refuses — before any journal exists —
+    when it may not.
+
+    Exactly one shape may carry them (the operator's 2026-09-29 ruling): an
+    upgrade that makes secret a setting the INSTALLED version keeps as a plain
+    value. So the active tuple must be one of them, the loss must stay within
+    the installed generation and its retained prior (the two files that upgrade
+    does not write before its new version is active), and the installed root
+    must differ from the incoming one (which is what lets `activation_kept`
+    read activation off `active.yaml`). Any other loss — a pending candidate of
+    another version, a prior alone, an install — is the 2026-09-27 ruling's
+    refusal."""
+    from specialist_bundle_journal import lossy_capture_files
+
+    lossy = lossy_capture_files(
+        before_tuple_files, op=op, target_root=target_root, declared=declared)
+    if not lossy:
+        return ()
+    if op == "upgrade" and "active.yaml" in lossy and set(lossy) <= _R2_LOSSY_FILES:
+        try:
+            active_doc = yaml.safe_load(before_tuple_files.get("active.yaml") or "")
+        except yaml.YAMLError:
+            active_doc = None
+        active_root = active_doc.get("root") if isinstance(active_doc, dict) else None
+        if isinstance(active_root, str) and active_root != target_root:
+            return lossy
+    # INV-OPS-001: nothing was written, so the advice keeps what is saved and
+    # proposes nothing that deletes it.
+    raise SpecialistInstallError(
+        "capture_lossy",
+        f"{slug!r}: the saved settings in {', '.join(lossy)} hold a plain value "
+        f"that the incoming version declares secret, and this change could not "
+        f"undo itself without losing that value, so it was refused before "
+        f"anything was changed; keep those saved settings — an upgrade is allowed "
+        f"when the version holding the value is the ACTIVE one")
 
 
 def _resolve_verified_component(
@@ -3773,19 +3939,31 @@ def rollback_specialist(
                 "rollback_artifact_missing",
                 f"retained artifact for {row['name']!r} is unavailable ({verdict})")
 
+    # #975: the door (the operator's 2026-09-27 ruling). A slug with nothing
+    # retained has nothing to roll back to — decidable here, before any journal
+    # exists (the core keeps its own check for the direct arm). Then every root
+    # the capture holds saved settings for is classified, or the rollback is
+    # refused; what is classified is carried, so the compensation never reads
+    # the store.
+    if not (slug_dir / "active.prior.yaml").is_file():
+        raise SpecialistInstallError("no_prior_tuple", f"{slug!r} has no retained prior tuple")
     _reg = plugin_registry.load_registry(registry_path)
     before_owned = plugin_registry.owned_entries_for(slug, _reg)
     before_tuple_files = _tuple_files_snapshot(slug_dir)
     ack_records = acks.snapshot_slug(slug)
+    declared_secret_names = _declarations_for_capture(
+        before_tuple_files, specialists_dir=specialists_dir, slug=slug)
     journal = specialist_bundle_journal.begin(
         "rollback", slug, before_entries=before_owned,
         before_tuple_files=before_tuple_files, ack_records=ack_records,
         specialists_dir=specialists_dir,   # #966
+        declared_secret_names=declared_secret_names,
         ops_dir=ops_dir)
     rollback_txn = BundleTxn(
         journal_path=journal, slug=slug, before_entries=before_owned,
         before_tuple_files=before_tuple_files, ack_records=ack_records,
-        op="rollback", registry_path=registry_path, specialists_dir=specialists_dir,
+        op="rollback", declared_secret_names=declared_secret_names,
+        registry_path=registry_path, specialists_dir=specialists_dir,
         acks_path=acks.path,
         agents_specialists_dir=agents_specialists_dir)
     try:
@@ -3813,6 +3991,7 @@ def rollback_specialist(
             op="rollback", owned_swap_committed=True,
             removed_owned_names=_removed_owned_names(
                 before_entries, prior_entries),
+            declared_secret_names=declared_secret_names,
             registry_path=registry_path, specialists_dir=specialists_dir,
             acks_path=acks.path,
             agents_specialists_dir=agents_specialists_dir)
