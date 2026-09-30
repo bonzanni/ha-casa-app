@@ -288,3 +288,49 @@ def test_an_install_over_any_active_version_refuses_before_its_journal(
     assert ei.value.kind == "active_present"
     assert begins == []
     assert (fx.slug_dir / "active.yaml").read_bytes() == before
+
+
+def test_an_outstanding_prior_rotation_does_not_block_the_one_step_upgrade(
+        tmp_path, monkeypatch) -> None:
+    """An earlier commit's prior promotion failed and left its outgoing version
+    in the rollback temporary. The reclassifying upgrade completes that rotation
+    before it records anything, so its capture holds only the installed
+    generation and its prior: a refused attempt leaves both exactly as they
+    were after that completion, and the corrected retry activates."""
+    import os
+
+    import specialist_receipt
+
+    fx = _UpgradeFixture(tmp_path, monkeypatch, v2_required=(), v2_secret_names=("k",),
+                         value="prior-v")
+    receipt1 = specialist_receipt.load(fx.insp1.receipt_id, receipts_dir=tmp_path / "receipts")
+    real_replace = os.replace
+    faults = []
+
+    def _rename_fails_once(src, dst, *a, **kw):
+        if not faults and str(src).endswith("active.yaml.rollback-tmp"):
+            faults.append(1)
+            raise OSError(5, "Input/output error")
+        return real_replace(src, dst, *a, **kw)
+    monkeypatch.setattr(os, "replace", _rename_fails_once)
+    inst, txn = specialist_install.upgrade_specialist(
+        slug="mtg", inspection=fx.insp1, receipt=receipt1, config={"k": "v"}, **fx.common)
+    monkeypatch.setattr(os, "replace", real_replace)
+    specialist_bundle_journal.complete(txn.journal_path)
+    assert faults == [1] and inst.state == "active"
+    assert (fx.slug_dir / "active.yaml.rollback-tmp").is_file()
+
+    fx.approve_v2()
+    with pytest.raises(specialist_install.SpecialistInstallError) as ei:
+        fx.upgrade(config={"k": "incoming-value"})
+    assert ei.value.kind == "secret_value_in_config"
+    assert not (fx.slug_dir / "active.yaml.rollback-tmp").exists()
+    prior = yaml.safe_load((fx.slug_dir / "active.prior.yaml").read_text(encoding="utf-8"))
+    assert prior["config_snapshot"] == {"k": "prior-v"}
+    active = yaml.safe_load((fx.slug_dir / "active.yaml").read_text(encoding="utf-8"))
+    assert active["config_snapshot"] == {"k": "v"}
+
+    fx.approve_v2()
+    inst, txn = fx.upgrade(config={}, secret_names_provided=frozenset({"k"}))
+    assert inst.state == "active"
+    specialist_bundle_journal.complete(txn.journal_path)
