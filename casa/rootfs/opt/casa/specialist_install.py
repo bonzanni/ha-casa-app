@@ -2285,16 +2285,15 @@ def commit_specialist_install(
             # a slug that is already active is refused by the in-lock guard
             # below in every case — but after the journal exists, and the
             # incoming component's declarations empty the capture of the active
-            # tuple it never opened. So the occupant rules run here first,
-            # read-only; the in-lock guard stays the authority against a
-            # writer that races in afterwards.
+            # tuple it never opened. So an active occupant is refused here
+            # first, read-only; the in-lock guard stays the authority against
+            # a writer that races in afterwards.
             if (slug_dir / "active.yaml").exists():
                 raise SpecialistInstallError(
                     "active_present",
                     f"{inspection.slug!r} is already installed and active; an "
                     f"installed specialist changes version through "
                     f"specialist_upgrade — nothing was changed")
-            _refuse_if_active_present(instance_dir, slug=inspection.slug, root=root)
             _reg = plugin_registry.load_registry(registry_path)
             before_owned = plugin_registry.owned_entries_for(inspection.slug, _reg)
             before_tuple_files = _tuple_files_snapshot(slug_dir)

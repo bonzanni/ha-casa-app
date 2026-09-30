@@ -232,3 +232,59 @@ def test_boot_finishes_the_prior_after_a_crash_between_the_swap_and_its_rotation
     assert not (fx.slug_dir / "active.yaml.rollback-tmp").exists()
     assert [p.name for p in fx.slug_dir.rglob("*")
             if p.is_file() and value.encode() in p.read_bytes()] == []
+
+
+def test_a_successful_upgrade_whose_prior_rename_failed_leaves_no_plain_copy(
+        tmp_path, monkeypatch) -> None:
+    """The commit LOGS a failed prior promotion and carries on, leaving the
+    outgoing version — the reclassified setting as a plain value — in the
+    rollback temporary. The upgrade succeeds and its journal is completed (as
+    the tool layer does on success), so no boot replay will ever look at it:
+    the success path itself must finish the prior."""
+    import os
+
+    value = "plain-5b77"
+    fx = _UpgradeFixture(tmp_path, monkeypatch, v2_required=(), v2_secret_names=("k",),
+                         value=value)
+    fx.approve_v2()
+    real_replace = os.replace
+    faults = []
+
+    def _rename_fails_once(src, dst, *a, **kw):
+        if not faults and str(src).endswith("active.yaml.rollback-tmp"):
+            faults.append(1)
+            raise OSError(5, "Input/output error")
+        return real_replace(src, dst, *a, **kw)
+    monkeypatch.setattr(os, "replace", _rename_fails_once)
+    inst, txn = fx.upgrade(config={}, secret_names_provided=frozenset({"k"}))
+    monkeypatch.setattr(os, "replace", real_replace)
+    specialist_bundle_journal.complete(txn.journal_path)
+
+    assert faults == [1]
+    assert inst.state == "active"
+    assert fx.journals() == set()
+    prior = yaml.safe_load((fx.slug_dir / "active.prior.yaml").read_text(encoding="utf-8"))
+    assert "k" not in prior["config_snapshot"] and prior["config_digest"] == SENTINEL
+    assert [p.name for p in fx.slug_dir.rglob("*")
+            if p.is_file() and value.encode() in p.read_bytes()] == []
+
+
+def test_an_install_over_any_active_version_refuses_before_its_journal(
+        tmp_path, monkeypatch) -> None:
+    """The occupant refusal does not depend on a lossy capture: an install
+    handed another version of an ACTIVE slug is refused before `begin`."""
+    fx = _UpgradeFixture(tmp_path, monkeypatch, v2_required=("k",))
+    fx.approve_v2()
+    begins = []
+    real_begin = specialist_bundle_journal.begin
+    monkeypatch.setattr(specialist_bundle_journal, "begin",
+                        lambda *a, **kw: (begins.append(1), real_begin(*a, **kw))[1])
+    before = (fx.slug_dir / "active.yaml").read_bytes()
+
+    with pytest.raises(specialist_install.SpecialistInstallError) as ei:
+        specialist_install.commit_specialist_install(
+            inspection=fx.insp2, receipt=fx.receipt2, config={}, **fx.common)
+
+    assert ei.value.kind == "active_present"
+    assert begins == []
+    assert (fx.slug_dir / "active.yaml").read_bytes() == before
