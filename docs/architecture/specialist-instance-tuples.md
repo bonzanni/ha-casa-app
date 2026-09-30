@@ -111,8 +111,8 @@ place when they could not be classified.
 
 What it does not cover: the boot journal replay's own sanitizer, which classifies from the
 declarations its journal carries (INV-SPEC-020, `architecture/specialist-bundle-recovery.md`)
-and, for a journal written before those were carried, still strips every key when its union of
-declarations cannot be established; an unparseable tuple
+and, for an uninstall's journal (removal carries none) or one written before those were carried,
+still strips every key when its union of declarations cannot be established; an unparseable tuple
 and a snapshot that is not a mapping, which still fail closed; and a legacy plaintext that
 meets an unreadable store, which stays in the live file until a boot at which its component
 can be read — for a tuple with no usable root, indefinitely, though such a tuple never loads.
