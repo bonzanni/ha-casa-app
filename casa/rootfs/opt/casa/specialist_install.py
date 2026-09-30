@@ -2758,6 +2758,7 @@ def upgrade_specialist(
             registry_path=registry_path, specialists_dir=specialists_dir,
             acks_path=acks.path,
             agents_specialists_dir=agents_specialists_dir)
+        dropped_names: "tuple[str, ...]" = ()
         try:
             instance = _upgrade_core(
                 slug=slug, inspection=eff_inspection, config=config,
@@ -2782,6 +2783,9 @@ def upgrade_specialist(
                 new_entries = [_owned_entry_for(slug, row, res) for row, res in published]
                 before_entries, _ = plugin_registry.apply_owned_swap(
                     slug=slug, new_entries=new_entries, registry_path=registry_path)
+                # #975: a kept upgrade that fails after this point has
+                # committed this removal; its report owes the disclosure.
+                dropped_names = _removed_owned_names(before_entries, new_entries)
                 new_artifact_ids = {res.artifact_id for _, res in published}
                 removed = _removed_artifact_ids(before_entries, new_artifact_ids)
                 sidecar_doc = _owned_sidecar_doc(slug, receipt, published)
@@ -2819,7 +2823,8 @@ def upgrade_specialist(
                 # whole — keep the new version and report. Its owned-plugin
                 # swap may not have happened; re-running the same upgrade
                 # finishes it (the tuple commit is then a no-op).
-                raise _kept_new_version(rollback_txn, journal, slug, exc) from exc
+                raise _kept_new_version(
+                    rollback_txn, journal, slug, exc, dropped_names) from exc
             # P1-1: complete the journal ONLY after a SUCCESSFUL rollback. A
             # rollback that raises leaves the in-progress journal on disk so boot
             # reconciliation re-runs it (or quarantines the slug) — completing here
@@ -2835,11 +2840,22 @@ def upgrade_specialist(
     return instance, txn
 
 
-def _kept_new_version(txn, journal, slug: str, exc: BaseException) -> "SpecialistInstallError":
+def _kept_new_version(txn, journal, slug: str, exc: BaseException,
+                      dropped_names: "tuple[str, ...]" = ()) -> "SpecialistInstallError":
     """#975: finish a kept reclassifying upgrade and build its report. The
     retained prior's rotation and sanitization are finished and the journal
     completed; if that cleanup itself fails the journal is LEFT, so boot
-    finishes it (never restores the old version), and the report says so."""
+    finishes it (never restores the old version), and the report says so.
+    `dropped_names` are the owned plugins its registry swap already removed —
+    a committed removal the tool layer discloses (INV-TOOL-007); the error
+    carries them as `dropped_owned_names`."""
+    err = _kept_new_version_error(txn, journal, slug, exc)
+    err.dropped_owned_names = tuple(dropped_names)
+    return err
+
+
+def _kept_new_version_error(txn, journal, slug: str,
+                            exc: BaseException) -> "SpecialistInstallError":
     import specialist_bundle_journal
 
     step = f"{type(exc).__name__}: {exc}"

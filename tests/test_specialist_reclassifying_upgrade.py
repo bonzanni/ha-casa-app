@@ -334,3 +334,33 @@ def test_an_outstanding_prior_rotation_does_not_block_the_one_step_upgrade(
     inst, txn = fx.upgrade(config={}, secret_names_provided=frozenset({"k"}))
     assert inst.state == "active"
     specialist_bundle_journal.complete(txn.journal_path)
+
+
+def test_a_kept_upgrade_discloses_the_owned_plugins_its_swap_dropped(
+        tmp_path, monkeypatch) -> None:
+    """The kept version's owned-plugin swap is a committed removal of whatever
+    it dropped, so the kept envelope carries the same plugin-data disclosure a
+    successful swap does (INV-TOOL-007) — and nothing is rolled back."""
+    from types import SimpleNamespace
+
+    from test_specialist_recovery_debt import _finish_inline, _inline_tools
+
+    tools = _inline_tools(monkeypatch)
+    journal = tmp_path / "mtg.0123456789abcdef0123456789abcdef.json"
+    journal.write_text(json.dumps({"state": "in-progress"}), encoding="utf-8")
+    calls = []
+    txn = SimpleNamespace(
+        slug="mtg", journal_path=journal, owned_swap_committed=True,
+        removed_owned_names=("mtg.dropped",), new_artifact_ids=(),
+        activation_kept=lambda: True,
+        finish_forward=lambda: calls.append("finish"),
+        rollback_disk=lambda: calls.append("rollback"))
+
+    env = _finish_inline(tools._bundle_seq_failure(
+        txn, {"ok": False, "kind": "bundle_sequence_failed"}, slug="mtg"))
+
+    assert calls == ["finish"]
+    assert not journal.exists()
+    assert env["kept_new_version"] is True and "rolled_back" not in env
+    assert env["plugin_data_may_remain"] is True
+    assert env["plugin_data_plugins"] == ["mtg.dropped"]

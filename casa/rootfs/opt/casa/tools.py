@@ -14534,6 +14534,9 @@ async def _bundle_seq_failure(txn, seq: dict, *, slug: str) -> dict:
         # #975: nothing was rolled back, so none of the rollback wording below
         # is true — say what holds instead.
         env.update(_KEPT_NEW_VERSION_ENVELOPE)
+        # The kept version's owned-plugin swap is a committed removal of
+        # whatever it dropped (INV-TOOL-007), exactly as on success.
+        env.update(_swap_removal_disclosure(txn))
         if not compensated["disk_ok"]:
             env["outcome"] += (
                 "; finishing the retained prior version failed, so its undo "
@@ -15744,8 +15747,11 @@ async def specialist_upgrade(args: dict) -> dict:
             if exc.kind == "upgrade_kept_new_version":
                 # #975: the library kept the new version (it failed after
                 # activation); the receipt and staging are kept for the re-run.
+                dropped = list(getattr(exc, "dropped_owned_names", ()) or ())
                 return {"ok": False, "kind": exc.kind, "detail": exc.detail,
-                        **_KEPT_NEW_VERSION_ENVELOPE}
+                        **_KEPT_NEW_VERSION_ENVELOPE,
+                        **(_plugin_data_disclosure(_PLUGIN_DATA_NOTE_COMMITTED, dropped)
+                           if dropped else {})}
             return {"ok": False, "kind": exc.kind, "detail": exc.detail}
         try:
             seq = await _bundle_reload_and_verify(
