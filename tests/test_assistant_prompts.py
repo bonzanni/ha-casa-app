@@ -1506,3 +1506,47 @@ def test_the_assistant_never_points_to_an_unopened_engagement_topic():
             _collapse_ws(text).count(needle)) == (0, 1)
     legacy = dict(_legacy_prompt_carriers())
     assert _collapse_ws(legacy["assistant"]).count(needle) == 1
+
+
+# ---------------------------------------------------------------------------
+# #1116 red case (b): the served assistant text doctrine's beat rule has an
+# exception keyed on what the model can SEE in the turn.
+#
+# The runtime gives the model no buffered-turn marker; what it reads is the
+# turn's own instructions, and Casa's buffered turns say what they are there
+# (the heartbeat and briefing: nothing is seen until the turn ends; an event
+# wake: "this is a background wake"). At the base the served `assistant:text`
+# projection asked for one beat per step with no exception, and on a buffered
+# turn that closes without a send that narration is delivered (#1075 row 3).
+# Pinned through the REAL compiler; this pins the text served, not obedience.
+# ---------------------------------------------------------------------------
+
+_BACKGROUND_EXCEPTION = (
+    "When a turn's own instructions say it is a scheduled or background "
+    "check, or that nothing you write is seen until the turn ends, nobody "
+    "is watching the steps: give no beats and do not announce what you "
+    "are checking; deliver only what those instructions ask for."
+)
+
+_INTERACTIVE_BEAT = (
+    "While a multi-step job is running, give one short beat per step; "
+    "save the detail for whoever asks, and offer it rather than "
+    "volunteering it."
+)
+
+
+def test_background_exception_reaches_only_assistant_text() -> None:
+    carriers = _compiled_resident_carriers()
+    expected_names = sorted(
+        f"{role}:{surface}"
+        for role in ("assistant", "butler", "concierge")
+        for surface in ("text", "voice", "restricted_webhook")
+    )
+    assert len(carriers) == 9
+    assert sorted(name for name, _ in carriers) == expected_names
+    assert [
+        _collapse_ws(body).count(_collapse_ws(_BACKGROUND_EXCEPTION))
+        for _name, body in carriers
+    ] == [int(name == "assistant:text") for name, _body in carriers]
+    assert _collapse_ws(dict(carriers)["assistant:text"]).count(
+        _collapse_ws(_INTERACTIVE_BEAT)) == 1
