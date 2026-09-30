@@ -230,10 +230,10 @@ to replace an operator's settings and then offers an alternative that deletes th
 destroyed exactly what it was written to save, and the operator followed instructions.
 
 The rule governs what the advice PROPOSES. It is not a claim that the protected state is
-intact when the call returns — a refusal can still reach a transaction compensation that
-rewrites files the refused call never opened, which is a separate defect class and is
-tracked as one (#975). Advice must therefore say what the call did and what to keep, and must not
-assert an outcome the calling path does not control.
+intact when the call returns — that is the transactions' own guarantee, stated where they are
+(INV-SPEC-020 and INV-SPEC-021 in `architecture/specialist-bundle-recovery.md`, which exempt
+removal), and not something advice can promise. Advice must therefore say what the call did
+and what to keep, and must not assert an outcome the calling path does not control.
 Recovery advice must preserve retained operator state and the resources needed to resume
 using it. Do not recommend an action that would discard, overwrite or make that state
 unrecoverable unless a usable recovery copy has been verified to survive the action.

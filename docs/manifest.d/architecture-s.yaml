@@ -58,10 +58,22 @@
 
 - doc: architecture/specialist-bundle-recovery.md
   summary: What a specialist bundle transaction does when it does not succeed — the pre-journal refusals, the sync-phase and sequencer compensations, the boot replay and quarantine pass, the age sweeps that follow it, and the race and failed-rotation refusals.
-  when_changing: bundle-transaction failure behaviour, the compensation a failed sync phase or sequencer runs, boot reconciliation of bundle journals, or the consent-receipt and staging age sweeps
+  when_changing: bundle-transaction failure behaviour, the compensation a failed sync phase or sequencer runs, the pre-journal door that refuses a before-state it cannot record without loss, the reclassifying upgrade kept after activation, boot reconciliation of bundle journals, or the consent-receipt and staging age sweeps
+  covers:
+    - casa/rootfs/opt/casa/specialist_install.py::_declarations_for_capture
+    - casa/rootfs/opt/casa/specialist_install.py::_admit_lossy_capture
+    - casa/rootfs/opt/casa/specialist_bundle_journal.py::lossy_capture_files
+    - casa/rootfs/opt/casa/specialist_bundle_journal.py::BundleTxn.activation_kept
+    - casa/rootfs/opt/casa/specialist_bundle_journal.py::BundleTxn.finish_forward
   tests:
     - tests/test_specialist_bundle_journal.py
+    - tests/test_specialist_capture_admission.py
+    - tests/test_specialist_reclassifying_upgrade.py
   related: [architecture/specialist-bundle-transactions.md, architecture/specialist-lifecycle.md, architecture/personality.md]
+  defines_invariants: [INV-SPEC-020, INV-SPEC-021]
+  invariant_tests:
+    INV-SPEC-020: [tests/test_specialist_capture_admission.py::test_install_over_active_refuses_before_capture, tests/test_specialist_capture_admission.py::test_pending_recommit_compensation_uses_carried_declarations, tests/test_specialist_capture_admission.py::test_pending_only_rollback_refuses_before_capture, tests/test_specialist_capture_admission.py::test_rollback_unclassifiable_prior_refuses_before_capture, tests/test_specialist_capture_admission.py::test_rollback_compensation_uses_carried_declarations, tests/test_specialist_capture_admission.py::test_persona_override_unclassifiable_prior_refuses_before_capture, tests/test_specialist_capture_admission.py::test_persona_override_compensation_uses_carried_declarations, tests/test_specialist_capture_admission.py::test_uninstall_unclassifiable_store_reaches_core, tests/test_specialist_reclassifying_upgrade.py::test_a_loss_outside_the_installed_generation_is_refused, tests/test_specialist_reclassifying_upgrade.py::test_an_install_loss_is_refused, tests/test_specialist_reclassifying_upgrade.py::test_an_install_over_any_active_version_refuses_before_its_journal]
+    INV-SPEC-021: [tests/test_specialist_capture_admission.py::test_rejected_secret_config_preserves_active_and_allows_retry, tests/test_specialist_capture_admission.py::test_pre_activation_boot_replay_preserves_reclassified_tuple_files, tests/test_specialist_capture_admission.py::test_reclassifying_upgrade_sequence_failure_keeps_activated_tuple, tests/test_specialist_capture_admission.py::test_reclassifying_upgrade_boot_finishes_pending_prior_rotation, tests/test_specialist_capture_admission.py::test_nonreclassifying_sequence_failure_restores_complete_a, tests/test_specialist_reclassifying_upgrade.py::test_the_journal_records_lossy_names_and_no_value, tests/test_specialist_reclassifying_upgrade.py::test_finish_forward_strips_only_what_the_prior_and_incoming_declare, tests/test_specialist_reclassifying_upgrade.py::test_a_failure_after_activation_keeps_the_new_version_and_the_retry_finishes, tests/test_specialist_reclassifying_upgrade.py::test_boot_finishes_the_prior_after_a_crash_between_the_swap_and_its_rotation, tests/test_specialist_reclassifying_upgrade.py::test_a_successful_upgrade_whose_prior_rename_failed_leaves_no_plain_copy, tests/test_specialist_reclassifying_upgrade.py::test_an_outstanding_prior_rotation_does_not_block_the_one_step_upgrade]
 
 - doc: architecture/specialist-bundle-transactions.md
   summary: What happens to an installed specialist after its install — the upgrade, rollback and uninstall transactions, the owned-plugin generation each publishes, and the crash journal that makes a bundle transaction recoverable.

@@ -80,7 +80,9 @@ compiled and committed.
 **INV-SPEC-003**: An upgrade failure retains the complete prior active tuple; a rollback restores it.
 
 Enforced by the upgrade core recording an error result without touching the running tuple,
-and by the rollback core's restoration from the retained prior.
+and by the rollback core's restoration from the retained prior. Scoped by INV-SPEC-021
+(`specialist-bundle-recovery.md`): a reclassifying upgrade that fails after its new version
+is already active keeps that version, because the tuple it replaced cannot be restored whole.
 
 On the receipt-bearing bundle arm the retention depends on something further back than
 the core, because a *refusal* there runs the compensation, and the compensation rewrites
@@ -102,9 +104,10 @@ direct library caller — still performs the read itself and raises the identica
 the hoist is the bundle arm's ordering, not the core's authority.
 
 What that ordering buys is bounded and worth stating exactly: it removes these refusals
-from the compensation's reach. It does not make the compensation lossless. A failure
-raised later in the window still restores from the recorded before-state, and that
-restore re-runs the capture sanitizer.
+from the compensation's reach. A failure raised later in the window still restores from
+the recorded before-state, and that restore re-runs the capture sanitizer — which is lossless
+only because of the door and the carry described next (INV-SPEC-020), and because a file the
+incoming declaration strips is never written back at all (INV-SPEC-021).
 
 What the capture is sanitized against is then carried rather than looked up. A captured
 snapshot's keys are removed only because some component declares them secret, and the
@@ -120,7 +123,9 @@ refusal rather than a record. "I cannot tell which of these keys are secret" is 
 answer to *may this go in a journal* and the wrong answer to *what was on disk before* —
 and the compensation asks the second question. So the upgrade raises
 `prior_schema_unreadable` with nothing staged, captured or compensated, and the operator's
-tuple untouched and still in service. The refusal offers no uninstall and reinstall as its
+tuple untouched and still in service. The install, the rollback and the specialist persona
+override run the same door before their own journals and carry what it classified; the
+uninstall does not, because removal stays unconditional (INV-SPEC-020). The refusal offers no uninstall and reinstall as its
 recovery, and neither does this document: an uninstall deletes the instance directory, and with
 it the saved settings the refusal preserved.
 

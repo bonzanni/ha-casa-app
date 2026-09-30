@@ -39,10 +39,13 @@ What this file pins, in order:
   carry, with its own mutation control.
 
 Counts, not statuses. What this file does NOT claim: it does not certify the
-compensation generally. The install and uninstall transactions carry no
-declarations at all, and the incoming-secret union above empties a capture with
-the carry complete. All of that is measured and tracked as #975; this change no
-longer contributes a route into any of it.
+compensation generally. The rest of that — the pre-journal door and carry for
+install, rollback and persona override, and the incoming-secret union's lossy
+captures, which are named in the journal and never written back — is #975's,
+pinned in `test_specialist_capture_admission.py` and
+`test_specialist_reclassifying_upgrade.py` (INV-SPEC-020, INV-SPEC-021). The
+uninstall still carries no declarations: removal stays unconditional, and its
+compensation keeps its accepted behaviour.
 """
 import inspect
 from pathlib import Path

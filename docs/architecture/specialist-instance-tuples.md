@@ -109,8 +109,10 @@ unreadable store is therefore left exactly as it was found, and it loads. A tupl
 digest does not cover its mapping is still tombstoned (INV-SPEC-009) — with its values in
 place when they could not be classified.
 
-What it does not cover: the boot journal replay's own sanitizer, which strips every key when
-its union of declarations cannot be established and is tracked as #975; an unparseable tuple
+What it does not cover: the boot journal replay's own sanitizer, which classifies from the
+declarations its journal carries (INV-SPEC-020, `architecture/specialist-bundle-recovery.md`)
+and, for a journal written before those were carried, still strips every key when its union of
+declarations cannot be established; an unparseable tuple
 and a snapshot that is not a mapping, which still fail closed; and a legacy plaintext that
 meets an unreadable store, which stays in the live file until a boot at which its component
 can be read — for a tuple with no usable root, indefinitely, though such a tuple never loads.
@@ -182,10 +184,12 @@ upgrade's above `specialist_bundle_journal.begin` with the rest of the bundle pr
 leaves no journal and runs no compensation, and the files are as the call found them.
 
 What the advice still does NOT say is that they are intact whatever else happens. A failure
-raised later in a bundle transaction restores from the recorded before-state, and that
-restore re-runs the capture sanitizer, which can write an emptied snapshot back over a tuple
-the failed call never opened — a separate defect class, tracked as #975. Advice states what
-its own call did, not an outcome the calling path does not control. This is the operating
+raised later in a bundle transaction restores from the recorded before-state; that capture is
+classified before the journal exists and carried, and a file whose copy lost a saved setting
+is never written back (INV-SPEC-020 and INV-SPEC-021,
+`architecture/specialist-bundle-recovery.md`). Those are the transactions' guarantees, stated
+where they are; advice states what its own call did, not an outcome the calling path does not
+control. This is the operating
 doctrine's general preservation rule, declared narrowly over these two paths as INV-OPS-001
 (`doctrine/operating-casa.md`).
 
