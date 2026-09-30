@@ -122,7 +122,8 @@ def _message_text(message: Any) -> str:
 
 async def transcript_to_items(
     messages: list, *, speaker_provenance: SpeakerProvenance,
-    user_provenance: SpeakerProvenance, scheduled: bool | None = None,
+    user_provenance: SpeakerProvenance, semantic_memory: Any,
+    scheduled: bool | None = None,
 ) -> list[dict[str, Any]]:
     """Turn an SDK transcript into provenance-bearing Hindsight retain items
     (design §4.2; tier model §2.4; personality Task 10). Each user turn is
@@ -144,7 +145,11 @@ async def transcript_to_items(
     the time of the user turn it answered — the nearest preceding user turn's
     envelope time, cleared by a user turn that had none (the SDK transcript
     carries no per-message time) — and when it is ``True`` every item carries
-    :data:`SCHEDULED_MARK` except an operator answer or a delegated result."""
+    :data:`SCHEDULED_MARK` except an operator answer or a delegated result.
+
+    ``semantic_memory`` (#1123) is the memory the caller retains the items
+    into: each item's stored tier is read from it first, so a save never
+    lowers one (a read that fails raises, and the caller's failure arm runs)."""
     known = scheduled is not None
     mark = (SCHEDULED_MARK,)
     last_ts: str | None = None
@@ -186,7 +191,10 @@ async def transcript_to_items(
     # item (the structural-metadata-only rule).
     with classify_stats() as stats:
         items = await build_retain_items(
-            turns, classify=classify_tier, classify_concurrency=_CLASSIFY_CONCURRENCY,
+            turns, classify=classify_tier,
+            stored_tags=lambda document_id: semantic_memory.document_tags(
+                bank_id("casa"), document_id),
+            classify_concurrency=_CLASSIFY_CONCURRENCY,
         )
     if stats.defaulted:
         logger.warning(
@@ -281,6 +289,7 @@ async def save_session(
                 items = await transcript_to_items(
                     messages, speaker_provenance=snapshot.speaker_provenance,
                     user_provenance=snapshot.user_provenance,
+                    semantic_memory=semantic_memory,
                     scheduled=snapshot.scheduled,
                 )
                 if items:
@@ -424,7 +433,7 @@ async def retry_spooled_cold_retains(
                 messages = await asyncio.to_thread(get_session_messages, sid, directory)
                 items = await transcript_to_items(
                     messages, speaker_provenance=speaker, user_provenance=user,
-                    scheduled=scheduled)
+                    semantic_memory=semantic_memory, scheduled=scheduled)
                 if items:
                     await semantic_memory.retain(bank_id("casa"), items, async_=True)
             path.unlink(missing_ok=True)
@@ -495,7 +504,8 @@ async def retain_cold_session(
             )
             items = await transcript_to_items(
                 messages, speaker_provenance=old.speaker_provenance,
-                user_provenance=old.user_provenance, scheduled=old.scheduled,
+                user_provenance=old.user_provenance,
+                semantic_memory=semantic_memory, scheduled=old.scheduled,
             )
             if items:
                 await semantic_memory.retain(bank_id("casa"), items, async_=True)

@@ -185,6 +185,8 @@ async def retain_delegated(
         async with FENCE.retaining(fence_generation):
             items = await build_retain_items(
                 turns, classify=classify_tier,
+                stored_tags=lambda document_id: semantic_memory.document_tags(
+                    bank_id("casa"), document_id),
                 application_tags=application_tags,
             )
             if items:
