@@ -798,17 +798,27 @@ def _apply_specialist_override_locked(
         slug, plugin_registry.load_registry(registry_path))
     before_tuple_files = _tuple_files_snapshot(slug_dir)
     ack_records = acks.snapshot_slug(slug)
+    # #975: the door (the operator's 2026-09-27 ruling). The checks above read
+    # only the ACTIVE root's store; the capture also holds the retained prior,
+    # whose component may be unreadable. Classify every root it holds saved
+    # settings for, or refuse here with no journal; carry what is classified so
+    # the compensation never reads the store.
+    from specialist_install import _declarations_for_capture
+    declared_secret_names = _declarations_for_capture(
+        before_tuple_files, specialists_dir=slug_dir.parent, slug=slug)
     journal = specialist_bundle_journal.begin(
         "persona_override", slug, before_entries=before_owned,
         before_tuple_files=before_tuple_files, ack_records=ack_records,
         # #966: the same tree the BundleTxn below restores into — the capture
         # was classified against the module default instead.
         specialists_dir=slug_dir.parent,
+        declared_secret_names=declared_secret_names,
         ops_dir=ops_dir)
     rollback_txn = BundleTxn(
         journal_path=journal, slug=slug, before_entries=before_owned,
         before_tuple_files=before_tuple_files, ack_records=ack_records,
-        op="persona_override", registry_path=registry_path,
+        op="persona_override", declared_secret_names=declared_secret_names,
+        registry_path=registry_path,
         specialists_dir=slug_dir.parent, acks_path=acks.path,
         agents_specialists_dir=Path("/config/agents/specialists"))
     try:

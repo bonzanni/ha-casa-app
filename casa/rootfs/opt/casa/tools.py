@@ -14453,6 +14453,24 @@ async def _bundle_compensate(txn) -> bool:
     semantics are unchanged (completed exactly when the disk rollback
     succeeded)."""
     import specialist_bundle_journal
+    # #975 (the operator's 2026-09-29 ruling): a reclassifying upgrade whose
+    # new version is already active is KEPT — the version it replaced cannot be
+    # restored whole. No rollback and no compensating sequencer (which would
+    # un-publish the kept version's artifacts): finish the retained prior and
+    # complete the journal. If that cleanup fails the journal stays for boot,
+    # which finishes it the same way.
+    activation_kept = getattr(txn, "activation_kept", None)
+    if callable(activation_kept) and await asyncio.to_thread(activation_kept):
+        try:
+            await asyncio.to_thread(txn.finish_forward)
+        except Exception:  # noqa: BLE001 — boot finishes it
+            logger.warning(
+                "bundle upgrade of %s kept its new version, but finishing its "
+                "retained prior failed; leaving the journal for boot",
+                txn.slug, exc_info=True)
+            return {"disk_ok": False, "runtime_ok": False, "kept_new_version": True}
+        await asyncio.to_thread(specialist_bundle_journal.complete, txn.journal_path)
+        return {"disk_ok": True, "runtime_ok": False, "kept_new_version": True}
     try:
         await asyncio.to_thread(txn.rollback_disk)
     except Exception:  # noqa: BLE001 — leave the journal for boot reconcile
@@ -14480,6 +14498,17 @@ async def _bundle_compensate(txn) -> bool:
     return {"disk_ok": True, "runtime_ok": runtime_ok}
 
 
+# #975: the one shape of failure after which nothing is rolled back.
+_KEPT_NEW_VERSION_ENVELOPE = {
+    "kept_new_version": True,
+    "outcome": (
+        "the new version is active and stays active: the version it replaced "
+        "cannot be restored whole, because a setting it kept as a plain value is "
+        "now secret. Nothing was rolled back; the failure above is reported, and "
+        "re-running the same upgrade finishes whatever it left undone"),
+}
+
+
 async def _bundle_seq_failure(txn, seq: dict, *, slug: str) -> dict:
     """Whole-branch B: a sequencer that returned ok:false — compensate and
     build the ok:false envelope. P1-1: when the disk rollback could not
@@ -14501,6 +14530,16 @@ async def _bundle_seq_failure(txn, seq: dict, *, slug: str) -> dict:
            "not_ready": seq.get("not_ready"),
            "absent_violations": seq.get("absent_violations"),
            "verify": seq.get("verify")}
+    if compensated.get("kept_new_version"):
+        # #975: nothing was rolled back, so none of the rollback wording below
+        # is true — say what holds instead.
+        env.update(_KEPT_NEW_VERSION_ENVELOPE)
+        if not compensated["disk_ok"]:
+            env["outcome"] += (
+                "; finishing the retained prior version failed, so its undo "
+                "record is still standing and further changes to this "
+                "specialist are refused until Casa restarts and finishes it")
+        return env
     if not compensated["disk_ok"]:
         env["compensation_failed"] = True
         # #838: this is the arm that CREATES recovery debt, and it was the only
@@ -15702,6 +15741,11 @@ async def specialist_upgrade(args: dict) -> dict:
                 acks=SpecialistInstallAckStore(),
             )
         except SpecialistInstallError as exc:
+            if exc.kind == "upgrade_kept_new_version":
+                # #975: the library kept the new version (it failed after
+                # activation); the receipt and staging are kept for the re-run.
+                return {"ok": False, "kind": exc.kind, "detail": exc.detail,
+                        **_KEPT_NEW_VERSION_ENVELOPE}
             return {"ok": False, "kind": exc.kind, "detail": exc.detail}
         try:
             seq = await _bundle_reload_and_verify(

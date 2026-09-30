@@ -297,6 +297,49 @@ def _sanitize_captured_tuple_files(
     return sanitized
 
 
+def lossy_capture_files(
+    tuple_files: "dict[str, str | None]", *, op: str, target_root: str,
+    declared: "dict | None",
+) -> "tuple[str, ...]":
+    """#975: the captured tuple files whose journalled copy LOSES a saved
+    setting — a key the file holds as a plain value that only the INCOMING
+    component declares secret, so the capture sanitizer removes it and no
+    restore could ever put it back.
+
+    Only an install or an upgrade unions an incoming root into the sanitizer, so
+    only they can lose a setting this way; every other op sanitizes a file
+    against its own root alone. Reads the PLAINTEXT capture it is handed and the
+    carried declarations, never the store: a root the map does not carry is not
+    classified here (the door that produced the map refuses one before any
+    journal exists). Returns sorted filenames — names only, no value and no
+    digest, so recording it keeps the #372 D9a rule."""
+    if op not in ("install", "upgrade") or not target_root or not declared:
+        return ()
+    incoming = declared.get(target_root)
+    if incoming is None:
+        return ()
+    lossy = []
+    for filename, content in tuple_files.items():
+        if content is None or filename not in _CAPTURED_TUPLE_FILES:
+            continue
+        try:
+            payload = yaml.safe_load(content)
+        except yaml.YAMLError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        snapshot = payload.get("config_snapshot")
+        root = payload.get("root")
+        if not isinstance(snapshot, dict) or not snapshot or not isinstance(root, str):
+            continue
+        own = declared.get(root)
+        if own is None:
+            continue
+        if set(snapshot) & (set(incoming) - set(own)):
+            lossy.append(filename)
+    return tuple(sorted(lossy))
+
+
 def begin(op: str, slug: str, *, before_entries: list[dict],
           before_tuple_files: dict[str, "str | None"],
           ack_records: list[dict], receipt_digest: str = "",
@@ -332,6 +375,11 @@ def begin(op: str, slug: str, *, before_entries: list[dict],
     # digest computed over them, at any moment of its life.
     declared_secret_names = {
         root: sorted(names) for root, names in (declared_secret_names or {}).items()}
+    # #975: classified from the PLAINTEXT capture, before it is sanitized below —
+    # after sanitizing, a stripped key is indistinguishable from an absent one.
+    lossy = lossy_capture_files(
+        before_tuple_files, op=op, target_root=target_root,
+        declared=declared_secret_names)
     before_tuple_files = _sanitize_captured_tuple_files(
         dict(before_tuple_files), op=op, target_root=target_root,
         specialists_dir=Path(specialists_dir if specialists_dir is not None
@@ -357,6 +405,12 @@ def begin(op: str, slug: str, *, before_entries: list[dict],
         "declared_secret_names": declared_secret_names,
         "steps_done": [],
     }
+    if lossy:
+        # #975: filenames only. Written in the journal's FIRST write, before any
+        # mutation, and never changed after — it names the files no restore may
+        # write, whether or not the transaction changes them, so there is no
+        # write it has to be ordered against.
+        payload["lossy_tuple_files"] = list(lossy)
     _fsync_write(path, _dump(payload))
     return path
 
@@ -425,6 +479,67 @@ class BundleTxn:
     specialists_dir: Path = SPECIALISTS_DIR
     acks_path: Path = ACKS_PATH
     agents_specialists_dir: Path = Path("/config/agents/specialists")
+    # #975: the captured tuple files whose journalled copy lost a saved setting
+    # to the incoming component's secret declarations (`lossy_capture_files`,
+    # recorded by `begin`). No restore writes one of these. Only the upgrade the
+    # operator's 2026-09-29 ruling allows can carry any — every other lossy
+    # capture is refused before its journal exists. Default () is today's
+    # behaviour, which is what every other transaction and a pre-#975 journal get.
+    lossy_tuple_files: "tuple[str, ...]" = ()
+
+    def activation_kept(self) -> bool:
+        """#975: has this reclassifying upgrade already made its new version
+        active? Then the version it replaced cannot be restored whole — its
+        saved plain value is now a secret no journal may hold — so the new
+        version is kept and the failure reported instead of undone.
+
+        Read off the file it names: the `root` recorded in `active.yaml` is the
+        incoming root exactly when the upgrade's `os.replace` of that file has
+        happened. The door admits a lossy capture only when the installed root
+        differs from the incoming one, so nothing else can make this true —
+        and it is a fact on disk, correct after a crash at any point, where a
+        step mark could lag or lead the write it records. An unreadable file
+        answers False: the restricted restore that follows never writes a lossy
+        file, so it cannot lose the installed settings either way."""
+        if not self.lossy_tuple_files or self.op != "upgrade" or not self.target_root:
+            return False
+        active = Path(self.specialists_dir) / self.slug / "active.yaml"
+        try:
+            doc = yaml.safe_load(active.read_text(encoding="utf-8"))
+        except (OSError, ValueError, yaml.YAMLError):
+            return False
+        return isinstance(doc, dict) and doc.get("root") == self.target_root
+
+    def finish_forward(self) -> None:
+        """#975: the one piece of the kept upgrade that is still owed when its
+        journal is completed without a restore. The commit writes the new active
+        FIRST and only then promotes the outgoing tuple — a byte copy carrying
+        the reclassified setting as a plain value — into `active.prior.yaml` and
+        strips it there. A process that dies, or a promotion that fails, between
+        those steps leaves that plain copy in the rollback temporary, and the
+        next commit would promote it unstripped. So: complete the pending
+        rotation, then sanitize the retained prior with the SAME per-file rule a
+        capture uses (its own root's declarations plus the incoming root's, from
+        the carry). Idempotent; a no-op when the commit already did both.
+        Raises on any failure, so a caller keeps the journal for the next try."""
+        from atomic_io import atomic_write_text
+        from personality_binding import InstanceDir
+        from specialist_materialize import MATERIALIZE_LOCK
+
+        slug_dir = Path(self.specialists_dir) / self.slug
+        prior = slug_dir / "active.prior.yaml"
+        with MATERIALIZE_LOCK:
+            InstanceDir(slug_dir).complete_pending_rotation()
+            if not prior.is_file():
+                return
+            content = prior.read_text(encoding="utf-8")
+            cleaned = _sanitize_captured_tuple_files(
+                {"active.prior.yaml": content}, op="upgrade",
+                target_root=self.target_root,
+                specialists_dir=Path(self.specialists_dir),
+                declared=dict(self.declared_secret_names or {}))["active.prior.yaml"]
+            if cleaned != content:
+                atomic_write_text(prior, cleaned, mode=0o600)
 
     def rollback_disk(self) -> None:
         """Restore the registry entries, tuple/sidecar files, and consent-ack
@@ -474,8 +589,14 @@ class BundleTxn:
         # (or with unusable provenance) restores stripped-and-tombstoned
         # state, never plaintext or a secret-derived digest. Idempotent for
         # captures D9a already sanitized.
+        # #975: a capture that lost a saved setting is never written back. The
+        # only transaction carrying one is the reclassifying upgrade, and its
+        # window before activation writes neither of the files it can name
+        # (`active.yaml`, `active.prior.yaml` — the door completed any pending
+        # rotation first), so leaving them alone IS restoring them exactly.
         restored_tuple_files = _sanitize_captured_tuple_files(
-            dict(self.before_tuple_files), op=self.op,
+            {name: content for name, content in self.before_tuple_files.items()
+             if name not in self.lossy_tuple_files}, op=self.op,
             target_root=self.target_root,
             specialists_dir=Path(self.specialists_dir),
             declared=dict(self.declared_secret_names or {}))
@@ -778,6 +899,14 @@ def _valid_payload(payload: Any, slug: str) -> bool:
                 if not isinstance(names, list) or not all(
                         isinstance(n, str) for n in names):
                     return False
+        # #975: additive and optional in the same way — absent means nothing
+        # was lossy (or a pre-#975 journal). Present: a list of the fixed tuple
+        # filenames, nothing else.
+        lossy = payload.get("lossy_tuple_files")
+        if lossy is not None:
+            if not isinstance(lossy, list) or not all(
+                    isinstance(n, str) and n in TUPLE_FILENAMES for n in lossy):
+                return False
         before = payload.get("before")
         if not isinstance(before, dict):
             return False
@@ -943,11 +1072,34 @@ def _reconcile_journals(ops_dir: Path, *, registry_path: Path,
             declared_secret_names=(
                 payload.get("declared_secret_names")
                 if isinstance(payload.get("declared_secret_names"), dict) else {}),
+            # #975: the files no restore may write, from the journal's first
+            # write — `_valid_payload` has already checked its shape.
+            lossy_tuple_files=tuple(payload.get("lossy_tuple_files") or ()),
             registry_path=registry_path,
             specialists_dir=specialists_dir,
             acks_path=acks_path,
             agents_specialists_dir=agents_specialists_dir,
         )
+        if txn.activation_kept():
+            # #975: the reclassifying upgrade had already made its new version
+            # active when the process stopped. Keep it: finish the prior's
+            # rotation and sanitization, then drop the journal. Never the
+            # restore (it would rewrite the old version from a capture that
+            # lost a setting) and never the quarantine (it would drop the
+            # owned rows of a version that is whole on disk) — a failure keeps
+            # the journal, so the next boot tries again.
+            try:
+                txn.finish_forward()
+            except Exception:  # noqa: BLE001 — degrade-and-boot
+                logger.exception(
+                    "slug %s: the upgraded version is kept, but finishing its "
+                    "prior rotation failed; the journal is retained so the next "
+                    "boot retries", slug)
+                actions.append({"slug": slug, "action": "kept_activated_retry"})
+                continue
+            path.unlink()
+            actions.append({"slug": slug, "action": "kept_activated"})
+            continue
         try:
             txn.rollback_disk()
         except Exception:  # noqa: BLE001 — degrade-and-boot
