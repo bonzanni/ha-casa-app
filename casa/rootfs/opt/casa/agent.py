@@ -2673,9 +2673,10 @@ class Agent:
             _recall_clearance = _current_origin_clearance(channel)
             try:
                 # Bounded deadline: never the full HTTP timeout. No synchronous
-                # retry on failure — a 504 means the reranker is overloaded and
-                # retrying makes it worse (the seam itself only retries
-                # connection-level drops, never HTTP errors).
+                # retry on failure here — a 504 means the reranker is overloaded
+                # and retrying makes it worse (the seam itself retries only
+                # connection-level drops and, #1117, one 503 inside this same
+                # deadline).
                 #
                 # Task 11: the awaited method is now the typed, attributed
                 # recall_items; the OWN _RecallBreaker/wait_for/record_* logic

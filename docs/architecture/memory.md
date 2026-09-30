@@ -70,10 +70,11 @@ already-framed unknown result. The framing is attached where a slice reaches an 
 can *say something to someone*, which is where the false denial happens.
 
 **A recalled fact says when it was recorded, and whether a scheduled turn last saved it —
-two separate facts, and neither decides which memory is right.** Each rendered hit carries a
-`[recorded <weekday> <day> <month> <year>]` line, an absolute date in the operator's timezone
-(a rendered slice can sit in a resumed session's prompt for days, so a relative age would go
-stale). The date is the backend's recorded time: the turn's own time for anything saved with
+two separate facts, and neither decides which memory is right.** Each rendered hit the backend
+returned with a timezone-aware date carries a `[recorded <weekday> <day> <month> <year>]` line,
+an absolute date in the operator's timezone (a rendered slice can sit in a resumed session's
+prompt for days, so a relative age would go stale); a hit whose date is absent, unparseable or
+naive renders without that line, and is not an error. The date is the backend's recorded time: the turn's own time for anything saved with
 one — user turns, and the model's lines once their session's scheduled marker is known — and
 otherwise the time the save ran, which is never earlier than when the text was said. For
 identical text the backend keeps the FIRST date, so a fact re-asserted verbatim still shows
@@ -85,8 +86,8 @@ was last saved, not where it was first said; it is never fused with the date int
 … on …" claim. Hits stay in the backend's order, and a tight budget can keep an older or a
 scheduled line and drop a newer contradicting one; what settles a question about current
 state is a live read, which the assistant's doctrine requires before stating such state as
-current. The recall request carries Casa's own clock in the operator's timezone, so the
-backend anchors "today" on it.
+current. The recall request carries Casa's own clock in the operator's timezone as its
+`query_timestamp`.
 
 **Auto-recall is not "every turn".** It happens when a turn's options are built, which is a
 fresh non-voice session only — a warm reused client skips that path entirely, and voice never
