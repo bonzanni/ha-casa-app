@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import datetime
 from types import MappingProxyType
 from typing import Literal, Mapping
 
@@ -30,6 +31,10 @@ class RetainedTurn:
     # is stripped from the hashed/stored content. None when the source carried
     # no envelope (agent turns, delegated writes).
     timestamp: str | None = None
+    # #1117: application tags for THIS turn only, added to the batch's
+    # ``application_tags`` (the scheduled mark rides here). Same reserved-family
+    # rules as the batch tags; empty for every writer that does not set it.
+    application_tags: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +51,10 @@ class RecallHit:
     metadata: Mapping[str, object] | None
     context: str | None
     score: float | None
+    # #1117: when the backend recorded this memory (Hindsight ``mentioned_at``:
+    # the retain item's timestamp when one was sent, else the save time).
+    # ``None`` when the result carried no usable tz-aware date.
+    mentioned_at: datetime | None = None
 
     @staticmethod
     def freeze_metadata(value: dict[str, object] | None):

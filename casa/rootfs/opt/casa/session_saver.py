@@ -19,6 +19,7 @@ from claude_agent_sdk import get_session_messages
 from hindsight_ids import bank_id
 from memory_provenance import build_retain_items
 from personality_types import RetainedTurn, SpeakerProvenance
+from recall_renderer import SCHEDULED_MARK
 # #526: the "guard unconditionally" sentinel — save_session's
 # ``expected_generation`` default must forward "omitted" (not None, which
 # means "snapshotted a pre-restart entry with no live generation").
@@ -67,6 +68,40 @@ def freshness_window(channel: str) -> timedelta:
     return timedelta(hours=int(os.environ.get("FRESHNESS_TELEGRAM_HOURS", _DEFAULT_TELEGRAM_H)))
 
 
+# #1117: the two user-turn classes a scheduled session holds that are NOT
+# scheduled output, recognised by the fixed text their one producer writes (read
+# AFTER the time envelope is split off, never on the raw transcript text):
+# - the operator's tap, ``scheduled_asks._terminal_text``'s answer arm
+#   (``[answer to <rid>] the operator tapped: <choice>``) — ``[no answer to``
+#   continuations are Casa's own and stay marked;
+# - a delegated result, every branch of ``Agent._synthesize_delegation_turn``
+#   (opens ``[System notification: `` and closes with the reply instruction).
+# Neither producer's wording may change without breaking
+# tests/test_pin_1117_dated_marked_recall.py, which builds every real branch.
+# A scheduled prompt that itself carries one of these shapes is saved unmarked:
+# the misreading goes toward "ordinary memory" and never drops anything.
+_OPERATOR_ANSWER_RE = re.compile(r"\[answer to [^\]\n]+\] the operator tapped: ")
+_DELEGATION_NOTICE_PREFIX = "[System notification: "
+_DELEGATION_NOTICE_CLOSING = "Reply to the user via their original channel. Be concise."
+
+
+def _is_unmarked_user_turn(text: str) -> bool:
+    """Is this (envelope-free, stripped) user turn of a scheduled session one
+    the rulings keep an ordinary memory — an operator answer or a delegated
+    result?"""
+    if _OPERATOR_ANSWER_RE.match(text):
+        return True
+    return (text.startswith(_DELEGATION_NOTICE_PREFIX)
+            and text.endswith(_DELEGATION_NOTICE_CLOSING))
+
+
+def _decode_scheduled(value: object) -> bool | None:
+    """The session marker's three read states (#1117): exactly ``True`` or
+    ``False`` as stored, anything else — absent (written before the marker
+    existed) or corrupt — is UNKNOWN (``None``), never "not scheduled"."""
+    return value if isinstance(value, bool) else None
+
+
 def _message_text(message: Any) -> str:
     """Extract plain text from a SessionMessage.message payload. The payload is
     Any: either a string, or an Anthropic-style {role, content} where content is
@@ -87,7 +122,7 @@ def _message_text(message: Any) -> str:
 
 async def transcript_to_items(
     messages: list, *, speaker_provenance: SpeakerProvenance,
-    user_provenance: SpeakerProvenance,
+    user_provenance: SpeakerProvenance, scheduled: bool | None = None,
 ) -> list[dict[str, Any]]:
     """Turn an SDK transcript into provenance-bearing Hindsight retain items
     (design §4.2; tier model §2.4; personality Task 10). Each user turn is
@@ -101,7 +136,18 @@ async def transcript_to_items(
     ``document_id`` (user_peer- or persona-identity-keyed) makes the same turn
     retained from any later session upsert to the SAME document instead of
     duplicating. ``classify_tier`` is passed by name so tests that monkeypatch
-    ``session_saver.classify_tier`` still take effect."""
+    ``session_saver.classify_tier`` still take effect.
+
+    ``scheduled`` (#1117) is the session's persisted marker. ``None`` (unknown:
+    an entry or spool record written before the marker existed) keeps exactly
+    the form below from before it. Once it is KNOWN, each model line carries
+    the time of the user turn it answered — the nearest preceding user turn's
+    envelope time, cleared by a user turn that had none (the SDK transcript
+    carries no per-message time) — and when it is ``True`` every item carries
+    :data:`SCHEDULED_MARK` except an operator answer or a delegated result."""
+    known = scheduled is not None
+    mark = (SCHEDULED_MARK,)
+    last_ts: str | None = None
     turns: list[RetainedTurn] = []
     for m in messages:
         text = _message_text(getattr(m, "message", None))
@@ -117,11 +163,17 @@ async def transcript_to_items(
             # so id and stored text are envelope-free while the wall-clock time
             # survives out-of-band on the item.
             ts, text = split_time_envelope(text)
+            last_ts = ts
             if not text.strip():
                 continue
-            turns.append(RetainedTurn(text, user_provenance, timestamp=ts))
+            marked = scheduled is True and not _is_unmarked_user_turn(text.strip())
+            turns.append(RetainedTurn(text, user_provenance, timestamp=ts,
+                                      application_tags=mark if marked else ()))
         else:
-            turns.append(RetainedTurn(text, speaker_provenance))
+            turns.append(RetainedTurn(
+                text, speaker_provenance,
+                timestamp=last_ts if known else None,
+                application_tags=mark if scheduled is True else ()))
     if not turns:
         return []
     # #508: count failure-defaults across the whole batch so the operator sees
@@ -229,6 +281,7 @@ async def save_session(
                 items = await transcript_to_items(
                     messages, speaker_provenance=snapshot.speaker_provenance,
                     user_provenance=snapshot.user_provenance,
+                    scheduled=snapshot.scheduled,
                 )
                 if items:
                     await semantic_memory.retain(
@@ -311,6 +364,8 @@ def _spool_cold_retain(
             "channel": channel,
             "speaker_provenance": provenance_mapping(old.speaker_provenance),
             "user_provenance": provenance_mapping(old.user_provenance),
+            # #1117: the session marker (true/false/null = unknown).
+            "scheduled": old.scheduled,
             "attempts": attempts,
         }, mode=PRIVATE)
     except Exception:  # noqa: BLE001 — spooling is best-effort
@@ -358,6 +413,7 @@ async def retry_spooled_cold_retains(
             directory = str(record["directory"])
             speaker = provenance_from_mapping(record["speaker_provenance"])
             user = provenance_from_mapping(record["user_provenance"])
+            scheduled = _decode_scheduled(record.get("scheduled"))
         except (OSError, ValueError, KeyError, TypeError):
             logger.error(
                 "cold-retain retry: unreadable record %s — dropping", path.name)
@@ -367,7 +423,8 @@ async def retry_spooled_cold_retains(
             async with FENCE.retaining(fence_generation):
                 messages = await asyncio.to_thread(get_session_messages, sid, directory)
                 items = await transcript_to_items(
-                    messages, speaker_provenance=speaker, user_provenance=user)
+                    messages, speaker_provenance=speaker, user_provenance=user,
+                    scheduled=scheduled)
                 if items:
                     await semantic_memory.retain(bank_id("casa"), items, async_=True)
             path.unlink(missing_ok=True)
@@ -438,7 +495,7 @@ async def retain_cold_session(
             )
             items = await transcript_to_items(
                 messages, speaker_provenance=old.speaker_provenance,
-                user_provenance=old.user_provenance,
+                user_provenance=old.user_provenance, scheduled=old.scheduled,
             )
             if items:
                 await semantic_memory.retain(bank_id("casa"), items, async_=True)

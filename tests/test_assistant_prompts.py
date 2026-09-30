@@ -1124,13 +1124,21 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # word by word: exactly ONE `insert` on `assistant:text`, that sentence and
 # nothing else; the other eight carriers byte-identical. No retention claim
 # anywhere.
+# MOVED 2026-09-30 (#1117), the three `assistant:*` carriers ONLY. The Core
+# doctrine paragraph gains one sentence after "trust live tool results over
+# stale memory": before stating changeable household or device state as
+# current, read it live in this turn or say it has not been checked; a recalled
+# memory is history, not verification. Measured with `difflib` over base-vs-new
+# compiled text, word by word: exactly ONE `insert` per assistant carrier,
+# that sentence and nothing else; the six butler and concierge carriers
+# byte-identical. No retention claim anywhere.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
-        "6b448653f991d6f10cd0ad87fcfe4147bb1ab3411d0617afa6ebb8bd1df4b202",
+        "2d93c4b6db0a43610aa5ef94165b82581474825d10ee2b9cd8697b75009e36eb",
     "assistant:text":
-        "ae81d353157e6566eeda1c52040848d5a01e26275de89883516584bc34fd7b0c",
+        "6a1ab6eb2aa80a7786ecd782deb97634435136160f2aba52cc7738f516579250",
     "assistant:voice":
-        "c696b4c936e8d0010dfe47cd9245c3521c6d52fc0e19c2647d70a87d5282d4fa",
+        "3c783a79ee847344c8b0835e807904dbed51d46804b666e49f2755d154fd2dbb",
     "butler:restricted_webhook":
         "72684ce23f3aa2c41999930de39f583f2f2b52cf95cb0a38ba6be6b8a8bb30e3",
     "butler:text":
