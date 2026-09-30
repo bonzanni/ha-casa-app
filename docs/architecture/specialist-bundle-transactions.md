@@ -295,5 +295,6 @@ journal and be restorable by rollback, or a crash leaves it outside recovery.
 - [`architecture/specialist-lifecycle.md`](../architecture/specialist-lifecycle.md)
 - [`architecture/personality.md`](../architecture/personality.md)
 - [`architecture/plugin-mutation-tools.md`](../architecture/plugin-mutation-tools.md)
+- [`architecture/plugin-removal.md`](../architecture/plugin-removal.md)
 - [`architecture/persona-lifecycle.md`](../architecture/persona-lifecycle.md)
 <!-- END SOURCEMAP -->

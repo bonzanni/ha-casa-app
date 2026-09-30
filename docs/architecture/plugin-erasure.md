@@ -15,7 +15,7 @@ eraser, the finishing `plugin_remove` or `specialist_uninstall` call that remove
 only after a complete erasure, and the `plugin-env.conf` references Casa clears after an
 Erase everything. What a
 removal discloses when nothing was erased is
-[`plugin-mutation-tools.md`](plugin-mutation-tools.md)'s (INV-TOOL-007); the result broker
+[`plugin-removal.md`](plugin-removal.md)'s (INV-TOOL-007); the result broker
 the capture lives in is [`plugin-result-contract.md`](plugin-result-contract.md)'s; the
 grant identity of the Casa-dispatched turn is
 [`plugin-setup-turn.md`](plugin-setup-turn.md)'s (INV-PLUG-027); the uninstall transaction
@@ -326,7 +326,7 @@ the question and reports its data as surviving when it was erased, or the revers
 - `tests/test_plugin_erase_fence.py`
 
 **Related**
-- [`architecture/plugin-mutation-tools.md`](../architecture/plugin-mutation-tools.md)
+- [`architecture/plugin-removal.md`](../architecture/plugin-removal.md)
 - [`architecture/plugin-result-contract.md`](../architecture/plugin-result-contract.md)
 - [`architecture/plugin-setup-turn.md`](../architecture/plugin-setup-turn.md)
 - [`architecture/specialist-bundle-transactions.md`](../architecture/specialist-bundle-transactions.md)

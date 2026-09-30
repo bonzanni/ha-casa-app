@@ -55,7 +55,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | personas, bindings, prompt composition, the per-surface admission ceilings, or the binding digest | [`architecture/personality.md`](architecture/personality.md) |
 | plugin environment resolution or withholding, the plugin env conf file, or the plugin media outbox | [`architecture/plugin-runtime.md`](architecture/plugin-runtime.md) |
 | plugin installation, artifact identity, or protected-tool declarations | [`architecture/plugins.md`](architecture/plugins.md) |
-| plugin mutation sequencing, a plugin or specialist mutation envelope, what a result may say about an integration being live, the removal disclosure, or re-issuing a plugin-consent DM on demand | [`architecture/plugin-mutation-tools.md`](architecture/plugin-mutation-tools.md) |
+| plugin mutation sequencing, a plugin or specialist mutation envelope, what a result may say about an integration being live, or re-issuing a plugin-consent DM on demand | [`architecture/plugin-mutation-tools.md`](architecture/plugin-mutation-tools.md) |
 | plugin trigger declaration, the routing overlay, trigger consent, or per-trigger secret backing | [`architecture/plugin-triggers.md`](architecture/plugin-triggers.md) |
 | read clearance, the per-sender origin stamp, the engagement clearance clamp, or the executor-archive epoch scoping | [`architecture/memory-scoping.md`](architecture/memory-scoping.md) |
 | recall behaviour or the absence contract | [`architecture/memory.md`](architecture/memory.md) |
@@ -75,6 +75,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | the in_casa launch handoff, the launch-turn owner, what the engager is told about a launch outcome, the graceful stop's launch drains, or the engagement-outcome envelope | [`architecture/engagement-launch-detach.md`](architecture/engagement-launch-detach.md) |
 | the plugin file handoff folder, publish or capture, its sweep, or share_inbound_file's handoff side | [`architecture/plugin-handoff.md`](architecture/plugin-handoff.md) |
 | the plugin health report or its regeneration, the operator health notice or DM, health repeat suppression or dedup marks, or the plugin status tool | [`architecture/plugin-health.md`](architecture/plugin-health.md) |
+| the removal disclosure — what plugin_remove, a specialist bundle's owned-set swap or its compensation says a committed removal left behind | [`architecture/plugin-removal.md`](architecture/plugin-removal.md) |
 | the response-shape or prompt-file write guards, or why an edit to a resident's per-agent file is refused | [`architecture/prompt-file-guards.md`](architecture/prompt-file-guards.md) |
 | the setup tool's dispatch obligation or its consent gating | [`architecture/plugin-setup.md`](architecture/plugin-setup.md) |
 | the setup-dispatch gate — the applied state it recomputes before a setup tool is dispatched, or the overlay reads that fence the send | [`architecture/plugin-setup-dispatch-gate.md`](architecture/plugin-setup-dispatch-gate.md) |
