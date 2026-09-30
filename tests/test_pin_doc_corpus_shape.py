@@ -567,6 +567,54 @@ def test_the_completion_gate_and_committed_configuration_reload_declare_from_sep
     assert counts == (1, 1, 2), (counts, gate, reload)
 
 
+def test_mutation_envelope_and_committed_removal_disclosure_are_separate():
+    """#1113: keep the mutation envelope's three invariants together,
+    separate from committed-removal disclosure and its failure paragraphs.
+
+    DECLARED ownership partition: the split establishes this property.
+    This pins ownership and paragraph location, identified by lead phrases,
+    only—not prose correctness, one-hop sufficiency, or byte-identical
+    payload movement; those remain reviewer obligations.
+
+    The seam is the one the document names itself at c31c1e70:
+    ``docs/architecture/plugin-mutation-tools.md:11-14`` lists "what a
+    committed removal discloses about what it leaves behind" as its third
+    subject beside the commit-then-converge ordering and what an envelope
+    may claim; ``docs/architecture/tools-interface.md:16-19`` names the
+    same three clauses, ``docs/architecture/plugin-erasure.md:17-18``
+    already assigns the removal disclosure to INV-TOOL-007, and the row's
+    ``when_changing`` (``docs/manifest.d/architecture-plugin-m-r.yaml:6``)
+    routes "the removal disclosure" as its own clause while
+    ``defines_invariants`` (``:15``) lists all four ids on one document.
+    INV-DOC-007 (``docs/contributing/doc-contract.md:75``) owes the split.
+
+    At c31c1e70 all four invariants resolve to one document: the ownership
+    counts are (1, 1), not (1, 2). Both paragraph checks independently yield
+    (1, 1) at base and are regression arms.
+
+    Specified by **astra** in the drive red-case round.
+    """
+    envelope = {
+        _declaring_document(inv)
+        for inv in ("INV-TOOL-003", "INV-TOOL-004", "INV-TOOL-005")
+    }
+    removal = _declaring_document("INV-TOOL-007")
+    counts = (len(envelope), len(envelope | {removal}))
+    assert counts == (1, 2), (counts, envelope, removal)
+
+    texts = {
+        doc: _normalized((DOCS / doc).read_text())
+        for doc in _documents()
+    }
+    for lead in (
+        "**A removal path raises after the commit.**",
+        "**A removal's caller is cancelled after the commit.**",
+    ):
+        total = sum(text.count(lead) for text in texts.values())
+        owned = texts[removal].count(lead)
+        assert (total, owned) == (1, 1), (lead, total, owned)
+
+
 def test_turn_conduct_and_warm_client_life_have_distinct_owners():
     """#899: the conduct of one turn and the life of the warm client that turn
     runs on are two subjects, so INV-TURN-004 and INV-TURN-001 are declared by

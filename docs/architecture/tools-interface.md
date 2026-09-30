@@ -14,9 +14,10 @@ failures roll back versus which merely report. It covers families and contracts,
 per-tool catalog — the registry tuple is the authority on what exists. Dispatch and
 authorization live in `architecture/mcp-and-tools.md`; this file is about what the tools
 themselves guarantee. What the plugin and specialist mutation tools guarantee — how a
-mutation orders its registry commit against the convergence that follows, what its envelope
-may claim about a plugin's integration, and what a committed removal discloses — is in
-[`plugin-mutation-tools.md`](plugin-mutation-tools.md).
+mutation orders its registry commit against the convergence that follows, and what its
+envelope may claim about a plugin's integration — is in
+[`plugin-mutation-tools.md`](plugin-mutation-tools.md); what a committed removal discloses
+is in [`plugin-removal.md`](plugin-removal.md).
 
 ## Mental model
 
