@@ -7280,8 +7280,11 @@ async def recall_memory(args: dict) -> dict:
             "status": "unavailable",
             "message": (
                 "Long-term memory could not be checked (no memory backend). "
-                "Do NOT say the information doesn't exist — say memory "
-                "couldn't be checked."
+                "Do NOT say the information doesn't exist or that you don't "
+                "have it. If a person asked for something that needs memory, "
+                "tell them memory couldn't be checked. On a check nobody asked "
+                "for, this alone is not a reason to send anything; still "
+                "report what the task itself requires."
             ),
         })
 
@@ -7348,8 +7351,11 @@ async def recall_memory(args: dict) -> dict:
             "status": "unavailable",
             "message": (
                 "Long-term memory could not be checked (backend unavailable). "
-                "Tell the user memory couldn't be checked right now — do NOT "
-                "say the information doesn't exist or that you don't have it."
+                "Do NOT say the information doesn't exist or that you don't "
+                "have it. If a person asked for something that needs memory, "
+                "tell them memory couldn't be checked. On a check nobody asked "
+                "for, this alone is not a reason to send anything; still "
+                "report what the task itself requires."
             ),
         })
     # #369: the clamp is monotonic and the record is live, so re-resolving
@@ -7536,7 +7542,9 @@ async def share_inbound_file(args: dict) -> dict:
     "get_schedule",
     "Return your upcoming scheduled triggers (interval + cron) within a "
     "time window. Returns a markdown bullet list with name, type, cron/interval "
-    "description, and next fire time. Own-role only.",
+    "description, and next fire time. Own-role only. These are Casa's own "
+    "triggers and reminders for your role — not the operator's calendar or "
+    "agenda.",
     {"within_hours": int},
 )
 async def get_schedule(args: dict) -> dict:

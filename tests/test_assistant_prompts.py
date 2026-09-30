@@ -1116,11 +1116,19 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # drop-off paragraph (a pasted link no longer rides in a brief). Measured:
 # replacing the new paragraph with the #1048 one and removing the clause gives
 # the base text on every carrier, byte for byte. No retention claim anywhere.
+# MOVED 2026-09-30 (#1116), the `assistant:text` carrier ONLY. The Text
+# projection's beat-per-step paragraph gains one sentence: when a turn's own
+# instructions say it is a scheduled or background check, or that nothing is
+# seen until the turn ends, give no beats and deliver only what those
+# instructions ask for. Measured with `difflib` over base-vs-new compiled text,
+# word by word: exactly ONE `insert` on `assistant:text`, that sentence and
+# nothing else; the other eight carriers byte-identical. No retention claim
+# anywhere.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
         "6b448653f991d6f10cd0ad87fcfe4147bb1ab3411d0617afa6ebb8bd1df4b202",
     "assistant:text":
-        "6184c2eb1bb74fcb63f2cb4ce01d3103369c5702e29cc51f8fb1b173053bc9cc",
+        "ae81d353157e6566eeda1c52040848d5a01e26275de89883516584bc34fd7b0c",
     "assistant:voice":
         "c696b4c936e8d0010dfe47cd9245c3521c6d52fc0e19c2647d70a87d5282d4fa",
     "butler:restricted_webhook":

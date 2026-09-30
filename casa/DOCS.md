@@ -106,6 +106,7 @@ setting by hand:
 4. **Home Assistant integration**: Agents interact with HA via the official HA MCP server, allowing them to control devices, read states, and create automations.
 5. **Per-agent triggers**: Each agent declares scheduled triggers (cron, interval or a one-off date) in its own `agents/<role>/triggers.yaml`. The TriggerRegistry registers them at boot, and fires them via the agent's normal turn loop.
 6. **Reminders**: Ellen can set her own reminders, which are ordinary triggers written to her `triggers.yaml` — so they survive restarts and updates. One-off reminders remove themselves after firing, and any reminder whose time fell while Casa was down is delivered on the next sweep rather than lost.
+7. **Weekday morning briefing**: Ellen's 08:00 weekday briefing is meant to be silent on most days. It sends a message only for something you must act on today and have not already been told, checked against a live source that morning or marked as unverified. Memory and Casa's own schedule are not treated as confirmation of today's state, and an empty or failed check is not a reason to message you. These are instructions to the model, so an occasional stray line is still possible.
 
 ### Writing a scheduled trigger prompt by hand
 

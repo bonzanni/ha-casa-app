@@ -297,7 +297,12 @@ success whose text is withheld from the bank, audibly (INV-MEM-016, and see
 
 **Memory cannot answer.** The recall tools report unavailability as its own status and
 refuse blank queries outright; neither is ever a fake empty result (INV-MEM-001's
-tool-level face).
+tool-level face). `recall_memory`'s unavailable message tells the model to say memory
+could not be checked when a person asked, and that on a check nobody asked for the outage
+alone is no reason to send.
+
+`get_schedule` lists the calling role's own triggers and reminders, not the operator's
+calendar.
 
 The assistant's `start_job` and a job session's `report_job_progress` are described in
 [`background-jobs.md`](background-jobs.md).
