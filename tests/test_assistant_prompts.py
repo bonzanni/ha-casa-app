@@ -1116,11 +1116,19 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # drop-off paragraph (a pasted link no longer rides in a brief). Measured:
 # replacing the new paragraph with the #1048 one and removing the clause gives
 # the base text on every carrier, byte for byte. No retention claim anywhere.
+# MOVED 2026-09-30 (#1116), the `assistant:text` carrier ONLY. The Text
+# projection's beat-per-step paragraph gains one sentence: when a turn's own
+# instructions say it is a scheduled or background check, or that nothing is
+# seen until the turn ends, give no beats and deliver only what those
+# instructions ask for. Measured with `difflib` over base-vs-new compiled text,
+# word by word: exactly ONE `insert` on `assistant:text`, that sentence and
+# nothing else; the other eight carriers byte-identical. No retention claim
+# anywhere.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
         "6b448653f991d6f10cd0ad87fcfe4147bb1ab3411d0617afa6ebb8bd1df4b202",
     "assistant:text":
-        "6184c2eb1bb74fcb63f2cb4ce01d3103369c5702e29cc51f8fb1b173053bc9cc",
+        "ae81d353157e6566eeda1c52040848d5a01e26275de89883516584bc34fd7b0c",
     "assistant:voice":
         "c696b4c936e8d0010dfe47cd9245c3521c6d52fc0e19c2647d70a87d5282d4fa",
     "butler:restricted_webhook":
@@ -1506,3 +1514,47 @@ def test_the_assistant_never_points_to_an_unopened_engagement_topic():
             _collapse_ws(text).count(needle)) == (0, 1)
     legacy = dict(_legacy_prompt_carriers())
     assert _collapse_ws(legacy["assistant"]).count(needle) == 1
+
+
+# ---------------------------------------------------------------------------
+# #1116 red case (b): the served assistant text doctrine's beat rule has an
+# exception keyed on what the model can SEE in the turn.
+#
+# The runtime gives the model no buffered-turn marker; what it reads is the
+# turn's own instructions, and Casa's buffered turns say what they are there
+# (the heartbeat and briefing: nothing is seen until the turn ends; an event
+# wake: "this is a background wake"). At the base the served `assistant:text`
+# projection asked for one beat per step with no exception, and on a buffered
+# turn that closes without a send that narration is delivered (#1075 row 3).
+# Pinned through the REAL compiler; this pins the text served, not obedience.
+# ---------------------------------------------------------------------------
+
+_BACKGROUND_EXCEPTION = (
+    "When a turn's own instructions say it is a scheduled or background "
+    "check, or that nothing you write is seen until the turn ends, nobody "
+    "is watching the steps: give no beats and do not announce what you "
+    "are checking; deliver only what those instructions ask for."
+)
+
+_INTERACTIVE_BEAT = (
+    "While a multi-step job is running, give one short beat per step; "
+    "save the detail for whoever asks, and offer it rather than "
+    "volunteering it."
+)
+
+
+def test_background_exception_reaches_only_assistant_text() -> None:
+    carriers = _compiled_resident_carriers()
+    expected_names = sorted(
+        f"{role}:{surface}"
+        for role in ("assistant", "butler", "concierge")
+        for surface in ("text", "voice", "restricted_webhook")
+    )
+    assert len(carriers) == 9
+    assert sorted(name for name, _ in carriers) == expected_names
+    assert [
+        _collapse_ws(body).count(_collapse_ws(_BACKGROUND_EXCEPTION))
+        for _name, body in carriers
+    ] == [int(name == "assistant:text") for name, _body in carriers]
+    assert _collapse_ws(dict(carriers)["assistant:text"]).count(
+        _collapse_ws(_INTERACTIVE_BEAT)) == 1
