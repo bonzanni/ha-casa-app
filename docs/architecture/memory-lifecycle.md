@@ -62,6 +62,27 @@ wall-clock time survives out-of-band as the retain item's timestamp. The
 composer and splitter are a pinned pair, so the envelope's shape cannot drift
 from what is stripped.
 
+**A scheduled session's output is saved dated and marked; nothing stops being
+saved.** Each session entry records whether a turn Casa's own schedule fired
+registered it ([`architecture/persistent-state.md`](persistent-state.md)).
+Once that marker is known, each model line is dated with the envelope time of
+the user turn before it (the transcript carries no per-message time; a user
+turn without an envelope clears it). When it says scheduled, every item —
+the trigger or reminder prompt, a `[no answer to …]` continuation, every
+model line, `<silent/>` — also carries the application tag `casa-scheduled`,
+except the operator's tapped answer and a delegated result, which stay
+ordinary memories: both are recognised by their producer's fixed text after
+the envelope is split off, so a scheduled prompt written in either shape is
+saved unmarked too. Each item is sent with its complete tag set — tier,
+provenance, mark — because the backend REPLACES an identical document's tags
+with its latest save's set while keeping its FIRST date: the mark records
+where a text was last saved, and a scheduled line re-said verbatim in an
+ordinary session loses it (and the reverse gains it). An entry or spool
+record written before the marker existed is saved exactly as before —
+undated model lines, no mark — unless the turn superseding it on the same
+key carries the scheduled marker, which proves the old session scheduled.
+Event wakes run on the operator's own conversation and are never marked.
+
 **Each item is labelled before it is stored, and the labels are not the
 caller's to choose.** A bounded LLM pass classifies the item's sensitivity
 tier, and its speaker provenance is recorded from what the turn actually
@@ -191,13 +212,15 @@ drops the pointer (its contract) and nothing saves that session again.
 
 Enforced at the transcript-readback boundary, which splits a single leading
 envelope off each user turn before the retain-item builder hashes or stores
-it. The envelope's composer and splitter are a pinned pair; a round-trip test
+it, and carries that time onto the model lines that follow it once the
+session's scheduled marker is known. The envelope's composer and splitter are a pinned pair; a round-trip test
 fails the moment the composed shape drifts from what the splitter recognises.
 
 What it does not cover: documents retained before the split existed keep their
 enveloped text and stale ids — the bank converges only as facts are re-said.
 Writers that bypass the transcript readback (delegated retains) never carried
-the envelope in the first place.
+the envelope in the first place. Model lines saved from an entry that predates the
+scheduled marker carry no time, so the backend dates them by the save.
 
 **INV-MEM-012**: A tier-classifier reply yields a tier only when it is a single line holding one (possibly decorated) tier token, or when a multi-line reply's final non-empty line is the literal `Tier: <word>` answer line whose earlier tier-token or Tier-label lines all resolve to the same tier; prose tier words, conflicts, and unresolvable labels yield no tier; the item defaults to private.
 
