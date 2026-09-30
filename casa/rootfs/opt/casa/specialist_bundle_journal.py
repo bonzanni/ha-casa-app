@@ -433,6 +433,11 @@ def complete(journal_path: Path) -> None:
     journal_path.unlink()
 
 
+class ActivationUnknown(Exception):
+    """#975: whether a reclassifying upgrade's new version is active cannot be
+    established from `active.yaml`; nothing may be restored until it can."""
+
+
 @dataclass(frozen=True)
 class BundleTxn:
     """The rollback half of a bundle transaction — reusable by boot
@@ -495,20 +500,38 @@ class BundleTxn:
 
         Read off the file it names: the `root` recorded in `active.yaml` is the
         incoming root exactly when the upgrade's `os.replace` of that file has
-        happened. The door admits a lossy capture only when the installed root
-        differs from the incoming one, so nothing else can make this true —
-        and it is a fact on disk, correct after a crash at any point, where a
-        step mark could lag or lead the write it records. An unreadable file
-        answers False: the restricted restore that follows never writes a lossy
-        file, so it cannot lose the installed settings either way."""
+        happened, and the installed root before it. The door admits a lossy
+        capture only when those two differ, so the answer is a fact on disk,
+        correct after a crash at any point, where a step mark could lag or lead
+        the write it records. Raises `ActivationUnknown` when the file cannot
+        be read, or names neither root: after activation the restore would
+        remove a retained prior the capture recorded as absent, so a guess in
+        either direction can lose a setting — the caller undoes nothing and
+        leaves the journal standing for a later attempt. A transaction with no
+        lossy capture never reads the file and always answers False."""
         if not self.lossy_tuple_files or self.op != "upgrade" or not self.target_root:
             return False
+        installed_root = None
+        try:
+            captured = yaml.safe_load(self.before_tuple_files.get("active.yaml") or "")
+            if isinstance(captured, dict):
+                installed_root = captured.get("root")
+        except yaml.YAMLError:
+            pass
         active = Path(self.specialists_dir) / self.slug / "active.yaml"
         try:
             doc = yaml.safe_load(active.read_text(encoding="utf-8"))
-        except (OSError, ValueError, yaml.YAMLError):
+        except (OSError, ValueError, yaml.YAMLError) as exc:
+            raise ActivationUnknown(
+                f"{self.slug}: active.yaml cannot be read ({exc})") from exc
+        root = doc.get("root") if isinstance(doc, dict) else None
+        if root == self.target_root:
+            return True
+        if isinstance(root, str) and root == installed_root:
             return False
-        return isinstance(doc, dict) and doc.get("root") == self.target_root
+        raise ActivationUnknown(
+            f"{self.slug}: active.yaml names neither the installed nor the "
+            f"incoming version ({root!r})")
 
     def finish_forward(self) -> None:
         """#975: the one piece of the kept upgrade that is still owed when its
@@ -1080,7 +1103,19 @@ def _reconcile_journals(ops_dir: Path, *, registry_path: Path,
             acks_path=acks_path,
             agents_specialists_dir=agents_specialists_dir,
         )
-        if txn.activation_kept():
+        try:
+            kept = txn.activation_kept()
+        except ActivationUnknown:
+            # #975: restore nothing and quarantine nothing while it is unknown
+            # whether the new version is active — either guess can lose a
+            # setting. The journal stands (so the slug refuses changes,
+            # INV-SPEC-014) and the next boot asks again.
+            logger.exception(
+                "slug %s: cannot establish whether its upgrade's new version is "
+                "active; the journal is retained for the next boot", slug)
+            actions.append({"slug": slug, "action": "activation_unknown"})
+            continue
+        if kept:
             # #975: the reclassifying upgrade had already made its new version
             # active when the process stopped. Keep it: finish the prior's
             # rotation and sanitization, then drop the journal. Never the

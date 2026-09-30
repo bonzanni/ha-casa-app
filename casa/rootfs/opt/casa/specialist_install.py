@@ -2817,7 +2817,20 @@ def upgrade_specialist(
                 acks_path=acks.path,
                 agents_specialists_dir=agents_specialists_dir)
         except BaseException as exc:
-            if rollback_txn.activation_kept():
+            try:
+                kept = rollback_txn.activation_kept()
+            except specialist_bundle_journal.ActivationUnknown as unknown:
+                # #975: whether the new version is active cannot be read back,
+                # and either guess can lose a setting — undo nothing and leave
+                # the journal for boot, which asks again.
+                raise SpecialistInstallError(
+                    "upgrade_outcome_unknown",
+                    f"{slug!r}: the upgrade failed ({type(exc).__name__}: {exc}) and "
+                    f"whether its new version became active cannot be read back "
+                    f"({unknown}); nothing was undone and its undo record is kept, "
+                    f"so further changes to this specialist are refused until Casa "
+                    f"restarts and boot settles it. Nothing was deleted") from exc
+            if kept:
                 # #975 (the operator's 2026-09-29 ruling): the new version is
                 # already active and the one it replaced cannot be restored
                 # whole — keep the new version and report. Its owned-plugin

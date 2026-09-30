@@ -364,3 +364,53 @@ def test_a_kept_upgrade_discloses_the_owned_plugins_its_swap_dropped(
     assert env["kept_new_version"] is True and "rolled_back" not in env
     assert env["plugin_data_may_remain"] is True
     assert env["plugin_data_plugins"] == ["mtg.dropped"]
+
+
+def test_an_unreadable_active_tuple_at_replay_restores_nothing(tmp_path, monkeypatch) -> None:
+    """Diff review r1 (astra): A has no retained prior; B makes `k` secret.
+    After B is written active the retained prior is A — for any setting B
+    dropped, its only copy. The process dies before the journal completes, and
+    at boot `active.yaml` cannot be read once. Guessing "not active" would run
+    the restore, which removes the prior the capture recorded as absent; so
+    nothing is restored, the journal stands, and the next boot keeps B."""
+    fx = _UpgradeFixture(tmp_path, monkeypatch, v2_required=(), v2_secret_names=("k",))
+    fx.approve_v2()
+    active_path = fx.slug_dir / "active.yaml"
+    assert not (fx.slug_dir / "active.prior.yaml").exists()
+    # The upgrade returns with its journal still in progress: the process is
+    # taken to die before the tool layer completes it.
+    inst, _txn = fx.upgrade(config={}, secret_names_provided=frozenset({"k"}))
+    assert inst.state == "active"
+    b_bytes = active_path.read_bytes()
+    prior_bytes = (fx.slug_dir / "active.prior.yaml").read_bytes()
+
+    real_read = Path.read_text
+    reads = []
+
+    def _eio_once(self, *a, **kw):
+        if self == active_path and not reads:
+            reads.append(1)
+            raise OSError(5, "Input/output error")
+        return real_read(self, *a, **kw)
+    monkeypatch.setattr(Path, "read_text", _eio_once)
+    rollbacks = []
+    real_rollback = specialist_bundle_journal.BundleTxn.rollback_disk
+    monkeypatch.setattr(specialist_bundle_journal.BundleTxn, "rollback_disk",
+                        lambda self: (rollbacks.append(1), real_rollback(self))[1])
+    kw = dict(ops_dir=fx.ops_dir, registry_path=fx.common["registry_path"],
+              specialists_dir=fx.common["specialists_dir"], acks_path=fx.acks.path,
+              receipts_dir=tmp_path / "receipts",
+              agents_specialists_dir=fx.common["agents_specialists_dir"])
+    actions = specialist_bundle_journal.reconcile_boot(**kw)
+
+    assert reads == [1]
+    assert {"slug": "mtg", "action": "activation_unknown"} in actions
+    assert rollbacks == []
+    assert len(fx.journals()) == 1
+    assert (fx.slug_dir / "active.prior.yaml").read_bytes() == prior_bytes
+    assert active_path.read_bytes() == b_bytes
+
+    actions = specialist_bundle_journal.reconcile_boot(**kw)
+    assert {"slug": "mtg", "action": "kept_activated"} in actions
+    assert fx.journals() == set() and rollbacks == []
+    assert (fx.slug_dir / "active.prior.yaml").read_bytes() == prior_bytes

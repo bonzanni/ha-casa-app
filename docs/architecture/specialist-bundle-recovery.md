@@ -89,7 +89,10 @@ pending before it records anything), so a failure there — a refused plain valu
 compile, any step before the commit — leaves them exactly as they were, and the corrected
 retry works. Whether the new version is active is read off the root recorded in
 `active.yaml`, the file its commit replaces, so the answer is right after a crash at any
-point. Once it is, the version it replaced cannot be restored whole, so nothing is rolled
+point; when that file cannot be read, or names neither version, nothing is restored at all
+and the journal stays for the next boot (`activation_unknown` in the boot report,
+`upgrade_outcome_unknown` from the library) — after activation the restore would remove a
+retained prior the capture recorded as absent. Once it is active, the version it replaced cannot be restored whole, so nothing is rolled
 back: the retained prior's pending rotation is finished and the prior stripped of the
 reclassified value per file, the journal is completed, and the failure is reported —
 `upgrade_kept_new_version` from the library, `kept_new_version: true` on a failed

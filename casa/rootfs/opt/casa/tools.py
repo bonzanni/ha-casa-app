@@ -14460,7 +14460,17 @@ async def _bundle_compensate(txn) -> bool:
     # complete the journal. If that cleanup fails the journal stays for boot,
     # which finishes it the same way.
     activation_kept = getattr(txn, "activation_kept", None)
-    if callable(activation_kept) and await asyncio.to_thread(activation_kept):
+    try:
+        kept = callable(activation_kept) and await asyncio.to_thread(activation_kept)
+    except Exception:  # noqa: BLE001 — ActivationUnknown: undo nothing
+        # Whether the new version is active cannot be read back, and either
+        # guess can lose a setting: restore nothing, leave the journal for
+        # boot, and report it as the compensation that did not complete.
+        logger.warning(
+            "bundle upgrade of %s: cannot establish whether its new version is "
+            "active; leaving the journal for boot", txn.slug, exc_info=True)
+        return {"disk_ok": False, "runtime_ok": False}
+    if kept:
         try:
             await asyncio.to_thread(txn.finish_forward)
         except Exception:  # noqa: BLE001 — boot finishes it
