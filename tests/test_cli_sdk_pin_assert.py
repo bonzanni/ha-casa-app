@@ -248,6 +248,11 @@ async def test_resident_specialist_and_executor_options_use_verified_cli(
     assert resident_options.cli_path == "/usr/local/bin/claude"
     assert specialist_options.cli_path == "/usr/local/bin/claude"
     assert executor_options.cli_path == "/usr/local/bin/claude"
+    # #1111: the builders' options really carry the raised line limit.
+    from claude_runtime import SDK_MAX_BUFFER_SIZE
+    assert resident_options.max_buffer_size == SDK_MAX_BUFFER_SIZE
+    assert specialist_options.max_buffer_size == SDK_MAX_BUFFER_SIZE
+    assert executor_options.max_buffer_size == SDK_MAX_BUFFER_SIZE
 
 
 def test_effective_cli_is_verified_before_any_ingress_listener() -> None:

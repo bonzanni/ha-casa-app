@@ -242,6 +242,10 @@ class ClaudeAgentOptions:
     # v0.84.0 effective CLI pin: every Casa option builder selects the
     # boot-verified absolute executable. The mock accepts and ignores it.
     cli_path: str | None = None
+    # v0.332.16 (#1111): every Casa option builder raises the per-line stream
+    # limit to claude_runtime.SDK_MAX_BUFFER_SIZE. The mock reads no CLI
+    # stream, so it accepts and ignores it.
+    max_buffer_size: int | None = None
     # v0.97.0 (Release A) restricted webhook runtime: the untrusted-webhook
     # option builder (build_restricted_webhook_options) sets these to lock the
     # runtime down — tools=[] strips built-ins, strict_mcp_config excludes

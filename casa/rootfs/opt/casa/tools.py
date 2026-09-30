@@ -70,7 +70,7 @@ from output_boundary import (
     Admitted, IntentKind, ReadBeforeDescribe, TurnScope, UnadmittedText,
     casa_text,
 )
-from claude_runtime import CLAUDE_CLI_PATH
+from claude_runtime import CLAUDE_CLI_PATH, SDK_MAX_BUFFER_SIZE
 from media_policies import MEDIA_POLICIES
 import plugin_outbox
 from error_kinds import (
@@ -2272,6 +2272,7 @@ def _build_specialist_options(
     return ClaudeAgentOptions(
         model=cfg.model,
         cli_path=CLAUDE_CLI_PATH,
+        max_buffer_size=SDK_MAX_BUFFER_SIZE,
         system_prompt=resolved_system_prompt,
         allowed_tools=allowed_tools,
         disallowed_tools=disallowed_tools,
@@ -2346,6 +2347,7 @@ def _build_plugin_job_options(rec, resolution) -> ClaudeAgentOptions:
     cwd.mkdir(parents=True, exist_ok=True)
     return ClaudeAgentOptions(
         model=identity["model"], cli_path=CLAUDE_CLI_PATH,
+        max_buffer_size=SDK_MAX_BUFFER_SIZE,
         system_prompt=_PLUGIN_JOB_PROMPT,
         allowed_tools=allowed,
         disallowed_tools=["Agent", "Task", "AskUserQuestion"],
@@ -2508,6 +2510,7 @@ def _build_executor_options(
     return ClaudeAgentOptions(
         model=defn.model,
         cli_path=CLAUDE_CLI_PATH,
+        max_buffer_size=SDK_MAX_BUFFER_SIZE,
         system_prompt="",
         allowed_tools=allowed_tools,
         disallowed_tools=disallowed_tools,
@@ -12114,6 +12117,7 @@ async def _synthesize_answer(
     options = ClaudeAgentOptions(
         model=model,
         cli_path=CLAUDE_CLI_PATH,
+        max_buffer_size=SDK_MAX_BUFFER_SIZE,
         system_prompt=_QUERY_ENGAGER_SYSTEM,
         max_turns=1,
         mcp_servers={},

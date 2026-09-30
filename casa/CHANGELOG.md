@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.332.16] - 2026-09-30
+
+### Fixed
+
+- A specialist, or any other Casa agent, that read a large PDF could lose its
+  whole turn with a "JSON message exceeded maximum buffer size" error, and
+  return nothing. It happened with PDFs from about 400 KB, such as scanned
+  invoices. Casa now accepts any file the reading tool returns, up to its own
+  20 MB limit for PDFs.
+
 ## [0.332.15] - 2026-09-30
 
 ### Fixed
