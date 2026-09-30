@@ -57,8 +57,9 @@ async def build_retain_items(
         raise ValueError("classify_concurrency must be positive")
     # Reserved/tier tag rejection MUST precede any classify/IO — a forged tag
     # never reaches the classifier (a test pins that the classifier is never
-    # even called on rejection).
-    for tag in application_tags:
+    # even called on rejection). #1117: per-turn tags are checked here too,
+    # for EVERY turn — a duplicate that later collapses included.
+    for tag in (*application_tags, *(t for turn in turns for t in turn.application_tags)):
         if not isinstance(tag, str):
             raise ValueError("application tags must be strings")
         if tag.startswith(RESERVED_SOURCE_NAMESPACE):
@@ -103,17 +104,24 @@ async def build_retain_items(
         if tier not in TIERS:
             raise ValueError("invalid sensitivity tier returned by classifier")
         provenance_json = canonical_json_bytes(provenance_mapping(turn.provenance)).decode("utf-8")
+        # #1117: the COMPLETE set, in one list — the backend replaces a stored
+        # document's tags with the latest save's set, so a save that sent part
+        # of it (a mark without its tier) would make the memory unreadable.
+        turn_tags = tuple(
+            t for t in dict.fromkeys(turn.application_tags) if t not in application_tags)
         item: dict[str, object] = {
             "content": text,
-            "tags": [tier, encode_provenance_tag(turn.provenance), *application_tags],
+            "tags": [tier, encode_provenance_tag(turn.provenance), *application_tags,
+                     *turn_tags],
             "metadata": {"casa_source_v1": provenance_json},
             "document_id": document_id,
         }
         # #471: the turn's wall-clock time rides OUT-OF-BAND (a documented
         # retain-item field, semantic_memory.retain) now that the envelope is
         # stripped from the hashed/stored content. Within-batch duplicates keep
-        # the first occurrence's timestamp; a cross-session re-retain upserts
-        # the whole document, timestamp included.
+        # the first occurrence's timestamp and tags. #1117, measured on
+        # Hindsight 0.10.2: a cross-session re-retain of identical content keeps
+        # the document's FIRST date and REPLACES its tags with this save's set.
         if turn.timestamp is not None:
             item["timestamp"] = turn.timestamp
         items.append(item)

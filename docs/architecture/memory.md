@@ -69,6 +69,26 @@ answer from the context it was handed or return `UNKNOWN`, and that `UNKNOWN` be
 already-framed unknown result. The framing is attached where a slice reaches an agent that
 can *say something to someone*, which is where the false denial happens.
 
+**A recalled fact says when it was recorded, and whether a scheduled turn last saved it —
+two separate facts, and neither decides which memory is right.** Each rendered hit the backend
+returned with a timezone-aware date carries a `[recorded <weekday> <day> <month> <year>]` line,
+an absolute date in the operator's timezone (a rendered slice can sit in a resumed session's
+prompt for days, so a relative age would go stale); a hit whose date is absent, unparseable or
+naive renders without that line, and is not an error. The date is the backend's recorded time: the turn's own time for anything saved with
+one — user turns, and the model's lines once their session's scheduled marker is known — and
+otherwise the time the save ran, which is never earlier than when the text was said. For
+identical text the backend keeps the FIRST date, so a fact re-asserted verbatim still shows
+when it was first recorded, and a later date does not mean a later truth. A hit whose last
+save came from a scheduled turn — a trigger or reminder prompt, the model's lines on such a
+turn, its `<silent/>` — carries a second line, `[last saved by a scheduled turn]`. The backend
+replaces an identical text's tags with its latest save's, so that line says where the text
+was last saved, not where it was first said; it is never fused with the date into a "said by
+… on …" claim. Hits stay in the backend's order, and a tight budget can keep an older or a
+scheduled line and drop a newer contradicting one; what settles a question about current
+state is a live read, which the assistant's doctrine requires before stating such state as
+current. The recall request carries Casa's own clock in the operator's timezone as its
+`query_timestamp`.
+
 **Auto-recall is not "every turn".** It happens when a turn's options are built, which is a
 fresh non-voice session only — a warm reused client skips that path entirely, and voice never
 auto-recalls. Both can still recall explicitly through the tool. "The agent remembers
@@ -152,7 +172,9 @@ direct calls only; an alias or other indirection escapes it.
 
 **The backend is slow, unreachable, or returns an error.** The seam raises `RecallUnavailable`
 carrying a reason slug that names the class of failure. There is no HTTP-level retry beyond a
-single connection retry.
+single connection retry — except one: a recall the backend answers 503 ("busy") is retried
+once, after its `Retry-After` capped at one second, and a second 503 raises as any other
+failure does. No other status is retried, and a write never is.
 
 **The backend returns something malformed** — a bad envelope, unusable hit
 text/tags/metadata, or nothing readable at the caller's clearance. The seam raises `RecallProtocolError`.

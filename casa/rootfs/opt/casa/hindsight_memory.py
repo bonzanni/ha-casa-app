@@ -9,9 +9,12 @@ unauthenticated on the internal network (spec §8.4).
 from __future__ import annotations
 
 import asyncio
+import email.utils
 import logging
+import math
 import time
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, Awaitable, Callable
 
 import aiohttp
 
@@ -25,6 +28,7 @@ from semantic_memory import (
     render_recall,
 )
 from speaker_provenance import RESERVED_SOURCE_NAMESPACE, decode_provenance_from_tags
+from timekeeping import resolve_tz
 
 logger = logging.getLogger(__name__)
 
@@ -53,10 +57,67 @@ def _decode_sensitivity(wire_tags: tuple[str, ...], *, clearance: str) -> str | 
     return tier
 
 
+# #1117: one retry of a recall answered 503 ("server busy"). The wait honours
+# ``Retry-After`` but never exceeds a second, because auto-recall runs inside a
+# 5 s deadline; without a usable header it waits this long.
+_RETRY_503_CAP_S = 1.0
+_RETRY_503_DEFAULT_S = 0.5
+
+
+def _retry_after_s(headers: object) -> float:
+    """Seconds to wait before retrying a 503: ``Retry-After`` as
+    delta-seconds or an HTTP-date, clamped to ``[0, _RETRY_503_CAP_S]``; the
+    default when the header is absent or unparseable."""
+    try:
+        raw = headers.get("Retry-After")  # type: ignore[union-attr]
+    except Exception:  # noqa: BLE001 — a missing/odd headers object is "absent"
+        raw = None
+    if not isinstance(raw, str) or not raw.strip():
+        return _RETRY_503_DEFAULT_S
+    raw = raw.strip()
+    try:
+        seconds = float(raw)
+    except ValueError:
+        try:
+            when = email.utils.parsedate_to_datetime(raw)
+        except (TypeError, ValueError, IndexError):
+            return _RETRY_503_DEFAULT_S
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        seconds = (when - datetime.now(timezone.utc)).total_seconds()
+    if not math.isfinite(seconds):
+        return _RETRY_503_DEFAULT_S
+    return min(max(seconds, 0.0), _RETRY_503_CAP_S)
+
+
+def _parse_mentioned_at(value: object) -> datetime | None:
+    """#1117: a hit's recorded date, or ``None`` — never an error. Only a
+    tz-aware ISO-8601 string is a date; a naive one cannot be placed in the
+    operator's day, so it is treated as absent."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed
+
+
 class HindsightSemanticMemory(SemanticMemory):
-    def __init__(self, base_url: str, *, timeout_s: float = 20.0) -> None:
+    def __init__(
+        self, base_url: str, *, timeout_s: float = 20.0,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ) -> None:
         self._base = base_url.rstrip("/")
         self._timeout = aiohttp.ClientTimeout(total=timeout_s)
+        # #1117: the wait before the one 503 retry. Injected so tests never
+        # patch the shared ``asyncio.sleep``.
+        self._sleep = sleep
         # Lazily created inside a running event loop (tests construct this
         # object synchronously). One ClientSession is reused across calls, but
         # its connector uses ``force_close`` (see _new_session) so no TCP
@@ -106,6 +167,36 @@ class HindsightSemanticMemory(SemanticMemory):
             # a ClientConnectionError) means the request WAS received, so a
             # retained write may have landed — retrying it could double-write.
             return await self._roundtrip(method, url, payload)
+
+    @staticmethod
+    def _recall_payload(
+        query: str, *, tags: list[str], tags_match: str, max_tokens: int,
+        types: tuple[str, ...], budget: str,
+    ) -> dict[str, Any]:
+        """The ONE recall request body, shared by :meth:`recall` and
+        :meth:`recall_items` so the two can never drift. #1117: carries the
+        client's own "now" in the operator's timezone, so the server anchors
+        "today" and recency on Casa's clock."""
+        return {
+            "query": query, "tags": tags, "tags_match": tags_match,
+            "max_tokens": max_tokens, "types": list(types), "budget": budget,
+            "query_timestamp": datetime.now(resolve_tz()).isoformat(),
+        }
+
+    async def _recall_request(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """A recall round-trip with ONE retry of a 503 (#1117). Only a 503 —
+        "busy, try again" — is retried, once, after :func:`_retry_after_s`;
+        every other status stays single-shot (a 504 means the reranker is
+        overloaded, and retrying makes it worse). Recall only: a retain never
+        comes through here, because a retried write may double-write. The same
+        payload is re-sent."""
+        try:
+            return await self._request("POST", path, payload)
+        except aiohttp.ClientResponseError as exc:
+            if exc.status != 503:
+                raise
+            await self._sleep(_retry_after_s(exc.headers))
+        return await self._request("POST", path, payload)
 
     async def close(self) -> None:
         """Close the shared client session (called on shutdown so aiohttp
@@ -168,9 +259,10 @@ class HindsightSemanticMemory(SemanticMemory):
         ``results`` list may mean zero hits; every failure (timeout, 5xx/429,
         transport drop, malformed envelope) raises so callers can tell
         "memory could not be checked" from "searched and found nothing".
-        No synchronous retry on HTTP errors — a 504 means the reranker is
-        overloaded and retrying makes it worse (_request already restricts
-        its single retry to connection-level drops)."""
+        No synchronous retry on HTTP errors except one: a 503 ("busy") is
+        retried once after at most a second (#1117). A 504 means the reranker
+        is overloaded and retrying makes it worse (_request already restricts
+        its own single retry to connection-level drops)."""
         _validate_bank_id(bank)
         t0 = time.monotonic()
 
@@ -187,12 +279,12 @@ class HindsightSemanticMemory(SemanticMemory):
             return RecallUnavailable(reason)
 
         try:
-            resp = await self._request(
-                "POST", f"/v1/default/banks/{bank}/memories/recall",
-                {
-                    "query": query, "tags": tags, "tags_match": tags_match,
-                    "max_tokens": max_tokens, "types": list(types), "budget": budget,
-                },
+            resp = await self._recall_request(
+                f"/v1/default/banks/{bank}/memories/recall",
+                self._recall_payload(
+                    query, tags=tags, tags_match=tags_match,
+                    max_tokens=max_tokens, types=types, budget=budget,
+                ),
             )
         except asyncio.TimeoutError as exc:
             raise _unavailable("timeout") from exc
@@ -250,12 +342,12 @@ class HindsightSemanticMemory(SemanticMemory):
             return RecallUnavailable(reason)
 
         try:
-            raw = await self._request(
-                "POST", f"/v1/default/banks/{bank}/memories/recall",
-                {
-                    "query": query, "tags": tags, "tags_match": tags_match,
-                    "max_tokens": max_tokens, "types": list(types), "budget": budget,
-                },
+            raw = await self._recall_request(
+                f"/v1/default/banks/{bank}/memories/recall",
+                self._recall_payload(
+                    query, tags=tags, tags_match=tags_match,
+                    max_tokens=max_tokens, types=types, budget=budget,
+                ),
             )
         except asyncio.TimeoutError as exc:
             raise _unavailable("timeout") from exc
@@ -316,6 +408,7 @@ class HindsightSemanticMemory(SemanticMemory):
                 source_fact_ids=source_fact_ids,
                 metadata=RecallHit.freeze_metadata(raw_metadata),
                 context=result.get("context") or None, score=score,
+                mentioned_at=_parse_mentioned_at(result.get("mentioned_at")),
             ))
         if not hits:
             # Every hit was dropped (clearance or ambiguous provenance): NOT a

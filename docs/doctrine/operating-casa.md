@@ -34,6 +34,13 @@ such slice now carries a note saying so. Say "I did not find" or "nothing I can 
 rather than "there is no", and say "I could not check" when that is what happened. See
 `architecture/memory.md`.
 
+**Check changeable state with a live tool before stating it as current.** Whether a lamp
+is on, an invoice is paid or a gap is filled can change between one turn and the next.
+Before stating such state as current, read it with a live tool in this turn, or say plainly
+that it has not been checked. A recalled memory is history, not verification — however
+recent the date it shows, and whether or not a scheduled turn saved it
+(`architecture/memory.md`). The assistant's core doctrine carries this rule.
+
 **A protected-tool approval covers one action with one argument set.** That authorization is
 single-use and bound to the exact canonical arguments. If a call is denied and you change
 the arguments, you are asking a different question and need a new approval — do not treat a

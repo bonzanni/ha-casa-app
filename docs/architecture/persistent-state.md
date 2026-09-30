@@ -159,6 +159,17 @@ instead (INV-TURN-012, `architecture/turn-loop.md`). An entry written before tha
 existed carries none, and is treated as a mismatch rather than as agreement: a prompt
 that was never observed cannot be certified as current.
 
+An entry also records whether the session is scheduled — whether a turn Casa's own
+schedule fired (a trigger or reminder prompt, a scheduled question's continuation, a
+delegated result returning into such a conversation) registered it. Every registration
+writes it explicitly, from the reserved marker Casa's scheduled dispatch stamps and never
+from the message type or the speaker; once true it stays true for that entry, because a
+key is either a schedule's label or a person's chat. The durable cold-retain retry record
+carries it too. It has three read states: true, false, and absent — an entry or retry
+record written before the upgrade that added it has none, and absent is read as *unknown*,
+never as "not scheduled". Saving uses it to date and mark what the session retained
+(`architecture/memory-lifecycle.md`); an unknown session is saved as before.
+
 A session entry may also carry two advisory resume-fault fields — the fault-streak state
 of the turn loop's INV-TURN-008 (`architecture/turn-loop.md`), persisted with the entry
 and restored on write failure so disk and memory never disagree about the streak. Absent

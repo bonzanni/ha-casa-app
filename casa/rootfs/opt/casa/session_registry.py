@@ -195,6 +195,7 @@ class SessionRegistry:
         prompt_surface_digest: str = "",
         speaker_provenance: SpeakerProvenance,
         user_provenance: SpeakerProvenance,
+        scheduled: bool = False,
     ) -> None:
         """Register (or overwrite) a session entry and persist.
 
@@ -216,6 +217,15 @@ class SessionRegistry:
         stored as their canonical v1 mappings. Merged onto a deep copy of any
         prior entry so a concurrent in-flight ``SpeakerProvenance``/dict can
         never mutate the persisted snapshot.
+
+        ``scheduled`` (#1117): whether this turn is one Casa's own schedule
+        fired (the caller reads the reserved ``_scheduled_delivery`` marker).
+        Written EXPLICITLY on every registration, and sticky: once an entry is
+        scheduled, a later turn without the marker (a delegation completion
+        restored from a job row that predates the marker) never clears it —
+        an entry belongs to one key, and a key is either a schedule's label or
+        a person's chat, never both. An entry written before this field
+        existed has none, which readers treat as UNKNOWN, not "not scheduled".
         """
         validate_speaker_provenance(speaker_provenance)
         validate_speaker_provenance(user_provenance)
@@ -236,6 +246,7 @@ class SessionRegistry:
             entry: dict[str, Any] = copy.deepcopy(
                 self._data.get(channel_key) or {},
             )
+            was_scheduled = entry.get("scheduled") is True
             entry.update({
                 "agent": agent,
                 "sdk_session_id": sdk_session_id,
@@ -248,6 +259,7 @@ class SessionRegistry:
                 "prompt_surface_digest": prompt_surface_digest,
                 "speaker_provenance": provenance_mapping(speaker_provenance),
                 "user_provenance": provenance_mapping(user_provenance),
+                "scheduled": bool(scheduled) or was_scheduled,
             })
             # A fresh registration supersedes any in-flight save claim.
             entry.pop("consolidated_at", None)

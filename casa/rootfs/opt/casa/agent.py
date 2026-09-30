@@ -489,6 +489,9 @@ class SessionEntrySnapshot:
     user_provenance: SpeakerProvenance | None
     # #1029: absent (None) on every entry written before the surface gate.
     prompt_surface_digest: str | None = None
+    # #1117: the session marker — True/False as written by register(), None
+    # (UNKNOWN, never "not scheduled") on an entry written before it existed.
+    scheduled: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -540,7 +543,23 @@ def snapshot_session_entry(entry: dict | None) -> SessionEntrySnapshot | None:
         speaker_provenance=_decode_provenance(entry.get("speaker_provenance")),
         user_provenance=_decode_provenance(entry.get("user_provenance")),
         prompt_surface_digest=entry.get("prompt_surface_digest"),
+        scheduled=(entry.get("scheduled")
+                   if isinstance(entry.get("scheduled"), bool) else None),
     )
+
+
+def _proven_scheduled(
+    old: SessionEntrySnapshot, turn_scheduled: bool,
+) -> SessionEntrySnapshot:
+    """#1117: the superseded session's marker, completed from the turn that
+    superseded it. An entry written before the marker existed reads UNKNOWN;
+    if the incoming turn on the SAME key is one Casa's schedule fired, the key
+    is a schedule's label, so the old session on it was scheduled too. An
+    unmarked incoming turn proves nothing, and a known marker is never
+    overridden."""
+    if old.scheduled is None and turn_scheduled:
+        return dataclasses.replace(old, scheduled=True)
+    return old
 
 
 def agent_home_for_role_id(role_id: str) -> str:
@@ -1808,6 +1827,21 @@ class Agent:
             else:
                 user_provenance = SpeakerProvenance(speaker_kind="system")
 
+            # #1117: is this a turn Casa's own schedule fired? Read ONLY from
+            # the reserved ``_scheduled_delivery`` marker — stamped by the
+            # scheduler, the reminder sweep and the scheduled-ask continuation,
+            # and carried into a delegation completion by the synthesizer from
+            # the origin of the turn that delegated, whose ``chat_id`` keys this
+            # same session; stripped from every external context. Never from
+            # the message type (a completion is a REQUEST; the webhook route
+            # dispatches SCHEDULED) and never from provenance (an event wake on
+            # the operator's DM is ``system`` too). Persisted on the entry so
+            # every save path knows the session was scheduled.
+            turn_scheduled = (
+                msg.channel == "telegram"
+                and msg.context.get("_scheduled_delivery") is True
+            )
+
             # <current_time> rides on the per-turn query text (NOT the cached
             # system prompt) so the agent still knows the wall-clock time to
             # second precision without busting prompt caching (M27). user_text
@@ -1908,6 +1942,7 @@ class Agent:
                         prompt_surface_digest=_armed_surface_digest() or "",
                         speaker_provenance=speaker_provenance_for_role(self.config),
                         user_provenance=user_provenance,
+                        scheduled=turn_scheduled,
                     )
                     session_published = True
 
@@ -1917,7 +1952,8 @@ class Agent:
                     cid=cid_var.get(), build_options=_build,
                     binding_digest=self.config.binding_digest,
                     on_stale_old=lambda old, fence_gen=None: self._spawn_cold_retain(
-                        old, directory=agent_home, channel=msg.channel,
+                        _proven_scheduled(old, turn_scheduled),
+                        directory=agent_home, channel=msg.channel,
                         fence_generation=fence_gen,
                     ),
                     on_message=on_message,
@@ -1986,7 +2022,8 @@ class Agent:
                     # race register(); per-item classification runs off the hot
                     # path, tier §2.4).
                     self._spawn_cold_retain(
-                        decision.old, directory=agent_home, channel=msg.channel,
+                        _proven_scheduled(decision.old, turn_scheduled),
+                        directory=agent_home, channel=msg.channel,
                         fence_generation=_fence_gen,
                     )
                 # else ("new", retain_old=False): no prior entry → nothing to save
@@ -2213,6 +2250,7 @@ class Agent:
                         prompt_surface_digest=_armed_surface_digest() or "",
                         speaker_provenance=speaker_provenance_for_role(self.config),
                         user_provenance=user_provenance,
+                        scheduled=turn_scheduled,
                     )
 
                 # #650: return-path health note — after the registration step
@@ -2635,9 +2673,10 @@ class Agent:
             _recall_clearance = _current_origin_clearance(channel)
             try:
                 # Bounded deadline: never the full HTTP timeout. No synchronous
-                # retry on failure — a 504 means the reranker is overloaded and
-                # retrying makes it worse (the seam itself only retries
-                # connection-level drops, never HTTP errors).
+                # retry on failure here — a 504 means the reranker is overloaded
+                # and retrying makes it worse (the seam itself retries only
+                # connection-level drops and, #1117, one 503 inside this same
+                # deadline).
                 #
                 # Task 11: the awaited method is now the typed, attributed
                 # recall_items; the OWN _RecallBreaker/wait_for/record_* logic
