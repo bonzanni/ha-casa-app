@@ -1,5 +1,69 @@
 # Changelog
 
+## [0.332.18] - 2026-09-30
+
+### Fixed
+
+- Ellen could state how things are now, such as whether a lamp is on or a bill
+  is paid, from an old memory, and recalled memories carried no date that would
+  show they might be out of date. A recalled memory now shows the date it was
+  recorded, in your timezone, when the memory server returns that date with a
+  time zone. A date without a time zone, or one that cannot be read, is left
+  out, and that memory is shown without a date. Hindsight 0.10.2 was measured
+  returning a recorded date for recalled memories.
+- Ellen's core instructions now tell her to check changeable household or
+  device state with a live tool before stating it as current, or to say plainly
+  that she has not checked it. A recalled memory counts as history, not as
+  confirmation. These are instructions to the model, so she can still
+  occasionally state remembered state as current.
+- On Telegram, what a scheduled turn (a trigger or a reminder) saves to memory
+  is now marked, for sessions that have had a turn since the update. That
+  covers the trigger or reminder prompt, what the agent wrote on that turn, and
+  its silence. Recall shows such a memory with a
+  separate "last saved by a scheduled turn" line. Your own answers to a
+  scheduled question, and results a specialist returned into that
+  conversation, are saved as ordinary memories. The agent's replies to them are
+  marked. A session saves the same items as before; only the mark and the
+  dates are added.
+- On Telegram, an agent's replies are now saved with the time of the message
+  they answered, when that message carried a time, instead of the time the
+  conversation was saved to memory. This applies to sessions that have had a
+  turn since the update. Conversations stored before it are covered under
+  Known limitations.
+- A recall that the memory server answers as busy (HTTP 503) is retried once,
+  after a wait of at most a second. No other HTTP error is retried, and saving
+  to memory is not retried on a busy answer.
+
+### Changed
+
+- Ellen's written instructions changed, so each of her stored conversations
+  starts a fresh session once, on its next turn after the update, instead of
+  resuming. A replaced Telegram conversation goes through the usual background
+  save to memory. Webhook and voice conversations are not saved to memory when
+  they are replaced, so what was said in them does not carry over.
+- The date and scheduled-mark lines count against recall's size limit, so a
+  recall can show fewer memories than before.
+
+### Known limitations
+
+- A text saved again word for word keeps the date it was first recorded, so a
+  recent date does not mean the text was recently confirmed.
+- The scheduled mark reflects only the latest save of a text. A scheduled line
+  that is repeated word for word in an ordinary conversation loses the mark,
+  and the reverse gains it.
+- Recalled memories keep the memory server's order. When the size limit is
+  tight, an older or scheduled memory can be shown while a newer one that
+  contradicts it is left out.
+- Memories saved before this update are not rewritten. They show no scheduled
+  mark, and the replies in them keep the date of the save. A conversation that
+  was already stored when you updated can be saved once more in the old form,
+  and that save can remove a mark that a newer scheduled save had just added,
+  until the scheduled text is saved again.
+- Removing scheduled output that is already in memory (#1119) and a time
+  window for recall (#1120) are tracked separately. So is the case where saving
+  a text again replaces its stored privacy tier with the latest save's
+  (#1123). This change does not address it.
+
 ## [0.332.17] - 2026-09-30
 
 ### Fixed
