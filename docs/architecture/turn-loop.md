@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-22
+last_reviewed: 2026-09-30
 ---
 
 # The turn loop
@@ -210,6 +210,25 @@ connects with exactly the captured servers, so a publication landing mid-turn ne
 new tools with the old identity; the next turn picks it up. A role with no published tool
 surface digests exactly as before, so its conversations are not retired by this. The butler's
 conversations restart once, retained, on the upgrade that introduces it.
+
+**INV-TURN-013**: Every in-process SDK client Casa builds raises the SDK's per-message stream limit to one shared value, `SDK_MAX_BUFFER_SIZE` in `claude_runtime.py`, sized so that a built-in `Read` of the largest PDF the pinned CLI inlines whole still arrives as one message instead of ending the turn.
+
+The SDK reads the CLI's output one JSON line at a time and fails the whole query when a
+line exceeds `max_buffer_size`, which is 1 MiB when left unset. A `Read` of a PDF puts the
+file's base64 on one line twice — in the tool result's document block and again in
+`tool_use_result` — so a PDF of about 400 KB was enough to cross the default, and a
+delegated specialist that read one lost its whole turn (#1111). The pinned CLI reads a
+whole PDF of up to 20 MiB as one inline document and refuses a larger one; above 3 MiB it
+first tries to render pages through `pdftoppm`, and when that is unavailable, as it is in
+the Casa image, it falls back to the inline document. Two base64 copies of a 20 MiB PDF come
+to about 53 MiB, so the shared value is 64 MiB. It bounds one line; nothing is allocated up
+front. A `Read` that names a page range is a different path: it accepts PDFs up to 100 MiB
+and always renders pages through `pdftoppm`, so in the Casa image it ends in a tool error.
+Were `pdftoppm` ever added to the image, that path could return up to 20 page images of up
+to 5 MiB of base64 each, and 64 MiB would no longer cover it. The value is passed by every
+`ClaudeAgentOptions` construction rather than applied by a wrapper, because not every
+client goes through the same wrapper: a construction that omits it silently falls back to
+the 1 MiB default, and a source sweep refuses one.
 
 ## Failure behavior
 

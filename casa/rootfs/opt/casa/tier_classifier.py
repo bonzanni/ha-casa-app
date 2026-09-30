@@ -18,7 +18,7 @@ import dataclasses
 import logging
 from collections.abc import Iterator
 
-from claude_runtime import CLAUDE_CLI_PATH
+from claude_runtime import CLAUDE_CLI_PATH, SDK_MAX_BUFFER_SIZE
 # Re-export the canonical sensitivity-tier set (single source of truth is
 # sensitivity.py:TIERS) so consumers gate on ``from tier_classifier import
 # TIERS, classify_tier`` — classify_tier only ever returns a member of it.
@@ -113,6 +113,7 @@ async def classify_tier(content: str) -> str:
 
     opts = sdk.ClaudeAgentOptions(
         cli_path=CLAUDE_CLI_PATH,
+        max_buffer_size=SDK_MAX_BUFFER_SIZE,
         # max_turns=8 (#497 reopen + operator ruling 2026-08-11): on 0.174.0
         # the runtime errored with "Reached maximum number of turns (1)"; the
         # 0.176.0 fix granted one spare turn and the live session still hit

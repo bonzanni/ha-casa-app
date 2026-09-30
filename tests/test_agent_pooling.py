@@ -709,6 +709,8 @@ def test_claude_agent_options_fields_all_classified():
         # voice partial-message streaming (2026-07-11 design §2 point 1):
         # connect-time, derived from `channel` — True only for voice.
         "include_partial_messages",
+        # #1111: static — every builder passes the same SDK_MAX_BUFFER_SIZE.
+        "max_buffer_size",
         # defaults Casa does not set — audited 2026-07-11 against SDK
         # 0.2.114 (spec §Q6); the 0.2.128 field set is identical, and the
         # `actual` assertion below re-checks it against the installed SDK
@@ -717,7 +719,7 @@ def test_claude_agent_options_fields_all_classified():
         "continue_conversation", "debug_stderr", "effort",
         "enable_file_checkpointing", "env", "extra_args", "fallback_model",
         "fork_session", "include_hook_events",
-        "load_timeout_ms", "max_budget_usd", "max_buffer_size",
+        "load_timeout_ms", "max_budget_usd",
         "max_thinking_tokens", "output_format", "permission_prompt_tool_name",
         "sandbox", "session_id", "session_store", "session_store_flush",
         "settings", "skills", "strict_mcp_config", "task_budget", "thinking",

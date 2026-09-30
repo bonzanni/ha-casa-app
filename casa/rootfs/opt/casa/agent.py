@@ -39,7 +39,7 @@ from plugin_grants import (
 
 from bus import BusMessage, MessageBus, MessageType
 from channels import ChannelManager, DeliveryOutcome
-from claude_runtime import CLAUDE_CLI_PATH
+from claude_runtime import CLAUDE_CLI_PATH, SDK_MAX_BUFFER_SIZE
 from config import AgentConfig
 from specialist_registry import DelegationComplete
 from hooks import read_evidence_matchers, resolve_hooks
@@ -872,6 +872,7 @@ def build_restricted_webhook_options(
     return ClaudeAgentOptions(
         model=model,
         cli_path=CLAUDE_CLI_PATH,
+        max_buffer_size=SDK_MAX_BUFFER_SIZE,
         system_prompt=system_prompt,
         allowed_tools=list(_RESTRICTED_WEBHOOK_TOOLS),
         disallowed_tools=list(_RESTRICTED_DISALLOWED_TOOLS),
@@ -2925,6 +2926,7 @@ class Agent:
         options = ClaudeAgentOptions(
             model=self.config.model,
             cli_path=CLAUDE_CLI_PATH,
+            max_buffer_size=SDK_MAX_BUFFER_SIZE,
             system_prompt=system_prompt,
             allowed_tools=allowed_tools,
             disallowed_tools=self.config.tools.disallowed,
