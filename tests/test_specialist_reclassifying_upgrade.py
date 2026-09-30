@@ -179,3 +179,56 @@ def test_a_failure_after_activation_keeps_the_new_version_and_the_retry_finishes
     assert (fx.slug_dir / "active.yaml").read_bytes() == b_bytes   # the tuple commit was a no-op
     specialist_bundle_journal.complete(txn.journal_path)
     assert fx.journals() == set()
+
+
+class _ProcessLost(BaseException):
+    """Stands for the process dying: nothing after the raise runs in-process."""
+
+
+def test_boot_finishes_the_prior_after_a_crash_between_the_swap_and_its_rotation(
+        tmp_path, monkeypatch) -> None:
+    """The process dies right after `active.yaml` is replaced and before the
+    outgoing version — a plain byte copy in the rollback temporary — is
+    promoted and stripped, and again while the library tries to finish it.
+    Boot must keep the new version, promote and strip the prior, and leave no
+    plain copy anywhere."""
+    import os
+
+    from personality_binding import InstanceDir
+
+    value = "plain-41f0"
+    fx = _UpgradeFixture(tmp_path, monkeypatch, v2_required=(), v2_secret_names=("k",),
+                         value=value)
+    fx.approve_v2()
+    a_root = yaml.safe_load((fx.slug_dir / "active.yaml").read_text(encoding="utf-8"))["root"]
+    real_replace = os.replace
+
+    def _die_on_rotation(src, dst, *a, **kw):
+        if str(src).endswith("active.yaml.rollback-tmp"):
+            raise _ProcessLost()
+        return real_replace(src, dst, *a, **kw)
+    monkeypatch.setattr(os, "replace", _die_on_rotation)
+    with pytest.raises(_ProcessLost):
+        fx.upgrade(config={}, secret_names_provided=frozenset({"k"}))
+    monkeypatch.setattr(os, "replace", real_replace)
+
+    assert len(fx.journals()) == 1
+    assert (fx.slug_dir / "active.yaml.rollback-tmp").is_file()
+    b_bytes = (fx.slug_dir / "active.yaml").read_bytes()
+
+    actions = specialist_bundle_journal.reconcile_boot(
+        ops_dir=fx.ops_dir, registry_path=fx.common["registry_path"],
+        specialists_dir=fx.common["specialists_dir"], acks_path=fx.acks.path,
+        receipts_dir=tmp_path / "receipts",
+        agents_specialists_dir=fx.common["agents_specialists_dir"])
+
+    assert {"slug": "mtg", "action": "kept_activated"} in actions
+    assert fx.journals() == set()
+    assert (fx.slug_dir / "active.yaml").read_bytes() == b_bytes
+    assert InstanceDir(fx.slug_dir).active().root != a_root
+    prior = yaml.safe_load((fx.slug_dir / "active.prior.yaml").read_text(encoding="utf-8"))
+    assert prior["root"] == a_root
+    assert "k" not in prior["config_snapshot"] and prior["config_digest"] == SENTINEL
+    assert not (fx.slug_dir / "active.yaml.rollback-tmp").exists()
+    assert [p.name for p in fx.slug_dir.rglob("*")
+            if p.is_file() and value.encode() in p.read_bytes()] == []
