@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.332.17] - 2026-09-30
+
+### Fixed
+
+- Ellen's weekday morning briefing could send a message when there was
+  nothing to act on. It sent filler about Casa's own schedule, narration such
+  as "I'll run the checklist.", a notice that memory could not be checked, and
+  closing questions. Its instructions now make silence the default. It may
+  send only what you must act on today and have not already been told, with
+  each line checked against a live source that morning or marked as
+  unverified. The instructions also rule out greetings, narration, closing
+  questions, empty results and memory outages as things to send. These are
+  instructions to the model, so an occasional stray line is still possible.
+- The briefing still receives recalled memory, so it can still repeat an
+  out-of-date item from an earlier day. Its instructions now treat recalled
+  memory as a lead to check, not as confirmation. The memory side is tracked
+  separately in #1117.
+
+### Changed
+
+- If you edited the briefing prompt (`agents/assistant/prompts/morning-briefing.md`),
+  this update replaces it with the new version. Casa reports that it
+  overwrote a customization, and your version stays recoverable from the
+  config's git history, or from a `.casabak` copy beside the file when git
+  could not record it.
+- Ellen's written instructions changed, so each of her stored conversations
+  starts a fresh session once, on its next turn after the update, instead of
+  resuming. A replaced Telegram conversation goes through the usual background
+  save to memory. Webhook and voice conversations are not saved to memory when
+  they are replaced, so what was said in them does not carry over.
+
 ## [0.332.16] - 2026-09-30
 
 ### Fixed
