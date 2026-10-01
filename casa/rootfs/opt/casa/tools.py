@@ -15720,6 +15720,21 @@ def _acknowledged(args: dict) -> "tuple[list[str] | None, dict | None]":
     return list(dict.fromkeys(raw)), None
 
 
+def _names_this_specialist(ack: "list | None", slug: str) -> bool:
+    """True when the acknowledgement names at least one engagement of *slug*
+    the registry knows — open or since closed — i.e. ids a warning could have
+    listed. A made-up id, or another specialist's, acknowledges nothing (diff
+    review r2: any non-empty list used to let an ordinary change through)."""
+    reg = _engagement_registry
+    if not ack or reg is None:
+        return False
+    for i in ack:
+        rec = reg.get(i)
+        if rec is not None and rec.kind == "specialist" and rec.role_or_type == slug:
+            return True
+    return False
+
+
 def _operator_user_id() -> "int | None":
     import trigger_consent
     channel = _channel_manager.get("telegram") if _channel_manager is not None else None
@@ -15775,13 +15790,15 @@ def _ordinary_change_gate(tool: str, slug: str,
     ``(refusal, acknowledgement, seen)``. While conversations are open a call
     with no acknowledgement is refused with the warning; any acknowledgement
     lets it commit — a conversation opened after the operator confirmed is
-    named in the result, never a reason to refuse (ruling-1095-3). ``seen`` is
-    what the result does NOT name afterwards."""
+    named in the result, never a reason to refuse (ruling-1095-3). An
+    acknowledgement counts only when it names an engagement of this specialist
+    (``_names_this_specialist``). ``seen`` is what the result does NOT name
+    afterwards."""
     ack, bad = _acknowledged(args)
     if bad is not None:
         return bad, None, set()
     recs = _open_specialist_engagements(slug)
-    if recs and not ack:
+    if recs and not _names_this_specialist(ack, slug):
         return _open_conversations_pending(tool, slug, recs, removal=False), None, set()
     return None, ack, (set(ack) if ack else {r.id for r in recs})
 

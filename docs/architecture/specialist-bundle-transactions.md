@@ -252,7 +252,7 @@ not be persisted — over an unreadable registry, say — and the fence then kee
 until a boot resolves it. The operator's own repair paths are refused with everything else,
 and that is the point: an uninstall permitted here would be undone by the very next boot.
 
-**INV-SPEC-022**: While a specialist has open conversations, `persona_apply`, `specialist_upgrade` and `specialist_rollback` called with no acknowledgement (absent or empty), and `specialist_uninstall` called with erase unset or `erase_data=false` and an acknowledgement that does not name every one of them, change nothing and return a warning that lists them — with two exceptions for the uninstall: where the base call returns `consent_channel_unavailable` it returns that refusal unchanged and touches no erase state, and otherwise a refused uninstall call performs exactly its base erase-question step (it voids the subject's question where the base call would open or close one); a persona, upgrade or rollback carrying a non-empty acknowledgement commits and names every conversation open after the commit that the acknowledgement does not name; an `erase_data=true` uninstall call is never refused by it; and an uninstall, only after its commit and reload, attempts through the terminal funnel to close every conversation of that specialist still open at that point, and its result names each one it closed and each whose close failed.
+**INV-SPEC-022**: While a specialist has open conversations, `persona_apply`, `specialist_upgrade` and `specialist_rollback` called with no acknowledgement naming one of that specialist's engagements (absent, empty, or only ids the registry does not know as its engagements), and `specialist_uninstall` called with erase unset or `erase_data=false` and an acknowledgement that does not name every one of them, change nothing and return a warning that lists them — with two exceptions for the uninstall: where the base call returns `consent_channel_unavailable` it returns that refusal unchanged and touches no erase state, and otherwise a refused uninstall call performs exactly its base erase-question step (it voids the subject's question where the base call would open or close one); a persona, upgrade or rollback whose acknowledgement names one of that specialist's engagements — open or since closed — commits and names every conversation open after the commit that the acknowledgement does not name; an `erase_data=true` uninstall call is never refused by it; and an uninstall, only after its commit and reload, attempts through the terminal funnel to close every conversation of that specialist still open at that point, and its result names each one it closed and each whose close failed.
 
 A specialist's open conversations are its active or idle specialist-kind engagements —
 delegated conversations, background jobs and launches still in flight; the configurator's
@@ -261,7 +261,9 @@ tools commits on the call, so the warning can only come first as a pending resul
 `ok: false`, `kind: "open_conversations_unconfirmed"`, the conversations by topic and task,
 and a `warning` the configurator relays verbatim before asking. The operator's yes comes back
 as `acknowledged_conversations`; nothing about it is stored, so a follow-up from another
-configurator conversation is warned again. For a persona, upgrade or rollback the warning
+configurator conversation is warned again. An id counts only when the registry knows it as
+one of that specialist's engagements, so a made-up list acknowledges nothing; the calls
+Casa's erase-question continuations tell the model to make carry the same ids. For a persona, upgrade or rollback the warning
 says, of each conversation, the one sentence `tools.py::SPECIALIST_OPEN_CONVERSATION_NOTICE`
 holds — it keeps its personality and the plugin versions it started with, picks up the new
 settings when it resumes, and switches only by closing it with `/complete` and asking for a

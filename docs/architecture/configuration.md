@@ -227,8 +227,9 @@ sweep backfilled one it is neither live nor residual — under the same disabled
 the same role lock; and by `casa_core.py::_close_disabled_specialist_engagements`, the boot
 pass for a specialist disabled while Casa was down, placed after the channels start (a
 closure armed in this process is told live, INV-ENG-018) and before background jobs resume,
-so a disabled specialist's job is never resumed. A failed close is told to the operator at
-once, because that conversation got no closing telling. Keyed on "read as disabled", never
+so a disabled specialist's job is never resumed — the pass hands the resume the
+conversations it failed to close, and the resume skips them. A failed close is told to the
+operator at once, because that conversation got no closing telling. Keyed on "read as disabled", never
 on "absent from the registry": a load failure is not a disable and closes nothing. The step
 awaits the funnel inline under the locks its caller holds; the funnel takes neither the
 reload lock nor the plugin-tools lock.

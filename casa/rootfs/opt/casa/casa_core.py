@@ -3592,42 +3592,57 @@ def _engagement_delivery_ack(registry, engagement_id: str):
 
 
 async def _close_disabled_specialist_engagements(engagement_registry: Any,
-                                                specialist_registry: Any) -> None:
+                                                specialist_registry: Any) -> set:
     """#1095 boot pass: close the open conversations of every specialist the
     registry loaded and reads DISABLED. A specialist that failed to load is not
     disabled (``is_disabled`` excludes load failures) and keeps its
     conversations. A failed close is told to the operator by the close helper
-    and remembered for the next ``agents`` sweep. Never raises."""
+    and remembered for the next ``agents`` sweep. Returns the ids of the
+    disabled specialists' conversations it could not close, so the background-
+    job resume that follows leaves them alone. Never raises."""
     import reload as reload_mod
     import tools as tools_mod
+    left_open: set = set()
     try:
         roles = sorted({r.role_or_type for r in engagement_registry.active_and_idle()
                         if r.kind == "specialist"})
     except Exception:  # noqa: BLE001 — boot continues
         logger.exception("boot: listing open specialist engagements failed")
-        return
+        return left_open
     for role in roles:
         try:
             if specialist_registry.is_disabled(role) is not True:
                 continue
             rows = await tools_mod.close_disabled_specialist_engagements(role)
-            if any(r["outcome"] == "close_failed" for r in rows):
+            failed = {r["engagement_id"] for r in rows if r["outcome"] == "close_failed"}
+            if failed:
+                left_open |= failed
                 reload_mod._note_retirement_outcome(role, ["close_engagements"])
             logger.info("boot: closed %d open conversation(s) of disabled specialist %s",
                         sum(r["outcome"] == "closed" for r in rows), role)
         except Exception:  # noqa: BLE001 — boot continues
             logger.exception("boot: closing disabled specialist %s's conversations failed",
                              role)
+            left_open |= {r.id for r in engagement_registry.active_and_idle()
+                          if r.kind == "specialist" and r.role_or_type == role}
+    return left_open
 
 
-async def _resume_background_jobs(registry, channel) -> None:
-    """Continue open in-casa jobs once channels and residents are running."""
+async def _resume_background_jobs(registry, channel, skip=frozenset()) -> None:
+    """Continue open in-casa jobs once channels and residents are running.
+    *skip*: engagements the boot close of a disabled specialist could not close
+    (#1095) — a disabled specialist's job is never resumed; the next ``agents``
+    sweep retries closing it."""
     from background_jobs import start_next_batch
     from tools import _post_engagement_notice
 
     if channel is None:
         return
     for rec in registry.active_and_idle():
+        if rec.id in skip:
+            logger.warning("not resuming job %s: its specialist is disabled and "
+                           "closing it failed", rec.id[:8])
+            continue
         if rec.driver == "in_casa" and rec.origin.get("job"):
             try:
                 title = rec.origin["job"]["title"]
@@ -5624,8 +5639,9 @@ async def main() -> None:
     # here — after the channels started (a closure armed in this process is
     # told live, never replayed: INV-ENG-018) and before background jobs
     # resume (a disabled specialist's job must not be resumed).
-    await _close_disabled_specialist_engagements(engagement_registry, specialist_registry)
-    await _resume_background_jobs(engagement_registry, telegram_channel)
+    left_open = await _close_disabled_specialist_engagements(
+        engagement_registry, specialist_registry)
+    await _resume_background_jobs(engagement_registry, telegram_channel, skip=left_open)
 
     # 13c. Surface any default-sync overwrites to the operator (direct
     # telegram outbound — see notify_config_sync).

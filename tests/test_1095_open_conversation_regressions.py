@@ -193,3 +193,66 @@ async def test_a_confirmed_uninstalls_continuations_carry_its_acknowledgement(
         [pe.ErasureOutcome("fin.bank", "1" * 64, "complete", "gone")],
         deliverer(None, None), f", acknowledged_conversations={[a.id]!r}")
     assert f"acknowledged_conversations={[a.id]!r}" in delivered[-1]
+
+
+async def test_an_acknowledgement_must_name_one_of_the_specialists_engagements(
+        reg, rollback):
+    """Diff review r2 (terra S2): a made-up id, or another specialist's, does
+    not acknowledge the warning; an id the warning listed still does after
+    that conversation closed, and a conversation opened since is named."""
+    import tools as tools_mod
+    a = await _open(reg)
+    other = await _open(reg, slug="travel", topic=103)
+    for bogus in (["not-an-engagement-id"], [other.id]):
+        out = _out(await tools_mod.specialist_rollback.handler(
+            {"slug": "fin", "acknowledged_conversations": bogus}))
+        assert out.get("kind") == "open_conversations_unconfirmed", (bogus, out)
+    assert rollback.calls == 0
+    await reg.try_transition_terminal(a.id, "cancelled")
+    b = await _open(reg, topic=102, task="Plan the holiday budget")
+    out = _out(await tools_mod.specialist_rollback.handler(
+        {"slug": "fin", "acknowledged_conversations": [a.id]}))
+    assert out.get("ok") is True and rollback.calls == 1, out
+    assert [row["engagement_id"] for row in out.get("opened_after_confirmation", [])] == [b.id]
+
+
+async def test_boot_does_not_resume_a_job_whose_disabled_close_failed(reg, monkeypatch):
+    """Diff review r2 (terra S2): the boot pass returns what it could not close,
+    and the job resume that follows it skips exactly those."""
+    import inspect
+    import background_jobs
+    import casa_core
+    import reload as reload_mod
+    import tools as tools_mod
+    monkeypatch.setattr(reload_mod, "_INCOMPLETE_RETIREMENTS", set())
+    stuck = await _open(reg, slug="travel", topic=103, job={"title": "Fares"})
+    fine = await _open(reg, slug="fin", topic=104, job={"title": "Budget"})
+
+    async def failing(engagement, **kw):
+        return tools_mod.FinalizeResult.PERSIST_FAILED
+    monkeypatch.setattr(tools_mod, "_finalize_engagement", failing)
+
+    async def notify(cm, text):
+        return None
+    monkeypatch.setattr(casa_core, "operator_notify", notify)
+
+    class _Specs:
+        def is_disabled(self, role):
+            return role == "travel"
+    left = await casa_core._close_disabled_specialist_engagements(reg, _Specs())
+    assert left == {stuck.id}
+    assert "travel" in reload_mod._INCOMPLETE_RETIREMENTS
+    resumed: list = []
+
+    async def start(rec, channel):
+        resumed.append(rec.id)
+    monkeypatch.setattr(background_jobs, "start_next_batch", start)
+
+    async def notice(channel, rec, text):
+        return None
+    monkeypatch.setattr(tools_mod, "_post_engagement_notice", notice)
+    await casa_core._resume_background_jobs(reg, object(), skip=left)
+    assert resumed == [fine.id]
+    src = inspect.getsource(casa_core.main)
+    assert src.count("await _resume_background_jobs(engagement_registry, telegram_channel, "
+                     "skip=left_open)") == 1
