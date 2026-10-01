@@ -480,7 +480,7 @@
 - item: tool:voice_job_status
   doc: architecture/tools-interface.md
 - item: tool:wipe_memory
-  doc: architecture/memory-lifecycle.md
+  doc: architecture/memory-wipe.md
 - item: route:casa/rootfs/opt/casa/casa_core.py:GET:/
   doc: architecture/http-surface.md
 - item: route:casa/rootfs/opt/casa/casa_core.py:GET:/callback/done
@@ -492,7 +492,7 @@
 - item: route:casa/rootfs/opt/casa/casa_core.py:GET:path
   doc: architecture/mcp-and-tools.md
 - item: route:casa/rootfs/opt/casa/casa_core.py:POST:/admin/memory/wipe
-  doc: architecture/memory-lifecycle.md
+  doc: architecture/memory-wipe.md
 - item: route:casa/rootfs/opt/casa/casa_core.py:POST:/admin/reload
   doc: architecture/configuration.md
 - item: route:casa/rootfs/opt/casa/casa_core.py:POST:/internal/broker/deposit
