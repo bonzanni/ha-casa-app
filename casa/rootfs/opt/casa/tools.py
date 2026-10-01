@@ -10123,6 +10123,8 @@ async def _own_in_casa_launch(
     kind: str | None = None
     detail = ""
     outcome: "LaunchDeathResult | None" = None
+    limit_stop: Any = None
+    limit_telling = False
     try:
         try:
             await driver.run_launch_turn(rec, prompt)
@@ -10134,10 +10136,24 @@ async def _own_in_casa_launch(
         except Exception as exc:  # noqa: BLE001
             kind, detail = "driver_start_failed", str(exc)
         else:
-            _incomplete = _launch_incomplete_reason(driver, rec.id)
-            if _incomplete:
+            _incomplete, limit_stop = _launch_turn_observation(driver, rec.id)
+            # #1141: a launch turn that stopped at its turn limit is NOT a
+            # launch death, whatever else it left (no visible output, text the
+            # topic refused): the limit fact wins, and the engagement stays
+            # open (ruling-1141).
+            if _incomplete and limit_stop is None:
                 kind = LAUNCH_INCOMPLETE_KIND
                 detail = _LAUNCH_INCOMPLETE_DETAIL.get(_incomplete, _incomplete)
+        if kind is None and limit_stop is not None:
+            # #1141: the telling runs HERE, inside the outer ``try``, so this
+            # launch still holds its turn ownership and its launch enrolment
+            # while it awaits — a job's stall sweep cannot start batch 1
+            # under it (seam review r1) — and the flag is raised with no
+            # await since ``run_launch_turn`` returned, so a cancellation
+            # landing anywhere in the telling finds the abort predicate below
+            # false: the record stays live and boot resumes it.
+            limit_telling = True
+            await _tell_launch_limit_stop(channel, rec, limit_stop)
         if kind is not None:
             outcome = await asyncio.shield(_spawn_launch_death_report(
                 channel, rec, topic_id, kind=kind, detail=detail, driver=driver,
@@ -10159,8 +10175,10 @@ async def _own_in_casa_launch(
         # r2, Terra: a compensator on PERSIST_FAILED re-asked the question, got
         # the same rollback and told the uncommitted case AGAIN); ALREADY_TERMINAL
         # means the winner owns it. Only a turn cancelled BEFORE the question
-        # was asked is the cancellation owner's.
-        if outcome is None:
+        # was asked is the cancellation owner's. #1141: and never a turn that
+        # stopped at its turn limit — it is live, and its telling is not a
+        # death (INV-ENG-020).
+        if outcome is None and not limit_telling:
             _abort_launch_on_cancel(channel, rec, topic_id)
         raise
     finally:
@@ -10286,6 +10304,81 @@ def _launch_incomplete_reason(driver: Any, engagement_id: str) -> str:
             exc_info=True)
         return ""
     return reason if isinstance(reason, str) else ""
+
+
+def _launch_turn_observation(driver: Any, engagement_id: str) -> tuple[str, Any]:
+    """#1141: POP the launch-turn observation as ``(reason, limit_stop)``.
+
+    The anchored owner's reader. ``_launch_incomplete_reason`` above stays the
+    two inline-``start()`` launchers' reader and still answers ``""`` for
+    anything that is not a plain reason — those launchers serve only a driver
+    without ``supports_split_launch``, and ``InCasaDriver`` declares it.
+    A turn that stopped at its turn limit arrives as a ``TurnLimitStop``
+    carrying the reason the slot would otherwise hold; it is returned as the
+    second element (duck-typed, ``getattr``-guarded like its sibling), and the
+    reason as the first. A read that raises is "nothing observed".
+    """
+    reader = getattr(driver, "launch_turn_incomplete", None)
+    if reader is None:
+        return "", None
+    try:
+        value = reader(engagement_id)
+    except Exception:  # noqa: BLE001 — an observation must never break a launch
+        logger.warning(
+            "launch_turn_incomplete read failed for %s", engagement_id[:8],
+            exc_info=True)
+        return "", None
+    if isinstance(value, str):
+        return value, None
+    reason = getattr(value, "reason", "")
+    return (reason if isinstance(reason, str) else ""), value
+
+
+async def _tell_launch_limit_stop(channel: Any, rec: Any, limit_stop: Any) -> None:
+    """#1141 (ruling-1141, INV-ENG-020): a LAUNCH turn — a job's launch turn
+    included — that stopped at its turn limit. No death, no engager telling:
+    whatever the turn posted stands, and Casa makes ONE bounded attempt to add
+    C11's line, even when the turn posted nothing — unless the settled read
+    finds the record terminal.
+
+    Exactly ONE WARNING, logged in the ``finally`` so a cancellation landing in
+    the read OR the post still logs it before propagating; it carries the
+    outcome (``line=posted|failed|cancelled|terminal``, and ``state=unread``
+    when the settled read failed and the line was attempted anyway). A failed
+    read or post adds no WARNING of its own and is never retried, and never a
+    fallback death: the engagement stays live.
+
+    A ``CancelledError`` propagates — the caller raised its flag before the
+    first await here, so the cancellation never reaches the abort arm.
+    """
+    from agent import _LIMIT_CONTINUE  # C11's ruled line (#1121)
+    status, state, line = "", "", "cancelled"
+    try:
+        if _engagement_registry is not None:
+            try:
+                status, _told = await asyncio.wait_for(
+                    _engagement_registry.settled_terminal_state(rec.id),
+                    _TOPIC_OP_TIMEOUT_S)
+            except Exception:  # noqa: BLE001 — fail TOWARD telling
+                status, state = "", "unread"
+        if status in ("completed", "cancelled", "error"):
+            line = "terminal"
+            return
+        try:
+            await asyncio.wait_for(
+                _post_engagement_notice(channel, rec, _LIMIT_CONTINUE),
+                _TOPIC_OP_TIMEOUT_S)
+        except Exception:  # noqa: BLE001 — one bounded best-effort attempt
+            line = "failed"
+        else:
+            line = "posted"
+    finally:
+        logger.warning(
+            "engagement %s launch turn limit reached: role=%s turns=%s "
+            "line=%s%s",
+            rec.id[:8], getattr(rec, "role_or_type", "-"),
+            getattr(limit_stop, "turns", None), line,
+            f" state={state}" if state else "")
 
 
 class LaunchAbortResult(enum.Enum):

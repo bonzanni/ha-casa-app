@@ -79,6 +79,19 @@ landing inside it neither cuts it nor spawns a second one. When the launch turn 
 background job ends with nothing to report, the owner hands the engagement to the job's
 batch loop ([`background-jobs.md`](background-jobs.md)).
 
+**A launch turn that stopped at its turn limit is not a death** (INV-ENG-020). The owner reads
+the limit fact alongside the turn's other observation and, when it is present, takes none of
+the arms above — no reporter, no transition, no engager telling — whatever else the turn left
+(no visible output, text the topic refused). It tells the topic itself, still inside the
+turn's ownership: it raises the flag that keeps its cancellation arm from aborting before its
+first `await`, reads the settled record (bounded), posts Casa's step-limit line once unless
+that record is terminal (bounded), and logs one WARNING carrying the outcome in a `finally`
+around both. A cancellation there propagates and leaves the record live for boot; a failed
+post is logged and never becomes a death. Because the turn ownership and the ledger enrolment
+are held across the telling, a job's stall sweep cannot start batch 1 under it (measured in
+review: a telling placed after the owner's `finally` let the sweep admit a batch); once it
+ends, a job's launch turn hands the engagement to the batch loop like any other.
+
 **Cancellation has an owner at every point.** An owner cancelled mid-turn takes the
 cancellation arm the tool call had: the cancellation owner reports `launch_cancelled` with
 the stop's recorded cause, armed, and tells the engager what the report's outcome allows —

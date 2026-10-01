@@ -2394,7 +2394,8 @@ class TelegramChannel(Channel):
         self._inbound_cleanup_tasks.add(t)
         t.add_done_callback(self._inbound_cleanup_tasks.discard)
 
-    async def _report_incomplete_turn(self, rec, token) -> bool:
+    async def _report_incomplete_turn(
+            self, rec, token, *, system_turn: bool = False) -> bool:
         """#692/#678: tell the operator when THEIR turn ended without the
         turn's own terminal artifact — or, #665, finished with its streamed
         text wholly undelivered — and the engagement is still live.
@@ -2452,6 +2453,23 @@ class TelegramChannel(Channel):
             logger.debug("follow-up observation read failed for %s",
                          rec.id[:8], exc_info=True)
             return False
+        # #1141: a turn that stopped at its turn limit arrives as a
+        # ``TurnLimitStop`` (duck-typed: the channel does not import a driver
+        # module) carrying the reason the slot would otherwise hold. A BATCH
+        # turn — one ``deliver_system_turn`` delivered into a job engagement —
+        # drops the limit fact and is handled on that reason exactly as before
+        # (ruling-1141: "background job batches are unchanged"). Every other
+        # turn — an operator's message, a job topic's included, and a
+        # Casa-started turn into a non-job engagement — is the limit's: the
+        # limit wins over the reason, so neither of the two WARNINGs nor any
+        # notice below is reached for it.
+        if not isinstance(reason, str):
+            limit_stop = reason
+            reason = getattr(limit_stop, "reason", "")
+            if not isinstance(reason, str):
+                reason = ""
+            if not (system_turn and rec.origin.get("job")):
+                return await self._tell_turn_limit_stop(rec, limit_stop)
         if not reason:
             return False
         status, told = "", False
@@ -2506,11 +2524,59 @@ class TelegramChannel(Channel):
                            rec.id[:8], exc_info=True)
         return True
 
+    async def _tell_turn_limit_stop(self, rec, limit_stop) -> bool:
+        """#1141 (ruling-1141, INV-ENG-020): a non-batch follow-up turn that
+        stopped at its turn limit. Returns False — a limit stop is never "cut
+        off", so a job topic's operator turn goes on to the next batch.
+
+        Whatever the turn already posted stands; Casa makes ONE bounded attempt
+        to add C11's line — even when the turn posted nothing — unless the
+        settled read finds the record terminal (then nothing is posted: "say
+        'continue'" would be false). The limit WINS over an established
+        text-not-delivered reason on this arm, so that reason's notice is not
+        posted: one Casa telling per turn.
+
+        Exactly ONE WARNING, logged after the attempt and carrying its outcome
+        (``line=posted|failed|cancelled|terminal``; ``state=unread`` when the
+        settled read failed and the line was attempted anyway, the fail-toward-
+        telling direction this function's sibling takes). A failed read or post
+        therefore adds no WARNING of its own, and nothing retries the post. A
+        cancellation while awaiting is absorbed exactly as the sibling notice
+        absorbs it (one bounded best-effort attempt, then return).
+        """
+        from agent import _LIMIT_CONTINUE  # C11's ruled line (#1121)
+        status, state, line = "", "", "posted"
+        if self._engagement_registry is not None:
+            try:
+                status, _told = await asyncio.wait_for(
+                    self._engagement_registry.settled_terminal_state(rec.id),
+                    _SETTLED_STATUS_TIMEOUT_S)
+            except BaseException:  # noqa: BLE001 — fail TOWARD telling
+                status, state = "", "unread"
+        if status in ("completed", "cancelled", "error"):
+            line = "terminal"
+        else:
+            try:
+                await asyncio.wait_for(
+                    self._post_engagement_notice(rec, _LIMIT_CONTINUE),
+                    _TURN_INCOMPLETE_NOTICE_TIMEOUT_S)
+            except asyncio.CancelledError:
+                line = "cancelled"
+            except BaseException:  # noqa: BLE001 — one bounded attempt
+                line = "failed"
+        logger.warning(
+            "engagement %s turn limit reached: role=%s turns=%s line=%s%s",
+            rec.id[:8], getattr(rec, "role_or_type", "-"),
+            getattr(limit_stop, "turns", None), line,
+            f" state={state}" if state else "")
+        return False
+
     async def _deliver_turn_bg(
         self, rec, text: str, *, tg_message_id: int | None = None,
         answer_token: str | None = None,
         inbound_reserved: bool = False,
         inbound_token: object | None = None,
+        system_turn: bool = False,
     ) -> None:
         """M9 (v0.52.0): run one engagement user-turn to completion.
 
@@ -2530,6 +2596,10 @@ class TelegramChannel(Channel):
 
         v0.79.0 (§3): ``tg_message_id`` threads the durable inbound envelope to
         the operator's Telegram message (reply-quoting / receipts).
+
+        #1141: ``system_turn`` is True only when ``deliver_system_turn``
+        spawned this task. It reaches ``_report_incomplete_turn``, which
+        treats a system turn into a job engagement as a batch turn.
 
         v0.83.0 (§A3, Sol r9-1/r10-2): this task OWNS the answered reservation
         after hand-off. The enqueue DISPOSITION drives its fate — an ACCEPTED
@@ -2581,7 +2651,8 @@ class TelegramChannel(Channel):
             # the turn's own terminal artifact, and tell the operator if it
             # did not. After the discharge above, so the ledger is in its
             # final state either way.
-            turn_cut_off = await self._report_incomplete_turn(rec, inbound_token)
+            turn_cut_off = await self._report_incomplete_turn(
+                rec, inbound_token, system_turn=system_turn)
         except asyncio.CancelledError:
             _release_inbound()
             # Cancelled before a durable enqueue could promote — roll back.
@@ -2952,8 +3023,11 @@ class TelegramChannel(Channel):
                     await self._settle_lost_inbound(rec, inbound_token)
                     inbound_token = None
                     return False
+                # #1141: the explicit system-turn marker — set here and only
+                # here — is what lets the follow-up owner tell a job's batch
+                # turn from an operator's message in the same topic.
                 task = asyncio.create_task(self._deliver_turn_bg(
-                    rec, text, inbound_token=inbound_token))
+                    rec, text, inbound_token=inbound_token, system_turn=True))
                 self._turn_tasks.add(task)
                 task.add_done_callback(self._turn_tasks.discard)
                 # Task-end backstop for a cancelled-before-first-step task.

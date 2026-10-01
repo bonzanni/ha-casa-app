@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.332.24] - 2026-10-01
+
+### Fixed
+
+- When a conversation with a specialist, or with Ellen's configurator, reached
+  its step limit, Casa did not say so. A turn that had written some progress
+  looked like a finished answer, and one that had only used tools posted
+  nothing at all. On the conversation's first turn, a stop that left nothing
+  posted, or whose reply could not be delivered to the topic, made Casa end
+  the conversation as a failed start. Now the conversation stays open, first
+  turn included. Whatever the turn already said stays, and Casa adds one line
+  in the conversation's topic, even when nothing had been posted: "I hit my
+  step limit before finishing — say 'continue' and I'll pick up where I
+  stopped." Casa does not continue the stopped turn on its own, Ellen is not
+  told, and each such stop logs one WARNING.
+  - In a background job's topic, your own message gets the line too, and so
+    does the job's first turn; the job then goes on with its next batch as
+    usual. The job's batches themselves are unchanged: a batch that runs out
+    of steps gets no line and logs no step-limit WARNING.
+  - If the conversation had already been closed when that turn ended, nothing
+    is added. If Casa cannot check that in time, it adds the line anyway.
+  - If a later turn's reply could not be delivered to the topic, the
+    step-limit line takes the place of the usual "could not deliver its
+    response" notice.
+  - Saying "continue" picks up in the same session, as any message to an open
+    conversation does. A conversation that Casa has to restart in a fresh
+    session, for example after its clearance was lowered, does not keep that
+    session.
+  - If the line itself cannot be posted, the WARNING records it and the
+    conversation stays open. Casa does not try the line again.
+
 ## [0.332.23] - 2026-10-01
 
 ### Changed

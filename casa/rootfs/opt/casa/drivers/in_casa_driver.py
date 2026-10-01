@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from claude_agent_sdk import (
@@ -151,6 +152,29 @@ missing-result case keeps its own reason
 (:data:`FOLLOWUP_MISSING_RESULT`) — this one requires the turn to have
 FINISHED (``result_msg`` present) with its text refused."""
 
+RESULT_SUBTYPE_MAX_TURNS = "error_max_turns"
+"""#1141: the CLI's own result subtype for a turn that stopped at its turn
+limit — the same name ``tools._KNOWN_RESULT_SUBTYPES`` and C11's resident
+detection read. The ONLY carrier: ``is_error`` is also true of other aborts,
+``stop_reason`` is whatever the last model step said, and a limit stop may or
+may not have posted text."""
+
+
+@dataclass(frozen=True)
+class TurnLimitStop:
+    """#1141: a turn's observation when it stopped at its turn limit.
+
+    The limit fact is recorded ALONGSIDE the turn's existing reason, never
+    instead of it: ``reason`` is exactly what the slot would have held without
+    the limit (``""``, a ``*_TEXT_NOT_DELIVERED`` or ``no_visible_output``), so
+    an owner that must keep today's handling — a job's batch turn — still has
+    it. Which fact wins is the OWNER's decision, because only the owner knows
+    what kind of turn this was. Stored only for a limit stop; every other
+    observation stays the bare reason string it always was."""
+
+    reason: str
+    turns: int | None
+
 
 class EmptyTurnError(RuntimeError):
     """#649: an ADMITTED inbound turn whose response stream ended with no
@@ -250,8 +274,9 @@ class InCasaDriver(DriverProtocol):
         # path commits in memory before awaiting the tombstone write), so
         # adjudication belongs to the registry's own single transactional
         # question, asked by the owner. Values: "" | LAUNCH_MISSING_RESULT |
-        # LAUNCH_NO_VISIBLE_OUTPUT | LAUNCH_TEXT_NOT_DELIVERED.
-        self._launch_incomplete: dict[str, str] = {}
+        # LAUNCH_NO_VISIBLE_OUTPUT | LAUNCH_TEXT_NOT_DELIVERED, or (#1141) a
+        # TurnLimitStop wrapping one of those (or "") for a limit stop.
+        self._launch_incomplete: dict[str, str | TurnLimitStop] = {}
         # #692/#678: the same observation for a ticketed FOLLOW-UP turn,
         # keyed by the exact admission TICKET rather than by engagement.
         # Per-engagement keying is not merely coarse, it is wrong: the
@@ -260,8 +285,10 @@ class InCasaDriver(DriverProtocol):
         # then acquire the lock, run and overwrite or consume it before T1's
         # delivery task reads — losing one notice or attributing it to the
         # wrong turn. Both design reviewers reached that interleaving
-        # independently. eid -> {ticket: reason}.
-        self._followup_incomplete: dict[str, dict[object, str]] = {}
+        # independently. eid -> {ticket: reason}; #1141: the reason is a
+        # TurnLimitStop wrapping it when the turn stopped at its turn limit.
+        self._followup_incomplete: dict[
+            str, dict[object, str | TurnLimitStop]] = {}
 
     # -- lifecycle --------------------------------------------------------
 
@@ -583,12 +610,15 @@ class InCasaDriver(DriverProtocol):
             self._inbound_reservations.get(engagement_id, 0)
             - self._inbound_command_reservations.get(engagement_id, 0))
 
-    def launch_turn_incomplete(self, engagement_id: str) -> str:
+    def launch_turn_incomplete(
+        self, engagement_id: str,
+    ) -> str | TurnLimitStop:
         """SYNCHRONOUS: POP the #678 launch-turn observation.
 
         Returns ``LAUNCH_MISSING_RESULT``, ``LAUNCH_NO_VISIBLE_OUTPUT``,
         ``LAUNCH_TEXT_NOT_DELIVERED`` or
-        ``""``. Read exactly once, by the launch owner, immediately after
+        ``""`` — or, #1141, a :class:`TurnLimitStop` carrying one of those
+        (or ``""``) when the launch turn stopped at its turn limit. Read exactly once, by the launch owner, immediately after
         :meth:`start` returns; popping means a re-read cannot report the same
         death twice. Not part of ``DriverProtocol`` — the launch owners reach
         it through ``getattr`` inside their in_casa branches only, so a
@@ -600,12 +630,14 @@ class InCasaDriver(DriverProtocol):
 
     def followup_turn_incomplete(
         self, engagement_id: str, inbound_token: object,
-    ) -> str:
+    ) -> str | TurnLimitStop:
         """SYNCHRONOUS: POP the #692/#678 FOLLOW-UP turn observation for one
         exact admission ticket.
 
         Returns ``FOLLOWUP_MISSING_RESULT``,
-        ``FOLLOWUP_TEXT_NOT_DELIVERED`` or ``""``. Read once, by the
+        ``FOLLOWUP_TEXT_NOT_DELIVERED`` or ``""`` — or, #1141, a
+        :class:`TurnLimitStop` carrying ``FOLLOWUP_TEXT_NOT_DELIVERED`` or
+        ``""`` when the turn stopped at its turn limit. Read once, by the
         delivery task that owns that ticket, immediately after its
         ``send_user_turn`` returns; popping means the task-end cleanup
         backstop that runs after it cannot tell the operator a second time.
@@ -1127,6 +1159,31 @@ class InCasaDriver(DriverProtocol):
                 engagement.id[:8], idx,
             )
 
+        # #1141: a turn that stopped at its TURN LIMIT. Read from the result's
+        # subtype alone (see RESULT_SUBTYPE_MAX_TURNS), after the
+        # ``ApiErrorTurn`` / ``EmptyTurnError`` raises above, so a refusal still
+        # ends as a refusal. RECORDED, never raised — a raise here would take
+        # ``run_launch_turn``'s M14 rollback and end the very engagement the
+        # ruling keeps open. The fact WRAPS whatever reason the arms above and
+        # below record (``TurnLimitStop``), so it sits ALONGSIDE that reason in
+        # the same pop-once slot; the owner decides which one governs.
+        limit_turns: int | None = None
+        limit_stopped = (
+            result_msg is not None
+            and getattr(result_msg, "subtype", None) == RESULT_SUBTYPE_MAX_TURNS)
+        if limit_stopped:
+            _turns = getattr(result_msg, "num_turns", None)
+            limit_turns = _turns if isinstance(_turns, int) else None
+        if inbound_token is not None and limit_stopped:
+            bucket = self._followup_incomplete.setdefault(engagement.id, {})
+            bucket[inbound_token] = TurnLimitStop(
+                reason=bucket.get(inbound_token, ""), turns=limit_turns)
+            logger.info(
+                "Engagement %s follow-up turn stopped at its turn limit "
+                "(turns=%s) — recorded for its delivery task to adjudicate",
+                engagement.id[:8], limit_turns,
+            )
+
         # #678: OBSERVE whether this LAUNCH turn left a terminal artifact.
         # Launch turns only (``inbound_token is None``); the ticketed arm is
         # directly above and writes a DIFFERENT slot, so neither can overwrite
@@ -1182,4 +1239,12 @@ class InCasaDriver(DriverProtocol):
                     "(reason=%s frames=%d) — recorded for the launch owner "
                     "to adjudicate",
                     engagement.id[:8], reason, idx,
+                )
+            if limit_stopped:
+                self._launch_incomplete[engagement.id] = TurnLimitStop(
+                    reason=reason, turns=limit_turns)
+                logger.info(
+                    "Engagement %s launch turn stopped at its turn limit "
+                    "(turns=%s) — recorded for the launch owner to adjudicate",
+                    engagement.id[:8], limit_turns,
                 )
