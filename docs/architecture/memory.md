@@ -10,13 +10,15 @@ last_reviewed: 2026-08-10
 
 Long-term memory on the way *out*: how a recalled fact is rendered, what a caller is told
 when the store cannot answer, and what a caller may claim from what comes back. It covers
-the memory seam, the provenance carried on a recalled fact, and the mental-model overlay
-together with the mental models Casa declares for it. *Who* may read a stored
+the memory seam and the provenance carried on a recalled fact. The mental-model overlay,
+together with the mental models Casa declares for it, is
+[`architecture/memory-mental-models.md`](memory-mental-models.md). *Who* may read a stored
 fact back — read clearance per channel and sender, the engagement clearance clamp, and
 the executor-archive epoch scoping — is
-[`architecture/memory-scoping.md`](memory-scoping.md). How a fact is written and
-labelled — tier classification, speaker provenance, content addressing, and the retention
-lifecycle around them — is [`architecture/memory-lifecycle.md`](memory-lifecycle.md). It
+[`architecture/memory-scoping.md`](memory-scoping.md). How a fact is labelled — tier
+classification, speaker provenance, content addressing — is
+[`architecture/memory-labelling.md`](memory-labelling.md), and the retention lifecycle
+around it is [`architecture/memory-lifecycle.md`](memory-lifecycle.md). It
 does not cover the SDK session transcript, which is short-term context on a different
 lifecycle, and it does not describe the memory backend's own internals — those live
 outside this repository.
@@ -115,12 +117,13 @@ automatically" is true of a narrower set of turns than it sounds.
 
 **Writing is narrower than reading, and it has its own document.** Only write-trusted
 channels retain to the shared bank; *when* a conversation is retained, reset, or wiped is
-the retention lifecycle, and so is everything about how a fact is *labelled* on the way in —
-tier classification, provenance, and the content addressing that deduplicates it.
+the retention lifecycle, and how a fact is *labelled* on the way in — tier classification,
+provenance, and the content addressing that deduplicates it — is item labelling.
 [`architecture/memory-lifecycle.md`](memory-lifecycle.md) owns the freshness windows, the
-save guard protocol (INV-MEM-006), the write-side tag and provenance gate (INV-MEM-004), the
-content-addressing contract (INV-MEM-009), the tier-classifier parse (INV-MEM-012), the
-retirement claims (INV-MEM-013), the tier floor (INV-MEM-018); the operator-consented wipe (INV-MEM-014) is
+save guard protocol (INV-MEM-006) and the retirement claims (INV-MEM-013);
+[`architecture/memory-labelling.md`](memory-labelling.md) owns the write-side tag and
+provenance gate (INV-MEM-004), the content-addressing contract (INV-MEM-009), the
+tier-classifier parse (INV-MEM-012) and the tier floor (INV-MEM-018); the operator-consented wipe (INV-MEM-014) is
 [`architecture/memory-wipe.md`](memory-wipe.md)'s. What this
 document owns is the other direction: what comes back, and what a caller may claim from it.
 
@@ -134,48 +137,6 @@ bank stores nothing, and the next save recreates it). Any other 404 — an unkno
 failure raises, and the save is skipped. Reading an unknown answer as "never saved" would let
 a save lower a tier, which is why this read has no lenient arm and no default in the seam.
 The route is present in the backend since v0.0.8; the behaviour above was verified on 0.10.2.
-
-**Mental-model overlays cannot be tier-filtered at all**, because they are bank-wide
-summaries rather than individually tagged facts. That is why they are exposed only at the
-highest clearance — there is no way to redact part of one.
-
-**The overlay is the backend's mental models, each dated, framed as leads.** A *mental
-model* is a standing question the memory backend re-answers from the bank on its own
-schedule. On a fresh session at `private` origin clearance, the turn reads the bank's models
-(with their content — the backend's list returns metadata only unless asked) and pushes the
-ones that have content into the prompt. Each renders under its name with `refreshed <weekday>
-<day> <month> <year>` — the date of its last refresh in the operator's timezone, the same form
-as a recalled fact's recorded date — and, when its automatic refreshes are paused because the
-last one failed (the backend's own rule: a failure later than the last success, or a failure
-with no success at all), says that it may be out of date. A model with no content yet (its
-first refresh still running) or no readable refresh date is left out: the overlay never shows a
-summary whose age it cannot state. A non-empty overlay opens with one line framing it as
-memory-derived leads: not live state, and not a complete list, so nothing missing from it is
-evidence of absence. A missing bank (after a wipe, before the first save) is simply no overlay;
-any other failure to read it is logged and the turn runs without it.
-
-**Casa declares two of those models and keeps them reconciled.** `casa-open-commitments` asks
-for the operator's open commitments and follow-ups with their stated dates and deadlines,
-leaving out the assistant's own reminders and briefings; it refreshes on the backend's daily
-schedule at 05:00 UTC. `casa-operator-profile` asks for a profile of the operator and their
-household — who they are, the people around them, how they like to be addressed, standing
-preferences and routines with their cadence, each item with the date it was last stated —
-leaving out health, money and other people's private matters; it refreshes after the backend
-consolidates new memories, at most once a day. Both are untagged, so each reads the whole
-bank, including the other model and any model the operator created. The exclusions are
-written into the question, not enforced: they shape what the backend writes and filter
-nothing. A reconcile pass makes the backend match the declarations: it creates a missing
-model, rewrites a definition whose declared fields drifted (fields Casa does not declare are
-left as they are), and deletes any model under the **reserved `casa-` prefix** that Casa no
-longer declares — so a model the operator creates under that prefix is deleted at the next
-pass, while every other id is never touched. The pass reads one page of up to 1,000 models,
-and when the backend reports more than it returned, it deletes nothing. A model whose
-definition was rewritten, or whose automatic refreshes are paused, gets one explicit refresh in
-that pass, because rewriting does not refresh and only an explicit refresh resumes a paused
-model. A pass runs in the background
-at boot and after every completed wipe, one at a time in arrival order; boot and the wipe never
-wait for it, and shutdown cancels it before the memory client closes. It is best-effort: when
-the backend is unreachable it logs and changes nothing, and the next boot or wipe tries again.
 
 ## Contracts & invariants
 
@@ -207,11 +168,12 @@ What it does not cover: the legacy string recall path, mental-model overlays, an
 transcript are not tier-filtered by this check. Filtering is also applied locally to what the
 backend returned — the request's own tag filter is not treated as the access control.
 
-**INV-MEM-004**, **INV-MEM-005**, **INV-MEM-006**, **INV-MEM-009** and **INV-MEM-012** — the
-write-side tag and provenance gate, write trust, the save/reset guard protocol, the
-content-addressing contract and the tier-classifier parse — are declared in
-[`architecture/memory-lifecycle.md`](memory-lifecycle.md), together with the retirement
-claims (INV-MEM-013) and the tier floor (INV-MEM-018); the wipe contract (INV-MEM-014) is declared in
+**INV-MEM-005** and **INV-MEM-006** — write trust and the save/reset guard protocol — are
+declared in [`architecture/memory-lifecycle.md`](memory-lifecycle.md), together with the
+retirement claims (INV-MEM-013); **INV-MEM-004**, **INV-MEM-009** and **INV-MEM-012** — the
+write-side tag and provenance gate, the content-addressing contract and the tier-classifier
+parse — are declared in [`architecture/memory-labelling.md`](memory-labelling.md), together
+with the tier floor (INV-MEM-018); the wipe contract (INV-MEM-014) is declared in
 [`architecture/memory-wipe.md`](memory-wipe.md).
 
 One consequence of INV-MEM-004 belongs on the read side and is easy to miss: it protects the
@@ -248,20 +210,6 @@ token budget before Casa filters, so a memory first recorded in the period can s
 missing from the result. A memory's date is the backend's first recorded date for identical
 text, not when the event it describes happened.
 
-**INV-MEM-020**: The mental-model overlay is pushed only on a fresh session at `private` origin clearance, and every model it renders carries its name and the date of its last refresh in the operator's timezone.
-
-Enforced by the turn's load plan, which pushes the overlay on a fresh session only, behind the
-`private`-only overlay gate; by the backend's overlay read, which asks the list for content;
-and by the overlay render, which emits a model only together with its name and its local
-refresh date and leaves out a model whose refresh date it cannot read.
-
-What it does not cover: what the summaries *say*. They are written by the backend's own model
-from the whole bank; their dates are the last refresh, not when any fact in them was stated,
-and the declared exclusions are part of the question rather than a filter. Nor does it cover
-the declared models' reconcile, which is best-effort by design and pinned by ordinary tests:
-a pass that cannot reach the backend leaves the models as they were until the next boot or
-wipe.
-
 ## Failure behavior
 
 **The backend is slow, unreachable, or returns an error.** The seam raises `RecallUnavailable`
@@ -278,15 +226,6 @@ This is deliberately not an empty result.
 comes back empty, no mental model is reconciled, and **writes silently succeed without
 persisting anything**. The write side fails quietly here while the read side does not.
 
-**A reconcile pass fails.** If the backend's model list cannot be read — unreachable,
-timing out, a server error, an unrecognisable answer — the pass writes nothing and logs it.
-A missing bank is not a failure: its list answers 404 and the pass creates both models, which
-recreates the bank. One model's create, rewrite, refresh or delete failing is logged and the
-pass moves on; a rewrite that failed is not followed by a refresh. A refresh whose connection
-drops is not resent — the pass cannot tell whether the backend accepted it. Nothing retries
-inside the process: if the backend comes up after Casa, the declared models wait for the next
-boot or wipe.
-
 **Auto-recall fails.** The turn absorbs it: no memory block is injected and the turn proceeds
 without memory. Repeated failures open a per-agent breaker that skips the attempt.
 The model is not told that recall was skipped, so an agent cannot distinguish "no memory
@@ -298,8 +237,9 @@ dedicated reason rather than calling the backend. Genuine zero-hit results count
 and reset it; only unavailability counts as failure.
 
 Failures on the *write* side — a save that fails, a spooled retry, a corrupt session
-registry, a wipe whose drain times out, a tier classification that cannot be parsed — are the
-retention lifecycle's: [`architecture/memory-lifecycle.md`](memory-lifecycle.md). The last of
+registry, a wipe whose drain times out — are the retention lifecycle's:
+[`architecture/memory-lifecycle.md`](memory-lifecycle.md); a tier classification that cannot
+be parsed is item labelling's: [`architecture/memory-labelling.md`](memory-labelling.md). The last of
 those has a read-side consequence worth knowing here: an unparseable classification defaults
 the item to *private*, so the write is not lost but the fact goes invisible below the highest
 clearance — absence on voice and friends surfaces — until a later save's real verdict replaces
@@ -316,10 +256,6 @@ survives filtering. Its stored-tag read must likewise answer "never saved" only 
 positively says so, and raise on everything else; the seam declares it abstract so a backend
 cannot inherit a lenient one. If it holds resources, implement the close hook. Its mental-model
 reconcile has a do-nothing default: a backend without mental models has nothing to reconcile.
-
-**A new declared mental model** is one more entry in the declarations, under the reserved
-`casa-` prefix. Its first reconcile creates it; removing the entry later deletes it from the
-backend at the next pass.
 
 **A new recall caller** should decide whether it wants its own telemetry and breaker, which
 means choosing a distinct recall path rather than inheriting another's. It must also decide,
@@ -348,13 +284,6 @@ since what may be disclosed is decided per surface.
 - `casa/rootfs/opt/casa/recall_health.py::observed_recall`
 - `casa/rootfs/opt/casa/delegated_memory.py::delegated_recall`
 - `casa/rootfs/opt/casa/timekeeping.py::resolve_period`
-- `casa/rootfs/opt/casa/semantic_memory.py::render_mental_models`
-- `casa/rootfs/opt/casa/semantic_memory.py::mental_model_refresh_paused`
-- `casa/rootfs/opt/casa/hindsight_memory.py::HindsightSemanticMemory.profile`
-- `casa/rootfs/opt/casa/hindsight_memory.py::HindsightSemanticMemory.reconcile_mental_models`
-- `casa/rootfs/opt/casa/mental_models.py::reconcile`
-- `casa/rootfs/opt/casa/mental_models.py::schedule_reconcile`
-- `casa/rootfs/opt/casa/mental_models.py::drain_reconcile_tasks`
 
 **Tests**
 - `tests/test_recall_absence_invariant.py`
@@ -364,12 +293,12 @@ since what may be disclosed is decided per surface.
 - `tests/test_recall_readable_slice_framing.py`
 - `tests/test_1123_tier_floor_regressions.py`
 - `tests/test_pin_1120_recall_period.py`
-- `tests/test_mental_models_1126.py`
 
 **Related**
 - [`architecture/overview.md`](../architecture/overview.md)
 - [`architecture/turn-loop.md`](../architecture/turn-loop.md)
 - [`architecture/memory-lifecycle.md`](../architecture/memory-lifecycle.md)
+- [`architecture/memory-mental-models.md`](../architecture/memory-mental-models.md)
 - [`architecture/memory-scoping.md`](../architecture/memory-scoping.md)
 - [`architecture/memory-wipe.md`](../architecture/memory-wipe.md)
 <!-- END SOURCEMAP -->
