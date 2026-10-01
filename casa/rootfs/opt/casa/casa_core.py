@@ -2300,7 +2300,9 @@ async def _close_tina_ha_facade(
         logger.warning("ha_facade_close_failed")
 
 
-# Max webhook request body (spec A3). Larger requests are rejected before read.
+# Default max webhook request body (spec A3). Larger requests are rejected
+# before auth. #1156: a plugin route may declare its own (``max_body_kib``); the
+# route record carries it, and this is the fallback for a record without one.
 _WEBHOOK_BODY_MAX = 64 * 1024
 
 # #1142: Casa's OWN constant, appended to an opted-in (`deliver: operator`)
@@ -2325,8 +2327,9 @@ def _make_webhook_handler(
 ):
     """Build the wildcard ``/webhook/{name}`` handler.
 
-    Request pipeline (spec A3): rate limit → bounded body read (64 KiB) →
-    name lookup (unknown ⇒ 404) → PER-TRIGGER auth verify (fail ⇒ 401) →
+    Request pipeline (spec A3): rate limit → name lookup (unknown ⇒ 404) →
+    body read bounded by the route's cap (64 KiB unless a plugin trigger
+    declares ``max_body_kib``, #1156) → PER-TRIGGER auth verify (fail ⇒ 401) →
     dispatch a SCHEDULED bus message to the registered role.
 
     Auth is per-trigger (spec A1): each webhook trigger declares an ``auth``
@@ -2391,13 +2394,14 @@ def _make_webhook_handler(
                 pass
         return got or b""
 
-    def _verify(request: web.Request, body: bytes, name: str, route: dict) -> bool:
+    def _verify(request: web.Request, body: bytes, route: dict,
+                secret: bytes) -> bool:
         policy = route.get("auth") or {"mode": "hmac_body"}
         return webhook_auth.verify(
             policy.get("mode", "hmac_body"),
             body=body,
             headers=request.headers,
-            secret=_secret_for(name, route),
+            secret=secret,
             header_name=policy.get("header", "X-Webhook-Signature"),
             tolerance_secs=int(policy.get("tolerance_secs", 300)),
             now=int(time.time()),
@@ -2408,37 +2412,45 @@ def _make_webhook_handler(
         if limited is not None:
             return limited
 
-        # Bounded body read (spec A3): reject a declared oversize Content-Length
-        # early, AND stream-read with a hard cap so a chunked/Transfer-Encoding
-        # request cannot buffer past 64 KiB (Terra ship-review P1).
-        if request.content_length is not None and request.content_length > _WEBHOOK_BODY_MAX:
-            return web.json_response({"error": "payload too large"}, status=413)
-        chunks: list[bytes] = []
-        read = 0
-        async for chunk in request.content.iter_chunked(8192):
-            read += len(chunk)
-            if read > _WEBHOOK_BODY_MAX:
-                return web.json_response({"error": "payload too large"}, status=413)
-            chunks.append(chunk)
-        body = b"".join(chunks)
-
         name = request.match_info.get("name", "")
         # #620 (seam S1): ONE atomic route record per request — role, auth
-        # policy, both clearance uses and resident/plugin authority all come
-        # from it, never from a second registry read. Three separate getters
-        # could straddle a concurrent re-registration and stamp one message
-        # from two routes (target from the old, clearance from the new).
+        # policy, body cap, both clearance uses and resident/plugin authority
+        # all come from it, never from a second registry read. Three separate
+        # getters could straddle a concurrent re-registration and stamp one
+        # message from two routes (target from the old, clearance from the new).
+        # #1156: read BEFORE the body, because the cap is the route's; names
+        # are non-secret, so a 404 here discloses nothing new.
         route = trigger_registry.webhook_route(name)
         if route is None:
             return web.json_response(
                 {"error": "unknown webhook"}, status=404,
             )
+        max_body = int(route.get("max_body") or _WEBHOOK_BODY_MAX)
+        # #1156 (diff r1 S1): the key is read WITH the route, before the body
+        # is awaited. Read after a slow body, it could belong to an approval
+        # that replaced this route mid-request — one request verified by the
+        # new approval's key under the old route's role and clearance.
+        secret = _secret_for(name, route)
+
+        # Bounded body read (spec A3): reject a declared oversize Content-Length
+        # early, AND stream-read with a hard cap so a chunked/Transfer-Encoding
+        # request cannot buffer past the route's cap (Terra ship-review P1).
+        if request.content_length is not None and request.content_length > max_body:
+            return web.json_response({"error": "payload too large"}, status=413)
+        chunks: list[bytes] = []
+        read = 0
+        async for chunk in request.content.iter_chunked(8192):
+            read += len(chunk)
+            if read > max_body:
+                return web.json_response({"error": "payload too large"}, status=413)
+            chunks.append(chunk)
+        body = b"".join(chunks)
         target_role = route["role"]
         clearance = route.get("clearance", "public") or "public"
         # #1142: from the SAME route record — never a second registry read.
         deliver = "operator" if route.get("deliver") == "operator" else "none"
 
-        if not _verify(request, body, name, route):
+        if not _verify(request, body, route, secret):
             return web.json_response(
                 {"error": "invalid signature"}, status=401,
             )

@@ -125,10 +125,70 @@ def test_missing_target_rejected():
 
 # --- auth mode / owner -----------------------------------------------------
 
-def test_provider_secret_owner_rejected_this_release():
+@pytest.mark.parametrize("mode", ["static_header", "timestamped_hmac"])
+def test_provider_secret_owner_accepted_on_per_trigger_modes(mode):
+    """#1156: the provider generates the secret; the declared owner is kept
+    in the normalized policy, so it reaches the consent identity."""
+    manifest = _m([_wh(
+        auth={"mode": mode, "header": "ElevenLabs-Signature",
+              "secret_owner": "provider"})])
+    manifest["casa"]["setupTool"] = "setup_postcall"
+    trig, errs = parse_and_validate("p", manifest)
+    assert errs == []
+    assert trig[0]["auth"]["secret_owner"] == "provider"
+
+
+def test_provider_secret_owner_requires_a_setup_tool():
+    """Diff r1 S2 (Terra): nothing but the setup tool fills a provider slot,
+    so without one the route would answer 401 forever."""
     _, errs = parse_and_validate("p", _m([_wh(
-        auth={"mode": "timestamped_hmac", "secret_owner": "provider"})]))
-    assert any("provider" in e for e in errs)
+        auth={"mode": "static_header", "secret_owner": "provider"})]))
+    assert any("setupTool" in e for e in errs)
+
+
+def test_provider_secret_owner_rejected_on_hmac_body():
+    """hmac_body verifies with the one global secret — there is no slot for a
+    provider to fill."""
+    _, errs = parse_and_validate("p", _m([_wh(
+        auth={"mode": "hmac_body", "secret_owner": "provider"})]))
+    assert any("provider" in e and "hmac_body" in e for e in errs)
+
+
+def test_unknown_secret_owner_rejected():
+    _, errs = parse_and_validate("p", _m([_wh(
+        auth={"mode": "static_header", "secret_owner": "someone"})]))
+    assert any("secret_owner" in e for e in errs)
+
+
+def test_owner_is_part_of_the_consent_identity():
+    base = dict(plugin="p", artifact_id="a", effective="plg-p--x",
+                target="resident:assistant")
+    auth = {"mode": "timestamped_hmac", "header": "H", "tolerance_secs": 300}
+    assert (plugin_triggers.ack_identity(
+                **base, auth={**auth, "secret_owner": "casa"})
+            != plugin_triggers.ack_identity(
+                **base, auth={**auth, "secret_owner": "provider"}))
+
+
+# --- max_body_kib (#1156) ---------------------------------------------------
+
+def test_max_body_kib_defaults_to_64():
+    trig, errs = parse_and_validate("p", _m([_wh()]))
+    assert errs == []
+    assert trig[0]["max_body_kib"] == 64
+
+
+@pytest.mark.parametrize("kib", [64, 512, 1024])
+def test_max_body_kib_in_range_accepted(kib):
+    trig, errs = parse_and_validate("p", _m([_wh(max_body_kib=kib)]))
+    assert errs == []
+    assert trig[0]["max_body_kib"] == kib
+
+
+@pytest.mark.parametrize("kib", [63, 1025, 0, -1, True, 128.0, "256", None])
+def test_max_body_kib_out_of_range_or_wrong_type_rejected(kib):
+    _, errs = parse_and_validate("p", _m([_wh(max_body_kib=kib)]))
+    assert any("max_body_kib" in e for e in errs)
 
 
 def test_unknown_mode_rejected():

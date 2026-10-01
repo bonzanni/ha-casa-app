@@ -21,6 +21,7 @@ from aiohttp import web
 from bus import BusMessage, MessageBus, MessageType
 from config import TriggerSpec
 from log_cid import new_cid
+import plugin_triggers
 from provenance import scheduled_delivery_markers
 import scheduled_asks
 
@@ -28,6 +29,10 @@ if TYPE_CHECKING:
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 logger = logging.getLogger(__name__)
+
+# #1156: the webhook body cap a route reads when it declares none — every
+# resident route, and a plugin route without ``max_body_kib``.
+_DEFAULT_MAX_BODY = 1024 * plugin_triggers.MAX_BODY_KIB_DEFAULT
 
 
 class _RoutingUnavailable:
@@ -578,7 +583,8 @@ class TriggerRegistry:
 
     def webhook_route(self, name: str) -> dict | None:
         """ONE atomic snapshot of the route for ``name`` — ``{"role",
-        "clearance", "auth", "deliver", "resident"}`` — or ``None`` when nothing routes
+        "clearance", "auth", "deliver", "max_body", "resident"}`` — or ``None``
+        when nothing routes
         it (#620, seam S1). Resident records win; the plugin overlay is the
         fallback, ``resident: False``, exactly as ``get_webhook_target``
         resolves. The wildcard handler and the secret report read THIS and
@@ -588,7 +594,9 @@ class TriggerRegistry:
         record = self._webhook_routes.get(name)
         if record is not None:
             # #1142: a resident trigger has no ``deliver``; it reads "none".
-            return {**record, "deliver": "none", "resident": True}
+            # #1156: nor a body cap of its own; it reads the default.
+            return {**record, "deliver": "none",
+                    "max_body": _DEFAULT_MAX_BODY, "resident": True}
         if self._plugin_overlay is ROUTING_UNAVAILABLE:
             return None                                  # #606: closed ingress
         entry = self._plugin_overlay.get(name)
@@ -596,7 +604,10 @@ class TriggerRegistry:
             return None
         return {"role": entry["role"], "clearance": entry["clearance"],
                 "auth": entry["auth"],
-                "deliver": entry.get("deliver", "none"), "resident": False}
+                "deliver": entry.get("deliver", "none"),
+                "max_body": 1024 * int(entry.get(
+                    "max_body_kib", plugin_triggers.MAX_BODY_KIB_DEFAULT)),
+                "resident": False}
 
     def webhook_names_for(self, role: str) -> list[str]:
         """The webhook names this role currently ROUTES, from the same map

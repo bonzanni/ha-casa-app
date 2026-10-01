@@ -255,13 +255,17 @@ def compute_desired(
                     "plugin": rp.name, "artifact_id": rp.artifact_id,
                     "effective": t["effective"], "target": target,
                     "auth": t["auth"], "clearance": t["clearance"],
-                    "deliver": t["deliver"]})
+                    "deliver": t["deliver"],
+                    "max_body_kib": t["max_body_kib"]})
                 continue
             entries[t["effective"]] = {
                 "plugin": rp.name, "role": role,
                 "clearance": t["clearance"], "auth": t["auth"],
                 # #1142: travels inside the route record (INV-TRIG-018).
                 "deliver": t["deliver"],
+                # #1156: the route's body cap, read by ingress from the same
+                # record before it reads the body.
+                "max_body_kib": t["max_body_kib"],
                 # the (consent identity, approval generation) this route was
                 # approved under — the mint binds the secret to the PAIR, so
                 # a re-approval after a revoke (new gen) rekeys even for an
@@ -277,7 +281,8 @@ def compute_desired(
 
 
 def _secret_backed(desired: DesiredTriggers) -> "list[tuple[str, dict]]":
-    """The overlay entries backed by a casa-minted PER-TRIGGER secret file.
+    """The overlay entries backed by a PER-TRIGGER secret file — casa-minted,
+    or (#1156) provider-owned, whose slot Casa binds and the plugin fills.
 
     One definition shared by the writer (:func:`_mint_secrets`) and the reader
     (:func:`verify_minted_secrets`) — they must agree on which routes have a
@@ -285,6 +290,24 @@ def _secret_backed(desired: DesiredTriggers) -> "list[tuple[str, dict]]":
     forever or wave through one whose file is missing."""
     return [(eff, entry) for eff, entry in desired.overlay.items()
             if entry["auth"].get("mode") in _PER_TRIGGER_SECRET_MODES]
+
+
+def _provider_owned(entry: dict) -> bool:
+    """#1156: the slot's value comes from the provider via the plugin's setup
+    tool; Casa only binds the slot to the approval (never mints a value)."""
+    return entry["auth"].get("secret_owner") == "provider"
+
+
+def _slot_bound(eff: str, entry: dict, secrets_dir: Path) -> bool:
+    """The gate's predicate for one secret-backed entry, by owner: a casa slot
+    holds a value minted under this identity; a provider slot is bound to it
+    (its value arrives later, from the setup this predicate releases)."""
+    import webhook_auth
+
+    check = (webhook_auth.provider_slot_bound if _provider_owned(entry)
+             else webhook_auth.secret_bound_to_identity)
+    return check(eff, identity=entry.get("identity", ""),
+                 secrets_dir=Path(secrets_dir))
 
 
 def _fail_close_plugins(desired: DesiredTriggers, plugins: set[str]) -> None:
@@ -335,9 +358,7 @@ def verify_minted_secrets(desired: DesiredTriggers, secrets_dir: Path) -> None:
 
     unbacked: set[str] = set()
     for eff, entry in _secret_backed(desired):
-        if webhook_auth.secret_bound_to_identity(
-                eff, identity=entry.get("identity", ""),
-                secrets_dir=Path(secrets_dir)):
+        if _slot_bound(eff, entry, secrets_dir):
             continue
         unbacked.add(entry.get("plugin", ""))
         desired.issues.append(PluginIssue(
@@ -350,21 +371,16 @@ def verify_minted_secrets(desired: DesiredTriggers, secrets_dir: Path) -> None:
 def _needs_mint(desired: DesiredTriggers, secrets_dir: Path) -> bool:
     """Will :func:`_mint_secrets` WRITE on this pass? True iff some routed,
     secret-backed entry is not already bound to the identity this pass derived
-    (#823). Read-only: the gate's own predicate
-    (:func:`webhook_auth.secret_bound_to_identity`, the one
-    :func:`verify_minted_secrets` applies), which is the exact complement of the
-    reuse test inside ``ensure_secret_for_identity`` — a read failure reads as
+    (#823). Read-only: the gate's own predicate (:func:`_slot_bound`, the
+    one :func:`verify_minted_secrets` applies), which is the exact complement of the
+    reuse test inside ``ensure_secret_for_identity`` (``bind_provider_slot`` for a
+    provider-owned slot) — a read failure reads as
     "unbound" on both sides, so the answer errs toward publishing the marker
     and the mint then rekeys. It decides whether the pass must close plugin
     ingress before it writes; a pass whose secrets are all bound writes
     nothing and publishes no marker."""
-    import webhook_auth
-
-    secrets_dir = Path(secrets_dir)
-    return any(
-        not webhook_auth.secret_bound_to_identity(
-            eff, identity=entry.get("identity", ""), secrets_dir=secrets_dir)
-        for eff, entry in _secret_backed(desired))
+    return any(not _slot_bound(eff, entry, secrets_dir)
+               for eff, entry in _secret_backed(desired))
 
 
 def _mint_secrets(desired: DesiredTriggers, secrets_dir: Path) -> None:
@@ -380,6 +396,23 @@ def _mint_secrets(desired: DesiredTriggers, secrets_dir: Path) -> None:
 
     failed_plugins: set[str] = set()
     for eff, entry in _secret_backed(desired):
+        if _provider_owned(entry):
+            # #1156: bind, never adopt — a value bound to another identity is
+            # retired first; one that survives leaves the plugin unrouted.
+            try:
+                bound = webhook_auth.bind_provider_slot(
+                    eff, identity=entry.get("identity", ""),
+                    secrets_dir=secrets_dir)
+            except Exception:  # noqa: BLE001 — same contract as a mint
+                logger.exception("provider slot bind failed (%s)", eff)
+                bound = False
+            if not bound:
+                failed_plugins.add(entry.get("plugin", ""))
+                desired.issues.append(PluginIssue(
+                    name=entry.get("plugin", ""),
+                    target=f"resident:{entry['role']}",
+                    stage="triggers", reason_code="trigger_secret_missing"))
+            continue
         try:
             # Identity-bound (Terra shipB-r2): a surviving secret minted
             # under a DIFFERENT consent identity is rekeyed here — the old
@@ -1025,7 +1058,9 @@ async def reprompt_pending(
                     plugin=p["plugin"], artifact_id=p["artifact_id"],
                     effective=p["effective"], target=p["target"],
                     auth=p["auth"], clearance=p.get("clearance", "public"),
-                    deliver=p.get("deliver", "none"))
+                    deliver=p.get("deliver", "none"),
+                    max_body_kib=p.get("max_body_kib",
+                                       plugin_triggers.MAX_BODY_KIB_DEFAULT))
                 report.append(dict(row, handle=handle))
             except Exception:  # noqa: BLE001 — one prompt failure must not
                 # abort the remaining rows

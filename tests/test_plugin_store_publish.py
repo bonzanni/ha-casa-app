@@ -1145,10 +1145,17 @@ class TestManifestTriggers:
             validate_manifest(root, "p")
         assert ei.value.reason_code == "triggers_invalid"
 
-    def test_validate_manifest_rejects_provider_owner(self, tmp_path):
-        root = _tree_with_casa(tmp_path, "p", {"triggers": [
+    def test_validate_manifest_accepts_provider_owner(self, tmp_path):
+        # #1156: the provider generates the secret; the setup tool stores it.
+        root = _tree_with_casa(tmp_path, "p", {"setupTool": "setup_x", "triggers": [
             {"name": "x", "type": "webhook", "target": "resident:assistant",
              "auth": {"mode": "timestamped_hmac", "secret_owner": "provider"}}]})
+        validate_manifest(root, "p")  # no raise
+
+    def test_validate_manifest_rejects_provider_owner_on_hmac_body(self, tmp_path):
+        root = _tree_with_casa(tmp_path, "p", {"triggers": [
+            {"name": "x", "type": "webhook", "target": "resident:assistant",
+             "auth": {"mode": "hmac_body", "secret_owner": "provider"}}]})
         with pytest.raises(StoreError) as ei:
             validate_manifest(root, "p")
         assert ei.value.reason_code == "triggers_invalid"
