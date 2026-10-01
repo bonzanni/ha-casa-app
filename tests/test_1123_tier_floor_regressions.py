@@ -281,6 +281,14 @@ async def test_hindsight_read_only_the_document_not_found_404_is_never_saved():
     _Resp(404, ""),
     _Resp(404, "<html>gone</html>"),
     _Resp(404, '{"detail":"document not found"}'),
+    # Only a decoded JSON OBJECT whose detail is the measured string is
+    # "never saved" (M-7); the bare string, as text or as a JSON scalar, is not.
+    _Resp(404, "Document not found"),
+    _Resp(404, '"Document not found"'),
+    _Resp(404, '["Document not found"]'),
+    _Resp(404, '{"message":"Document not found"}'),
+    _Resp(404, '{"detail":{"detail":"Document not found"}}'),
+    _Resp(404, "{not json"),
     _Resp(500, '{"detail":"boom"}'),
     _Resp(503, ""),
     _Resp(200, "not json"),
@@ -288,6 +296,12 @@ async def test_hindsight_read_only_the_document_not_found_404_is_never_saved():
     _Resp(200, '{"tags": "private"}'),
     _Resp(200, '{"tags": ["private", 1]}'),
     _Resp(200, '["private"]'),
+    _Resp(200, '"private"'),
+    _Resp(200, "null"),
+    _Resp(200, '{"tags": null}'),
+    _Resp(200, '{"tags": {"private": true}}'),
+    _Resp(200, '{"tags": [null]}'),
+    _Resp(200, '{"tags": [["private"]]}'),
 ])
 async def test_hindsight_read_fails_on_every_other_answer(resp):
     with pytest.raises(StoredTagsUnavailable):
@@ -300,6 +314,16 @@ async def test_hindsight_read_logs_an_unrecognised_404(caplog):
         with pytest.raises(StoredTagsUnavailable):
             await _memory(_Resp(404, '{"detail":"Not Found"}')).document_tags("casa", "m-1")
     assert any("unrecognised 404" in r.getMessage() and "Not Found" in r.getMessage()
+               for r in caplog.records)
+
+
+@pytest.mark.parametrize("body", ["Document not found", '"Document not found"'])
+async def test_hindsight_read_logs_a_404_without_a_json_detail(caplog, body):
+    import logging
+    with caplog.at_level(logging.WARNING, logger="hindsight_memory"):
+        with pytest.raises(StoredTagsUnavailable):
+            await _memory(_Resp(404, body)).document_tags("casa", "m-1")
+    assert any("unrecognised 404" in r.getMessage() and "Document not found" in r.getMessage()
                for r in caplog.records)
 
 
@@ -329,3 +353,90 @@ async def test_hindsight_read_validates_the_bank_before_any_request():
     with pytest.raises(ValueError):
         await mem.document_tags("Bad Bank!", "m-1")
     assert mem._session.calls == []
+
+
+class _HttpBank:
+    """The real adapter's HTTP seam over a bank with Hindsight 0.10.2's measured
+    semantics: a retain REPLACES a document's tag set (M-5); a GET returns the
+    document's current tags (M-6), and a document never saved answers 404 with
+    the measured ``{"detail":"Document not found"}`` (M-7). ``drifted`` set to a
+    body makes EVERY read answer 404 with it — a server (or anything in front of
+    it) whose answers differ from the measured ones."""
+
+    def __init__(self) -> None:
+        self.docs: dict[str, list[str]] = {}
+        self.retains = 0
+        self.drifted: str | None = None
+        self.closed = False
+
+    def request(self, method, url, json=None, **kw):  # noqa: A002 — aiohttp's name
+        bank = self
+
+        class _R:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            def raise_for_status(self):
+                return None
+
+            async def json(self):
+                return {"success": True}
+
+            async def text(self):
+                return self.body
+
+        resp = _R()
+        if method == "POST" and url.endswith("/memories"):
+            bank.retains += 1
+            for item in json["items"]:
+                bank.docs[item["document_id"]] = list(item["tags"])
+            resp.status, resp.body = 200, '{"success": true}'
+        elif method == "GET" and "/documents/" in url:
+            tags = bank.docs.get(url.rsplit("/", 1)[1])
+            if bank.drifted is not None:
+                resp.status, resp.body = 404, bank.drifted
+            elif tags is None:
+                resp.status, resp.body = 404, '{"detail":"Document not found"}'
+            else:
+                import json as _json
+                resp.status, resp.body = 200, _json.dumps({"tags": tags})
+        else:  # pragma: no cover — no other route is used
+            raise AssertionError((method, url))
+        return resp
+
+
+@pytest.mark.parametrize("drifted", ["Document not found", '"Document not found"'])
+async def test_a_malformed_404_never_lets_a_delegated_save_lower_a_stored_tier(
+        monkeypatch, drifted):
+    """The bank holds a document saved ``private``; the server then answers the
+    read of it with a 404 whose body is not the measured JSON object. That answer
+    is not "never saved": the save is skipped, so the stored ``private`` stands."""
+    http = _HttpBank()
+    mem = HindsightSemanticMemory(base_url="http://hs:8888")
+    mem._session = http
+    turns = [RetainedTurn("The garage code is 4417.", STUB_USER_PROV)]
+    monkeypatch.setattr(delegated_memory, "classify_tier", _fixed("private"))
+    await delegated_memory.retain_delegated(mem, origin_channel="telegram", turns=turns)
+    assert http.retains == 1
+    assert [[t for t in tags if t in TIERS] for tags in http.docs.values()] == [["private"]]
+
+    http.drifted = drifted
+    monkeypatch.setattr(delegated_memory, "classify_tier", _fixed("public"))
+    await delegated_memory.retain_delegated(mem, origin_channel="telegram", turns=turns)
+    assert http.retains == 1
+    assert [[t for t in tags if t in TIERS] for tags in http.docs.values()] == [["private"]]
+
+
+async def test_the_measured_404_still_saves_through_the_real_adapter(monkeypatch):
+    http = _HttpBank()
+    mem = HindsightSemanticMemory(base_url="http://hs:8888")
+    mem._session = http
+    monkeypatch.setattr(delegated_memory, "classify_tier", _fixed("friends"))
+    await delegated_memory.retain_delegated(
+        mem, origin_channel="telegram",
+        turns=[RetainedTurn("The garage code is 4417.", STUB_USER_PROV)])
+    assert http.retains == 1
+    assert [[t for t in tags if t in TIERS] for tags in http.docs.values()] == [["friends"]]

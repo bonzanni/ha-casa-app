@@ -94,20 +94,27 @@ def _retry_after_s(headers: object) -> float:
 
 # #1123: the one answer to a document read that means "never saved". Measured
 # on Hindsight 0.10.2 (the route is present since v0.0.8): an unknown document
-# AND a missing bank both answer 404 with exactly this detail, while an unknown
-# ROUTE answers 404 "Not Found". Every other answer fails the read, so a server
-# whose wording differs stops first saves rather than disabling the floor.
+# AND a missing bank both answer 404 with a JSON object whose ``detail`` is
+# exactly this string, while an unknown ROUTE answers 404 "Not Found". Every
+# other answer fails the read — the bare string as plain text or as a JSON
+# scalar included — so a server whose wording differs stops first saves rather
+# than disabling the floor.
 _DOCUMENT_NOT_FOUND = "Document not found"
 _DETAIL_LOG_CHARS = 120
+_NO_DETAIL = object()
 
 
 def _error_detail(body: str) -> object:
-    """The ``detail`` of an error body, or the raw body when it has none."""
+    """The ``detail`` of an error body that decodes to a JSON object carrying
+    one, else :data:`_NO_DETAIL` — never the raw body, so no other shape can
+    equal the measured detail."""
     try:
         parsed = json.loads(body)
     except ValueError:
-        return body
-    return parsed.get("detail") if isinstance(parsed, dict) else parsed
+        return _NO_DETAIL
+    if not isinstance(parsed, dict) or "detail" not in parsed:
+        return _NO_DETAIL
+    return parsed["detail"]
 
 
 def _parse_mentioned_at(value: object) -> datetime | None:
@@ -244,10 +251,11 @@ class HindsightSemanticMemory(SemanticMemory):
 
     async def document_tags(self, bank: str, document_id: str) -> frozenset[str] | None:
         """#1123: ``GET /v1/default/banks/{bank}/documents/{document_id}`` —
-        the document's current tags, or None only for a 404 whose detail is
-        exactly "Document not found" (see ``_DOCUMENT_NOT_FOUND``). Any other
-        404, any other status, and a 200 without a list of string ``tags``
-        raise :class:`StoredTagsUnavailable`; a timeout or transport failure
+        the document's current tags, or None only for a 404 whose body is a
+        JSON object with ``detail`` exactly "Document not found" (see
+        ``_DOCUMENT_NOT_FOUND``). Any other 404 — plain text, a JSON scalar or
+        list, an object without that detail — any other status, and a 200
+        without a JSON object holding a list of string ``tags`` raise :class:`StoredTagsUnavailable`; a timeout or transport failure
         propagates. Not ``_roundtrip``: that raises on the status before the
         body — the only thing that tells "never saved" from a wrong route —
         can be read. A GET is safe to retry once after a dropped connection."""
@@ -266,9 +274,9 @@ class HindsightSemanticMemory(SemanticMemory):
             status, body = await _get_once()
         if status == 404:
             detail = _error_detail(body)
-            if detail == _DOCUMENT_NOT_FOUND:
+            if isinstance(detail, str) and detail == _DOCUMENT_NOT_FOUND:
                 return None
-            shown = repr(detail)[:_DETAIL_LOG_CHARS]
+            shown = repr(body if detail is _NO_DETAIL else detail)[:_DETAIL_LOG_CHARS]
             logger.warning(
                 "memory stored-tier read got an unrecognised 404 bank=%s "
                 "detail=%s — not read as never-saved; the save is skipped",
