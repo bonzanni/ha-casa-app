@@ -2869,28 +2869,37 @@ def _kept_new_version(txn, journal, slug: str, exc: BaseException,
 
 def _kept_new_version_error(txn, journal, slug: str,
                             exc: BaseException) -> "SpecialistInstallError":
+    """#975: the library kept the new version after activation failed. #1095
+    (ruling-1095-5/-6): the tool returns this before any reload, so Casa has
+    loaded none of it — the detail says "not active yet", never "active".
+    ``restart_first`` marks the variant whose prior-version cleanup also
+    failed: there a re-run is refused until Casa restarts (INV-SPEC-014)."""
     import specialist_bundle_journal
 
     step = f"{type(exc).__name__}: {exc}"
+    kept = (f"{slug!r}: the upgrade is not active yet. The new version is kept — the "
+            f"version it replaced cannot be restored whole, because a setting it kept "
+            f"as a plain value is now secret — but the upgrade then failed ({step}) "
+            f"before Casa loaded it, so new and open conversations still use the "
+            f"previous version")
     try:
         txn.finish_forward()
         specialist_bundle_journal.complete(journal)
     except Exception as cleanup_exc:  # noqa: BLE001 — reported, boot retries
-        return SpecialistInstallError(
+        err = SpecialistInstallError(
             "upgrade_kept_new_version",
-            f"{slug!r}: the new version is active and stays active — the version "
-            f"it replaced cannot be restored whole, because a setting it kept as a "
-            f"plain value is now secret. The upgrade then failed ({step}), and "
-            f"finishing the retained prior failed too ({cleanup_exc}); its undo "
-            f"record is kept, so further changes to this specialist are refused "
-            f"until Casa restarts and finishes it. Nothing was deleted")
-    return SpecialistInstallError(
+            f"{kept}. Finishing the retained prior failed too ({cleanup_exc}); its "
+            f"undo record is kept, so further changes to this specialist are refused "
+            f"until Casa restarts and finishes it: restart Casa, then re-run the "
+            f"upgrade. Nothing was deleted")
+        err.restart_first = True
+        return err
+    err = SpecialistInstallError(
         "upgrade_kept_new_version",
-        f"{slug!r}: the new version is active and stays active — the version it "
-        f"replaced cannot be restored whole, because a setting it kept as a plain "
-        f"value is now secret. The upgrade then failed ({step}); its owned plugins "
-        f"may still be the previous version's. Re-run the same upgrade to finish "
-        f"it. Nothing was deleted")
+        f"{kept}, and its owned plugins may still be the previous version's. "
+        f"Re-running the same upgrade finishes it. Nothing was deleted")
+    err.restart_first = False
+    return err
 
 
 @dataclass(frozen=True)

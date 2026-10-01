@@ -40,7 +40,7 @@ changes, addon options.json mutations, or kernel concerns.
 | Edit delegates.yaml | `agent` for that role |
 | Edit disclosure.yaml | `agent` for that role — but it changes no served prompt today; see `recipes/disclosure/edit.md` |
 | Edit voice.yaml | `agent` for that role |
-| Flip a specialist's `enabled` flag | `agent` for that role — the reload that reads `enabled: false` tears the specialist down (no agent, no bus queue, no jobs or routes, not delegatable) instead of swapping it; the file-reading scopes (`triggers`, `policies`, `agents`, and so `config_sync`/`full`) honour the flag the same way, and each reports `teardown_disabled_specialist` |
+| Flip a specialist's `enabled` flag | `agent` for that role — the reload that reads `enabled: false` tears the specialist down (no agent, no bus queue, no jobs or routes, not delegatable) instead of swapping it; the file-reading scopes (`triggers`, `policies`, `agents`, and so `config_sync`/`full`) honour the flag the same way, and each reports `teardown_disabled_specialist`; the teardown also closes the specialist's open conversations (each topic is told; a close that failed is reported as `teardown_incomplete_close_engagements`, the operator is told, and the next `agents` reload retries it) — say so before flipping the flag |
 | hooks.yaml (any agent's) | NOT editable by you — hook-policy files are denied unconditionally; policy changes are an operator/image action |
 | Edit policies/disclosure.yaml | `policies` — same caveat as the row above |
 | Edit an executor's `definition.yaml` | `executors` |

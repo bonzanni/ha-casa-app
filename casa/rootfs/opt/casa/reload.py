@@ -1366,7 +1366,23 @@ async def _teardown_disabled_specialist(
     async def purge_grants() -> None:
         _invalidate_role_grants(role)
 
-    failed = await _run_named_steps(role, ("purge_grants", purge_grants))
+    async def close_engagements() -> None:
+        # #1095 (INV-CFG-013): the disable takes effect here, so the
+        # specialist's open conversations are closed now, through the terminal
+        # funnel (which tells each topic). Awaited inline: the funnel takes no
+        # reload or plugin-tools lock, so holding the RW reader and
+        # `agent:<role>` here cannot wedge. A failed close is told to the
+        # operator by the helper, named by raising, and retried by the next
+        # `agents` sweep (`_INCOMPLETE_RETIREMENTS`).
+        import tools as tools_mod
+        rows = await tools_mod.close_disabled_specialist_engagements(role)
+        failed_rows = [r["engagement_id"] for r in rows if r["outcome"] == "close_failed"]
+        if failed_rows:
+            raise RuntimeError(
+                f"{len(failed_rows)} open conversation(s) not closed: {failed_rows}")
+
+    failed = await _run_named_steps(role, ("purge_grants", purge_grants),
+                                    ("close_engagements", close_engagements))
     old_agent = runtime.agents.pop(role, None)
     _schedule_agent_close(old_agent, runtime=runtime, role=role)
     actions.append(f"teardown_disabled_specialist{suffix}")
@@ -1375,6 +1391,15 @@ async def _teardown_disabled_specialist(
         actions.append(f"teardown_incomplete_{step}{suffix}")
         _note_failure(role, f"teardown_incomplete_{step}_{role}")
     _note_retirement_outcome(role, failed)
+
+
+def _specialist_roles_with_open_engagements() -> set[str]:
+    """Specialist roles with an open specialist-kind engagement (#1095)."""
+    try:
+        import tools as tools_mod
+        return set(tools_mod.specialist_roles_with_open_engagements())
+    except Exception:  # noqa: BLE001 — no registry, no candidates
+        return set()
 
 
 def _note_retirement_outcome(role: str, failed: list[str]) -> None:
@@ -2297,11 +2322,18 @@ async def reload_agents(runtime: Any, *, role: str | None = None) -> list[str]:
                 if isinstance(r, str)}
         except Exception:  # noqa: BLE001 — a pre-v0.74 registry stand-in
             disabled_now = set()
-    for s in sorted(live_or_residual & disabled_now):
+    # #1095 (INV-CFG-013): boot constructs no Agent for a specialist (only the
+    # backfill above does), so one disabled before any sweep backfilled it is
+    # neither live nor residual — but its open conversations still have to be
+    # closed. A role with an open specialist engagement is a candidate too,
+    # under the same disabled re-check and the same lock.
+    with_open = _specialist_roles_with_open_engagements() - set(runtime.role_configs.keys())
+    for s in sorted((live_or_residual | with_open) & disabled_now):
         async with _get_lock(_lock_key("agent", s)):
             if runtime.specialist_registry.is_disabled(s) is not True:
                 continue
-            if s not in runtime.agents and s not in _INCOMPLETE_RETIREMENTS:
+            if (s not in runtime.agents and s not in _INCOMPLETE_RETIREMENTS
+                    and s not in _specialist_roles_with_open_engagements()):
                 continue
             await _teardown_disabled_specialist(actions, runtime, s, suffix=f"_{s}")
 

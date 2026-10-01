@@ -16,7 +16,28 @@
 3. `specialist_upgrade(slug=..., component_id=..., version=..., root_digest=..., staged_dir=...,
    receipt_id=..., config={...}, secret_names_provided=[...])` using the EXACT `root_digest` and
    `receipt_id` `specialist_install_inspect` returned. Omitting `receipt_id` (or passing a stale
-   one) refuses with `kind: "receipt_required"`. If the result carries
+   one) refuses with `kind: "receipt_required"`.
+   If `ok: false, kind: "open_conversations_unconfirmed"`: NOTHING changed — the specialist has
+   open conversations. Relay the result's `warning` to the operator VERBATIM (it lists each
+   conversation and says what happens to it) and ask whether to go ahead. Only on a yes, repeat
+   the same call with `acknowledged_conversations` set to the ids the result lists; on a no, stop
+   and tell the operator nothing changed — a declined warning voids those ids, so never re-pass
+   them without asking again. If a later result carries `opened_after_confirmation` (or
+   `opened_while_this_change_ran`), tell the operator about those conversations too, with the
+   result's `open_conversation_notice` verbatim.
+   Keep the acknowledged ids: the pending-configuration re-commit (step 4) and a re-run of a kept
+   upgrade (below) pass the same `acknowledged_conversations` again, so the operator is not asked
+   twice in this conversation.
+   If `ok: false, kind: "upgrade_kept_new_version"`: the new version is kept on disk but Casa has
+   not loaded it. Tell the operator plainly, from the result's `outcome`:
+   the upgrade is not active yet, and new and open conversations still use the previous version.
+   Then do the finishing step the result names — normally re-run this same `specialist_upgrade`
+   call (same arguments, same `acknowledged_conversations`); when it says
+   "restart Casa, then re-run the upgrade", ask the operator to restart Casa first
+   (`casa_restart_supervised`) and re-run the call after it.
+   Key this on the `kind`, never on `kept_new_version: true` alone: a sequencer-failure result
+   carries that flag too, and there the new version IS loaded.
+   If the result carries
    `plugin_data_note` — on ANY outcome, including an `ok:false` result that
    carries no `state` at all — relay it verbatim with the names in
    `plugin_data_plugins`, exactly as `recipes/plugin/remove.md` step 4
@@ -53,7 +74,9 @@
 - Omitting `receipt_id` on `specialist_upgrade`, or reusing one from an earlier inspect call — it
   refuses with `kind: "receipt_required"`; always use the id the LATEST inspect returned.
 - Forgetting `casa_reload(scope="agents")` after `state == "active"` — the new tuple is committed on
-  disk but the live registry keeps running the old compiled bundle until reload runs.
+  disk but the live registry keeps running the old compiled bundle until reload runs. Even after
+  it, a conversation already open keeps its personality and plugin versions; only new ones get the
+  new version.
 - Treating `state == "pending-configuration"` or `state == "error"` as a failed upgrade that needs
   retrying blind — in BOTH cases the previously-active version, and its owned plugin set, is still
   running unchanged; report the specific gap (missing config, or the validation error) and let the
