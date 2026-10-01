@@ -4054,6 +4054,17 @@ async def main() -> None:
     # 2. Long-term semantic memory (spec §5/§4.2): the only memory path —
     # Hindsight or noop (resolve_semantic_memory_choice).
     semantic_memory = build_semantic_memory(resolve_semantic_memory_choice(dict(os.environ)))
+    # #1126: reconcile Casa's declared mental models in the background. Boot
+    # never waits on it; if the memory server is not up yet the pass logs and
+    # the next boot (or wipe) runs another. Shutdown drains it before the
+    # memory client closes.
+    from semantic_memory import NoOpSemanticMemory as _NoOpSemanticMemory
+    if not isinstance(semantic_memory, _NoOpSemanticMemory):
+        import mental_models as _mental_models
+        from hindsight_ids import bank_id as _bank_id
+        _mental_models.schedule_reconcile(
+            semantic_memory, _bank_id("casa"), reason="boot",
+        )
 
     def _agent_home_dir(role: str) -> str:
         """Resident transcript cwd (encoded-cwd dir for get_session_messages /
@@ -6069,6 +6080,12 @@ async def _shutdown_cleanup(
         await job_registry.close()
     except Exception:  # noqa: BLE001 — shutdown must complete
         logger.warning("job registry close failed", exc_info=True)
+
+    # #1126: cancel and await every mental-model reconcile pass (boot's, and
+    # any a wipe drained above started) so none is mid-request when the memory
+    # client closes; new passes are refused from here on.
+    import mental_models as _mental_models_shutdown
+    await _mental_models_shutdown.drain_reconcile_tasks()
 
     # Close the shared Hindsight client session (L32) so aiohttp does not
     # warn about an unclosed session; no-op for NoOp/other backends.

@@ -62,10 +62,15 @@ def test_render_mental_models_empty() -> None:
     assert render_mental_models({}) == ""
 
 
+_REFRESHED = "2026-09-30T05:00:00Z"
+
+
 def test_render_mental_models_formats_entries() -> None:
-    resp = {"mental_models": [
-        {"content": "Nicola: terse, prefers metric units."},
-        {"content": "Guest mode disables personal data."},
+    resp = {"items": [
+        {"name": "Operator profile", "content": "Nicola: terse, prefers metric units.",
+         "last_refreshed_at": _REFRESHED},
+        {"name": "Open commitments", "content": "Guest mode disables personal data.",
+         "last_refreshed_at": _REFRESHED},
     ]}
     out = render_mental_models(resp)
     assert "terse" in out
@@ -74,8 +79,9 @@ def test_render_mental_models_formats_entries() -> None:
 
 
 def test_render_mental_models_tolerates_alt_keys() -> None:
-    assert "terse" in render_mental_models({"models": [{"content": "terse"}]})
-    assert "terse" in render_mental_models({"items": [{"content": "terse"}]})
+    for key in ("items", "models", "mental_models"):
+        assert "terse" in render_mental_models(
+            {key: [{"content": "terse", "last_refreshed_at": _REFRESHED}]})
 
 
 def test_render_recall_empty() -> None:
