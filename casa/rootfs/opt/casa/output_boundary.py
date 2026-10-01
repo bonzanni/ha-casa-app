@@ -495,7 +495,16 @@ class TurnScope:
         mint from server-stamped, reserved context keys."""
         return (self.channel == "webhook"
                 and self.markers.get("_origin_route") == "webhook_trigger"
-                and self.markers.get("_webhook_deliver") == "operator")
+                and self.markers.get("_webhook_deliver") in (
+                    "operator", "operator_always"))
+
+    @property
+    def silence_forbidden(self) -> bool:
+        """#1158: a ``deliver: operator_always`` fire — every accepted fire
+        ends in exactly one operator message, so a reply that is silent anyway
+        is replaced by Casa's fallback line, not suppressed into nothing."""
+        return (self.delivers_to_operator
+                and self.markers.get("_webhook_deliver") == "operator_always")
 
     def resolve_channel(self, requested: str) -> str:
         """The channel a discrete send actually goes to: the requested one,

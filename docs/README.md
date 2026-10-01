@@ -24,6 +24,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | Telegram transport, callback namespaces, topic output ordering, or the outbound request boundary | [`architecture/telegram.md`](architecture/telegram.md) |
 | a launch failure or abort, what a launch rollback removes, or restart replay | [`architecture/engagement-failure-and-restart.md`](architecture/engagement-failure-and-restart.md) |
 | a plugin tool result, the result contract, a capability reference or its redemption, or the broker routes | [`architecture/plugin-result-contract.md`](architecture/plugin-result-contract.md) |
+| a plugin webhook trigger's deliver value, how an opted-in fire's reply, error or fallback reaches the operator, or whether such a fire may end in silence | [`architecture/webhook-delivery.md`](architecture/webhook-delivery.md) |
 | a plugin's declared drop-off, the vault_drop_off tool, the drop-off item's title, tag or write sequence, or where a sign-in link goes instead of a brief | [`architecture/vault-drop-off.md`](architecture/vault-drop-off.md) |
 | a plugin's declared eraser or its result convention, the erase-data question or its choice grant, the erase episode, the plugin_erase marker, or what plugin_remove or specialist_uninstall do with erase_data | [`architecture/plugin-erasure.md`](architecture/plugin-erasure.md) |
 | a plugin-declared background job, start_job or job host resolution, the batch loop or its progress tool, or how a job resumes after a restart | [`architecture/background-jobs.md`](architecture/background-jobs.md) |

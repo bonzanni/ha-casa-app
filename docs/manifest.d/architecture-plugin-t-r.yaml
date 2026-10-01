@@ -1,0 +1,92 @@
+# Manifest shard (#1158, split from architecture-plugin-m-r.yaml at the 40 KB index ceiling)
+# — architecture documents plugin-triggers through R. Loaded with the root
+# docs/manifest.yaml by scripts/verify_docs.py; same entry format.
+
+- doc: architecture/plugin-triggers.md
+  summary: What a plugin's declared webhook must satisfy before it routes — the overlay, its preconditions, and the operator approval gating them.
+  when_changing: plugin trigger declaration, the routing overlay, trigger consent, or per-trigger secret backing
+  covers:
+    - casa/rootfs/opt/casa/trigger_reconcile.py
+    - casa/rootfs/opt/casa/trigger_acks.py::TriggerAckStore
+    - casa/rootfs/opt/casa/trigger_consent.py
+    - casa/rootfs/opt/casa/plugin_triggers.py::parse_and_validate
+    - casa/rootfs/opt/casa/trigger_registry.py::TriggerRegistry.replace_plugin_overlay
+    - casa/rootfs/opt/casa/plugin_routing_recovery.py
+  tests:
+    - tests/test_plugin_triggers_reconcile.py
+    - tests/test_plugin_triggers_consent.py
+    - tests/test_plugin_triggers_overlay.py
+    - tests/test_plugin_triggers_manifest.py
+    - tests/test_trigger_consent.py
+    - tests/test_trigger_reconcile_publication_fence.py
+    - tests/test_plugin_trigger_provider_secret.py
+  related: [architecture/triggers.md, architecture/trigger-secrets.md, architecture/plugins.md, architecture/callbacks.md, architecture/plugin-setup-dispatch-gate.md, architecture/output-boundary.md, architecture/webhook-delivery.md]
+  defines_invariants: [INV-TRIG-003, INV-TRIG-004, INV-TRIG-005, INV-TRIG-006, INV-TRIG-015, INV-TRIG-017, INV-TRIG-019, INV-TRIG-020]
+  invariant_tests:
+    INV-TRIG-019: [tests/test_plugin_triggers_manifest.py::test_provider_secret_owner_requires_a_setup_tool, tests/test_plugin_trigger_provider_secret.py::test_provider_route_goes_live_bound_but_empty_and_refuses, tests/test_plugin_trigger_provider_secret.py::test_setup_gate_releases_on_the_bind_not_on_a_value, tests/test_plugin_trigger_provider_secret.py::test_value_written_after_the_bind_authenticates_and_survives_reconcile, tests/test_plugin_trigger_provider_secret.py::test_replaced_artifact_never_inherits_a_value_whose_removal_failed, tests/test_plugin_trigger_provider_secret.py::test_reapproval_after_revoke_clears_the_value, tests/test_plugin_trigger_provider_secret.py::test_owner_flip_casa_to_provider_retires_the_casa_token, tests/test_plugin_trigger_provider_secret.py::test_owner_flip_provider_to_casa_mints_fresh]
+    INV-TRIG-020: [tests/test_plugin_trigger_provider_secret.py::test_the_key_is_read_with_the_route_not_after_the_body, tests/test_plugin_trigger_provider_secret.py::test_route_record_carries_the_declared_cap, tests/test_plugin_trigger_provider_secret.py::test_body_up_to_the_declared_cap_is_accepted, tests/test_plugin_trigger_provider_secret.py::test_body_over_the_declared_cap_is_413, tests/test_plugin_trigger_provider_secret.py::test_undeclared_cap_stays_64_kib, tests/test_plugin_trigger_provider_secret.py::test_unknown_name_is_404_whatever_the_body_size, tests/test_plugin_trigger_provider_secret.py::test_resident_route_reads_the_default_cap, tests/test_plugin_trigger_provider_secret.py::test_consent_prompt_names_provider_owner_and_raised_cap]
+    INV-TRIG-015: [tests/test_plugin_routing_sentinel.py::test_unavailable_plugin_routing_recovers_as_one_scheduled_pair]
+    INV-TRIG-017: [tests/test_trigger_reconcile_publication_fence.py::test_a_writing_pass_publishes_the_marker_before_its_first_secret_write, tests/test_trigger_reconcile_publication_fence.py::test_a_caller_cancelled_mid_mint_holds_the_lock_until_its_writes_land, tests/test_trigger_reconcile_publication_fence.py::test_a_pass_whose_secrets_are_all_bound_publishes_no_marker, tests/test_trigger_reconcile_publication_fence.py::test_a_mint_hop_failure_republishes_and_leaves_the_marker, tests/test_trigger_reconcile_publication_fence.py::test_a_second_cancellation_during_the_drain_still_holds_the_lock, tests/test_trigger_reconcile_publication_fence.py::test_no_setup_dispatch_lands_between_the_mint_and_the_publish]
+    INV-TRIG-003: [tests/test_plugin_triggers_reconcile.py::test_per_plugin_all_or_nothing]
+    INV-TRIG-004: [tests/test_plugin_triggers_consent.py::test_tampered_identity_fails_whole_store_closed]
+    INV-TRIG-005: [tests/test_plugin_triggers_overlay.py::test_replace_is_atomic_full_swap_stale_swept]
+    INV-TRIG-006: [tests/test_plugin_routing_sentinel.py::test_every_plugin_accessor_closes_ingress_under_the_sentinel, tests/test_plugin_routing_sentinel.py::test_every_callback_accessor_closes_ingress_under_the_sentinel, tests/test_plugin_routing_sentinel.py::test_the_snapshot_returns_the_singleton_by_identity, tests/test_plugin_routing_sentinel.py::test_an_invalid_registry_publishes_the_sentinel_not_an_empty_map, tests/test_plugin_routing_sentinel.py::test_an_authoritative_pass_publishes_a_real_map_and_clears_it, tests/test_plugin_routing_sentinel.py::test_a_compute_failure_publishes_the_sentinel_and_re_raises, tests/test_plugin_routing_sentinel.py::test_revoke_preserves_the_sentinel_instead_of_sweeping_it, tests/test_plugin_routing_sentinel.py::test_a_one_shot_failure_yields_exactly_one_routing_row, tests/test_plugin_routing_sentinel.py::test_a_persistent_failure_yields_two_independent_rows]
+- doc: architecture/plugins.md
+  summary: How a plugin becomes usable — registry, content-addressed store, artifact identity, and which tools are protected.
+  when_changing: plugin installation, artifact identity, or protected-tool declarations
+  covers:
+    - casa/rootfs/opt/casa/plugin_registry.py::compute_artifact_id
+    - casa/rootfs/opt/casa/plugin_registry.py::reload_snapshot
+    - casa/rootfs/opt/casa/plugin_store.py::safe_extract_tar
+    - casa/rootfs/opt/casa/plugin_store.py::artifact_verdict
+    - casa/rootfs/opt/casa/plugin_store.py::manifest_protected_tools
+    - casa/rootfs/opt/casa/plugin_store.py::resolve_latest_release
+    - casa/rootfs/opt/casa/plugin_store.py::_peel_tag
+    - casa/rootfs/opt/casa/plugin_grants.py::protected_map
+    - casa/rootfs/opt/casa/plugin_boot.py::main
+  tests:
+    - tests/test_plugin_store_latest.py
+    - tests/test_plugin_add_latest.py
+    - tests/test_plugin_registry.py
+    - tests/test_plugin_store_publish.py
+    - tests/test_plugin_grants.py
+    - tests/test_plugin_boot.py
+  related: [architecture/overview.md, architecture/agent-taxonomy.md, architecture/callbacks.md, architecture/plugin-health.md, architecture/plugin-mutation-tools.md, architecture/plugin-authorization.md]
+  defines_invariants: [INV-PLUG-001, INV-PLUG-002, INV-PLUG-003, INV-PLUG-006, INV-PLUG-021, INV-PLUG-022]
+  invariant_tests:
+    INV-PLUG-022: [tests/test_plugin_store_latest.py::test_latest_release_with_a_lightweight_tag, tests/test_plugin_store_latest.py::test_latest_release_with_an_annotated_tag_is_peeled, tests/test_plugin_store_latest.py::test_no_releases_falls_back_to_the_highest_release_tag_numerically, tests/test_plugin_store_latest.py::test_a_release_named_like_a_branch_is_not_latest, tests/test_plugin_store_latest.py::test_a_stale_release_naming_a_missing_tag_is_no_release_found, tests/test_plugin_store_latest.py::test_a_prefix_match_list_is_not_the_tag, tests/test_plugin_add_latest.py::test_latest_installs_the_release_tag_and_stores_it, tests/test_plugin_add_latest.py::test_no_release_refuses_before_anything_moves, tests/test_plugin_add_latest.py::test_the_tag_version_guard_runs_on_the_resolved_tag, tests/test_plugin_add_latest.py::test_expected_revision_is_compared_with_the_peel, tests/test_plugin_add_latest.py::test_plugin_update_to_latest_repoints_to_the_tag]
+    INV-PLUG-001: [tests/test_plugin_registry.py::test_artifact_id_mismatch_is_per_entry_skip]
+    INV-PLUG-002: [tests/test_pin_plugin_invariants.py::test_pin_inv_plug_002_checksum_drift_and_symlinked_locations]
+    INV-PLUG-003: [tests/test_plugin_store.py::test_safe_extract_rejects]
+    INV-PLUG-006: [tests/test_agent_plugin_binding.py::test_executor_options_have_plugins_but_no_grants_no_callback]
+    INV-PLUG-021: [tests/test_plugin_resolver.py::test_operator_executor_target_is_ignored, tests/test_plugin_tools.py::test_plugin_add_refuses_a_worker_target_before_any_side_effect, tests/test_plugin_tools.py::test_plugin_assign_refuses_a_worker_target_even_when_bundled, tests/test_plugin_tools.py::test_plugin_update_refuses_a_bundled_plugin_that_serves_a_worker, tests/test_plugin_health.py::test_describe_operator_executor_target_as_ignored]
+- doc: architecture/prompt-file-guards.md
+  summary: The per-agent prompt files a compiled bundle makes dead — response_shape.yaml and prompts/system.md — and the file-tool guards that refuse an edit to them.
+  when_changing: the response-shape or prompt-file write guards, or why an edit to a resident's per-agent file is refused
+  covers:
+    - casa/rootfs/opt/casa/hooks.py::make_response_shape_write_guard
+    - casa/rootfs/opt/casa/hooks.py::make_resident_prompt_write_guard
+  tests:
+    - tests/test_response_shape_write_guard.py
+    - tests/test_resident_prompt_write_guard.py
+    - tests/test_resident_prompt_guard_denial_wording.py
+  related: [architecture/personality.md, architecture/hook-resolution.md]
+  defines_invariants: [INV-PERS-017, INV-PERS-012]
+  invariant_tests:
+    INV-PERS-017: [tests/test_response_shape_write_guard.py::TestResponseShapeWriteGuard::test_denies_every_write_primitive_on_every_resident, tests/test_response_shape_write_guard.py::TestTheFileIsActuallyDead::test_every_resident_role_requires_a_persona, tests/test_response_shape_write_guard.py::TestTheFileIsReadRenderedButNotServed::test_published_invariant_matches_the_measured_response_shape_path, tests/test_response_shape_write_guard.py::TestTheFileIsReadRenderedButNotServed::test_real_loader_renders_each_response_shape_field, tests/test_response_shape_write_guard.py::TestTheFileIsReadRenderedButNotServed::test_each_response_shape_field_is_absent_from_all_served_projections, tests/test_response_shape_write_guard.py::TestTheWriteClauseHoldsOnEveryPathItNames::test_three_builder_paths_deny_and_a_specialist_abstains]
+    INV-PERS-012: [tests/test_resident_prompt_write_guard.py::TestTheGuardIsRegisteredAndRefuses::test_registry_primitives_and_denial_counts, tests/test_resident_prompt_write_guard.py::TestTheGuardIsRegisteredAndRefuses::test_the_shell_is_not_classified_at_all, tests/test_resident_prompt_write_guard.py::TestTheGuardIsCodeMandatoryEverywhereCasaBuildsHooks::test_four_builder_paths_deny_or_abstain_exactly, tests/test_resident_prompt_write_guard.py::TestTheGuardIsCodeMandatoryEverywhereCasaBuildsHooks::test_the_claude_code_transport_carries_it_on_both_halves, tests/test_resident_prompt_write_guard.py::TestTheFileIsReadButNotServed::test_the_loader_opens_the_file_into_the_composed_prompt, tests/test_resident_prompt_write_guard.py::TestTheFileIsReadButNotServed::test_no_served_projection_carries_the_composed_prompt]
+- doc: architecture/reminders.md
+  summary: How an agent comes to nudge someone later — entry ownership, the narrow writer, delivery, and the sweep that redeems a past-dated one-shot the process was down for.
+  when_changing: reminder creation or cancellation, the reminder sweep, or recurrence derivation
+  covers:
+    - casa/rootfs/opt/casa/reminders.py
+  tests:
+    - tests/test_reminders_store.py
+    - tests/test_reminder_tools.py
+    - tests/test_reminder_sweep.py
+    - tests/test_trigger_registry_date.py
+  related: [architecture/triggers.md, architecture/config-reconciliation.md, architecture/tools-interface.md]
+  defines_invariants: [INV-TRIG-008, INV-TRIG-010]
+  invariant_tests:
+    INV-TRIG-008: [tests/test_reminder_sweep.py::test_overdue_reminder_is_delivered_and_removed, tests/test_reminder_sweep.py::test_removal_failure_leaves_it_for_the_next_sweep, tests/test_reminder_sweep.py::test_the_sweep_reads_the_operators_trigger_file]
+    INV-TRIG-010: [tests/test_reminder_tools.py::test_writes_only_to_the_calling_roles_own_file, tests/test_reminder_tools.py::test_cancel_refuses_a_non_reminder_name, tests/test_reminders_store.py::test_an_operator_LOOKALIKE_is_not_owned, tests/test_reminders_store.py::test_it_refuses_a_duplicate_of_an_OPERATOR_name]

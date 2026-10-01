@@ -752,3 +752,189 @@ async def test_a_non_opted_in_limit_stop_still_sends_nothing(
     msg = await _ingress("none")
     await _run(agent, msg, _LimitFactory([[]]), monkeypatch)
     assert bot.sent == []
+
+
+# ---------------------------------------------------------------------------
+# #1158 — `deliver: operator_always`: silence is not an outcome. Every accepted
+# fire ends in exactly one operator message: the reply, a classified error,
+# the limit-stop line, or — when the reply is silent or empty — Casa's fallback.
+# ---------------------------------------------------------------------------
+
+FALLBACK = f"The '{EFFECTIVE}' webhook fired; I had nothing to add."
+
+
+def test_always_is_accepted_by_the_manifest():
+    trig, errs = parse_and_validate("elevenlabs", _m(deliver="operator_always"))
+    assert errs == []
+    assert trig[0]["deliver"] == "operator_always"
+
+
+@pytest.mark.asyncio
+async def test_always_the_route_record_carries_it(tmp_path):
+    registry, issues = await _reconcile(
+        tmp_path, _plugin("operator_always"), acked=True)
+    assert issues == []
+    assert registry.webhook_route(EFFECTIVE)["deliver"] == "operator_always"
+
+
+@pytest.mark.asyncio
+async def test_always_ingress_stamps_it_with_a_line_that_never_invites_silence():
+    import casa_core
+    msg = await _ingress("operator_always")
+    assert msg.context["_webhook_deliver"] == "operator_always"
+    scope = _scope_of(msg)
+    assert scope.delivers_to_operator is True
+    assert scope.silence_forbidden is True
+    assert msg.content.endswith("\n\n" + casa_core.WEBHOOK_DELIVER_ALWAYS_LINE)
+    assert casa_core.WEBHOOK_DELIVER_LINE not in msg.content
+    assert "<silent/>" not in casa_core.WEBHOOK_DELIVER_ALWAYS_LINE
+
+
+@pytest.mark.asyncio
+async def test_always_is_not_set_for_the_other_values():
+    for deliver in ("operator", "none"):
+        assert _scope_of(await _ingress(deliver)).silence_forbidden is False
+
+
+@pytest.mark.asyncio
+async def test_always_the_pending_consent_names_it(tmp_path, monkeypatch):
+    import authz_grants
+    import verdict_broker
+    monkeypatch.setattr(verdict_broker, "BROKER", verdict_broker.VerdictBroker())
+    monkeypatch.setattr(authz_grants, "CHALLENGES",
+                        authz_grants.ChallengeCoordinator())
+    telegram = _FakeTelegram()
+    await _reconcile(tmp_path, _plugin("operator_always"), acked=False,
+                     telegram=telegram)
+    for _ in range(8):
+        await asyncio.sleep(0)
+    assert len(telegram.posts) == 1
+    assert "exactly one Telegram message" in telegram.posts[0][2]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reply", ["<silent/>", "  <silent/>\n<silent/> ", "", "   "])
+async def test_always_a_silent_reply_becomes_one_fallback_message(
+        tmp_path, monkeypatch, reply):
+    """Pins INV-TRIG-021: a silent or empty reply still yields exactly one
+    operator message, Casa's fallback naming the webhook."""
+    agent, _ch, bot = _resident(tmp_path)
+    msg = await _ingress("operator_always")
+    script = [_mk_assistant(reply)] if reply else []
+    await _run(agent, msg, _Factory([script]), monkeypatch)
+    assert _chats(bot) == [OPERATOR_CHAT]
+    assert _texts(bot) == [FALLBACK]
+
+
+@pytest.mark.asyncio
+async def test_always_a_real_reply_is_the_one_message(tmp_path, monkeypatch):
+    agent, _ch, bot = _resident(tmp_path)
+    msg = await _ingress("operator_always")
+    await _run(agent, msg, _Factory([[_mk_assistant("Robocall, 12 s.")]]),
+               monkeypatch)
+    assert _chats(bot) == [OPERATOR_CHAT]
+    assert len(bot.sent) == 1 and "Robocall, 12 s." in _texts(bot)[0]
+
+
+@pytest.mark.asyncio
+async def test_always_an_error_is_the_one_message(tmp_path, monkeypatch):
+    from agent import _USER_MESSAGES
+    agent, _ch, bot = _resident(tmp_path)
+    msg = await _ingress("operator_always")
+    await _run(agent, msg, _Factory([[RuntimeError("boom")]]), monkeypatch)
+    assert _texts(bot) == [_USER_MESSAGES[ErrorKind.UNKNOWN]]
+
+
+@pytest.mark.asyncio
+async def test_always_retry_tainted_silence_is_the_error_not_the_fallback(
+        tmp_path, monkeypatch):
+    """A failed fire must not be reported as one with nothing to add."""
+    from agent import _USER_MESSAGES
+    agent, _ch, bot = _resident(tmp_path)
+    msg = await _ingress("operator_always")
+    factory = _Factory([[RuntimeError("rate limit exceeded")],
+                        [_mk_assistant("<silent/>")]])
+    await _run(agent, msg, factory, monkeypatch)
+    assert _texts(bot) == [_USER_MESSAGES[ErrorKind.RATE_LIMIT]]
+
+
+@pytest.mark.asyncio
+async def test_always_a_silent_limit_stop_sends_only_the_limit_line(
+        tmp_path, monkeypatch):
+    agent, _ch, bot = _resident(tmp_path)
+    msg = await _ingress("operator_always")
+    await _run(agent, msg, _LimitFactory([[_mk_assistant("<silent/>")]]),
+               monkeypatch)
+    assert len(bot.sent) == 1
+    assert "step limit" in _texts(bot)[0] and FALLBACK not in _texts(bot)
+
+
+@pytest.mark.asyncio
+async def test_always_offers_no_send_message(tmp_path, monkeypatch):
+    agent, _ch, bot = _resident(tmp_path)
+    msg = await _ingress("operator_always")
+    results: list = []
+    factory = _Factory([[_send_hook(results), _mk_assistant("<silent/>")]])
+    await _run(agent, msg, factory, monkeypatch)
+    opts = factory.clients[0].options
+    assert SEND_TOOL not in opts.allowed_tools
+    assert len(results) == 1 and results[0].get("is_error") is True
+    assert _texts(bot) == [FALLBACK]
+
+
+@pytest.mark.asyncio
+async def test_plain_operator_silence_is_still_suppressed(tmp_path, monkeypatch):
+    """Negative control: `deliver: operator` keeps INV-OUT-006's suppression."""
+    agent, _ch, bot = _resident(tmp_path)
+    msg = await _ingress("operator")
+    await _run(agent, msg, _Factory([[_mk_assistant("<silent/>")]]), monkeypatch)
+    assert bot.sent == []
+
+
+def _error_result(sid: str) -> _SDKResultMessage:
+    # The CLI's non-retryable execution failure, returned (not raised) by the
+    # pool — diff r1 S2 (Astra): it must not read as "nothing to add".
+    return _SDKResultMessage(
+        subtype="error_during_execution", duration_ms=1000, duration_api_ms=900,
+        is_error=True, num_turns=2, session_id=sid, stop_reason=None,
+        total_cost_usd=0.1, usage={"input_tokens": 1, "output_tokens": 1},
+        result=None)
+
+
+class _ErrorClient(_ScriptedClient):
+    async def receive_response(self):
+        for item in self._script:
+            yield item
+        yield _error_result(self._sid)
+
+
+class _ErrorFactory(_Factory):
+    def __call__(self, options) -> _ScriptedClient:
+        script = self._scripts.pop(0) if self._scripts else []
+        c = _ErrorClient(options, script, sid=f"sid-{len(self.clients) + 1}")
+        self.clients.append(c)
+        return c
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("script", [[], ["<silent/>"]])
+async def test_always_a_returned_error_result_is_the_error_not_the_fallback(
+        tmp_path, monkeypatch, script):
+    from agent import _USER_MESSAGES
+    agent, _ch, bot = _resident(tmp_path)
+    msg = await _ingress("operator_always")
+    await _run(agent, msg,
+               _ErrorFactory([[_mk_assistant(t) for t in script]]), monkeypatch)
+    assert _chats(bot) == [OPERATOR_CHAT]
+    assert _texts(bot) == [_USER_MESSAGES[ErrorKind.SDK_ERROR]]
+
+
+@pytest.mark.asyncio
+async def test_plain_operator_returned_error_result_is_unchanged(
+        tmp_path, monkeypatch):
+    """Negative control: other turn kinds keep today's handling."""
+    agent, _ch, bot = _resident(tmp_path)
+    msg = await _ingress("operator")
+    await _run(agent, msg, _ErrorFactory([[_mk_assistant("<silent/>")]]),
+               monkeypatch)
+    assert bot.sent == []

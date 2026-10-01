@@ -39,9 +39,9 @@ passes through `scope.admit(FINAL_REPLY, …)`, which judges closing silence its
 unannotated text, so a `<silent/>` turn is suppressed before any line could be added and
 prose after a sentinel is delivered whole; a classified-error reply is Casa's own text; the
 plugin-health notice is prepended outermost over the admitted value, except on a
-`deliver: operator` webhook turn, whose reply goes to the operator's Telegram through one
-fresh delivery context on every output path (INV-TRIG-018 in
-[`plugin-triggers.md`](plugin-triggers.md)); and every streamed
+`deliver: operator` or `operator_always` webhook turn, whose reply goes to the operator's
+Telegram through one fresh delivery context on every output path (INV-TRIG-018 in
+[`webhook-delivery.md`](webhook-delivery.md)); and every streamed
 cumulative `_emit` releases is admitted too, after the INV-TURN-009 hold has judged the
 unannotated cumulative with the same predicates. Options assembly is where the
 read-evidence matchers join every resident's hook bundle. What the scope does with the text

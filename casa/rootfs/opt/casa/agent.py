@@ -892,6 +892,11 @@ _LIMIT_WEBHOOK = (
     "The '{name}' webhook fired, but I hit my step limit before finishing, so "
     "what I sent about it may be incomplete.")
 
+# #1158 (INV-TRIG-021): the one message a `deliver: operator_always` fire still
+# owes when its reply was silent or empty. Casa's template; the name is the
+# server-stamped webhook name.
+_SILENCE_FORBIDDEN_WEBHOOK = "The '{name}' webhook fired; I had nothing to add."
+
 
 def _is_chat_id(value: Any) -> bool:
     """A real Telegram chat id (signed integer), not a session label."""
@@ -1372,6 +1377,24 @@ class Agent:
             )
             text = _USER_MESSAGES[error_kind]
 
+        # #1158 (INV-TRIG-021): a silence-forbidden fire whose silence came
+        # with an SDK error result did not have "nothing to add" — it failed.
+        # It reports the error, which is then its one message. Every other
+        # turn kind keeps today's handling of a returned error result.
+        if (
+            error_kind is None
+            and scope.silence_forbidden
+            and _strips_to_silence(text)
+            and turn_report.get("error_result")
+        ):
+            error_kind = ErrorKind.SDK_ERROR
+            logger.warning(
+                "silence-forbidden fire ended in an error result: role=%s "
+                "webhook=%s subtype=%s -> surfacing %s", self.config.role,
+                msg.context.get("webhook_name"), turn_report["error_result"],
+                error_kind.value)
+            text = _USER_MESSAGES[error_kind]
+
         # Deliver the response via the channel.
         # For voice (or any channel that supplies emit_error_line), prefer
         # the persona-voice error pipeline on error paths. Otherwise fall
@@ -1464,6 +1487,15 @@ class Agent:
                                     report=turn_report)
                         if error_kind is None else casa_text(text))
             text = "" if admitted.suppressed else admitted
+
+        # #1158 (INV-TRIG-021): a `deliver: operator_always` fire owes exactly
+        # one operator message. A reply admission left empty — the sentinel,
+        # whitespace, or no text at all — is replaced by Casa's fallback line,
+        # sent below as its own send. An error reply or the limit-stop line is
+        # already that one message, so neither adds the fallback: a classified
+        # error is non-empty text here, and the limit line takes precedence
+        # where both are sent.
+        silence_owed = scope.silence_forbidden and not text
 
         # §3.10 notice: while plugin-health holds a blocking issue affecting
         # this agent's role, prepend a one-line notice to a user-visible reply.
@@ -1598,6 +1630,11 @@ class Agent:
         # acknowledges a durable announcement.
         if limit_route in ("chat", "operator"):
             await self._send_limit_line(msg, channel, limit_route, is_narration)
+        elif silence_owed:
+            await self._send_limit_line(
+                msg, channel, "operator", is_narration,
+                line=_SILENCE_FORBIDDEN_WEBHOOK.format(
+                    name=str(msg.context.get("webhook_name") or "")))
         elif limit_route == "response":
             line = _limit_stop_line(
                 msg, is_narration=False,
@@ -1702,11 +1739,15 @@ class Agent:
 
     async def _send_limit_line(
         self, msg: BusMessage, channel: Any, route: str, is_narration: bool,
+        *, line: str | None = None,
     ) -> None:
         """#1121: deliver the limit-stop line as Casa's own send. Best-effort:
         the turn has already ended, so a failure is logged, never raised —
         and the send carries its own context, so its delivery is never read
-        as the turn's (no announcement is acknowledged by it)."""
+        as the turn's (no announcement is acknowledged by it).
+
+        #1158: *line* overrides the wording — the silence-forbidden fallback
+        rides the same operator send, with the same guarantees."""
         if route == "chat":
             target, ctx = channel, dict(msg.context)
             resumable = _is_chat_id(ctx.get("chat_id"))
@@ -1716,23 +1757,26 @@ class Agent:
             op = _tc.operator_identity(target) if target is not None else None
             ctx = {"chat_id": op[0]} if op is not None else {}
             resumable = False
-        line = _limit_stop_line(msg, is_narration=is_narration,
-                                resumable=resumable)
+        what = "turn limit line" if line is None else "casa fallback line"
+        if line is None:
+            line = _limit_stop_line(msg, is_narration=is_narration,
+                                    resumable=resumable)
         if target is None:
             logger.warning(
-                "turn limit line not delivered: no telegram channel "
-                "(role=%s channel=%s)", self.config.role, msg.channel or "-")
+                "%s not delivered: no telegram channel "
+                "(role=%s channel=%s)", what, self.config.role,
+                msg.channel or "-")
             return
         try:
             outcome = await target.send(casa_text(line), ctx)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001
-            logger.exception("turn limit line send failed (role=%s)",
+            logger.exception("%s send failed (role=%s)", what,
                              self.config.role)
             return
         if outcome is DeliveryOutcome.NOT_DELIVERED:
-            logger.warning("turn limit line not delivered (role=%s channel=%s)",
+            logger.warning("%s not delivered (role=%s channel=%s)", what,
                            self.config.role, msg.channel or "-")
 
     def _synthesize_delegation_turn(self, msg: BusMessage) -> BusMessage:
@@ -2478,6 +2522,9 @@ class Agent:
                 # is absent for every other turn.
                 report["limit_stop"] = (
                     turn_state.get("state") or {}).get("limit_stop")
+                # #1158: the WINNING attempt's returned error result, if any.
+                report["error_result"] = (
+                    turn_state.get("state") or {}).get("error_result")
 
                 # 9. SessionRegistry — record the SDK session id for resume +
                 # save. Inside the gate; see the note above.
@@ -3484,6 +3531,12 @@ class Agent:
                 if getattr(sdk_msg, "subtype", None) == "error_max_turns":
                     state["limit_stop"] = {
                         "turns": getattr(sdk_msg, "num_turns", None)}
+                elif getattr(sdk_msg, "is_error", False) is True:
+                    # #1158: any other error result the pool returned rather
+                    # than raised. Read only by a silence-forbidden fire, whose
+                    # fallback says there was nothing to add — false of this.
+                    state["error_result"] = str(
+                        getattr(sdk_msg, "subtype", None) or "error")
             elif isinstance(sdk_msg, AssistantMessage):
                 if api_error_kind(sdk_msg) is not None:
                     # #568: an API-level fault — a safety refusal included —

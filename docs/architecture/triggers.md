@@ -84,9 +84,9 @@ on #1075 (INV-OUT-006 in [`output-boundary.md`](output-boundary.md)). Which prom
 the clause, what it says, and how the tools a turn calls decide the question are
 [`architecture/scheduled-prompt-endings.md`](scheduled-prompt-endings.md)'s. A webhook
 trigger carries no prompt at all (INV-TRIG-013), so the convention does not reach it. The one
-line Casa appends to a `deliver: operator` plugin trigger's turn is Casa's own constant,
-selected by the route's enum, not trigger prose (INV-TRIG-018 in
-[`plugin-triggers.md`](plugin-triggers.md)).
+line Casa appends to a `deliver: operator` or `operator_always` plugin trigger's turn is
+Casa's own constant, selected by the route's enum, not trigger prose (INV-TRIG-018 in
+[`webhook-delivery.md`](webhook-delivery.md)).
 
 ## Contracts & invariants
 

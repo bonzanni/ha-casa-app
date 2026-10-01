@@ -47,7 +47,9 @@ MAX_BODY_KIB_DEFAULT = 64
 _MAX_BODY_KIB_MAX = 1024
 # #1142: what Casa does with a fire's final reply. ``none`` (the default) is the
 # pre-#1142 behaviour; ``operator`` delivers it to the operator's Telegram.
-_DELIVER = ("none", "operator")
+# #1158: ``operator_always`` delivers like ``operator`` and forbids silence —
+# every accepted fire ends in exactly one operator message.
+_DELIVER = ("none", "operator", "operator_always")
 _AUTH_KEYS = {"mode", "header", "tolerance_secs", "secret_owner"}
 
 
