@@ -6,7 +6,11 @@ any manual edit would be overwritten by the next reconcile.
 
 - New component version: `recipes/specialist/upgrade.md`.
 - Different persona: `recipes/persona/apply.md`.
-- Config changes (model tier, memory budget, secrets): re-run
-  `specialist_install_commit` with the new `config` for the installed component
-  (see `recipes/specialist/install.md`, step 5).
+- Different settings — the specialist's own config values, the names its
+  inspection lists: an upgrade to the version it already has, passing the new
+  settings. Follow "Change an installed specialist's settings" at the top of
+  `recipes/specialist/upgrade.md`. Its model tier and memory budget are not
+  settings: they come with the component version.
+- A secret one of its bundled plugins reads: `set_plugin_env_reference` with the
+  plugin's scoped name `<slug>.<plugin>`, following `recipes/plugin/secrets.md`.
 - Bad upgrade: `recipes/specialist/rollback.md`.

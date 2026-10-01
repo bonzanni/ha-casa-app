@@ -16152,7 +16152,8 @@ async def specialist_install_commit(args: dict) -> dict:
 
 @tool(
     "specialist_upgrade",
-    "Transactionally upgrade an installed specialist to a new version — the current install keeps "
+    "Transactionally upgrade an installed specialist to a new version — or to the version it "
+    "already has, passing new config, to change its settings — the current install keeps "
     "running until the new version validates+compiles successfully. Supply component_id/version/"
     "root_digest/staged_dir exactly as returned by specialist_install_inspect(mode='upgrade', "
     "target_slug=<slug>)." + _ORDINARY_CHANGE_TOOL_NOTE,
