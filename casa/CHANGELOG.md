@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.332.20] - 2026-10-01
+
+### Added
+
+- Ellen's memory search can now be limited to a time period: today,
+  yesterday, this week, last week, this month, last month (weeks start on
+  Monday), a single day, or a range of days, counted in the timezone Casa uses
+  for its clock. Only memories first recorded in that period come back, so a
+  fact first saved earlier and repeated during the period is not included, and
+  memories with no recorded date are left out. A search is still limited in
+  size, and the memory server can cut its results before Casa applies the
+  period, so a search can miss memories from the period; when it finds
+  nothing, Ellen is told that this is not proof that nothing exists. A period
+  that Casa cannot read, or one that ends before it starts, is refused, and
+  nothing is searched.
+- Tina, the voice butler, and any specialist that can search memory get the
+  same option. A search without a period sends the same request and gets the
+  same answer as before.
+
 ## [0.332.19] - 2026-10-01
 
 ### Fixed

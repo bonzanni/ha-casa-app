@@ -299,7 +299,9 @@ success whose text is withheld from the bank, audibly (INV-MEM-016, and see
 refuse blank queries outright; neither is ever a fake empty result (INV-MEM-001's
 tool-level face). `recall_memory`'s unavailable message tells the model to say memory
 could not be checked when a person asked, and that on a check nobody asked for the outage
-alone is no reason to send.
+alone is no reason to send. Its optional `period` keeps only memories first recorded in that
+period; a period it cannot read is refused before any search, and one that keeps nothing gets
+its own not-proof-of-absence empty result (INV-MEM-019, [`memory.md`](memory.md)).
 
 `get_schedule` lists the calling role's own triggers and reminders, not the operator's
 calendar.

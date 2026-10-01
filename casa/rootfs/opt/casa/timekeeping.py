@@ -23,7 +23,8 @@ from __future__ import annotations
 import logging
 import os
 import re
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
 from functools import lru_cache
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -60,6 +61,100 @@ def resolve_tz() -> ZoneInfo:
             "this warning.", tz_name, _FALLBACK_TZ,
         )
         return ZoneInfo(_FALLBACK_TZ)
+
+
+@dataclass(frozen=True)
+class RecallWindow:
+    """#1120: a resolved time period for a memory search. Both bounds are
+    timezone-aware and INCLUSIVE, the same representation the memory server's
+    ``temporal_window`` takes, so the bounds Casa filters on, sends and echoes
+    are one value. Comparisons are made on the UTC timeline: two datetimes
+    sharing one zone object compare by wall clock, which is wrong in the hour
+    a clock change repeats."""
+
+    start: datetime
+    end: datetime
+
+    def __post_init__(self) -> None:
+        for bound in (self.start, self.end):
+            if bound.tzinfo is None or bound.utcoffset() is None:
+                raise ValueError("a recall window needs timezone-aware bounds")
+        if self.end.astimezone(timezone.utc) < self.start.astimezone(timezone.utc):
+            raise ValueError("a recall window cannot end before it starts")
+
+    def contains(self, moment: datetime) -> bool:
+        utc = moment.astimezone(timezone.utc)
+        return (self.start.astimezone(timezone.utc) <= utc
+                <= self.end.astimezone(timezone.utc))
+
+
+# The named periods a search can be limited to; weeks start on Monday, as the
+# ``week N`` of the time envelope does.
+NAMED_PERIODS = ("today", "yesterday", "this_week", "last_week",
+                 "this_month", "last_month")
+_ISO_DAY_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", re.ASCII)
+
+
+def _parse_day(text: str) -> date:
+    # date.fromisoformat also takes "20260404" and "2026-W14-6"; only the one
+    # published form is a period.
+    if not _ISO_DAY_RE.fullmatch(text):
+        raise ValueError(f"not a YYYY-MM-DD day: {text!r}")
+    return date.fromisoformat(text)
+
+
+def _named_days(name: str, today: date) -> tuple[date, date]:
+    if name == "today":
+        return today, today
+    if name == "yesterday":
+        day = today - timedelta(days=1)
+        return day, day
+    if name in ("this_week", "last_week"):
+        monday = today - timedelta(days=today.weekday())
+        if name == "last_week":
+            monday -= timedelta(days=7)
+        return monday, monday + timedelta(days=6)
+    first_this = today.replace(day=1)
+    if name == "this_month":
+        next_first = (first_this + timedelta(days=32)).replace(day=1)
+        return first_this, next_first - timedelta(days=1)
+    last_prev = first_this - timedelta(days=1)  # last_month
+    return last_prev.replace(day=1), last_prev
+
+
+def resolve_period(spec: str, now: datetime) -> RecallWindow:
+    """#1120: resolve a period — a name in :data:`NAMED_PERIODS`, one day
+    ``YYYY-MM-DD``, or an inclusive day range ``YYYY-MM-DD..YYYY-MM-DD`` — to
+    whole local days in ``now``'s timezone (the operator's, from
+    :func:`resolve_tz`). Raises ``ValueError`` on anything else, including a
+    range that ends before it starts.
+
+    The bounds are computed on the UTC timeline: the first instant of the
+    first day, and one microsecond before the first instant of the day after
+    the last. Subtracting on the wall clock instead would cut off the hour a
+    clock change repeats at the end of a day."""
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("resolve_period needs a timezone-aware now")
+    if not isinstance(spec, str):
+        raise ValueError("a period is a string")
+    tz = now.tzinfo
+    key = spec.strip().lower().replace(" ", "_").replace("-", "_")
+    if key in NAMED_PERIODS:
+        first, last = _named_days(key, now.date())
+    else:
+        text = spec.strip()
+        lo, sep, hi = text.partition("..")
+        first = _parse_day(lo)
+        last = _parse_day(hi) if sep else first
+        if last < first:
+            raise ValueError("a period cannot end before it starts")
+
+    def _first_instant(day: date) -> datetime:
+        return datetime(day.year, day.month, day.day, tzinfo=tz).astimezone(timezone.utc)
+
+    start = _first_instant(first)
+    end = _first_instant(last + timedelta(days=1)) - timedelta(microseconds=1)
+    return RecallWindow(start=start.astimezone(tz), end=end.astimezone(tz))
 
 
 def compose_time_envelope(now: datetime) -> str:

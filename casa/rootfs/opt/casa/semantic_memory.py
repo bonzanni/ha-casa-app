@@ -11,9 +11,12 @@ by the SDK session.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from personality_types import RecallHit, SensitivityTier
+
+if TYPE_CHECKING:
+    from timekeeping import RecallWindow
 
 
 class RecallUnavailable(RuntimeError):
@@ -122,6 +125,7 @@ class SemanticMemory(ABC):
         clearance: SensitivityTier,
         types: tuple[str, ...] = ("world", "experience", "observation"),
         tags_match: str = "any", budget: str = "mid",
+        window: RecallWindow | None = None,
     ) -> tuple[RecallHit, ...]:
         """Typed, attributed recall (personality Task 11): decode each hit's
         sensitivity tier + speaker provenance and return trustworthy,
@@ -132,7 +136,13 @@ class SemanticMemory(ABC):
         well-formed 2xx response whose ``results`` is an actual empty list;
         a malformed envelope or a response whose hits are all dropped by the
         clearance/wire contract raises :class:`RecallProtocolError`; every
-        transport/HTTP failure raises :class:`RecallUnavailable`."""
+        transport/HTTP failure raises :class:`RecallUnavailable`.
+
+        #1120: ``window`` is a RANKING HINT for the backend and nothing more —
+        the seam does not filter by it, so the contract above is unchanged and
+        hits recorded outside the window may come back. A caller that promises
+        "only from this period" filters the hits itself (``recall_memory``).
+        Callers pass it only when they have one."""
         raise NotImplementedError
 
     @abstractmethod
@@ -194,6 +204,7 @@ class NoOpSemanticMemory(SemanticMemory):
         clearance: SensitivityTier,
         types: tuple[str, ...] = ("world", "experience", "observation"),
         tags_match: str = "any", budget: str = "mid",
+        window: RecallWindow | None = None,
     ) -> tuple[RecallHit, ...]:
         raise RecallUnavailable("not_configured")
 
