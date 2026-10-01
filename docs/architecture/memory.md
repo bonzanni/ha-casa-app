@@ -15,9 +15,10 @@ together with the mental models Casa declares for it, is
 [`architecture/memory-mental-models.md`](memory-mental-models.md). *Who* may read a stored
 fact back — read clearance per channel and sender, the engagement clearance clamp, and
 the executor-archive epoch scoping — is
-[`architecture/memory-scoping.md`](memory-scoping.md). How a fact is written and
-labelled — tier classification, speaker provenance, content addressing, and the retention
-lifecycle around them — is [`architecture/memory-lifecycle.md`](memory-lifecycle.md). It
+[`architecture/memory-scoping.md`](memory-scoping.md). How a fact is labelled — tier
+classification, speaker provenance, content addressing — is
+[`architecture/memory-labelling.md`](memory-labelling.md), and the retention lifecycle
+around it is [`architecture/memory-lifecycle.md`](memory-lifecycle.md). It
 does not cover the SDK session transcript, which is short-term context on a different
 lifecycle, and it does not describe the memory backend's own internals — those live
 outside this repository.
@@ -116,12 +117,13 @@ automatically" is true of a narrower set of turns than it sounds.
 
 **Writing is narrower than reading, and it has its own document.** Only write-trusted
 channels retain to the shared bank; *when* a conversation is retained, reset, or wiped is
-the retention lifecycle, and so is everything about how a fact is *labelled* on the way in —
-tier classification, provenance, and the content addressing that deduplicates it.
+the retention lifecycle, and how a fact is *labelled* on the way in — tier classification,
+provenance, and the content addressing that deduplicates it — is item labelling.
 [`architecture/memory-lifecycle.md`](memory-lifecycle.md) owns the freshness windows, the
-save guard protocol (INV-MEM-006), the write-side tag and provenance gate (INV-MEM-004), the
-content-addressing contract (INV-MEM-009), the tier-classifier parse (INV-MEM-012), the
-retirement claims (INV-MEM-013), the tier floor (INV-MEM-018); the operator-consented wipe (INV-MEM-014) is
+save guard protocol (INV-MEM-006) and the retirement claims (INV-MEM-013);
+[`architecture/memory-labelling.md`](memory-labelling.md) owns the write-side tag and
+provenance gate (INV-MEM-004), the content-addressing contract (INV-MEM-009), the
+tier-classifier parse (INV-MEM-012) and the tier floor (INV-MEM-018); the operator-consented wipe (INV-MEM-014) is
 [`architecture/memory-wipe.md`](memory-wipe.md)'s. What this
 document owns is the other direction: what comes back, and what a caller may claim from it.
 
@@ -166,11 +168,12 @@ What it does not cover: the legacy string recall path, mental-model overlays, an
 transcript are not tier-filtered by this check. Filtering is also applied locally to what the
 backend returned — the request's own tag filter is not treated as the access control.
 
-**INV-MEM-004**, **INV-MEM-005**, **INV-MEM-006**, **INV-MEM-009** and **INV-MEM-012** — the
-write-side tag and provenance gate, write trust, the save/reset guard protocol, the
-content-addressing contract and the tier-classifier parse — are declared in
-[`architecture/memory-lifecycle.md`](memory-lifecycle.md), together with the retirement
-claims (INV-MEM-013) and the tier floor (INV-MEM-018); the wipe contract (INV-MEM-014) is declared in
+**INV-MEM-005** and **INV-MEM-006** — write trust and the save/reset guard protocol — are
+declared in [`architecture/memory-lifecycle.md`](memory-lifecycle.md), together with the
+retirement claims (INV-MEM-013); **INV-MEM-004**, **INV-MEM-009** and **INV-MEM-012** — the
+write-side tag and provenance gate, the content-addressing contract and the tier-classifier
+parse — are declared in [`architecture/memory-labelling.md`](memory-labelling.md), together
+with the tier floor (INV-MEM-018); the wipe contract (INV-MEM-014) is declared in
 [`architecture/memory-wipe.md`](memory-wipe.md).
 
 One consequence of INV-MEM-004 belongs on the read side and is easy to miss: it protects the
@@ -234,8 +237,9 @@ dedicated reason rather than calling the backend. Genuine zero-hit results count
 and reset it; only unavailability counts as failure.
 
 Failures on the *write* side — a save that fails, a spooled retry, a corrupt session
-registry, a wipe whose drain times out, a tier classification that cannot be parsed — are the
-retention lifecycle's: [`architecture/memory-lifecycle.md`](memory-lifecycle.md). The last of
+registry, a wipe whose drain times out — are the retention lifecycle's:
+[`architecture/memory-lifecycle.md`](memory-lifecycle.md); a tier classification that cannot
+be parsed is item labelling's: [`architecture/memory-labelling.md`](memory-labelling.md). The last of
 those has a read-side consequence worth knowing here: an unparseable classification defaults
 the item to *private*, so the write is not lost but the fact goes invisible below the highest
 clearance — absence on voice and friends surfaces — until a later save's real verdict replaces

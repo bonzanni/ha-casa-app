@@ -168,7 +168,7 @@ key is either a schedule's label or a person's chat. The durable cold-retain ret
 carries it too. It has three read states: true, false, and absent — an entry or retry
 record written before the upgrade that added it has none, and absent is read as *unknown*,
 never as "not scheduled". Saving uses it to date and mark what the session retained
-(`architecture/memory-lifecycle.md`); an unknown session is saved as before.
+(`architecture/memory-labelling.md`); an unknown session is saved as before.
 
 A session entry may also carry two advisory resume-fault fields — the fault-streak state
 of the turn loop's INV-TURN-008 (`architecture/turn-loop.md`), persisted with the entry

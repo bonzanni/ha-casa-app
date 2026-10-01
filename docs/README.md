@@ -60,7 +60,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | read clearance, the per-sender origin stamp, the engagement clearance clamp, or the executor-archive epoch scoping | [`architecture/memory-scoping.md`](architecture/memory-scoping.md) |
 | recall behaviour or the absence contract | [`architecture/memory.md`](architecture/memory.md) |
 | reminder creation or cancellation, the reminder sweep, or recurrence derivation | [`architecture/reminders.md`](architecture/reminders.md) |
-| session persistence, tier classification, provenance or content addressing on a stored fact, the save/reset guard protocol, the retirement claims, or the retry spool | [`architecture/memory-lifecycle.md`](architecture/memory-lifecycle.md) |
+| session persistence, the save/reset guard protocol, the retirement claims, or the retry spool | [`architecture/memory-lifecycle.md`](architecture/memory-lifecycle.md) |
 | specialist install identity, consent, or materialization | [`architecture/specialist-lifecycle.md`](architecture/specialist-lifecycle.md) |
 | the HA facade, HA tool exposure, or anything about what an agent may control | [`architecture/home-assistant-control.md`](architecture/home-assistant-control.md) |
 | the callback route, callback consent or reconciliation, or the validated redirect base URL | [`architecture/callbacks.md`](architecture/callbacks.md) |
@@ -83,6 +83,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | the turn lifecycle, retry behaviour, or how a turn's output and faults are classified | [`architecture/turn-loop.md`](architecture/turn-loop.md) |
 | the vault exploration a plugin mutation result carries, the configurator's vault tools or their schemas, the item-field projection, or what a failing op call may report | [`architecture/plugin-secret-exploration.md`](architecture/plugin-secret-exploration.md) |
 | the warm client pool, client reuse or invalidation, a key reset, or pool teardown | [`architecture/sdk-client-pool.md`](architecture/sdk-client-pool.md) |
+| tier classification or the stored-tier floor, provenance, the scheduled mark, or content addressing on a stored fact | [`architecture/memory-labelling.md`](architecture/memory-labelling.md) |
 | trigger types, resident webhook routing, one-shot firing and cleanup, scheduling, or who may write a resident's trigger file | [`architecture/triggers.md`](architecture/triggers.md) |
 | turn admission — how a turn is handed to a live engagement, or what a terminal record is never handed | [`architecture/engagement-turn-admission.md`](architecture/engagement-turn-admission.md) |
 | voice transports, voice authentication, the turn budget, specialist handoff, or deferred delivery | [`architecture/voice.md`](architecture/voice.md) |

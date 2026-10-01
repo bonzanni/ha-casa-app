@@ -13,8 +13,9 @@ Telegram sender via the stamped origin, failing closed — the clearance an enga
 inherits from its creating turn and the monotonic clamp steering applies to it, and the
 procedural-epoch scoping on the executor archive. How a recalled fact is rendered, what a
 caller is told when the store cannot answer, and what a caller may claim from what comes
-back are [`architecture/memory.md`](memory.md); the write side — write trust, tier
-labelling, retention — is [`architecture/memory-lifecycle.md`](memory-lifecycle.md).
+back are [`architecture/memory.md`](memory.md); the write side — write trust and
+retention — is [`architecture/memory-lifecycle.md`](memory-lifecycle.md), and tier
+labelling is [`architecture/memory-labelling.md`](memory-labelling.md).
 
 ## Mental model
 
