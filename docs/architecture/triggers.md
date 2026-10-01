@@ -279,13 +279,13 @@ nowhere; a webhook spec is the loader's own.
 Reminder-specific failures — an unparseable role file during a sweep, a delivered reminder
 whose entry cannot be removed — are in [`architecture/reminders.md`](reminders.md).
 
-**A webhook body is too large.** Requests are hard-capped at 64 KiB — chunked or not — and
-refused with 413 *before* authentication or dispatch, so an oversized producer never
-reaches its trigger.
+**A webhook body is too large.** Requests are hard-capped at the route's cap — 64 KiB, or a
+plugin trigger's declared `max_body_kib` (INV-TRIG-020 in
+[`plugin-triggers.md`](plugin-triggers.md)) — chunked or not, and refused with 413 *before*
+authentication or dispatch, so an oversized producer never reaches its trigger.
 
-**An unknown webhook name.** Not-found, with no turn dispatched — and the name check happens
-*after* the body has been read and size-capped, so an unknown name still consumes the
-request.
+**An unknown webhook name.** Not-found, with no turn dispatched. The name check happens
+*before* the body is read, because the cap is the route's.
 
 **Authentication fails, the body is too large, or rate limiting applies.** Refused with the
 corresponding status. A malformed body that is not valid JSON is *not* refused — it is

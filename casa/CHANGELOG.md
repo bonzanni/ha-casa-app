@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.334.0] - 2026-10-01
+
+### Added
+
+- A plugin webhook trigger can now use a secret that the calling service
+  generates itself (#1156). The trigger declares `secret_owner: provider` on a
+  `static_header` or `timestamped_hmac` trigger, in a plugin that declares a
+  setup tool. Casa generates no secret for
+  it: after you approve, the plugin's setup tool registers the webhook with the
+  service and stores the secret the service returns. Until it has, the
+  endpoint answers `401`. The consent message says the secret comes from the
+  provider. This is what ElevenLabs post-call webhooks need: ElevenLabs creates
+  the signing secret and does not accept one from Casa.
+- A plugin webhook trigger can declare `max_body_kib`, from 64 to 1024 (the
+  default stays 64). Larger requests are refused with `413` as before. The
+  consent message names any cap above 64 KiB. A post-call payload carries the
+  whole transcript, and calls longer than about four minutes no longer fit in
+  64 KiB.
+- After a plugin update, or a revoke followed by a new approval, a
+  provider-owned secret is cleared before the trigger routes again, and the
+  setup tool runs again once you approve. If the old secret cannot be
+  deleted, the plugin's triggers stay off and plugin health says why.
+- Plugin authors: a Casa older than this release rejects `secret_owner:
+  provider` and `max_body_kib`, and with them all of the plugin's triggers.
+  Ship a plugin that declares either only after this release. The setup tool
+  writes the secret to `/data/webhook_secrets/plg-<plugin>--<name>` atomically
+  (write a temporary file in that directory, then rename it), with no trailing
+  newline.
+
 ## [0.333.0] - 2026-10-01
 
 ### Added

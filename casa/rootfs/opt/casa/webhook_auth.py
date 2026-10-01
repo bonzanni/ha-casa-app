@@ -855,6 +855,43 @@ def secret_bound_to_identity(
         return False
 
 
+def provider_slot_bound(name: str, *, identity: str, secrets_dir: Path) -> bool:
+    """Is the provider-owned plugin slot for ``name`` bound to ``identity``?
+
+    #1156: the provider-owned mirror of :func:`secret_bound_to_identity`. The
+    VALUE is not required — the plugin's setup tool writes it, and setup is
+    dispatched only once this holds. Total: any read failure is False."""
+    try:
+        return _ident_path(name, Path(secrets_dir)).read_text(
+            encoding="ascii").strip() == identity
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
+def bind_provider_slot(name: str, *, identity: str, secrets_dir: Path) -> bool:
+    """Bind the provider-owned plugin slot for ``name`` to ``identity``.
+
+    #1156: Casa never writes a provider VALUE, so non-inheritance is enforced
+    here, at activation, the way :func:`ensure_secret_for_identity` rekeys a
+    casa slot: a slot bound to any other identity (an earlier approval, another
+    artifact, a casa mint) is retired first, so whatever value a later
+    retirement left behind is never adopted. Returns False when that value
+    survives the retirement or the binding cannot be written — the caller then
+    leaves the plugin unrouted. A slot already bound writes nothing, so the
+    value the setup tool wrote under this approval is kept."""
+    secrets_dir = Path(secrets_dir)
+    if provider_slot_bound(name, identity=identity, secrets_dir=secrets_dir):
+        return True
+    retire_secret(name, secrets_dir=secrets_dir)
+    if _present(secrets_dir / name):
+        return False
+    try:
+        secrets_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    except OSError:
+        return False
+    return _write_ident(name, identity, secrets_dir)
+
+
 def ensure_secret_for_identity(
     name: str, *, identity: str, secrets_dir: Path,
 ) -> bytes | None:
@@ -884,6 +921,12 @@ def ensure_secret_for_identity(
         retire_secret(name, secrets_dir=secrets_dir)
         if _read_final(name, "casa", secrets_dir) is not None:
             return None  # stale credential survived — fail closed, no reuse
+    elif _present(secrets_dir / name):
+        # #1156: bytes that are no casa token — a provider value left by an
+        # owner flip — are never adopted, and would block the no-clobber mint
+        # below forever. Retire them; bytes that survive still fail the mint
+        # closed (the publish never clobbers).
+        retire_secret(name, secrets_dir=secrets_dir)
     got = ensure_secret(name, owner="casa", secrets_dir=secrets_dir)
     if got is None:
         return None

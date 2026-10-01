@@ -106,7 +106,9 @@ The lifecycle of the secrets those modes compare against — who mints one, the 
 what a Casa-owned resident route may read (only bytes its receipt certifies for the role
 that routes the name; anything else is an empty secret and a `401`), and what retires one
 — is [`trigger-secrets.md`](trigger-secrets.md)'s subject. The handler takes one route
-record per request and reads its role, auth policy and clearance from that record alone.
+record per request and reads its role, auth policy, body cap and clearance from that record
+alone, taking it — and the key it verifies with — before the body, so the body can be capped
+at the route's limit.
 
 The invoke route's concrete contract is easy to guess wrong: the global rate limit runs
 *before* authentication; no configured secret is a 403 and a failed body-HMAC a 401; only

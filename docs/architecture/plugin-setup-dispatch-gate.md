@@ -41,7 +41,7 @@ with no yield before the send (INV-PLUG-016).
 
 ## Contracts & invariants
 
-**INV-PLUG-011**: The setup-dispatch route gate recomputes the applied state at the moment it decides — a per-trigger webhook secret must already be minted under the consent identity the recomputation derives, and a routed plugin's callback marker pair must already equal the desired one — so an artifact the reconcile has not yet written keeps the obligation holding; and it opens only for a plugin each recomputation reports having actually seen, never merely for one no issue happens to name.
+**INV-PLUG-011**: The setup-dispatch route gate recomputes the applied state at the moment it decides — a per-trigger webhook secret must already be minted under the consent identity the recomputation derives (for a provider-owned trigger, its slot must already be bound to that identity, since the value is what setup writes), and a routed plugin's callback marker pair must already equal the desired one — so an artifact the reconcile has not yet written keeps the obligation holding; and it opens only for a plugin each recomputation reports having actually seen, never merely for one no issue happens to name.
 
 **INV-PLUG-016**: A released setup obligation is dispatched only from a read, with no yield between it and the bus send, in which neither applied plugin routing overlay carries the unavailable marker and no overlay publication of either kind has landed since the route recomputation began — every publication, including one that re-publishes the marker, advances a single registry generation the read compares; the same marker read precedes the recomputation, and a standing marker defers before it runs. Every refusal these reads produce leaves the obligation pending and released and establishes a worker-owned timed retry; a publication's kick may run the pass sooner, but correctness does not depend on it. With no runtime registry bound the recomputation alone decides.
 
@@ -91,7 +91,10 @@ setup run dispatched from the derived state alone would provision the external s
 against a credential — or a redirect URI — Casa is about to change, which is the exact
 failure automatic setup exists to prevent. Both checks therefore read the durable artifact:
 the secret's identity sidecar must name the consent identity this pass computed, and the
-marker pair is compared byte-strictly against the pair the reconcile would publish.
+marker pair is compared byte-strictly against the pair the reconcile would publish. A
+provider-owned trigger has no value for Casa to mint: its slot's sidecar is the artifact, and
+the setup run this gate releases is what writes the value (INV-TRIG-019 in
+[`plugin-triggers.md`](plugin-triggers.md)).
 
 Holding is not a dead end, and making that true took a second look: the gate may only
 demand an artifact the reconcile will actually write. The trigger side mints on every pass,

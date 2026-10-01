@@ -232,7 +232,8 @@ All endpoints are accessible through the ingress proxy.
 | `POST` | `/webhook/{name}` | Fire-and-forget named webhook |
 | `POST` | `/invoke/{agent}` | Synchronous agent invocation (returns response) |
 
-Webhook and invoke endpoints accept JSON bodies (capped at 64 KiB). Auth is
+Webhook and invoke endpoints accept JSON bodies (capped at 64 KiB; a plugin
+trigger may declare a larger cap, see below). Auth is
 always on and **fail-closed**: a webhook trigger whose secret is missing
 returns `401` rather than serving open.
 
@@ -304,6 +305,19 @@ unless the plugin's trigger declares `deliver: operator`. Then each fire's
 reply, or the error message if the turn fails, is sent to you on Telegram, and
 the consent message tells you so. A reply that is only `<silent/>` sends
 nothing. Triggers that do not declare it behave as before.
+
+**Provider-generated secrets and larger bodies (0.334.0).** A plugin trigger
+using `static_header` or `timestamped_hmac` may declare
+`secret_owner: provider` when the calling service generates the signing secret
+itself (ElevenLabs post-call webhooks, for example); the plugin must declare a
+setup tool. Casa then generates no secret: after you approve, the plugin's
+setup tool registers the webhook with
+the service and stores the secret the service returns. Until it has, the
+endpoint answers `401`. A plugin update, or a revoke followed by a new
+approval, clears the stored secret, and the setup tool runs again once you
+approve. A plugin trigger may also declare
+`max_body_kib` (64–1024, default 64) to accept larger bodies, such as a long
+call transcript. The consent message names both.
 
 The target of `/invoke/{agent}` must declare the `webhook` capability in its `channels:` list to be invoke-reachable; a request for an agent that does not (for example the voice butler, which declares only `ha_voice`) returns `404 {"error": "unknown agent"}` — the same response as for an agent that does not exist, so the endpoint reveals nothing about which agents are configured. The default `assistant` (Ellen) declares `webhook` and stays reachable.
 

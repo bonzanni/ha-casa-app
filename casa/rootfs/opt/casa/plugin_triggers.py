@@ -18,8 +18,10 @@ import json
 import re
 from typing import Any
 
-# Scope (Release B): only Casa-owned secrets. ``provider`` (import-based) is
-# deferred; reject it intrinsically with an actionable message.
+# #1156: ``secret_owner: provider`` — the external service generates the
+# secret and the plugin's setup tool writes it into the trigger's slot. Only
+# the per-trigger modes carry a slot; ``hmac_body`` uses the one global secret.
+_OWNERS = ("casa", "provider")
 _MODES = ("hmac_body", "static_header", "timestamped_hmac")
 # Must stay identical to agent_loader._DEFAULT_AUTH_HEADER: a neutral name at
 # one site and a vendor's at the other is the same defect relocated (#655).
@@ -37,7 +39,12 @@ _CLEARANCES = ("public", "friends", "family")
 _MAX_TRIGGERS = 8
 _MAX_EFFECTIVE_LEN = 64
 
-_TRIGGER_KEYS = {"name", "type", "target", "clearance", "auth", "deliver"}
+_TRIGGER_KEYS = {"name", "type", "target", "clearance", "auth", "deliver",
+                 "max_body_kib"}
+# #1156: the largest request body the route accepts, in KiB. Not in the consent
+# identity (the checksum-validated artifact id binds it, as for ``deliver``).
+MAX_BODY_KIB_DEFAULT = 64
+_MAX_BODY_KIB_MAX = 1024
 # #1142: what Casa does with a fire's final reply. ``none`` (the default) is the
 # pre-#1142 behaviour; ``operator`` delivers it to the operator's Telegram.
 _DELIVER = ("none", "operator")
@@ -87,12 +94,13 @@ def _validate_auth(auth: Any, errs: list[str], where: str) -> dict[str, Any] | N
         errs.append(f"{where}: auth.mode must be one of {list(_MODES)}")
         return None
     owner = auth.get("secret_owner", "casa")
-    if owner == "provider":
+    if owner not in _OWNERS:
+        errs.append(f"{where}: secret_owner must be one of {list(_OWNERS)}")
+        owner = "casa"
+    elif owner == "provider" and mode == "hmac_body":
         errs.append(
-            f"{where}: secret_owner 'provider' is deferred in this release; "
-            "use a Casa-owned static_header or timestamped_hmac trigger")
-    elif owner != "casa":
-        errs.append(f"{where}: secret_owner must be 'casa'")
+            f"{where}: secret_owner 'provider' needs a per-trigger secret; "
+            "hmac_body uses the global webhook secret")
     header = auth.get("header", _DEFAULT_HEADER[mode])
     if not isinstance(header, str) or not _HEADER_RE.match(header):
         errs.append(f"{where}: auth.header {header!r} is not a valid header token")
@@ -103,7 +111,7 @@ def _validate_auth(auth: Any, errs: list[str], where: str) -> dict[str, Any] | N
         errs.append(f"{where}: auth.tolerance_secs must be an int in [60, 3600]")
         tol = 300
     return {"mode": mode, "header": header, "tolerance_secs": tol,
-            "secret_owner": "casa"}
+            "secret_owner": owner}
 
 
 def parse_and_validate(
@@ -185,6 +193,12 @@ def parse_and_validate(
         if not isinstance(deliver, str) or deliver not in _DELIVER:
             errs.append(f"{where}: deliver must be one of {list(_DELIVER)}")
             deliver = "none"
+        max_body_kib = entry.get("max_body_kib", MAX_BODY_KIB_DEFAULT)
+        if (isinstance(max_body_kib, bool) or not isinstance(max_body_kib, int)
+                or not (MAX_BODY_KIB_DEFAULT <= max_body_kib <= _MAX_BODY_KIB_MAX)):
+            errs.append(f"{where}: max_body_kib must be an int in "
+                        f"[{MAX_BODY_KIB_DEFAULT}, {_MAX_BODY_KIB_MAX}]")
+            max_body_kib = MAX_BODY_KIB_DEFAULT
         auth = _validate_auth(entry.get("auth", {}), errs, where)
         if name and auth and target:
             out.append({
@@ -195,5 +209,13 @@ def parse_and_validate(
                 "clearance": clearance,
                 "auth": auth,
                 "deliver": deliver,
+                "max_body_kib": max_body_kib,
             })
+    # #1156: a provider-owned slot is filled by the plugin's setup tool, which
+    # Casa runs after consent. Without one nothing ever fills it and the route
+    # answers 401 forever — refuse that at declaration, like setupProvides.
+    if (any(t["auth"]["secret_owner"] == "provider" for t in out)
+            and not casa.get("setupTool")):
+        errs.append("secret_owner 'provider' requires casa.setupTool: the "
+                    "plugin's setup tool stores the provider's secret")
     return out, errs

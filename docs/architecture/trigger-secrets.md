@@ -20,8 +20,10 @@ The secrets themselves have a lifecycle worth knowing, and the two halves of the
 not share one. **Plugin** trigger secrets are minted *per trigger identity* — bound to the
 plugin artifact, so a plugin update means a new identity and a fresh secret — and are
 retired when the artifact's grant is revoked, so a later artifact cannot inherit a
-credential. **Resident** trigger secrets are minted per NAME, when the trigger is
-registered: at boot and on every reload that installs triggers, never on the request that
+credential. A provider-owned plugin slot is bound to its approval the same way, but holds a
+value the plugin's setup tool wrote (INV-TRIG-019 in
+[`plugin-triggers.md`](plugin-triggers.md)). **Resident** trigger secrets are minted per
+NAME, when the trigger is registered: at boot and on every reload that installs triggers, never on the request that
 verifies one. The names are globally unique, and a name is the whole identity — which is
 why a resident secret's lifetime is defined by its **route**, not by its declaration.
 

@@ -1062,7 +1062,8 @@ def manifest_triggers(manifest: dict, plugin_name: str) -> list:
     """Guarded + STRICT ``casa.triggers`` extraction (Release B), beside
     ``manifest_protected_tools``. Absent ``casa.triggers`` → ``[]``. Any
     intrinsic-validation error (shape, naming, auth policy, non-resident
-    target, deferred ``provider`` secret_owner, counts/lengths) is a
+    target, a ``provider`` secret_owner on ``hmac_body``, an out-of-range
+    ``max_body_kib``, counts/lengths) is a
     plugin-author error: raises ``StoreError(reason_code="triggers_invalid")``.
 
     Needs ``plugin_name`` because the routed effective name is

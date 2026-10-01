@@ -47,6 +47,13 @@ identity is retired and re-minted rather than inherited, and a stale one that ca
 removed yields no secret at all rather than the old value — non-inheritance is enforced when
 the credential is activated, not by tidying up after a revocation.
 
+**A provider-owned secret is bound, never adopted.** A trigger declaring
+`secret_owner: provider` gets no value from Casa: the external service generates it and the
+plugin's setup tool writes it into the trigger's slot. What Casa does write is the slot's
+binding to the approval, at activation, clearing anything bound to another approval first.
+So the setup that the binding releases is the first writer the route can trust, and until
+it writes, the route answers 401.
+
 **One reconcile pass sees one registry snapshot.** The plugins, their manifests and each
 target's assignment authority are served from a single pinned resolution, so a registry
 reload landing mid-pass cannot make the overlay compose two generations.
@@ -72,9 +79,11 @@ stores — so it fails closed on read.
 normalized auth policy. **Clearance is not in it** — a clearance change on a trigger installs
 under the old approval without renewed consent. Everything in the tuple, including any auth
 mode, header or tolerance change, does invalidate the approval.
-`deliver` is not in the tuple either (INV-TRIG-018). The artifact id binds it: the artifact is
-checksum-validated, so adding or changing the field makes a new artifact, which needs a new
-approval. The prompt names the field, so the operator approves the messages they will receive.
+`deliver` and `max_body_kib` are not in the tuple either (INV-TRIG-018, INV-TRIG-020). The
+artifact id binds them: the artifact is checksum-validated, so adding or changing either field
+makes a new artifact, which needs a new approval. The prompt names both, so the operator
+approves the messages they will receive and the size they will accept. The secret owner is
+part of the auth policy, so an owner change needs fresh consent too.
 
 **INV-TRIG-005**: Reconciliation replaces the entire plugin overlay in a single rebind.
 
@@ -202,6 +211,33 @@ What it does not cover: a failed Telegram send is logged, not retried (the reque
 already answered), and with no Telegram channel registered the reply is dropped with a
 warning.
 
+**INV-TRIG-019**: A provider-owned plugin trigger's slot is bound to the approval that routes it by the reconcile's writing hop, which never writes a value: a slot bound to any other approval is retired first, a value that survives that retirement leaves the plugin's whole set unrouted with `trigger_secret_missing`, and the setup-dispatch gate counts the route as backed once its slot is bound, with or without a value. A slot already bound is left as it is. A Casa-owned mint retires bytes that are not a Casa token before minting. A provider-owned trigger is valid only in a plugin declaring `casa.setupTool`.
+
+Retirement on update, revoke and removal is best-effort and returns what survived; the
+plugin callers ignore that. So non-inheritance cannot rest on it, and for a Casa-owned
+trigger it never did: the mint rekeys a slot bound to another identity. A provider slot has
+no value for Casa to rekey, so the binding is what carries the rule. A replacement artifact
+whose predecessor's value cannot be deleted does not route at all, rather than routing on
+it. The bind runs inside the INV-TRIG-017 fence, so a pass that binds publishes the marker
+first.
+
+What it does not cover: the value's writer. A setup turn the superseded artifact already
+dispatched can still finish after the replacement is bound (the dispatch-to-turn window the
+setup worker already accepts and discloses), and its write lands in the bound slot. It holds a key to a webhook
+that the same plugin registered at the same provider. That opens no route to anyone else;
+the cost is that one of the plugin's two provider webhooks fails to authenticate until setup
+runs again.
+
+**INV-TRIG-020**: A plugin webhook route's body cap is its manifest entry's `max_body_kib` — an integer in [64, 1024], default 64 — carried in the route record. Ingress reads the route, and the key it verifies with, before the body, and refuses past that cap with 413 before authenticating, whether the length is declared or the body is chunked. A resident route reads 64 KiB.
+
+The cap is the route's, so the name lookup moved ahead of the body read: an unknown name is a
+404 without reading the body at all. That discloses nothing new, since names are non-secret
+and a 404 already preceded authentication. A larger cap is also a larger turn, because the
+payload becomes the turn's content. 1024 KiB is the ceiling for that reason, and the consent
+prompt names any raised cap. The key is read with the route, not after the body: read after a
+slow body, it could belong to an approval that replaced the route mid-request, verifying one
+request with the new approval's key under the old route's role and clearance.
+
 ## Failure behavior
 
 **Reconciliation raises.** The overlay is replaced before the exception propagates, so a
@@ -246,10 +282,14 @@ absent rather than opening.
 **A new plugin trigger** needs the manifest declaration, an assigned target that accepts
 webhooks, secret backing, and operator consent — and reconciliation must then run. The
 declaration itself has hard rails a plugin author cannot discover from the routing model: at
-most eight triggers per plugin, effective names capped at 64 characters, and provider-owned
-secrets rejected outright. Secret backing is mode-specific: static-header and timestamped
+most eight triggers per plugin, effective names capped at 64 characters, and a provider-owned
+secret only on a per-trigger mode (`hmac_body` rides the global secret, so there is no slot
+to fill) and only in a plugin declaring `casa.setupTool`, the one writer of that slot. Secret backing is mode-specific: static-header and timestamped
 modes get a per-trigger secret minted eagerly after consent into the webhook-secrets state
-directory, while body-HMAC rides the one global webhook secret — provisioning the wrong kind
+directory, or a bound empty slot when provider-owned, which the setup tool fills by writing
+its value atomically (a temporary file in the same directory, then a rename), mode 0600,
+with no trailing newline, since a provider value must be printable ASCII. Body-HMAC rides
+the one global webhook secret — provisioning the wrong kind
 leaves the plugin unroutable.
 
 **Delivering a fire to the operator** is the entry's `deliver: operator`. A Casa that predates
@@ -288,6 +328,7 @@ those leaves the old overlay live until a covered scope runs.
 - `tests/test_trigger_consent.py`
 - `tests/test_trigger_reconcile_publication_fence.py`
 - `tests/test_webhook_deliver_operator.py`
+- `tests/test_plugin_trigger_provider_secret.py`
 
 **Related**
 - [`architecture/triggers.md`](../architecture/triggers.md)
