@@ -168,3 +168,34 @@ async def test_a_refusal_that_also_carries_the_limit_subtype_is_a_refusal(
     assert len(notices) == 1 and notices[0].startswith("Turn failed:"), notices
     assert LINE not in notices
     assert f.drv._followup_incomplete == {}
+
+
+async def test_a_launch_limit_stop_over_a_terminal_record_posts_nothing(
+        tmp_path, monkeypatch, caplog):
+    """C13-6 on the LAUNCH side: the launch turn stopped at its limit with its
+    text delivered, and the bounded settled-state read finds the record
+    terminal (the engagement completed during the turn). Nothing is posted
+    into its topic — no line, no launch-death notice — and the engager is not
+    told.
+
+    MUTATION: the launch owner's terminal suppression removed (the line is
+    posted over a terminal record). Named by the stream's diff review as a
+    survivor of the committed tests; added at the cut."""
+    probe = _Probe()
+    client_cls = _launch_client("text")
+    engage_executor, registry, channel, driver = _build(
+        tmp_path, monkeypatch, probe, client_cls)
+    seen, _inner = _spy_launch(monkeypatch, driver, probe)
+
+    async def _settled(engagement_id):
+        return "completed", True
+    monkeypatch.setattr(registry, "settled_terminal_state", _settled)
+    caplog.set_level(logging.DEBUG)
+    caplog.clear()
+    await _launch(engage_executor)
+    await asyncio.wait_for(_drain_owner(), _WATCHDOG_S)
+    assert probe.events.count("finalize") == 1, probe.events
+    assert probe.notice_texts == [], probe.notice_texts
+    assert seen.tell == 0 and seen.send == 0 and seen.abort == 0
+    assert not [w for w in _warnings(caplog)
+                if "line=posted" in w.getMessage()]
