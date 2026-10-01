@@ -58,7 +58,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | plugin mutation sequencing, a plugin or specialist mutation envelope, what a result may say about an integration being live, or re-issuing a plugin-consent DM on demand | [`architecture/plugin-mutation-tools.md`](architecture/plugin-mutation-tools.md) |
 | plugin trigger declaration, the routing overlay, trigger consent, or per-trigger secret backing | [`architecture/plugin-triggers.md`](architecture/plugin-triggers.md) |
 | read clearance, the per-sender origin stamp, the engagement clearance clamp, or the executor-archive epoch scoping | [`architecture/memory-scoping.md`](architecture/memory-scoping.md) |
-| recall behaviour or the absence contract, the mental-model overlay, or the mental models Casa declares and reconciles | [`architecture/memory.md`](architecture/memory.md) |
+| recall behaviour or the absence contract | [`architecture/memory.md`](architecture/memory.md) |
 | reminder creation or cancellation, the reminder sweep, or recurrence derivation | [`architecture/reminders.md`](architecture/reminders.md) |
 | session persistence, tier classification, provenance or content addressing on a stored fact, the save/reset guard protocol, the retirement claims, or the retry spool | [`architecture/memory-lifecycle.md`](architecture/memory-lifecycle.md) |
 | specialist install identity, consent, or materialization | [`architecture/specialist-lifecycle.md`](architecture/specialist-lifecycle.md) |
@@ -73,6 +73,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | the engagement uid allocator, workspace ownership, root's access into a workspace, the privilege drop, whether an engagement's process is actually stopped, or boot replay's down-first sweep | [`architecture/engagement-containment.md`](architecture/engagement-containment.md) |
 | the event manifest surface, the emission spool, event consent or reconciliation, the delivery worker, or the ack tools | [`architecture/plugin-events.md`](architecture/plugin-events.md) |
 | the in_casa launch handoff, the launch-turn owner, what the engager is told about a launch outcome, the graceful stop's launch drains, or the engagement-outcome envelope | [`architecture/engagement-launch-detach.md`](architecture/engagement-launch-detach.md) |
+| the mental-model overlay, or the mental models Casa declares and reconciles | [`architecture/memory-mental-models.md`](architecture/memory-mental-models.md) |
 | the plugin file handoff folder, publish or capture, its sweep, or share_inbound_file's handoff side | [`architecture/plugin-handoff.md`](architecture/plugin-handoff.md) |
 | the plugin health report or its regeneration, the operator health notice or DM, health repeat suppression or dedup marks, or the plugin status tool | [`architecture/plugin-health.md`](architecture/plugin-health.md) |
 | the removal disclosure — what plugin_remove, a specialist bundle's owned-set swap or its compensation says a committed removal left behind | [`architecture/plugin-removal.md`](architecture/plugin-removal.md) |

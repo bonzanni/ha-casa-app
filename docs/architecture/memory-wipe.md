@@ -66,7 +66,7 @@ that content.
 stores mental models inside the bank, so deleting the bank deletes them — the
 operator's own included. Once a wipe has completed and released turn
 admission, it starts one background pass that recreates the two models Casa
-declares (see [`architecture/memory.md`](memory.md)); their first refresh
+declares (see [`architecture/memory-mental-models.md`](memory-mental-models.md)); their first refresh
 reads the emptied bank. The report is already final when the pass starts:
 the door gets it without waiting, and a pass that fails — the backend
 unreachable, say — only logs and leaves the models absent until the next boot

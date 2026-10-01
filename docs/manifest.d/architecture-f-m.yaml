@@ -2,8 +2,8 @@
 # the root docs/manifest.yaml by scripts/verify_docs.py; same entry format.
 
 - doc: architecture/memory.md
-  summary: Recall — how a stored fact is rendered on the way back out, and what a caller may claim from what comes back; the mental-model overlay and the models Casa declares for it.
-  when_changing: recall behaviour or the absence contract, the mental-model overlay, or the mental models Casa declares and reconciles
+  summary: Recall — how a stored fact is rendered on the way back out, and what a caller may claim from what comes back.
+  when_changing: recall behaviour or the absence contract
   covers:
     - casa/rootfs/opt/casa/semantic_memory.py::SemanticMemory
     - casa/rootfs/opt/casa/semantic_memory.py::RecallUnavailable
@@ -15,13 +15,6 @@
     - casa/rootfs/opt/casa/recall_health.py::observed_recall
     - casa/rootfs/opt/casa/delegated_memory.py::delegated_recall
     - casa/rootfs/opt/casa/timekeeping.py::resolve_period
-    - casa/rootfs/opt/casa/semantic_memory.py::render_mental_models
-    - casa/rootfs/opt/casa/semantic_memory.py::mental_model_refresh_paused
-    - casa/rootfs/opt/casa/hindsight_memory.py::HindsightSemanticMemory.profile
-    - casa/rootfs/opt/casa/hindsight_memory.py::HindsightSemanticMemory.reconcile_mental_models
-    - casa/rootfs/opt/casa/mental_models.py::reconcile
-    - casa/rootfs/opt/casa/mental_models.py::schedule_reconcile
-    - casa/rootfs/opt/casa/mental_models.py::drain_reconcile_tasks
   tests:
     - tests/test_recall_absence_invariant.py
     - tests/test_recall_health.py::test_breaker_opens_after_threshold_failures
@@ -30,14 +23,30 @@
     - tests/test_recall_readable_slice_framing.py
     - tests/test_1123_tier_floor_regressions.py
     - tests/test_pin_1120_recall_period.py
-    - tests/test_mental_models_1126.py
-  related: [architecture/overview.md, architecture/turn-loop.md, architecture/memory-lifecycle.md, architecture/memory-scoping.md, architecture/memory-wipe.md]
-  defines_invariants: [INV-MEM-001, INV-MEM-002, INV-MEM-010, INV-MEM-019, INV-MEM-020]
+  related: [architecture/overview.md, architecture/turn-loop.md, architecture/memory-lifecycle.md, architecture/memory-mental-models.md, architecture/memory-scoping.md, architecture/memory-wipe.md]
+  defines_invariants: [INV-MEM-001, INV-MEM-002, INV-MEM-010, INV-MEM-019]
   invariant_tests:
     INV-MEM-001: [tests/test_pin_memory_invariants.py::test_pin_inv_mem_001_failures_raise_never_return_empty, tests/test_hindsight_memory.py::test_recall_unrenderable_results_are_unavailable_not_zero_hits]
     INV-MEM-002: [tests/test_pin_memory_invariants.py::test_pin_inv_mem_002_exactly_one_readable_tier]
     INV-MEM-010: [tests/test_recall_empty_verdict.py::TestRecallMemoryEmptyIsNotAbsence::test_zero_hits_below_top_clearance_scopes_the_claim, tests/test_recall_empty_verdict.py::TestRecallMemoryEmptyIsNotAbsence::test_hits_that_did_not_fit_are_reported_as_existing, tests/test_recall_empty_verdict.py::TestQueryEngagerUnknownIsNotAbsence::test_unknown_carries_do_not_assert_guidance, tests/test_recall_readable_slice_framing.py::TestRecallMemoryOkArm::test_nonempty_result_carries_the_note_and_the_fact, tests/test_recall_readable_slice_framing.py::TestRecallMemoryOkArm::test_the_note_is_identical_at_every_clearance, tests/test_recall_readable_slice_framing.py::TestAutoRecallBlock::test_injected_memory_context_carries_the_note, tests/test_recall_readable_slice_framing.py::TestSpecialistBlock::test_specialist_memory_context_carries_the_note, tests/test_recall_readable_slice_framing.py::TestExecutorArchiveBlock::test_lessons_block_carries_the_note, tests/test_recall_readable_slice_framing.py::TestExecutorArchiveBlock::test_empty_archive_stays_silent, tests/test_recall_readable_slice_framing.py::test_every_slice_consumer_is_declared]
     INV-MEM-019: [tests/test_pin_1120_recall_period.py::test_rc1_windowed_recall_returns_only_hits_recorded_in_the_period, tests/test_pin_1120_recall_period.py::test_rc2_all_out_of_period_is_the_bounded_empty_arm, tests/test_pin_1120_recall_period.py::test_rc3_invalid_or_inverted_period_is_refused_with_zero_requests, tests/test_pin_1120_recall_period.py::test_rc5_named_periods_resolve_in_the_operator_zone_and_reach_the_server, tests/test_pin_1120_recall_period.py::test_period_end_at_timezone_transition, tests/test_pin_1120_recall_period.py::test_period_filter_runs_after_the_clearance_refilter, tests/test_pin_1120_recall_period.py::test_unwindowed_call_sends_the_same_request_as_before]
+
+- doc: architecture/memory-mental-models.md
+  summary: The mental-model overlay and the models Casa declares for it.
+  when_changing: the mental-model overlay, or the mental models Casa declares and reconciles
+  covers:
+    - casa/rootfs/opt/casa/semantic_memory.py::render_mental_models
+    - casa/rootfs/opt/casa/semantic_memory.py::mental_model_refresh_paused
+    - casa/rootfs/opt/casa/hindsight_memory.py::HindsightSemanticMemory.profile
+    - casa/rootfs/opt/casa/hindsight_memory.py::HindsightSemanticMemory.reconcile_mental_models
+    - casa/rootfs/opt/casa/mental_models.py::reconcile
+    - casa/rootfs/opt/casa/mental_models.py::schedule_reconcile
+    - casa/rootfs/opt/casa/mental_models.py::drain_reconcile_tasks
+  tests:
+    - tests/test_mental_models_1126.py
+  related: [architecture/memory.md, architecture/memory-wipe.md]
+  defines_invariants: [INV-MEM-020]
+  invariant_tests:
     INV-MEM-020: [tests/test_pin_1126_overlay.py::test_profile_renders_each_model_name_and_local_refresh_date, tests/test_agent_read_tiers.py::test_overlay_pushed_only_at_private_clearance, tests/test_agent_read_path.py::test_resumed_session_skips_overlay_push]
 
 - doc: architecture/memory-scoping.md
