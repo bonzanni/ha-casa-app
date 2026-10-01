@@ -91,15 +91,15 @@ established. Both live in reserved tag namespaces that ordinary application
 tags may not reach, so a caller cannot promote its own fact to a tier the
 classifier did not give it or attribute it to someone it did not come from.
 
-**A save can raise a memory's tier and never lowers it.** The classifier sees
-only the text, and the same text is classified again on every save — a reset
-racing a sweep, a spool retry, the same line said in a new conversation — so
+**A save can raise a memory's tier and never lowers the tier it read.** The
+classifier sees only the text, and the same text is classified again on
+every save — a reset racing a sweep, a spool retry, the same line said in a new conversation — so
 each save is a fresh draw. Before the items are built, the builder therefore
-reads each document's current tags from the bank it is about to write and
-sends the stricter of the stored tier and this save's verdict. Only the tier
-changes; provenance and marks still follow the latest save, and the stored
-set is never merged in. A `private` that came only from a classifier failure
-(blank input, a backend error after its retry, a reply still unparseable
+reads the current tags of each document whose verdict is not already a real
+`private` from the bank it is about to write, and sends the stricter of the
+stored tier and this save's verdict. Only the tier changes; provenance and
+marks still follow the latest save, and the stored set is never merged in.
+A `private` that came only from a classifier failure (blank input, a backend error after its retry, a reply still unparseable
 after the re-ask) is not a verdict: over a stored tier it re-sends that tier
 unchanged, and on a document that has none it is stored beside the
 Casa-reserved marker `casa-tier-unverified`, which tells a later save the
@@ -107,7 +107,9 @@ Casa-reserved marker `casa-tier-unverified`, which tells a later save the
 without that marker is a floor, including one saved before this rule existed
 and whatever produced it. A cross-ask conflict — a re-ask less sensitive than
 the first reply's own `private` evidence — counts as a real verdict. A real
-`private` therefore stays `private`; nothing lowers a stored tier yet.
+`private` therefore stays `private` against every save that reads it — the
+in-flight exception is INV-MEM-018's — and no operator action to lower a
+stored tier exists.
 
 **A registry key names a conversation slot, not a session.** A new turn can
 re-register the slot at any suspension point, so every step of the save
@@ -379,7 +381,7 @@ the next real verdict replace it (INV-MEM-018).
 has — the memory store is busy, restarting or unreachable, the read timed
 out, or it answered anything but the document's tags or its positive "never
 saved" — so the whole save is skipped and nothing is written with an
-unchecked tier. One warning names the failure. Each writer's existing arm then
+unchecked tier. A warning names the failure. Each writer's existing arm then
 applies: a freshness sweep releases its claim and the next sweep retries, a
 reset or gap-superseded session spools a durable retry, a spool retry counts
 an attempt toward its limit, and a delegated or engagement memory is dropped —

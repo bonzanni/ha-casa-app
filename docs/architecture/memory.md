@@ -212,8 +212,9 @@ those has a read-side consequence worth knowing here: an unparseable classificat
 the item to *private*, so the write is not lost but the fact goes invisible below the highest
 clearance — absence on voice and friends surfaces — until a later save's real verdict replaces
 it, or for good where an earlier save had already stored a tier, which that save keeps. A
-*real* `private`, by contrast, is now permanent: no save lowers a stored tier, so a fact once
-classified private stays invisible below the highest clearance however it is later re-said.
+*real* `private`, by contrast, now stays: a save that reads it never stores a lower tier
+(INV-MEM-018 states the in-flight exception), so a fact stored with a real `private` stays
+invisible below the highest clearance however it is later re-said.
 
 ## Extension points
 
