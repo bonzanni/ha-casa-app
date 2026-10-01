@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.333.0] - 2026-10-01
+
+### Added
+
+- A plugin webhook trigger can now declare `deliver: operator` (#1142). For
+  such a trigger, each fire's final reply is sent to you on Telegram. If the
+  turn fails, the error message is sent instead. A reply of only `<silent/>`
+  sends nothing. The consent message for the trigger says that each fire sends
+  you a Telegram message. Triggers that do not declare it are unchanged: their
+  replies still go nowhere.
+- On such a turn the assistant cannot use `send_message`. Its reply is the
+  message, so you get one message per fire and not two.
+- If such a turn stops at its step limit, you get a line saying the webhook
+  fired and that what was sent about it may be incomplete. Before, that stop
+  was only logged, like any other webhook turn's.
+- Plugin authors: a Casa older than this release rejects `deliver` as an
+  unknown key, and with it all of the plugin's triggers. Ship a plugin that
+  declares it only after this release.
+
 ## [0.332.25] - 2026-10-01
 
 ### Fixed

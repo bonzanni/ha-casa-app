@@ -37,7 +37,10 @@ _CLEARANCES = ("public", "friends", "family")
 _MAX_TRIGGERS = 8
 _MAX_EFFECTIVE_LEN = 64
 
-_TRIGGER_KEYS = {"name", "type", "target", "clearance", "auth"}
+_TRIGGER_KEYS = {"name", "type", "target", "clearance", "auth", "deliver"}
+# #1142: what Casa does with a fire's final reply. ``none`` (the default) is the
+# pre-#1142 behaviour; ``operator`` delivers it to the operator's Telegram.
+_DELIVER = ("none", "operator")
 _AUTH_KEYS = {"mode", "header", "tolerance_secs", "secret_owner"}
 
 
@@ -178,6 +181,10 @@ def parse_and_validate(
         if clearance not in _CLEARANCES:
             errs.append(f"{where}: clearance must be one of {list(_CLEARANCES)}")
             clearance = "public"
+        deliver = entry.get("deliver", "none")
+        if not isinstance(deliver, str) or deliver not in _DELIVER:
+            errs.append(f"{where}: deliver must be one of {list(_DELIVER)}")
+            deliver = "none"
         auth = _validate_auth(entry.get("auth", {}), errs, where)
         if name and auth and target:
             out.append({
@@ -187,5 +194,6 @@ def parse_and_validate(
                 "target": target,
                 "clearance": clearance,
                 "auth": auth,
+                "deliver": deliver,
             })
     return out, errs

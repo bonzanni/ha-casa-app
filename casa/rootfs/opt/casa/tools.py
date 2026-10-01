@@ -272,6 +272,11 @@ def _text_result(text: str, *, is_error: bool = False) -> dict:
     return out
 
 
+_DELIVERS_TO_OPERATOR_REFUSAL = (
+    "this webhook's final reply is delivered to the operator; reply instead "
+    "of calling send_message")
+
+
 @tool(
     "send_message",
     "Send a message to a user through a communication channel.",
@@ -287,6 +292,13 @@ async def send_message(args: dict) -> dict:
     scope = _current_scope(_origin)
     if scope is None:
         return _text_result(f"Error: {_NO_SCOPE_MESSAGE}.", is_error=True)
+    # #1142 (INV-TRIG-018): on a `deliver: operator` webhook turn the final
+    # reply IS the delivery, so a tool send would be a second message. The
+    # tool is not offered to such a turn; this refusal is the defence in depth,
+    # read from the scope's registered facts, never from tool input.
+    if scope.delivers_to_operator:
+        return _text_result(f"Error: {_DELIVERS_TO_OPERATOR_REFUSAL}.",
+                            is_error=True)
     # Release A / Layer 1 egress binding (#1038 R2: now the scope's
     # DestinationOperatorOnly obligation, registered at mint): an UNTRUSTED
     # webhook turn may notify only the operator's Telegram surface — the

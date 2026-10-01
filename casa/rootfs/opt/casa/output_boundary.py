@@ -485,6 +485,18 @@ class TurnScope:
                 and self.operator_sends_delivered
                 and all(a.state == "ok" for a in self.send_attempts))
 
+    @property
+    def delivers_to_operator(self) -> bool:
+        """#1142: this turn is a plugin webhook-trigger fire whose route
+        declared ``deliver: operator`` — its final reply goes to the operator's
+        Telegram, and ``send_message`` is neither offered nor honoured. The ONE
+        predicate every reader uses (final delivery, the restricted-options
+        builder, the ``send_message`` handler), read from markers registered at
+        mint from server-stamped, reserved context keys."""
+        return (self.channel == "webhook"
+                and self.markers.get("_origin_route") == "webhook_trigger"
+                and self.markers.get("_webhook_deliver") == "operator")
+
     def resolve_channel(self, requested: str) -> str:
         """The channel a discrete send actually goes to: the requested one,
         unless :class:`DestinationOperatorOnly` binds it to Telegram."""

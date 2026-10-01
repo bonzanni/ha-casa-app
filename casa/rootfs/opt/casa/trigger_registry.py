@@ -578,7 +578,7 @@ class TriggerRegistry:
 
     def webhook_route(self, name: str) -> dict | None:
         """ONE atomic snapshot of the route for ``name`` — ``{"role",
-        "clearance", "auth", "resident"}`` — or ``None`` when nothing routes
+        "clearance", "auth", "deliver", "resident"}`` — or ``None`` when nothing routes
         it (#620, seam S1). Resident records win; the plugin overlay is the
         fallback, ``resident: False``, exactly as ``get_webhook_target``
         resolves. The wildcard handler and the secret report read THIS and
@@ -587,14 +587,16 @@ class TriggerRegistry:
         """
         record = self._webhook_routes.get(name)
         if record is not None:
-            return {**record, "resident": True}
+            # #1142: a resident trigger has no ``deliver``; it reads "none".
+            return {**record, "deliver": "none", "resident": True}
         if self._plugin_overlay is ROUTING_UNAVAILABLE:
             return None                                  # #606: closed ingress
         entry = self._plugin_overlay.get(name)
         if entry is None:
             return None
         return {"role": entry["role"], "clearance": entry["clearance"],
-                "auth": entry["auth"], "resident": False}
+                "auth": entry["auth"],
+                "deliver": entry.get("deliver", "none"), "resident": False}
 
     def webhook_names_for(self, role: str) -> list[str]:
         """The webhook names this role currently ROUTES, from the same map

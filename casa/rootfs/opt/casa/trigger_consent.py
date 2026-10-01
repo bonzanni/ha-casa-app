@@ -74,15 +74,21 @@ def operator_identity(channel: Any) -> "tuple[int, int] | None":
 
 def render_trigger_consent_message(
     *, plugin: str, effective: str, role: str, auth: dict,
-    clearance: str = "public",
+    clearance: str = "public", deliver: str = "none",
 ) -> str:
     mode = auth.get("mode", "?")
     header = auth.get("header", "?")
+    # #1142: the egress the operator approves is named in the prompt — an
+    # opted-in trigger's every fire ends in a message to them.
+    delivery = (
+        "deliver: operator — each fire sends you a Telegram message.\n\n"
+        if deliver == "operator" else "")
     return (
         "\U0001F510 Plugin ingress consent\n\n"
         f"Plugin '{plugin}' wants to open POST /webhook/{effective} "
         f"→ {role} (auth {mode}, header {header}; memory clearance "
         f"{clearance}).\n\n"
+        f"{delivery}"
         "Approve to route it; Deny to leave it unrouted."
     )
 
@@ -90,7 +96,7 @@ def render_trigger_consent_message(
 def prompt_trigger_consent(
     *, coordinator: Any, channel: Any, chat_id: int, operator_id: int,
     plugin: str, artifact_id: str, effective: str, target: str,
-    auth: dict, acks: Any, clearance: str = "public",
+    auth: dict, acks: Any, clearance: str = "public", deliver: str = "none",
     reconcile_cb: "Callable[[], Awaitable[None]] | None" = None,
     setup_nonce: str = "",
 ) -> Any:
@@ -108,7 +114,7 @@ def prompt_trigger_consent(
     role = target.partition(":")[2] or target
     text = render_trigger_consent_message(
         plugin=plugin, effective=effective, role=role, auth=auth,
-        clearance=clearance)
+        clearance=clearance, deliver=deliver)
 
     # v0.112.0 (elevenlabs#2): the plugin's consent ROUND membership was
     # SEALED by the reconciler (`plugin_setup_episodes.open_round`, one

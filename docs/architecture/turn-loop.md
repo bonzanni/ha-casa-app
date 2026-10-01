@@ -36,7 +36,10 @@ event wake is minted with `NoStream` and gets no token callback. The model's fin
 passes through `scope.admit(FINAL_REPLY, …)`, which judges closing silence itself, on the
 unannotated text, so a `<silent/>` turn is suppressed before any line could be added and
 prose after a sentinel is delivered whole; a classified-error reply is Casa's own text; the
-plugin-health notice is prepended outermost over the admitted value; and every streamed
+plugin-health notice is prepended outermost over the admitted value, except on a
+`deliver: operator` webhook turn, whose reply goes to the operator's Telegram through one
+fresh delivery context on every output path (INV-TRIG-018 in
+[`plugin-triggers.md`](plugin-triggers.md)); and every streamed
 cumulative `_emit` releases is admitted too, after the INV-TURN-009 hold has judged the
 unannotated cumulative with the same predicates. Options assembly is where the
 read-evidence matchers join every resident's hook bundle. What the scope does with the text
@@ -231,7 +234,7 @@ to 5 MiB of base64 each, and 64 MiB would no longer cover it. The value is passe
 client goes through the same wrapper: a construction that omits it silently falls back to
 the 1 MiB default, and a source sweep refuses one.
 
-**INV-TURN-014**: A resident turn whose terminal SDK result has subtype `error_max_turns` is a limit stop: it is detected from that subtype alone, returned rather than raised, its session published exactly as any returned turn's, never retried or continued, never reclassified as an error and never counted as a resume fault — a trusted turn records it healthy. Limit handling never rewrites or replaces the model's text: what admission delivers is delivered, and what it suppresses stays suppressed. Casa adds exactly one line of its own, attempted as a separate send — in the turn's Telegram chat; in the operator's Telegram chat, addressed explicitly, for a narration or a schedule that ran on no Telegram chat; at the end of a trusted `/invoke` response body; or spoken after the held tail on voice once something was spoken — except on an untrusted webhook turn, which sends nothing. Every limit stop logs one WARNING naming the role, the channel and the turn count. An untrusted webhook turn runs with a fixed limit of 20.
+**INV-TURN-014**: A resident turn whose terminal SDK result has subtype `error_max_turns` is a limit stop: it is detected from that subtype alone, returned rather than raised, its session published exactly as any returned turn's, never retried or continued, never reclassified as an error and never counted as a resume fault — a trusted turn records it healthy. Limit handling never rewrites or replaces the model's text: what admission delivers is delivered, and what it suppresses stays suppressed. Casa adds exactly one line of its own, attempted as a separate send — in the turn's Telegram chat; in the operator's Telegram chat, addressed explicitly, for a narration or a schedule that ran on no Telegram chat; at the end of a trusted `/invoke` response body; or spoken after the held tail on voice once something was spoken — except on an untrusted webhook turn, which sends nothing unless its route declares `deliver: operator` (INV-TRIG-018), when the line goes to the operator's Telegram chat and names the webhook. Every limit stop logs one WARNING naming the role, the channel and the turn count. An untrusted webhook turn runs with a fixed limit of 20.
 
 The CLI ends a turn that would need one model call more than its limit with an error result
 of that subtype and no result text. The pool treats it like any non-retryable error result —

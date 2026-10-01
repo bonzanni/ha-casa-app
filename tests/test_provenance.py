@@ -39,6 +39,9 @@ def test_reserved_context_keys_are_exactly_the_spec_set():
         "_voice_delivery_offer",
         # Release A: unspoofable server-set webhook-origin markers.
         "_origin_route", "_origin_clearance",
+        # #1142: the webhook route's `deliver` enum — a caller who could set
+        # it would choose where an untrusted turn's final reply goes.
+        "_webhook_deliver",
         # #283: live-operator marker — an external caller who could set it
         # would exempt itself from the agent-spawn cap.
         "_operator_turn",

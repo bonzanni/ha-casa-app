@@ -2303,6 +2303,16 @@ async def _close_tina_ha_facade(
 # Max webhook request body (spec A3). Larger requests are rejected before read.
 _WEBHOOK_BODY_MAX = 64 * 1024
 
+# #1142: Casa's OWN constant, appended to an opted-in (`deliver: operator`)
+# webhook turn's content — selected by the route's enum, never trigger prose, so
+# INV-TRIG-013 (a webhook trigger carries no prompt) stands. Guidance only: what
+# keeps the turn to one send path is that `send_message` is not offered to it
+# (INV-TRIG-018), not this line.
+WEBHOOK_DELIVER_LINE = (
+    "(Casa: your final reply is delivered to the operator on Telegram; "
+    "reply <silent/> if nothing warrants telling them.)"
+)
+
 
 def _make_webhook_handler(
     *,
@@ -2425,6 +2435,8 @@ def _make_webhook_handler(
             )
         target_role = route["role"]
         clearance = route.get("clearance", "public") or "public"
+        # #1142: from the SAME route record — never a second registry read.
+        deliver = "operator" if route.get("deliver") == "operator" else "none"
 
         if not _verify(request, body, name, route):
             return web.json_response(
@@ -2457,11 +2469,14 @@ def _make_webhook_handler(
                 {"error": "ingress identity unavailable"}, status=500,
             )
 
+        content = f"Webhook '{name}' triggered with payload: {payload}"
+        if deliver == "operator":
+            content = f"{content}\n\n{WEBHOOK_DELIVER_LINE}"
         msg = BusMessage(
             type=MessageType.SCHEDULED,
             source="webhook",
             target=target_role,
-            content=f"Webhook '{name}' triggered with payload: {payload}",
+            content=content,
             channel="webhook",
             trusted_user_origin=trusted_origin,
             context={
@@ -2474,6 +2489,9 @@ def _make_webhook_handler(
                 # resume another session.
                 "_origin_route": "webhook_trigger",
                 "_origin_clearance": clearance,
+                # #1142: server-set from the route record, like the two
+                # markers above; reserved, so no external context can set it.
+                "_webhook_deliver": deliver,
                 "chat_id": str(uuid.uuid4()),
             },
         )

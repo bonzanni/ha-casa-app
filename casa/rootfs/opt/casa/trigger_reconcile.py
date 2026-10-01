@@ -254,11 +254,14 @@ def compute_desired(
                 plugin_pending.append({
                     "plugin": rp.name, "artifact_id": rp.artifact_id,
                     "effective": t["effective"], "target": target,
-                    "auth": t["auth"], "clearance": t["clearance"]})
+                    "auth": t["auth"], "clearance": t["clearance"],
+                    "deliver": t["deliver"]})
                 continue
             entries[t["effective"]] = {
                 "plugin": rp.name, "role": role,
                 "clearance": t["clearance"], "auth": t["auth"],
+                # #1142: travels inside the route record (INV-TRIG-018).
+                "deliver": t["deliver"],
                 # the (consent identity, approval generation) this route was
                 # approved under — the mint binds the secret to the PAIR, so
                 # a re-approval after a revoke (new gen) rekeys even for an
@@ -1021,7 +1024,8 @@ async def reprompt_pending(
                     reconcile_cb=_reconcile_again, setup_nonce=nonce,
                     plugin=p["plugin"], artifact_id=p["artifact_id"],
                     effective=p["effective"], target=p["target"],
-                    auth=p["auth"], clearance=p.get("clearance", "public"))
+                    auth=p["auth"], clearance=p.get("clearance", "public"),
+                    deliver=p.get("deliver", "none"))
                 report.append(dict(row, handle=handle))
             except Exception:  # noqa: BLE001 — one prompt failure must not
                 # abort the remaining rows

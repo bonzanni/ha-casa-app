@@ -72,6 +72,9 @@ stores — so it fails closed on read.
 normalized auth policy. **Clearance is not in it** — a clearance change on a trigger installs
 under the old approval without renewed consent. Everything in the tuple, including any auth
 mode, header or tolerance change, does invalidate the approval.
+`deliver` is not in the tuple either (INV-TRIG-018). The artifact id binds it: the artifact is
+checksum-validated, so adding or changing the field makes a new artifact, which needs a new
+approval. The prompt names the field, so the operator approves the messages they will receive.
 
 **INV-TRIG-005**: Reconciliation replaces the entire plugin overlay in a single rebind.
 
@@ -181,6 +184,24 @@ after its swap has already published a live map, so no marker of its stands for 
 to collect and its drain ends in a setup-worker kick, where this one deliberately ends in
 none. Same mechanism, opposite terminus, because the two passes leave opposite state behind.
 
+**INV-TRIG-018**: A plugin webhook trigger's final reply reaches the operator only when its manifest entry declares `deliver: operator` — an enum whose only other value, `none`, is the default — and the route record carries it to ingress, which stamps it on the turn as a reserved marker no request can set. Such a turn delivers its reply, including a classified error and the line Casa adds when it stops at its turn limit (INV-TURN-014), to the operator's Telegram, and is not offered `send_message`.
+
+A webhook turn's reply used to go nowhere: no channel is registered under `webhook`, and
+nothing said so. The opt-in is per trigger and travels in the one route snapshot ingress
+reads (#620's seam), never re-read from the registry later. A resident webhook route reads
+`none`. One predicate, `TurnScope.delivers_to_operator`, decides everything downstream. It
+picks the reply's channel and context (INV-OUT-006 in
+[`output-boundary.md`](output-boundary.md)). It builds the restricted runtime's tool set,
+whose allowlist and tool listing both lose `send_message`. And it makes the `send_message`
+handler refuse, as defence in depth. A prompt line could not stop a tool send and an
+ordinary final reply from both arriving; removing the tool does. The turn's content also
+ends with one constant line saying where the reply goes. It is guidance only, and it is
+Casa's text (INV-TRIG-013 in [`triggers.md`](triggers.md)).
+
+What it does not cover: a failed Telegram send is logged, not retried (the request was
+already answered), and with no Telegram channel registered the reply is dropped with a
+warning.
+
 ## Failure behavior
 
 **Reconciliation raises.** The overlay is replaced before the exception propagates, so a
@@ -231,6 +252,10 @@ modes get a per-trigger secret minted eagerly after consent into the webhook-sec
 directory, while body-HMAC rides the one global webhook secret — provisioning the wrong kind
 leaves the plugin unroutable.
 
+**Delivering a fire to the operator** is the entry's `deliver: operator`. A Casa that predates
+the field rejects it as an unknown key, and rejects the whole set with it, so a plugin that
+declares it ships only after a Casa that knows it.
+
 **Re-issuing an expired consent DM** is the `consent_reprompt` tool's job — the prompt-only
 re-issue shared by all three consent kinds (its contract is in
 [`plugin-mutation-tools.md`](plugin-mutation-tools.md)), which skips triggers the operator
@@ -262,6 +287,7 @@ those leaves the old overlay live until a covered scope runs.
 - `tests/test_plugin_triggers_manifest.py`
 - `tests/test_trigger_consent.py`
 - `tests/test_trigger_reconcile_publication_fence.py`
+- `tests/test_webhook_deliver_operator.py`
 
 **Related**
 - [`architecture/triggers.md`](../architecture/triggers.md)
@@ -269,4 +295,5 @@ those leaves the old overlay live until a covered scope runs.
 - [`architecture/plugins.md`](../architecture/plugins.md)
 - [`architecture/callbacks.md`](../architecture/callbacks.md)
 - [`architecture/plugin-setup-dispatch-gate.md`](../architecture/plugin-setup-dispatch-gate.md)
+- [`architecture/output-boundary.md`](../architecture/output-boundary.md)
 <!-- END SOURCEMAP -->
