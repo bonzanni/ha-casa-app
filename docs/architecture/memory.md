@@ -101,9 +101,20 @@ tier classification, provenance, and the content addressing that deduplicates it
 [`architecture/memory-lifecycle.md`](memory-lifecycle.md) owns the freshness windows, the
 save guard protocol (INV-MEM-006), the write-side tag and provenance gate (INV-MEM-004), the
 content-addressing contract (INV-MEM-009), the tier-classifier parse (INV-MEM-012), the
-retirement claims (INV-MEM-013); the operator-consented wipe (INV-MEM-014) is
+retirement claims (INV-MEM-013), the tier floor (INV-MEM-018); the operator-consented wipe (INV-MEM-014) is
 [`architecture/memory-wipe.md`](memory-wipe.md)'s. What this
 document owns is the other direction: what comes back, and what a caller may claim from it.
+
+**The seam has one read that is not a recall, and it fails the other way.** Before a save,
+the retain-item builder asks the seam for one document's stored tags, to keep a save from
+lowering its tier (INV-MEM-018). The answer is the tag set, or *never saved* — and only the
+backend's positive "never saved" may mean that: on the Hindsight backend, a 404 whose detail
+is exactly `Document not found`, which a missing bank also answers (correctly — a deleted
+bank stores nothing, and the next save recreates it). Any other 404 — an unknown route answers
+`Not Found` — any other status, a body without a list of string tags, a timeout or a transport
+failure raises, and the save is skipped. Reading an unknown answer as "never saved" would let
+a save lower a tier, which is why this read has no lenient arm and no default in the seam.
+The route is present in the backend since v0.0.8; the behaviour above was verified on 0.10.2.
 
 **Mental-model overlays cannot be tier-filtered at all**, because they are bank-wide
 summaries rather than individually tagged facts. That is why they are exposed only at the
@@ -143,7 +154,7 @@ backend returned — the request's own tag filter is not treated as the access c
 write-side tag and provenance gate, write trust, the save/reset guard protocol, the
 content-addressing contract and the tier-classifier parse — are declared in
 [`architecture/memory-lifecycle.md`](memory-lifecycle.md), together with the retirement
-claims (INV-MEM-013); the wipe contract (INV-MEM-014) is declared in
+claims (INV-MEM-013) and the tier floor (INV-MEM-018); the wipe contract (INV-MEM-014) is declared in
 [`architecture/memory-wipe.md`](memory-wipe.md).
 
 One consequence of INV-MEM-004 belongs on the read side and is easy to miss: it protects the
@@ -199,13 +210,18 @@ registry, a wipe whose drain times out, a tier classification that cannot be par
 retention lifecycle's: [`architecture/memory-lifecycle.md`](memory-lifecycle.md). The last of
 those has a read-side consequence worth knowing here: an unparseable classification defaults
 the item to *private*, so the write is not lost but the fact goes invisible below the highest
-clearance — absence on voice and friends surfaces.
+clearance — absence on voice and friends surfaces — until a later save's real verdict replaces
+it, or for good where an earlier save had already stored a tier, which that save keeps. A
+*real* `private`, by contrast, is now permanent: no save lowers a stored tier, so a fact once
+classified private stays invisible below the highest clearance however it is later re-said.
 
 ## Extension points
 
 **A new backend** implements the seam's methods and must preserve the three outcomes —
 in particular it must raise, not return empty, when it cannot answer or when nothing readable
-survives filtering. If it holds resources, implement the close hook.
+survives filtering. Its stored-tag read must likewise answer "never saved" only when the backend
+positively says so, and raise on everything else; the seam declares it abstract so a backend
+cannot inherit a lenient one. If it holds resources, implement the close hook.
 
 **A new recall caller** should decide whether it wants its own telemetry and breaker, which
 means choosing a distinct recall path rather than inheriting another's. It must also decide,
@@ -229,6 +245,7 @@ since what may be disclosed is decided per surface.
 - `casa/rootfs/opt/casa/semantic_memory.py::RecallProtocolError`
 - `casa/rootfs/opt/casa/semantic_memory.py::NoOpSemanticMemory`
 - `casa/rootfs/opt/casa/hindsight_memory.py::HindsightSemanticMemory.recall_items`
+- `casa/rootfs/opt/casa/hindsight_memory.py::HindsightSemanticMemory.document_tags`
 - `casa/rootfs/opt/casa/recall_renderer.py::render_recall`
 - `casa/rootfs/opt/casa/recall_health.py::observed_recall`
 - `casa/rootfs/opt/casa/delegated_memory.py::delegated_recall`
@@ -239,6 +256,7 @@ since what may be disclosed is decided per surface.
 - `tests/test_agent_auto_recall_unavailable.py`
 - `tests/test_recall_empty_verdict.py`
 - `tests/test_recall_readable_slice_framing.py`
+- `tests/test_1123_tier_floor_regressions.py`
 
 **Related**
 - [`architecture/overview.md`](../architecture/overview.md)
