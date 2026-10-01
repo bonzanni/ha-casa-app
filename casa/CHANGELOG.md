@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.332.25] - 2026-10-01
+
+### Fixed
+
+- The configurator's guidance for changing an installed specialist's settings
+  no longer points at a step that always refuses. It sent that change to the
+  install step, which refuses a specialist that is already installed. Now it
+  tells the configurator to upgrade the specialist to the version it already
+  has, passing the new settings, and to tell you two things before it starts:
+  the install may ask for your approval again, and afterwards "rollback"
+  restores the previous settings, not the previous version, which can then no
+  longer be rolled back to. If the specialist has open conversations, you are
+  warned about them first, as for any upgrade.
+  - This changes only the specialist's own settings. Its model tier and memory
+    budget come with the version it is installed at. A secret that one of its
+    plugins reads is set through that plugin's secret reference.
+
 ## [0.332.24] - 2026-10-01
 
 ### Fixed
