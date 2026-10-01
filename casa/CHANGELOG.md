@@ -1,5 +1,59 @@
 # Changelog
 
+## [0.332.23] - 2026-10-01
+
+### Changed
+
+- Changing a specialist while you have open conversations with it now asks you
+  first. This covers applying a persona to an installed specialist, upgrading
+  it, rolling it back and uninstalling it. Open conversations are the ones in
+  its topics and the background jobs it is running. Casa holds the change
+  back and gives Ellen's configurator the list, which its instructions say to
+  show you and ask you to confirm before anything changes. If you say no, the
+  specialist is left as it was. If nothing is open, it does not ask.
+  Changing a specialist's plugins with the plugin tools does not ask.
+- After a persona, an upgrade or a rollback, a conversation that was already
+  open is not switched over. The warning ends by saying so: "When it
+  resumes, it picks up Casa's updated settings, but it keeps its personality
+  and the plugin versions it started with. To get everything new, close it
+  with `/complete` and ask Ellen for a new conversation." New conversations
+  get the new setup once Casa has loaded it: an upgrade or a rollback that
+  completes loads it during the change, and a persona is loaded by a reload of
+  the agents, which the configurator's instructions say to run right after
+  applying it. If a conversation opened after you confirmed is still open when
+  the change finishes, the configurator is told about it too, to pass on to
+  you.
+- Uninstalling a specialist now closes the conversations still open once it is
+  removed. A turn still running in one of them is stopped, and Casa posts the
+  reason in each topic. If a conversation could not be closed, the uninstall's
+  result lists it as still open, for the configurator to pass on to you.
+- Disabling a specialist (`enabled: false`) now closes its open conversations
+  when the disable takes effect: at the reload that reads it, or at the next
+  start if Casa was down at the time. Casa posts the reason in each topic.
+  If a close fails, Casa tells you which conversation is still open and tries
+  again at the next reload of the agents.
+- Your confirmation travels with the configurator's next call, as the list of
+  conversations you confirmed. While the specialist has open conversations, a
+  call that names none of its conversations is held back and warned again, and
+  an uninstall is held back unless it names every open one. The one exception
+  is the uninstall call that goes ahead after you chose to erase a plugin's
+  data, which this check never holds back. For example, a call is held back if
+  you re-run an uninstall in a new configurator conversation after Casa could
+  not hand the result of erasing a plugin's data back to the conversation that
+  asked.
+
+### Fixed
+
+- The configurator said that reloading after applying a persona to a
+  specialist "activates it immediately". In fact only new conversations get
+  the new persona after the reload, and it now says so.
+- When an upgrade kept the new version on disk but then failed before Casa
+  loaded it, the result said the new version was active. It now says that the
+  upgrade is not active yet, that new and open conversations still use the
+  previous version, and that re-running the upgrade finishes it. In the rarer
+  case where cleaning up the previous version also failed, it says to restart
+  Casa and then re-run the upgrade.
+
 ## [0.332.22] - 2026-10-01
 
 ### Fixed

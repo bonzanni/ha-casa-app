@@ -8,7 +8,16 @@ from when it was active.
 1. Confirm WHICH specialist and that the operator wants the immediately-prior tuple specifically —
    a version, or the pre-override binding (rollback is one generation back, not "pick a
    version"). Confirm the owned-plugin consequence in step 2 with them too, BEFORE the call.
-2. `specialist_rollback(slug=...)`. This republishes the retained prior's owned plugin set too, in
+2. `specialist_rollback(slug=...)`.
+   If `ok: false, kind: "open_conversations_unconfirmed"`: NOTHING changed — the specialist has
+   open conversations. Relay the result's `warning` to the operator VERBATIM (it lists each
+   conversation and says what happens to it) and ask whether to go ahead. Only on a yes, repeat
+   the same call with `acknowledged_conversations` set to the ids the result lists; on a no, stop
+   and tell the operator nothing changed — a declined warning voids those ids, so never re-pass
+   them without asking again. If a later result carries `opened_after_confirmation` (or
+   `opened_while_this_change_ran`), tell the operator about those conversations too, with the
+   result's `open_conversation_notice` verbatim.
+   The call republishes the retained prior's owned plugin set too, in
    the SAME call: a plugin the CURRENT version owns but the prior generation did not is removed,
    and anything the prior generation owned is restored — atomically with the tuple itself, no
    separate plugin step. The retained owned-plugin generation is always the one the retained
@@ -43,7 +52,8 @@ from when it was active.
   swaps them back again, re-applying what the first call undid; `kind: "no_prior_tuple"` is
   returned only when nothing was ever retained.
 - Forgetting `casa_reload(scope="agents")` — same as every other install/upgrade path, the committed
-  tuple is not live until reload runs.
+  tuple is not live until reload runs, and even then only for new conversations: an open one keeps
+  its personality and plugin versions.
 - Trying to `plugin_add`/`plugin_remove` the bundled plugin set yourself to "help" a rollback along
   — the owned-set swap is atomic and part of `specialist_rollback` itself; a manual edit first is
   just refused (`kind: "owned_by_specialist"`), and one attempted after is reverted by the rollback.

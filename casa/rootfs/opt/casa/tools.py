@@ -14627,6 +14627,23 @@ _KEPT_NEW_VERSION_ENVELOPE = {
 }
 
 
+# #1095 (ruling-1095-5, ruling-1095-6): the LIBRARY-kept arm of
+# specialist_upgrade returns before the sequencer, so Casa has loaded none of
+# the kept version. Said in the present tense, at the moment of telling: an
+# unrelated reload before the re-run can change what new conversations get,
+# so neither text promises how long the previous version stays in use.
+_KEPT_NOT_ACTIVE_OUTCOME = (
+    "the upgrade is not active yet: the new version is kept on disk, but Casa "
+    "has not loaded it, so new and open conversations still use the previous "
+    "version. Re-running the same upgrade finishes it.")
+_KEPT_NOT_ACTIVE_RESTART_OUTCOME = (
+    "the upgrade is not active yet: the new version is kept on disk, but Casa "
+    "has not loaded it, so new and open conversations still use the previous "
+    "version. Finishing the version it replaced failed too, so further changes "
+    "to this specialist are refused until Casa restarts: restart Casa, then "
+    "re-run the upgrade.")
+
+
 async def _bundle_seq_failure(txn, seq: dict, *, slug: str) -> dict:
     """Whole-branch B: a sequencer that returned ok:false — compensate and
     build the ok:false envelope. P1-1: when the disk rollback could not
@@ -15620,6 +15637,255 @@ async def _settle_install_consent_post(handle) -> "dict | None":
                        "the inspect tool to be prompted again")}
 
 
+# ---------------------------------------------------------------------------
+# #1095: a change to a specialist that has open conversations warns first;
+# removing a specialist closes them
+# ---------------------------------------------------------------------------
+#
+# A persona apply, an upgrade, a rollback and an uninstall commit on the call,
+# so the warning can only precede the change as a PENDING-FIRST result: the
+# call lists the specialist's open conversations and changes nothing, the
+# configurator relays the warning verbatim and asks, and on yes calls again
+# with `acknowledged_conversations` naming them. Nothing about the
+# acknowledgement is kept server-side — the ids live in the configurator's
+# context, exactly as INV-PERS-018's notice lives in the tool result.
+
+# Ruling-1095-4's sentence, verbatim. The ONE source for every tool
+# description and result that carries it (pinned by
+# tests/test_pin_1095_warn_then_act.py), so no entry point can drift.
+SPECIALIST_OPEN_CONVERSATION_NOTICE = (
+    "When it resumes, it picks up Casa's updated settings, but it keeps its "
+    "personality and the plugin versions it started with. To get everything "
+    "new, close it with `/complete` and ask Ellen for a new conversation."
+)
+SPECIALIST_UNINSTALL_CONVERSATION_NOTICE = (
+    "Uninstalling it closes each of these conversations once the specialist is "
+    "removed; a turn still running in one of them is stopped."
+)
+OPEN_CONVERSATIONS_PENDING = "open_conversations_unconfirmed"
+_ACKNOWLEDGED_SCHEMA = {
+    "type": "array", "items": {"type": "string"},
+    "description": ("the engagement ids of the open conversations the operator "
+                    "confirmed, exactly as a previous call's "
+                    "open_conversations_unconfirmed result listed them")}
+_ORDINARY_CHANGE_TOOL_NOTE = (
+    " If the specialist has open conversations, a call without "
+    "acknowledged_conversations changes nothing and returns kind "
+    "'open_conversations_unconfirmed' with a warning to relay to the operator "
+    "verbatim, which says of each open conversation: "
+    + SPECIALIST_OPEN_CONVERSATION_NOTICE
+    + " Only on the operator's yes, call again with the same arguments plus "
+    "acknowledged_conversations.")
+_UNINSTALL_TOOL_NOTE = (
+    " If the specialist has open conversations, a call without "
+    "acknowledged_conversations naming them all removes nothing (it only "
+    "withdraws a pending erase-data question) and returns kind "
+    "'open_conversations_unconfirmed' with a warning to relay verbatim: "
+    + SPECIALIST_UNINSTALL_CONVERSATION_NOTICE
+    + " Only on the operator's yes, call again with the same erase_data choice "
+    "plus acknowledged_conversations.")
+
+
+def _open_specialist_engagements(slug: str) -> list:
+    """The specialist's open conversations: its specialist-kind engagements
+    that are active or idle — delegated conversations, background jobs and
+    launches still in flight. Executors (the configurator itself) and plugin
+    jobs are another kind and never listed. The registry is set at boot before
+    any tool can be called; unset (a unit harness) reads as none open."""
+    reg = _engagement_registry
+    if reg is None:
+        return []
+    return [r for r in reg.active_and_idle()
+            if r.kind == "specialist" and r.role_or_type == slug]
+
+
+def specialist_roles_with_open_engagements() -> set:
+    """Every specialist role that has an open specialist-kind engagement."""
+    reg = _engagement_registry
+    if reg is None:
+        return set()
+    return {r.role_or_type for r in reg.active_and_idle() if r.kind == "specialist"}
+
+
+def _acknowledged(args: dict) -> "tuple[list[str] | None, dict | None]":
+    """``(ids, None)`` — ``ids`` None when no acknowledgement was given — or
+    ``(None, refusal)`` for a malformed one, refused before anything runs."""
+    raw = args.get("acknowledged_conversations")
+    if raw is None:
+        return None, None
+    if not isinstance(raw, list) or not all(isinstance(i, str) for i in raw):
+        return None, {"ok": False, "kind": "invalid_argument",
+                      "detail": ("acknowledged_conversations must be a list of the "
+                                 "engagement ids a previous warning listed")}
+    return list(dict.fromkeys(raw)), None
+
+
+def _names_this_specialist(ack: "list | None", slug: str) -> bool:
+    """True when the acknowledgement names at least one engagement of *slug*
+    the registry knows — open or since closed — i.e. ids a warning could have
+    listed. A made-up id, or another specialist's, acknowledges nothing (diff
+    review r2: any non-empty list used to let an ordinary change through)."""
+    reg = _engagement_registry
+    if not ack or reg is None:
+        return False
+    for i in ack:
+        rec = reg.get(i)
+        if rec is not None and rec.kind == "specialist" and rec.role_or_type == slug:
+            return True
+    return False
+
+
+def _operator_user_id() -> "int | None":
+    import trigger_consent
+    channel = _channel_manager.get("telegram") if _channel_manager is not None else None
+    try:
+        op = trigger_consent.operator_identity(channel) if channel is not None else None
+    except Exception:  # noqa: BLE001 — the identity only refines a line
+        op = None
+    return op[1] if op else None
+
+
+def _conversation_row(rec, operator_id: "int | None") -> dict:
+    task = " ".join(str(rec.task or "").split())
+    if len(task) > 80:
+        task = task[:79] + "…"
+    job = bool((rec.origin or {}).get("job"))
+    where = f"topic {rec.topic_id}" if rec.topic_id is not None else "no topic"
+    line = f"{where}: {task or '(no task)'}" + (" (background job)" if job else "")
+    # /complete is refused only when the origin names a DIFFERENT user
+    # (channels/telegram.py's originator check); say so for that one.
+    started_by = (rec.origin or {}).get("user_id")
+    if (started_by not in (None, "") and operator_id is not None
+            and str(started_by) != str(operator_id)):
+        line += " — started by someone else, so only they can close it with `/complete`"
+    return {"engagement_id": rec.id, "topic_id": rec.topic_id, "task": task,
+            "background_job": job, "line": line}
+
+
+def _open_conversations_pending(tool: str, slug: str, recs: list, *,
+                                removal: bool, withdrew: bool = False) -> dict:
+    op = _operator_user_id()
+    rows = [_conversation_row(r, op) for r in recs]
+    n = len(rows)
+    notice = (SPECIALIST_UNINSTALL_CONVERSATION_NOTICE if removal
+              else SPECIALIST_OPEN_CONVERSATION_NOTICE)
+    warning = (f"The specialist {slug} has {n} open conversation"
+               f"{'' if n == 1 else 's'}:\n"
+               + "\n".join(f"- {row['line']}" for row in rows) + "\n" + notice)
+    ids = [row["engagement_id"] for row in rows]
+    detail = ("Nothing was changed. " if not withdrew else
+              "Nothing was removed; the pending erase-data question was withdrawn. ")
+    detail += ("Relay `warning` to the operator verbatim and ask whether to go "
+               f"ahead. On yes, call {tool} again with the same arguments"
+               + (" (the same erase_data choice)" if removal else "")
+               + f" plus acknowledged_conversations={ids!r}; on no, stop — a "
+               "declined warning voids these ids.")
+    return {"ok": False, "kind": OPEN_CONVERSATIONS_PENDING, "slug": slug,
+            "conversations": rows, "warning": warning, "detail": detail}
+
+
+def _ordinary_change_gate(tool: str, slug: str,
+                          args: dict) -> "tuple[dict | None, list | None, set]":
+    """The warn-first check of an ORDINARY change (persona, upgrade, rollback):
+    ``(refusal, acknowledgement, seen)``. While conversations are open a call
+    with no acknowledgement is refused with the warning; any acknowledgement
+    lets it commit — a conversation opened after the operator confirmed is
+    named in the result, never a reason to refuse (ruling-1095-3). An
+    acknowledgement counts only when it names an engagement of this specialist
+    (``_names_this_specialist``). ``seen`` is what the result does NOT name
+    afterwards."""
+    ack, bad = _acknowledged(args)
+    if bad is not None:
+        return bad, None, set()
+    recs = _open_specialist_engagements(slug)
+    if recs and not _names_this_specialist(ack, slug):
+        return _open_conversations_pending(tool, slug, recs, removal=False), None, set()
+    return None, ack, (set(ack) if ack else {r.id for r in recs})
+
+
+def _after_ordinary_change(out: Any, slug: str, ack: "list | None",
+                           seen: set) -> Any:
+    """Echo the acknowledgement (the pending-configuration follow-up and the
+    kept re-run carry it), and name each conversation open after a committed
+    change that the operator was not told about."""
+    if not isinstance(out, dict):
+        return out
+    if ack:
+        out.setdefault("acknowledged_conversations", list(ack))
+    if out.get("ok") is True:
+        new = [r for r in _open_specialist_engagements(slug) if r.id not in seen]
+        if new:
+            op = _operator_user_id()
+            key = "opened_after_confirmation" if ack else "opened_while_this_change_ran"
+            out[key] = [_conversation_row(r, op) for r in new]
+            out["open_conversation_notice"] = SPECIALIST_OPEN_CONVERSATION_NOTICE
+    return out
+
+
+def _engagement_driver_for(rec) -> Any:
+    try:
+        import agent as agent_mod
+        if rec.driver == "claude_code":
+            return getattr(agent_mod, "active_claude_code_driver", None)
+        return getattr(agent_mod, "active_engagement_driver", None)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+async def close_specialist_engagements(slug: str, *, reason: str,
+                                       acknowledged: "list | None" = None) -> list:
+    """Close every open conversation of *slug* through the terminal funnel
+    (outcome ``cancelled``; the funnel tells the topic, closes it and notifies
+    the engager). Read now, never from a copied list. Awaited inline, one at a
+    time: the funnel takes no reload or plugin-tools lock, so a caller holding
+    either may await this. One row per conversation —
+    ``closed`` / ``already_closed`` / ``close_failed`` — and one failure never
+    stops the rest."""
+    rows = []
+    for rec in _open_specialist_engagements(slug):
+        row = {"engagement_id": rec.id, "topic_id": rec.topic_id}
+        if acknowledged is not None:
+            row["opened_after_confirmation"] = rec.id not in acknowledged
+        try:
+            fin = await _finalize_engagement(
+                rec, outcome="cancelled", text=reason, artifacts=[],
+                next_steps=[], driver=_engagement_driver_for(rec))
+        except Exception:  # noqa: BLE001 — reported per conversation
+            logger.exception("closing engagement %s of %s failed", rec.id[:8], slug)
+            fin = None
+        if fin is FinalizeResult.ALREADY_TERMINAL:
+            row["outcome"] = "already_closed"
+        elif fin:
+            row["outcome"] = "closed"
+        else:
+            row["outcome"] = "close_failed"
+        rows.append(row)
+    return rows
+
+
+async def close_disabled_specialist_engagements(role: str) -> list:
+    """The disable close (ruling-1095-3: closed when the disable takes effect,
+    and the operator told at once): the funnel tells each closed topic; a close
+    that failed leaves that conversation open, so the operator is told here.
+    Shared by the reload's retirement step and the boot pass."""
+    rows = await close_specialist_engagements(
+        role, reason=f"Closed: the specialist {role} was disabled.")
+    failed = [r for r in rows if r["outcome"] == "close_failed"]
+    if failed:
+        names = ", ".join(f"topic {r['topic_id']} ({r['engagement_id']})" for r in failed)
+        text = (f"The specialist {role} was disabled, but Casa could not close "
+                f"{len(failed)} of its open conversation"
+                f"{'' if len(failed) == 1 else 's'}: {names}. Casa retries on the "
+                "next reload of the agents.")
+        try:
+            import casa_core
+            await casa_core.operator_notify(_channel_manager, text)
+        except Exception:  # noqa: BLE001 — the failure is also named and retried
+            logger.warning("could not tell the operator about %s's failed closes",
+                           role, exc_info=True)
+    return rows
+
+
 def _pending_resume_inputs(inspection, receipt, *, tool_name: str) -> dict:
     """#929 (INV-SPEC-015): the arguments a re-commit of a pending-configuration
     candidate takes, as this call validated them — never as the caller asserted
@@ -15796,13 +16062,14 @@ async def specialist_install_commit(args: dict) -> dict:
     "Transactionally upgrade an installed specialist to a new version — the current install keeps "
     "running until the new version validates+compiles successfully. Supply component_id/version/"
     "root_digest/staged_dir exactly as returned by specialist_install_inspect(mode='upgrade', "
-    "target_slug=<slug>).",
+    "target_slug=<slug>)." + _ORDINARY_CHANGE_TOOL_NOTE,
     {"type": "object", "properties": {
         "slug": {"type": "string"}, "component_id": {"type": "string"},
         "version": {"type": "string"}, "root_digest": {"type": "string"},
         "staged_dir": {"type": "string"}, "receipt_id": {"type": "string"},
         "config": {"type": "object", "additionalProperties": {"type": "string"}},
-        "secret_names_provided": {"type": "array", "items": {"type": "string"}}},
+        "secret_names_provided": {"type": "array", "items": {"type": "string"}},
+        "acknowledged_conversations": _ACKNOWLEDGED_SCHEMA},
      "required": ["slug", "component_id", "version", "root_digest", "staged_dir", "receipt_id"]},
 )
 async def specialist_upgrade(args: dict) -> dict:
@@ -15842,6 +16109,12 @@ async def specialist_upgrade(args: dict) -> dict:
         receipt_id=receipt.receipt_id, receipt_digest=receipt.receipt_digest,
         plugin_resolutions=receipt.plugins,
     )
+    # #1095: warn first, before the transaction — the receipt, the staging tree
+    # and the consent are untouched by a refused call (validation above only
+    # reads them).
+    refusal, ack, seen = _ordinary_change_gate("specialist_upgrade", args["slug"], args)
+    if refusal is not None:
+        return _result(refusal)
 
     async def _txn() -> dict:
         # #346: the receipt was loaded BEFORE this lock; a concurrent bundle
@@ -15865,9 +16138,16 @@ async def specialist_upgrade(args: dict) -> dict:
             if exc.kind == "upgrade_kept_new_version":
                 # #975: the library kept the new version (it failed after
                 # activation); the receipt and staging are kept for the re-run.
+                # #1095 (ruling-1095-5/-6): this arm returns BEFORE the
+                # sequencer, so Casa has loaded none of it — the result says
+                # so, never the shared envelope's "active" sentence (which the
+                # sequencer-ran arm in _bundle_seq_failure keeps).
                 dropped = list(getattr(exc, "dropped_owned_names", ()) or ())
                 return {"ok": False, "kind": exc.kind, "detail": exc.detail,
-                        **_KEPT_NEW_VERSION_ENVELOPE,
+                        "kept_new_version": True,
+                        "outcome": (_KEPT_NOT_ACTIVE_RESTART_OUTCOME
+                                    if getattr(exc, "restart_first", False)
+                                    else _KEPT_NOT_ACTIVE_OUTCOME),
                         **(_plugin_data_disclosure(_PLUGIN_DATA_NOTE_COMMITTED, dropped)
                            if dropped else {})}
             return {"ok": False, "kind": exc.kind, "detail": exc.detail}
@@ -15901,7 +16181,8 @@ async def specialist_upgrade(args: dict) -> dict:
                 # persisting removal, same disclosure.
                 **_swap_removal_disclosure(txn)}
 
-    return _result(await _run_bundle_transaction(_txn))
+    return _result(_after_ordinary_change(
+        await _run_bundle_transaction(_txn), args["slug"], ack, seen))
 
 
 @tool(
@@ -15910,8 +16191,10 @@ async def specialist_upgrade(args: dict) -> dict:
     "upgrade OR persona override (a first persona override rotates the component-default "
     "binding into that prior, so this is also the way back to the bundled persona). The "
     "rollback exchanges the active tuple with the retained prior, owned plugin set included; "
-    "fails with no_prior_tuple if nothing was retained.",
-    {"type": "object", "properties": {"slug": {"type": "string"}}, "required": ["slug"]},
+    "fails with no_prior_tuple if nothing was retained." + _ORDINARY_CHANGE_TOOL_NOTE,
+    {"type": "object", "properties": {
+        "slug": {"type": "string"},
+        "acknowledged_conversations": _ACKNOWLEDGED_SCHEMA}, "required": ["slug"]},
 )
 async def specialist_rollback(args: dict) -> dict:
     from specialist_install import SpecialistInstallError, rollback_specialist
@@ -15919,6 +16202,10 @@ async def specialist_rollback(args: dict) -> dict:
     import specialist_bundle_journal
 
     slug = args["slug"]
+    # #1095: warn first, before the transaction.
+    refusal, ack, seen = _ordinary_change_gate("specialist_rollback", slug, args)
+    if refusal is not None:
+        return _result(refusal)
 
     async def _txn() -> dict:
         try:
@@ -15944,7 +16231,8 @@ async def specialist_rollback(args: dict) -> dict:
                 # prior one never had is dropped by the swap.
                 **_swap_removal_disclosure(txn)}
 
-    return _result(await _run_bundle_transaction(_txn))
+    return _result(_after_ordinary_change(
+        await _run_bundle_transaction(_txn), slug, ack, seen))
 
 
 @tool(
@@ -15953,9 +16241,12 @@ async def specialist_rollback(args: dict) -> dict:
     "Does not affect a hand-authored (non-installed) specialist of the same name. When a bundled "
     "plugin declares an eraser the operator is asked first, in the DM, with the options Casa "
     "offers for this uninstall: call without erase_data and wait for Casa to continue with "
-    "their choice.",
+    "their choice. After the uninstall, Casa closes the specialist's conversations still open "
+    "and lists each in closed_conversations; any it could not close are also listed in "
+    "conversations_still_open." + _UNINSTALL_TOOL_NOTE,
     {"type": "object", "properties": {
-        "slug": {"type": "string"}, "erase_data": {"type": "boolean"}},
+        "slug": {"type": "string"}, "erase_data": {"type": "boolean"},
+        "acknowledged_conversations": _ACKNOWLEDGED_SCHEMA},
      "required": ["slug"]},
 )
 async def specialist_uninstall(args: dict) -> dict:
@@ -15968,6 +16259,21 @@ async def specialist_uninstall(args: dict) -> dict:
     reports: list = []
     cleared: list = []
     not_cleared: list = []
+    ack, bad = _acknowledged(args)
+    if bad is not None:
+        return _result(bad)
+
+    def _confirm(withdrew: bool) -> "dict | None":
+        # #1095: run by the erase gate, inside this transaction (which owns
+        # the mutation lock), at the point where the base call would open or
+        # close the erase question — so a refused call does exactly that
+        # question step and nothing else, linearized with every other
+        # uninstall of this slug. Never on an erase_data=true call.
+        recs = _open_specialist_engagements(slug)
+        if all(r.id in (ack or ()) for r in recs):
+            return None
+        return _open_conversations_pending("specialist_uninstall", slug, recs,
+                                           removal=True, withdrew=withdrew)
 
     async def _txn() -> dict:
         import plugin_erasure
@@ -15988,7 +16294,8 @@ async def specialist_uninstall(args: dict) -> dict:
             tool="specialist_uninstall", arg="slug", name=slug,
             subject=f"specialist:{slug}", what=f"the specialist {slug}",
             specs=_erase_specs_for(_owned_entries_now(slug)),
-            erase=args.get("erase_data"), held=held)
+            erase=args.get("erase_data"), held=held, confirm=_confirm,
+            call_extra=(f", acknowledged_conversations={ack!r}" if ack else ""))
         if gate is not None:
             return gate
         reports.extend(taken)
@@ -16017,6 +16324,14 @@ async def specialist_uninstall(args: dict) -> dict:
         if not seq.get("ok", True):
             return await _bundle_seq_failure(txn, seq, slug=slug)
         await asyncio.to_thread(specialist_bundle_journal.complete, txn.journal_path)
+        # #1095: the uninstall committed and the reload removed the
+        # specialist, so its open conversations are closed now — read here,
+        # never copied from the warning, so one opened since the operator
+        # confirmed is closed too and named. In this shielded child, so a
+        # cancelled handler still closes them (its result is then lost).
+        closed = await close_specialist_engagements(
+            slug, reason=f"Closed: the specialist {slug} was uninstalled.",
+            acknowledged=ack)
         done, failed = await _clear_env_references(clear)
         cleared.extend(done)
         not_cleared.extend(failed)
@@ -16030,6 +16345,11 @@ async def specialist_uninstall(args: dict) -> dict:
         # one way an upgrade and a rollback can share.
         payload = {"ok": True, "slug": slug, "reloaded": seq["reloaded"],
                    "verify": seq["verify"]}
+        if closed:
+            payload["closed_conversations"] = closed
+            still = [r["engagement_id"] for r in closed if r["outcome"] == "close_failed"]
+            if still:
+                payload["conversations_still_open"] = still
         payload.update(_swap_removal_disclosure(txn))
         return payload
 
@@ -16312,11 +16632,16 @@ RESIDENT_CONVERSATION_RESET_NOTICE = (
     "surfaces first: one that exceeds an admission ceiling is refused with nothing written "
     "(ok:false, kind:incompatible). For a RESIDENT the accepted binding is STAGED, not "
     "activated — it takes effect on that resident's next restart. For a specialist it is "
-    "committed and activated by the next casa_reload. FOR A RESIDENT, say this "
-    "when you report the staging: " + RESIDENT_CONVERSATION_RESET_NOTICE,
+    "committed now but not loaded: new conversations with it use it once "
+    "casa_reload(scope=\"agents\") has run; a conversation already open with it keeps its "
+    "personality." + _ORDINARY_CHANGE_TOOL_NOTE
+    + " FOR A RESIDENT, say this when you report the staging: "
+    + RESIDENT_CONVERSATION_RESET_NOTICE,
     {"type": "object", "properties": {
         "target_role_id": {"type": "string"}, "persona_id": {"type": "string"},
-        "persona_version": {"type": "string"}}, "required": ["target_role_id", "persona_id", "persona_version"]},
+        "persona_version": {"type": "string"},
+        "acknowledged_conversations": _ACKNOWLEDGED_SCHEMA},
+     "required": ["target_role_id", "persona_id", "persona_version"]},
 )
 async def persona_apply(args: dict) -> dict:
     from persona_install import apply_persona_override, validate_persona_path_segments
@@ -16452,8 +16777,14 @@ async def persona_apply(args: dict) -> dict:
         role_dirs = index.installed_component_role_dirs()
         if slot not in role_dirs:
             return _result({"ok": False, "kind": "not_installed", "slug": slot})
-        return _result(await _materialize_and_apply(
-            role_dirs[slot] / "role", Path("/config/specialists") / slot, bundle=True))
+        # #1095: warn first — the apply below is the commit. Residents never
+        # reach this (their binding is staged, INV-PERS-018's notice).
+        refusal, ack, seen = _ordinary_change_gate("persona_apply", slot, args)
+        if refusal is not None:
+            return _result(refusal)
+        return _result(_after_ordinary_change(await _materialize_and_apply(
+            role_dirs[slot] / "role", Path("/config/specialists") / slot, bundle=True),
+            slot, ack, seen))
 
 
 def _find_entry(data, name: str) -> dict | None:
@@ -16858,18 +17189,22 @@ def _engagement_deliverer(channel: Any, eng: Any):
     return _deliver
 
 
-def _erase_call(tool: str, arg: str, name: str, erase: bool) -> str:
-    return f"{tool}({arg}={name!r}, erase_data={'true' if erase else 'false'})"
+def _erase_call(tool: str, arg: str, name: str, erase: bool, extra: str = "") -> str:
+    # #1095: *extra* carries the specialist uninstall's acknowledged
+    # conversations into every call a continuation tells the model to make, so
+    # a confirmed uninstall is not warned again on its Keep or finishing call.
+    return f"{tool}({arg}={name!r}, erase_data={'true' if erase else 'false'}{extra})"
 
 
-def _choice_continuation(tool: str, arg: str, name: str, choice: int) -> str:
+def _choice_continuation(tool: str, arg: str, name: str, choice: int,
+                         extra: str = "") -> str:
     import plugin_erase_consent as pec
     if choice == pec.KEEP:
-        return (f"The operator chose Keep data. Call {_erase_call(tool, arg, name, False)} "
+        return (f"The operator chose Keep data. Call {_erase_call(tool, arg, name, False, extra)} "
                 "now to uninstall and keep the data, then finish the recipe.")
     if choice in (pec.ERASE, pec.ERASE_DATA_ONLY):
         label = pec.LABELS[choice]
-        return (f"The operator chose {label}. Call {_erase_call(tool, arg, name, True)} "
+        return (f"The operator chose {label}. Call {_erase_call(tool, arg, name, True, extra)} "
                 "now: it starts the plugin's eraser and removes nothing yet. Casa "
                 "then sends the eraser's result into this topic — wait for it.")
     return (f"The operator cancelled uninstalling {name!r}. Nothing was removed; "
@@ -16877,7 +17212,7 @@ def _choice_continuation(tool: str, arg: str, name: str, choice: int) -> str:
 
 
 async def _deliver_erasure_outcome(tool: str, name: str, outcomes: list,
-                                   deliver) -> None:
+                                   deliver, extra: str = "") -> None:
     """Continue the configurator with what the eraser(s) said; if the
     engagement cannot take it, tell the operator directly. Never raises."""
     arg = "slug" if tool == "specialist_uninstall" else "name"
@@ -16887,7 +17222,7 @@ async def _deliver_erasure_outcome(tool: str, name: str, outcomes: list,
             model_text = (
                 f"The eraser reported the erasure complete. Its report, to relay "
                 f"to the operator verbatim: {reports}. Now call "
-                f"{_erase_call(tool, arg, name, True)} to finish the uninstall.")
+                f"{_erase_call(tool, arg, name, True, extra)} to finish the uninstall.")
             # Casa's own words only: this DM is a Casa notice, and the
             # plugin's report is plugin-authored text.
             operator_text = (
@@ -16905,7 +17240,7 @@ async def _deliver_erasure_outcome(tool: str, name: str, outcomes: list,
                 f"{report} — Relay it verbatim, then ask the operator whether to "
                 "try again later (run the uninstall again, which asks again) or "
                 "uninstall anyway keeping whatever is left "
-                f"({_erase_call(tool, arg, name, False)}).")
+                f"({_erase_call(tool, arg, name, False, extra)}).")
             operator_text = (
                 f"Erasing {plugin}'s data did not complete, so nothing was "
                 "removed, and the configurator could not be resumed to relay "
@@ -16948,14 +17283,25 @@ _ERASE_UNAVAILABLE = {
 
 async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
                       what: str, specs: list, erase,
-                      held: "list | None" = None) -> "tuple[dict | None, list]":
+                      held: "list | None" = None,
+                      confirm: "Callable[[bool], dict | None] | None" = None,
+                      call_extra: str = "",
+                      ) -> "tuple[dict | None, list]":
     """The erase step in front of an uninstall. The caller holds the mutation
     lock the removal commits under, and computed *specs* from the registry
     under it, so what this decides is what the removal removes: no update can
     land between the two. Returns ``(payload, reports)``: a payload is the
     refusal / pending result to return with nothing removed; ``None`` means
     proceed, with *reports* ``[(plugin, report, kind, unrecorded)]`` of the
-    complete erasures it consumed (empty when nothing was erased)."""
+    complete erasures it consumed (empty when nothing was erased).
+
+    #1095: *confirm* (a specialist uninstall's open-conversation check,
+    synchronous) runs where the call would otherwise go on to remove or ask:
+    after the close of the Keep and no-eraser branches, and in place of opening
+    the question — which it voids instead — on the asking branch. A refusal
+    therefore has exactly the base call's effect on erase state: never on an
+    erase_data=true call, and never where the operator's DM is unavailable
+    (that refusal comes first, unchanged)."""
     import plugin_erase_consent as pec
     import plugin_erasure
     import trigger_consent
@@ -16963,8 +17309,10 @@ async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
     if erase is False:
         # Keep data: today's removal. It answers — and so closes — whatever
         # question is open, voiding every tap, run and record of it.
+        had = questions.current(subject) is not None
         questions.close(subject)
-        return None, []
+        refusal = confirm(had) if confirm is not None else None
+        return refusal, []
     if not specs:
         if erase is True:
             # #1070: nothing can finish this question's erasure now.
@@ -16973,8 +17321,10 @@ async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
         # An ordinary removal answers — and so closes — whatever question is
         # open (#1070 diff r1: a complete erasure's fence must not survive
         # into a reinstall).
+        had = questions.current(subject) is not None
         questions.close(subject)
-        return None, []
+        refusal = confirm(had) if confirm is not None else None
+        return refusal, []
     if erase is True:
         open_q = questions.current(subject)
         taken = _take_complete_erasures(specs, open_q) if open_q else None
@@ -17000,6 +17350,15 @@ async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
     eng = engagement_var.get(None)
     deliver = _engagement_deliverer(channel, eng)
     if erase is None:
+        if confirm is not None:
+            had = questions.current(subject) is not None
+            refusal = confirm(had)
+            if refusal is not None:
+                # #1095: base would replace the question here — voiding every
+                # tap, run and record of the old one; the refusal voids it the
+                # same way and asks nothing (no new question, no DM).
+                questions.close(subject)
+                return refusal, []
         # A fresh question replaces any open one: every tap, run and record of
         # an earlier question — or of an earlier installation of the same
         # artifact — is void, so only the answer to THIS question decides.
@@ -17021,7 +17380,8 @@ async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
                 # Keep and Cancel answer the question now: an erase already
                 # approved and queued must not run behind them.
                 questions.close(subject, question)
-            return await deliver(_choice_continuation(tool, arg, name, choice))
+            return await deliver(_choice_continuation(tool, arg, name, choice,
+                                                      call_extra))
         try:
             handle = pec.prompt_erase_choice(
                 coordinator=CHALLENGES, channel=channel, key=key, text=text,
@@ -17081,7 +17441,7 @@ async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
         finally:
             if not complete:
                 fence.lift(fenced, question)
-        await _deliver_erasure_outcome(tool, name, outcomes, deliver)
+        await _deliver_erasure_outcome(tool, name, outcomes, deliver, call_extra)
     task = asyncio.get_running_loop().create_task(_run())
     _ERASE_TASKS.add(task)
     task.add_done_callback(_ERASE_TASKS.discard)

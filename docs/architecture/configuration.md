@@ -199,7 +199,8 @@ instead of registering, under the role's agent lock), and the agents sweep, whic
 the runtime agent of a role its own committed re-scan reports disabled — re-validated under
 that role's lock, never a same-named resident — so the full and config-sync scopes inherit
 through their composition. The retirement is a sequence of named best-effort steps (grant
-purge, bus unregister, scheduled-ask revoke, route unwind), each failure a
+purge, the open-conversation close of INV-CFG-013, bus unregister, scheduled-ask revoke,
+route unwind), each failure a
 `teardown_incomplete_<step>` row; the registry re-scan and the agent-registry rebuild that
 follow raise a reload error whose kind names the step (`specialist_reload_failed`,
 `agent_registry_rebuild_failed`), which the single-role scopes return as their error
@@ -212,6 +213,26 @@ when a scope reads it, not when it is written; and the agent scope's own swap wi
 which a flip between its load and its re-scan installs an agent the registry calls disabled
 until the next reload that reads the file or the registry. The personality maps refreshed
 alongside the delegation map are not among the five states named.
+
+**INV-CFG-013**: A specialist read as disabled — by the reload scope that retires it, by an `agents` sweep whether or not it has a runtime Agent, or at boot after the channels start and before background jobs resume — has a close attempted through the terminal funnel, as a named retirement step, for each of its open conversations; a close that fails leaves that conversation open, is told to the operator, is named in the reload's report (at boot, in the log) and is retried by the next `agents` sweep that still reads the specialist disabled; a specialist that failed to load has nothing closed.
+
+A disable cannot be confirmed beforehand — no tool disables a specialist, and Casa notices
+only when a reload or a boot reads the file — so its conversations are closed when it takes
+effect: the retirement's `close_engagements` step finalizes each through the same funnel an
+uninstall uses (outcome `cancelled`; the topic is told and closed, the engager notified).
+Enforced by that step in `reload.py::_teardown_disabled_specialist`, which every retiring
+scope reaches; by the `agents` sweep also admitting a disabled role that has open
+conversations but no runtime Agent — boot constructs none for a specialist, so before any
+sweep backfilled one it is neither live nor residual — under the same disabled re-check and
+the same role lock; and by `casa_core.py::_close_disabled_specialist_engagements`, the boot
+pass for a specialist disabled while Casa was down, placed after the channels start (a
+closure armed in this process is told live, INV-ENG-018) and before background jobs resume,
+so a disabled specialist's job is never resumed — the pass hands the resume the
+conversations it failed to close, and the resume skips them. A failed close is told to the
+operator at once, because that conversation got no closing telling. Keyed on "read as disabled", never
+on "absent from the registry": a load failure is not a disable and closes nothing. The step
+awaits the funnel inline under the locks its caller holds; the funnel takes neither the
+reload lock nor the plugin-tools lock.
 
 ## Failure behavior
 
@@ -318,6 +339,8 @@ None of those are inferred.
 - `casa/config.yaml::schema`
 - `casa/rootfs/etc/s6-overlay/scripts/setup-configs.sh`
 - `casa/rootfs/opt/casa/config.py::AgentConfig`
+- `casa/rootfs/opt/casa/tools.py::close_disabled_specialist_engagements`
+- `casa/rootfs/opt/casa/casa_core.py::_close_disabled_specialist_engagements`
 
 **Tests**
 - `tests/test_casa_reload_tool.py`
@@ -326,6 +349,7 @@ None of those are inferred.
 - `tests/test_reload_live_resident_not_promoted.py`
 - `tests/test_reload.py`
 - `tests/test_reload_disabled_specialist_scopes.py`
+- `tests/test_pin_1095_removal_close.py`
 
 **Related**
 - [`architecture/overview.md`](../architecture/overview.md)

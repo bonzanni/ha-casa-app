@@ -4,6 +4,14 @@
    `specialist:<slug>` for an INSTALLED specialist — hand-authored specialists have no binding to
    apply to) and the persona id/version (must already be installed — see `recipes/persona/install.md`).
 2. `persona_apply(target_role_id=..., persona_id=..., persona_version=...)`.
+   If `ok: false, kind: "open_conversations_unconfirmed"`: NOTHING changed — the specialist has
+   open conversations. Relay the result's `warning` to the operator VERBATIM (it lists each
+   conversation and says what happens to it) and ask whether to go ahead. Only on a yes, repeat
+   the same call with `acknowledged_conversations` set to the ids the result lists; on a no, stop
+   and tell the operator nothing changed — a declined warning voids those ids, so never re-pass
+   them without asking again. If a later result carries `opened_after_confirmation` (or
+   `opened_while_this_change_ran`), tell the operator about those conversations too, with the
+   result's `open_conversation_notice` verbatim.
 3. If `ok: false, kind: "incompatible"`: the persona failed the role's compatibility check or its
    compile admission ceiling — report the detail verbatim, do not retry with a different persona
    without asking. **Nothing was written**: the binding is unchanged and no restart is pending, so
@@ -34,8 +42,9 @@
    something on voice is a reason to WAIT before restarting, and the operator can only
    weigh that if you pass the notice on.
 6. `config_git_commit` first, then — if `ok: true` and `restart_required: false` (specialists) —
-   `casa_reload(scope="agents")` activates it immediately, then `emit_completion`
-   (canonical commit -> reload -> emit order, see `completion.md`).
+   `casa_reload(scope="agents")`, from which every NEW conversation with the specialist uses the
+   persona (a conversation already open keeps its personality, as the step-2 warning said), then
+   `emit_completion` (canonical commit -> reload -> emit order, see `completion.md`).
    - SPECIALIST only — the way back. A specialist's FIRST override rotated its
      component-default binding into the retained prior tuple, and `specialist_rollback`
      restores it: follow `recipes/specialist/rollback.md` (it carries the owned-plugin-set
@@ -49,7 +58,8 @@
 
 - Treating `ok: true` for a specialist target as immediately live without the follow-up
   `casa_reload(scope="agents")` — the binding is committed to disk but the live registry keeps
-  running the old compiled bundle until reload runs.
+  running the old compiled bundle until reload runs. Even after it, only NEW conversations get the
+  persona; never tell the operator an open conversation switched.
 - Forgetting that a resident swap is restart-to-swap, never hot-swapped — do not tell the operator
   the resident's voice changed until AFTER `casa_restart_supervised` actually runs.
 - Reporting a staged resident binding as though the restart were free. When it does
