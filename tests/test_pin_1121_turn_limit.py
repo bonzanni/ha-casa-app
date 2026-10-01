@@ -197,6 +197,7 @@ async def test_rc1_dm_progress_stays_and_one_line_follows(tmp_path, caplog):
     lines = tg.lines()
     assert len(lines) == 1 and tg.send.await_count == 1
     assert "continue" in lines[0][0].lower()
+    assert lines[0][1].get("chat_id") == "123"       # the turn's own chat
     assert len(_limit_warnings(caplog, "assistant", "telegram")) == 1
 
 
@@ -209,7 +210,9 @@ async def test_rc2_dm_no_text_gets_the_line_alone(tmp_path, caplog):
     await _run(agent, _dm())
     assert tg.texts("finalize_response_stream") == []
     assert tg.texts("finalize_stream") == []
-    assert len(tg.lines()) == 1 and tg.send.await_count == 1
+    lines = tg.lines()
+    assert len(lines) == 1 and tg.send.await_count == 1
+    assert lines[0][1].get("chat_id") == "123"
     assert len(_limit_warnings(caplog, "assistant", "telegram")) == 1
 
 
@@ -249,6 +252,9 @@ async def test_rc4_scheduled_no_text_names_the_task_and_offers_a_redo(
     lines = tg.lines()
     assert len(lines) == 1 and tg.send.await_count == 1
     assert "heartbeat" in lines[0][0] and "redo" in lines[0][0].lower()
+    # the scheduled turn's own Telegram chat (its session label, which the
+    # transport resolves to the operator DM) — not a rerouted address
+    assert lines[0][1].get("chat_id") == "interval-heartbeat"
     assert tg.texts("send_response") == []
     e = agent._session_registry.get(build_scoped_session_key(
         "telegram", "assistant", "interval-heartbeat"))
@@ -265,6 +271,7 @@ async def test_rc5_scheduled_text_is_delivered_then_one_line(tmp_path):
     assert tg.texts("send_response") == ["Two of five invoices filed."]
     lines = tg.lines()
     assert len(lines) == 1 and "morning-briefing" in lines[0][0]
+    assert lines[0][1].get("chat_id") == "interval-morning-briefing"
 
 
 async def test_rc6_rule1_suppression_holds_and_the_line_still_goes(
