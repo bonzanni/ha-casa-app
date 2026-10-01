@@ -89,6 +89,24 @@ state is a live read, which the assistant's doctrine requires before stating suc
 current. The recall request carries Casa's own clock in the operator's timezone as its
 `query_timestamp`.
 
+**A search can be limited to a period, and "only" is Casa's filter, not the backend's.** The
+recall tool takes an optional period — today, yesterday, this or last week (weeks start on
+Monday), this or last month, one day, or an inclusive range of days. Casa resolves it to whole
+days in the operator's timezone, because not every session holding the tool sees the current
+time. The backend's time window only *ranks* memories dated in it higher and still returns
+the rest, so the window is sent as that ranking hint and the tool itself keeps only the hits
+whose recorded date — the first date, for identical text — falls inside the period, after the
+clearance re-filter; a hit with no usable date cannot be placed in a period and is left out.
+So "from last week" means *first recorded* last week: a fact first said earlier and repeated
+last week is not in it. The backend's token budget still truncates before Casa filters, so
+in-period memories can be cut; the ranking hint is the only mitigation, and nothing promises
+completeness. A search with a period that keeps nothing gets its own empty result, worded
+like the others: not proof of absence. A period that cannot be read, or ends before it starts,
+is refused before anything is searched — sent to the backend, an inverted window would come
+back as an error the tool would report as "memory could not be checked". The seam's typed
+recall takes the window only as that hint and never filters by it, so its three outcomes are
+unchanged; auto-recall and delegated recall never send one.
+
 **Auto-recall is not "every turn".** It happens when a turn's options are built, which is a
 fresh non-voice session only — a warm reused client skips that path entirely, and voice never
 auto-recalls. Both can still recall explicitly through the tool. "The agent remembers
@@ -179,6 +197,18 @@ absence, and a framing line with no memories under it would be a header for a se
 found nothing. The consumer inventory that guards against a fifth, unframed consumer resolves
 direct calls only; an alias or other indirection escapes it.
 
+**INV-MEM-019**: A `recall_memory` call given a period returns only readable hits whose recorded date lies inside the period Casa resolved in the operator's timezone — hits without a recorded date are left out — the period filter runs after the clearance gate, an empty in-period result is framed as bounded and never as absence, an invalid or inverted period is refused before any request, and a call without a period sends no window.
+
+Enforced in the recall tool, which resolves the period (`timekeeping.resolve_period`), passes the
+window to the seam only when one was given, filters on each hit's recorded date after the
+clearance re-filter, and keys every result arm on what that filter keeps; the backend
+implementation adds the window to its request only when one is passed.
+
+What it does not cover: completeness. The backend ranks by the window and truncates to its
+token budget before Casa filters, so a memory first recorded in the period can still be
+missing from the result. A memory's date is the backend's first recorded date for identical
+text, not when the event it describes happened.
+
 ## Failure behavior
 
 **The backend is slow, unreachable, or returns an error.** The seam raises `RecallUnavailable`
@@ -250,6 +280,7 @@ since what may be disclosed is decided per surface.
 - `casa/rootfs/opt/casa/recall_renderer.py::render_recall`
 - `casa/rootfs/opt/casa/recall_health.py::observed_recall`
 - `casa/rootfs/opt/casa/delegated_memory.py::delegated_recall`
+- `casa/rootfs/opt/casa/timekeeping.py::resolve_period`
 
 **Tests**
 - `tests/test_recall_absence_invariant.py`
@@ -258,6 +289,7 @@ since what may be disclosed is decided per surface.
 - `tests/test_recall_empty_verdict.py`
 - `tests/test_recall_readable_slice_framing.py`
 - `tests/test_1123_tier_floor_regressions.py`
+- `tests/test_pin_1120_recall_period.py`
 
 **Related**
 - [`architecture/overview.md`](../architecture/overview.md)
