@@ -7259,10 +7259,62 @@ def _recall_surface(channel: str, origin: dict) -> "Surface":
     return "text"
 
 
+# #1120: a pre-built schema, because the SDK makes every dict-of-types key
+# required; ``period`` is optional, and ``null`` (what a client sends for an
+# unset optional) means no period.
+RECALL_MEMORY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "query": {"type": "string"},
+        "period": {
+            "type": ["string", "null"],
+            "description": (
+                "Optional. Only memories first recorded in this period: "
+                "today, yesterday, this_week, last_week, this_month, "
+                "last_month (weeks start Monday, in the operator's timezone), "
+                "one day YYYY-MM-DD, or an inclusive range "
+                "YYYY-MM-DD..YYYY-MM-DD."
+            ),
+        },
+    },
+    "required": ["query"],
+}
+
+_INVALID_PERIOD_MESSAGE = (
+    "Error: period must be one of today, yesterday, this_week, last_week, "
+    "this_month, last_month, a day YYYY-MM-DD, or a range "
+    "YYYY-MM-DD..YYYY-MM-DD that does not end before it starts. Nothing was "
+    "searched."
+)
+
+
+def _recall_period(args: dict):
+    """#1120: ``(window, error_result)`` for ``args``' optional period —
+    ``(None, None)`` without one. Resolved in the operator's timezone from one
+    reading of the clock; refused BEFORE any search, because an inverted
+    window sent to the memory server comes back as an HTTP error, which the
+    tool would report as "memory could not be checked"."""
+    from datetime import datetime
+
+    from timekeeping import resolve_period, resolve_tz
+
+    spec = args.get("period")
+    if spec is None:
+        return None, None
+    try:
+        return resolve_period(spec, datetime.now(resolve_tz())), None
+    except ValueError:
+        return None, _result({"status": "error", "kind": "invalid_period",
+                              "message": _INVALID_PERIOD_MESSAGE})
+
+
 @tool(
     "recall_memory",
-    "Search your long-term memory for facts relevant to a query.",
-    {"query": str},
+    "Search your long-term memory for facts relevant to a query. Give an "
+    "optional period to see only memories first recorded in it; memories "
+    "with no recorded date are left out of such a search, and like every "
+    "search it is bounded, so finding nothing is not proof of absence.",
+    RECALL_MEMORY_SCHEMA,
 )
 async def recall_memory(args: dict) -> dict:
     """On-demand semantic recall against the shared 'casa' bank, filtered by the channel's tier clearance (spec §4.3).
@@ -7273,10 +7325,20 @@ async def recall_memory(args: dict) -> dict:
     if not query:
         return _result({"status": "error", "kind": "empty_query",
                         "message": "Error: query is required"})
+    window, refused = _recall_period(args)
+    if refused is not None:
+        return refused
+    # #1120: every result of a search given a period echoes the resolved one.
+    echo = (
+        {} if window is None
+        else {"period": {"start": window.start.isoformat(),
+                         "end": window.end.isoformat()}}
+    )
     sem = getattr(agent_mod, "active_semantic_memory", None)
     if sem is None:
         # No backend wired: memory CANNOT be checked — never a fake zero-hit.
         return _result({
+            **echo,
             "status": "unavailable",
             "message": (
                 "Long-term memory could not be checked (no memory backend). "
@@ -7327,9 +7389,12 @@ async def recall_memory(args: dict) -> dict:
     try:
         hits = await observed_recall(
             path="direct_tool", telemetry=default_telemetry(),
+            # #1120: the window rides only when a period was given, so a
+            # backend's unwindowed call is exactly what it was.
             operation=lambda: sem.recall_items(
                 bank_id("casa"), query, tags=tags, max_tokens=tokens,
                 clearance=clearance, budget=budget,
+                **({} if window is None else {"window": window}),
             ),
         )
     except Exception as exc:  # noqa: BLE001
@@ -7348,6 +7413,7 @@ async def recall_memory(args: dict) -> dict:
             "recall_memory outcome=unavailable role=%r reason=%s", role, reason,
         )
         return _result({
+            **echo,
             "status": "unavailable",
             "message": (
                 "Long-term memory could not be checked (backend unavailable). "
@@ -7369,6 +7435,16 @@ async def recall_memory(args: dict) -> dict:
         readable_now = set(readable_tiers(clearance_now))
         hits = tuple(h for h in hits if h.sensitivity in readable_now)
         clearance = clearance_now
+    if window is not None:
+        # #1120: the server only RANKS by the window, so "only from this
+        # period" is this filter, on the date each memory was first recorded.
+        # A memory with no usable date cannot be placed in a period and is
+        # left out. It runs after the clearance re-filter above, and every arm
+        # below is keyed on what it keeps.
+        hits = tuple(
+            h for h in hits
+            if h.mentioned_at is not None and window.contains(h.mentioned_at)
+        )
     digest = render_recall(
         hits, current_speaker=current_speaker, surface=surface,
         clearance=clearance, token_budget=tokens,
@@ -7384,11 +7460,30 @@ async def recall_memory(args: dict) -> dict:
         # actually distinguish.
         if hits:
             return _result({
+                **echo,
                 "status": "ok", "memory": "",
                 "message": (
                     "Readable matching memories exist but exceeded the "
                     "render budget. Refine the query — narrow the topic or "
                     "be more specific — and try again."
+                ),
+            })
+        if window is not None:
+            # #1120: one constant wording whether the server returned nothing,
+            # the dates left everything out, or the clearance re-filter did —
+            # it never says which.
+            return _result({
+                **echo,
+                "status": "ok", "memory": "",
+                "message": (
+                    "This search found nothing readable from this surface "
+                    "first recorded in the period you asked for. That is NOT "
+                    "proof of absence — a memory counts as from a period by "
+                    "the date it was first recorded, memories with no "
+                    "recorded date are left out, memory may hold entries this "
+                    "surface cannot read, and the search itself is bounded. "
+                    "Do not claim non-existence to the user; say you found "
+                    "nothing you can share from that period here."
                 ),
             })
         return _result({
@@ -7410,6 +7505,7 @@ async def recall_memory(args: dict) -> dict:
     # filtered here", and truncation and the types filter hide content at the
     # top tier too.
     return _result({
+        **echo,
         "status": "ok", "memory": digest, "message": READABLE_SLICE_NOTE,
     })
 

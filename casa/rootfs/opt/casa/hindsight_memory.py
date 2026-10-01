@@ -30,7 +30,7 @@ from semantic_memory import (
     render_recall,
 )
 from speaker_provenance import RESERVED_SOURCE_NAMESPACE, decode_provenance_from_tags
-from timekeeping import resolve_tz
+from timekeeping import RecallWindow, resolve_tz
 
 logger = logging.getLogger(__name__)
 
@@ -198,17 +198,25 @@ class HindsightSemanticMemory(SemanticMemory):
     @staticmethod
     def _recall_payload(
         query: str, *, tags: list[str], tags_match: str, max_tokens: int,
-        types: tuple[str, ...], budget: str,
+        types: tuple[str, ...], budget: str, window: RecallWindow | None = None,
     ) -> dict[str, Any]:
         """The ONE recall request body, shared by :meth:`recall` and
         :meth:`recall_items` so the two can never drift. #1117: carries the
         client's own "now" in the operator's timezone, so the server anchors
-        "today" and recency on Casa's clock."""
-        return {
+        "today" and recency on Casa's clock. #1120: a ``window`` becomes the
+        server's ``temporal_window`` (inclusive, timezone-aware bounds), which
+        RANKS memories dated in it higher and filters nothing; without one the
+        key is absent and the body is exactly what it was."""
+        payload = {
             "query": query, "tags": tags, "tags_match": tags_match,
             "max_tokens": max_tokens, "types": list(types), "budget": budget,
             "query_timestamp": datetime.now(resolve_tz()).isoformat(),
         }
+        if window is not None:
+            payload["temporal_window"] = {
+                "start": window.start.isoformat(), "end": window.end.isoformat(),
+            }
+        return payload
 
     async def _recall_request(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         """A recall round-trip with ONE retry of a 503 (#1117). Only a 503 —
@@ -389,6 +397,7 @@ class HindsightSemanticMemory(SemanticMemory):
         clearance: str,
         types: tuple[str, ...] = _DEFAULT_TYPES,
         tags_match: str = "any", budget: str = "mid",
+        window: RecallWindow | None = None,
     ) -> tuple[RecallHit, ...]:
         """Typed, attributed recall (personality Task 11). ADDITIVE — leaves
         :meth:`recall` and its reason strings untouched. The failure mapping
@@ -398,7 +407,8 @@ class HindsightSemanticMemory(SemanticMemory):
         an empty tuple is returned ONLY for a well-formed 2xx ``results: []``;
         a malformed envelope, a per-hit wire-contract violation, or an
         all-hits-dropped-by-clearance response raises RecallProtocolError (a
-        RecallUnavailable subclass)."""
+        RecallUnavailable subclass). #1120: ``window`` only ranks (see
+        :meth:`_recall_payload`); it never changes which outcome is returned."""
         _validate_bank_id(bank)
         t0 = time.monotonic()
 
@@ -419,6 +429,7 @@ class HindsightSemanticMemory(SemanticMemory):
                 self._recall_payload(
                     query, tags=tags, tags_match=tags_match,
                     max_tokens=max_tokens, types=types, budget=budget,
+                    window=window,
                 ),
             )
         except asyncio.TimeoutError as exc:
