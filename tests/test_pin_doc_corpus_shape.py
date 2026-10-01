@@ -803,3 +803,52 @@ def test_bridge_owner_documents_other_hook_refusals():
     section = _normalized(_section(owner, "Failure behavior"))
     counts = tuple(section.count(claim) for claim in OTHER_HOOK_REFUSAL_CLAIMS)
     assert counts == (1, 1, 1), (owner, counts)
+
+
+def test_mental_model_overlay_and_recall_are_separate():
+    """#1133: separate the mental-model overlay, and the mental models Casa
+    declares for it, from recall on the way out.
+
+    The seam is the one the document names itself at 0e80d4b8:
+    ``docs/architecture/memory.md:13-14`` lists "the mental-model overlay
+    together with the mental models Casa declares for it" as its own clause
+    beside the memory seam and the provenance on a recalled fact; the row's
+    ``summary`` and ``when_changing``
+    (``docs/manifest.d/architecture-f-m.yaml:5-6``) route it as its own
+    clause while ``defines_invariants`` (``:35``) lists all five ids on one
+    document. INV-DOC-007 (``docs/contributing/doc-contract.md:75``) owes
+    the split.
+
+    At 0e80d4b86bc35fb3bd82231375713d6455cd5ab3, ownership counts are
+    (1, 1, 1), not (1, 1, 2). All five payload-location checks independently
+    yield (1, 1) at base and are regression arms.
+
+    Pins ownership and lead location; byte-identical movement and
+    completeness of the passages remain review obligations.
+
+    Added by the drive cut that splits the document (D35).
+    """
+    overlay = {_declaring_document("INV-MEM-020")}
+    recall = {
+        _declaring_document(inv)
+        for inv in ("INV-MEM-001", "INV-MEM-002", "INV-MEM-010", "INV-MEM-019")
+    }
+    counts = (len(overlay), len(recall), len(overlay | recall))
+    assert counts == (1, 1, 2), (counts, overlay, recall)
+
+    owner = _declaring_document("INV-MEM-020")
+    texts = {
+        doc: _normalized((DOCS / doc).read_text())
+        for doc in _text_corpus()
+    }
+    for lead in (
+        "**Mental-model overlays cannot be tier-filtered at all**",
+        "**The overlay is the backend's mental models, each dated, framed "
+        "as leads.**",
+        "**Casa declares two of those models and keeps them reconciled.**",
+        "**A reconcile pass fails.**",
+        "**A new declared mental model**",
+    ):
+        total = sum(text.count(lead) for text in texts.values())
+        owned = texts[owner].count(lead)
+        assert (total, owned) == (1, 1), (lead, total, owned)
