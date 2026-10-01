@@ -1423,7 +1423,7 @@ different persona to it.
 open with a specialist — in its topic, or a background job it is running — is
 not switched by a change to that specialist. Before a persona is applied to it,
 or it is upgraded or rolled back, Casa lists its open conversations and asks you
-to confirm; for each one it says:
+to confirm; of each one it says:
 
 > When it resumes, it picks up Casa's updated settings, but it keeps its
 > personality and the plugin versions it started with. To get everything new,
@@ -1435,13 +1435,14 @@ its open conversations, telling each topic why. A specialist you **disable**
 (its `enabled: false`) cannot be confirmed beforehand: Casa closes its open
 conversations when the disable takes effect — at the reload that reads it, or at
 the next start if Casa was down — and each topic is told. If a close fails, Casa
-tells you which conversation is still open and tries again at the next reload.
+tells you which conversation is still open and tries again at the next reload
+of the agents.
 
-If an upgrade fails after the new version was already kept, Casa says the upgrade
-is not active yet — new and open conversations still use the previous version —
-and that re-running the upgrade finishes it (or, in the rarer case where cleaning
-up the previous version also failed, that you should restart Casa and then re-run
-the upgrade).
+If an upgrade fails after the new version was already kept but before Casa
+loaded it, Casa says the upgrade is not active yet — new and open conversations
+still use the previous version — and that re-running the upgrade finishes it
+(or, in the rarer case where cleaning up the previous version also failed, that
+you should restart Casa and then re-run the upgrade).
 
 **Changing a resident's persona costs you its conversations.** Giving Ellen,
 the butler or the concierge a different persona — or resetting one back to its
