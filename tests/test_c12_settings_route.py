@@ -191,3 +191,16 @@ def test_specialist_upgrade_description_admits_the_installed_version():
     assert "or to the version it already has, passing new config, to change its settings" in desc
     assert desc.count(tools.SPECIALIST_OPEN_CONVERSATION_NOTICE) == 1
     assert desc.endswith(tools._ORDINARY_CHANGE_TOOL_NOTE)
+
+
+def test_upgrade_recipe_redirects_the_install_worded_resume_turn():
+    # The post-Approve resume turn (tools.py `_reconcile_cb`) is worded for a
+    # fresh install whatever the inspect's mode; an upgrade -- a settings
+    # change included -- continues with step 3's specialist_upgrade.
+    import tools
+    assert "call specialist_install_commit" in Path(tools.__file__).read_text(encoding="utf-8")
+    text = _flat("upgrade.md")
+    step2 = text[text.index(" 2. Same consent flow"):text.index(" 3. `specialist_upgrade(")]
+    assert ("for an upgrade, continue with step 3's `specialist_upgrade` instead — "
+            "`specialist_install_commit` refuses an installed slug with "
+            '`kind: "active_present"`') in step2

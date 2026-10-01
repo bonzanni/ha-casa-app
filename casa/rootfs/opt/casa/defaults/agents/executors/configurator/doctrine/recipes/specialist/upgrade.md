@@ -34,7 +34,10 @@ apply unchanged, step 3's open-conversation warning included.
    consent DM in the next step covers the FULL new closure, not a diff against the old one.
 2. Same consent flow as `recipes/specialist/install.md` steps 2-3 — an upgrade re-consents exactly
    like a fresh install (the identity binds `root_digest`, which changes with every version; at the
-   version already installed the approval may already be on record, or may be asked again).
+   version already installed the approval may already be on record, or may be asked again). The
+   automatic resume turn after Approve is worded for a fresh install (it says to commit the
+   install); for an upgrade, continue with step 3's `specialist_upgrade` instead —
+   `specialist_install_commit` refuses an installed slug with `kind: "active_present"`.
 3. `specialist_upgrade(slug=..., component_id=..., version=..., root_digest=..., staged_dir=...,
    receipt_id=..., config={...}, secret_names_provided=[...])` using the EXACT `root_digest` and
    `receipt_id` `specialist_install_inspect` returned. Omitting `receipt_id` (or passing a stale
