@@ -24,15 +24,27 @@ Red case demonstrated at c3547ffd: both rows name memory-lifecycle.md, so each
 parametrised case fails on the owner equality, independently.
 """
 
+import importlib.util
 from pathlib import Path
 
 import pytest
 
-from scripts import coverage_ledger, verify_docs
 from test_pin_doc_corpus_shape import _ledger_owner
 
 ROOT = Path(__file__).resolve().parents[1]
 DOCS = ROOT / "docs"
+
+_spec = importlib.util.spec_from_file_location(
+    "_pin_1134_coverage_ledger", ROOT / "scripts" / "coverage_ledger.py"
+)
+coverage_ledger = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(coverage_ledger)
+
+_spec = importlib.util.spec_from_file_location(
+    "_pin_1134_verify_docs", ROOT / "scripts" / "verify_docs.py"
+)
+verify_docs = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(verify_docs)
 
 
 @pytest.mark.parametrize(
