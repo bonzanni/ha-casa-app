@@ -1,5 +1,65 @@
 # Changelog
 
+## [0.332.21] - 2026-10-01
+
+### Fixed
+
+- With Hindsight 0.10.2, the memory summaries meant for the start of Ellen's
+  private conversations came back empty. That version's mental-model list
+  leaves out each model's text unless the request asks for it (read in its
+  source code, not measured against a running server), and Casa did not ask.
+  Casa now asks for the text.
+
+### Changed
+
+- Each summary is shown under its name with the date of its last refresh, in
+  Casa's timezone. The block opens with a line saying these are leads to check:
+  not live facts, and not a complete list. A summary is not shown until it has
+  text and a last-refresh date Casa can read. A summary whose automatic
+  refreshes Hindsight has paused after a failed refresh says it may be out of
+  date.
+- As before, the summaries are shown only at the start of a new private
+  conversation.
+
+### Added
+
+- Casa now keeps two mental models in your Hindsight bank:
+  - `casa-open-commitments` asks for your open commitments and follow-ups, with
+    the dates and deadlines that were stated, leaving out the assistant's own
+    reminders and briefings. Casa sets it to refresh daily at 05:00 UTC.
+  - `casa-operator-profile` asks for a profile of you and your household: who
+    you are, the people around you, how you like to be addressed, and your
+    standing preferences, routines and recurring obligations, each with the
+    date it was last stated. Casa sets it to refresh after Hindsight
+    consolidates new memories, at most once a day. Its question asks Hindsight
+    to leave out health, money and other people's private matters. That is an
+    instruction to Hindsight's summariser; nothing checks or filters what it
+    writes.
+
+  Neither model is limited by tags or set to ignore other models, so (by
+  Hindsight 0.10.2's source) each summary can draw on the other's text and on
+  any model you created yourself.
+- Casa checks these models in the background at every start while long-term
+  memory is on, and after every completed memory wipe. It creates a missing
+  one, puts back the parts of a definition it sets if they were edited, and
+  deletes any other model whose id starts with `casa-`. That prefix is now
+  reserved: Casa deletes a model you create under it (a check that finds more
+  than 1,000 models in the bank deletes none). Casa never changes a model under
+  any other id. If Hindsight cannot be reached, Casa logs it and tries again
+  at the next start or wipe.
+- A memory wipe deletes the whole Hindsight bank, and with it (by Hindsight
+  0.10.2's source) the bank's mental models. Casa recreates its two models
+  after the wipe if it can reach Hindsight then, and their first refresh reads
+  the emptied bank. One exception: a refresh Hindsight was already running
+  when the bank was deleted can write its pre-wipe summary into a recreated
+  model, where it stays until that model's next refresh. Models you created
+  yourself are not recreated.
+- Each refresh is a run of the language model configured in the Hindsight app.
+  Besides the scheduled refreshes and the first one Hindsight runs when a model
+  is created, a start or a wipe asks for at most one extra refresh per model,
+  and only when its definition had to be put back or its automatic refreshes
+  were paused.
+
 ## [0.332.20] - 2026-10-01
 
 ### Added
