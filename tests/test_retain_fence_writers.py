@@ -54,6 +54,7 @@ async def test_save_session_discards_after_wipe(tmp_path, fresh_fence, monkeypat
         speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV,
     )
     sem = AsyncMock()
+    sem.document_tags.return_value = None  # #1123: never saved
     real_begin = reg.try_begin_save
 
     async def begin_then_wipe(key, **kwargs):
@@ -87,6 +88,7 @@ async def test_save_session_deadlock_free_when_wipe_waits(tmp_path, fresh_fence,
         speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV,
     )
     sem = AsyncMock()
+    sem.document_tags.return_value = None  # #1123: never saved
     in_save = asyncio.Event()
 
     async def fake_classify(content):
@@ -114,6 +116,7 @@ async def test_cold_retain_discards_with_no_spool(tmp_path, fresh_fence, monkeyp
     DECISION; a wipe completing before the detached body runs discards —
     no retain AND no spool record."""
     sem = AsyncMock()
+    sem.document_tags.return_value = None  # #1123: never saved
     gen = fresh_fence.generation()      # capture: decision time
     await _wipe_now(fresh_fence)        # wipe completes before the task body
     spool = tmp_path / "spool"
@@ -140,6 +143,9 @@ async def test_cold_retain_failure_after_wipe_does_not_respool(
     spool = tmp_path / "spool"
 
     class ExplodingSem:
+        async def document_tags(self, bank, document_id):
+            return None  # #1123: reads as never saved
+
         async def retain(self, *a, **k):
             fresh_fence._generation += 1   # "a wipe completed" before the arm
             raise RuntimeError("backend down")
@@ -162,6 +168,7 @@ async def test_spool_replay_discards_and_drops_record(tmp_path, fresh_fence, mon
     fenced retain (simulated with a direct bump in the record-decode window)
     discards the record: no retain, record dropped rather than retried."""
     sem = AsyncMock()
+    sem.document_tags.return_value = None  # #1123: never saved
     spool = tmp_path / "spool"
     spool.mkdir()
     from speaker_provenance import provenance_mapping, provenance_from_mapping
@@ -188,6 +195,7 @@ async def test_retain_delegated_discards_after_wipe(fresh_fence, monkeypatch):
     from personality_types import RetainedTurn
 
     sem = AsyncMock()
+    sem.document_tags.return_value = None  # #1123: never saved
 
     async def fake_classify(content):
         return "public"
@@ -208,6 +216,7 @@ async def test_retain_delegated_carries_application_tags(fresh_fence, monkeypatc
     from personality_types import RetainedTurn
 
     sem = AsyncMock()
+    sem.document_tags.return_value = None  # #1123: never saved
 
     async def fake_classify(content):
         return "public"

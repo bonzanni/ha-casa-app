@@ -15,6 +15,14 @@ from session_reg_helpers import STUB_BINDING_DIGEST, STUB_SPEAKER_PROV, STUB_USE
 pytestmark = [pytest.mark.unit]
 
 
+class _NeverSavedMemory:
+    async def document_tags(self, bank, document_id):
+        return None  # #1123: an empty bank — every document reads never saved
+
+
+_NEVER_SAVED = _NeverSavedMemory()
+
+
 def test_voice_is_short():
     assert freshness_window("voice") == timedelta(minutes=30)
 
@@ -50,7 +58,7 @@ async def test_transcript_to_items_builds_verified_shape(monkeypatch):
         _Msg("assistant", {"role": "assistant", "content": [{"type": "text", "text": "20C."}]}),
     ]
     items = await transcript_to_items(
-        msgs, speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV,
+        msgs, speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV, semantic_memory=_NEVER_SAVED,
     )
     assert [i["content"] for i in items] == ["What temp do I like?", "20C."]
     # Task 10: content-derived document_id, keyed by KIND — user turn on its
@@ -72,7 +80,7 @@ async def test_transcript_to_items_skips_empty_and_toolonly(monkeypatch):
 
     msgs = [_Msg("assistant", {"role": "assistant", "content": [{"type": "tool_use", "id": "t1"}]})]
     result = await transcript_to_items(
-        msgs, speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV,
+        msgs, speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV, semantic_memory=_NEVER_SAVED,
     )
     assert result == []
 
@@ -86,6 +94,7 @@ async def test_save_session_retains_and_finishes(tmp_path, monkeypatch):
     reg = SessionRegistry(str(tmp_path / "s.json"))
     await reg.register("telegram-r1", "assistant", "sid-9", binding_digest=STUB_BINDING_DIGEST, speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV)
     sem = AsyncMock()  # SemanticMemory
+    sem.document_tags.return_value = None  # #1123: never saved
     msgs = [type("M", (), {"type": "user", "message": {"role": "user", "content": "hi"}})()]
     with patch("session_saver.get_session_messages", return_value=msgs):
         ok = await save_session(
@@ -111,6 +120,7 @@ async def test_save_session_releases_claim_on_failure(tmp_path, monkeypatch):
     reg = SessionRegistry(str(tmp_path / "s.json"))
     await reg.register("telegram-r1", "assistant", "sid-9", binding_digest=STUB_BINDING_DIGEST, speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV)
     sem = AsyncMock()
+    sem.document_tags.return_value = None  # #1123: never saved
     sem.retain.side_effect = RuntimeError("hindsight down")
     msgs = [type("M", (), {"type": "user", "message": {"content": "hi"}})()]
     with patch("session_saver.get_session_messages", return_value=msgs):
@@ -140,6 +150,9 @@ async def test_save_session_cancellation_releases_the_claim(tmp_path, monkeypatc
     retain_started = asyncio.Event()
 
     class _HangingMemory:
+        async def document_tags(self, bank, document_id):
+            return None  # #1123: reads as never saved
+
         async def retain(self, *args, **kwargs):
             retain_started.set()
             await asyncio.Event().wait()  # hang until cancelled
@@ -165,6 +178,7 @@ async def test_save_session_skips_when_already_claimed(tmp_path):
     await reg.register("telegram-r1", "assistant", "sid-9", binding_digest=STUB_BINDING_DIGEST, speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV)
     await reg.try_begin_save("telegram-r1")       # someone else claimed it
     sem = AsyncMock()
+    sem.document_tags.return_value = None  # #1123: never saved
     ok = await save_session(
         "telegram-r1", reg, sem, directory="/d", channel="telegram",
     )
@@ -177,6 +191,7 @@ async def test_save_session_empty_transcript_still_finishes(tmp_path):
     reg = SessionRegistry(str(tmp_path / "s.json"))
     await reg.register("telegram-r1", "assistant", "sid-9", binding_digest=STUB_BINDING_DIGEST, speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV)
     sem = AsyncMock()
+    sem.document_tags.return_value = None  # #1123: never saved
     # tool-only message → transcript_to_items returns [] → no retain, but still finishes
     msgs = [type("M", (), {"type": "assistant",
             "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t1"}]}})()]
@@ -196,6 +211,7 @@ async def test_save_session_no_sid_releases_claim(tmp_path):
     # Plant an entry directly (no sdk_session_id) to hit the sid-guard.
     reg._data["telegram-r1"] = {"agent": "assistant"}
     sem = AsyncMock()
+    sem.document_tags.return_value = None  # #1123: never saved
     ok = await save_session(
         "telegram-r1", reg, sem, directory="/d", channel="telegram",
     )
@@ -210,6 +226,7 @@ async def test_save_session_voice_skips_entirely(tmp_path):
     reg = SessionRegistry(str(tmp_path / "s.json"))
     await reg.register("voice-r1", "assistant", "sid-9", binding_digest=STUB_BINDING_DIGEST, speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV)
     sem = AsyncMock()
+    sem.document_tags.return_value = None  # #1123: never saved
     ok = await save_session(
         "voice-r1", reg, sem, directory="/d", channel="voice",
     )
@@ -228,6 +245,7 @@ async def test_reset_channel_saves_then_clears(tmp_path, monkeypatch):
     reg = SessionRegistry(str(tmp_path / "s.json"))
     await reg.register("telegram-42", "assistant", "sid-9", binding_digest=STUB_BINDING_DIGEST, speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV)
     sem = AsyncMock()
+    sem.document_tags.return_value = None  # #1123: never saved
     msgs = [type("M", (), {"type": "user", "message": {"content": "remember X"}})()]
     with patch("session_saver.get_session_messages", return_value=msgs):
         await reset_channel("telegram-42", reg, sem, channel="telegram")
@@ -239,6 +257,7 @@ async def test_reset_channel_no_entry_is_noop(tmp_path):
     from session_registry import SessionRegistry
     reg = SessionRegistry(str(tmp_path / "s.json"))
     sem = AsyncMock()
+    sem.document_tags.return_value = None  # #1123: never saved
     await reset_channel("telegram-99", reg, sem, channel="telegram")
     sem.retain.assert_not_awaited()         # nothing to save
     assert reg.get("telegram-99") is None
@@ -254,6 +273,7 @@ async def test_save_session_expected_sid_mismatch_releases_claim(tmp_path):
     # cold snapshot of sid-old).
     await reg.register("telegram-r1", "assistant", "sid-new", binding_digest=STUB_BINDING_DIGEST, speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV)
     sem = AsyncMock()
+    sem.document_tags.return_value = None  # #1123: never saved
     ok = await save_session(
         "telegram-r1", reg, sem, directory="/d", channel="telegram",
         expected_sid="sid-old",
@@ -274,6 +294,7 @@ async def test_save_session_expected_sid_match_proceeds(tmp_path, monkeypatch):
     reg = SessionRegistry(str(tmp_path / "s.json"))
     await reg.register("telegram-r1", "assistant", "sid-9", binding_digest=STUB_BINDING_DIGEST, speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV)
     sem = AsyncMock()
+    sem.document_tags.return_value = None  # #1123: never saved
     msgs = [type("M", (), {"type": "user", "message": {"content": "hi"}})()]
     with patch("session_saver.get_session_messages", return_value=msgs):
         ok = await save_session(
@@ -297,6 +318,7 @@ async def test_reset_channel_trailing_remove_spares_follow_up_session(tmp_path, 
     reg = SessionRegistry(str(tmp_path / "s.json"))
     await reg.register("telegram-42", "assistant", "sid-old", binding_digest=STUB_BINDING_DIGEST, speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV)
     sem = AsyncMock()
+    sem.document_tags.return_value = None  # #1123: never saved
 
     retained = []
 
@@ -421,6 +443,9 @@ class _R878Memory:
     def __init__(self, *, failing: bool) -> None:
         self.failing = failing
         self.retains: list[tuple] = []
+
+    async def document_tags(self, bank, document_id):
+        return None  # #1123: reads as never saved
 
     async def retain(self, bank, items, *, async_=False):
         self.retains.append((bank, items))

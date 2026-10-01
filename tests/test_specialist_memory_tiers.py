@@ -55,6 +55,9 @@ class _FakeSem:
         })
         return (_hit(self._recall_ret),) if self._recall_ret else ()
 
+    async def document_tags(self, bank, document_id):
+        return None  # #1123: reads as never saved
+
     async def retain(self, bank, items, *, async_=True):
         self.retain_calls.append({"bank": bank, "items": items})
 

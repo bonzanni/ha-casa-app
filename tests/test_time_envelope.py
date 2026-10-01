@@ -27,6 +27,14 @@ from timekeeping import compose_time_envelope, split_time_envelope, strip_time_e
 
 pytestmark = pytest.mark.unit
 
+
+class _NeverSavedMemory:
+    async def document_tags(self, bank, document_id):
+        return None  # #1123: an empty bank — every document reads never saved
+
+
+_NEVER_SAVED = _NeverSavedMemory()
+
 _TZ = ZoneInfo("Europe/Amsterdam")
 _T1 = datetime(2026, 8, 9, 9, 15, 3, tzinfo=_TZ)
 _T2 = datetime(2026, 8, 10, 21, 40, 59, tzinfo=_TZ)
@@ -43,7 +51,7 @@ async def _items(msgs, monkeypatch):
         return "public"
     monkeypatch.setattr(session_saver, "classify_tier", fake_classify)
     return await transcript_to_items(
-        msgs, speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV,
+        msgs, speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV, semantic_memory=_NEVER_SAVED,
     )
 
 

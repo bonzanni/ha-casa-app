@@ -247,6 +247,9 @@ class _GaryMemory:
         # Task 11: typed recall — a genuine zero-hit is the empty tuple.
         return ()
 
+    async def document_tags(self, *args, **kwargs):
+        return None  # #1123: the seam's stored-tag read; voice never writes
+
     async def profile(self, *args, **kwargs):
         return ""
 
