@@ -16276,7 +16276,8 @@ async def specialist_uninstall(args: dict) -> dict:
             tool="specialist_uninstall", arg="slug", name=slug,
             subject=f"specialist:{slug}", what=f"the specialist {slug}",
             specs=_erase_specs_for(_owned_entries_now(slug)),
-            erase=args.get("erase_data"), held=held, confirm=_confirm)
+            erase=args.get("erase_data"), held=held, confirm=_confirm,
+            call_extra=(f", acknowledged_conversations={ack!r}" if ack else ""))
         if gate is not None:
             return gate
         reports.extend(taken)
@@ -17169,18 +17170,22 @@ def _engagement_deliverer(channel: Any, eng: Any):
     return _deliver
 
 
-def _erase_call(tool: str, arg: str, name: str, erase: bool) -> str:
-    return f"{tool}({arg}={name!r}, erase_data={'true' if erase else 'false'})"
+def _erase_call(tool: str, arg: str, name: str, erase: bool, extra: str = "") -> str:
+    # #1095: *extra* carries the specialist uninstall's acknowledged
+    # conversations into every call a continuation tells the model to make, so
+    # a confirmed uninstall is not warned again on its Keep or finishing call.
+    return f"{tool}({arg}={name!r}, erase_data={'true' if erase else 'false'}{extra})"
 
 
-def _choice_continuation(tool: str, arg: str, name: str, choice: int) -> str:
+def _choice_continuation(tool: str, arg: str, name: str, choice: int,
+                         extra: str = "") -> str:
     import plugin_erase_consent as pec
     if choice == pec.KEEP:
-        return (f"The operator chose Keep data. Call {_erase_call(tool, arg, name, False)} "
+        return (f"The operator chose Keep data. Call {_erase_call(tool, arg, name, False, extra)} "
                 "now to uninstall and keep the data, then finish the recipe.")
     if choice in (pec.ERASE, pec.ERASE_DATA_ONLY):
         label = pec.LABELS[choice]
-        return (f"The operator chose {label}. Call {_erase_call(tool, arg, name, True)} "
+        return (f"The operator chose {label}. Call {_erase_call(tool, arg, name, True, extra)} "
                 "now: it starts the plugin's eraser and removes nothing yet. Casa "
                 "then sends the eraser's result into this topic — wait for it.")
     return (f"The operator cancelled uninstalling {name!r}. Nothing was removed; "
@@ -17188,7 +17193,7 @@ def _choice_continuation(tool: str, arg: str, name: str, choice: int) -> str:
 
 
 async def _deliver_erasure_outcome(tool: str, name: str, outcomes: list,
-                                   deliver) -> None:
+                                   deliver, extra: str = "") -> None:
     """Continue the configurator with what the eraser(s) said; if the
     engagement cannot take it, tell the operator directly. Never raises."""
     arg = "slug" if tool == "specialist_uninstall" else "name"
@@ -17198,7 +17203,7 @@ async def _deliver_erasure_outcome(tool: str, name: str, outcomes: list,
             model_text = (
                 f"The eraser reported the erasure complete. Its report, to relay "
                 f"to the operator verbatim: {reports}. Now call "
-                f"{_erase_call(tool, arg, name, True)} to finish the uninstall.")
+                f"{_erase_call(tool, arg, name, True, extra)} to finish the uninstall.")
             # Casa's own words only: this DM is a Casa notice, and the
             # plugin's report is plugin-authored text.
             operator_text = (
@@ -17216,7 +17221,7 @@ async def _deliver_erasure_outcome(tool: str, name: str, outcomes: list,
                 f"{report} — Relay it verbatim, then ask the operator whether to "
                 "try again later (run the uninstall again, which asks again) or "
                 "uninstall anyway keeping whatever is left "
-                f"({_erase_call(tool, arg, name, False)}).")
+                f"({_erase_call(tool, arg, name, False, extra)}).")
             operator_text = (
                 f"Erasing {plugin}'s data did not complete, so nothing was "
                 "removed, and the configurator could not be resumed to relay "
@@ -17261,6 +17266,7 @@ async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
                       what: str, specs: list, erase,
                       held: "list | None" = None,
                       confirm: "Callable[[bool], dict | None] | None" = None,
+                      call_extra: str = "",
                       ) -> "tuple[dict | None, list]":
     """The erase step in front of an uninstall. The caller holds the mutation
     lock the removal commits under, and computed *specs* from the registry
@@ -17355,7 +17361,8 @@ async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
                 # Keep and Cancel answer the question now: an erase already
                 # approved and queued must not run behind them.
                 questions.close(subject, question)
-            return await deliver(_choice_continuation(tool, arg, name, choice))
+            return await deliver(_choice_continuation(tool, arg, name, choice,
+                                                      call_extra))
         try:
             handle = pec.prompt_erase_choice(
                 coordinator=CHALLENGES, channel=channel, key=key, text=text,
@@ -17415,7 +17422,7 @@ async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
         finally:
             if not complete:
                 fence.lift(fenced, question)
-        await _deliver_erasure_outcome(tool, name, outcomes, deliver)
+        await _deliver_erasure_outcome(tool, name, outcomes, deliver, call_extra)
     task = asyncio.get_running_loop().create_task(_run())
     _ERASE_TASKS.add(task)
     task.add_done_callback(_ERASE_TASKS.discard)

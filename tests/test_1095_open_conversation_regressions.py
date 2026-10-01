@@ -149,3 +149,47 @@ async def test_the_teardown_close_completes_under_the_reader_with_a_writer_queue
         await asyncio.wait_for(writer, 5)
         await rw.release_write()
 
+
+
+async def test_a_confirmed_uninstalls_continuations_carry_its_acknowledgement(
+        reg, sflow, funnel, monkeypatch):
+    """Diff review r1 (terra S2): the calls Casa's continuations tell the model
+    to make — after a Keep tap, and after the eraser's result — name the
+    acknowledged conversations, so following them verbatim commits instead of
+    warning the operator a second time. Read back from the delivered text, not
+    assumed."""
+    import ast
+    import re
+    import plugin_erase_consent as pec
+    import plugin_erasure as pe
+    tm = sflow.tm
+    delivered: list = []
+
+    def deliverer(channel, eng):
+        async def deliver(text):
+            delivered.append(text)
+            return True
+        return deliver
+    monkeypatch.setattr(tm, "_engagement_deliverer", deliverer)
+    a = await _open(reg)
+    out = _out(await tm.specialist_uninstall.handler(
+        {"slug": "fin", "acknowledged_conversations": [a.id]}))
+    assert out.get("kind") == "erase_choice_pending", out
+    [prompt] = sflow.prompts
+    assert await prompt["continue_cb"](pec.KEEP) is True
+    [keep] = delivered
+    call = re.search(r"specialist_uninstall\((.*?)\) now", keep).group(1)
+    kwargs = {k.strip(): ast.literal_eval(v.strip().replace("false", "False")
+                                          .replace("true", "True"))
+              for k, v in (part.split("=", 1) for part in
+                           re.split(r",\s*(?=\w+=)", call))}
+    assert kwargs.get("acknowledged_conversations") == [a.id], keep
+    out = _out(await tm.specialist_uninstall.handler(kwargs))
+    assert out.get("ok") is True, out
+    assert sflow.uninstalled == [True] and reg.get(a.id).status == "cancelled"
+    delivered.clear()
+    await tm._deliver_erasure_outcome(
+        "specialist_uninstall", "fin",
+        [pe.ErasureOutcome("fin.bank", "1" * 64, "complete", "gone")],
+        deliverer(None, None), f", acknowledged_conversations={[a.id]!r}")
+    assert f"acknowledged_conversations={[a.id]!r}" in delivered[-1]
