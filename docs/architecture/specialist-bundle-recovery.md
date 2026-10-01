@@ -92,13 +92,21 @@ retry works. Whether the new version is active is read off the root recorded in
 point; when that file cannot be read, or names neither version, nothing is restored at all
 and the journal stays for the next boot (`activation_unknown` in the boot report,
 `upgrade_outcome_unknown` from the library) — after activation the restore would remove a
-retained prior the capture recorded as absent. Once it is active, the version it replaced cannot be restored whole, so nothing is rolled
-back: the retained prior's pending rotation is finished and the prior stripped of the
-reclassified value per file, the journal is completed, and the failure is reported —
-`upgrade_kept_new_version` from the library, `kept_new_version: true` on a failed
-reload-and-verify. A failure between the commit and the owned-plugin swap leaves the new
-version running with the previous version's owned plugins, and says so; re-running the same
-upgrade finishes it. A successful upgrade finishes the prior the same way before it returns.
+retained prior the capture recorded as absent. Once it is active in that sense — committed on disk — the version it replaced cannot be
+restored whole, so nothing is rolled back: the retained prior's pending rotation is finished
+and the prior stripped of the reclassified value per file, the journal is completed, and the
+failure is reported. Two results carry it, and "active" means different things in them.
+`upgrade_kept_new_version` comes from the library, before any reload, so Casa has loaded none
+of the kept version: the result says the upgrade is not active yet, that new and open
+conversations still use the previous version, and what finishes it — re-running the same
+upgrade, or, when finishing the retained prior failed too and further changes are refused
+until a restart, restarting Casa and then re-running it. That is true when it is said; an
+unrelated reload before the re-run can load parts of the kept version for new conversations.
+`kept_new_version: true` on a failed reload-and-verify comes after the sequencer loaded the new
+version, and keeps saying it is active. A failure between the commit and the owned-plugin
+swap leaves the new version committed with the previous version's owned plugins, and says
+so; re-running the same upgrade finishes it. A successful upgrade finishes the prior the same
+way before it returns.
 
 **A bundle sync phase fails.** The journal rolls the recorded pre-state back; if rollback
 itself fails, the journal stays in progress for boot to finish, and that slug refuses
@@ -222,6 +230,7 @@ the journal opens belongs in the preflight instead, where there is nothing to un
 - `tests/test_specialist_bundle_journal.py`
 - `tests/test_specialist_capture_admission.py`
 - `tests/test_specialist_reclassifying_upgrade.py`
+- `tests/test_pin_1095_kept_upgrade_telling.py`
 
 **Related**
 - [`architecture/specialist-bundle-transactions.md`](../architecture/specialist-bundle-transactions.md)

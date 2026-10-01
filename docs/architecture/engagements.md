@@ -43,6 +43,13 @@ when the declaring plugin is installed on the calling resident — a worker reco
 its prompt; what Casa then does with a job's engagement is
 [`architecture/background-jobs.md`](background-jobs.md).
 
+**A specialist's engagements are its open conversations, and a change to the specialist
+does not reach them.** One keeps the personality and the plugin versions it started with
+and reads the specialist's current settings when it resumes. So a persona apply, an upgrade,
+a rollback or an uninstall warns before it changes a specialist that has any (INV-SPEC-022),
+and removing a specialist closes them — after an uninstall commits, and when a reload or a
+boot reads it disabled (INV-CFG-013) — through the terminal funnel, outcome `cancelled`.
+
 **Much less survives a restart than the word "durable" suggests.** The record persists;
 concurrency permits, live drivers, output sequencers, inbound reservations and various
 in-flight maps do not. A record found `active` at startup is rewritten to `idle`, because no

@@ -78,7 +78,7 @@ async def test_only_the_removed_specialists_conversations_close(reg, sflow, funn
     configurator = await _open(reg, slug="fin", kind="executor", topic=105,
                                task="the configurator itself")
     other = await _open(reg, slug="travel", topic=103)
-    plugin_job = await _open(reg, slug="fin", kind="plugin_job", topic=106)
+    plugin_job = await _open(reg, slug="fin", kind="plugin", topic=106)
     out = _out(await sflow.tm.specialist_uninstall.handler(
         {"slug": "fin", "acknowledged_conversations": [a.id]}))
     assert out.get("ok") is True, out

@@ -33,6 +33,11 @@ wins it performs the external effects — closing the topic, tearing down the dr
 the resident. Everything else is a loser that does nothing. This is what stops a completion
 racing a cancellation from producing two closures and two notifications.
 
+Casa itself is one of those callers: removing a specialist closes its open conversations
+through the same funnel, outcome `cancelled`, exactly as a cancel does — after an uninstall
+commits (INV-SPEC-022) and when a reload or a boot reads the specialist disabled
+(INV-CFG-013).
+
 **The transition is strict about persistence.** If writing the terminal state fails, the
 in-memory record is restored and the call raises, so there is no state where the process
 believes an engagement finished and the durable record disagrees. The caller is told to

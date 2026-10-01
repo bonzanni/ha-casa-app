@@ -126,8 +126,9 @@ executors only missing-required and forbidden files reach this failure at all.
 **An agent is disabled.** `enabled: false` makes a specialist or executor valid but
 inactive — excluded from normal lookup and new launches, not failed and not unknown. A
 disabled *executor's* definition additionally stays available to recovery paths, so an
-engagement that already exists can resume after a restart: disabling is not a termination
-control for in-flight work.
+engagement that already exists can resume after a restart: disabling an executor is not a
+termination control for in-flight work. Disabling a *specialist* is: its open conversations
+are closed when the disable takes effect (INV-CFG-013).
 
 **A resident and a specialist claim one role.** Registry construction raises, naming the
 role. The check is cross-tier because each directory looks fine on its own.
