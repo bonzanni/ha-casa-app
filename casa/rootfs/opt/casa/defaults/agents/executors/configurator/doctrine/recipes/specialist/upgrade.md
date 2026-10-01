@@ -1,9 +1,30 @@
 # Recipe: upgrade an installed specialist
 
+## Change an installed specialist's settings
+
+To change an installed specialist's own config values — the config names its inspection lists —
+upgrade it with `specialist_upgrade` to the version it already has, passing the new settings.
+Before you inspect anything, tell the operator plainly what that costs:
+- the install may ask for their approval again;
+- afterwards, "rollback" restores the previous settings, not the previous version, and that
+  previous version can no longer be rolled back to.
+
+Then follow the steps below at the installed version. In step 1 pass the same repo and the ref the
+specialist was installed from — its tag or revision, never `ref="latest"` or a branch, which may
+have moved; ask the operator if you do not know it. Compare the inspection's `version` with the
+installed one: a different version, or a ref that has moved since the install, makes this a real
+upgrade, not a settings change — tell the operator and ask before going on. In step 3 put only the
+values that change in `config`: a setting you leave out keeps its current value. Secret names are
+not carried over, so list them in `secret_names_provided` again as the install did. Steps 2-6
+apply unchanged, step 3's open-conversation warning included.
+
+## Steps
+
 1. `specialist_install_inspect(repo=..., ref=<new ref>, mode="upgrade", target_slug=<slug>)` against
-   the SAME repo, a newer ref — `ref="latest"` is accepted here too and resolves to the newest
-   published release tag (reported as `resolved_ref`; `no_release_found` when the repo has none —
-   see `recipes/specialist/install.md`). **Always pass `mode="upgrade"` + `target_slug`** — plain
+   the SAME repo, a newer ref (for a settings change, the installed ref — see above) —
+   `ref="latest"` is accepted here too and resolves to the newest published release tag (reported
+   as `resolved_ref`; `no_release_found` when the repo has none — see
+   `recipes/specialist/install.md`). **Always pass `mode="upgrade"` + `target_slug`** — plain
    `specialist_install_inspect(repo=..., ref=...)` with no `mode` will refuse with `kind:
    "slug_collision"` because the slug is already installed (that refusal is correct for a FRESH
    install; upgrade mode is the only sanctioned way past it for the SAME slug). The result carries a
@@ -12,7 +33,11 @@
    active — a plugin may be added, dropped, or repointed to a new digest by the new version; the
    consent DM in the next step covers the FULL new closure, not a diff against the old one.
 2. Same consent flow as `recipes/specialist/install.md` steps 2-3 — an upgrade re-consents exactly
-   like a fresh install (the identity binds `root_digest`, which changes with every version).
+   like a fresh install (the identity binds `root_digest`, which changes with every version; at the
+   version already installed the approval may already be on record, or may be asked again). The
+   automatic resume turn after Approve is worded for a fresh install (it says to commit the
+   install); for an upgrade, continue with step 3's `specialist_upgrade` instead —
+   `specialist_install_commit` refuses an installed slug with `kind: "active_present"`.
 3. `specialist_upgrade(slug=..., component_id=..., version=..., root_digest=..., staged_dir=...,
    receipt_id=..., config={...}, secret_names_provided=[...])` using the EXACT `root_digest` and
    `receipt_id` `specialist_install_inspect` returned. Omitting `receipt_id` (or passing a stale
@@ -54,7 +79,7 @@
    live and answering delegations; tell the operator exactly which new config/secret names the new
    version needs. Nothing broke. The result names the five values the resume takes and, as `tool`,
    the handler that takes them — for an upgrade that is `specialist_upgrade` again, because the
-   still-active old version makes `specialist_install_commit` refuse `concurrent_mutation`. Pass
+   still-active old version makes `specialist_install_commit` refuse `active_present`. Pass
    the five back verbatim with `slug` and the supplied values. A later engagement reads the same
    six from `casactl specialist status <slug>`, and acts on `pending_commit_check` exactly as
    `recipes/specialist/install.md` step 5 describes — including that `not_verified` is never a
@@ -84,3 +109,6 @@
 - Trying to `plugin_add`/`plugin_remove` the owned plugin set yourself to "help" an upgrade along —
   the owned-set swap is atomic and part of `specialist_upgrade` itself; those tools refuse an owned
   entry outright with `kind: "owned_by_specialist"` anyway.
+- Changing an installed specialist's settings through `specialist_install_commit` — it refuses an
+  installed slug with `kind: "active_present"`; follow "Change an installed specialist's settings"
+  above.

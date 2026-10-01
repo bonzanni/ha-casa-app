@@ -72,7 +72,7 @@ call `plugin_add` for a specialist's declared plugin — see `recipes/plugin/add
    them; pass the five back verbatim with `slug` and the config/secret values the operator
    supplied. **Call the tool `tool` names and no other** — a pending UPGRADE keeps the old version
    active, and `specialist_install_commit` refuses any slug with an active tuple
-   (`kind: "concurrent_mutation"`), so its resume goes to `specialist_upgrade`. The receipt and
+   (`kind: "active_present"`), so its resume goes to `specialist_upgrade`. The receipt and
    the staged bytes are RETAINED for exactly this.
    A LATER engagement that no longer has that result gets the same six from
    `casactl specialist status <slug>` under `pending_commit` (the operator runs it and pastes the
