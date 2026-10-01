@@ -20,12 +20,15 @@ from typing import Any, Awaitable, Callable
 import aiohttp
 
 from hindsight_ids import bank_id as _validate_bank_id  # fail-fast on bad ids
+from mental_models import RESERVED_PREFIX
 from personality_types import RecallHit
 from semantic_memory import (
+    MentalModelSpec,
     RecallProtocolError,
     RecallUnavailable,
     SemanticMemory,
     StoredTagsUnavailable,
+    mental_model_refresh_paused,
     render_mental_models,
     render_recall,
 )
@@ -177,15 +180,20 @@ class HindsightSemanticMemory(SemanticMemory):
 
     async def _request(
         self, method: str, path: str, payload: dict[str, Any] | None = None,
+        *, retry_on_drop: bool = True,
     ) -> dict[str, Any]:
         """One HTTP round-trip -> parsed JSON. Raises aiohttp errors to caller
-        (callers degrade to '' / log per the existing memory-call rule)."""
+        (callers degrade to '' / log per the existing memory-call rule).
+        ``retry_on_drop=False`` sends the request exactly once (#1126: a
+        mental-model refresh, where a retried POST is a second LLM run)."""
         url = f"{self._base}{path}"
         if self._session is None or self._session.closed:
             self._session = self._new_session()
         try:
             return await self._roundtrip(method, url, payload)
         except aiohttp.ClientConnectionError:
+            if not retry_on_drop:
+                raise
             # Belt to force_close's root-cause fix: a genuine mid-call drop
             # (ServerDisconnectedError / ClientOSError, both subclasses) means
             # no response was received, so aiohttp has discarded the dead
@@ -504,9 +512,169 @@ class HindsightSemanticMemory(SemanticMemory):
         return tuple(hits)
 
     async def profile(self, bank: str) -> str:
+        """#1126: the overlay digest. Asks for ``detail=content`` — since
+        Hindsight 0.10.0 the list returns metadata only by default, which
+        rendered every overlay empty. A 404 is a bank that does not exist (after
+        a wipe, before the first save): no overlay. Every other failure raises;
+        the caller logs it and the turn runs without the overlay."""
         _validate_bank_id(bank)
-        resp = await self._request(
-            "GET", f"/v1/default/banks/{bank}/mental-models", None,
-        )
+        try:
+            resp = await self._request(
+                "GET", f"/v1/default/banks/{bank}/mental-models?detail=content",
+                None,
+            )
+        except aiohttp.ClientResponseError as exc:
+            if exc.status == 404:
+                return ""
+            raise
         return render_mental_models(resp)
+
+    async def reconcile_mental_models(
+        self, bank: str, declared: tuple[MentalModelSpec, ...],
+    ) -> None:
+        """#1126: one reconcile pass over ``bank``'s mental models.
+
+        1. List them with their definitions (``detail=content`` carries
+           ``source_query``, ``max_tokens``, ``trigger``). A 404, whatever its
+           body, is a missing bank and means "no models": the creates below
+           recreate the bank. Any other list failure raises — no write is made
+           on a state that could not be read.
+        2. Per declared model: create it if absent (409 = present); else PATCH
+           the declared fields that differ, then send ONE explicit refresh if it
+           was patched (a PATCH does not refresh, so content written under the
+           old definition would stay) or if its automatic refreshes are paused
+           by a failure (only an explicit refresh resumes them). A 404 on a
+           PATCH or refresh means the model is gone. A failure is logged and
+           the pass moves on to the next model.
+        3. Delete every listed id under the reserved ``casa-`` prefix that is no
+           longer declared — skipped when the list was not complete. No other id
+           is ever written.
+        """
+        _validate_bank_id(bank)
+        base = f"/v1/default/banks/{bank}/mental-models"
+        try:
+            resp = await self._request("GET", f"{base}?detail=content&limit=1000", None)
+        except aiohttp.ClientResponseError as exc:
+            if exc.status != 404:
+                raise
+            resp = {"items": [], "total": 0}
+        items = resp.get("items") if isinstance(resp, dict) else None
+        if not isinstance(items, list):
+            raise RecallProtocolError("mental_model_list_malformed")
+        stored = {
+            m["id"]: m for m in items
+            if isinstance(m, dict) and isinstance(m.get("id"), str)
+        }
+        for spec in declared:
+            try:
+                await self._reconcile_mental_model(base, spec, stored.get(spec.id))
+            except Exception as exc:  # noqa: BLE001 — one model never starves the other
+                logger.warning(
+                    "mental_model_reconcile bank=%s id=%s outcome=failed error=%s",
+                    bank, spec.id, _describe_failure(exc),
+                )
+        total = resp.get("total")
+        if isinstance(total, int) and total > len(items):
+            logger.warning(
+                "mental_model_reconcile bank=%s outcome=deletions_skipped "
+                "listed=%d total=%d", bank, len(items), total,
+            )
+            return
+        declared_ids = {spec.id for spec in declared}
+        for model_id in stored:
+            if not model_id.startswith(RESERVED_PREFIX) or model_id in declared_ids:
+                continue
+            try:
+                await self._request("DELETE", f"{base}/{model_id}", None)
+                logger.info(
+                    "mental_model_reconcile bank=%s id=%s action=deleted", bank, model_id,
+                )
+            except aiohttp.ClientResponseError as exc:
+                if exc.status != 404:
+                    logger.warning(
+                        "mental_model_reconcile bank=%s id=%s outcome=delete_failed "
+                        "error=%s", bank, model_id, _describe_failure(exc),
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "mental_model_reconcile bank=%s id=%s outcome=delete_failed "
+                    "error=%s", bank, model_id, _describe_failure(exc),
+                )
+
+    async def _reconcile_mental_model(
+        self, base: str, spec: MentalModelSpec, model: dict[str, Any] | None,
+    ) -> None:
+        if model is None:
+            body = {
+                "id": spec.id, "name": spec.name, "source_query": spec.source_query,
+                "tags": [], "max_tokens": spec.max_tokens, "trigger": dict(spec.trigger),
+            }
+            try:
+                # The create schedules the model's first refresh itself.
+                await self._request("POST", base, body)
+            except aiohttp.ClientResponseError as exc:
+                if exc.status != 409:
+                    raise
+                logger.info("mental_model_reconcile id=%s action=present", spec.id)
+                return
+            logger.info("mental_model_reconcile id=%s action=created", spec.id)
+            return
+        patch = _mental_model_drift(spec, model)
+        if patch:
+            try:
+                await self._request("PATCH", f"{base}/{spec.id}", patch)
+            except aiohttp.ClientResponseError as exc:
+                if exc.status == 404:
+                    return
+                raise
+            logger.info(
+                "mental_model_reconcile id=%s action=patched fields=%s",
+                spec.id, sorted(patch),
+            )
+        elif not mental_model_refresh_paused(model):
+            return
+        try:
+            await self._request(
+                "POST", f"{base}/{spec.id}/refresh", None, retry_on_drop=False,
+            )
+        except aiohttp.ClientResponseError as exc:
+            if exc.status == 404:
+                return
+            raise
+        except aiohttp.ClientConnectionError:
+            logger.warning(
+                "mental_model_reconcile id=%s outcome=refresh_unconfirmed "
+                "(connection dropped; not resent)", spec.id,
+            )
+            return
+        logger.info("mental_model_reconcile id=%s action=refreshed", spec.id)
+
+
+def _mental_model_drift(spec: MentalModelSpec, model: dict[str, Any]) -> dict[str, Any]:
+    """#1126: the PATCH body for the declared fields ``model`` does not match —
+    empty when nothing drifted. Only declared keys are compared: the backend
+    stores a full trigger (its own defaults included), and a key Casa does not
+    declare is never a drift. A drifted trigger re-sends the declared trigger
+    keys only; the backend merges them over the stored trigger."""
+    patch: dict[str, Any] = {}
+    for key, want in (
+        ("name", spec.name), ("source_query", spec.source_query),
+        ("max_tokens", spec.max_tokens),
+    ):
+        if model.get(key) != want:
+            patch[key] = want
+    if model.get("tags"):
+        patch["tags"] = []
+    stored_trigger = model.get("trigger")
+    if not isinstance(stored_trigger, dict):
+        stored_trigger = {}
+    if any(stored_trigger.get(k) != v for k, v in spec.trigger.items()):
+        patch["trigger"] = dict(spec.trigger)
+    return patch
+
+
+def _describe_failure(exc: BaseException) -> str:
+    """A failure as its type and HTTP status — never a response body."""
+    status = getattr(exc, "status", None)
+    return f"{type(exc).__name__}" + (f" status={status}" if status is not None else "")
 

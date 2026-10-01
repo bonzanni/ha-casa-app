@@ -26,6 +26,7 @@ is shown, never used to decide which of two conflicting memories wins.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Literal, Sequence
 
 from personality_types import RecallHit, SpeakerProvenance
@@ -48,15 +49,22 @@ _MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 
 
+def local_date_text(when: datetime) -> str:
+    """``Wed 30 Sep 2026``: a tz-aware instant as a date in the operator's
+    timezone. Fixed English names, independent of the process locale. Shared
+    by recall's recorded date and the mental-model overlay's refresh date
+    (#1126), so the two read alike in one prompt."""
+    local = when.astimezone(resolve_tz())
+    return (f"{_WEEKDAYS[local.weekday()]} {local.day} "
+            f"{_MONTHS[local.month - 1]} {local.year}")
+
+
 def recorded_line(hit: RecallHit) -> str | None:
     """``  [recorded Wed 30 Sep 2026]`` in the operator's timezone, or
-    ``None`` for an undated hit. Fixed English names, independent of the
-    process locale."""
+    ``None`` for an undated hit."""
     if hit.mentioned_at is None:
         return None
-    local = hit.mentioned_at.astimezone(resolve_tz())
-    return (f"  [recorded {_WEEKDAYS[local.weekday()]} {local.day} "
-            f"{_MONTHS[local.month - 1]} {local.year}]")
+    return f"  [recorded {local_date_text(hit.mentioned_at)}]"
 
 #581: the ONE wording every model-facing consumer of a rendered slice attaches
 # to a NON-EMPTY result. #472 scoped the empty arms and stopped there, but the

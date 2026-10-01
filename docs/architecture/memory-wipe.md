@@ -62,6 +62,17 @@ in-flight sections, so a pre-wipe writer that resumes later retains nothing
 and, crucially, spools nothing: the operator consented to deleting exactly
 that content.
 
+**Mental models go with the bank, and Casa's two come back.** The backend
+stores mental models inside the bank, so deleting the bank deletes them — the
+operator's own included. Once a wipe has completed and released turn
+admission, it starts one background pass that recreates the two models Casa
+declares (see [`architecture/memory.md`](memory.md)); their first refresh
+reads the emptied bank. The report is already final when the pass starts:
+the door gets it without waiting, and a pass that fails — the backend
+unreachable, say — only logs and leaves the models absent until the next boot
+or wipe. A wipe that aborts starts no pass. Models the operator created are
+not recreated.
+
 ## Contracts & invariants
 
 **INV-MEM-014**: The wipe executes only on the configured operator's explicit consent at its consent-bearing door, and no durable pre-wipe writer survives it: the spool is dropped, every claimed pointer is dropped without retention, and a bank writer that straddles the wipe discards — retaining nothing and spooling nothing.
@@ -83,7 +94,14 @@ by a steered-fresh turn mid-wipe survives (its conversation is
 post-wipe-initiation — the sid-guarded remove protects it on purpose); the
 backend applies retains it accepted before the delete on its own schedule;
 and the bank deletion itself is the backend's — Casa does not verify
-emptiness afterwards.
+emptiness afterwards. Mental models belong to the same class: a model refresh
+the backend was already running when the bank was deleted, if it had read the
+bank before the delete, can write its pre-wipe summary into the model Casa
+recreates under the same id, where it stays until that model's next refresh
+replaces it; and a boot-time reconcile pass still running when a wipe lands can
+recreate the bank mid-wipe with an empty model, which the post-wipe pass,
+queued behind it, then reconciles. Neither touches the wipe's order or its
+report.
 
 ## Failure behavior
 

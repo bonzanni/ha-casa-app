@@ -11,9 +11,12 @@ by the SDK session.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import TYPE_CHECKING, Any, Mapping
 
 from personality_types import RecallHit, SensitivityTier
+from recall_renderer import local_date_text
 
 if TYPE_CHECKING:
     from timekeeping import RecallWindow
@@ -71,17 +74,91 @@ class StoredTagsUnavailable(RuntimeError):
         super().__init__(f"stored tags unavailable: {reason}")
 
 
+# #1126: the one line that opens a non-empty overlay. The summaries are written
+# by the memory server from past conversations, on its own schedule, so they are
+# leads to check, not live state — and a model covers only what its question
+# asked, so nothing missing from it is evidence of absence.
+MENTAL_MODEL_OVERLAY_LABEL = (
+    "[memory-derived leads: summaries the memory server wrote from past "
+    "conversations, each dated by its last refresh. Not live state — check "
+    "anything that can change before relying on it — and not a complete list: "
+    "something missing here is not evidence that it does not exist.]"
+)
+
+
+def parse_aware_timestamp(value: object) -> datetime | None:
+    """A tz-aware ISO-8601 instant (``Z`` accepted), or ``None`` — never an
+    error. A naive timestamp cannot be placed in the operator's day, so it is
+    treated as absent."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed
+
+
+def mental_model_refresh_paused(model: Mapping[str, Any]) -> bool:
+    """#1126: the memory server's own predicate for "automatic refreshes of this
+    model are paused" (Hindsight 0.10.2 ``_automatic_refresh_paused``): the last
+    refresh failed AND (it never refreshed OR the failure is later than the last
+    success). A model whose first refresh is still running (both null) is not
+    paused. A failure time that cannot be read is not treated as one."""
+    failed = parse_aware_timestamp(model.get("last_refresh_failed_at"))
+    if failed is None:
+        return False
+    raw_refreshed = model.get("last_refreshed_at")
+    if raw_refreshed is None:
+        return True
+    refreshed = parse_aware_timestamp(raw_refreshed)
+    if refreshed is None:
+        return False
+    return failed > refreshed
+
+
 def render_mental_models(response: dict[str, Any]) -> str:
-    """Render a mental-model list response into a digest. Tolerant of the
-    list key name (``mental_models``/``models``/``items``)."""
-    resp = response or {}
-    models = resp.get("mental_models") or resp.get("models") or resp.get("items") or []
-    lines: list[str] = []
+    """Render a mental-model list response into the overlay digest (#1126).
+
+    Each model with content renders under its name with the date of its last
+    refresh in the operator's timezone, and says so when its automatic refreshes
+    are paused by a failure. A model with no content (still on its first
+    refresh) or no readable refresh date is skipped: the overlay never shows a
+    summary whose age it cannot state. Total: odd items and fields are skipped,
+    never raised on. Tolerant of the list key (``items`` is Hindsight's)."""
+    resp = response if isinstance(response, dict) else {}
+    models = resp.get("items") or resp.get("mental_models") or resp.get("models") or []
+    if not isinstance(models, list):
+        return ""
+    blocks: list[str] = []
     for m in models:
-        content = (m.get("content") or "").strip() if isinstance(m, dict) else ""
-        if content:
-            lines.append(content)
-    return "\n\n".join(lines)
+        if not isinstance(m, dict):
+            continue
+        content = m.get("content")
+        if not isinstance(content, str) or not content.strip():
+            continue
+        refreshed = parse_aware_timestamp(m.get("last_refreshed_at"))
+        if refreshed is None:
+            continue
+        name = next(
+            (v.strip() for v in (m.get("name"), m.get("id"))
+             if isinstance(v, str) and v.strip()),
+            "mental model",
+        )
+        when = f"refreshed {local_date_text(refreshed)}"
+        if mental_model_refresh_paused(m):
+            failed = parse_aware_timestamp(m.get("last_refresh_failed_at"))
+            when += (f"; its last refresh failed {local_date_text(failed)}, so it "
+                     "may be out of date")
+        blocks.append(f"### {name} ({when})\n{content.strip()}")
+    if not blocks:
+        return ""
+    return "\n\n".join([MENTAL_MODEL_OVERLAY_LABEL, *blocks])
 
 
 def render_recall(response: dict[str, Any]) -> str:
@@ -97,6 +174,19 @@ def render_recall(response: dict[str, Any]) -> str:
         if text:
             lines.append(f"- {text}")
     return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class MentalModelSpec:
+    """#1126: one mental model Casa declares and reconciles on the backend. Tags
+    are always empty (an untagged model reads the whole bank). ``trigger``
+    holds ONLY the keys Casa declares: the backend stores a full trigger, and a
+    key Casa does not declare is never compared or sent."""
+    id: str
+    name: str
+    source_query: str
+    max_tokens: int
+    trigger: Mapping[str, Any] = field(default_factory=dict)
 
 
 class SemanticMemory(ABC):
@@ -167,6 +257,20 @@ class SemanticMemory(ABC):
         quiescing live entirely at the callers (:mod:`memory_wipe`); nothing
         but the wipe orchestrator may call this."""
         return False
+
+    async def reconcile_mental_models(
+        self, bank: str, declared: tuple[MentalModelSpec, ...],
+    ) -> None:
+        """#1126: make ``bank``'s Casa-owned mental models match ``declared`` —
+        create the missing, re-define the drifted, delete undeclared ids under
+        the reserved ``casa-`` prefix, never touch any other id. Best-effort:
+        callers (:mod:`mental_models`) log a failure and carry on.
+
+        Concrete no-op default on purpose (a backend without mental models has
+        nothing to reconcile), unlike the abstract ``document_tags``, whose
+        default would fail open. An abstract method here would also make every
+        ABC test double unbuildable for a reason unrelated to what it tests."""
+        return None
 
     async def close(self) -> None:
         """Release any backend resources (e.g. a pooled HTTP session).

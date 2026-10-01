@@ -58,7 +58,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | plugin mutation sequencing, a plugin or specialist mutation envelope, what a result may say about an integration being live, or re-issuing a plugin-consent DM on demand | [`architecture/plugin-mutation-tools.md`](architecture/plugin-mutation-tools.md) |
 | plugin trigger declaration, the routing overlay, trigger consent, or per-trigger secret backing | [`architecture/plugin-triggers.md`](architecture/plugin-triggers.md) |
 | read clearance, the per-sender origin stamp, the engagement clearance clamp, or the executor-archive epoch scoping | [`architecture/memory-scoping.md`](architecture/memory-scoping.md) |
-| recall behaviour or the absence contract | [`architecture/memory.md`](architecture/memory.md) |
+| recall behaviour or the absence contract, the mental-model overlay, or the mental models Casa declares and reconciles | [`architecture/memory.md`](architecture/memory.md) |
 | reminder creation or cancellation, the reminder sweep, or recurrence derivation | [`architecture/reminders.md`](architecture/reminders.md) |
 | session persistence, tier classification, provenance or content addressing on a stored fact, the save/reset guard protocol, the retirement claims, or the retry spool | [`architecture/memory-lifecycle.md`](architecture/memory-lifecycle.md) |
 | specialist install identity, consent, or materialization | [`architecture/specialist-lifecycle.md`](architecture/specialist-lifecycle.md) |

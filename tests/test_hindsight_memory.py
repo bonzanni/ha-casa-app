@@ -93,14 +93,17 @@ async def test_recall_logs_hit_count_not_query(caplog) -> None:
 
 
 async def test_profile_gets_mental_models() -> None:
+    # #1126: the list must ask for content (Hindsight >= 0.10.0 returns metadata
+    # only by default); the real envelope key is ``items``.
     mem = HindsightSemanticMemory(base_url="http://hs:8888")
-    mem._request = AsyncMock(return_value={"mental_models": [
-        {"content": "Nicola: terse, prefers metric units."},
-    ]})
+    mem._request = AsyncMock(return_value={"items": [
+        {"name": "Operator profile", "content": "Nicola: terse, prefers metric units.",
+         "last_refreshed_at": "2026-09-30T05:00:00Z"},
+    ], "total": 1, "limit": 100, "offset": 0})
     out = await mem.profile("casa-assistant")
     method, path, payload = mem._request.await_args.args
     assert method == "GET"
-    assert path == "/v1/default/banks/casa-assistant/mental-models"
+    assert path == "/v1/default/banks/casa-assistant/mental-models?detail=content"
     assert payload is None
     assert "terse" in out
 

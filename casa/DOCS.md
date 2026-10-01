@@ -53,13 +53,52 @@ is enabled by pointing Casa at a self-hosted **Hindsight** app.
 |--------|-------------|
 | `hindsight_api_url` | Internal base URL for the self-hosted Hindsight app (e.g. `http://5884eb17-hindsight:8888` or its IP), reached via the app's hassio network alias/IP — not the bare host `hindsight`. **This is the single toggle for long-term memory: set it to turn long-term semantic memory ON** (the app auto-derives `MEMORY_BACKEND=hindsight`) — both **save** (the freshness reaper retains ended conversations, each item tier-classified) and **recall** (a mental-model overlay + relevance-ranked recall on the read path, plus a `recall_memory` pull tool). **Leave empty to keep long-term memory disabled** (short-term continuity still works via the SDK session, except across a resident identity change — and with this empty, nothing an ended conversation held is recoverable afterwards). |
 
+**Mental models: what your assistant reads first.** With long-term memory on,
+Casa keeps two *mental models* in your Hindsight bank — standing questions that
+Hindsight re-answers from your memories on its own schedule — and shows their
+answers, each with its name and the date it was last refreshed, at the start of
+your private conversations, framed as leads to check rather than live facts:
+
+- `casa-open-commitments` — your open commitments and follow-ups, with the dates
+  and deadlines you stated (not the assistant's own reminders and briefings).
+  Refreshed daily at 05:00 UTC when there is something new.
+- `casa-operator-profile` — who you are, the people around you, how you like to
+  be addressed, your standing preferences, routines and recurring obligations,
+  each with the date it was last stated. It leaves out health, money and other
+  people's private matters; that exclusion is part of the question Hindsight
+  answers, not a filter, and recall still brings those subjects in when they
+  are asked about. Refreshed after Hindsight consolidates new memories, at most
+  once a day.
+
+Casa creates them, puts back the parts of their definitions it sets if they are
+edited, and deletes any other model whose id starts with **`casa-` — that prefix
+is reserved**: a model you create under it in the Hindsight UI is deleted at
+Casa's next start (unless the bank holds more than 1,000 models; then Casa
+deletes none). Models under any other id are never touched, and they show
+at the start of your private conversations too. A model shows only once it has
+text and a last-refresh date Casa can read. This happens in the background at
+every start and after every memory wipe; if Hindsight is not reachable then,
+Casa tries again at the next start or wipe. Each refresh is a run of the
+language model configured in the Hindsight app, on that app's account: the
+scheduled ones; the first one, which Hindsight starts when Casa creates a model
+(at the first start, after every wipe, and at any start that finds one
+missing); and at most one extra per model at each start or wipe when its
+definition had to be put back or its automatic refreshes were paused by a
+failed refresh.
+
 **Wiping long-term memory** (v0.194.0): one supported operation deletes the whole
 bank, drops any pending durable retry records, and forgets every conversation
 pointer without saving it — closing the "cleared it by hand but items kept
 reappearing" gap. **There is one way to run it: from the add-on terminal, run
 `casactl memory-wipe --yes`** (it refuses without the flag). A conversation or
 engagement already in flight when the wipe runs may still contribute one item
-afterwards; everything durable is removed.
+afterwards; everything durable is removed. Hindsight's mental models are part of
+the bank and go with it; Casa recreates its two right after the wipe (or at
+the next start or wipe, if Hindsight cannot be reached then), and they fill in
+from the emptied bank — except that a refresh Hindsight was already running when the
+bank was deleted can write its pre-wipe summary into a recreated model, where
+it stays until that model's next refresh. Models you created yourself are not
+recreated.
 
 Casa also carries a consent-gated agent door for the same operation — the
 `wipe_memory` tool, which posts an Approve/Cancel keyboard to the configured
