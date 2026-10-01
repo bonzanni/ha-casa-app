@@ -208,7 +208,7 @@ the turn did not fail. It is spoken once anything was said, the "still working" 
 notice included; a turn that said nothing keeps the existing `empty_turn` line, retries or
 not. The marker is written on every voice turn, so a caller cannot carry one into a healthy
 turn. Why and when a turn stops there is
-[`turn-loop.md`](turn-loop.md)'s INV-TURN-014.
+[`turn-limits.md`](turn-limits.md)'s INV-TURN-014.
 
 **Delivery fails at the endpoint.** Send failures are absorbed and logged, and the sweeper
 survives them. Endpoint failure is reported by the client rather than discovered here — so

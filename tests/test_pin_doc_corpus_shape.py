@@ -918,3 +918,55 @@ def test_mental_model_overlay_and_recall_are_separate():
         total = sum(text.count(lead) for text in texts.values())
         owned = texts[owner].count(lead)
         assert (total, owned) == (1, 1), (lead, total, owned)
+
+
+def test_turn_limit_stop_and_turn_conduct_are_separate():
+    """Separate what happens when a resident turn stops at its turn limit
+    from the rest of the turn's conduct.
+
+    The seam is the one the document names itself at 3f6f752b:
+    ``docs/architecture/turn-loop.md:11-12`` lists "what bounds the turn" as
+    its own clause beside what is assembled before the model is called and
+    how the call is retried; the row's ``summary``
+    (``docs/manifest.d/architecture-t-z.yaml:124``, "and what bounds it")
+    routes it as its own clause while ``defines_invariants`` (``:138``)
+    lists INV-TURN-014 beside the seven conduct ids on one document. #1143
+    took the document past the 25 KB ceiling with that one invariant's
+    block, and INV-DOC-007 (``docs/contributing/doc-contract.md:75``) owes
+    the split.
+
+    At 3f6f752b121bb72fa283843ab6b4465b0e53f54e, ownership counts are
+    (1, 1, 1), not (1, 1, 2). All five payload-location checks independently
+    yield (1, 1) at base and are regression arms.
+
+    Pins ownership and lead location; byte-identical movement and
+    completeness of the passages remain review obligations.
+    """
+    limits = {_declaring_document("INV-TURN-014")}
+    conduct = {
+        _declaring_document(inv)
+        for inv in (
+            "INV-TURN-004", "INV-TURN-005", "INV-TURN-007", "INV-TURN-008",
+            "INV-TURN-009", "INV-TURN-012", "INV-TURN-013",
+        )
+    }
+    counts = (len(limits), len(conduct), len(limits | conduct))
+    assert counts == (1, 1, 2), (counts, limits, conduct)
+
+    owner = _declaring_document("INV-TURN-014")
+    texts = {
+        doc: _normalized((DOCS / doc).read_text())
+        for doc in _text_corpus()
+    }
+    for lead in (
+        "The CLI ends a turn that would need one model call more than its "
+        "limit",
+        "The fact is recorded in the result-message arm both attempt paths "
+        "share",
+        "Where the line goes is decided by the server-stamped origin route",
+        "The assistant's limit is `tools.max_turns` in its `runtime.yaml`, 80",
+        "What it does not cover: a delegated or job turn's limit",
+    ):
+        total = sum(text.count(lead) for text in texts.values())
+        owned = texts[owner].count(lead)
+        assert (total, owned) == (1, 1), (lead, total, owned)

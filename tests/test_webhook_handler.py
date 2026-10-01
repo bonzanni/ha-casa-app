@@ -172,10 +172,11 @@ class TestWebhookAllowlist:
             msg = bus.send.call_args.args[0]
             # Precise contract: only Casa-OWNED keys are present. Release A
             # adds the server-set origin markers + one-shot chat_id; caller
-            # keys are still stripped.
+            # keys are still stripped. #1142 adds the route's `deliver` enum.
             assert set(msg.context.keys()) <= {
                 "webhook_name", "cid",
-                "_origin_route", "_origin_clearance", "chat_id",
+                "_origin_route", "_origin_clearance", "_webhook_deliver",
+                "chat_id",
             }
             assert "execution_role" not in msg.context
             assert "smuggled" not in msg.context

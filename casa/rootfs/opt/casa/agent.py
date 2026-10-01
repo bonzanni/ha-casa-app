@@ -171,6 +171,7 @@ origin_var: ContextVar[dict | None] = ContextVar("origin_var", default=None)
 #   plugin_erase_target / _artifact / _episode — #1046 the same for a
 #                                plugin-erase dispatch, the artifact the tap
 #                                named, and the erase run it belongs to
+#   _webhook_deliver           — #1142 the webhook route's `deliver` enum
 COPIED_CONTEXT_MARKERS = (
     "synthetic", "button_answer", "_origin_route", "_origin_clearance",
     "_operator_turn", "_scheduled_delivery", "_scheduled_epoch",
@@ -181,6 +182,9 @@ COPIED_CONTEXT_MARKERS = (
     # sends it (stamped by the scheduler, the reminder sweep and delegation
     # synthesis; registered on the scope at mint as an InheritedNote).
     "_inherited_note",
+    # #1142: the route's `deliver` enum, stamped at /webhook/{name} ingress.
+    # Gates read it through ``TurnScope.delivers_to_operator``.
+    "_webhook_deliver",
 )
 
 # Personality Task 14 / GH #199: the per-turn explanation draft. ``_build_options``
@@ -881,6 +885,12 @@ _LIMIT_CONTINUE = (
 _LIMIT_REDO = (
     "{subject} hit its step limit before finishing. Ask me if you want me to "
     "redo it.")
+# #1142: a `deliver: operator` webhook fire cannot be redone on request — the
+# payload is gone with the turn — so its line says what arrived and that its
+# report may be incomplete.
+_LIMIT_WEBHOOK = (
+    "The '{name}' webhook fired, but I hit my step limit before finishing, so "
+    "what I sent about it may be incomplete.")
 
 
 def _is_chat_id(value: Any) -> bool:
@@ -897,6 +907,8 @@ def _limit_stop_line(msg: BusMessage, *, is_narration: bool,
     session."""
     ctx = msg.context or {}
     name = str(ctx.get("trigger") or "")
+    if ctx.get("_origin_route") == "webhook_trigger":
+        return _LIMIT_WEBHOOK.format(name=str(ctx.get("webhook_name") or ""))
     if is_narration:
         subject = f"My report on {msg.source}'s finished work"
         prefix = f"(report on {msg.source}'s finished work) "
@@ -931,6 +943,16 @@ def _limit_stop_line(msg: BusMessage, *, is_narration: bool,
     return _LIMIT_REDO.format(subject=subject)
 
 
+_RESTRICTED_SEND_TOOL = "mcp__casa-framework__send_message"
+
+
+def _delivers_to_operator(origin: dict) -> bool:
+    """#1142: ``TurnScope.delivers_to_operator`` of the turn bound on
+    *origin*; ``False`` when no scope is bound."""
+    scope = origin.get("turn_scope")
+    return isinstance(scope, TurnScope) and scope.delivers_to_operator
+
+
 def build_restricted_webhook_options(
     *,
     model: str,
@@ -939,6 +961,7 @@ def build_restricted_webhook_options(
     max_turns: int,
     agent_home: str,
     resume_sid: str | None,
+    delivers_to_operator: bool = False,
 ) -> ClaudeAgentOptions:
     """Build the LOCKED-DOWN options for an UNTRUSTED webhook turn (spec A4 /
     Release A Layer 1 — the primary containment boundary; Sol+Terra design r5).
@@ -951,16 +974,27 @@ def build_restricted_webhook_options(
     ``Task`` are additionally disallowed (they bypass ``allowed_tools``). This
     closes the Bash→(unauthenticated)Hindsight, Bash→transcript-file, and
     pre-tool-decision-hook bypasses that application-level memory gates cannot.
+
+    #1142 (INV-TRIG-018): a ``deliver: operator`` turn's final reply is its
+    delivery, so ``send_message`` is not offered — removed from BOTH the
+    allowlist and the server the tool listing comes from (omitting it from
+    ``allowed_tools`` alone leaves it listed and merely denied at call time),
+    and named in ``disallowed_tools``.
     """
     from tools import create_casa_tools
-    casa_server = create_casa_tools(frozenset(_RESTRICTED_WEBHOOK_TOOLS))
+    allowed = tuple(_RESTRICTED_WEBHOOK_TOOLS)
+    disallowed = list(_RESTRICTED_DISALLOWED_TOOLS)
+    if delivers_to_operator:
+        allowed = tuple(t for t in allowed if t != _RESTRICTED_SEND_TOOL)
+        disallowed.append(_RESTRICTED_SEND_TOOL)
+    casa_server = create_casa_tools(frozenset(allowed))
     return ClaudeAgentOptions(
         model=model,
         cli_path=CLAUDE_CLI_PATH,
         max_buffer_size=SDK_MAX_BUFFER_SIZE,
         system_prompt=system_prompt,
-        allowed_tools=list(_RESTRICTED_WEBHOOK_TOOLS),
-        disallowed_tools=list(_RESTRICTED_DISALLOWED_TOOLS),
+        allowed_tools=list(allowed),
+        disallowed_tools=disallowed,
         permission_mode="dontAsk",
         max_turns=max_turns,
         mcp_servers={"casa-framework": casa_server},
@@ -1256,7 +1290,25 @@ class Agent:
         # is ingress-unforgeable (INV-EV-006) — external input can never
         # opt itself out of streaming.
         on_token: OnTokenCallback | None = None
-        channel = self._channel_manager.get(msg.channel) if msg.channel else None
+        # #1142 (INV-OUT-006): ONE (channel, context) pair for every output
+        # path of this turn — streaming, the classified-error line, the final
+        # reply, teardown. A `deliver: operator` webhook-trigger fire delivers
+        # to the operator's Telegram (the channel its scope binds every send
+        # to) with a FRESH context: the execution context's `chat_id` keys the
+        # session and is never a destination, and a numeric one would
+        # override the channel's own chat. Every other turn: the message's own
+        # channel and context, as before.
+        if scope.delivers_to_operator:
+            channel = self._channel_manager.get(scope.resolve_channel("webhook"))
+            delivery_context: dict[str, Any] = {}
+            if channel is None:
+                logger.warning(
+                    "webhook deliver: no operator channel (role=%s webhook=%s)",
+                    self.config.role, msg.context.get("webhook_name"))
+        else:
+            channel = (self._channel_manager.get(msg.channel)
+                       if msg.channel else None)
+            delivery_context = msg.context
 
         # #1038 R2: whether this turn streams is a property of its scope — a
         # NoStream obligation registered at mint from the two facts above.
@@ -1265,7 +1317,7 @@ class Agent:
             and hasattr(channel, "create_on_token")
             and scope.streaming_allowed
         ):
-            on_token = channel.create_on_token(msg.context)
+            on_token = channel.create_on_token(delivery_context)
 
         error_kind: ErrorKind | None = None
         turn_report: dict[str, Any] = {}
@@ -1328,7 +1380,7 @@ class Agent:
                 and hasattr(channel, "emit_error_line"):
             try:
                 handled = await channel.emit_error_line(
-                    error_kind.value, msg.context, self.config,
+                    error_kind.value, delivery_context, self.config,
                 )
             except Exception:
                 logger.exception("emit_error_line raised; falling back to text")
@@ -1391,7 +1443,9 @@ class Agent:
         # delivery — and where Casa's one line of its own goes (INV-TURN-014).
         limit_route: str | None = None
         if limit_stop:
-            limit_route = (self._limit_line_route(msg, channel, is_narration)
+            limit_route = (self._limit_line_route(
+                               msg, channel, is_narration,
+                               delivers_to_operator=scope.delivers_to_operator)
                            if error_kind is None else None)
             logger.warning(
                 "turn limit reached: role=%s channel=%s turns=%s line=%s",
@@ -1421,9 +1475,12 @@ class Agent:
         # notice — and must not consume its cooldown — so it is not consulted
         # at all; a channel that can actually show it renders it (Sol/Terra
         # diff r1).
+        # #1142: never on a `deliver: operator` webhook fire — an untrusted
+        # turn; the helper itself does not exclude those.
         if (
             text and channel is not None
             and getattr(channel, "delivers_final_text", True)
+            and not scope.delivers_to_operator
         ):
             noticed, health_notice = await self._maybe_prepend_health_notice(text)
             # The notice is prepended OUTSIDE the admitted text (outermost, as
@@ -1446,19 +1503,19 @@ class Agent:
                         channel, "finalize_response_stream",
                     ):
                         outcome = await channel.finalize_response_stream(
-                            text, msg.context, on_token,
+                            text, delivery_context, on_token,
                         )
                     else:
                         outcome = await channel.finalize_stream(
-                            text, msg.context, on_token,
+                            text, delivery_context, on_token,
                         )
                 elif error_kind is None and hasattr(channel, "send_response"):
-                    outcome = await channel.send_response(text, msg.context)
+                    outcome = await channel.send_response(text, delivery_context)
                 else:
-                    outcome = await channel.send(text, msg.context)
+                    outcome = await channel.send(text, delivery_context)
                 delivered = (
                     outcome is DeliveryOutcome.DELIVERED
-                    or bool(msg.context.get("_delivery_head_sent"))
+                    or bool(delivery_context.get("_delivery_head_sent"))
                 )
             except BaseException as _delivery_exc:
                 # #349, preserved through #551's rework and NARROWED by #556: a
@@ -1470,7 +1527,7 @@ class Agent:
                 # only carrier of that fact, because a raising call returns no
                 # outcome at all.
                 if (health_notice is not None
-                        and not msg.context.get("_delivery_head_sent")):
+                        and not delivery_context.get("_delivery_head_sent")):
                     import plugin_health
                     plugin_health.forget_notice(
                         self.config.role, health_notice)
@@ -1480,7 +1537,7 @@ class Agent:
                 # the obligation is discharged before the exception continues
                 # on its way. A raise before the head discharges nothing and
                 # the next boot announces again.
-                if msg.context.get("_delivery_head_sent"):
+                if delivery_context.get("_delivery_head_sent"):
                     await self._ack_delivery(msg, error_kind)
                 # #1121: the model's delivery failing does not unsay the stop —
                 # Casa's line is still attempted (never on a cancellation).
@@ -1508,7 +1565,7 @@ class Agent:
             # teardown must never break the turn.
             if hasattr(channel, "turn_finished"):
                 try:
-                    await channel.turn_finished(msg.context)
+                    await channel.turn_finished(delivery_context)
                 except Exception:  # noqa: BLE001
                     logger.exception("channel.turn_finished failed")
             # #1079: a CLEAN CHOSEN SILENCE is the resident's complete answer
@@ -1614,12 +1671,16 @@ class Agent:
 
     def _limit_line_route(
         self, msg: BusMessage, channel: Any, is_narration: bool,
+        delivers_to_operator: bool = False,
     ) -> str:
         """#1121: where a limit stop's line goes. The discriminator is the
         server-stamped origin route, never the message type — an untrusted
         webhook turn dispatches as SCHEDULED like Casa's own schedule.
 
-        ``log``: an untrusted webhook turn — no user to tell, WARNING only.
+        ``log``: an untrusted webhook turn — no user to tell, WARNING only —
+        unless its route declares ``deliver: operator`` (#1142): that fire's
+        line goes to the operator, or the stop would be the silent loss the
+        opt-in exists to close.
         ``chat``: the turn's own Telegram chat. ``operator``: the operator's
         Telegram chat, taken explicitly, for a Casa-started turn that ran on no
         Telegram chat (a voice- or webhook-origin narration, a schedule
@@ -1627,7 +1688,7 @@ class Agent:
         ``voice``: spoken by the transport after the held tail."""
         route = (msg.context or {}).get("_origin_route")
         if route == "webhook_trigger":
-            return "log"
+            return "operator" if delivers_to_operator else "log"
         if is_narration:
             return ("chat" if msg.channel == "telegram" and channel is not None
                     else "operator")
@@ -2788,7 +2849,8 @@ class Agent:
         # plugins, no external hooks, no Bash/fs/net, two casa-framework tools).
         # webhook_trigger turns are SCHEDULED → bypass the client pool → fresh
         # options per turn, so this branch is pool-key-neutral.
-        _route = (origin_var.get(None) or {}).get("_origin_route")
+        _origin = origin_var.get(None) or {}
+        _route = _origin.get("_origin_route")
         # Personality Phase A, Task 8: a resident config carries a compiled
         # per-surface prompt bundle; specialists/executors keep None and stay on
         # the legacy self.config.system_prompt path untouched.
@@ -2812,6 +2874,8 @@ class Agent:
                 max_turns=_RESTRICTED_WEBHOOK_MAX_TURNS,
                 agent_home=agent_home,
                 resume_sid=resume_sid,
+                # #1142: the turn scope's predicate, and nothing else.
+                delivers_to_operator=_delivers_to_operator(_origin),
             )
             # #199: an untrusted webhook turn does no recall — record the
             # restricted projection + its persona-stripped prompt, memory empty.

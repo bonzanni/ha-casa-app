@@ -178,7 +178,7 @@ line was added; `delegate_to_agent` reports the brief's note as `casa_note` on e
 pending result — the async one and a synchronous wait that degraded to pending. The
 transcript the model builds on therefore says what the operator saw.
 
-**INV-OUT-006**: Whether a turn streams, whether its final reply is closing silence, and where an untrusted webhook turn's discrete send goes are properties of its scope — the first and third registered at mint from the message's own facts, the second intrinsic to final-reply admission: a scheduled turn or an event wake never receives a token callback, a final reply that strips to nothing but `<silent/>` sentinels is suppressed by admission while prose after a sentinel is delivered whole — except that when a scheduled turn's or an event wake's last text-bearing message strips to a `<silent/>` after earlier text, the reply is suppressed if the turn made at least one Casa send, every one confirmed delivered, every send call resolved without failure, and exactly one attempt ran with no retry, and is otherwise the earlier messages without the closing ones — and an untrusted webhook turn's `send_message` is bound to Telegram whatever channel it named.
+**INV-OUT-006**: Whether a turn streams, whether its final reply is closing silence, and where an untrusted webhook turn's discrete send goes are properties of its scope — the first and third registered at mint from the message's own facts, the second intrinsic to final-reply admission: a scheduled turn or an event wake never receives a token callback, a final reply that strips to nothing but `<silent/>` sentinels is suppressed by admission while prose after a sentinel is delivered whole — except that when a scheduled turn's or an event wake's last text-bearing message strips to a `<silent/>` after earlier text, the reply is suppressed if the turn made at least one Casa send, every one confirmed delivered, every send call resolved without failure, and exactly one attempt ran with no retry, and is otherwise the earlier messages without the closing ones — and an untrusted webhook turn's `send_message` is bound to Telegram whatever channel it named, while its final reply is delivered only when its route declares `deliver: operator`, and then on every output path only to the operator's Telegram with a fresh delivery context.
 
 The three used to be inline checks — the two-clause callback condition and the sentinel
 gate in `handle_message`, the egress clamp in `send_message` — and are now `NoStream`
@@ -188,6 +188,12 @@ gate in `handle_message`, the egress clamp in `send_message` — and are now `No
 classification and the #666 stream hold use), and `DestinationOperatorOnly` (applied by
 `TurnScope.resolve_channel`). The behaviour is unchanged: the tests that pinned the three
 checks keep their assertions, and a grep test refuses the old inline forms coming back.
+
+The delivered webhook reply (#1142) is `TurnScope.delivers_to_operator`, read once where
+`handle_message` picks the turn's one channel-and-context pair; the error line, the reply and
+teardown all use it. The context is fresh because the execution context's `chat_id` keys the
+session, and a numeric one would override the channel's chat. The rest of the route is
+[`plugin-triggers.md`](plugin-triggers.md)'s INV-TRIG-018.
 
 What it does not cover: `send_media` still requires a Telegram origin of its own, so a
 webhook turn's media is refused before the binding matters; the #650 retry-tainted-silence

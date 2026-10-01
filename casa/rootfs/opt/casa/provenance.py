@@ -63,6 +63,10 @@ RESERVED_CONTEXT_KEYS = frozenset({
     # forge "invoke"/"private" clearance (spec A0/A4).
     "_origin_route",
     "_origin_clearance",
+    # #1142: the route's `deliver` enum, stamped by the /webhook/{name}
+    # dispatch from the route record. A caller that could set it would choose
+    # where an untrusted turn's final reply goes.
+    "_webhook_deliver",
     # #485: the scheduled-delivery marker. A resident's own time-based trigger
     # turn carries a session-keying LABEL in `chat_id`, not a chat id, so
     # `send_media` had nowhere to deliver. This marker — stamped ONLY by Casa's

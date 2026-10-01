@@ -72,7 +72,8 @@ Code is the source of truth; these files are a map.
 - [architecture/tools-interface.md](architecture/tools-interface.md): The mutation interface — the one tool registry, result envelopes, the question lifecycle, and which failures roll back versus report.
 - [architecture/trigger-secrets.md](architecture/trigger-secrets.md): The secrets that authenticate webhook triggers — who mints one and when, the mint receipt and provenance, the per-slot reload report, and what is not retired.
 - [architecture/triggers.md](architecture/triggers.md): What makes an agent act without a person speaking — a resident's scheduled and webhook triggers, and who may write the file they live in.
-- [architecture/turn-loop.md](architecture/turn-loop.md): How one inbound message becomes one agent turn, and what bounds it.
+- [architecture/turn-limits.md](architecture/turn-limits.md): What bounds a resident turn — the stop at its turn limit, the one line Casa adds about it and where that line goes, and the limits the residents run with.
+- [architecture/turn-loop.md](architecture/turn-loop.md): How one inbound message becomes one agent turn — what it assembles and how its model call is retried.
 - [architecture/vault-drop-off.md](architecture/vault-drop-off.md): How a sign-in link reaches the plugin tool that consumes it without a delegation brief — the casa.dropOffs field, the Casa-titled and tagged vault item, and the assistant's vault_drop_off tool that writes only that item and never returns or logs the value.
 - [architecture/voice-delivery.md](architecture/voice-delivery.md): The leased claim/acknowledge protocol that gets a deferred voice answer to a device — attempts, leases, per-device ordering, the fixed bounds, and result disclosure.
 - [architecture/voice.md](architecture/voice.md): How speech becomes a turn and the answer gets back — transports, auth, turn budget, deferred delivery.
