@@ -145,6 +145,8 @@
   doc: architecture/memory-lifecycle.md
 - item: casa/rootfs/opt/casa/memory_wipe.py
   doc: architecture/memory-wipe.md
+- item: casa/rootfs/opt/casa/mental_models.py
+  doc: architecture/memory.md
 - item: casa/rootfs/opt/casa/observer.py
   doc: architecture/engagements.md
 - item: casa/rootfs/opt/casa/output_boundary.py
