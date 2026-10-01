@@ -260,8 +260,9 @@ own executor engagement and plugin jobs are another kind and never listed. Each 
 tools commits on the call, so the warning can only come first as a pending result:
 `ok: false`, `kind: "open_conversations_unconfirmed"`, the conversations by topic and task,
 and a `warning` the configurator relays verbatim before asking. The operator's yes comes back
-as `acknowledged_conversations`; nothing about it is stored, so a follow-up from another
-configurator conversation is warned again. An id counts only when the registry knows it as
+as `acknowledged_conversations`, carried in the call itself: the check reads only the ids
+the call carries and matches no call to the configurator conversation that was warned, so a
+call without the ids is warned again and one carrying them commits, whoever makes it. An id counts only when the registry knows it as
 one of that specialist's engagements, so a made-up list acknowledges nothing; the calls
 Casa's erase-question continuations tell the model to make carry the same ids. For a persona, upgrade or rollback the warning
 says, of each conversation, the one sentence `tools.py::SPECIALIST_OPEN_CONVERSATION_NOTICE`
@@ -270,7 +271,7 @@ settings when it resumes, and switches only by closing it with `/complete` and a
 new one — and that constant also feeds the three tool descriptions, so no surface can drift.
 A conversation opened after the operator confirmed does not refuse an ordinary change; the
 committed result names it with the same sentence. A pending-configuration upgrade's
-follow-up and a kept upgrade's re-run carry the same ids, so the operator is asked once.
+follow-up and a kept upgrade's re-run carry the same ids, so neither is warned again.
 
 Enforced by one listing (`tools.py::_open_specialist_engagements`) and two placements. The
 ordinary changes check in `tools.py::_ordinary_change_gate` before anything commits — for
