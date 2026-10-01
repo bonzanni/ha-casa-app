@@ -290,7 +290,7 @@ def test_assistant_denies_bash():
 # ---------------------------------------------------------------------------
 # #633 — the wipe door is granted to NOBODY, and the corpus says so
 #
-# `casa/DOCS.md` and `docs/architecture/memory-lifecycle.md` publish the claim
+# `casa/DOCS.md` and `docs/architecture/memory-wipe.md` publish the claim
 # "no shipped agent is granted `wipe_memory`". Nothing bound it in either
 # direction before this test, which is how the opposite claim survived four
 # releases. Asserted on the EXPOSURE outcome (`select_casa_tools`), never on a
