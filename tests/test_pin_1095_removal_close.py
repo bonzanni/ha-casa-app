@@ -30,8 +30,6 @@ import plugin_erasure as pe
 from test_plugin_erase_flow import _spec, flow, sflow  # noqa: F401 — fixtures
 from test_reload_disabled_specialist_scopes import ROLE, harness  # noqa: F401 — fixture
 
-pytestmark = pytest.mark.asyncio
-
 SUBJECT = "specialist:fin"
 PENDING = "open_conversations_unconfirmed"
 
