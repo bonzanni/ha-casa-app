@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.335.0] - 2026-10-01
+
+### Added
+
+- A plugin webhook trigger can now declare `deliver: operator_always` (#1158).
+  Like `deliver: operator`, each fire's reply is sent to you on Telegram. The
+  difference is that no fire ends silently. The assistant is not told it may
+  reply `<silent/>`, and if its reply is silent or empty anyway, Casa sends you
+  one line of its own: "The '<webhook>' webhook fired; I had nothing to add."
+  If the turn fails, or stops at its step limit, you get that notice instead,
+  and not the line as well. The consent message says every fire sends you a
+  message. `deliver: operator` is unchanged: a silent reply still sends
+  nothing.
+- Plugin authors: a Casa older than this release rejects `operator_always` as
+  an invalid `deliver` value, and with it all of the plugin's triggers. Ship a
+  plugin that declares it only after this release.
+
 ## [0.334.0] - 2026-10-01
 
 ### Added

@@ -82,9 +82,14 @@ def render_trigger_consent_message(
     header = auth.get("header", "?")
     # #1142: the egress the operator approves is named in the prompt — an
     # opted-in trigger's every fire ends in a message to them.
-    delivery = (
-        "deliver: operator — each fire sends you a Telegram message.\n\n"
-        if deliver == "operator" else "")
+    delivery = {
+        "operator":
+            "deliver: operator — each fire sends you a Telegram message.\n\n",
+        # #1158: silence is not an outcome for this one.
+        "operator_always":
+            "deliver: operator_always — every fire sends you exactly one "
+            "Telegram message, even when there is nothing to add.\n\n",
+    }.get(deliver, "")
     # #1156: who holds the key, and how large a body the route accepts, are
     # both part of what the operator approves.
     owner = (

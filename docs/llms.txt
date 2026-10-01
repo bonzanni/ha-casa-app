@@ -77,6 +77,7 @@ Code is the source of truth; these files are a map.
 - [architecture/vault-drop-off.md](architecture/vault-drop-off.md): How a sign-in link reaches the plugin tool that consumes it without a delegation brief — the casa.dropOffs field, the Casa-titled and tagged vault item, and the assistant's vault_drop_off tool that writes only that item and never returns or logs the value.
 - [architecture/voice-delivery.md](architecture/voice-delivery.md): The leased claim/acknowledge protocol that gets a deferred voice answer to a device — attempts, leases, per-device ordering, the fixed bounds, and result disclosure.
 - [architecture/voice.md](architecture/voice.md): How speech becomes a turn and the answer gets back — transports, auth, turn budget, deferred delivery.
+- [architecture/webhook-delivery.md](architecture/webhook-delivery.md): Where a plugin webhook fire's reply goes — the deliver opt-in, the tools such a turn is offered, and the operator_always value under which no fire ends silent.
 
 ## Reference
 

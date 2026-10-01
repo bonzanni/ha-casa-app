@@ -306,6 +306,14 @@ reply, or the error message if the turn fails, is sent to you on Telegram, and
 the consent message tells you so. A reply that is only `<silent/>` sends
 nothing. Triggers that do not declare it behave as before.
 
+**Every fire, no silence (0.335.0).** A trigger that declares
+`deliver: operator_always` reaches you on every fire. The assistant is not
+invited to stay silent, and if its reply is `<silent/>` or empty anyway, Casa
+sends one line of its own instead: "The '<webhook>' webhook fired; I had
+nothing to add." An error or a step-limit notice counts as that message, so a
+fire with no reply still sends you exactly one message. The consent message
+says so.
+
 **Provider-generated secrets and larger bodies (0.334.0).** A plugin trigger
 using `static_header` or `timestamped_hmac` may declare
 `secret_owner: provider` when the calling service generates the signing secret

@@ -79,7 +79,8 @@ stores — so it fails closed on read.
 normalized auth policy. **Clearance is not in it** — a clearance change on a trigger installs
 under the old approval without renewed consent. Everything in the tuple, including any auth
 mode, header or tolerance change, does invalidate the approval.
-`deliver` and `max_body_kib` are not in the tuple either (INV-TRIG-018, INV-TRIG-020). The
+`deliver` and `max_body_kib` are not in the tuple either (INV-TRIG-018 in
+[`webhook-delivery.md`](webhook-delivery.md), INV-TRIG-020). The
 artifact id binds them: the artifact is checksum-validated, so adding or changing either field
 makes a new artifact, which needs a new approval. The prompt names both, so the operator
 approves the messages they will receive and the size they will accept. The secret owner is
@@ -193,24 +194,6 @@ after its swap has already published a live map, so no marker of its stands for 
 to collect and its drain ends in a setup-worker kick, where this one deliberately ends in
 none. Same mechanism, opposite terminus, because the two passes leave opposite state behind.
 
-**INV-TRIG-018**: A plugin webhook trigger's final reply reaches the operator only when its manifest entry declares `deliver: operator` — an enum whose only other value, `none`, is the default — and the route record carries it to ingress, which stamps it on the turn as a reserved marker no request can set. Such a turn delivers its reply, including a classified error and the line Casa adds when it stops at its turn limit (INV-TURN-014), to the operator's Telegram, and is not offered `send_message`.
-
-A webhook turn's reply used to go nowhere: no channel is registered under `webhook`, and
-nothing said so. The opt-in is per trigger and travels in the one route snapshot ingress
-reads (#620's seam), never re-read from the registry later. A resident webhook route reads
-`none`. One predicate, `TurnScope.delivers_to_operator`, decides everything downstream. It
-picks the reply's channel and context (INV-OUT-006 in
-[`output-boundary.md`](output-boundary.md)). It builds the restricted runtime's tool set,
-whose allowlist and tool listing both lose `send_message`. And it makes the `send_message`
-handler refuse, as defence in depth. A prompt line could not stop a tool send and an
-ordinary final reply from both arriving; removing the tool does. The turn's content also
-ends with one constant line saying where the reply goes. It is guidance only, and it is
-Casa's text (INV-TRIG-013 in [`triggers.md`](triggers.md)).
-
-What it does not cover: a failed Telegram send is logged, not retried (the request was
-already answered), and with no Telegram channel registered the reply is dropped with a
-warning.
-
 **INV-TRIG-019**: A provider-owned plugin trigger's slot is bound to the approval that routes it by the reconcile's writing hop, which never writes a value: a slot bound to any other approval is retired first, a value that survives that retirement leaves the plugin's whole set unrouted with `trigger_secret_missing`, and the setup-dispatch gate counts the route as backed once its slot is bound, with or without a value. A slot already bound is left as it is. A Casa-owned mint retires bytes that are not a Casa token before minting. A provider-owned trigger is valid only in a plugin declaring `casa.setupTool`.
 
 Retirement on update, revoke and removal is best-effort and returns what survived; the
@@ -292,9 +275,8 @@ with no trailing newline, since a provider value must be printable ASCII. Body-H
 the one global webhook secret — provisioning the wrong kind
 leaves the plugin unroutable.
 
-**Delivering a fire to the operator** is the entry's `deliver: operator`. A Casa that predates
-the field rejects it as an unknown key, and rejects the whole set with it, so a plugin that
-declares it ships only after a Casa that knows it.
+**Delivering a fire to the operator** — the entry's `deliver` — is
+[`webhook-delivery.md`](webhook-delivery.md)'s.
 
 **Re-issuing an expired consent DM** is the `consent_reprompt` tool's job — the prompt-only
 re-issue shared by all three consent kinds (its contract is in
@@ -327,7 +309,6 @@ those leaves the old overlay live until a covered scope runs.
 - `tests/test_plugin_triggers_manifest.py`
 - `tests/test_trigger_consent.py`
 - `tests/test_trigger_reconcile_publication_fence.py`
-- `tests/test_webhook_deliver_operator.py`
 - `tests/test_plugin_trigger_provider_secret.py`
 
 **Related**
@@ -337,4 +318,5 @@ those leaves the old overlay live until a covered scope runs.
 - [`architecture/callbacks.md`](../architecture/callbacks.md)
 - [`architecture/plugin-setup-dispatch-gate.md`](../architecture/plugin-setup-dispatch-gate.md)
 - [`architecture/output-boundary.md`](../architecture/output-boundary.md)
+- [`architecture/webhook-delivery.md`](../architecture/webhook-delivery.md)
 <!-- END SOURCEMAP -->

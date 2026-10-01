@@ -30,7 +30,11 @@
 
 - doc: manifest.d/architecture-plugin-m-r.yaml
   kind: meta
-  summary: Manifest shard — architecture documents plugin-m through R.
+  summary: Manifest shard — architecture documents plugin-m through plugin-setup-turn.
+
+- doc: manifest.d/architecture-plugin-t-r.yaml
+  kind: meta
+  summary: Manifest shard — architecture documents plugin-triggers through R (split from plugin-m-R at the 40 KB index ceiling).
 
 - doc: manifest.d/architecture-s.yaml
   kind: meta

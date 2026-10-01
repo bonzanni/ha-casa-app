@@ -2316,6 +2316,15 @@ WEBHOOK_DELIVER_LINE = (
 )
 
 
+# #1158: the line for a `deliver: operator_always` fire. It never invites
+# <silent/>: such a fire always ends in one operator message, and a reply that
+# is silent anyway is replaced by Casa's own fallback line (INV-TRIG-021).
+WEBHOOK_DELIVER_ALWAYS_LINE = (
+    "(Casa: your final reply is delivered to the operator on Telegram, and "
+    "every fire must reach them — always reply, even if only briefly.)"
+)
+
+
 def _make_webhook_handler(
     *,
     webhook_rate_limiter: Any,
@@ -2448,7 +2457,10 @@ def _make_webhook_handler(
         target_role = route["role"]
         clearance = route.get("clearance", "public") or "public"
         # #1142: from the SAME route record — never a second registry read.
-        deliver = "operator" if route.get("deliver") == "operator" else "none"
+        # #1158: the same enum, one value more; anything else reads "none".
+        deliver = (route.get("deliver")
+                   if route.get("deliver") in ("operator", "operator_always")
+                   else "none")
 
         if not _verify(request, body, route, secret):
             return web.json_response(
@@ -2484,6 +2496,8 @@ def _make_webhook_handler(
         content = f"Webhook '{name}' triggered with payload: {payload}"
         if deliver == "operator":
             content = f"{content}\n\n{WEBHOOK_DELIVER_LINE}"
+        elif deliver == "operator_always":
+            content = f"{content}\n\n{WEBHOOK_DELIVER_ALWAYS_LINE}"
         msg = BusMessage(
             type=MessageType.SCHEDULED,
             source="webhook",
