@@ -199,6 +199,17 @@ an agent.
 **The turn exceeds its budget.** Waits are computed from the remaining budget and refused
 when there is not enough left, rather than being started and abandoned.
 
+**The turn stops at its turn limit.** The agent marks the response, and the transport speaks
+the turn's held tail first, then one more line of its own — the persona's `turn_limit` line
+("I ran out of steps — ask me to continue."), overridable through `voice_errors` like every
+other line — as an ordinary speech block before `done`, on both transports. It is never an
+error frame and never takes the retracting path of INV-VOICE-007: what was said stands, and
+the turn did not fail. It is spoken once anything was said, the "still working" progress
+notice included; a turn that said nothing keeps the existing `empty_turn` line, retries or
+not. The marker is written on every voice turn, so a caller cannot carry one into a healthy
+turn. Why and when a turn stops there is
+[`turn-loop.md`](turn-loop.md)'s INV-TURN-014.
+
 **Delivery fails at the endpoint.** Send failures are absorbed and logged, and the sweeper
 survives them. Endpoint failure is reported by the client rather than discovered here — so
 "delivered" means "handed over", not "heard".

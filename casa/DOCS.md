@@ -147,6 +147,7 @@ setting by hand:
 6. **Reminders**: Ellen can set her own reminders, which are ordinary triggers written to her `triggers.yaml` — so they survive restarts and updates. One-off reminders remove themselves after firing, and any reminder whose time fell while Casa was down is delivered on the next sweep rather than lost.
 7. **Weekday morning briefing**: Ellen's 08:00 weekday briefing is meant to be silent on most days. It sends a message only for something you must act on today and have not already been told, checked against a live source that morning or marked as unverified. Memory and Casa's own schedule are not treated as confirmation of today's state, and an empty or failed check is not a reason to message you. These are instructions to the model, so an occasional stray line is still possible.
 8. **Dated, marked memories**: With long-term memory on, a recalled memory shows the date it was recorded when the memory server returns that date with a time zone, and one a scheduled turn last saved (a trigger or reminder prompt, what the agent wrote on that turn, its silence) says so. Your own answers to a scheduled question and results a specialist returned into it are kept as ordinary memories. Memory is still history, not confirmation of how things are now: Ellen is told to check changeable state live, or say it is unchecked, before stating it as current. A recall the memory server answers as busy is retried once, after a wait of at most a second. Memories saved before this change keep their old form.
+9. **Step limit**: Each turn has a step limit — one step is one model call, and parallel tool calls in one message count as one. Ellen's is 80; a turn started by an untrusted webhook always gets 20, and the voice agents keep 10 (butler) and 6 (concierge). When a turn reaches its limit, whatever it already said stays, Casa never retries or continues on its own, and Casa adds one line: in a chat, "say 'continue'" picks up where it stopped; a scheduled task, reminder or follow-up to a scheduled question runs on its own, so its line names the task and offers to redo it on request; a trusted `/invoke` gets the line at the end of its response; a voice agent that has already spoken says so aloud; an untrusted webhook turn is only logged. Every stop logs a WARNING with the agent, the channel and the step count.
 
 ### Writing a scheduled trigger prompt by hand
 
@@ -560,6 +561,7 @@ voice_errors:
   channel_error: "[flat] Something went wrong sending that."
   unknown:       "[flat] Sorry, something went wrong."
   empty_turn:    "[apologetic] Sorry, I lost my train of thought — could you ask that again?"
+  turn_limit:    "[flat] I ran out of steps — ask me to continue."   # after partial speech
 ```
 
 `tag_dialect` selects how inline emotion tags (`[confident]`, `[warm]`,

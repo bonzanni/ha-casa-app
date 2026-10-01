@@ -72,6 +72,13 @@ decision. A replayed orphan notice discharges the same way: a
 resident that stays silent about a job it lost track of leaves that loss untold, which is the
 cost of not replaying the notice forever.
 
+A narration cut at its **turn limit** did not choose its silence (#1121, INV-TURN-014 in
+[`turn-loop.md`](turn-loop.md)). When its only delivered output is Casa's own step-limit
+line — it wrote nothing, or nothing but the sentinel — the notice stays owed: that line is a
+send of its own, never the turn's delivery, so it acknowledges nothing, and the chosen-silence
+discharge skips a limit-stopped turn. A cut narration whose partial narration did reach the
+chat is acknowledged exactly as any delivered narration is; the line follows it.
+
 What it does **not** claim is that the resident's words describe the delegation. The
 acknowledgement is discharged by Casa's own output for that notification reaching the
 transport, and nothing inspects the narration's content — a resident that answers something
