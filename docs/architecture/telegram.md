@@ -326,6 +326,15 @@ finalization's topic operations; the contract is INV-ENG-012 in
 fails when one of its turns draws that notice; any other returned turn hands the job to its
 batch loop.
 
+**A turn RETURNS having stopped at its turn limit.** Its result frame says so, and the
+delivery task does not treat it as cut off. On every turn but a batch turn — one that
+`deliver_system_turn`, which marks its turns explicitly, delivered into a background job's
+engagement — it posts Casa's step-limit line once after whatever the turn posted, even when
+it posted nothing, posts nothing over a settled terminal record, and logs one WARNING; the
+limit takes precedence over the undelivered-text notice, so an operator's turn in a job topic
+hands the job to its batch loop. A batch turn keeps the handling above. The contract is
+INV-ENG-020 in [`architecture/engagements.md`](engagements.md).
+
 ## Extension points
 
 **Changing transport** touches the manifest schema, the environment-driven selection, the

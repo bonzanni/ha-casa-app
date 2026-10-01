@@ -44,7 +44,9 @@ still apply. Its working directory is `/data/engagements/<id>/plugin-job`.
 
 Casa then drives the job itself. Every batch is a system turn (`Batch <n> of "<title>":
 continue the job.`) delivered through the same path as an operator message. A batch ends
-when the specialist ends its turn or runs out of turns — running out is not a failure. The
+when the specialist ends its turn or runs out of turns — running out is not a failure. A
+job's launch turn that runs out of turns does not fail the job either: its topic gets Casa's
+step-limit line and batch 1 starts as usual (INV-ENG-020). The
 specialist reports each batch with `report_job_progress`, which posts one line in the topic
 and says whether the batch moved the job toward completion.
 Messages the operator writes in the topic are delivered as their own turns, between

@@ -228,7 +228,9 @@ that lost the terminal race to its own completion, because the engagement really
 itself. The kind is deliberately its own rather than the generic
 driver-start failure — a reader who cannot tell "the driver never got going" from "the turn
 ran and then died" cannot act on either. See INV-ENG-011 in
-[`engagements.md`](engagements.md).
+[`engagements.md`](engagements.md). A launch turn that stopped at its turn limit is the
+exception: whatever it left, it is not a death — the engagement stays open and the owner
+posts Casa's step-limit line instead (INV-ENG-020, same document).
 
 **A delivery is uncertain.** The send classifiers separate definitive refusal from
 uncertainty, and an uncertain Telegram send is deliberately not retried — a duplicate

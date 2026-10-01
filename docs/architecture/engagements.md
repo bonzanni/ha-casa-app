@@ -82,7 +82,7 @@ subject.** The allocation, the ownership it implies, and the boundary built on i
 
 ## Contracts & invariants
 
-**INV-ENG-011**: An `in_casa` LAUNCH turn ends holding the turn's own terminal artifact and either a terminal engagement record or operator-visible topic output — or the launch's owner reports the death: one durable strict `error` transition, one bounded notice into the still-open topic, a bounded driver teardown, and the topic aborted, whether or not the tool call that launched the engagement is still running. It is never left `active` behind an ended transport with nothing posted, and the path never writes `completed` and never retains to the shared memory bank.
+**INV-ENG-011**: An `in_casa` LAUNCH turn ends holding the turn's own terminal artifact and either a terminal engagement record or operator-visible topic output — or the launch's owner reports the death: one durable strict `error` transition, one bounded notice into the still-open topic, a bounded driver teardown, and the topic aborted, whether or not the tool call that launched the engagement is still running. It is never left `active` behind an ended transport with nothing posted, and the path never writes `completed` and never retains to the shared memory bank. A launch turn that stopped at its turn limit is never reported dead (INV-ENG-020); when its one line fails or is cancelled it is left `active`, transport live, with nothing posted.
 
 A driver's `start()` returning has always meant *the first turn ran to its end*, never *the
 engagement reported anything*, and that gap is where a launch turn could die unnoticed. The
@@ -138,7 +138,7 @@ its detail is the undifferentiated "the tool call was cancelled during launch", 
 launch cause seam is written at the canceller and the graceful stop is the only canceller
 that writes one today (#847).
 
-**INV-ENG-012**: A ticketed FOLLOW-UP turn to an `in_casa` engagement that ends without the turn's own terminal artifact — or that finishes holding it while finalization has *established* that its streamed text was wholly undelivered — is never answered with silence: exactly one bounded operator-facing notice attempt is made in the engagement's topic, by the owner of that turn's admission ticket, and one turn's observation can never be consumed or lost by another turn's owner. The single thing that excuses the telling is that the engagement's terminal path has already told that topic why the engagement ended; the record merely being terminal is not that fact, and wherever it is not known that the topic was told, the telling is made. A follow-up turn that ends holding its terminal artifact with no established delivery failure produces no observation and no notice; an *ambiguous* delivery (a lost acknowledgement, or a handle off the delivery contract) is not an established failure and records nothing. The driver records, never raises, and never reads the record's status.
+**INV-ENG-012**: A ticketed FOLLOW-UP turn to an `in_casa` engagement that ends without the turn's own terminal artifact — or that finishes holding it while finalization has *established* that its streamed text was wholly undelivered — is never answered with silence: exactly one bounded operator-facing notice attempt is made in the engagement's topic, by the owner of that turn's admission ticket, and one turn's observation can never be consumed or lost by another turn's owner. The single thing that excuses the telling is that the engagement's terminal path has already told that topic why the engagement ended; the record merely being terminal is not that fact, and wherever it is not known that the topic was told, the telling is made. A follow-up turn that ends holding its terminal artifact with no established delivery failure produces no observation and no notice, unless it stopped at its turn limit — INV-ENG-020 governs that turn, and outside a batch turn tells it instead of this statement even when its text was wholly undelivered; an *ambiguous* delivery (a lost acknowledgement, or a handle off the delivery contract) is not an established failure and records nothing. The driver records, never raises, and never reads the record's status.
 
 INV-ENG-011 covers the launch turn. The turn *after* it had the same hole and no owner at
 all: cut off mid-tool-loop, a ticketed turn raises nothing, records nothing, discharges its
@@ -202,6 +202,8 @@ failing against a closed topic. `in_casa` turn admission now exists, and it does
 this: admission decides whether a turn is *delivered*, not where a notice *lands*. Ordering
 the notice would additionally require the finalization's own topic operations to be sequenced
 against it, which is not built here.
+
+**INV-ENG-020**: An `in_casa` engagement turn whose terminal SDK result has subtype `error_max_turns` is a limit stop. It is detected from that subtype alone — after the API-fault and evidence checks, so a refusal still ends as `ApiErrorTurn` — and recorded alongside the turn's existing observation, never raised. A limit stop never ends the engagement: a LAUNCH turn that stopped at its limit (tool-only, with text, with its text undelivered, or a job's launch turn) is not reported dead, gets no other launch notice, and the engaging resident is sent nothing; a cancellation landing during its telling never takes the launch's cancellation-abort arm. Except on a BATCH turn, Casa makes exactly one bounded attempt to post one line of its own — the resident step-limit line (INV-TURN-014) — into the engagement's topic, after whatever the turn posted and even when it posted nothing, and no attempt when the bounded settled-state read returns a terminal status; limit handling logs exactly one WARNING naming the engagement, the role, the turn count and the telling's outcome. Such a turn is never reported cut off, and the limit takes precedence over an established text-not-delivered observation, whose notice is then not posted. A batch turn — delivered by `deliver_system_turn` into an engagement whose origin carries a job — is handled exactly as before: no line, no limit WARNING, not cut off on its own. A failed or cancelled line post is logged and leaves the engagement live; nothing retries it.
 
 **INV-ENG-014**: Once a `claude_code` launch's rollback has been entered, every removal it was entered to run — the s6 service directory, the workspace tree, the control directory that holds `.casa-meta.json`, the uid's passwd/group identity and its private outbox — is attempted; a cancellation delivered at one of the rollback's own awaits skips none of those attempts. That cancellation is never swallowed: it is re-raised once the attempts have run, carrying the failure it interrupted rather than replacing it.
 
@@ -304,6 +306,8 @@ persisting ledger checks it — is answered in the same document.
 - `tests/test_in_casa_launch_retention_guard.py`
 - `tests/test_launch_death_reporter.py`
 - `tests/test_in_casa_inbound_admission.py`
+- `tests/test_pin_1141_engagement_turn_limit.py`
+- `tests/test_turn_limit_engagement_regressions.py`
 
 **Related**
 - [`architecture/overview.md`](../architecture/overview.md)
