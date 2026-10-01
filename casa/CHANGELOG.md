@@ -1,5 +1,54 @@
 # Changelog
 
+## [0.332.19] - 2026-10-01
+
+### Fixed
+
+- Saving the same text to memory again could lower its privacy level. Each
+  save classifies the text anew, and the latest save's level replaced the
+  stored one, so a line once saved as private could become readable at a lower
+  level. Before saving a text, Casa now reads the level the memory server has
+  stored for it, unless the new level is already private from a real
+  classification, and saves the stricter of the stored level and the new one.
+  A save can raise a memory's level, and it does not lower the level it read.
+- When the privacy classifier fails (blank text, an error after its retry, or
+  an answer it still cannot read after asking again), the text is saved as
+  private, as before. That private no longer holds back a later real
+  classification: on a text with no stored level, or only a provisional one,
+  Casa marks the private as provisional, and the next real classification
+  replaces it. On a text that already has a stored level that is not
+  provisional, the save keeps that level.
+
+### Changed
+
+- Every memory stored as private before this update counts as a real private,
+  including ones saved as private only because the classifier failed. Saving
+  them again does not lower them, and this update adds no way to lower a
+  stored level by hand. A way for the operator to reclassify a memory is
+  tracked separately (#1125).
+- If Casa cannot check a memory's stored level before saving (the memory
+  server is busy, restarting or unreachable, the check times out, or the
+  server gives an answer Casa does not recognise), that whole save is skipped
+  and nothing is written with an unchecked level. A conversation whose save is
+  skipped goes through the same retry a failed save already gets. What a
+  specialist was asked and answered, an engagement summary or an executor's
+  summary, when its save is skipped this way, is not retried and is not
+  remembered. The check can fail where the save alone would have worked, so a
+  save can now be skipped where it would have succeeded before.
+- Saving to memory now makes one extra read request to the memory server for
+  each text whose new level is not already a real private (repeated once if
+  the connection drops). The document-read route it uses has been present in
+  Hindsight since v0.0.8; the behaviour Casa relies on was verified on
+  Hindsight 0.10.2.
+
+### Known limitations
+
+- The check and the save are not one step. Two saves of the same text that
+  are in flight at once and both find it never saved each store their own
+  level, and the one applied last stands, as before this update. A save that
+  raises a level can likewise be overwritten by a concurrent save that read
+  the level from before the raise; neither goes below the level both read.
+
 ## [0.332.18] - 2026-09-30
 
 ### Fixed
