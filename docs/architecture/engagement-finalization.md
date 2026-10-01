@@ -35,7 +35,8 @@ racing a cancellation from producing two closures and two notifications.
 
 Casa itself is one of those callers: removing a specialist closes its open conversations
 through the same funnel, outcome `cancelled`, exactly as a cancel does — after an uninstall
-commits (INV-SPEC-022) and when a reload or a boot reads the specialist disabled
+commits and its reload removes the specialist (INV-SPEC-022), and when a reload or a boot
+reads the specialist disabled
 (INV-CFG-013).
 
 **The transition is strict about persistence.** If writing the terminal state fails, the

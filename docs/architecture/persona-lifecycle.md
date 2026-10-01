@@ -153,8 +153,9 @@ What it does not cover: a staged binding is not a promise the next boot will run
 stops compiling before then — its bytes changed under the pinned version, say —
 reconciliation discards it and retains the last-known-good, exactly as INV-PERS-003
 describes. It also says nothing about specialists: a specialist's persona is committed at
-apply and new conversations get it after the next reload, while a conversation already open
-keeps its personality (INV-SPEC-022 warns before the apply).
+apply and new conversations get it once the specialist is reloaded — the apply recipe runs
+`casa_reload(scope="agents")` — while a conversation already open keeps its personality
+(INV-SPEC-022 warns before the apply).
 
 **INV-PERS-018**: Every entry point that stages a persona binding for a resident tells the operator what the promoting restart costs — the same notice in its result envelope and in its own description — and the apply recipe states it at the step that orders the restart.
 
@@ -184,8 +185,8 @@ cannot leave another entry point saying something else.
 What it does not cover: it says nothing about the resume decision, which is unchanged — a
 digest mismatch still refuses and retains. It does not make voice retain anything. It says
 nothing about specialists, which carry a different notice: a specialist's persona is
-committed at apply and used by new conversations after the next reload, while a conversation
-already open keeps its personality until it is closed — so `persona_apply` on a specialist
+committed at apply and used by new conversations once the specialist is reloaded, while a
+conversation already open keeps its personality until it is closed — so `persona_apply` on a specialist
 with open conversations warns first, with the sentence INV-SPEC-022 describes, and the
 resident restart notice is not shown. And it is about what the tool surface SAYS, not about what the model
 does with it: an operator who is told and restarts anyway loses the conversations exactly

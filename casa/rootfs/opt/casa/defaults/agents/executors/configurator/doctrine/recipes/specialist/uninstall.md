@@ -23,7 +23,7 @@
    `specialist_uninstall(slug=..., erase_data=...)` in place of `plugin_remove`.
    The specialist is uninstalled only when every bundled eraser reported its
    erasure complete; relay each report in `erase_reports` verbatim.
-   When it succeeds, Casa has closed the specialist's open conversations: relay
+   When it succeeds, Casa has tried to close every conversation of the specialist still open: relay
    `closed_conversations` (name any flagged `opened_after_confirmation` — opened after the operator
    confirmed), and if `conversations_still_open` is present, tell the operator those could not be
    closed and are still open.

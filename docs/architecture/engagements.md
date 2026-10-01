@@ -47,8 +47,9 @@ its prompt; what Casa then does with a job's engagement is
 does not reach them.** One keeps the personality and the plugin versions it started with
 and reads the specialist's current settings when it resumes. So a persona apply, an upgrade,
 a rollback or an uninstall warns before it changes a specialist that has any (INV-SPEC-022),
-and removing a specialist closes them — after an uninstall commits, and when a reload or a
-boot reads it disabled (INV-CFG-013) — through the terminal funnel, outcome `cancelled`.
+and removing a specialist closes the ones still open — after an uninstall commits and its
+reload removes the specialist, and when a reload or a boot reads it disabled (INV-CFG-013) —
+through the terminal funnel, outcome `cancelled`; a close that fails leaves that one open.
 
 **Much less survives a restart than the word "durable" suggests.** The record persists;
 concurrency permits, live drivers, output sequencers, inbound reservations and various

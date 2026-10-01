@@ -270,8 +270,10 @@ holds — it keeps its personality and the plugin versions it started with, pick
 settings when it resumes, and switches only by closing it with `/complete` and asking for a
 new one — and that constant also feeds the three tool descriptions, so no surface can drift.
 A conversation opened after the operator confirmed does not refuse an ordinary change; the
-committed result names it with the same sentence. A pending-configuration upgrade's
-follow-up and a kept upgrade's re-run carry the same ids, so neither is warned again.
+committed result names it, if it is still open when the change finishes, with the same
+sentence. A pending-configuration upgrade's result and a kept upgrade's result echo the ids,
+and the upgrade recipe passes them to the follow-up and the re-run, so neither is warned
+again.
 
 Enforced by one listing (`tools.py::_open_specialist_engagements`) and two placements. The
 ordinary changes check in `tools.py::_ordinary_change_gate` before anything commits — for

@@ -836,9 +836,11 @@ as errored and tells you to start a fresh one.
   engagement is marked as errored after two failed resumes. Start a
   new one; your prior conversation is still in Ellen's long-term
   memory. The same reply, mentioning a config that was not found, means
-  the specialist itself is gone — it failed to load, or a conversation
-  started just as it was being uninstalled; Casa closes a removed or
-  disabled specialist's conversations itself, so this is the rare case.
+  the specialist itself is gone — it failed to load, a conversation
+  started just as it was being uninstalled, or Casa could not close the
+  conversation when the specialist was uninstalled; Casa closes a
+  removed or disabled specialist's conversations itself, so this is the rare
+  case.
 - **Ellen doesn't narrate completion in the main chat.**
   Ellen receives the `ENGAGEMENT_COMPLETION` notification but chooses
   how to surface it based on the prompt she is actually served — which
@@ -1422,16 +1424,20 @@ different persona to it.
 **Changing a specialist while you are talking to it.** A conversation already
 open with a specialist — in its topic, or a background job it is running — is
 not switched by a change to that specialist. Before a persona is applied to it,
-or it is upgraded or rolled back, Casa lists its open conversations and asks you
-to confirm; of each one it says:
+or it is upgraded or rolled back, Casa holds the change back and gives the
+configurator a list of its open conversations, which the configurator's
+instructions say to show you before asking you to confirm; of each one it says:
 
 > When it resumes, it picks up Casa's updated settings, but it keeps its
 > personality and the plugin versions it started with. To get everything new,
 > close it with `/complete` and ask Ellen for a new conversation.
 
-New conversations always use the new setup, and saying no changes nothing. An
-**uninstall** asks the same way, and once the specialist is removed Casa closes
-its open conversations, telling each topic why. A specialist you **disable**
+Saying no changes nothing. New conversations get the new setup once Casa has
+loaded it: an upgrade or a rollback that completes loads it during the change,
+and a persona is loaded by a reload of the agents, which the configurator's
+instructions say to run right after applying it. An **uninstall** asks the same
+way, and once the specialist is removed Casa closes the conversations still
+open, telling each topic why. A specialist you **disable**
 (its `enabled: false`) cannot be confirmed beforehand: Casa closes its open
 conversations when the disable takes effect — at the reload that reads it, or at
 the next start if Casa was down — and each topic is told. If a close fails, Casa

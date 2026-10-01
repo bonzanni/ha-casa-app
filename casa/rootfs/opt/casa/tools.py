@@ -16241,8 +16241,9 @@ async def specialist_rollback(args: dict) -> dict:
     "Does not affect a hand-authored (non-installed) specialist of the same name. When a bundled "
     "plugin declares an eraser the operator is asked first, in the DM, with the options Casa "
     "offers for this uninstall: call without erase_data and wait for Casa to continue with "
-    "their choice. After the uninstall, the specialist's open conversations are closed and "
-    "listed in closed_conversations." + _UNINSTALL_TOOL_NOTE,
+    "their choice. After the uninstall, Casa closes the specialist's conversations still open "
+    "and lists each in closed_conversations; any it could not close are also listed in "
+    "conversations_still_open." + _UNINSTALL_TOOL_NOTE,
     {"type": "object", "properties": {
         "slug": {"type": "string"}, "erase_data": {"type": "boolean"},
         "acknowledged_conversations": _ACKNOWLEDGED_SCHEMA},
@@ -16631,8 +16632,9 @@ RESIDENT_CONVERSATION_RESET_NOTICE = (
     "surfaces first: one that exceeds an admission ceiling is refused with nothing written "
     "(ok:false, kind:incompatible). For a RESIDENT the accepted binding is STAGED, not "
     "activated — it takes effect on that resident's next restart. For a specialist it is "
-    "committed now, and new conversations with it use it after the next casa_reload; a "
-    "conversation already open with it keeps its personality." + _ORDINARY_CHANGE_TOOL_NOTE
+    "committed now but not loaded: new conversations with it use it once "
+    "casa_reload(scope=\"agents\") has run; a conversation already open with it keeps its "
+    "personality." + _ORDINARY_CHANGE_TOOL_NOTE
     + " FOR A RESIDENT, say this when you report the staging: "
     + RESIDENT_CONVERSATION_RESET_NOTICE,
     {"type": "object", "properties": {
