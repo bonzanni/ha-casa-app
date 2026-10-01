@@ -103,8 +103,7 @@ other prefix is the role as given. The same canonicalisation applies to
 `send_message`, `ask_user`, `send_media`'s caption and `set_reminder` resolve the scope this
 call commits under — a bound engagement's, else the turn scope on the handler's entry
 snapshot — and refuse when none is bound (`send_message` with an error result, the others
-with `unsupported_origin`), never defaulting to plain text (`send_message` also on a
-`deliver: operator` webhook, INV-TRIG-018). `send_message`'s result then
+with `unsupported_origin`), never defaulting to plain text. `send_message`'s result then
 names the exact line — `Message sent via telegram. Casa prefixed: “…”`; `ask_user` admits
 the body before its plain and scheduled arms branch, so the keyboard, the stored record and
 every settle edit carry the same text, and its `awaiting_user` payload gains `casa_prefixed`

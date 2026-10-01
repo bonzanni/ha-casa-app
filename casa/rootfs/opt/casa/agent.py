@@ -941,6 +941,8 @@ def _limit_stop_line(msg: BusMessage, *, is_narration: bool,
     if resumable:
         return prefix + _LIMIT_CONTINUE
     return _LIMIT_REDO.format(subject=subject)
+
+
 _RESTRICTED_SEND_TOOL = "mcp__casa-framework__send_message"
 
 

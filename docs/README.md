@@ -29,6 +29,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | a plugin-declared background job, start_job or job host resolution, the batch loop or its progress tool, or how a job resumes after a restart | [`architecture/background-jobs.md`](architecture/background-jobs.md) |
 | a resident webhook trigger's secret — minting it, its mint receipt or provenance, importing or retiring it, or the per-slot secret report | [`architecture/trigger-secrets.md`](architecture/trigger-secrets.md) |
 | a resident's scheduled question to the operator, its restart restore or settling, its terminal continuation, or the attention-lane displacement rule | [`architecture/scheduled-asks.md`](architecture/scheduled-asks.md) |
+| a resident's turn limit, how a turn-limit stop is detected or returned, or what Casa says about a limit stop and where | [`architecture/turn-limits.md`](architecture/turn-limits.md) |
 | a specialist upgrade, rollback or uninstall, the owned-plugin generation a rollback republishes, or the bundle journal's contracts | [`architecture/specialist-bundle-transactions.md`](architecture/specialist-bundle-transactions.md) |
 | adding a route, changing webhook authentication, or anything crossing the container boundary | [`architecture/http-surface.md`](architecture/http-surface.md) |
 | adding a tool, a tool's result contract, the question lifecycle, or completion semantics | [`architecture/tools-interface.md`](architecture/tools-interface.md) |

@@ -73,7 +73,7 @@ resident that stays silent about a job it lost track of leaves that loss untold,
 cost of not replaying the notice forever.
 
 A narration cut at its **turn limit** did not choose its silence (#1121, INV-TURN-014 in
-[`turn-loop.md`](turn-loop.md)). When its only delivered output is Casa's own step-limit
+[`turn-limits.md`](turn-limits.md)). When its only delivered output is Casa's own step-limit
 line — it wrote nothing, or nothing but the sentinel — the notice stays owed: that line is a
 send of its own, never the turn's delivery, so it acknowledges nothing, and the chosen-silence
 discharge skips a limit-stopped turn. A cut narration whose partial narration did reach the

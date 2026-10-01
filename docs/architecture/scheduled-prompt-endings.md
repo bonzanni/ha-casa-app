@@ -36,7 +36,7 @@ configurator's `trigger/add`, `trigger/update` and `prompt/edit` recipes), and e
 new surface by adding it there.
 
 Casa adds one ending of its own, for a turn that stops at its turn limit and only then
-(#1121, INV-TURN-014 in [`turn-loop.md`](turn-loop.md)): one line, sent separately in the
+(#1121, INV-TURN-014 in [`turn-limits.md`](turn-limits.md)): one line, sent separately in the
 operator's chat, naming the task and offering to redo it — a scheduled turn runs in a
 session of its own, so a "continue" in the chat would not reach it. The line changes nothing
 in what the rule above delivers or drops of the model's text; it goes out whatever that
