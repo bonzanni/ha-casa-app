@@ -168,9 +168,11 @@ nothing. A reconcile pass makes the backend match the declarations: it creates a
 model, rewrites a definition whose declared fields drifted (fields Casa does not declare are
 left as they are), and deletes any model under the **reserved `casa-` prefix** that Casa no
 longer declares — so a model the operator creates under that prefix is deleted at the next
-pass, while every other id is never touched. A model whose definition was rewritten, or whose
-automatic refreshes are paused, gets one explicit refresh in that pass, because rewriting does
-not refresh and only an explicit refresh resumes a paused model. A pass runs in the background
+pass, while every other id is never touched. The pass reads one page of up to 1,000 models,
+and when the backend reports more than it returned, it deletes nothing. A model whose
+definition was rewritten, or whose automatic refreshes are paused, gets one explicit refresh in
+that pass, because rewriting does not refresh and only an explicit refresh resumes a paused
+model. A pass runs in the background
 at boot and after every completed wipe, one at a time in arrival order; boot and the wipe never
 wait for it, and shutdown cancels it before the memory client closes. It is best-effort: when
 the backend is unreachable it logs and changes nothing, and the next boot or wipe tries again.

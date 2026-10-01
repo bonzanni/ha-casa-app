@@ -70,16 +70,21 @@ your private conversations, framed as leads to check rather than live facts:
   are asked about. Refreshed after Hindsight consolidates new memories, at most
   once a day.
 
-Casa creates them, puts back their definitions if they are edited, and deletes
-any other model whose id starts with **`casa-` — that prefix is reserved**: a
-model you create under it in the Hindsight UI is deleted at Casa's next start.
-Models under any other id are never touched, and they show at the start of your
-private conversations too. This happens in the background at every start and
-after every memory wipe; if Hindsight is not reachable then, Casa tries again at
-the next start. Each refresh is a run of the language model configured in the
-Hindsight app, on that app's account — the two scheduled ones, plus at most one
-extra per model at each start or wipe when its definition had to be put back or
-its automatic refreshes were paused by a failed refresh.
+Casa creates them, puts back the parts of their definitions it sets if they are
+edited, and deletes any other model whose id starts with **`casa-` — that prefix
+is reserved**: a model you create under it in the Hindsight UI is deleted at
+Casa's next start (unless the bank holds more than 1,000 models; then Casa
+deletes none). Models under any other id are never touched, and they show
+at the start of your private conversations too. A model shows only once it has
+text and a last-refresh date Casa can read. This happens in the background at
+every start and after every memory wipe; if Hindsight is not reachable then,
+Casa tries again at the next start or wipe. Each refresh is a run of the
+language model configured in the Hindsight app, on that app's account: the
+scheduled ones; the first one, which Hindsight starts when Casa creates a model
+(at the first start, after every wipe, and at any start that finds one
+missing); and at most one extra per model at each start or wipe when its
+definition had to be put back or its automatic refreshes were paused by a
+failed refresh.
 
 **Wiping long-term memory** (v0.194.0): one supported operation deletes the whole
 bank, drops any pending durable retry records, and forgets every conversation
@@ -88,8 +93,12 @@ reappearing" gap. **There is one way to run it: from the add-on terminal, run
 `casactl memory-wipe --yes`** (it refuses without the flag). A conversation or
 engagement already in flight when the wipe runs may still contribute one item
 afterwards; everything durable is removed. Hindsight's mental models are part of
-the bank and go with it; Casa recreates its two right after the wipe, and they
-fill in from the emptied bank. Models you created yourself are not recreated.
+the bank and go with it; Casa recreates its two right after the wipe (or at
+the next start or wipe, if Hindsight cannot be reached then), and they fill in
+from the emptied bank — except that a refresh Hindsight was already running when the
+bank was deleted can write its pre-wipe summary into a recreated model, where
+it stays until that model's next refresh. Models you created yourself are not
+recreated.
 
 Casa also carries a consent-gated agent door for the same operation — the
 `wipe_memory` tool, which posts an Approve/Cancel keyboard to the configured
