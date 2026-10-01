@@ -101,7 +101,7 @@ branch that streams text: an interactive specialist's output is capped, and once
 freezes the accumulator that branch stops running, so a fault arriving after the freeze would
 otherwise end the turn as a truncated success.
 
-**INV-TURN-008**: A turn carrying server-stamped trusted user ingress that consumes SDK retries and still ends in silence ends as a classified error instead of silence; and a conversation whose resumed trusted-ingress turns repeatedly evidence SDK faults is not resumed past a bounded streak — it starts fresh with the old session retained.
+**INV-TURN-008**: A turn carrying server-stamped trusted user ingress that consumes SDK retries and still ends in silence ends as a classified error instead of silence, unless it stopped at its turn limit (INV-TURN-014); and a conversation whose resumed trusted-ingress turns repeatedly evidence SDK faults is not resumed past a bounded streak — it starts fresh with the old session retained.
 
 Two shapes of a doomed ask motivate this. Retries can exhaust and raise, which was always
 visible; or the final attempt can return nothing but whitespace or the literal silence
@@ -132,7 +132,8 @@ The streak half guards against a poisoned resume: each trusted turn that resumed
 conversation commits a health note — while still holding the per-key session write gate,
 which is what orders notes against the decisions that read them — striking on a terminal
 SDK-error raise or on silence whose consumed retries included an SDK error, resetting on
-a real answer or a clean no-retry finish. A terminal rate-limit or timeout is
+a real answer, a clean no-retry finish, or a turn that stopped at its turn limit whatever
+retries preceded it (INV-TURN-014). A terminal rate-limit or timeout is
 congestion-shaped and records no verdict either way. The note follows the session-id
 chain (a resumed turn may publish a successor id), so the recorded fault id is always the
 id the next ask would resume. At the streak bound the resume decision comes out fresh
@@ -229,6 +230,49 @@ to 5 MiB of base64 each, and 64 MiB would no longer cover it. The value is passe
 `ClaudeAgentOptions` construction rather than applied by a wrapper, because not every
 client goes through the same wrapper: a construction that omits it silently falls back to
 the 1 MiB default, and a source sweep refuses one.
+
+**INV-TURN-014**: A resident turn whose terminal SDK result has subtype `error_max_turns` is a limit stop: it is detected from that subtype alone, returned rather than raised, its session published exactly as any returned turn's, never retried or continued, never reclassified as an error and never counted as a resume fault — a trusted turn records it healthy. Limit handling never rewrites or replaces the model's text: what admission delivers is delivered, and what it suppresses stays suppressed. Casa adds exactly one line of its own, attempted as a separate send — in the turn's Telegram chat; in the operator's Telegram chat, addressed explicitly, for a narration or a schedule that ran on no Telegram chat; at the end of a trusted `/invoke` response body; or spoken after the held tail on voice once something was spoken — except on an untrusted webhook turn, which sends nothing. Every limit stop logs one WARNING naming the role, the channel and the turn count. An untrusted webhook turn runs with a fixed limit of 20.
+
+The CLI ends a turn that would need one model call more than its limit with an error result
+of that subtype and no result text. The pool treats it like any non-retryable error result —
+the entry is invalidated, the session id returned and published (INV-TURN-002) — so the next
+message resumes the stopped conversation. Before #1121 nothing on the resident path read the
+subtype: whatever progress text the turn had written went out as an ordinary reply, a
+buffered turn that had written nothing was wholly silent, only an INFO line recorded it,
+and a stop after a consumed SDK retry was turned into the generic error line and struck.
+
+The fact is recorded in the result-message arm both attempt paths share and published on
+the turn report from the winning attempt; a stop is never retried, so it can only be the
+last. Every reader of "the turn ended silent" consults it: the INV-TURN-008 reclassification
+skips it, the health note resets on it, and a narration's chosen-silence acknowledgement
+skips it, because a cut narration did not choose its silence. The #1075 rule of INV-OUT-006
+is untouched: the line is never merged into the admitted text, so admission decides the
+model's text exactly as before and the line goes out whatever it decided.
+
+Where the line goes is decided by the server-stamped origin route, never the message type —
+an untrusted webhook turn dispatches as a scheduled one — and by whether the message that
+arrived was a completion notice, captured before synthesis rebinds it. Its words must be
+true where they land: "say 'continue'" only in a real chat whose next message resumes the
+stopped session; a turn that ran in a session of its own (a schedule, a reminder, the
+follow-up to a scheduled question, a narration whose session is not that chat's) names the
+task by what the message carries and offers to redo it. A Casa-started turn in the
+operator's chat is named by its kind. The WARNING is logged before any fallible delivery, and
+a model delivery that raises still has the line attempted. The spoken line is
+[`voice.md`](voice.md)'s.
+
+The assistant's limit is `tools.max_turns` in its `runtime.yaml`, 80; the copy in its
+`role.yaml` is kept in step, which moves the role checksum, so each open assistant
+conversation restarts once, retained where its channel retains, on the release that
+changes it. The restricted options every webhook-channel turn without the `invoke` route
+takes — a webhook trigger, and a schedule declared on `channel: webhook` — pass the fixed
+`_RESTRICTED_WEBHOOK_MAX_TURNS` instead. The butler (10) and the concierge (6) keep theirs.
+
+What it does not cover: a delegated or job turn's limit, which stays the specialist's
+`specialist_turn_limit` failure; the in-Casa engagement driver; a failure independent of the
+stop — persistence, delivery, cancellation — which keeps its own handling, the line being
+best-effort with its own failure logged; and a cut narration whose partial narration reached
+the chat, which is acknowledged as today
+([`delegation-announcements.md`](delegation-announcements.md)).
 
 ## Failure behavior
 

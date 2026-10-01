@@ -23,8 +23,8 @@ for.** A scheduled turn that sends a message with a tool and then ends with ordi
 delivers twice to the same chat: the tool send happens immediately, and the turn's own
 closing text then rides the ordinary reply path. Casa narrows neither half on its own: a
 scheduled turn whose closing text is real text still delivers it exactly once, and prose
-*after* the silence sentinel is still delivered (the recant contract). The one ending Casa
-decides is the operator's ruling on #1075 (INV-OUT-006 in
+*after* the silence sentinel is still delivered (the recant contract). The one ending of the
+model's text Casa decides is the operator's ruling on #1075 (INV-OUT-006 in
 [`output-boundary.md`](output-boundary.md)), which the trigger recipes and `casa/DOCS.md`
 state in the same words: If the turn's last message is the sentinel `<silent/>` after
 earlier text, Casa drops that text when the turn made at least one send, every send was
@@ -34,6 +34,13 @@ prompt, per prompt, and it is a convention — carried by the surfaces
 `tests/test_scheduled_prompt_guidance.py` enumerates (this document, `casa/DOCS.md`, and the
 configurator's `trigger/add`, `trigger/update` and `prompt/edit` recipes), and extended to a
 new surface by adding it there.
+
+Casa adds one ending of its own, for a turn that stops at its turn limit and only then
+(#1121, INV-TURN-014 in [`turn-loop.md`](turn-loop.md)): one line, sent separately in the
+operator's chat, naming the task and offering to redo it — a scheduled turn runs in a
+session of its own, so a "continue" in the chat would not reach it. The line changes nothing
+in what the rule above delivers or drops of the model's text; it goes out whatever that
+rule decided, including after a closing silence it suppressed.
 
 For interval/cron/date prompts whose turn delivers its own message, keep
 the send instruction first and unconditional, and end the prompt with:

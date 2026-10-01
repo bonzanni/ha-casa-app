@@ -69,6 +69,7 @@ def _scan():
 
 CASA_TEXT_SITES = {
     ("agent.py", "handle_message"): "a classified-error reply (_USER_MESSAGES) is Casa's",
+    ("agent.py", "_send_limit_line"): "#1121: the turn-limit line, Casa template, its own send",
     ("authz_grants.py", "_post"): "a challenge raised with NO turn bound (a setup dispatch); with a turn it is admitted",
     ("casa_core.py", "_notify_plugin_health_locked"): "plugin-health notice, Casa template",
     ("casa_core.py", "notify_placeholder_rewrites"): "placeholder-rewrite notice, Casa template",
@@ -133,6 +134,7 @@ CHANNEL_METHODS = {"send", "send_response", "finalize_stream", "finalize_respons
 # method. Receivers that are not a channel (the bus, PTB's bot) are excluded.
 CHANNEL_METHOD_CALLERS = {
     ("agent.py", "handle_message"): "admitted",                 # the final reply
+    ("agent.py", "_send_limit_line"): "casa_text",              # #1121: the turn-limit line
     ("authz_grants.py", "_post"): "admitted",                   # the challenge body (or casa_text with no turn)
     ("casa_core.py", "operator_notify"): "casa_text",
     ("casa_core.py", "_notify_plugin_health_locked"): "casa_text",

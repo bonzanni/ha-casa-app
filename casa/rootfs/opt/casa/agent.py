@@ -863,6 +863,72 @@ _RESTRICTED_WEBHOOK_TOOLS = (
 # sub-agents), so name them in disallowed_tools; Bash is belt-and-braces on top
 # of tools=[].
 _RESTRICTED_DISALLOWED_TOOLS = ("Bash", "Task", "Agent")
+# #1137 (operator ruling): third-party input never gets the resident's bigger
+# budget — an untrusted webhook turn runs with this fixed limit whatever the
+# role's own `tools.max_turns` says.
+_RESTRICTED_WEBHOOK_MAX_TURNS = 20
+
+
+# #1121 (operator rulings): the one line Casa adds when a resident turn stops at
+# its turn limit. It must be TRUE where it lands: "say 'continue'" only where the
+# next message in that chat resumes the stopped session; a turn that ran in a
+# session of its own (a scheduled one, or a narration whose session is not the
+# chat's) instead names the task and offers to redo it. Names come only from
+# what the message already carries — never a lookup.
+_LIMIT_CONTINUE = (
+    "I hit my step limit before finishing — say 'continue' and I'll pick up "
+    "where I stopped.")
+_LIMIT_REDO = (
+    "{subject} hit its step limit before finishing. Ask me if you want me to "
+    "redo it.")
+
+
+def _is_chat_id(value: Any) -> bool:
+    """A real Telegram chat id (signed integer), not a session label."""
+    if isinstance(value, int):
+        return True
+    return isinstance(value, str) and value.lstrip("-").isdigit()
+
+
+def _limit_stop_line(msg: BusMessage, *, is_narration: bool,
+                     resumable: bool) -> str:
+    """The wording of the limit-stop line for *msg* (#1121). ``resumable`` is
+    whether the next message where the line lands continues the stopped
+    session."""
+    ctx = msg.context or {}
+    name = str(ctx.get("trigger") or "")
+    if is_narration:
+        subject = f"My report on {msg.source}'s finished work"
+        prefix = f"(report on {msg.source}'s finished work) "
+    elif msg.type == MessageType.SCHEDULED:
+        if msg.source == "reminder-sweep" and name:
+            subject = f"Your reminder '{name}'"
+        elif name:
+            subject = f"Your scheduled task '{name}'"
+        elif msg.source == "scheduled-ask":
+            subject = "The follow-up to your answer to a scheduled question"
+        else:
+            subject = "Your scheduled task"
+        return _LIMIT_REDO.format(subject=subject)
+    else:
+        synthetic = ctx.get("synthetic")
+        if synthetic == "event_wake":
+            prefix = (f"(event '{ctx.get('event', '')}' from "
+                      f"{ctx.get('emitter', '')}) ")
+        elif synthetic == "callback_nudge":
+            prefix = "(plugin callback) "
+        elif synthetic == "plugin_setup":
+            prefix = "(plugin setup) "
+        elif synthetic == "plugin_erase":
+            prefix = "(plugin removal) "
+        elif msg.source == "observer":
+            prefix = "(observer) "
+        else:
+            prefix = ""
+        subject = "This request"
+    if resumable:
+        return prefix + _LIMIT_CONTINUE
+    return _LIMIT_REDO.format(subject=subject)
 
 
 def build_restricted_webhook_options(
@@ -1160,10 +1226,14 @@ class Agent:
         # Phase 3.1: late-completion delegation NOTIFICATION — synthesize
         # a fresh turn so the delegating resident narrates the result
         # back to the user on the origin channel.
-        if (
+        # #1121: whether this turn narrates a completion is a fact about the
+        # message that ARRIVED — synthesis rebinds it to a REQUEST that keeps
+        # the origin's markers (an `/invoke` origin's route among them).
+        is_narration = (
             msg.type == MessageType.NOTIFICATION
             and isinstance(msg.content, DelegationComplete)
-        ):
+        )
+        if is_narration:
             msg = self._synthesize_delegation_turn(msg)
 
         # #1038: one scope per dispatched turn — the one place a per-turn
@@ -1224,11 +1294,16 @@ class Agent:
         # author at ingress" fact — so doctrinally-silent background turns
         # (heartbeats, event wakes, scheduled work, setup dispatch) keep
         # their silence through any upstream congestion window.
+        # #1121: a turn that stopped at its turn limit is never this silence —
+        # whatever retries preceded it, it ran; Casa's own line says so below
+        # (INV-TURN-014).
+        limit_stop = turn_report.get("limit_stop")
         if (
             error_kind is None
             and _strips_to_silence(text)
             and turn_report.get("retries")
             and msg.trusted_user_origin is not None
+            and not limit_stop
         ):
             last_kind = turn_report["retries"][-1]
             error_kind = (
@@ -1312,6 +1387,23 @@ class Agent:
         # never a bare string. A classified-error reply is Casa's own text.
         # An admission that is ``suppressed`` (closing silence) empties the
         # text, and delivery below is skipped exactly as before.
+        # #1121: one WARNING per limit stop — logged BEFORE any fallible
+        # delivery — and where Casa's one line of its own goes (INV-TURN-014).
+        limit_route: str | None = None
+        if limit_stop:
+            limit_route = (self._limit_line_route(msg, channel, is_narration)
+                           if error_kind is None else None)
+            logger.warning(
+                "turn limit reached: role=%s channel=%s turns=%s line=%s",
+                self.config.role, msg.channel or "-",
+                limit_stop.get("turns"), limit_route or "none",
+            )
+        if msg.channel == "voice":
+            # Read by the voice transport off the RESPONSE (its context is this
+            # dict). Written on every voice turn, so a caller-supplied value
+            # never survives into a healthy turn's response.
+            msg.context["_turn_limit_stop"] = limit_route == "voice"
+
         admitted: Admitted | None = None
         if text:
             admitted = (scope.admit(IntentKind.FINAL_REPLY, text,
@@ -1368,7 +1460,7 @@ class Agent:
                     outcome is DeliveryOutcome.DELIVERED
                     or bool(msg.context.get("_delivery_head_sent"))
                 )
-            except BaseException:
+            except BaseException as _delivery_exc:
                 # #349, preserved through #551's rework and NARROWED by #556: a
                 # delivery that raised having shown NOTHING releases the
                 # cooldown, so the notice is offered again on the very next
@@ -1390,6 +1482,12 @@ class Agent:
                 # the next boot announces again.
                 if msg.context.get("_delivery_head_sent"):
                     await self._ack_delivery(msg, error_kind)
+                # #1121: the model's delivery failing does not unsay the stop —
+                # Casa's line is still attempted (never on a cancellation).
+                if (limit_route in ("chat", "operator")
+                        and isinstance(_delivery_exc, Exception)):
+                    await self._send_limit_line(
+                        msg, channel, limit_route, is_narration)
                 raise
             # #556: a NORMAL return is not a reliable positive either — every
             # delivery method returns normally when the PTB app is absent,
@@ -1423,6 +1521,9 @@ class Agent:
             # directly, and a report without them retains); and every piece
             # of model-authored content the turn committed to the operator
             # was confirmed delivered.
+            # #1121: a turn cut at its turn limit did not choose its silence —
+            # a narration whose only delivered output is Casa's line keeps its
+            # announcement owed.
             if (
                 admitted is not None
                 and admitted.suppressed
@@ -1430,8 +1531,21 @@ class Agent:
                 and error_kind is None
                 and turn_report.get("retries") == []
                 and scope.operator_sends_delivered
+                and not limit_stop
             ):
                 await self._ack_delivery(msg, error_kind)
+
+        # #1121: Casa's one line for a limit stop, as its OWN send — never
+        # merged into the model's admitted text, so whatever admission decided
+        # about that text (#1075 included) the line is delivered, and it never
+        # acknowledges a durable announcement.
+        if limit_route in ("chat", "operator"):
+            await self._send_limit_line(msg, channel, limit_route, is_narration)
+        elif limit_route == "response":
+            line = _limit_stop_line(
+                msg, is_narration=False,
+                resumable=not _is_uuid_scope(str(msg.context.get("chat_id", ""))))
+            text = f"{text}\n\n{line}" if text else line
 
         if not text and error_kind is None and msg.type != MessageType.REQUEST:
             return None
@@ -1497,6 +1611,68 @@ class Agent:
                 "delivery acknowledgement failed for role=%s — the "
                 "announcement stays owed", self.config.role,
             )
+
+    def _limit_line_route(
+        self, msg: BusMessage, channel: Any, is_narration: bool,
+    ) -> str:
+        """#1121: where a limit stop's line goes. The discriminator is the
+        server-stamped origin route, never the message type — an untrusted
+        webhook turn dispatches as SCHEDULED like Casa's own schedule.
+
+        ``log``: an untrusted webhook turn — no user to tell, WARNING only.
+        ``chat``: the turn's own Telegram chat. ``operator``: the operator's
+        Telegram chat, taken explicitly, for a Casa-started turn that ran on no
+        Telegram chat (a voice- or webhook-origin narration, a schedule
+        declared on another channel). ``response``: the trusted `/invoke` body.
+        ``voice``: spoken by the transport after the held tail."""
+        route = (msg.context or {}).get("_origin_route")
+        if route == "webhook_trigger":
+            return "log"
+        if is_narration:
+            return ("chat" if msg.channel == "telegram" and channel is not None
+                    else "operator")
+        if route == "invoke":
+            return "response"
+        if msg.channel == "voice" and msg.type == MessageType.REQUEST:
+            return "voice"
+        if msg.channel == "telegram" and channel is not None:
+            return "chat"
+        return "operator"
+
+    async def _send_limit_line(
+        self, msg: BusMessage, channel: Any, route: str, is_narration: bool,
+    ) -> None:
+        """#1121: deliver the limit-stop line as Casa's own send. Best-effort:
+        the turn has already ended, so a failure is logged, never raised —
+        and the send carries its own context, so its delivery is never read
+        as the turn's (no announcement is acknowledged by it)."""
+        if route == "chat":
+            target, ctx = channel, dict(msg.context)
+            resumable = _is_chat_id(ctx.get("chat_id"))
+        else:
+            import trigger_consent as _tc
+            target = self._channel_manager.get("telegram")
+            op = _tc.operator_identity(target) if target is not None else None
+            ctx = {"chat_id": op[0]} if op is not None else {}
+            resumable = False
+        line = _limit_stop_line(msg, is_narration=is_narration,
+                                resumable=resumable)
+        if target is None:
+            logger.warning(
+                "turn limit line not delivered: no telegram channel "
+                "(role=%s channel=%s)", self.config.role, msg.channel or "-")
+            return
+        try:
+            outcome = await target.send(casa_text(line), ctx)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            logger.exception("turn limit line send failed (role=%s)",
+                             self.config.role)
+            return
+        if outcome is DeliveryOutcome.NOT_DELIVERED:
+            logger.warning("turn limit line not delivered (role=%s channel=%s)",
+                           self.config.role, msg.channel or "-")
 
     def _synthesize_delegation_turn(self, msg: BusMessage) -> BusMessage:
         """Convert a NOTIFICATION+DelegationComplete into a REQUEST turn
@@ -2236,6 +2412,11 @@ class Agent:
                 # admission reads both on a buffered turn.
                 report["reply_messages"] = reply_messages
                 report["attempts"] = len(turn_state.get("states") or ())
+                # #1121: the WINNING attempt's limit stop. A stop is never
+                # retried, so it can only be the last attempt's state; the key
+                # is absent for every other turn.
+                report["limit_stop"] = (
+                    turn_state.get("state") or {}).get("limit_stop")
 
                 # 9. SessionRegistry — record the SDK session id for resume +
                 # save. Inside the gate; see the note above.
@@ -2628,7 +2809,7 @@ class Agent:
                 model=self.config.model,
                 role=self.config.role,
                 system_prompt=restricted_prompt,
-                max_turns=self.config.tools.max_turns,
+                max_turns=_RESTRICTED_WEBHOOK_MAX_TURNS,
                 agent_home=agent_home,
                 resume_sid=resume_sid,
             )
@@ -3231,6 +3412,14 @@ class Agent:
             # Usage + E-2 streaming concat (session-id capture is the client's).
             if isinstance(sdk_msg, ResultMessage):
                 state["usage"] = extract_usage(sdk_msg)
+                # #1121: the CLI's turn-limit stop, named by its subtype alone
+                # (never empty text, ``is_error`` or ``stop_reason``). The pool
+                # returns this result like any non-retryable one and publishes
+                # the session; this fact rides the turn report out of
+                # ``_process`` without raising (INV-TURN-014).
+                if getattr(sdk_msg, "subtype", None) == "error_max_turns":
+                    state["limit_stop"] = {
+                        "turns": getattr(sdk_msg, "num_turns", None)}
             elif isinstance(sdk_msg, AssistantMessage):
                 if api_error_kind(sdk_msg) is not None:
                     # #568: an API-level fault — a safety refusal included —
@@ -3495,7 +3684,9 @@ class Agent:
         retries carried no SDK_ERROR, are congestion-shaped: no verdict
         either way. Reset (health evidence): a real answer, or clean silence
         with no retries consumed — a FRESH healthy turn resets too, which is
-        what retires leftover fields after the fault-streak escape. Never
+        what retires leftover fields after the fault-streak escape — or a turn
+        that stopped at its turn limit, whatever retries preceded it (#1121:
+        not counted toward the streak). Never
         raises — a bookkeeping failure must not fail a turn that already has
         an answer.
         """
@@ -3508,6 +3699,11 @@ class Agent:
             if resumed_sid is None or terminal_kind is not ErrorKind.SDK_ERROR:
                 return
             healthy = False
+        elif report.get("limit_stop"):
+            # #1121: a turn that ran to its turn limit is not a fault, whatever
+            # retries preceded it — the resumed session did its work. Reset,
+            # as a limit stop with text already did (INV-TURN-014).
+            healthy = True
         elif _strips_to_silence(final_text):
             if ErrorKind.SDK_ERROR in retries:
                 if resumed_sid is None:

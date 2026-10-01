@@ -1,5 +1,59 @@
 # Changelog
 
+## [0.332.22] - 2026-10-01
+
+### Fixed
+
+- When a turn of Ellen, the butler or the concierge reached its step limit,
+  Casa did not say so. A turn that had written some progress left it looking
+  like a finished answer, and in a chat or a scheduled task a turn that had
+  written nothing usually sent nothing at all. Now Casa adds one line of its
+  own when such a turn stops at its limit. Whatever the turn had already said
+  stays, and Casa does not retry the turn or continue it on its own. What the
+  line says, and where it goes, depends on how the turn started:
+  - In a Telegram chat, the line says the step limit was hit and that saying
+    "continue" picks up where it stopped. A plugin setup that Casa runs in
+    your chat gets the same line, marked "(plugin setup)".
+  - A scheduled task, a reminder, or the follow-up to your answer to a
+    scheduled question runs in a session of its own, so "continue" would not
+    reach it. Its line goes to your Telegram chat, names the task, and offers
+    to redo it if you ask.
+  - A trusted `/invoke` call gets the line at the end of its response.
+  - On voice, once the agent has said something, it speaks one more short line
+    after it. The default is "I ran out of steps — ask me to continue.", and a
+    persona can change it with `voice_errors.turn_limit`. A voice turn that
+    said nothing keeps the existing "lost my train of thought" line.
+  - A turn started by an untrusted webhook sends nothing; the stop is only
+    logged.
+
+  Every stop logs a WARNING naming the agent, the channel and the number of
+  steps. A line sent to Telegram that cannot be delivered is logged too.
+- A turn that stopped at its step limit with nothing written, after Casa had
+  retried an earlier fault in it, showed the generic error message and could
+  count toward the run of failures after which Casa starts a conversation
+  afresh. It now ends like any other stop at the limit, and it does not count
+  as a failure.
+
+### Changed
+
+- Ellen's step limit is now 80 instead of 20, so tool-heavy work has room to
+  finish. One step is one model call, and parallel tool calls in one message
+  count as one. A turn started by an untrusted webhook, and a schedule declared
+  on the `webhook` channel, still get 20. The butler (10) and the concierge (6)
+  are unchanged. A plugin background job started under Ellen after the update,
+  whose declaration sets no `turnsPerBatch`, also gets 80 steps per batch.
+- A turn that keeps working without finishing can now make up to four times as many model calls
+  before it stops, with the time and cost that brings.
+- Ellen's role definition changed with the step limit, so each of her stored
+  conversations starts a fresh session once, on its next turn after the
+  update, instead of resuming. A replaced Telegram conversation goes through the usual background
+  save to memory. Webhook and voice conversations are not saved to memory when
+  they are replaced, so what was said in them does not carry over.
+- If you edited `agents/assistant/runtime.yaml`, this update replaces it with
+  the new version. Casa reports that it overwrote a customization, and your
+  version stays recoverable from the config's git history, or from a
+  `.casabak` copy beside the file when git could not record it.
+
 ## [0.332.21] - 2026-10-01
 
 ### Fixed

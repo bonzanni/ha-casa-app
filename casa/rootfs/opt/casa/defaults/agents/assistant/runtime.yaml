@@ -66,7 +66,7 @@ tools:
     # account a Casa install has no connection to; it fails at call time.
     - Skill(schedule)
   permission_mode: acceptEdits
-  max_turns: 20
+  max_turns: 80
 mcp_server_names:
   - casa-framework
 memory:

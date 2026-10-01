@@ -361,7 +361,19 @@ _DEFAULT_ERROR_LINES = {
     # listener holding a statement Casa never stood behind. Overridable per
     # persona through `voice_errors` like any other line.
     "retraction":    "[flat] Disregard that —",
+    # #1121: NOT an error kind either — spoken AFTER whatever the turn already
+    # said when it stopped at its turn limit; never through the retracting
+    # error path (the speech it follows stands). Overridable per persona
+    # through `voice_errors` like any other line.
+    "turn_limit":    "[flat] I ran out of steps — ask me to continue.",
 }
+
+
+def _limit_stopped(result: Any) -> bool:
+    """#1121: the agent marks a voice turn that stopped at its turn limit on
+    the RESPONSE context (server-written on every voice turn)."""
+    ctx = getattr(result, "context", None)
+    return isinstance(ctx, dict) and ctx.get("_turn_limit_stop") is True
 
 
 class _SpeechDelivered:
@@ -882,10 +894,19 @@ class VoiceChannel(Channel):
                 tail_text, carry_sep = _compose_block(
                     carry_sep, tail, adapter, fallback_sep=fallback_gap,
                 )
+            # #1121: a turn that stopped at its turn limit after saying
+            # something (its held tail, earlier speech, or the progress line)
+            # gets one more spoken line after all of it — never S-1.
+            limit_line = (
+                self._limit_line_block(cfg, adapter, carry_sep)
+                if _limit_stopped(result)
+                and (tail_text or spoke.delivered() or progress_sent)
+                else ""
+            )
             if tail_text:
                 await _write_sse(response, "block", {
                     "text": tail_text,
-                    "final": True,
+                    "final": not limit_line,
                 })
                 fallback_gap = ""
                 _log_first_block()
@@ -894,7 +915,7 @@ class VoiceChannel(Channel):
                 # the listener gets — and the terminal `done` write after it
                 # can still fail. Selection is untouched: this is delivery.
                 spoke.record()
-            elif not speech_block_sent:
+            elif not speech_block_sent and not limit_line:
                 # S-1: zero spoken output for the whole turn — emit a typed
                 # empty_turn error line instead of a silent bare `done`
                 # (mirrors every other error path: error frame, no done).
@@ -904,6 +925,10 @@ class VoiceChannel(Channel):
                     "spoken": adapter.render(line) if line else "",
                 })
                 return response
+            if limit_line:
+                await _write_sse(response, "block", {
+                    "text": limit_line, "final": True,
+                })
             await _write_sse(response, "done", {})
         except asyncio.CancelledError:
             # Client disconnect mid-stream — do NOT emit `event: done`.
@@ -952,6 +977,14 @@ class VoiceChannel(Channel):
     def _error_line(cfg: Any, exc: Exception) -> str:
         kind = _classify_error(exc).value
         return VoiceChannel._error_line_for_kind(cfg, kind)
+
+    def _limit_line_block(self, cfg: Any, adapter: Any, carry_sep: str) -> str:
+        """#1121: the wire text of the turn-limit line — the persona's
+        `turn_limit` line rendered like S-1 (no retraction), carrying its own
+        separator because the integration concatenates frames verbatim."""
+        line = self._error_line_for_kind(cfg, "turn_limit")
+        rendered = adapter.render(line) if line else ""
+        return (carry_sep or " ") + rendered if rendered else ""
 
     @staticmethod
     def _error_line_for_kind(cfg: Any, kind: str) -> str:
@@ -1539,7 +1572,7 @@ class VoiceChannel(Channel):
             # streaming/done behaviour and consume the unused callback waiter.
             handoff.cancel()
             await asyncio.gather(handoff, return_exceptions=True)
-            await request_task
+            result = await request_task
             if error_emitted:
                 return
             tail = splitter.flush_tail()
@@ -1548,16 +1581,23 @@ class VoiceChannel(Channel):
                 tail_text, carry_sep = _compose_block(
                     carry_sep, tail, adapter, fallback_sep=fallback_gap,
                 )
+            # #1121 — the socket twin of the SSE limit line.
+            limit_line = (
+                self._limit_line_block(cfg, adapter, carry_sep)
+                if _limit_stopped(result)
+                and (tail_text or spoke.delivered() or progress_sent)
+                else ""
+            )
             if tail_text:
                 await ws.send_json({
                     "type": "block", "utterance_id": uid,
-                    "text": tail_text, "final": True,
+                    "text": tail_text, "final": not limit_line,
                 })
                 fallback_gap = ""
                 _log_first_block()
                 # #594 — the socket twin of the SSE tail write.
                 spoke.record()
-            elif not speech_block_sent:
+            elif not speech_block_sent and not limit_line:
                 # S-1: zero spoken output — typed empty_turn error, never a
                 # silent bare `done`. See the SSE handler for rationale.
                 line = self._error_line_for_kind(cfg, "empty_turn")
@@ -1567,6 +1607,11 @@ class VoiceChannel(Channel):
                     "spoken": adapter.render(line) if line else "",
                 })
                 return
+            if limit_line:
+                await ws.send_json({
+                    "type": "block", "utterance_id": uid,
+                    "text": limit_line, "final": True,
+                })
             await ws.send_json({"type": "done", "utterance_id": uid})
         except asyncio.CancelledError:
             # Cancellation from a `cancel` frame — drop partial state; do
