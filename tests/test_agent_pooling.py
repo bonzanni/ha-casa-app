@@ -139,6 +139,9 @@ class FakeSemanticMemory(SemanticMemory):
             score=None,
         ),)
 
+    async def document_tags(self, bank, document_id):
+        return None  # #1123: nothing stored here — every document reads never-saved
+
     async def profile(self, bank):
         return self._overlay
 

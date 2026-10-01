@@ -70,6 +70,9 @@ class _FailingSem(SemanticMemory):
         self.recall_attempts += 1
         raise RecallUnavailable("http_504")
 
+    async def document_tags(self, bank, document_id):
+        return None  # #1123: nothing stored here — every document reads never-saved
+
     async def profile(self, bank):
         return ""
 

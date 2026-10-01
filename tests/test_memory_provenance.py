@@ -13,6 +13,11 @@ from personality_types import RetainedTurn, SpeakerProvenance
 pytestmark = [pytest.mark.unit]
 
 
+async def _never_saved(_document_id):
+    """#1123: the stored-tier reader for a bank that holds nothing yet."""
+    return None
+
+
 def _agent(version: str, persona: str = "casa/tina") -> SpeakerProvenance:
     return SpeakerProvenance(
         speaker_kind="resident", role_id="resident:butler", persona_id=persona,
@@ -39,6 +44,7 @@ async def test_writer_emits_exactly_one_tier_and_one_reserved_tag() -> None:
 
     items = await build_retain_items(
         [RetainedTurn("The office is dark.", _agent("0.1.0"))], classify=classify_as_friends,
+        stored_tags=_never_saved,
     )
     assert items[0]["tags"][0] == "friends"
     assert len([t for t in items[0]["tags"] if t.startswith("casa-source-")]) == 1
@@ -56,7 +62,8 @@ async def test_caller_supplied_reserved_or_tier_tag_is_rejected_pre_io() -> None
     with pytest.raises(ValueError):
         await build_retain_items(
             [RetainedTurn("text", _agent("0.1.0"))],
-            classify=classify, application_tags=["casa-source-v1.forged"],
+            classify=classify, stored_tags=_never_saved,
+            application_tags=["casa-source-v1.forged"],
         )
     assert called is False
 
@@ -73,7 +80,8 @@ async def test_caller_supplied_tier_application_tag_is_rejected_pre_io() -> None
     with pytest.raises(ValueError):
         await build_retain_items(
             [RetainedTurn("text", _agent("0.1.0"))],
-            classify=classify, application_tags=["private"],
+            classify=classify, stored_tags=_never_saved,
+            application_tags=["private"],
         )
     assert called is False
 
@@ -84,5 +92,5 @@ async def test_duplicate_document_id_with_identical_text_collapses_to_one_item()
         return "friends"
 
     turns = [RetainedTurn("Same fact.", _agent("0.1.0")), RetainedTurn("Same fact.", _agent("0.2.0"))]
-    items = await build_retain_items(turns, classify=classify)
+    items = await build_retain_items(turns, classify=classify, stored_tags=_never_saved)
     assert len(items) == 1  # ignores persona_version per agent_document_id's own contract

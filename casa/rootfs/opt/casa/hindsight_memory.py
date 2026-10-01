@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import email.utils
+import json
 import logging
 import math
 import time
@@ -24,6 +25,7 @@ from semantic_memory import (
     RecallProtocolError,
     RecallUnavailable,
     SemanticMemory,
+    StoredTagsUnavailable,
     render_mental_models,
     render_recall,
 )
@@ -88,6 +90,31 @@ def _retry_after_s(headers: object) -> float:
     if not math.isfinite(seconds):
         return _RETRY_503_DEFAULT_S
     return min(max(seconds, 0.0), _RETRY_503_CAP_S)
+
+
+# #1123: the one answer to a document read that means "never saved". Measured
+# on Hindsight 0.10.2 (the route is present since v0.0.8): an unknown document
+# AND a missing bank both answer 404 with a JSON object whose ``detail`` is
+# exactly this string, while an unknown ROUTE answers 404 "Not Found". Every
+# other answer fails the read — the bare string as plain text or as a JSON
+# scalar included — so a server whose wording differs stops first saves rather
+# than disabling the floor.
+_DOCUMENT_NOT_FOUND = "Document not found"
+_DETAIL_LOG_CHARS = 120
+_NO_DETAIL = object()
+
+
+def _error_detail(body: str) -> object:
+    """The ``detail`` of an error body that decodes to a JSON object carrying
+    one, else :data:`_NO_DETAIL` — never the raw body, so no other shape can
+    equal the measured detail."""
+    try:
+        parsed = json.loads(body)
+    except ValueError:
+        return _NO_DETAIL
+    if not isinstance(parsed, dict) or "detail" not in parsed:
+        return _NO_DETAIL
+    return parsed["detail"]
 
 
 def _parse_mentioned_at(value: object) -> datetime | None:
@@ -221,6 +248,51 @@ class HindsightSemanticMemory(SemanticMemory):
         logger.info(
             "memory_retain bank=%s items=%d async=%s", bank, len(items), async_,
         )
+
+    async def document_tags(self, bank: str, document_id: str) -> frozenset[str] | None:
+        """#1123: ``GET /v1/default/banks/{bank}/documents/{document_id}`` —
+        the document's current tags, or None only for a 404 whose body is a
+        JSON object with ``detail`` exactly "Document not found" (see
+        ``_DOCUMENT_NOT_FOUND``). Any other 404 — plain text, a JSON scalar or
+        list, an object without that detail — any other status, and a 200
+        without a JSON object holding a list of string ``tags`` raise :class:`StoredTagsUnavailable`; a timeout or transport failure
+        propagates. Not ``_roundtrip``: that raises on the status before the
+        body — the only thing that tells "never saved" from a wrong route —
+        can be read. A GET is safe to retry once after a dropped connection."""
+        _validate_bank_id(bank)
+        url = f"{self._base}/v1/default/banks/{bank}/documents/{document_id}"
+        if self._session is None or self._session.closed:
+            self._session = self._new_session()
+
+        async def _get_once() -> tuple[int, str]:
+            async with self._session.request("GET", url) as resp:
+                return resp.status, await resp.text()
+
+        try:
+            status, body = await _get_once()
+        except aiohttp.ClientConnectionError:
+            status, body = await _get_once()
+        if status == 404:
+            detail = _error_detail(body)
+            if isinstance(detail, str) and detail == _DOCUMENT_NOT_FOUND:
+                return None
+            shown = repr(body if detail is _NO_DETAIL else detail)[:_DETAIL_LOG_CHARS]
+            logger.warning(
+                "memory stored-tier read got an unrecognised 404 bank=%s "
+                "detail=%s — not read as never-saved; the save is skipped",
+                bank, shown,
+            )
+            raise StoredTagsUnavailable(f"http_404 detail={shown}")
+        if status != 200:
+            raise StoredTagsUnavailable(f"http_{status}")
+        try:
+            payload = json.loads(body)
+        except ValueError:
+            raise StoredTagsUnavailable("malformed_document") from None
+        tags = payload.get("tags") if isinstance(payload, dict) else None
+        if not isinstance(tags, list) or not all(isinstance(t, str) for t in tags):
+            raise StoredTagsUnavailable("malformed_document")
+        return frozenset(tags)
 
     async def delete_bank(self, bank: str) -> bool:
         """#411: whole-bank delete (``DELETE /v1/default/banks/{bank}``).

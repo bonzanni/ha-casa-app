@@ -78,6 +78,9 @@ class _CaptureSem(SemanticMemory):
             score=None,
         ),)
 
+    async def document_tags(self, bank, document_id):
+        return None  # #1123: nothing stored here — every document reads never-saved
+
     async def profile(self, bank):
         return ""
 

@@ -77,7 +77,8 @@ saved unmarked too. Each item is sent with its complete tag set — tier,
 provenance, mark — because the backend REPLACES an identical document's tags
 with its latest save's set while keeping its FIRST date: the mark records
 where a text was last saved, and a scheduled line re-said verbatim in an
-ordinary session loses it (and the reverse gains it). An entry or spool
+ordinary session loses it (and the reverse gains it). The tier alone is not
+last-save-wins: it is floored by the tier already stored (below). An entry or spool
 record written before the marker existed is saved exactly as before —
 undated model lines, no mark — unless the turn superseding it on the same
 key carries the scheduled marker, which proves the old session scheduled.
@@ -89,6 +90,26 @@ tier, and its speaker provenance is recorded from what the turn actually
 established. Both live in reserved tag namespaces that ordinary application
 tags may not reach, so a caller cannot promote its own fact to a tier the
 classifier did not give it or attribute it to someone it did not come from.
+
+**A save can raise a memory's tier and never lowers the tier it read.** The
+classifier sees only the text, and the same text is classified again on
+every save — a reset racing a sweep, a spool retry, the same line said in a new conversation — so
+each save is a fresh draw. Before the items are built, the builder therefore
+reads the current tags of each document whose verdict is not already a real
+`private` from the bank it is about to write, and sends the stricter of the
+stored tier and this save's verdict. Only the tier changes; provenance and
+marks still follow the latest save, and the stored set is never merged in.
+A `private` that came only from a classifier failure (blank input, a backend error after its retry, a reply still unparseable
+after the re-ask) is not a verdict: over a stored tier it re-sends that tier
+unchanged, and on a document that has none it is stored beside the
+Casa-reserved marker `casa-tier-unverified`, which tells a later save the
+`private` sets no floor — the next real verdict replaces it. Every stored tier
+without that marker is a floor, including one saved before this rule existed
+and whatever produced it. A cross-ask conflict — a re-ask less sensitive than
+the first reply's own `private` evidence — counts as a real verdict. A real
+`private` therefore stays `private` against every save that reads it — the
+in-flight exception is INV-MEM-018's — and no operator action to lower a
+stored tier exists.
 
 **A registry key names a conversation slot, not a session.** A new turn can
 re-register the slot at any suspension point, so every step of the save
@@ -116,11 +137,12 @@ which is why the wipe cannot be "delete the bank" alone
 
 ## Contracts & invariants
 
-**INV-MEM-004**: A caller cannot inject a sensitivity tier or a provenance tag through ordinary application tags.
+**INV-MEM-004**: A caller cannot inject a sensitivity tier, a provenance tag or a Casa tier marker through ordinary application tags.
 
-Enforced in the retain-item builder, which refuses reserved tag namespaces
-before doing any classification or I/O, and validates the speaker provenance
-it is given.
+Enforced in the retain-item builder, which refuses reserved tag namespaces —
+`casa-source-`, `casa-tier-`, and the tier names — before doing any
+classification or I/O, for the batch's tags and every turn's own, and
+validates the speaker provenance it is given.
 
 What it does not cover, and this is worth stating plainly: it protects the
 *write* path from its own callers. It does not authenticate what the backend
@@ -284,6 +306,30 @@ protected nor deleted by this rule: a resumed session's predecessor, a
 pointer whose session id was cleared, and a *successfully* retained
 session all leave one behind.
 
+**INV-MEM-018**: A save never stores a memory at a less restrictive tier than the tier the memory server reported for that document when the save read it, unless that stored tier is a `private` carrying Casa's reserved provisional marker; the marker is written only beside a `private` that came from a classifier failure on a document storing no tier that counts as a floor, and a save whose read fails writes nothing.
+
+Enforced in the retain-item builder, the one place every writer's items are
+built: after classifying, it reads each document whose verdict is not already
+a real `private` through the memory seam's stored-tag read, under the same
+bound as classification and inside the writer's fence. The read is a required
+argument, so a writer cannot leave it out. A stored value that is not a set of
+tag strings is a failed read, never an empty one; several stored tiers count
+as the strictest, and a document holding no tier at all sets no floor. A
+failed classification is carried as a distinct value equal to `private`, so it
+can be told from a real `private` without changing what any caller stores.
+
+What it does not cover. Read and write are not one step, and saves are queued
+on the server: two FIRST saves of the same text that both read "never saved"
+each apply their own tier, and the last applied wins — the behaviour before
+this rule; and a raise can be lost behind a concurrent save that read the
+pre-raise tier, though neither goes below what both read. A reset racing a
+sweep over one transcript, a cold retain beside its own spool retry, a
+delegated request matching the same person's direct line, and one resident
+line said in two conversations all produce such pairs. A `private` stored
+before this rule — whatever produced it — cannot be told from a real one and
+stays a floor; no operator action to lower a tier exists. The server's
+replace-and-read semantics are pinned only through a fake of them.
+
 ## Failure behavior
 
 **Saving a session fails.** The save is abandoned, its claim is released —
@@ -306,7 +352,9 @@ consent (INV-MEM-014).
 
 Because the reset takes no save claim, a freshness sweep already retaining
 the same session can submit the same transcript alongside it. Retains are
-content-addressed, so the bank ends identical; what is duplicated is work.
+content-addressed, so both land on the same documents; each classifies on its
+own, so their tiers can differ, and the one applied last stands — never below
+the tier both read (INV-MEM-018). What is duplicated is work.
 That is the deliberate price of not making the reset's retry depend on
 winning a claim it does not need — the reset has already decided which
 conversation it is ending.
@@ -325,7 +373,22 @@ strict: only a single-line (possibly decorated) tier token or a final
 `Tier: <word>` line with agreeing earlier answers parses — anything else
 (prose, conflicts) is ambiguity. The write is not lost, but the fact goes
 invisible below the highest clearance — absence on voice and friends
-surfaces.
+surfaces. That `private` is provisional: over a tier already stored the save
+re-sends the stored tier, and on a new document the provisional marker lets
+the next real verdict replace it (INV-MEM-018).
+
+**The stored-tier read fails.** Casa cannot tell what tier a memory already
+has — the memory store is busy, restarting or unreachable, the read timed
+out, or it answered anything but the document's tags or its positive "never
+saved" — so the whole save is skipped and nothing is written with an
+unchecked tier. A warning names the failure. Each writer's existing arm then
+applies: a freshness sweep releases its claim and the next sweep retries, a
+reset or gap-superseded session spools a durable retry, a spool retry counts
+an attempt toward its limit, and a delegated or engagement memory is dropped —
+it is not retried, as when the retain itself fails. The read can fail where the
+write alone would have succeeded, so this skips a little more than before. A
+memory server whose "never saved" answer differs from the one Casa recognises
+fails every first save the same way, which is the safe direction.
 
 **The session registry file is corrupt at boot.** An unparseable file is
 renamed aside and the process starts with an empty registry; a parseable
@@ -336,8 +399,9 @@ comes up.
 ## Extension points
 
 **A new writer** should build its items through the retain-item builder
-(bypassing it skips tier tagging, provenance validation and the write-trust
-check at once) — and must capture a fence generation at its decision point
+(bypassing it skips tier tagging, provenance validation, the tier floor and the
+write-trust check at once), handing it the stored-tag read of the bank it is
+about to write — and must capture a fence generation at its decision point
 and enter the fence's shared section around its retain-and-spool critical
 section, or a wipe cannot see it. It also owns the completeness question: if
 the content it is about to store can be the product of a turn that did not
@@ -386,6 +450,7 @@ the wipe do — the claim is what keeps racing turns off the dying session.
 - `tests/test_time_envelope.py`
 - `tests/test_specialist_memory_tiers.py`
 - `tests/test_session_sweeper.py`
+- `tests/test_pin_1123_tier_floor.py`
 
 **Related**
 - [`architecture/memory.md`](../architecture/memory.md)

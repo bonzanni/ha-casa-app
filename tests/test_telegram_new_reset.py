@@ -94,6 +94,7 @@ class TestTelegramNewReset:
         reg = SessionRegistry(str(tmp_path / "s.json"))
         await reg.register(_KEY_42, "assistant", "sid-1", binding_digest=STUB_BINDING_DIGEST, speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV)
         sem = AsyncMock()
+        sem.document_tags.return_value = None  # #1123: never saved
         msgs = [
             type("M", (), {"type": "user", "message": {"content": "remember X"}})()
         ]
@@ -112,6 +113,7 @@ class TestTelegramNewReset:
         reg = SessionRegistry(str(tmp_path / "s.json"))
         await reg.register(_KEY_42, "assistant", "sid-1", binding_digest=STUB_BINDING_DIGEST, speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV)
         sem = AsyncMock()
+        sem.document_tags.return_value = None  # #1123: never saved
         msgs = [
             type("M", (), {"type": "user", "message": {"content": "hi"}})()
         ]
@@ -132,6 +134,7 @@ class TestTelegramNewReset:
         reg = SessionRegistry(str(tmp_path / "s.json"))
         await reg.register(_KEY_42, "assistant", "sid-1", binding_digest=STUB_BINDING_DIGEST, speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV)
         sem = AsyncMock()
+        sem.document_tags.return_value = None  # #1123: never saved
         msgs = [
             type("M", (), {"type": "user", "message": {"content": "hi"}})()
         ]
@@ -149,6 +152,7 @@ class TestTelegramNewReset:
         reg = SessionRegistry(str(tmp_path / "s.json"))
         await reg.register(_KEY_42, "assistant", "sid-1", binding_digest=STUB_BINDING_DIGEST, speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV)
         sem = AsyncMock()
+        sem.document_tags.return_value = None  # #1123: never saved
         msgs = [
             type("M", (), {"type": "user", "message": {"content": "important data"}})()
         ]
@@ -176,6 +180,7 @@ class TestTelegramNewReset:
 
         reg = SessionRegistry(str(tmp_path / "s.json"))
         sem = AsyncMock()
+        sem.document_tags.return_value = None  # #1123: never saved
         ch, bus, app = _make_channel(session_registry=reg, semantic_memory=sem)
 
         await ch._handle(_fake_update("55", "/new please"), None)
@@ -209,6 +214,7 @@ class TestNewSerializesWithFollowUps:
 
         reg = SessionRegistry(str(tmp_path / "s.json"))
         sem = AsyncMock()
+        sem.document_tags.return_value = None  # #1123: never saved
         ch, bus, app = _make_channel(session_registry=reg, semantic_memory=sem)
 
         reset_started = asyncio.Event()

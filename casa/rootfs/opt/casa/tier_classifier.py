@@ -31,7 +31,7 @@ from sensitivity import (
     tier_evidence,
 )
 
-__all__ = ["ClassifyStats", "classify_stats", "classify_tier", "TIERS"]
+__all__ = ["ClassifyStats", "FallbackTier", "classify_stats", "classify_tier", "TIERS"]
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +71,18 @@ def classify_stats() -> Iterator[ClassifyStats]:
     finally:
         _STATS.reset(token)
 
+class FallbackTier(str):
+    """#1123: the ``DEFAULT_TIER`` a classification FAILURE returned — blank
+    input, a backend error after the retry, or a reply still unparseable after
+    the re-ask. It is still that tier (equal to ``"private"``, a member of
+    ``TIERS``), so every caller that only stores it is unchanged; the retain
+    builder tells it apart from a real verdict with ``isinstance``, because a
+    failure sets no floor on the memory's stored tier. A classifier that
+    returns a plain ``str`` is always giving a real verdict."""
+
+    __slots__ = ()
+
+
 # D-5 (v0.69.2): backoff before the single retry. A transient SDK/CLI failure
 # permanently mis-tiers the item to ``private`` (over-restriction — the fact
 # becomes invisible below private clearance forever), and this path is off the
@@ -105,10 +117,12 @@ def _warn_unparseable(reply: str, *, will_reask: bool) -> None:
 async def classify_tier(content: str) -> str:
     """Classify one fact/item into a sensitivity tier. Returns a member of TIERS;
     DEFAULT_TIER on blank input, a reply still unparseable after one stricter
-    re-ask (#508), or any backend error (after one retry per ask — D-5)."""
+    re-ask (#508), or any backend error (after one retry per ask — D-5) — each
+    of those three as a :class:`FallbackTier` (#1123) — and also, as a plain
+    verdict, on a cross-ask conflict."""
     text = (content or "").strip()
     if not text:
-        return DEFAULT_TIER
+        return FallbackTier(DEFAULT_TIER)
     import claude_agent_sdk as sdk
 
     opts = sdk.ClaudeAgentOptions(
@@ -199,6 +213,9 @@ async def classify_tier(content: str) -> str:
         # Evidence is a FLOOR only: a re-ask answer at or above it is accepted;
         # one below it is a cross-ask conflict — ambiguity, never "last one
         # wins" (#350/r2 doctrine) — and falls to the leak-safe default.
+        # #1123: that default is a REAL verdict (a plain ``str``), not a
+        # FallbackTier — the first reply's own evidence said private, so it
+        # sets a floor. It still counts as ``defaulted`` below.
         floor = max(
             (TIERS.index(t) for t in tier_evidence(reply)), default=-1)
         reply = await _ask(f"{text}\n\n{TIER_FORMAT_REMINDER}")
@@ -212,8 +229,10 @@ async def classify_tier(content: str) -> str:
                     "answer-shaped evidence in the discarded reply; "
                     "defaulting to %s", DEFAULT_TIER,
                 )
-            else:
-                _warn_unparseable(reply, will_reask=False)
+                if stats is not None:
+                    stats.defaulted += 1
+                return DEFAULT_TIER
+            _warn_unparseable(reply, will_reask=False)
     if stats is not None:
         stats.defaulted += 1
-    return DEFAULT_TIER
+    return FallbackTier(DEFAULT_TIER)

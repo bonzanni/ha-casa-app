@@ -40,6 +40,7 @@ async def test_claim_is_live_during_notify_reset(tmp_path, monkeypatch):
 
     reg.add_reset_listener(listener)
     sem = AsyncMock()
+    sem.document_tags.return_value = None  # #1123: never saved
 
     async def fake_classify(content: str) -> str:
         return "public"
@@ -63,6 +64,7 @@ async def test_racing_fresh_registration_survives_reset(tmp_path, monkeypatch):
 
     reg.add_reset_listener(racing_listener)
     sem = AsyncMock()
+    sem.document_tags.return_value = None  # #1123: never saved
     retained = []
 
     # #878: the reset retains its snapshot registry-decoupled, so the seam this
@@ -104,6 +106,7 @@ async def test_sidless_entry_rederives_and_retires_materialized_session(
 
     reg.add_reset_listener(publishing_listener)
     sem = AsyncMock()
+    sem.document_tags.return_value = None  # #1123: never saved
 
     async def fake_classify(content: str) -> str:
         return "public"
@@ -119,6 +122,7 @@ async def test_sidless_entry_rederives_and_retires_materialized_session(
 async def test_no_entry_no_claim_no_retain(tmp_path):
     reg = _reg(tmp_path)
     sem = AsyncMock()
+    sem.document_tags.return_value = None  # #1123: never saved
     await reset_channel("telegram-99", reg, sem, channel="telegram")
     sem.retain.assert_not_awaited()
     assert not reg.retirement_pending("telegram-99")
@@ -133,6 +137,7 @@ async def test_claim_released_when_the_retain_raises(tmp_path, monkeypatch):
     reg = _reg(tmp_path)
     await _register(reg, "telegram-42", "sid-old")
     sem = AsyncMock()
+    sem.document_tags.return_value = None  # #1123: never saved
 
     async def exploding_retain(*a, **k):
         raise RuntimeError("boom")
@@ -157,6 +162,7 @@ async def test_inflight_old_turn_republish_refused_then_reset_completes(
 
     reg.add_reset_listener(republishing_listener)
     sem = AsyncMock()
+    sem.document_tags.return_value = None  # #1123: never saved
 
     async def fake_classify(content: str) -> str:
         return "public"
@@ -197,6 +203,7 @@ async def test_a_wipe_during_the_flush_close_makes_the_reset_discard(
 
     reg.add_reset_listener(wipe_completes_mid_close)
     sem = AsyncMock()
+    sem.document_tags.return_value = None  # #1123: never saved
 
     async def fake_classify(content: str) -> str:
         return "public"

@@ -19,6 +19,9 @@ class _Sem:
     def __init__(self):
         self.retained = []
 
+    async def document_tags(self, bank, document_id):
+        return None  # #1123: reads as never saved
+
     async def retain(self, bank, items, *, async_=True):
         self.retained.append((bank, [i["tags"] for i in items]))
 
@@ -81,6 +84,9 @@ async def test_retain_cold_session_no_provenance_noop(monkeypatch):
 class _FailingSem:
     def __init__(self):
         self.calls = 0
+
+    async def document_tags(self, bank, document_id):
+        return None  # #1123: reads as never saved
 
     async def retain(self, bank, items, *, async_=True):
         self.calls += 1
@@ -203,6 +209,9 @@ async def test_cancelled_cold_retain_still_spools(tmp_path, monkeypatch):
     started = asyncio.Event()
 
     class _Hanging:
+        async def document_tags(self, bank, document_id):
+            return None  # #1123: reads as never saved
+
         async def retain(self, *a, **k):
             started.set()
             await asyncio.Event().wait()

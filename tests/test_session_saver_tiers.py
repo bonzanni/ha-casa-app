@@ -12,6 +12,14 @@ from session_reg_helpers import STUB_SPEAKER_PROV, STUB_USER_PROV
 
 pytestmark = [pytest.mark.unit]
 
+
+class _NeverSavedMemory:
+    async def document_tags(self, bank, document_id):
+        return None  # #1123: an empty bank — every document reads never saved
+
+
+_NEVER_SAVED = _NeverSavedMemory()
+
 # STUB_USER_PROV.user_peer is "tester"; STUB_SPEAKER_PROV is a resident.
 _USER_PEER = STUB_USER_PROV.user_peer
 
@@ -29,7 +37,7 @@ async def test_transcript_items_tagged_per_item(monkeypatch):
 
     msgs = [_Msg("user", "my salary is 5000"), _Msg("assistant", "bin day is Tuesday")]
     items = await session_saver.transcript_to_items(
-        msgs, speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV,
+        msgs, speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV, semantic_memory=_NEVER_SAVED,
     )
     assert [i["tags"][0] for i in items] == ["private", "public"]
     # Task 10: content-derived document_id, keyed by KIND (user_peer vs persona).
@@ -76,7 +84,7 @@ async def test_save_logs_one_aggregate_defaulted_count(monkeypatch, caplog):
     with caplog.at_level(logging.WARNING):
         items = await session_saver.transcript_to_items(
             msgs, speaker_provenance=STUB_SPEAKER_PROV,
-            user_provenance=STUB_USER_PROV,
+            user_provenance=STUB_USER_PROV, semantic_memory=_NEVER_SAVED,
         )
     # Leak-safe default preserved on the items themselves.
     assert [i["tags"][0] for i in items] == ["private", "private"]
@@ -94,7 +102,7 @@ async def test_clean_save_logs_no_aggregate_line(monkeypatch, caplog):
     with caplog.at_level(logging.WARNING):
         items = await session_saver.transcript_to_items(
             msgs, speaker_provenance=STUB_SPEAKER_PROV,
-            user_provenance=STUB_USER_PROV,
+            user_provenance=STUB_USER_PROV, semantic_memory=_NEVER_SAVED,
         )
     assert [i["tags"][0] for i in items] == ["friends"]
     assert not [r for r in caplog.records if "defaulted" in r.getMessage()]
@@ -118,7 +126,7 @@ async def test_transcript_dedupes_repeated_line_within_batch(monkeypatch):
         _Msg("assistant", "ok"),                                # dup
     ]
     items = await session_saver.transcript_to_items(
-        msgs, speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV,
+        msgs, speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV, semantic_memory=_NEVER_SAVED,
     )
     assert [i["content"] for i in items] == [
         "harden probe TG-DISPATCH-001 reply ok", "ok",
@@ -136,15 +144,15 @@ async def test_transcript_same_content_stable_id_across_sessions(monkeypatch):
 
     msg = [_Msg("user", "the bins go out on Tuesday")]
     a = await session_saver.transcript_to_items(
-        msg, speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV)
+        msg, speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV, semantic_memory=_NEVER_SAVED)
     b = await session_saver.transcript_to_items(
-        msg, speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV)
+        msg, speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV, semantic_memory=_NEVER_SAVED)
     assert a[0]["document_id"] == b[0]["document_id"]
 
     # A different speaker KIND (agent) with the same words is a distinct document.
     other = await session_saver.transcript_to_items(
         [_Msg("assistant", "the bins go out on Tuesday")],
-        speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV,
+        speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV, semantic_memory=_NEVER_SAVED,
     )
     assert other[0]["document_id"] != a[0]["document_id"]
 
@@ -153,6 +161,9 @@ async def test_save_session_skips_voice():
     retained = []
 
     class _Sem:
+        async def document_tags(self, bank, document_id):
+            return None  # #1123: reads as never saved
+
         async def retain(self, bank, items, *, async_=True):
             retained.append(bank)
 
@@ -180,6 +191,9 @@ async def test_save_session_retains_telegram_to_shared_bank(monkeypatch):
     retained = {}
 
     class _Sem:
+        async def document_tags(self, bank, document_id):
+            return None  # #1123: reads as never saved
+
         async def retain(self, bank, items, *, async_=True):
             retained["bank"] = bank
             retained["tags"] = [i["tags"] for i in items]
@@ -224,7 +238,7 @@ async def test_transcript_classification_is_concurrent(monkeypatch):
     monkeypatch.setattr(session_saver, "classify_tier", fake_classify)
     msgs = [_Msg("user", f"fact {i}") for i in range(8)]
     items = await session_saver.transcript_to_items(
-        msgs, speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV,
+        msgs, speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV, semantic_memory=_NEVER_SAVED,
     )
     assert len(items) == 8
     # Serial gives peak == 1; bounded-parallel gives peak in [2, 4].

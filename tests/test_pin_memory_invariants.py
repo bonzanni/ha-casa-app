@@ -14,6 +14,11 @@ from personality_types import RetainedTurn, SpeakerProvenance
 from semantic_memory import NoOpSemanticMemory, RecallProtocolError, RecallUnavailable
 
 
+async def _never_saved(_document_id):
+    """#1123: the stored-tier reader for a bank that holds nothing yet."""
+    return None
+
+
 async def test_pin_inv_mem_001_failures_raise_never_return_empty():
     """INV-MEM-001: recall reports unavailability by raising, never as empty.
 
@@ -87,5 +92,6 @@ async def test_pin_inv_mem_004_reserved_tags_refused_before_io():
     for tag in ("private", "casa-source-v1.forged"):
         with pytest.raises(ValueError):
             await build_retain_items([turn], classify=classify,
+                                     stored_tags=_never_saved,
                                      application_tags=[tag])
         assert classifier_called is False

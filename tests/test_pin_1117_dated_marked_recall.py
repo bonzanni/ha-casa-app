@@ -134,8 +134,15 @@ def _scheduled_transcript() -> list[_Msg]:
     ]
 
 
+class _NeverSaved:
+    async def document_tags(self, bank, document_id):
+        return None  # #1123: an empty bank
+
+
 async def _items(messages, *, scheduled, user_provenance=SYSTEM):
     kw = {"scheduled": scheduled} if _accepts(session_saver.transcript_to_items, "scheduled") else {}
+    if _accepts(session_saver.transcript_to_items, "semantic_memory"):
+        kw["semantic_memory"] = _NeverSaved()
     return await session_saver.transcript_to_items(
         messages, speaker_provenance=STUB_SPEAKER_PROV,
         user_provenance=user_provenance, **kw,
@@ -319,6 +326,7 @@ async def _save_via_registry(tmp_path, scheduled) -> list[dict]:
     session_label = "telegram-v2-scheduled-label"
     await _seed_entry(reg, session_label, "sid-sched", scheduled=scheduled)
     sem = AsyncMock()
+    sem.document_tags.return_value = None  # #1123: never saved
     with patch("session_saver.get_session_messages", return_value=_scheduled_transcript()):
         await session_saver.save_session(
             session_label, reg, sem, directory="/config/agent-home/assistant", channel="telegram")
@@ -509,6 +517,7 @@ async def test_rc6_failed_cold_retain_spools_and_replays_scheduled_marker(tmp_pa
              "user_provenance": provenance_mapping(SYSTEM), "scheduled": True}
     old = snapshot_session_entry(entry)
     failing = AsyncMock()
+    failing.document_tags.return_value = None  # #1123: never saved
     failing.retain.side_effect = RuntimeError("hindsight down")
     with patch("session_saver.get_session_messages", return_value=_scheduled_transcript()):
         await session_saver.retain_cold_session(
@@ -519,6 +528,7 @@ async def test_rc6_failed_cold_retain_spools_and_replays_scheduled_marker(tmp_pa
     assert json.loads(records[0].read_text()).get("scheduled", "<absent>") is True
 
     ok = AsyncMock()
+    ok.document_tags.return_value = None  # #1123: never saved
     with patch("session_saver.get_session_messages", return_value=_scheduled_transcript()):
         await session_saver.retry_spooled_cold_retains(ok, retry_dir=spool)
     assert ok.retain.await_count == 1
@@ -536,6 +546,7 @@ async def test_rc6_failed_cold_retain_spools_and_replays_scheduled_marker(tmp_pa
     spool.mkdir(exist_ok=True)
     (spool / "sid-legacy.json").write_text(json.dumps(legacy))
     ok2 = AsyncMock()
+    ok2.document_tags.return_value = None  # #1123: never saved
     with patch("session_saver.get_session_messages", return_value=_scheduled_transcript()):
         await session_saver.retry_spooled_cold_retains(ok2, retry_dir=spool)
     items = ok2.retain.await_args.args[1]
@@ -558,6 +569,11 @@ class _M5Memory:
     def __init__(self):
         self.docs: dict[str, dict] = {}
         self.clock = "2026-10-01T12:00:00+00:00"
+
+    async def document_tags(self, bank, document_id):
+        # #1123: the measured per-document read (M-6) — the CURRENT set.
+        doc = self.docs.get(document_id)
+        return None if doc is None else frozenset(doc["tags"])
 
     async def retain(self, bank, items, *, async_=True):
         for item in items:

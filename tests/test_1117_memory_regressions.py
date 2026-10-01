@@ -23,6 +23,11 @@ from test_pin_1117_dated_marked_recall import (
     _scheduled_transcript, _ts, amsterdam,  # noqa: F401 — fixture re-export
 )
 
+
+async def _never_saved(_document_id):
+    """#1123: the stored-tier reader for a bank that holds nothing yet."""
+    return None
+
 _TIERS = ("public", "friends", "family", "private")
 
 
@@ -82,6 +87,7 @@ async def test_retain_delegated_items_carry_exactly_tier_source_and_batch_tags(m
 
     monkeypatch.setattr(delegated_memory, "classify_tier", _classify)
     sem = AsyncMock()
+    sem.document_tags.return_value = None  # #1123: never saved
     turns = [RetainedTurn("question for finance", STUB_USER_PROV),
              RetainedTurn("finance answer", STUB_SPEAKER_PROV)]
     await delegated_memory.retain_delegated(
@@ -129,7 +135,7 @@ async def test_per_turn_tags_are_validated_before_any_classification():
         turns = [RetainedTurn("fine", STUB_USER_PROV),
                  RetainedTurn("fine", STUB_USER_PROV, application_tags=(bad,))]
         with pytest.raises(ValueError):
-            await build_retain_items(turns, classify=_classify)
+            await build_retain_items(turns, classify=_classify, stored_tags=_never_saved)
     assert classified == []
 
 
@@ -164,6 +170,7 @@ async def test_unknown_marker_saves_in_todays_form(tmp_path, monkeypatch, amster
                        speaker_provenance=STUB_SPEAKER_PROV, user_provenance=SYSTEM)
     reg._data[key].pop("scheduled")
     sem = AsyncMock()
+    sem.document_tags.return_value = None  # #1123: never saved
     with patch("session_saver.get_session_messages", return_value=_scheduled_transcript()):
         await session_saver.save_session(key, reg, sem, directory="/x", channel="telegram")
     items = sem.retain.await_args.args[1]
@@ -184,6 +191,7 @@ async def test_a_dm_session_is_written_not_scheduled_and_marks_nothing(tmp_path,
     assert reg.get("telegram-v2-dm")["scheduled"] is False
     msgs = [_Msg("user", _env(T0) + "is the lamp on?"), _Msg("assistant", "It is off.")]
     sem = AsyncMock()
+    sem.document_tags.return_value = None  # #1123: never saved
     with patch("session_saver.get_session_messages", return_value=msgs):
         await session_saver.save_session("telegram-v2-dm", reg, sem, directory="/x",
                                          channel="telegram")

@@ -55,6 +55,19 @@ class RecallProtocolError(RecallUnavailable):
         self.detail = detail
 
 
+class StoredTagsUnavailable(RuntimeError):
+    """#1123: a document's stored tags could NOT be read — the answer was
+    neither the document's tags nor the backend's positive "never saved".
+    A save that needs the stored tier must not proceed on a guess, so the
+    retain builder lets this (and every other read failure) fail the save.
+    ``reason`` is bounded diagnostics (a status and the backend's detail),
+    never memory content."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(f"stored tags unavailable: {reason}")
+
+
 def render_mental_models(response: dict[str, Any]) -> str:
     """Render a mental-model list response into a digest. Tolerant of the
     list key name (``mental_models``/``models``/``items``)."""
@@ -123,6 +136,16 @@ class SemanticMemory(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def document_tags(self, bank: str, document_id: str) -> frozenset[str] | None:
+        """#1123: the tags ``bank`` currently stores for ``document_id``, or
+        None when the backend positively reports that document was never saved.
+        Every other outcome RAISES (:class:`StoredTagsUnavailable` or the
+        transport error): the retain builder reads the stored tier through this
+        before each save, and an unknown answer read as "never saved" would
+        let a save lower that tier. Abstract with no default on purpose — a
+        default of None would be exactly that fail-open read."""
+
+    @abstractmethod
     async def profile(self, bank: str) -> str:
         """Return the bank's mental-model overlay digest (cheap GET, no LLM)."""
 
@@ -173,6 +196,11 @@ class NoOpSemanticMemory(SemanticMemory):
         tags_match: str = "any", budget: str = "mid",
     ) -> tuple[RecallHit, ...]:
         raise RecallUnavailable("not_configured")
+
+    async def document_tags(self, bank: str, document_id: str) -> frozenset[str] | None:
+        # Nothing is ever stored here (``retain`` is silent), so "never saved"
+        # is literally true — and a writer must not fail on it.
+        return None
 
     async def profile(self, bank: str) -> str:
         return ""

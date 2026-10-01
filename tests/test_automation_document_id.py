@@ -11,6 +11,11 @@ domain-separated id space instead.
 import pytest
 
 
+async def _never_saved(_document_id):
+    """#1123: the stored-tier reader for a bank that holds nothing yet."""
+    return None
+
+
 class TestAutomationDocumentId:
     def test_the_peer_is_part_of_the_key(self):
         from hindsight_ids import automation_document_id
@@ -69,7 +74,8 @@ class TestRetainItemRouting:
         async def classify(_text):
             return "public"
 
-        return asyncio.run(build_retain_items(turns, classify=classify))
+        return asyncio.run(build_retain_items(
+            turns, classify=classify, stored_tags=_never_saved))
 
     def test_an_automation_turn_lands_in_the_automation_id_space(self):
         from personality_types import RetainedTurn, SpeakerProvenance
