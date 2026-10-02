@@ -133,7 +133,7 @@ belongs to creation and the finalize path specifically. And the cancellation com
 itself best-effort on the disk side — if the compensating write fails, the on-disk ghost row
 remains until the boot reconcile and reap TTL retire it.
 
-**INV-ENG-022**: Once an `in_casa` engagement's terminal status is on disk, a pass run at scheduler start and every six hours deletes its CLI transcripts — a plugin job's whole per-engagement project folder, or, for a specialist or executor, each session the record names (its current session and every session its background job lists) in that record's own project folder — and selects nothing else.
+**INV-ENG-022**: Once an `in_casa` engagement's terminal status is on disk, a pass run at scheduler start and every six hours deletes its CLI transcripts — a plugin job's whole per-engagement project folder, or, for a specialist or executor, each session the record names (its current session and every session its background job lists) in that record's own project folder — and selects nothing else. A pass that cannot import the SDK's folder lookup deletes nothing.
 
 Casa owns transcript deletion: the CLI's own cleanup never fires under Casa's SDK
 invocation, and the resident time-to-live sweep
@@ -155,6 +155,13 @@ saying live — either way a restart would resume the session. Such a record wai
 later write. Every pass re-visits every terminal record still loaded, with no "done"
 marker, so a session named after a pass, or a removal that failed, is handled by the next
 pass; one record's failure never stops another's.
+
+The folder lookup is the SDK's own private helper, imported when a pass starts and never
+when the module loads: Casa imports the pass before scheduling it, so an import at load
+would stop Casa booting on any SDK version that lacks the helper. A pass that cannot import
+it logs one warning naming the helper, counts an error, deletes nothing and tries again on
+the next pass. The end-to-end test image's mock SDK carries a copy of the same lookup, so the
+pass runs there as it does in production.
 
 What it does not cover, and these are gaps rather than retention: it never lists a folder or
 selects by age, so sessions no record names stay — a synchronous delegation's, a utility
