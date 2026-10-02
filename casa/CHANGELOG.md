@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.341.1] - 2026-10-02
+
+### Fixed
+
+- For a specialist or executor engagement run inside Casa, when someone whose
+  clearance is lower than the engagement's writes in its topic, Casa drops the
+  session the engagement was running and starts a fresh one. The stored
+  conversation of the dropped session was not deleted when the engagement
+  finished. Casa now records that session when it drops it, and deletes it
+  together with the engagement's other stored conversations once the
+  engagement's finished status has been saved (#1167). Nothing is deleted at
+  the moment of the downgrade. A background job that starts a fresh
+  conversation for every batch was already covered. A session dropped before
+  this update was not recorded, so this change does not delete it.
+- A finished plugin job's working folder, `/data/engagements/<id>`, was not
+  removed automatically. The pass that deletes finished engagements' stored
+  conversations, which runs when Casa starts and then on a schedule, now
+  removes it too, once the job's finished status has been saved (#1170).
+  This also applies to jobs that finished before the update, as long as Casa
+  still keeps their record.
+- An install that has never run an engagement no longer logs, when the
+  cleanup of finished engagements runs, a warning that the engagements file
+  cannot be read (#1174). The warning is still logged when that file cannot be read while a
+  finished in-Casa engagement is waiting to be cleaned up.
+
 ## [0.341.0] - 2026-10-03
 
 ### Added
