@@ -135,8 +135,8 @@ remains until the boot reconcile and reap TTL retire it.
 
 **INV-ENG-022**: Once an `in_casa` engagement's terminal status is on disk, a pass run at scheduler start and every six hours deletes its CLI transcripts — a plugin job's whole per-engagement project folder, or, for a specialist or executor, each session the record names (its current session and every session its background job lists) in that record's own project folder — and selects nothing else. A pass that cannot import the SDK's folder lookup deletes nothing.
 
-Casa owns transcript deletion: the CLI's own cleanup never fires for a Casa launch, since
-none loads user settings or passes `cleanupPeriodDays` (INV-MEM-021, in
+Casa owns transcript deletion: the CLI's own cleanup never fires for an `in_casa` launch, since
+no SDK launch loads user settings or passes `cleanupPeriodDays` (INV-MEM-021, in
 [`architecture/memory-lifecycle.md`](memory-lifecycle.md)), and the resident time-to-live sweep
 ([`architecture/memory-lifecycle.md`](memory-lifecycle.md)) only ever reaps resident
 sessions. An `in_casa` session writes `<session>.jsonl` and a `<session>/` folder (its
