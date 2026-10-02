@@ -167,7 +167,8 @@ and that origin is the snapshot of the turn that launched the work. The turn tha
 completion is itself a turn, and a resident often delegates again from it. Its origin
 therefore records the question its completion carried, and not the notice it was handed.
 Without that, each hop's notice quoted the whole previous notice, result text included, so the
-prompt grew with every hop of the chain and every job row stored the nested text as its request.
+prompt grew with every hop of the chain, and a job row that takes its request from that origin
+stored the nested text as its request.
 The narration turn's own prompt, its options and its recall query are still the full notice;
 only the recorded question differs. A completion that carried no question passes on an empty
 one, never the notice. The question reaches `Agent._process` as an argument that
@@ -175,7 +176,7 @@ one, never the notice. The question reaches `Agent._process` as an argument that
 ingress can set it and no later turn can inherit it. Rows written before this rule keep the text
 they stored, and their replays quote it.
 
-**INV-JOB-017**: A turn synthesized from a delegation completion records, as its origin's question, the question that completion's origin carried — empty when it carried none — never the synthesized notice; so a delegation launched by `delegate_to_agent` from that turn records and persists (as its job row's request) the chain's root question, and the next notice quotes that root rather than re-embedding earlier notices or their result texts. Every other turn records its own text. Rows persisted before this rule are not repaired.
+**INV-JOB-017**: A turn synthesized from a delegation completion records, as its origin's question, the question that completion's origin carried — empty when it carried none — never the synthesized notice; so a delegation launched by `delegate_to_agent` from that turn records the chain's root question in its origin — and persists it as its job row's request wherever that row takes its request from the origin — and the next notice quotes that root rather than re-embedding earlier notices or their result texts. Every other turn records its own text. Rows persisted before this rule are not repaired.
 
 ## What Casa keeps about a finished delegation
 
