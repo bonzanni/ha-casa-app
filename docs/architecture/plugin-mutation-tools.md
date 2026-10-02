@@ -143,6 +143,15 @@ secrets** — `secret_candidates`: ids, roles and types, never an operator-typed
 tools it shares a projection with, and the classified `op` failure are
 [`architecture/plugin-secret-exploration.md`](plugin-secret-exploration.md)'s.
 
+**`plugin_assign` takes an optional `profile`, and a result carries recommendations.**
+A profile is written only for a target the call CREATES; an existing assignment is the
+no-op it always was and the result reports the access it holds (`profile`,
+`profile_tools`, `profile_tools_denied_by_config`). `plugin_add` and `plugin_assign` carry
+`requirement_candidates`, `plugin_unassign` and `plugin_remove` carry `dependents`, and
+`plugin_remove` carries `leftover_requirements`; all are told, never acted on, and
+`plugin_update` refuses with `profile_missing` a manifest that drops a held profile name
+before the repoint. The rules are [`plugin-access-profiles.md`](plugin-access-profiles.md)'s.
+
 **A mutation result names the ref it actually pinned** — `resolved_ref`: the tag the literal
 `latest` resolved to, or the exact ref given; the contract is INV-PLUG-022 in
 [`architecture/plugins.md`](plugins.md). A specialist inspection reports the same field under

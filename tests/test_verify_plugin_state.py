@@ -1332,3 +1332,42 @@ def test_verify_grades_only_the_assignments_casa_serves(tmp_path, monkeypatch):
     assert [row["target"] for row in r["targets"]] == ["resident:butler"]
     assert r["desired"]["targets"] == ["resident:butler"]
     assert r["desired"]["ignored_targets"] == ["executor:plugin-developer"]
+
+
+def test_verify_rows_disclose_the_profile_each_target_holds(tmp_path):
+    """S8: the per-target row carries the access profile (None = full) —
+    disclosure beside what the row grades, never part of the grade."""
+    store = tmp_path / "store"
+    e = entry("probe", ["specialist:finance", "resident:assistant"])
+    e["profiles"] = {"specialist:finance": "read"}
+    mk_artifact(store, "probe", e["artifact_id"])
+    mk_registry(tmp_path, [e])
+    r = _verify(tmp_path)
+    by_target = {row["target"]: row for row in r["targets"]}
+    assert by_target["specialist:finance"]["profile"] == "read"
+    assert by_target["resident:assistant"]["profile"] is None
+    assert r["ready"] is True
+
+
+def test_verify_rows_disclose_profile_tools_the_config_denies(tmp_path, monkeypatch):
+    """An operator deny on a tool inside the held profile is named on the row."""
+    from types import SimpleNamespace as _NS
+    from unittest.mock import MagicMock
+    import tools as tools_mod
+    store = tmp_path / "store"
+    e = entry("probe", ["specialist:finance"])
+    e["profiles"] = {"specialist:finance": "read"}
+    mk_artifact(store, "probe", e["artifact_id"], mcp_servers={"probe": {}},
+                extra_manifest={"casa": {"provides_tools": ["mcp__plugin_probe_probe__search"],
+                                         "profiles": {"read": ["search"]}}})
+    mk_registry(tmp_path, [e])
+    import plugin_registry as preg
+    preg.reload_snapshot(registry_path=tmp_path / "registry.json", store_root=store)
+    spec_reg = MagicMock()
+    spec_reg.get = MagicMock(return_value=_NS(
+        tools=_NS(disallowed=["mcp__plugin_probe_probe__search"])))
+    monkeypatch.setattr(tools_mod, "_specialist_registry", spec_reg, raising=False)
+    r = _verify(tmp_path)
+    (row,) = r["targets"]
+    assert row["profile"] == "read"
+    assert row["profile_tools_denied_by_config"] == ["search"]

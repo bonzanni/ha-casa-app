@@ -1,6 +1,7 @@
 """Resident plugin workers on the real launch, persistence and SDK options path."""
 from dataclasses import replace
 import json
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -85,7 +86,9 @@ async def test_worker_options_record_and_topic(worker, monkeypatch, limit):
     assert rec.origin['chat_id'] == '1' and rec.origin['_operator_turn'] is True
     assert rec.tools_allowed == ('mcp__plugin_ledger_ledger', *jobs.PLUGIN_JOB_CASA_GRANTS)
     assert rec.plugin_artifacts == ({'name': 'ledger', 'manifest_name': worker.host.plugin.manifest_name,
-                                     'path': str(worker.root), 'artifact_id': worker.host.plugin.artifact_id},)
+                                     'path': str(worker.root), 'artifact_id': worker.host.plugin.artifact_id,
+                                     # S8: the record stores the EFFECTIVE profile the build applied
+                                     'profile': None},)
     assert rec.topic_title == 'Ellen · Classify entries'
     assert worker.bot.create_forum_topic.call_args.kwargs['name'] == '🟢 Ellen · Classify entries'
     await worker.channel.update_topic_state(engagement_id=rec.id, new_state='awaiting')
@@ -159,3 +162,77 @@ async def test_options_failure_aborts_and_releases(worker):
     assert worker.limiter.in_flight == 0
     worker.bot.close_forum_topic.assert_awaited()
     assert not Client.instances
+
+
+async def test_worker_record_carries_the_effective_profile(worker, tmp_path):
+    """S8: a resident-hosted worker whose host holds the plugin under a
+    profile is built with that profile and its record says so — the profile
+    is read from the LIVE entry at build, not captured at launch."""
+    e = entry('ledger', ['resident:assistant'])
+    e['profiles'] = {'resident:assistant': 'read'}
+    live_store = tmp_path / 'live-store'
+    mk_artifact(live_store, 'ledger', e['artifact_id'],
+                mcp_servers={'ledger': {'env': {'KEY': '${LEDGER_JOB_KEY}'}}},
+                extra_manifest={'casa': {'protectedTools': ['classify'],
+                                         'provides_tools': ['mcp__plugin_ledger_ledger__classify',
+                                                            'mcp__plugin_ledger_ledger__export'],
+                                         'profiles': {'read': ['classify']}}},
+                extra_files={'skills/classify/SKILL.md': 'Classify entries.'})
+    plugin_registry.reload_snapshot(registry_path=mk_registry(tmp_path, [e]),
+                                    store_root=live_store)
+    result = await call()
+    assert result['status'] == 'pending', result
+    await tools.drain_launch_turns()
+    rec = worker.registry.get(result['engagement_id'])
+    assert rec.plugin_artifacts[0]['profile'] == 'read'
+    opts = Client.instances[0].options
+    assert 'mcp__plugin_ledger_ledger__classify' in opts.allowed_tools
+    assert 'mcp__plugin_ledger_ledger' not in opts.allowed_tools
+    # The visibility deny list comes from the LOADED artifact's declaration
+    # (this fixture's declares none); the barrier is the guard matcher.
+    assert any(getattr(m, 'matcher', '') == re.escape('mcp__plugin_ledger_ledger__') + '.*'
+               for m in opts.hooks['PreToolUse'])
+    loaded = EngagementRegistry(tombstone_path=worker.registry._tombstone_path, bus=None)
+    await loaded.load()
+    assert loaded.get(rec.id).plugin_artifacts[0]['profile'] == 'read'
+
+
+async def test_launch_records_the_plan_the_builder_applied_without_rereading(worker, tmp_path, monkeypatch):
+    """One plan read per build, inside the builder; the record is written from
+    that plan, never from a second read a mutation could slip between."""
+    e = entry('ledger', ['resident:assistant'])
+    e['profiles'] = {'resident:assistant': 'read'}
+    live_store = tmp_path / 'live-store'
+    mk_artifact(live_store, 'ledger', e['artifact_id'],
+                mcp_servers={'ledger': {'env': {'KEY': '${LEDGER_JOB_KEY}'}}},
+                extra_manifest={'casa': {'protectedTools': ['classify'],
+                                         'provides_tools': ['mcp__plugin_ledger_ledger__classify'],
+                                         'profiles': {'read': ['classify']}}},
+                extra_files={'skills/classify/SKILL.md': 'Classify entries.'})
+    plugin_registry.reload_snapshot(registry_path=mk_registry(tmp_path, [e]),
+                                    store_root=live_store)
+    import plugin_grants
+    real = plugin_grants.profile_plan
+    calls = []
+    def counting(resolution, *, target):
+        calls.append(target)
+        return real(resolution, target=target)
+    monkeypatch.setattr(tools, 'profile_plan', counting)
+    result = await call()
+    await tools.drain_launch_turns()
+    assert calls == ['resident:assistant'], calls
+    rec = worker.registry.get(result['engagement_id'])
+    assert rec.plugin_artifacts[0]['profile'] == 'read'
+
+
+async def test_launch_aborts_when_the_profile_write_fails(worker, monkeypatch):
+    """The record must say what the build enforces BEFORE the client starts;
+    a failed write aborts the launch rather than opening unrecorded."""
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr(worker.registry, 'update_plugin_profiles',
+                        AsyncMock(side_effect=OSError(28, 'No space left on device')))
+    result = await call()
+    await tools.drain_launch_turns()
+    assert (result['status'], result['kind']) == ('error', 'profile_persist_failed'), result
+    assert not Client.instances, 'no client may open when the profile write failed'
+    assert not worker.registry.active_and_idle()

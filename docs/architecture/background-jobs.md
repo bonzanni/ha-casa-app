@@ -231,8 +231,11 @@ batch replaces it — updates its epoch `last_advance`, and persists `origin["jo
 Resume options rebuild the job's per-batch turn limit and its progress grant from
 `origin["job"]`, so a resumed job session keeps both. Plugin workers additionally rebuild
 from the recorded artifact and launch model, independent of later host configuration or
-plugin assignment changes. A recorded resolution that loses the declaring plugin, including
-environment withholding, refuses resume rather than building an empty worker.
+plugin assignment changes — except the access profile the host holds for the plugin, which
+every build reads live and the record stores as built
+([`plugin-access-profiles.md`](plugin-access-profiles.md)). A recorded resolution that
+loses the declaring plugin, including environment withholding, refuses resume rather than
+building an empty worker.
 
 ## Failure behavior
 

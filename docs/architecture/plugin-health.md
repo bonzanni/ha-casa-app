@@ -165,6 +165,10 @@ could not run for this pass. Regenerating on the failure path without them would
 replaced one false report with a worse one — all-clear, while ingress was shut. See
 [`plugin-triggers.md`](plugin-triggers.md) for the marker they read.
 
+A plugin's recommendation its target does not hold is a WARNING row, `requirement_unmet`,
+recomputed on every regeneration and rendered with the plugin, the profile, where it stands
+and the author's `why` ([`plugin-access-profiles.md`](plugin-access-profiles.md)).
+
 ## Contracts & invariants
 
 **INV-PLUG-013**: A plugin-health fingerprint is recorded as announced only for a row an operator message actually named, on a send the channel did not report as undelivered, and only while the report that message described is still current; a fingerprint that is not recorded is suppressed on neither operator surface.

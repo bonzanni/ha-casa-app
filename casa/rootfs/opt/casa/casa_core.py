@@ -4750,6 +4750,8 @@ async def main() -> None:
     engagement_driver = InCasaDriver(
         topic_stream_factory=_topic_stream_factory,
         persist_session_id=engagement_registry.persist_session_id,
+        # S8: the profile a rebuilt session enforces is persisted before it opens.
+        persist_plugin_profiles=engagement_registry.update_plugin_profiles,
         result_observer=_specialist_result_observer,
         # #369: last-instant launch gate — start() re-reads the live record
         # before delivering the initial prompt.

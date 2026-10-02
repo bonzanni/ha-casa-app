@@ -423,6 +423,26 @@ def describe_issue(d: dict) -> str:
     # #554: the detail (an unresolved variable name, a setup episode's
     # last_error) is the one actionable fact in the row, and nothing else
     # carries it to the operator.
+    # S8: a recommendation the target does not hold — the detail is a
+    # structured row (which plugin, which profile, why, where it stands), so
+    # it renders as one sentence the operator can act on rather than a dict.
+    if code == "requirement_unmet" and isinstance(d.get("detail"), dict):
+        detail = d["detail"]
+        what = detail.get("plugin") or "a plugin"
+        if detail.get("profile"):
+            what = f"{what} ({detail['profile']} profile)"
+        where = d.get("target") or "its target"
+        why = detail.get("why") or ""
+        state = {
+            "not_installed": "which is not installed",
+            "offer": "which is installed but not assigned there",
+            "registered_elsewhere": "which is set up for another agent and "
+                                    "can be shared with one tap",
+            "held_narrower": "which it holds with a narrower profile",
+            "profile_missing_in_plugin": "a profile that plugin does not declare",
+        }.get(str(detail.get("state")), "")
+        tail = f": {why}" if why else ""
+        return f"{name} recommends {what} for {where}, {state}{tail}".replace(", :", ":")
     if d.get("detail"):
         return f"{name} {phrase} — {d['detail']}"
     return f"{name} {phrase}"

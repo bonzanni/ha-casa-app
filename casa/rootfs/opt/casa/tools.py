@@ -40,9 +40,11 @@ import plugin_registry
 import plugin_store
 from plugin_grants import (
     CASA_OWNED_ENV_OPTIONS as _CASA_OWNED_ENV,
+    apply_profile_plan,
     declared_tools_for_resolution, env_remediation_hint,
     grants_for_resolution, grants_for_resolved,
     make_fail_closed_can_use_tool, mcp_json_malformed,
+    profile_plan,
     required_env_vars_for_resolved, sanitized_env_for_paths,
     sanitized_env_for_resolution,
 )
@@ -2023,7 +2025,12 @@ def _resolution_from_recorded(plugin_artifacts) -> "plugin_registry.ResolutionRe
             # original launch used. `.get("manifest_name", "")` tolerates
             # engagements recorded before this field existed — those fall
             # back to the registry name via runtime_name(), same as before.
-            manifest_name=pa.get("manifest_name", "") if isinstance(pa, dict) else ""))
+            manifest_name=pa.get("manifest_name", "") if isinstance(pa, dict) else "",
+            # S8: the EFFECTIVE profile the build that wrote this row applied —
+            # the fallback a resume's plan uses when the live registry no
+            # longer assigns the plugin to this target (never widens).
+            profile=(pa.get("profile") if isinstance(pa, dict)
+                     and isinstance(pa.get("profile"), str) else None)))
     return ResolutionResult(registry_valid=True, plugins=plugins, issues=issues)
 
 
@@ -2091,8 +2098,13 @@ def _build_specialist_options(
     extra_casa_tools: tuple[str, ...] = (),
     output_format=None,
     max_turns: int | None = None,
+    plan_out: "list | None" = None,
 ) -> ClaudeAgentOptions:
     """Build ClaudeAgentOptions for a Tier 2 specialist invocation.
+
+    ``plan_out`` (S8): when a list is given, the ``ProfilePlan`` this build
+    APPLIED is appended to it, so the caller persists exactly what was
+    enforced instead of re-reading a snapshot a mutation could move.
 
     Specialist memory is injected via prompt in :func:`_run_delegated_agent`
     (shared ``casa`` bank); SDK-level session resume stays disabled
@@ -2234,6 +2246,20 @@ def _build_specialist_options(
         if grant not in allowed_tools:
             allowed_tools.append(grant)
 
+    # S8 plugin access profiles: the plan is read HERE from the live snapshot
+    # at construction (a recorded-artifact resume reaches this builder too —
+    # the loaded artifact gives the namespaces, the live entry the profile).
+    # The guard matcher is the barrier; the list hygiene decides visibility.
+    _plan = profile_plan(resolution, target=f"{_hook_tier}:{_role}")
+    if plan_out is not None:
+        plan_out.append(_plan)
+    allowed_tools, _profile_denies = apply_profile_plan(allowed_tools, [], _plan)
+    from hooks import profile_guard_matcher
+    _profile_guard = profile_guard_matcher(_plan)
+    if _profile_guard is not None:
+        resolved_hooks["PreToolUse"] = [
+            *resolved_hooks.get("PreToolUse", []), _profile_guard]
+
     if _mcp_registry is not None:
         mcp_servers = _mcp_registry.resolve(
             cfg.mcp_server_names,
@@ -2247,8 +2273,10 @@ def _build_specialist_options(
     # Compute the CLI-enforced disallowed set ONCE so the effective log line
     # below and the returned options cannot drift (Sol r1 S2): a tool that is
     # both granted and disallowed is denied at the CLI, so the log must not
-    # count it as effectively usable.
-    disallowed_tools = _with_subagent_spawn_disallowed(cfg.tools.disallowed)
+    # count it as effectively usable. The profile's visibility denies ride
+    # the same list, BEFORE the sub-agent and cross-session clamps.
+    disallowed_tools = _with_subagent_spawn_disallowed(
+        [*cfg.tools.disallowed, *_profile_denies])
 
     # #459: the boot-time `agent_capabilities` line (specialist_registry.py)
     # reports only the role.yaml DECLARATION — for a specialist whose tools
@@ -2345,8 +2373,10 @@ _PLUGIN_JOB_PROMPT = (
 )
 
 
-def _build_plugin_job_options(rec, resolution) -> ClaudeAgentOptions:
-    """Build a worker from its pinned plugin and launch settings."""
+def _build_plugin_job_options(rec, resolution,
+                              plan_out: "list | None" = None) -> ClaudeAgentOptions:
+    """Build a worker from its pinned plugin and launch settings. ``plan_out``
+    (S8): the applied ``ProfilePlan`` is appended when a list is given."""
     import result_broker
     from authz_grants import AuthzDeps, CHALLENGES, GRANTS, make_resident_authz_hook
     from plugin_grants import protected_map
@@ -2372,6 +2402,17 @@ def _build_plugin_job_options(rec, resolution) -> ClaudeAgentOptions:
         authz_hook=authz_hook, protected=protected)
     allowed = ["Skill", "ToolSearch", *grants_for_resolution(resolution),
                *background_jobs.PLUGIN_JOB_CASA_GRANTS]
+    # S8 plugin access profiles: a resident-hosted worker is built for its
+    # host's ``resident:<role>`` target; same plan, same barrier, same hygiene
+    # as the other builders, read from the live snapshot at construction.
+    _plan = profile_plan(resolution, target=f"resident:{role}")
+    if plan_out is not None:
+        plan_out.append(_plan)
+    allowed, _profile_denies = apply_profile_plan(allowed, [], _plan)
+    from hooks import profile_guard_matcher
+    _profile_guard = profile_guard_matcher(_plan)
+    if _profile_guard is not None:
+        hooks["PreToolUse"] = [*hooks.get("PreToolUse", []), _profile_guard]
     # The local artifact supplies its own MCP servers; only Casa's server
     # comes from the host registry, filtered to the worker's two tools.
     servers = (_mcp_registry.resolve(
@@ -2386,7 +2427,7 @@ def _build_plugin_job_options(rec, resolution) -> ClaudeAgentOptions:
         system_prompt=_PLUGIN_JOB_PROMPT,
         allowed_tools=allowed,
         disallowed_tools=with_cross_session_tools_denied(
-            ["Agent", "Task", "AskUserQuestion"]),
+            ["Agent", "Task", "AskUserQuestion", *_profile_denies]),
         settings=cli_session_settings(),
         permission_mode="default",
         max_turns=rec.origin["job"]["turns_per_batch"],
@@ -2590,12 +2631,19 @@ def build_engagement_resume_options(
     kind = getattr(engagement, "kind", "")
     role = getattr(engagement, "role_or_type", "")
     opts: ClaudeAgentOptions | None = None
+    # S8: the resolution a plugin/specialist resume was built from and the
+    # target its plan was read for — re-read after the build to re-apply the
+    # live plan's effective profile onto the record's rows (in memory here;
+    # the tombstone write that follows the open — persist_session_id, or the
+    # #369 flag clear — carries it to disk).
+    _applied_plans: list = []
     if kind == "plugin":
         from plugin_grants import withhold_env_unresolved
         resolution = _resolution_from_recorded(engagement.plugin_artifacts)
         resolution, _ = withhold_env_unresolved(
             resolution, context=f"plugin job {engagement.id} resume")
-        opts = _build_plugin_job_options(engagement, resolution)
+        opts = _build_plugin_job_options(engagement, resolution,
+                                         plan_out=_applied_plans)
     elif kind == "executor":
         defn = _executor_registry.get(role) if _executor_registry is not None else None
         if defn is not None:
@@ -2638,12 +2686,14 @@ def build_engagement_resume_options(
                     resolution=_resolution_from_recorded(recorded),
                     extra_casa_tools=grants,
                     max_turns=max_turns,
+                    plan_out=_applied_plans,
                 )
             else:
                 opts = _build_specialist_options(
                     cfg,
                     extra_casa_tools=grants,
                     max_turns=max_turns,
+                    plan_out=_applied_plans,
                 )
     if opts is None:
         raise RuntimeError(
@@ -2651,6 +2701,16 @@ def build_engagement_resume_options(
             f"role={role!r}: config not found (fail-closed — refusing a bare "
             "resume that would drop Agent/Task denies + the fail-closed callback)"
         )
+    if _applied_plans and getattr(engagement, "plugin_artifacts", None):
+        # S8: the rows say what THIS build enforced (the builder's own plan,
+        # never a re-read); the driver persists them before the client opens.
+        # A plugin this build did not LOAD (withheld) keeps its recorded
+        # profile — erasing it would widen the next build's fallback.
+        effective = _applied_plans[-1].effective_profiles()
+        engagement.plugin_artifacts = tuple(
+            {**row, "profile": effective[row.get("name")]}
+            if isinstance(row, dict) and row.get("name") in effective else row
+            for row in engagement.plugin_artifacts)
     return dataclasses.replace(opts, resume=session_id)
 
 
@@ -6026,14 +6086,16 @@ async def _launch_interactive_engagement(
                 logger.warning("set_initial_state_emoji(active) failed: %s", exc)
 
             # Build options + start driver (off-loop: registry resolve is file IO).
+            _applied_plans: list = []
             try:
                 if plugin_host is not None:
                     options = await asyncio.to_thread(
-                        _build_plugin_job_options, rec, _spec_res)
+                        _build_plugin_job_options, rec, _spec_res,
+                        plan_out=_applied_plans)
                 else:
                     options = await asyncio.to_thread(
                         _build_specialist_options, cfg, resolution=_spec_res,
-                        extra_casa_tools=casa_grants,
+                        extra_casa_tools=casa_grants, plan_out=_applied_plans,
                         **({"max_turns": turns_per_batch} if job is not None else {}),
                     )
             except Exception as exc:
@@ -6043,6 +6105,24 @@ async def _launch_interactive_engagement(
                 if _abort is LaunchAbortResult.PERSIST_FAILED:
                     owned = None
                 return _result({"status": "error", "kind": "options_build_failed",
+                                "message": str(exc)})
+            # S8: the record stores what was BUILT — the plan the builder
+            # handed back through ``plan_out``, persisted before the client
+            # starts; never a re-read (a mutation could move the snapshot
+            # between the build and the read) and never the profile captured
+            # before the topic await above.
+            try:
+                _applied = _applied_plans[-1].effective_profiles() if _applied_plans else {}
+                await _engagement_registry.update_plugin_profiles(rec.id, _applied)
+            except Exception as exc:  # noqa: BLE001
+                # A record that cannot say what this build enforces must not
+                # start: the next resume's fallback would read it.
+                _abort = await _abort_launch_inline(
+                    channel, rec, topic_id,
+                    kind="profile_persist_failed", message=str(exc))
+                if _abort is LaunchAbortResult.PERSIST_FAILED:
+                    owned = None
+                return _result({"status": "error", "kind": "profile_persist_failed",
                                 "message": str(exc)})
 
             prompt = (
@@ -13906,6 +13986,15 @@ def _regenerate_plugin_health(extra_issues: list) -> None:
                     pending_warnings.append(PluginIssue(
                         name=entry.get("name"), target=target,
                         stage="reload", reason_code="target_pending"))
+        # S8: a plugin's recommendation its target does not hold is a
+        # WARNING, recomputed on every regeneration (an assignment clears it).
+        try:
+            import plugin_requirements
+            pending_warnings.extend(plugin_requirements.unmet_requirement_issues(
+                reg.raw if isinstance(reg.raw, dict) else {},
+                plugin_registry.snapshot_store_root()))
+        except Exception:  # noqa: BLE001 — health must never crash on a recommendation
+            logger.debug("requirement warnings skipped", exc_info=True)
     # Release B: plugin-trigger issues are a RECOMPUTABLE input — derived
     # fresh on EVERY regeneration (never passed as one-shot extras), so an
     # unrelated health refresh can never erase trigger_pending_ack /
@@ -15178,6 +15267,37 @@ def _plugin_update_sync(*, name: str, new_ref: str,
     err = _tag_version_guard(new_ref, result.manifest)         # BEFORE sysreqs
     if err is not None:
         return err
+    # S8: a new manifest that no longer declares a profile some target HOLDS
+    # is refused BEFORE sysreqs and the repoint — never silently widened to
+    # full, never silently narrowed to nothing. A profile that stays declared
+    # applies its NEW tool list to sessions built after the update.
+    import plugin_requirements
+    held_profiles = entry.get("profiles") if isinstance(entry.get("profiles"), dict) else {}
+    profile_tools: dict = {}
+    profile_tools_removed: dict = {}
+    _store_root = plugin_registry.snapshot_store_root()
+    _old_manifest = plugin_requirements.manifest_at(_store_root, name, entry.get("artifact_id"))
+    _servers = plugin_requirements._servers_at(_store_root, name, entry.get("artifact_id"))
+    _rname = entry.get("manifest_name") or name
+    for _target, _profile in held_profiles.items():
+        _tools = plugin_requirements.profile_bare_tools(result.manifest, _profile)
+        if _tools is None:
+            return {"ok": False, "kind": "profile_missing", "name": name,
+                    "target": _target, "profile": _profile,
+                    "detail": (f"{new_ref} no longer declares the {_profile!r} "
+                               f"profile that {_target} holds — unassign and "
+                               "reassign first")}
+        profile_tools[_target] = _tools
+        # What the new list drops: the old list expanded over the servers the
+        # LIVE artifact declares, minus the new list expanded over the servers
+        # the NEW artifact declares — a server the update drops counts as
+        # dropped tools too. The confirmation names them.
+        from plugin_store import expand_tool_names as _expand, mcp_servers_map as _servers_of
+        _new_servers = sorted(_servers_of(Path(result.path) / ".mcp.json"))
+        _old = {fq for b in (plugin_requirements.profile_bare_tools(_old_manifest, _profile) or [])
+                for fq in _expand(_rname, _servers, b)}
+        _new = {fq for b in _tools for fq in _expand(_rname, _new_servers, b)}
+        profile_tools_removed[_target] = sorted(_old - _new)
     err = _install_plugin_sysreqs(name, result.manifest)       # BEFORE repoint
     if err is not None:
         return err
@@ -15191,6 +15311,8 @@ def _plugin_update_sync(*, name: str, new_ref: str,
     entry["version"] = result.version
     plugin_registry.save_registry(data)
     return {"ok": True, "name": name, "targets": list(entry.get("targets") or []),
+            "profile_tools": profile_tools,
+            "profile_tools_removed": profile_tools_removed,
             "artifact_id": result.artifact_id, "version": result.version,
             "revision": result.revision, "path": result.path,
             "resolved_ref": new_ref,
@@ -15441,6 +15563,11 @@ async def plugin_add(args: dict) -> dict:
             _secret_candidates, core["name"],
             list(core.get("required_env_vars") or []),
             manifest=published_manifest))
+        # S8: the just-published manifest's recommendations, one row per
+        # (requirement, target) with where it stands; the configurator offers.
+        core["requirement_candidates"] = await asyncio.to_thread(
+            _requirement_candidates_for, core["name"], list(core["targets"]),
+            manifest=published_manifest)
         return _result(core)
 
 
@@ -16939,9 +17066,99 @@ def _find_entry(data, name: str) -> dict | None:
                  if isinstance(e, dict) and e.get("name") == name), None)
 
 
-def _plugin_assign_sync(*, name: str, target: str) -> dict:
+def _profile_tools_denied_by_config(name: str, target: str, profile, *,
+                                    entry: "dict | None" = None,
+                                    store_root=None) -> list:
+    """S8 (round-7 fold): the bare tools of *profile* that the TARGET's own
+    runtime.yaml ``tools.disallowed`` keeps denying. Operator config can only
+    remove capability and a plugin manifest never widens it, so the deny
+    wins; this names the overlap for the confirmation. Best effort, never
+    raises, ``[]`` when the target's config is not reachable here."""
+    import plugin_requirements
+    if not profile:
+        return []
+    try:
+        tier, _, role = target.partition(":")
+        cfg = None
+        if tier == "specialist" and _specialist_registry is not None:
+            cfg = _specialist_registry.get(role)
+        elif tier == "resident":
+            import agent as agent_mod
+            agents = getattr(getattr(agent_mod, "active_runtime", None), "agents", None) or {}
+            cfg = getattr(agents.get(role), "config", None)
+        denied = set(getattr(getattr(cfg, "tools", None), "disallowed", None) or [])
+        if not denied:
+            return []
+        if entry is None:
+            data = plugin_registry.load_registry()
+            raw = data.raw if isinstance(data.raw, dict) else {}
+            entry = plugin_requirements.entry_named(raw, name)
+        if entry is None:
+            return []
+        if store_root is None:
+            store_root = plugin_registry.snapshot_store_root()
+        from plugin_store import expand_tool_names
+        bare = plugin_requirements.profile_bare_tools(
+            plugin_requirements.manifest_at(store_root, name, entry.get("artifact_id")),
+            profile) or []
+        servers = plugin_requirements._servers_at(store_root, name, entry.get("artifact_id"))
+        rname = entry.get("manifest_name") or name
+        return [b for b in bare
+                if any(fq in denied for fq in expand_tool_names(rname, servers, b))]
+    except Exception:  # noqa: BLE001 — a disclosure must never fail the mutation
+        logger.debug("profile_tools_denied_by_config unavailable", exc_info=True)
+        return []
+
+
+def _requirement_candidates_for(name: str, targets: list, *,
+                                manifest: "dict | None" = None) -> list:
+    """S8: ``requirement_candidates`` for *name*'s requirements on *targets*,
+    from the given manifest (the one a mutation just published) or the
+    plugin's live artifact. Never raises into a mutation envelope."""
+    import plugin_requirements
+    try:
+        data = plugin_registry.load_registry()
+        raw = data.raw if isinstance(data.raw, dict) else {}
+        store_root = plugin_registry.snapshot_store_root()
+        if manifest is not None:
+            from plugin_store import manifest_requires
+            requires = manifest_requires(manifest)
+        else:
+            entry = plugin_requirements.entry_named(raw, name)
+            requires = (plugin_requirements.requires_of(store_root, entry)
+                        if entry is not None else [])
+        return plugin_requirements.requirement_candidates(
+            raw, store_root, requires, targets)
+    except Exception:  # noqa: BLE001 — a recommendation must never fail the mutation
+        logger.warning("requirement candidates unavailable for %s", name,
+                       exc_info=True)
+        return []
+
+
+def _dependents_for(name: str, targets: list) -> list:
+    """S8: ``dependents`` of *name* on *targets* (see plugin_requirements).
+    Never raises into a mutation envelope."""
+    import plugin_requirements
+    try:
+        data = plugin_registry.load_registry()
+        return plugin_requirements.dependents(
+            data.raw if isinstance(data.raw, dict) else {},
+            plugin_registry.snapshot_store_root(), name, targets)
+    except Exception:  # noqa: BLE001
+        logger.warning("dependents unavailable for %s", name, exc_info=True)
+        return []
+
+
+def _plugin_assign_sync(*, name: str, target: str,
+                        profile: "str | None" = None) -> dict:
     if not plugin_registry.TARGET_RE.match(target or ""):
         return {"ok": False, "kind": "invalid_target", "target": target}
+    # S8: ``profile`` names a manifest-declared tool subset for a NEW
+    # assignment; omitted or ``full`` means no profile (today's behaviour).
+    # It is judged only on the new-assignment branch below: an existing
+    # assignment is the no-op it always was, whatever ``profile`` says.
+    if profile == plugin_registry.FULL_PROFILE:
+        profile = None
     data = plugin_registry.load_registry()
     if not data.valid:
         return {"ok": False, "kind": "registry_invalid"}
@@ -16967,11 +17184,43 @@ def _plugin_assign_sync(*, name: str, target: str) -> dict:
                            "workers use only the plugins Casa ships")}
     targets = entry.setdefault("targets", [])
     was_assigned = target in targets
-    if not was_assigned:
+    import plugin_requirements
+    store_root = plugin_registry.snapshot_store_root()
+    if was_assigned:
+        # S8 (widest access wins): an existing assignment is never changed —
+        # whatever ``profile`` says, this is the no-op it always was, and the
+        # envelope reports the access the target already holds.
+        held = plugin_requirements.held_profile(entry, target)
+    else:
+        held = profile
+        if held is not None and (
+                not isinstance(held, str)
+                or not plugin_registry.PROFILE_NAME_RE.fullmatch(held)):
+            return {"ok": False, "kind": "invalid_profile", "profile": held}
+        if held is not None:
+            # The profile must exist on the plugin's LIVE artifact before
+            # anything is written — a name the manifest does not declare
+            # would deny the whole namespace at the next build.
+            declared = plugin_requirements.profile_bare_tools(
+                plugin_requirements.manifest_at(
+                    store_root, name, entry.get("artifact_id")), held)
+            if declared is None:
+                return {"ok": False, "kind": "profile_missing_in_plugin",
+                        "name": name, "profile": held}
         targets.append(target)
+        if held is not None:
+            profiles = entry.get("profiles")
+            if not isinstance(profiles, dict):
+                profiles = entry["profiles"] = {}
+            profiles[target] = held
         plugin_registry.save_registry(data)
+    profile_tools = (plugin_requirements.profile_bare_tools(
+        plugin_requirements.manifest_at(store_root, name, entry.get("artifact_id")),
+        held) if held is not None else None)
     return {"ok": True, "name": name, "target": target,
-            "targets": list(targets), "was_assigned": was_assigned}
+            "targets": list(targets), "was_assigned": was_assigned,
+            "profile": held if held is not None else plugin_registry.FULL_PROFILE,
+            "profile_tools": profile_tools}
 
 
 def _plugin_unassign_sync(*, name: str, target: str) -> dict:
@@ -16990,6 +17239,13 @@ def _plugin_unassign_sync(*, name: str, target: str) -> dict:
     was_assigned = target in targets
     if was_assigned:
         entry["targets"] = [t for t in targets if t != target]
+        # S8: the sibling ``profiles`` map keeps ``keys ⊆ targets`` in the
+        # SAME save — a dangling key would invalidate the whole entry.
+        profiles = entry.get("profiles")
+        if isinstance(profiles, dict):
+            profiles.pop(target, None)
+            if not profiles:
+                del entry["profiles"]
         plugin_registry.save_registry(data)
     return {"ok": True, "name": name, "target": target,
             "was_assigned": was_assigned, "targets": entry.get("targets") or []}
@@ -17012,6 +17268,11 @@ def _plugin_remove_sync(*, name: str) -> dict:
     # the caller invalidates grants/challenges by artifact AND by each
     # former target's role only after this commits.
     artifact_id = entry.get("artifact_id")
+    # S8: what this plugin's own requirements leave assigned on its former
+    # targets — computed BEFORE the entry goes, mentioned, never unassigned.
+    import plugin_requirements
+    leftover = plugin_requirements.leftover_requirements(
+        data.raw, plugin_registry.snapshot_store_root(), entry)
     data.raw["plugins"] = [
         e for e in data.raw.get("plugins", [])
         if not (isinstance(e, dict) and e.get("name") == name)]
@@ -17035,6 +17296,7 @@ def _plugin_remove_sync(*, name: str) -> dict:
     # `core.update(seq)` in the async wrapper cannot drop it.
     return {"ok": True, "name": name, "targets": targets,
             "artifact_retained": True, "artifact_id": artifact_id,
+            "leftover_requirements": leftover,
             **_plugin_data_disclosure(_PLUGIN_DATA_NOTE_COMMITTED)}
 
 
@@ -17062,6 +17324,9 @@ def _tool_plugin_list() -> dict:
             "effective_targets": plugin_registry.effective_targets(e),
             "ignored_targets": list(
                 plugin_registry.ignored_executor_targets(e)),
+            # S8: the access profile each target holds (absent = full).
+            "profiles": dict(e.get("profiles") or {})
+            if isinstance(e.get("profiles"), dict) else {},
             "artifact_present": store_dir.is_dir(),
             "seeded_default": name in seeded,
         })
@@ -17076,13 +17341,23 @@ def _tool_plugin_list() -> dict:
     "plugin_assign",
     "Assign a registered plugin to a target (resident: or specialist:). For "
     "now a plugin cannot be assigned to a worker (executor:) — workers use "
-    "only the plugins Casa ships with them.",
-    {"name": str, "target": str},
+    "only the plugins Casa ships with them. An optional `profile` names one "
+    "of the plugin's declared access profiles for a NEW assignment (omit it "
+    "for full access); an existing assignment is never changed and the "
+    "result reports the access the target already holds. A profile applies "
+    "to the target's sessions built from now on.",
+    {"type": "object",
+     "properties": {
+         "name": {"type": "string"},
+         "target": {"type": "string"},
+         "profile": {"type": "string"}},
+     "required": ["name", "target"]},
 )
 async def plugin_assign(args: dict) -> dict:
     async with _PLUGIN_TOOLS_LOCK:
         core = await asyncio.to_thread(
-            _plugin_assign_sync, name=args["name"], target=args["target"])
+            _plugin_assign_sync, name=args["name"], target=args["target"],
+            profile=args.get("profile"))
         if core.get("ok") is not True:
             # Spec §E: the pinned payload shape holds on EVERY path.
             core.setdefault("kind", "unknown")
@@ -17093,6 +17368,12 @@ async def plugin_assign(args: dict) -> dict:
         seq = await _reload_and_verify_targets(
             core["name"], [core["target"]], expect="present")
         core.update(seq)
+        core["requirement_candidates"] = await asyncio.to_thread(
+            _requirement_candidates_for, core["name"], [core["target"]])
+        core["profile_tools_denied_by_config"] = await asyncio.to_thread(
+            _profile_tools_denied_by_config, core["name"], core["target"],
+            None if core.get("profile") == plugin_registry.FULL_PROFILE
+            else core.get("profile"))
         return _result(core)
 
 
@@ -17121,6 +17402,10 @@ async def plugin_unassign(args: dict) -> dict:
         seq = await _reload_and_verify_targets(
             core["name"], [core["target"]], expect="absent")
         core.update(seq)
+        # S8: the plugins whose requirements named this one on this target —
+        # the consequence is stated once; nothing blocks.
+        core["dependents"] = await asyncio.to_thread(
+            _dependents_for, core["name"], [core["target"]])
         return _result(core)
 
 
@@ -17739,6 +18024,10 @@ async def _plugin_remove_unit(args: dict) -> dict:
     seq = await _reload_and_verify_targets(
         core["name"], core["targets"], expect="absent")
     core.update(seq)
+    # S8: the plugins whose requirements named this one on its former
+    # targets — stated once; the entry is already gone, nothing blocks.
+    core["dependents"] = await asyncio.to_thread(
+        _dependents_for, core["name"], list(core.get("targets") or []))
     return _result(core)
 
 
@@ -18670,7 +18959,15 @@ def _tool_verify_plugin_state(
     stale_targets = []
     for target in entry.get("targets", []):
         tier, _, role = target.partition(":")
-        row = {"target": target, "ready": configured_ready, "reasons": []}
+        _held = ((entry.get("profiles") or {}).get(target)
+                 if isinstance(entry.get("profiles"), dict) else None)
+        row = {"target": target, "ready": configured_ready, "reasons": [],
+               # S8: the access profile this target holds (None = full) and
+               # the profile tools the target's own config still denies —
+               # disclosure only; the row grades what will be loaded.
+               "profile": _held,
+               "profile_tools_denied_by_config": _profile_tools_denied_by_config(
+                   plugin_name, target, _held, entry=entry, store_root=store_root)}
         if not configured_ready:
             row["reasons"] = list(reasons) or ["not_ready"]
         if tier == "specialist" and (

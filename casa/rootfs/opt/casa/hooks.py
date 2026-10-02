@@ -1072,6 +1072,35 @@ def agent_home_settings_guard_matcher():
     )
 
 
+def profile_guard_matcher(plan):
+    """S8: the ``HookMatcher`` that enforces a plugin access profile — deny
+    unless the exact tool name is in the profile's ``allowed_names``, over
+    every guarded namespace of the plan (``plugin_grants.ProfilePlan``).
+    Injected code-side in every options builder beside
+    :func:`agent_home_settings_guard_matcher`, so it holds whatever the
+    allow/deny lists say and whatever the CLI's precedence between them is:
+    a PreToolUse deny is evaluated before permission rules. ``None`` for an
+    empty plan, so an unprofiled build is byte-identical to today's."""
+    if plan is None or plan.empty:
+        return None
+    from claude_agent_sdk import HookMatcher
+    by_prefix = {pre: entry for entry in plan.entries for pre in entry.prefixes}
+    pattern = "|".join(re.escape(pre) + ".*" for pre in by_prefix)
+
+    async def _hook(input_data: dict[str, Any], tool_use_id, context) -> dict[str, Any]:
+        name = str(input_data.get("tool_name") or "")
+        for pre, entry in by_prefix.items():
+            if name.startswith(pre):
+                if name in entry.allowed_names:
+                    return {}
+                return _deny(
+                    f"{name} is outside the `{entry.profile}` profile of "
+                    f"{entry.name} this agent was assigned")
+        return {}
+
+    return HookMatcher(matcher=pattern, hooks=[_hook])
+
+
 # ---------------------------------------------------------------------------
 # managed_component_guard — #210 (v0.101.0): typed-pipeline-only state
 #

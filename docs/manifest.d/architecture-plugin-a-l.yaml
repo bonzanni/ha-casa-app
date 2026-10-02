@@ -109,6 +109,34 @@
     INV-EV-004: [tests/test_event_attempts.py::test_terminalize_double_terminalize_is_a_no_op, tests/test_event_episodes.py::test_six_accepts_exhaust_via_one_atomic_update_then_note, tests/test_event_episodes.py::test_failed_exhaustion_write_sends_no_note, tests/test_event_episodes.py::test_exhaustion_notice_survives_a_boot_window_send_failure, tests/test_event_episodes.py::test_exhaustion_send_success_mark_failure_never_resends, tests/test_event_spool.py::test_mark_delivery_noted_refuses_pending_gen_mismatch_and_unknown, tests/test_event_episodes.py::test_concurrent_ack_beats_bookkeeping_on_the_advance_branch]
     INV-EV-005: [tests/test_tools_ack_event.py::test_ack_event_token_never_in_reply_or_logs, tests/test_event_acceptance.py::test_no_envelope_bytes_or_ack_token_reach_any_log_surface, tests/test_event_attempts.py::test_envelope_extra_key_refused_meta_included, tests/test_event_spool.py::test_stale_token_cas_after_fold_rotates_it]
     INV-EV-006: [tests/test_event_wiring.py::TestEventWakeMarkerUnreachable::test_synthetic_key_is_reserved, tests/test_event_wiring.py::TestEventWakeMarkerUnreachable::test_event_wake_value_is_stripped_from_external_context, tests/test_event_wiring.py::TestAskUserRejectsEventDispatchedTurn::test_ask_user_rejects_event_wake_origin]
+- doc: architecture/plugin-access-profiles.md
+  summary: How an assignment gives an agent a subset of a plugin's tools — the registry profiles map, casa.profiles and casa.requires, the plan every options build enforces through a PreToolUse barrier, and what the configurator is told about recommendations.
+  when_changing: a plugin access profile, the registry profiles map, casa.profiles or casa.requires, the profile plan or guard matcher, requirement candidates, dependents or leftover requirements, or the requirement_unmet warning
+  covers:
+    - casa/rootfs/opt/casa/plugin_requirements.py
+    - casa/rootfs/opt/casa/plugin_grants.py::profile_plan
+    - casa/rootfs/opt/casa/plugin_grants.py::apply_profile_plan
+    - casa/rootfs/opt/casa/hooks.py::profile_guard_matcher
+    - casa/rootfs/opt/casa/plugin_store.py::manifest_profiles
+    - casa/rootfs/opt/casa/plugin_store.py::manifest_requires
+    - casa/rootfs/opt/casa/plugin_store.py::expand_tool_names
+    - casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.update_plugin_profiles
+    - casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver._persist_applied_profiles
+    - casa/rootfs/opt/casa/tools.py::_requirement_candidates_for
+    - casa/rootfs/opt/casa/tools.py::_dependents_for
+    - casa/rootfs/opt/casa/tools.py::_profile_tools_denied_by_config
+  tests:
+    - tests/test_plugin_profiles_registry.py
+    - tests/test_plugin_profiles_manifest.py
+    - tests/test_plugin_profiles_plan.py
+    - tests/test_plugin_profiles_builders.py
+    - tests/test_plugin_profiles_record.py
+    - tests/test_plugin_profiles_tools.py
+  related: [architecture/plugins.md, architecture/plugin-mutation-tools.md, architecture/plugin-health.md, architecture/plugin-authorization.md, architecture/mcp-and-tools.md, architecture/background-jobs.md]
+  defines_invariants: [INV-PLUG-043, INV-PLUG-044]
+  invariant_tests:
+    INV-PLUG-043: [tests/test_plugin_profiles_builders.py::test_specialist_builder_enforces_the_live_profile, tests/test_plugin_profiles_builders.py::test_specialist_builder_strips_a_config_level_server_allow, tests/test_plugin_profiles_builders.py::test_resident_builder_enforces_the_live_profile, tests/test_plugin_profiles_builders.py::test_plugin_job_builder_enforces_the_live_profile, tests/test_plugin_profiles_builders.py::test_recorded_artifact_row_restores_the_effective_profile, tests/test_plugin_profiles_plan.py::test_profile_guard_matcher_denies_outside_and_permits_inside, tests/test_plugin_profiles_plan.py::test_namespaces_come_from_the_loaded_artifact_not_the_live_one, tests/test_plugin_profiles_plan.py::test_fallback_without_live_assignment_uses_the_prior_binding, tests/test_plugin_profiles_record.py::test_resume_rebuild_reapplies_the_live_plan_onto_the_record, tests/test_plugin_profiles_record.py::test_resume_persists_the_applied_profile_before_opening, tests/test_plugin_profiles_record.py::test_open_fresh_persists_the_applied_profile_before_opening, tests/test_plugin_job_launch.py::test_worker_record_carries_the_effective_profile, tests/test_plugin_job_launch.py::test_launch_records_the_plan_the_builder_applied_without_rereading]
+    INV-PLUG-044: [tests/test_plugin_profiles_tools.py::test_assign_with_a_profile_writes_it_only_for_a_new_target, tests/test_plugin_profiles_tools.py::test_assign_on_an_existing_target_is_a_noop_that_reports_held_access, tests/test_plugin_profiles_tools.py::test_assign_with_an_undeclared_profile_is_refused_before_any_write, tests/test_plugin_profiles_tools.py::test_unassign_drops_the_profile_key_in_the_same_save, tests/test_plugin_profiles_tools.py::test_update_refuses_a_manifest_that_drops_a_held_profile, tests/test_plugin_profiles_tools.py::test_add_reports_requirement_candidates, tests/test_plugin_profiles_tools.py::test_an_omitted_requirement_profile_means_full, tests/test_plugin_profiles_tools.py::test_add_reports_a_required_profile_the_plugin_does_not_declare, tests/test_plugin_profiles_tools.py::test_a_full_holder_satisfies_a_requirement_naming_an_absent_profile, tests/test_plugin_profiles_tools.py::test_a_wider_profile_covers_a_narrower_named_requirement]
 - doc: architecture/plugin-handoff.md
   summary: The folder files move through between plugins — /data/handoff, publish and capture (the vendored casa_handoff contract), the sweep, share_inbound_file's handoff side.
   when_changing: the plugin file handoff folder, publish or capture, its sweep, or share_inbound_file's handoff side

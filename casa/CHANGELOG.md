@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.338.0] - 2026-10-02
+
+### Added
+
+- **Plugin access profiles.** A plugin can declare named subsets of its tools
+  (`casa.profiles`), and an assignment can give an agent exactly one of them:
+  `plugin_assign` takes an optional `profile`, and a session built for that
+  agent afterwards can use only the profile's tools of that plugin, enforced
+  before any permission rule runs. An assignment without a profile is full
+  access, exactly as before. Widest access wins: a profile is set only when an
+  assignment is created, an existing assignment is never narrowed, and a
+  plugin update that shrinks a profile applies to sessions started after it —
+  a running session keeps what it started with.
+- **Recommended requirements.** A plugin can recommend another plugin and one
+  of its profiles (`casa.requires`, with a reason). Casa never enforces them:
+  the configurator is told whether each is already covered, can be granted
+  with one tap, or is not installed; unassigning or removing a plugin names
+  the plugins that recommended it; removing a plugin names what its own
+  recommendations leave behind; and an unmet recommendation shows in
+  `plugin_status` as a warning.
+
+### Changed
+
+- An operator's own `tools.disallowed` entry on a tool inside a profile keeps
+  denying it, and the assignment result names the overlap
+  (`profile_tools_denied_by_config`).
+
 ## [0.337.0] - 2026-10-02
 
 ### Added

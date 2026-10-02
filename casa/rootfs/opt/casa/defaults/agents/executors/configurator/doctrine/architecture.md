@@ -242,8 +242,11 @@ Registry:
   manifest (never supplied).
 - `plugin_update(name, new_ref)` — re-publish from a new ref, repoint, reload,
   verify. New commit ⇒ new artifact_id (stale-code bug impossible).
-- `plugin_assign(name, target)` / `plugin_unassign(name, target)` — add/drop
-  one target's assignment.
+- `plugin_assign(name, target, profile?)` / `plugin_unassign(name, target)` —
+  add/drop one target's assignment. `profile` names one of the plugin's declared
+  access profiles for a NEW assignment only (omit = full); an existing
+  assignment is never changed. See `recipes/plugin/add.md` ("Profiles and
+  requirements").
 - `plugin_remove(name)` — remove the entry (artifact retained for GC).
 - `plugin_list()` — enumerate registered plugins + presence + seeded-default.
 - `verify_plugin_state(name)` — tier-aware readiness: desired-vs-active binding,

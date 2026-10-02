@@ -997,6 +997,18 @@ these tools:
   that is already stored on a plugin you installed stays in the registry file
   but is ignored — `plugin_list` shows it under `ignored_targets`, the plugin
   health report says so, and `plugin_unassign` clears it.
+- **Access profiles (v0.338.0).** A plugin can declare named subsets of its
+  tools (`casa.profiles` in its manifest), and `plugin_assign(name, target,
+  profile)` gives an agent exactly that subset: a session built for the agent
+  afterwards can use only those tools of that plugin. Leaving `profile` out
+  gives full access, as before. Widest access wins: a profile is set only when
+  an assignment is created, an existing assignment is never narrowed by a
+  later request, and a plugin update that shrinks a profile applies to
+  sessions started after it — a running session keeps what it started with.
+  A plugin can also recommend another plugin and one of its profiles
+  (`casa.requires`); Casa never enforces it, but the configurator tells you
+  whether it is already covered or can be granted with one tap, and
+  `plugin_status` shows an unmet recommendation as a warning.
 - `plugin_remove(name)` — drop a plugin from the registry (its artifact is left
   on disk for now; see disk usage). The plugin's own data stays behind and a
   reinstall picks it up again — unless the plugin can erase its data itself (see
