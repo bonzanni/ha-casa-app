@@ -1755,20 +1755,24 @@ class EngagementRegistry:
 
     async def update_plugin_profiles(self, engagement_id: str,
                                      profiles: dict) -> None:
-        """S8: record the EFFECTIVE plugin access profile a build applied,
-        per plugin name, on the record's ``plugin_artifacts`` rows — what a
-        later resume's fallback row reads when the live registry no longer
-        assigns the plugin to this target. Written after the options are
-        built and before the client starts, so the record never says a
-        profile the build did not enforce. Unknown record ⇒ no-op."""
+        """S8: record a build's plan on the record's ``plugin_artifacts``
+        rows, per plugin name — the EFFECTIVE profile it applied to each
+        plugin it loaded, and (#1186) the profile name its plan gives a
+        plugin it withheld — what a later resume's fallback row reads when
+        the live registry no longer assigns the plugin to this target.
+        Written after the options are built and before the client starts,
+        from the plan the build returned, never a re-read. Unknown record ⇒
+        no-op."""
         async with self._lock:
             rec = self._records.get(engagement_id)
             if rec is None:
                 return
-            # Only rows NAMED in the mapping change: a plugin the build did
-            # not load (withheld) keeps the profile its last loading build
-            # enforced. The write is strict — a caller that cannot record
-            # what it enforces must not open the client.
+            # Only rows NAMED in the mapping change. A launch names a plugin
+            # its build withheld only with a profile NAME (#1186); the driver
+            # re-writes every row with the value the resume build left, which
+            # for a withheld plugin is its own or a profile name — never an
+            # erasure. The write is strict — a caller that cannot record what
+            # its build decided must not open the client.
             rec.plugin_artifacts = tuple(
                 {**row, "profile": profiles[row.get("name")]}
                 if isinstance(row, dict) and row.get("name") in profiles else row

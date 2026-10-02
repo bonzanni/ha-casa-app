@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.340.2] - 2026-10-02
+
+### Fixed
+
+- An agent session started at a moment when a plugin with an access profile
+  could not be loaded (for example because its sign-in briefly failed to
+  resolve) recorded that plugin with no profile. If the plugin was later
+  unassigned from that agent and the session resumed with the plugin loaded,
+  it got the plugin's full set of tools instead of its profile. Now every
+  session records the profile it would apply to each plugin it leaves out, so
+  a later resume never exceeds that profile. Closes #1186.
+
 ## [0.340.1] - 2026-10-02
 
 ### Fixed

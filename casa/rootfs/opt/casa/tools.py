@@ -2060,9 +2060,11 @@ def _resolution_from_recorded(plugin_artifacts) -> "plugin_registry.ResolutionRe
             # engagements recorded before this field existed — those fall
             # back to the registry name via runtime_name(), same as before.
             manifest_name=pa.get("manifest_name", "") if isinstance(pa, dict) else "",
-            # S8: the EFFECTIVE profile the build that wrote this row applied —
-            # the fallback a resume's plan uses when the live registry no
-            # longer assigns the plugin to this target (never widens).
+            # S8: the profile the build that wrote this row decided — the
+            # EFFECTIVE one it applied if it loaded the plugin, or (#1186) the
+            # name its plan gave the plugin if it withheld it — the fallback a
+            # resume's plan uses when the live registry no longer assigns the
+            # plugin to this target (never widens).
             profile=(pa.get("profile") if isinstance(pa, dict)
                      and isinstance(pa.get("profile"), str) else None)))
     return ResolutionResult(registry_valid=True, plugins=plugins, issues=issues)
@@ -2137,8 +2139,10 @@ def _build_specialist_options(
     """Build ClaudeAgentOptions for a Tier 2 specialist invocation.
 
     ``plan_out`` (S8): when a list is given, the ``ProfilePlan`` this build
-    APPLIED is appended to it, so the caller persists exactly what was
-    enforced instead of re-reading a snapshot a mutation could move.
+    APPLIED is appended to it, so the caller persists exactly what the plan
+    decided — what was enforced for each loaded plugin, and (#1186) the
+    profile name given to each withheld one — instead of re-reading a
+    snapshot a mutation could move.
 
     Specialist memory is injected via prompt in :func:`_run_delegated_agent`
     (shared ``casa`` bank); SDK-level session resume stays disabled
@@ -2212,7 +2216,7 @@ def _build_specialist_options(
     # actually loads. Re-resolved fresh per delegation, so a plugin_env
     # reload takes effect on the next delegation without further ceremony.
     from plugin_grants import withhold_env_unresolved
-    resolution, _ = withhold_env_unresolved(
+    resolution, _withheld = withhold_env_unresolved(
         resolution, context=f"delegated {_role} options")
     sdk_plugins = [{"type": "local", "path": rp.path}
                    for rp in resolution.plugins]
@@ -2284,7 +2288,8 @@ def _build_specialist_options(
     # at construction (a recorded-artifact resume reaches this builder too —
     # the loaded artifact gives the namespaces, the live entry the profile).
     # The guard matcher is the barrier; the list hygiene decides visibility.
-    _plan = profile_plan(resolution, target=f"{_hook_tier}:{_role}")
+    _plan = profile_plan(resolution, target=f"{_hook_tier}:{_role}",
+                         withheld=[rp for rp, _ in _withheld])
     if plan_out is not None:
         plan_out.append(_plan)
     allowed_tools, _profile_denies = apply_profile_plan(allowed_tools, [], _plan)
@@ -2665,11 +2670,10 @@ def build_engagement_resume_options(
     kind = getattr(engagement, "kind", "")
     role = getattr(engagement, "role_or_type", "")
     opts: ClaudeAgentOptions | None = None
-    # S8: the resolution a plugin/specialist resume was built from and the
-    # target its plan was read for — re-read after the build to re-apply the
-    # live plan's effective profile onto the record's rows (in memory here;
-    # the tombstone write that follows the open — persist_session_id, or the
-    # #369 flag clear — carries it to disk).
+    # S8: the plan the builder returns through ``plan_out`` (never a re-read)
+    # is applied onto the record's rows below, in memory; the driver's
+    # ``_persist_applied_profiles`` writes them strictly BEFORE the client
+    # opens.
     _applied_plans: list = []
     if kind == "plugin":
         from plugin_grants import withhold_env_unresolved
@@ -2736,10 +2740,13 @@ def build_engagement_resume_options(
             "resume that would drop Agent/Task denies + the fail-closed callback)"
         )
     if _applied_plans and getattr(engagement, "plugin_artifacts", None):
-        # S8: the rows say what THIS build enforced (the builder's own plan,
-        # never a re-read); the driver persists them before the client opens.
-        # A plugin this build did not LOAD (withheld) keeps its recorded
-        # profile — erasing it would widen the next build's fallback.
+        # S8: the rows say what THIS build's plan decided (the builder's own
+        # plan, never a re-read) — the profile it enforced for each plugin it
+        # loaded; the driver persists them before the client opens.
+        # A plugin this build did not LOAD (withheld) is never erased —
+        # that would widen the next build's fallback; its row changes only
+        # when the plan names a profile for it (#1186: the live assignment's,
+        # or the prior binding's when unassigned), else it keeps its own.
         effective = _applied_plans[-1].effective_profiles()
         engagement.plugin_artifacts = tuple(
             {**row, "profile": effective[row.get("name")]}
@@ -6069,7 +6076,9 @@ async def _launch_interactive_engagement(
         # launches with, or a later resume (after the secret is wired)
         # loads a plugin mid-engagement that the engagement never started
         # with. The filtered result feeds BOTH the record and the options
-        # builder below (H7b), whose own filter then no-ops.
+        # builder below (H7b), whose own filter normally no-ops; a secret
+        # that goes unresolved in between is withheld there, and its row then
+        # records the profile name the build's plan gives it (#1186).
         from plugin_grants import withhold_env_unresolved
         if plugin_host is None:
             _spec_res, _ = withhold_env_unresolved(
@@ -6191,8 +6200,9 @@ async def _launch_interactive_engagement(
             # S8: the record stores what was BUILT — the plan the builder
             # handed back through ``plan_out``, persisted before the client
             # starts; never a re-read (a mutation could move the snapshot
-            # between the build and the read) and never the profile captured
-            # before the topic await above.
+            # between the build and the read). The profile captured before
+            # the topic await reaches it only as the plan's own fallback for
+            # a plugin no longer assigned live (S8 §5, #1186).
             try:
                 _applied = _applied_plans[-1].effective_profiles() if _applied_plans else {}
                 await _engagement_registry.update_plugin_profiles(rec.id, _applied)
