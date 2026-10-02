@@ -96,7 +96,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | what a terminal outcome discloses about inbound messages, a driver's inbound text accessors, the evicted-message population, or a reservation's disclosed text and the count over it | [`architecture/engagement-inbound-disclosure.md`](architecture/engagement-inbound-disclosure.md) |
 | what happens to a file or other non-text message sent in Telegram, the inbound-file folder or its sweep, list_inbound_files, or who may read an inbound file | [`architecture/inbound-files.md`](architecture/inbound-files.md) |
 | what the operator sees from a turn — the turn scope, the admission of model text, the read-before-describe disclosure, a stored payload's note, or the Telegram channel's admitted-text contract | [`architecture/output-boundary.md`](architecture/output-boundary.md) |
-| who may mark a job or an engagement terminal, terminal transitions, engagement creation strictness, finalization side effects, or engagement output ordering | [`architecture/engagement-finalization.md`](architecture/engagement-finalization.md) |
+| who may mark a job or an engagement terminal, terminal transitions, engagement creation strictness, finalization side effects, engagement output ordering, or deleting a finished engagement's transcripts | [`architecture/engagement-finalization.md`](architecture/engagement-finalization.md) |
 | wipe consent or its doors, the wipe orchestrator's order, the retain fence, the writer drain, or what a wipe leaves behind | [`architecture/memory-wipe.md`](architecture/memory-wipe.md) |
 <!-- END ROUTING -->
 
