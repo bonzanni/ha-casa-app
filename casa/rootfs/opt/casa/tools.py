@@ -12091,6 +12091,27 @@ async def report_job_progress(args: dict) -> dict:
     return _result({"ok": True})
 
 
+async def _record_pending_completion(engagement: Any, status: str, text: str) -> None:
+    """#1180: a fresh job's next turn starts with no memory of this refusal, so
+    the refused completion is recorded on the job, where ``job_brief`` names it
+    until the record is terminal (INV-BGJOB-005). A resume-mode job's
+    conversation remembers the refusal itself, and records nothing."""
+    rec = _engagement_registry.get(engagement.id) if _engagement_registry else None
+    if rec is None or not background_jobs.is_fresh_job(rec):
+        return
+    job = rec.origin["job"]
+    # A clearance downgrade drops `brief_context`; a turn that began at the old
+    # tier can still be refused after it, so its text is withheld here too.
+    job["completion_pending"] = (
+        {"status": status, "text": text} if "brief_context" in job
+        else {"status": status})
+    try:
+        await _engagement_registry.persist_origin(rec.id)
+    except Exception:  # noqa: BLE001 — the refusal itself must still be returned
+        logger.warning("could not persist the pending completion of %s",
+                       rec.id[:8], exc_info=True)
+
+
 @tool(
     "emit_completion",
     "Mark this engagement complete. Ellen receives the summary. Must be called "
@@ -12379,6 +12400,7 @@ async def emit_completion(args: dict) -> dict:
                     logger.warning(
                         "completion-gate forced boundary failed for %s",
                         engagement.id[:8], exc_info=True)
+            await _record_pending_completion(engagement, status_in, text)
             return _result({
                 "status": "error", "kind": "unread_inbound",
                 "retryable": True,
@@ -12433,6 +12455,7 @@ async def emit_completion(args: dict) -> dict:
                 driver.record_completion_refusal(engagement.id)
             except Exception:  # noqa: BLE001
                 pass
+        await _record_pending_completion(engagement, status_in, text)
         return _result({
             "status": "error", "kind": "unread_inbound", "retryable": True,
             "message": (

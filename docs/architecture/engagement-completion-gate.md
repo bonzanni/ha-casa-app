@@ -191,6 +191,9 @@ a retry. Both halves of the invariant's last sentence are that one path.
 **Completion is refused for unread input.** The transition is vetoed, the record stays live,
 and the caller gets a retryable outcome naming the condition. This is a precondition failure,
 not an error state.
+A fresh job, whose next turn starts with no memory of the refusal, also records the refused
+completion so that turn's brief names it ([`background-jobs.md`](background-jobs.md),
+INV-BGJOB-007); the reply is the same.
 
 **An inbound accessor raises.** The gate fails open for THAT accessor, with a warning rather
 than wedging termination: a driver that cannot answer one question does not get to make an

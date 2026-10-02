@@ -428,10 +428,28 @@ def job_brief(rec: Any) -> str:
         f"Job id: {rec.id}\n"
         f"Request: {rec.task}\n"
         f"Context:\n{context}\n"
-        "What follows this brief is this turn: a batch to run, or a message from "
+        + _pending_completion_line(job)
+        + "What follows this brief is this turn: a batch to run, or a message from "
         "the operator to answer. How the job runs:\n"
         + _job_rules(job.get("turns_per_batch"))
     )
+
+
+def _pending_completion_line(job: dict) -> str:
+    """#1180: a completion the gate refused for unread input, named so the
+    fresh turn that reads that input can complete again. Its text was authored
+    at the job's tier: a clearance downgrade keeps only the status."""
+    pending = job.get("completion_pending")
+    if not isinstance(pending, dict):
+        return ""
+    line = f'A completion (status {pending.get("status")}) was pending when an earlier turn ended'
+    text = pending.get("text")
+    if isinstance(text, str):
+        line += f": {(text.splitlines() or [''])[0][:300]}."
+    else:
+        line += ("; its summary is withheld because this engagement's clearance "
+                 "was lowered.")
+    return line + " Handle this turn, then call emit_completion again.\n"
 
 
 def batch_prompt(n: int, title: str) -> str:
@@ -470,6 +488,16 @@ def turn_owners(engagement_id: str) -> int:
 # The batch loop
 # ---------------------------------------------------------------------------
 
+def _pending_input_reserved(rec: Any, driver: Any) -> bool:
+    """#1180: while a refused completion is pending, an ingress reservation is
+    input about to arrive: the job waits for it, so the one spared batch is not
+    spent on a completion the same reservation would refuse again."""
+    if not rec.origin["job"].get("completion_pending"):
+        return False
+    reserved = getattr(driver, "inbound_reservations", None)
+    return reserved is not None and reserved(rec.id) > 0
+
+
 async def job_after_turn(rec: Any, channel: Any, *, turn_cut_off: bool = False) -> None:
     """Runs after every turn of a job engagement, once that turn's own owner has
     finished (and called ``turn_owner_finished``)."""
@@ -501,6 +529,8 @@ async def sweep_jobs(registry: Any, channel: Any) -> None:
             return
         job = rec.origin.get("job")
         if not job or driver.inbound_unread_depth(rec.id) > 0 or turn_owners(rec.id):
+            continue
+        if _pending_input_reserved(rec, driver):
             continue
         # The launch owns the record until its acknowledgement turn ends, and
         # until then there is no turn owner to see (diff review r1). This is a
@@ -549,7 +579,8 @@ async def start_next_batch(rec: Any, channel: Any) -> bool:
     `started` is committed and persisted only once the hand-off succeeded — a
     refused continuation costs nothing (C7a, review r3)."""
     driver = channel._engagement_driver
-    if driver.inbound_unread_depth(rec.id) > 0 or turn_owners(rec.id):
+    if driver.inbound_unread_depth(rec.id) > 0 or turn_owners(rec.id) or (
+            _pending_input_reserved(rec, driver)):
         return False
     # Stage the judgment: a refused hand-off must cost no batch or progress.
     job = dict(rec.origin["job"])
@@ -573,6 +604,13 @@ async def start_next_batch(rec: Any, channel: Any) -> bool:
         detail = "no progress in 3 consecutive batches"
     elif isinstance(job["batches"], int) and job["started"] >= job["batches"]:
         detail = f'reached its limit of {job["batches"]} batches'
+    # #1180: a completion refused for unread input is named in the next brief.
+    # When that input never became a turn of its own (a reservation released
+    # without one, a restart), the job gets ONE spared batch to read the brief
+    # and complete — once per job, whichever limit it reached.
+    if detail and job.get("completion_pending") and not job.get("pending_spared"):
+        job["pending_spared"] = True
+        detail = None
     if detail:
         from tools import _finalize_engagement
         task = asyncio.create_task(_finalize_engagement(
@@ -590,6 +628,8 @@ async def start_next_batch(rec: Any, channel: Any) -> bool:
         return False
     rec.origin["job"].update(
         {key: job[key] for key in ("started", "judged", "stuck", "advanced")})
+    if job.get("pending_spared"):
+        rec.origin["job"]["pending_spared"] = True
     rec.origin["job"].update(last_advance=time.time(), stalls=0)
     await channel._engagement_registry.persist_origin(rec.id)
     return True

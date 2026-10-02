@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.340.0] - 2026-10-02
+
+### Fixed
+
+- A background job declared `"session": "fresh"` no longer fails when it tries
+  to finish while you have an unread message in its topic. Casa asks the job to
+  read your message first; because every turn of such a job starts fresh, the
+  next turn used to have no idea a completion was waiting, and the job then
+  ended as failed at its batch limit although its work was done. Now the
+  pending completion is named in the next turn's brief, so that turn finishes
+  the job, and a job held at its limit this way gets one extra turn to do so.
+  Closes #1180.
+
 ## [0.339.0] - 2026-10-02
 
 ### Added
