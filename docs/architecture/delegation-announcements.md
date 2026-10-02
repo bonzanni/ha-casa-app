@@ -27,6 +27,15 @@ before that announces again at the next boot.
 the row in the snapshot that arms the obligation and removed in the snapshot that clears
 it, so a replay can quote it — and the replay says that it is a replay.
 
+**The notice also says what a plugin posted on the work's behalf.** When a plugin tool
+running under the delegation, engagement or job delivered a message or a file straight to
+the operator ([`plugin-result-contract.md`](plugin-result-contract.md)), the text the
+terminal notice carries ends with one body-free Casa line per proven post — the
+specialist's label, the kind, the page count or media kind — the same lines a synchronous
+delegation's returned text ends with — on the error arm, after the message. The lines are
+appended to the bounded answer before it is retained, so a replay carries them too; they
+never quote the body, the caption or the file name.
+
 ## Contracts & invariants
 
 **INV-JOB-010**: An announcement Casa owes a creator is durably owed until it has been DELIVERED or answered by a clean chosen silence — the row's pending marker is cleared only once the consuming resident's channel reports that its turn reached the transport, or once that turn ended in a clean chosen silence (a final text of nothing but one or more `<silent/>` sentinels, with no error, no consumed SDK retry, a channel present, and every piece of model-authored content the turn or a synchronous delegate committed to the operator through Casa's own send paths confirmed delivered), never when the bus accepted the notice for enqueue — so an announcement lost with the process is announced again at the next boot. A turn that ends with no text and no sentinel (an answer given only through tool use) is not a chosen silence and stays owed, and the effect of any other tool on the turn is not observed.

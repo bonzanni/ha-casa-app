@@ -318,3 +318,32 @@ def test_map_without_artifact_id_is_not_adopting(tmp_path):
                          manifest_name="")
     m = result_contract_map(SimpleNamespace(plugins=[rp]))
     assert m.plugins["p"].adopted is False and m.tools == {}
+
+
+# --- S3: the delivered-slot vocabulary gains operator_message / operator_file ---
+
+@pytest.mark.parametrize("kind", ["operator_message", "operator_file"])
+def test_a_message_or_file_delivery_is_normalized_like_a_link(kind):
+    out = manifest_result_contract({"name": "p", **_rc({
+        "post": {"result": "capability", "provides": ["report"],
+                 "delivers": {"report": kind}},
+    })})
+    assert out["tools"]["post"]["delivers"] == {"report": kind}
+    assert plugin_store._RC_DELIVERS_KINDS == (
+        "operator_link", "operator_message", "operator_file")
+
+
+@pytest.mark.parametrize("manifest", [
+    _rc({"post": {"result": "capability", "provides": ["a", "b"],
+                  "delivers": {"a": "operator_message", "b": "operator_file"}}}),
+    _rc({"post": {"result": "capability", "provides": ["a"],
+                  "delivers": {"a": "operator_post"}}}),
+    _rc({"post": {"result": "safe", "delivers": {"a": "operator_file"}}}),
+    _rc({"post": {"result": "capability", "provides": ["a"],
+                  "delivers": {"a": "operator_file"}},
+         "use": {"result": "safe", "consumes": {"p": "a"}}}),
+], ids=["two-kinds", "unknown-kind", "safe", "consumed-file"])
+def test_the_new_kinds_keep_every_declaration_rule(manifest):
+    with pytest.raises(StoreError) as ei:
+        manifest_result_contract({"name": "p", **manifest})
+    assert ei.value.reason_code == "result_contract_invalid"

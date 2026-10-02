@@ -1149,6 +1149,27 @@ Casa passes that result to the assistant unchanged and sends nothing, and a
 setup run that ends this way counts as run. Any other result without its
 reference is still withheld. This needs Casa 0.319.0 or later.
 
+#### A specialist's report or file arrives in your chat, labelled (v0.339.0)
+
+A plugin can also hand you its output directly — a quarterly summary, an
+export — instead of having the assistant retell it. It declares the slot as
+`operator_message` (text, up to 12,000 characters, with no control characters
+but newline and tab) or `operator_file` (a file it wrote to its outbox, with
+the media `kind` it is — `document`, `photo`, `audio`, `voice`, `zip` or
+`text` — and an optional one-line `caption`), and deposits it like any
+capability. Casa posts it to the chat you asked in, headed by `📊` and the
+specialist's name — the plugin cannot change or hide that line — and the
+assistant gets a receipt instead of the text, so nothing is paraphrased on the
+way. A message is split into pages like any long reply; one that would need
+more than six pages, or that could not be sent whole, is refused and nothing
+is posted. A file goes through the same checks as the `send_media` tool and
+is consumed whether or not it arrived; the label line plus the caption must
+fit the media caption limit of 1,024 characters. If Casa could not confirm
+delivery the result is withheld, as for a link. The assistant's own
+conversation learns only that the specialist posted something and how large
+it was, never what it said — ask the specialist if you want the detail
+repeated. Needs Casa 0.339.0 or later.
+
 #### Links a plugin needs from you: the vault drop-off (v0.330.0)
 
 Some sign-in steps run the other way: the provider emails you a single-use

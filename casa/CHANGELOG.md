@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.339.0] - 2026-10-02
+
+### Added
+
+- A plugin running inside a specialist can post its output straight to your
+  chat, headed by `📊` and the specialist's name: a text (`operator_message`,
+  up to 12,000 characters, split into pages like a long reply) or a file from
+  its outbox (`operator_file`, with its media kind and an optional caption).
+  The assistant receives a receipt instead of the text, so nothing is retold.
+  A text that could not be posted whole — more than six pages, or a link too
+  long for one message — is refused and nothing is posted; a file that fails
+  its media checks is not sent and is consumed either way; in both cases the
+  result is withheld and the assistant says so, as for a delivered link. The
+  assistant's own conversation learns only that the specialist posted
+  something and how large it was, never what it said.
+
 ## [0.338.0] - 2026-10-02
 
 ### Added

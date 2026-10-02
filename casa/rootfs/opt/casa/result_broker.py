@@ -60,18 +60,23 @@ plugin-author trust boundary #785 rules on; Casa detects no such violation.
 from __future__ import annotations
 
 import asyncio
+import collections
 import dataclasses
 import hmac
 import json
 import logging
+import os
 import re
 import secrets
 import threading
 import time
+import unicodedata
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlsplit
 
 from aiohttp import web
+
+from media_policies import MEDIA_POLICIES
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +107,31 @@ MAX_LABEL_CHARS = 40
 DEFAULT_LINK_LABEL = "Open"
 DELIVERED_TO = "operator_chat"
 OPERATOR_LINK = "operator_link"
+# S3: a specialist's plugin output posted by Casa, labelled, verbatim. The
+# body is judged in CHARACTERS at deposit (a body over the cap is refused,
+# never truncated — truncation would be Casa retelling); the page PLAN is
+# capped separately at delivery, before the first send, because a character
+# cap does not bound a page count (emoji are two UTF-16 units each, markers
+# are bounded by the 100-entity budget: three 12,000-character bodies
+# measured 4, 7 and 11 pages).
+OPERATOR_MESSAGE = "operator_message"
+OPERATOR_FILE = "operator_file"
+MAX_MESSAGE_CHARS = 12_000
+MAX_MESSAGE_PAGES = 6
+# The COMPOSED file caption — Casa's label line, a newline, the plugin's
+# caption — must fit ``send_media``'s cap (tools._CAPTION_MAX; a test pins
+# the two equal). An upload is slower than a text send, so its bound is
+# longer — still under the CLI's matcher deadline (HOOK_TIMEOUT_S), so the
+# receipt path, not the deadline, decides.
+MAX_FILE_CAPTION_CHARS = 1024
+FILE_DELIVERY_TIMEOUT_S = 45.0
+# One fixed Casa marker for "a specialist posted this"; the label is
+# ``<glyph> <display name>`` and the plugin cannot set, prefix or suppress it.
+POST_LABEL_GLYPH = "📊"
+# §6: the body-free echo the resident's conversation sees — one line per
+# proven post, at most this many per vehicle, each within this bound.
+ECHO_LINE_MAX = 120
+ECHO_MAX_LINES = 5
 _WS_RE = re.compile(r"\s")
 _DOMAINISH_RE = re.compile(r"\.[A-Za-z]")
 
@@ -155,6 +185,7 @@ class _Reference:
     used: bool = False
     caption: str = ""             # #1015: delivered slots only, validated
     label: str = ""
+    media_kind: str = ""          # S3: operator_file only — a MEDIA_POLICIES key
 
     def __repr__(self) -> str:      # never the value
         return (f"_Reference(slot={self.slot!r}, armed={self.armed is not None}, "
@@ -196,6 +227,137 @@ def _label_ok(value: Any) -> bool:
     """A label additionally may not look like a domain (``.`` followed by a
     letter): the host is Casa's to print from the URL, never the plugin's."""
     return _text_ok(value, MAX_LABEL_CHARS) and not _DOMAINISH_RE.search(value)
+
+
+# -- S3: what a message or file slot's deposit may carry ----------------------
+
+def _message_ok(value: Any) -> bool:
+    """An ``operator_message`` body: non-blank text of at most
+    MAX_MESSAGE_CHARS characters and MAX_VALUE_BYTES bytes, with no control
+    character (Unicode category Cc) but newline and tab. Spaces of every
+    width, joiners, marks and separators are text, not controls."""
+    if not isinstance(value, str) or not value.strip():
+        return False
+    if len(value) > MAX_MESSAGE_CHARS:
+        return False
+    if len(value.encode("utf-8", "surrogateescape")) > MAX_VALUE_BYTES:
+        return False
+    return all(ch in "\n\t" or unicodedata.category(ch) != "Cc" for ch in value)
+
+
+def _file_caption_ok(value: Any, label: str) -> bool:
+    """An ``operator_file`` caption: one printable line, and the COMPOSED
+    caption (``label``, newline, caption) fits MAX_FILE_CAPTION_CHARS —
+    overflow is refused, never truncated."""
+    if not isinstance(value, str) or not value.isprintable():
+        return False
+    return len(label) + 1 + len(value) <= MAX_FILE_CAPTION_CHARS
+
+
+def post_label(role: str) -> str:
+    """The label Casa heads a specialist's post with: the glyph and the
+    persona display name the ``<delegates>`` block advertises for *role*
+    (the role itself when it has none) — from the one map Casa resolves
+    delegation targets against, never from the plugin."""
+    import tools as tools_mod
+    return f"{POST_LABEL_GLYPH} {tools_mod._display_name_for_role(role)}"
+
+
+def compose_operator_message(body: str, label: str) -> str:
+    """The ONE text ``render_paged`` splits: the label line, then the body
+    as deposited. Paginating the composed text budgets the header like any
+    other line, so page 1 carries it and pages 2+ are bare — no planner,
+    no reserved budget (a header added after pagination overflows a full
+    page)."""
+    return f"{label}\n{body}"
+
+
+def compose_file_caption(label: str, caption: str) -> str:
+    """The file's caption: the label line first, the plugin's caption (if
+    any) beneath; a file with no plugin caption is still labelled."""
+    return f"{label}\n{caption}" if caption else label
+
+
+# -- S3 §6: the body-free echo ledger ------------------------------------------
+
+@dataclasses.dataclass(frozen=True)
+class PostEvent:
+    """One proven post, as the resident's conversation may learn of it:
+    Casa-derived metadata only — never the body, the caption or the file
+    name, which are plugin-authored bytes the model must see only as the
+    receipt."""
+    tool_use_id: str
+    plugin: str
+    slot: str
+    label: str
+    pages: int | None
+    media_kind: str | None
+
+
+class PostLedger:
+    """Append-only events keyed by the call's OWNER — the engagement id the
+    identity carries, or a sync delegation's id — drained atomically by
+    the vehicle that echoes them, so a post is echoed once and never
+    twice. A list, never a set: two tools of one plugin may each deliver
+    the same slot name, and two proven posts are two lines. In memory and
+    FIFO-bounded on owners, like the broker's references: a restart between
+    the post and its echo loses the echo, not the post."""
+
+    def __init__(self, max_owners: int = 512) -> None:
+        self._events: "collections.OrderedDict[str, list[PostEvent]]" = collections.OrderedDict()
+        self._max_owners = max_owners
+        self._lock = threading.Lock()
+
+    def record(self, owner: str, event: PostEvent) -> None:
+        if not owner:
+            return
+        with self._lock:
+            self._events.setdefault(owner, []).append(event)
+            self._events.move_to_end(owner)
+            while len(self._events) > self._max_owners:
+                self._events.popitem(last=False)
+
+    def drain(self, owner: str) -> list[PostEvent]:
+        """Read and clear *owner*'s events in one step."""
+        if not owner:
+            return []
+        with self._lock:
+            return self._events.pop(owner, [])
+
+
+POSTS = PostLedger()
+
+_MEDIA_WORDS = {
+    "document": "a document", "photo": "a photo", "audio": "an audio file",
+    "voice": "a voice message", "zip": "a zip archive", "text": "a text file",
+}
+
+
+def echo_lines(events: list[PostEvent]) -> list[str]:
+    """§6: one Casa-authored line per proven post, at most ECHO_MAX_LINES
+    then ``…and N more.``, each within ECHO_LINE_MAX characters; the label,
+    the kind and the page count or media kind — nothing plugin-authored."""
+    lines: list[str] = []
+    for event in events[:ECHO_MAX_LINES]:
+        if event.media_kind:
+            tail = f" posted {_MEDIA_WORDS.get(event.media_kind, 'a file')} to your chat."
+        else:
+            pages = event.pages or 1
+            tail = f" posted to your chat ({pages} page{'s' if pages != 1 else ''})."
+        room = ECHO_LINE_MAX - len(tail)
+        label = event.label if len(event.label) <= room else event.label[:room - 1] + "…"
+        lines.append(label + tail)
+    if len(events) > ECHO_MAX_LINES:
+        lines.append(f"…and {len(events) - ECHO_MAX_LINES} more.")
+    return lines
+
+
+def _post_owner(identity: Any) -> str:
+    """The ledger key: the engagement id the identity carries, else the sync
+    delegation's id threaded onto it as advisory metadata, else nothing (a
+    direct resident turn has the post in front of the operator already)."""
+    return (getattr(identity, "engagement_id", "") or ""
+            or getattr(identity, "delegation_id", "") or "")
 
 
 class ReferenceStore:
@@ -256,17 +418,25 @@ class ReferenceStore:
     # -- deposit ----------------------------------------------------------
     def deposit(self, *, client_id: str, slot: str, value: str,
                 caption: str | None = None,
-                label: str | None = None) -> tuple[str | None, str | None]:
+                label: str | None = None,
+                kind: Any = None) -> tuple[str | None, str | None]:
         """Bind ``value`` to the UNIQUE in-flight capability call of
         ``client_id`` whose contract provides ``slot``; mint and return a
         reference. Zero or more than one such call ⇒ refused (fail closed).
         Returns ``(reference, None)`` or ``(None, error_code)``.
 
-        For a slot the call DELIVERS (#1015) the value must be an ``https``
-        link Casa can post, and the optional ``caption``/``label`` must be
-        printable single lines that cannot read as a link themselves —
-        ``bad_link`` / ``bad_caption`` / ``bad_label`` otherwise, BEFORE any
-        reference is minted. For any other slot both are ignored, so a
+        For a slot the call DELIVERS the deposit is judged by the declared
+        kind, BEFORE any reference is minted: ``operator_link`` (#1015) —
+        an ``https`` link Casa can post, with optional ``caption``/``label``
+        as printable single lines that cannot read as a link themselves
+        (``bad_link`` / ``bad_caption`` / ``bad_label``); ``operator_message``
+        (S3) — a non-blank body within the character cap with no control
+        character but newline and tab (``bad_message``; caption, label and
+        kind ignored — the plugin cannot influence the label);
+        ``operator_file`` (S3) — ``kind`` a media-policy key (``bad_kind``)
+        and an optional caption whose COMPOSED form fits the cap
+        (``bad_caption``); the path itself is judged at delivery, never
+        read here. For any other slot every extra member is ignored, so a
         producer library can send them uniformly."""
         with self._lock:
             self._sweep_locked()
@@ -281,8 +451,21 @@ class ReferenceStore:
                 return None, "no_identity"
             if slot in call.deposits:
                 return None, "slot_already_deposited"
-            caption_s, label_s = "", ""
-            if slot in call.delivers:
+            caption_s, label_s, kind_s = "", "", ""
+            dkind = call.delivers.get(slot)
+            if dkind == OPERATOR_MESSAGE:
+                if not _message_ok(value):
+                    return None, "bad_message"
+            elif dkind == OPERATOR_FILE:
+                if not isinstance(kind, str) or kind not in MEDIA_POLICIES:
+                    return None, "bad_kind"
+                if caption is not None and caption != "":
+                    if not _file_caption_ok(
+                            caption, post_label(call.identity.enforcement_role)):
+                        return None, "bad_caption"
+                    caption_s = caption
+                kind_s = kind
+            elif dkind is not None:
                 # Only a DELIVERED slot judges the metadata (type included):
                 # for any other slot both fields are ignored whatever they
                 # are, exactly as the base ignored unknown request members.
@@ -301,7 +484,7 @@ class ReferenceStore:
             self._refs[ref] = _Reference(
                 value=value, slot=slot, identity=call.identity,
                 minted_at=now, expires_at=now + reference_ttl_s(),
-                caption=caption_s, label=label_s)
+                caption=caption_s, label=label_s, media_kind=kind_s)
             call.deposits[slot] = ref
             return ref, None
 
@@ -310,7 +493,7 @@ class ReferenceStore:
         the reference must exist, be unexpired, unused and unarmed; it is
         marked used (so ``arm``, ``redeem`` and a second take all refuse it;
         the next sweep removes it) and its value blanked. Returns
-        ``(value, caption, label, identity)`` or ``None``."""
+        ``(value, caption, label, identity, media_kind)`` or ``None``."""
         with self._lock:
             self._sweep_locked()
             r = self._refs.get(reference)
@@ -318,7 +501,7 @@ class ReferenceStore:
                 return None
             r.used = True
             value, r.value = r.value, ""
-            return value, r.caption, r.label, r.identity
+            return value, r.caption, r.label, r.identity, r.media_kind
 
     def validate_result(self, call: _InFlight, parsed: dict) -> bool:
         """True iff every declared slot of ``call`` is present in ``parsed``
@@ -470,6 +653,24 @@ _REASON_LINK_NOT_DELIVERED = (
     "reached their chat, so the result is withheld. Tell the operator: if a "
     "link message arrived just now it is valid; otherwise ask again for a "
     "fresh one. Do not retry on this turn.")
+# S3: the same shape for a message and a file — withheld, dropped, no retry.
+_REASON_MESSAGE_NOT_DELIVERED = (
+    "The tool produced a message for the operator, but Casa could not confirm "
+    "it reached their chat complete, so the result is withheld. Tell the "
+    "operator: if a message headed by the specialist's name arrived just now "
+    "it is theirs; otherwise ask again. Do not retry on this turn.")
+_REASON_FILE_NOT_DELIVERED = (
+    "The tool produced a file for the operator, but Casa could not confirm it "
+    "reached their chat, so the result is withheld and the file consumed. Tell "
+    "the operator: if a file headed by the specialist's name arrived just now "
+    "it is theirs; otherwise ask again for a fresh one. Do not retry on this "
+    "turn.")
+_NOT_DELIVERED_REASONS = {
+    OPERATOR_LINK: _REASON_LINK_NOT_DELIVERED,
+    OPERATOR_MESSAGE: _REASON_MESSAGE_NOT_DELIVERED,
+    OPERATOR_FILE: _REASON_FILE_NOT_DELIVERED,
+}
+_KIND_WORDS = {OPERATOR_LINK: "link", OPERATOR_MESSAGE: "message", OPERATOR_FILE: "file"}
 
 _DENY_NON_ADOPTING = (
     "not executed: this plugin has not adopted the Casa result contract "
@@ -746,6 +947,80 @@ async def _post_operator_link(chat_id: int, text: str, entities, plain: str):
     return await channel.deliver_operator_link(chat_id, text, entities, plain)
 
 
+def _telegram_channel():
+    """The Telegram channel the way the delegated authz factory reaches it
+    (``tools._channel_manager``); ``None`` when absent."""
+    import tools as tools_mod
+    manager = getattr(tools_mod, "_channel_manager", None)
+    return manager.get("telegram") if manager is not None else None
+
+
+async def _post_operator_message(chat_id: int, text: str):
+    """S3: the channel judges the whole physical plan of *text* before the
+    first send and posts every page; absent ⇒ ``NOT_DELIVERED``."""
+    from channels import DeliveryOutcome
+    channel = _telegram_channel()
+    if channel is None:
+        return DeliveryOutcome.NOT_DELIVERED
+    return await channel.deliver_operator_message(chat_id, text)
+
+
+def _claim_and_capture(outbox, path: str, kind: str):
+    """ONE synchronous unit, run off the loop: claim *path*, validate the
+    delivered name for *kind*, capture the bytes through the kind's policy,
+    and remove the claim in its own ``finally``. Returns ``((content,
+    filename), None)`` or ``(None, why)``. One unit because cancelling a
+    thread does not stop it: if the caller's bound ends while the claim is
+    waiting on the outbox lock, the claim still lands — and is still
+    consumed here, which an awaited sequence of three threads could not
+    promise."""
+    import tools as tools_mod
+    from plugin_outbox import OutboxError
+    try:
+        claim = outbox.claim(path)
+    except OutboxError as exc:
+        return None, f"claim refused ({exc.kind})"
+    try:
+        filename = tools_mod._validate_delivery_filename(os.path.basename(path), kind)
+        if filename is None:
+            return None, f"name not valid for kind {kind}"
+        try:
+            content = outbox.capture(claim, kind)
+        except OutboxError as exc:
+            return None, f"policy refused ({exc.kind})"
+        return (content, filename), None
+    finally:
+        try:
+            outbox.remove_claim(claim)
+        except Exception as exc:  # noqa: BLE001 — cleanup best-effort
+            logger.warning("operator file claim cleanup failed: %s", type(exc).__name__)
+
+
+async def _post_operator_file(chat_id: int, path: str, kind: str, caption: str):
+    """S3: claim *path* from the plugin outbox exactly as ``send_media``
+    claims it (the outbox derived from the authenticated engagement, else
+    the shared one), run the kind's policy through ``capture``, and send
+    the bytes with the composed caption. The claim is removed on EVERY
+    outcome — the file is consumed whether or not it was delivered, even
+    when the claim lands after the hook's bound. A claim, name or policy
+    refusal is ``NOT_DELIVERED``; a send error propagates and the hook
+    reads it as not proven."""
+    import tools as tools_mod
+    from channels import DeliveryOutcome
+    channel = _telegram_channel()
+    if channel is None:
+        return DeliveryOutcome.NOT_DELIVERED
+    outbox = tools_mod.outbox_for_current_context()
+    if outbox is None:
+        return DeliveryOutcome.NOT_DELIVERED
+    captured, why = await asyncio.to_thread(_claim_and_capture, outbox, path, kind)
+    if captured is None:
+        logger.warning("operator file not sent: %s", why)
+        return DeliveryOutcome.NOT_DELIVERED
+    content, filename = captured
+    return await channel.deliver_operator_file(chat_id, content, kind, filename, caption)
+
+
 async def _deliver_and_replace(store: ReferenceStore, seg: str, call: _InFlight,
                                parsed: dict) -> dict[str, Any]:
     """#1015, after the structural check passed: take the delivered slot's
@@ -754,38 +1029,74 @@ async def _deliver_and_replace(store: ReferenceStore, seg: str, call: _InFlight,
     deposit dropped either way: a delivered reference is used, a withheld
     one must not be redeemable through a notice). The hook's own
     cancellation (the CLI's deadline) drops the deposit and re-raises: no
-    replacement, the model holds the delivery-neutral original."""
+    replacement, the model holds the delivery-neutral original.
+
+    S3 dispatches on the delivered slot's kind; everything around the
+    dispatch — take-once, the bound, withhold-and-drop, the receipt,
+    cancellation — is the link path's. A message receipt carries the page
+    count of the plan that was judged, a file receipt the media kind; a
+    proven message or file post is also recorded on the echo ledger under
+    the call's owner (§6)."""
     from channels import DeliveryOutcome
     slot = next(iter(call.delivers))
+    dkind = call.delivers[slot]
     delivered = False
+    detail: dict[str, Any] = {}
+    event: PostEvent | None = None
+    identity = None
     try:
         taken = store.take_for_delivery(call.deposits.get(slot, ""))
         if taken is not None:
-            value, caption, label, identity = taken
-            text, entities, plain = compose_operator_link(
-                value, caption=caption, label=label)
-            outcome = await asyncio.wait_for(
-                _post_operator_link(identity.chat_id, text, entities, plain),
-                DELIVERY_TIMEOUT_S)
-            delivered = outcome is DeliveryOutcome.DELIVERED
+            value, caption, label, identity, media_kind = taken
+            if dkind == OPERATOR_MESSAGE:
+                head = post_label(identity.enforcement_role)
+                text = compose_operator_message(value, head)
+                outcome = await asyncio.wait_for(
+                    _post_operator_message(identity.chat_id, text),
+                    DELIVERY_TIMEOUT_S)
+                delivered = outcome is DeliveryOutcome.DELIVERED
+                if delivered:
+                    from channels.tg_richtext import render_paged
+                    pages = len(render_paged(text))
+                    detail = {"pages": pages}
+                    event = PostEvent(call.tool_use_id, seg, slot, head, pages, None)
+            elif dkind == OPERATOR_FILE:
+                head = post_label(identity.enforcement_role)
+                outcome = await asyncio.wait_for(
+                    _post_operator_file(identity.chat_id, value, media_kind,
+                                        compose_file_caption(head, caption)),
+                    FILE_DELIVERY_TIMEOUT_S)
+                delivered = outcome is DeliveryOutcome.DELIVERED
+                if delivered:
+                    detail = {"kind": media_kind}
+                    event = PostEvent(call.tool_use_id, seg, slot, head, None, media_kind)
+            else:
+                text, entities, plain = compose_operator_link(
+                    value, caption=caption, label=label)
+                outcome = await asyncio.wait_for(
+                    _post_operator_link(identity.chat_id, text, entities, plain),
+                    DELIVERY_TIMEOUT_S)
+                delivered = outcome is DeliveryOutcome.DELIVERED
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # noqa: BLE001 — not proven ⇒ withheld
         # The class only: an upstream error's text could quote the request
-        # (the URL is in the entity and the plain fallback), and no error
-        # echoes a value.
+        # (the URL is in the entity and the plain fallback, a body in a
+        # page), and no error echoes a value.
         logger.warning(
-            "operator link delivery failed (plugin=%s slot=%s): %s — withholding",
-            seg, slot, type(exc).__name__)
+            "operator %s delivery failed (plugin=%s slot=%s): %s — withholding",
+            _KIND_WORDS.get(dkind, "link"), seg, slot, type(exc).__name__)
         delivered = False
     finally:
         if not delivered:
             store.drop_call_deposits(call)
     if not delivered:
-        return _withheld(seg, _REASON_LINK_NOT_DELIVERED)
+        return _withheld(seg, _NOT_DELIVERED_REASONS.get(dkind, _REASON_LINK_NOT_DELIVERED))
+    if event is not None:
+        POSTS.record(_post_owner(identity), event)
     receipt = dict(parsed)
     receipt["casa_delivery"] = {
-        "slot": slot, "status": "delivered", "to": DELIVERED_TO}
+        "slot": slot, "status": "delivered", "to": DELIVERED_TO, **detail}
     return {"hookSpecificOutput": {"hookEventName": "PostToolUse",
                                    "updatedToolOutput": json.dumps(receipt)}}
 
@@ -933,8 +1244,9 @@ def _bad(code: str, status: int = 200) -> web.Response:
 def build_broker_deposit_handler(store: ReferenceStore | None = None):
     """``POST /internal/broker/deposit`` ``{"client", "slot", "value"}`` plus
     the optional ``"caption"``/``"label"`` strings a delivered slot may carry
-    (#1015) ⇒ ``{"reference"}`` or ``{"error"}``. Write-only: nothing here
-    reads a value back, and no error echoes one."""
+    (#1015) and the ``"kind"`` an ``operator_file`` slot requires (S3) ⇒
+    ``{"reference"}`` or ``{"error"}``. Write-only: nothing here reads a
+    value back, and no error echoes one."""
     store = store or STORE
 
     async def handler(request: web.Request) -> web.Response:
@@ -961,7 +1273,8 @@ def build_broker_deposit_handler(store: ReferenceStore | None = None):
         # for such a deposit is unchanged.
         ref, err = store.deposit(client_id=client, slot=slot, value=value,
                                  caption=body.get("caption"),
-                                 label=body.get("label"))
+                                 label=body.get("label"),
+                                 kind=body.get("kind"))
         if err:
             return _bad(err)
         return web.json_response({"reference": ref})
