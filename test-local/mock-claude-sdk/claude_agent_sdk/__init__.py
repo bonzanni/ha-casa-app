@@ -272,6 +272,13 @@ class ClaudeAgentOptions:
     # any e2e run. FOURTH instance of this drift; see `env` and `plugins`
     # above. The mock accepts and ignores it: it spawns no CLI to format.
     output_format: str | None = None
+    # #1168 / #1181: the utility one-shots pass
+    # extra_args={"no-session-persistence": None} (and setting_sources=[]),
+    # and the delegation runner sets a Casa-chosen session_id through
+    # dataclasses.replace. The mock accepts both; its client adopts the
+    # chosen id below, as the real CLI does.
+    extra_args: dict[str, str | None] = field(default_factory=dict)
+    session_id: str | None = None
 
 
 class ClaudeSDKClient:
@@ -281,7 +288,9 @@ class ClaudeSDKClient:
         self.options = options
         self._last_prompt: str = ""
         # Reuse session id on resume so registry round-tripping is observable.
-        self._session_id: str = options.resume or f"mock-{uuid.uuid4().hex[:12]}"
+        # A caller-chosen session id (--session-id) names the new session.
+        self._session_id: str = (options.resume or options.session_id
+                                 or f"mock-{uuid.uuid4().hex[:12]}")
         # Public attribute mirroring the real SDK's ClaudeSDKClient.session_id.
         self.session_id: str = self._session_id
         _log({

@@ -71,7 +71,8 @@ def run(monkeypatch):
 
     def builder(cfg, *, resolution=None, output_format=None):
         built.append(resolution)
-        return MagicMock()
+        # A real options object: the runner sets its own session id on it.
+        return tm.ClaudeAgentOptions()
 
     monkeypatch.setattr(tm, "_build_specialist_options", builder)
     cfg = MagicMock()

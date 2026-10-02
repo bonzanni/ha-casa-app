@@ -469,7 +469,7 @@ class TestPrelaunchRequiresGate:
         def _spy_builder(cfg, *, resolution=None, output_format=None):
             captured["resolution"] = resolution
             captured["output_format"] = output_format
-            return MagicMock()
+            return tm.ClaudeAgentOptions()
 
         monkeypatch.setattr(tm, "_build_specialist_options", _spy_builder)
         monkeypatch.setattr(tm, "ClaudeSDKClient", _FakeSDKClient)

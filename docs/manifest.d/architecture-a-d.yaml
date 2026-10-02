@@ -239,16 +239,19 @@
     - casa/rootfs/opt/casa/tools.py::_is_agent_context
     - casa/rootfs/opt/casa/specialist_limits.py::AgentSpawnLimiter
     - casa/rootfs/opt/casa/specialist_limits.py::SpawnToken
+    - casa/rootfs/opt/casa/tools.py::_delete_own_delegated_transcript
   tests:
+    - tests/test_delegated_transcript_delete.py
     - tests/test_delegation_acl.py
     - tests/test_delegates_block_live_names.py
     - tests/test_agent_spawn_limiter.py
     - tests/test_agent_spawn_cap_registry.py
     - tests/test_agent_spawn_cap_tools.py
   related: [architecture/engagements.md, architecture/engagement-finalization.md, architecture/engagement-completion-gate.md, architecture/agent-taxonomy.md]
-  defines_invariants: [INV-ENG-004, INV-ENG-006, INV-ENG-007, INV-ENG-008]
+  defines_invariants: [INV-ENG-004, INV-ENG-006, INV-ENG-007, INV-ENG-008, INV-ENG-023]
   invariant_tests:
     INV-ENG-004: [tests/test_delegation_context_wrapper.py::test_child_origin_extends_parent_with_execution_role, tests/test_delegate_to_agent.py::test_delegate_to_agent_depth_cap, tests/test_agent_spawn_cap_tools.py::TestDepthRecordFallback::test_depth_gate_reads_bound_record_origin, tests/test_agent_spawn_cap_tools.py::TestInteractiveSpawn::test_interactive_operator_child_stamps_depth_without_marker]
     INV-ENG-006: [tests/test_delegation_acl.py::TestDelegationAliasResolution::test_undeclared_persona_name_still_denied, tests/test_delegation_acl.py::TestDelegationAliasResolution::test_ambiguous_persona_name_denied, tests/test_delegation_acl.py::TestDelegationAliasResolution::test_exact_role_id_wins_over_another_delegates_name, tests/test_voice_delegation_budget.py::TestConciergeVoiceHandoffPolicy::test_handoff_policy_applies_when_addressed_by_display_name]
     INV-ENG-007: [tests/test_delegates_block_live_names.py::test_per_role_reload_refreshes_a_live_agents_delegates_block, tests/test_delegates_block_live_names.py::TestRenderWithLiveNames::test_live_names_win_over_a_stale_construction_registry, tests/test_delegates_block_live_names.py::TestRenderWithLiveNames::test_live_names_decide_membership_not_the_stale_registry, tests/test_delegates_block_live_names.py::TestLiveAgentDirectory::test_none_when_the_role_map_is_empty, tests/test_delegation_context_wrapper.py::test_caller_name_follows_a_rename_without_a_full_restart, tests/test_reload_delegates_prompt_refresh.py::test_rename_drops_warm_clients_of_agents_that_declare_the_role, tests/test_reload_delegates_prompt_refresh.py::test_a_reload_that_changes_no_name_refreshes_nobody, tests/test_reload_delegates_prompt_refresh.py::test_refresh_is_scheduled_not_awaited_by_the_reload, tests/test_reload_delegates_prompt_refresh.py::test_policies_cascade_refreshes_the_role_map_it_changed]
     INV-ENG-008: [tests/test_agent_spawn_limiter.py::test_restore_exceeds_cap_as_debt_and_blocks_acquisition, tests/test_agent_spawn_cap_registry.py::test_load_restores_occupancy_for_live_marked_rows_as_debt, tests/test_agent_spawn_cap_registry.py::test_create_refuses_marked_record_without_reservation, tests/test_agent_spawn_cap_tools.py::TestEngageExecutorSpawnCap::test_agent_context_at_cap_refused_before_any_telegram_call, tests/test_agent_spawn_cap_tools.py::TestEngageExecutorSpawnCap::test_operator_marked_turn_takes_no_occupancy, tests/test_agent_spawn_cap_tools.py::TestEngageExecutorSpawnCap::test_post_acquire_failure_releases_reservation, tests/test_agent_spawn_cap_tools.py::TestInteractiveSpawn::test_interactive_child_stamps_depth_and_transfers_token]
+    INV-ENG-023: [tests/test_delegated_transcript_delete.py::test_runner_deletes_its_own_session_after_the_client_exits, tests/test_delegated_transcript_delete.py::test_overlapping_runners_each_delete_only_their_own_session, tests/test_delegated_transcript_delete.py::test_a_failing_delete_is_logged_and_never_changes_the_outcome, tests/test_cross_session_tools.py::test_one_shot_launches_persist_no_session]
