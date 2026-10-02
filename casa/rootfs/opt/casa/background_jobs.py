@@ -44,6 +44,17 @@ _JOB_MAX_STALLS: int = 3
 # in-process claim separate from durable records so two starts cannot pass
 # that window for the same installed plugin.
 _pending_plugin_job_starts: dict[str, tuple[str, str]] = {}
+# The same window keyed by the job's manifest name (INV-BGJOB-006), mapped to
+# the installed plugin holding the claim, so two installations sharing a
+# manifest name cannot both pass it either.
+_pending_manifest_job_starts: dict[str, str] = {}
+
+
+def job_manifest_name(qualified: Any) -> str:
+    """The manifest name a qualified job name carries: the text before its
+    first ``:``. Every job record has the qualified name in
+    ``origin["job"]["name"]``, whatever its host kind or its age."""
+    return qualified.split(":", 1)[0] if isinstance(qualified, str) else ""
 
 
 @dataclass(frozen=True)
@@ -61,6 +72,7 @@ class JobDecl:
     # "resume" continues one conversation across turns; "fresh" resets it
     # before every turn after the launch and re-states the brief (S1).
     session: str = "resume"
+    host: str | None = None        # "specialist" = never hosted by a resident
 
 
 @dataclass(frozen=True)
@@ -117,21 +129,47 @@ def running_job_for_plugin(registry: Any, plugin: str) -> Any | None:
     return None
 
 
+def running_job_for_manifest(registry: Any, manifest_name: str) -> Any | None:
+    """Return a live job record whose qualified job name carries
+    *manifest_name*, whichever plugin installation and host kind runs it."""
+    if not manifest_name:
+        return None
+    for rec in registry.active_and_idle():
+        job = (getattr(rec, "origin", None) or {}).get("job")
+        if isinstance(job, dict) and job_manifest_name(job.get("name")) == manifest_name:
+            return rec
+    return None
+
+
 def pending_plugin_job_start(plugin: str) -> tuple[str, str] | None:
     """The qualified job and title currently claiming *plugin*, if any."""
     return _pending_plugin_job_starts.get(plugin)
 
 
+def pending_manifest_job_start(manifest_name: str) -> tuple[str, str] | None:
+    """The qualified job and title currently claiming *manifest_name*, if any."""
+    holder = _pending_manifest_job_starts.get(manifest_name)
+    return _pending_plugin_job_starts.get(holder) if holder is not None else None
+
+
 def claim_plugin_job_start(plugin: str, job: str, title: str) -> bool:
-    """Synchronously claim an installed plugin's short pre-record window."""
-    if plugin in _pending_plugin_job_starts:
+    """Synchronously claim the short pre-record window of an installed plugin
+    AND of its job's manifest name; both or neither."""
+    manifest_name = job_manifest_name(job)
+    if (plugin in _pending_plugin_job_starts
+            or manifest_name in _pending_manifest_job_starts):
         return False
     _pending_plugin_job_starts[plugin] = (job, title)
+    _pending_manifest_job_starts[manifest_name] = plugin
     return True
 
 
 def release_plugin_job_start(plugin: str) -> None:
-    _pending_plugin_job_starts.pop(plugin, None)
+    claimed = _pending_plugin_job_starts.pop(plugin, None)
+    if claimed is not None:
+        manifest_name = job_manifest_name(claimed[0])
+        if _pending_manifest_job_starts.get(manifest_name) == plugin:
+            del _pending_manifest_job_starts[manifest_name]
 
 
 def _job_busy_refusal(plugin: str, job: str, title: str, rec: Any | None) -> dict:
@@ -147,19 +185,30 @@ def _job_busy_refusal(plugin: str, job: str, title: str, rec: Any | None) -> dic
 
 
 def claim_job_start(host: "JobHost", registry: Any) -> dict | None:
-    """One job per installed plugin (A4): refuse when one is live or starting,
-    else claim the pre-record window. The caller releases in a `finally`."""
+    """One job per installed plugin (A4) and one per plugin manifest name
+    (INV-BGJOB-006): refuse when one is live or starting, else claim the
+    pre-record window. The caller releases in a `finally`.
+
+    The manifest rule reads only ``origin["job"]["name"]``, which every job
+    record carries, so a record whose artifact rows cannot name its plugin (an
+    older record, or one whose declaring row was lost when the plugin was
+    unassigned mid-launch) still blocks. Its accepted cost: installations
+    sharing a manifest name run their jobs one after the other."""
     plugin = host_plugin_name(host)
-    running = (running_job_for_plugin(registry, plugin)
-               if registry is not None else None)
+    manifest_name = job_manifest_name(host.decl.qualified_name)
+    running = None
+    if registry is not None:
+        running = (running_job_for_plugin(registry, plugin)
+                   or running_job_for_manifest(registry, manifest_name))
     if running is not None:
         job = (getattr(running, "origin", None) or {}).get("job") or {}
         return _job_busy_refusal(
             plugin, job.get("name") or host.decl.qualified_name,
             job.get("title") or getattr(running, "task", "")[:80], running)
     if not claim_plugin_job_start(plugin, host.decl.qualified_name, host.decl.title):
-        pending = pending_plugin_job_start(plugin) or (
-            host.decl.qualified_name, host.decl.title)
+        pending = (pending_plugin_job_start(plugin)
+                   or pending_manifest_job_start(manifest_name)
+                   or (host.decl.qualified_name, host.decl.title))
         return _job_busy_refusal(plugin, pending[0], pending[1], None)
     return None
 
@@ -214,6 +263,7 @@ def jobs_for_target(scope: str) -> dict[str, tuple[JobDecl, Any]]:
                              else entry["batches"]),
                     turns_per_batch=entry.get("turnsPerBatch"),
                     session=entry.get("session", "resume"),
+                    host=entry.get("host"),
                 ), resolved)
         return jobs
     except Exception:
@@ -233,11 +283,15 @@ def startable_jobs(caller_role: str, delegate_roles: Iterable[str]) -> list[JobH
     """Every job a caller can start, with own plugins before delegates.
 
     A duplicate qualified name is hosted by the first scope that declares it.
+    A job declaring ``host: "specialist"`` is skipped in the caller's own
+    scope WITHOUT claiming its name, so the first delegate declaring it hosts it.
     """
     found: list[JobHost] = []
     names: set[str] = set()
 
     for name, (decl, plugin) in jobs_for_target(f"resident:{caller_role}").items():
+        if decl.host == "specialist":
+            continue
         names.add(name)
         found.append(JobHost("resident", caller_role, decl, plugin))
     for role in delegate_roles:

@@ -1108,11 +1108,15 @@ def manifest_callbacks(manifest: dict, plugin_name: str) -> list:
 _JOB_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
 _JOB_FIELDS = {
     "name", "skill", "title", "summary", "batches", "turnsPerBatch", "session",
+    "host",
 }
 # How a job's turns after its launch see the conversation: "resume" (the
 # default) continues one conversation, "fresh" resets it before every turn and
 # re-states the job brief (INV-BGJOB-005).
 _JOB_SESSIONS = ("resume", "fresh")
+# The only `host` a job may declare: it then runs on a specialist delegate and
+# is never offered to, or started on, a resident (S1b).
+_JOB_HOSTS = ("specialist",)
 
 
 def _jobs_invalid(entry: int | None, field: str) -> StoreError:
@@ -1170,6 +1174,9 @@ def manifest_jobs(manifest: dict) -> list[dict]:
             raise _jobs_invalid(index, "turnsPerBatch")
         if "session" in job and job["session"] not in _JOB_SESSIONS:
             raise _jobs_invalid(index, "session")
+        if "host" in job and not (isinstance(job["host"], str)
+                                  and job["host"] in _JOB_HOSTS):
+            raise _jobs_invalid(index, "host")
         out.append(dict(job))
     return out
 

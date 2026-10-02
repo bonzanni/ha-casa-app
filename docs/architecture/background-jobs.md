@@ -19,9 +19,10 @@ slot is in [`delegation.md`](delegation.md).
 
 A job belongs to the plugin that declares it, not to a specialist. A plugin's manifest lists
 jobs under `casa.jobs`, each naming one of its skills, a title, a batch cap (`unlimited` or
-a positive integer) and an optional per-batch turn limit. Any specialist whose resolved
-plugin set includes that plugin can host the job; the qualified job name is
-`<plugin manifest name>:<job name>`.
+a positive integer), an optional per-batch turn limit and an optional `host`. Any specialist
+whose resolved plugin set includes that plugin can host the job, and so can a resident the
+plugin is installed on unless the job declares `"host": "specialist"`; the qualified job
+name is `<plugin manifest name>:<job name>`.
 
 The assistant sees the jobs its delegates can host in a `<jobs>` block and starts one with
 `start_job(job, task, context)`. The job runs as an ordinary interactive engagement of the
@@ -147,6 +148,30 @@ result contract applies unchanged: a tool whose result declares an operator link
 that link delivered by Casa into the operator's chat. Casa delivers it, as it posts the
 approval challenge — the worker itself holds no tool that reaches outside its topic.
 
+**INV-BGJOB-006**: At most one job per plugin manifest name is live or starting, whichever host kind runs it and whatever the record's shape: `start_job` refuses with `job_busy` while a live job record's qualified job name carries the requested job's manifest name, or while another start of that manifest name is inside its pre-record window.
+
+`background_jobs.claim_job_start` keeps the older per-installed-plugin check and adds this
+one, which reads only `origin["job"]["name"]` — the text before its first `:` — because every
+job record carries it, old and new. Artifact rows cannot always name a record's plugin: a
+record written before `manifest_name` was recorded has no such key, and a plugin unassigned
+from its host while the launch awaited topic creation leaves no declaring row at all, and
+an older record holding only an incidental row looks like another plugin's. Each inference
+from those rows left some record invisible, and a second job beside it.
+The in-process claim that covers the window before a record exists is keyed by the
+installed plugin AND by the manifest name, so concurrent starts of any two jobs of one
+plugin are serialised. A specialist-hosted job also records the selected plugin's registry
+name as `origin["plugin_job"] = {"plugin": <name>}`, taken from the host `find_job_host`
+chose before the launch awaits anything, with no `model` key: the record stays a
+`kind="specialist"` engagement, and the resident worker's builder and resume keep keying on
+`kind="plugin"`.
+
+The accepted trade-off: distinct installations of one plugin — the same manifest name under
+different registry names — never run jobs at the same time; they run one after the other.
+A plugin's jobs also run one at a time across all its job names. What it does not cover: a
+record leaves `active_and_idle()` the moment its terminal transition begins, before that
+transition has persisted, so a start admitted in that window runs beside it if the
+transition then rolls back.
+
 **INV-BGJOB-002**: A job fails through the engagement finalize funnel, with the reason and its last reported progress, when three consecutive batches report no progress or end without reporting, when a batch would exceed its declared batch cap, when a batch's delivery raises, or when a batch is cut off before finishing.
 
 A batch makes progress when its LAST `report_job_progress` of that batch said so: a batch
@@ -164,7 +189,8 @@ text the topic and the resident receive, so `/cancel` also reports what the job 
 The declaration is strict: `plugin_store.manifest_jobs` refuses a non-list, an unknown
 entry field, a bad or duplicate name, an empty skill, an over-long or multi-line title or
 summary, a `batches` or `turnsPerBatch` that is not a positive integer (a boolean is not
-one), and a `session` other than `resume` or `fresh`, with `jobs_invalid`; install validation also refuses a job whose
+one), a `session` other than `resume` or `fresh`, and a `host` other than the string
+`"specialist"`, with `jobs_invalid`; install validation also refuses a job whose
 `skills/<skill>/SKILL.md` is missing. An already stored artifact failing the same checks is
 excluded from resolution with that reason.
 
@@ -173,7 +199,10 @@ The `<jobs>` block is rendered only for a resident whose allowed tools include `
 available delegates in declared order, one line per job: qualified name, title, summary (or
 title) and the host's display name, marked as a plugin job where the resident itself hosts
 it. A job two hosts can run is listed once, under the first; `start_job` resolves it the
-same way.
+same way. A job declaring `"host": "specialist"` is skipped in the resident's own scope
+without claiming its name, so it is listed under, and started on, the first delegate whose
+plugins declare it; when no delegate does, it is not startable and `start_job` returns
+`job_not_declared`.
 A job declared by a plugin installed mid-conversation does not appear in a conversation
 already open: a session's system prompt is fixed when the session is created. The resume
 gate is what resolves it — the conversation's structural surface no longer matches what it
@@ -279,6 +308,7 @@ belong in the launch and resume builders; both kinds share the batch loop and la
 - `tests/test_plugin_job_launch.py`
 - `tests/test_background_jobs_loop.py`
 - `tests/test_job_fresh_conversation.py`
+- `tests/test_specialist_job_host.py`
 
 **Related**
 - [`architecture/engagements.md`](../architecture/engagements.md)
