@@ -239,8 +239,9 @@ async def _handle(agent, notice, factory, monkeypatch):
         seen.synth.append(out)
         return out
 
-    async def _process(msg, on_token=None, turn_report=None):
-        text = await real_process(msg, on_token=on_token, turn_report=turn_report)
+    async def _process(msg, on_token=None, turn_report=None, **kwargs):
+        text = await real_process(msg, on_token=on_token,
+                                  turn_report=turn_report, **kwargs)
         seen.process.append((text, list((turn_report or {}).get("retries", []))))
         seen.ack_count_at_return.append(counted.count)
         return text

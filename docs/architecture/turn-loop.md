@@ -48,6 +48,14 @@ read-evidence matchers join every resident's hook bundle. What the scope does wi
 is [`output-boundary.md`](output-boundary.md) (INV-OUT-006 for the three decisions that
 used to be inline checks here and in `send_message`).
 
+**The origin snapshot records the turn's question, which is usually its text.** The prompt,
+the options and the recall query are built from the message's own text. The origin's
+`user_text` normally holds that same text, and it is what a delegation launched from the turn
+records and quotes back. The one exception is a turn `handle_message` synthesized from a
+delegation completion. For that turn it passes `_process` the completion's own question as the
+keyword-only `origin_question`, and the origin records that instead of the notice (INV-JOB-017
+in [`delegation-announcements.md`](delegation-announcements.md)). No other caller passes it.
+
 ## Contracts & invariants
 
 **INV-TURN-004**: A memory read that raises does not fail the turn. It is logged and the turn proceeds with an empty memory block.
