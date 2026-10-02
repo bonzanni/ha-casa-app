@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.335.1] - 2026-10-02
+
+### Fixed
+
+- When an agent delegated a task again while reporting a delegation that had
+  finished in the background, the new delegation recorded that whole report as
+  "the original user question". When it finished, its report quoted the earlier
+  report in full, result included, so in a chain of delegations every report
+  carried all the ones before it, and each hop cost more than the last. Now a
+  delegation started while reporting a finished one records the question the
+  finished one carried. Each report in the chain quotes the question that
+  started it, once, instead of nesting the earlier reports. The first report in
+  a chain is unchanged, and so is any turn that is not reporting a finished
+  delegation. Interactive engagements and voice background jobs are not part
+  of this change.
+- Delegations saved before this update keep the request they stored. A report
+  replayed from one of them after a restart still quotes it, and a delegation
+  started while reporting it carries that stored text on, without adding to it.
+
 ## [0.335.0] - 2026-10-01
 
 ### Added
