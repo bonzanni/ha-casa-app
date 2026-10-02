@@ -48,6 +48,46 @@ def _assert_locked(opts) -> None:
     assert json.loads(opts.settings).get("crossSessionInbound") == "refuse"
 
 
+def _argv(opts) -> list[str]:
+    """The argv the pinned SDK transport hands the CLI for *opts*."""
+    from claude_agent_sdk._internal.transport.subprocess_cli import (
+        SubprocessCLITransport,
+    )
+    return SubprocessCLITransport(prompt="x", options=opts)._build_command()
+
+
+def _assert_loads_no_settings_source(opts) -> None:
+    """#1181: a utility one-shot loads no settings source at all and passes no
+    ``cleanupPeriodDays``. The pinned CLI runs its own age sweep over the
+    whole projects root only when user settings are loaded or a loaded source
+    sets ``cleanupPeriodDays`` — and that sweep would delete a resident
+    transcript INV-MEM-017 holds. A project source is no better: its file
+    could carry the key."""
+    assert opts.setting_sources == [], opts.setting_sources
+    assert sum(k == "cleanupPeriodDays" for k in json.loads(opts.settings)) == 0
+    argv = _argv(opts)
+    assert [a for a in argv if a.startswith("--setting-sources=")] == [
+        "--setting-sources="]
+    assert argv.count("--settings") == 1
+    flag = json.loads(argv[argv.index("--settings") + 1])
+    assert sum(k == "cleanupPeriodDays" for k in flag) == 0
+
+
+def _assert_no_user_source(opts) -> None:
+    """INV-MEM-021 on the project-sourced launches: their sources are pinned,
+    never the user source, and their ``--settings`` flag carries no
+    ``cleanupPeriodDays``."""
+    assert opts.setting_sources is not None
+    assert "user" not in opts.setting_sources
+    assert sum(k == "cleanupPeriodDays" for k in json.loads(opts.settings)) == 0
+
+
+def _assert_persists_no_session(opts) -> None:
+    """#1168: a utility one-shot is never resumed and nothing names its
+    session afterwards, so it must not write a transcript at all."""
+    assert _argv(opts).count("--no-session-persistence") == 1
+
+
 def test_shared_constants_name_the_three_tools_and_refuse():
     from claude_runtime import (
         CROSS_SESSION_INBOUND,
@@ -99,6 +139,7 @@ async def test_resident_options(tmp_path, monkeypatch):
             channel=channel, channel_key=f"{channel}-k", is_fresh=True,
             resume_sid=None, user_text="hello")
         _assert_locked(opts)
+        _assert_no_user_source(opts)
 
 
 @pytest.mark.parametrize("delivers_to_operator", [False, True])
@@ -110,6 +151,7 @@ def test_restricted_webhook_options(delivers_to_operator):
         agent_home="/tmp", resume_sid=None,
         delivers_to_operator=delivers_to_operator)
     _assert_locked(opts)
+    _assert_no_user_source(opts)
     # The restricted runtime's own settings survive the merge.
     assert json.loads(opts.settings)["disableAllHooks"] is True
 
@@ -138,11 +180,18 @@ def test_specialist_and_executor_options(monkeypatch):
     import tools as tools_mod
 
     monkeypatch.setattr(tools_mod, "_mcp_registry", None)
-    _assert_locked(tools_mod._build_specialist_options(
-        _specialist_cfg(), resolution=ResolutionResult(registry_valid=True)))
-    _assert_locked(tools_mod._build_executor_options(
-        _executor_defn(), executor_type="configurator",
-        resolution=ResolutionResult(registry_valid=True)))
+    for opts in (
+        tools_mod._build_specialist_options(
+            _specialist_cfg(), resolution=ResolutionResult(registry_valid=True)),
+        tools_mod._build_executor_options(
+            _executor_defn(), executor_type="configurator",
+            resolution=ResolutionResult(registry_valid=True)),
+    ):
+        _assert_locked(opts)
+        _assert_no_user_source(opts)
+        # The per-delegation session id is chosen by the delegation runner,
+        # never here: in_casa engagements launch and resume through these.
+        assert opts.session_id is None
 
 
 @pytest.mark.parametrize("kind", ["specialist", "executor"])
@@ -167,7 +216,9 @@ def test_engagement_resume_options(monkeypatch, kind):
     opts = tools_mod.build_engagement_resume_options(
         SimpleNamespace(kind=kind, role_or_type=role), "sess-1")
     assert opts.resume == "sess-1"
+    assert opts.session_id is None
     _assert_locked(opts)
+    _assert_no_user_source(opts)
 
 
 class _CapturingClient:
@@ -190,23 +241,28 @@ class _CapturingClient:
             yield None
 
 
-async def test_query_engager_synthesis_options(monkeypatch):
+async def _synthesis_launches(monkeypatch) -> list:
     import tools
 
-    _CapturingClient.captured = {}
-    monkeypatch.setattr(tools, "ClaudeSDKClient", _CapturingClient)
+    launches = []
+
+    class Client(_CapturingClient):
+        def __init__(self, options):
+            launches.append(options)
+
+    monkeypatch.setattr(tools, "ClaudeSDKClient", Client)
     monkeypatch.setattr(tools.sdk_logging, "with_stderr_callback",
                         lambda options, engagement_id=None: options)
     await tools._synthesize_answer("q?", "ctx", max_tokens=50)
-    _assert_locked(_CapturingClient.captured["options"])
+    return launches
 
 
-async def test_observer_decider_options(monkeypatch):
+async def _observer_launches(monkeypatch) -> list:
     import claude_agent_sdk
     import sdk_logging
     from observer import Observer
 
-    captured = {}
+    launches = []
     fake = types.ModuleType("claude_agent_sdk")
     fake.ClaudeAgentOptions = claude_agent_sdk.ClaudeAgentOptions
     fake.TextBlock = claude_agent_sdk.TextBlock
@@ -214,7 +270,7 @@ async def test_observer_decider_options(monkeypatch):
 
     class Client(_CapturingClient):
         def __init__(self, options):
-            captured["options"] = options
+            launches.append(options)
 
     fake.ClaudeSDKClient = Client
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake)
@@ -224,27 +280,67 @@ async def test_observer_decider_options(monkeypatch):
                    model_name="haiku")
     await obs._decide_interjection(
         "warn", {}, MagicMock(id="e-1", task="t", role_or_type="x"))
-    _assert_locked(captured["options"])
+    return launches
 
 
-async def test_tier_classifier_options(monkeypatch):
+async def _classifier_launches(monkeypatch) -> list:
     import claude_agent_sdk
     import tier_classifier
 
-    captured = {}
+    launches = []
     fake = types.ModuleType("claude_agent_sdk")
     fake.ClaudeAgentOptions = claude_agent_sdk.ClaudeAgentOptions
     fake.AssistantMessage = claude_agent_sdk.AssistantMessage
 
     async def query(*, prompt, options):
-        captured["options"] = options
+        launches.append(options)
         if False:
             yield None
 
     fake.query = query
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake)
     await tier_classifier.classify_tier("some fact")
-    _assert_locked(captured["options"])
+    return launches
+
+
+# Every launch each one-shot makes for one call: the classifier re-asks an
+# empty reply once (#508), so it launches twice and both launches count.
+_ONE_SHOTS = {
+    "synthesis": (_synthesis_launches, 1),
+    "observer": (_observer_launches, 1),
+    "classifier": (_classifier_launches, 2),
+}
+
+
+async def test_query_engager_synthesis_options(monkeypatch):
+    launches = await _synthesis_launches(monkeypatch)
+    assert len(launches) == 1
+    _assert_locked(launches[0])
+    _assert_loads_no_settings_source(launches[0])
+
+
+async def test_observer_decider_options(monkeypatch):
+    launches = await _observer_launches(monkeypatch)
+    assert len(launches) == 1
+    _assert_locked(launches[0])
+    _assert_loads_no_settings_source(launches[0])
+
+
+async def test_tier_classifier_options(monkeypatch):
+    launches = await _classifier_launches(monkeypatch)
+    assert len(launches) == 2
+    for opts in launches:
+        _assert_locked(opts)
+        _assert_loads_no_settings_source(opts)
+
+
+@pytest.mark.parametrize("one_shot", sorted(_ONE_SHOTS))
+async def test_one_shot_launches_persist_no_session(monkeypatch, one_shot):
+    capture, expected = _ONE_SHOTS[one_shot]
+    launches = await capture(monkeypatch)
+    assert len(launches) == expected
+    for opts in launches:
+        _assert_persists_no_session(opts)
 
 
 def test_claude_code_driver_settings(tmp_path):
