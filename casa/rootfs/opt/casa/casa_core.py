@@ -275,23 +275,15 @@ async def healthz(_request: web.Request) -> web.Response:
 def _regenerate_cc_settings(defn) -> dict:
     """Task 6 (#360): rebuild the CC ``.claude/settings.json`` shape from
     ``defn.hooks_document`` (the Task 3 load-time-validated snapshot) —
-    the exact assembly ``drivers.workspace.render_workspace_template`` uses
-    for provisioning (``translate_hooks_to_settings`` + ``_build_cc_permissions``),
-    reused verbatim here so boot replay and provisioning can never drift.
-    Raises whatever the two emitters raise; the caller is responsible for
-    fail-closed handling (a snapshot that cannot yield a settings document
-    at all is refused, not silently skipped)."""
-    from drivers.hook_bridge import translate_hooks_to_settings
-    from drivers.workspace import _build_cc_permissions
+    the one constructor provisioning uses
+    (``drivers.workspace.build_cc_settings``: hooks, permissions and the
+    cross-session inbound refusal), so boot replay and provisioning can never
+    drift. Raises whatever the constructor raises; the caller is responsible
+    for fail-closed handling (a snapshot that cannot yield a settings
+    document at all is refused, not silently skipped)."""
+    from drivers.workspace import build_cc_settings
 
-    hooks_block = translate_hooks_to_settings(
-        getattr(defn, "hooks_document", None) or {},
-        proxy_script_path="/opt/casa/scripts/hook_proxy.sh",
-    )
-    return {
-        "hooks": hooks_block.get("hooks", {}),
-        "permissions": _build_cc_permissions(defn),
-    }
+    return build_cc_settings(defn, getattr(defn, "hooks_document", None) or {})
 
 
 def _cc_settings_missing_floor(settings: dict) -> bool:

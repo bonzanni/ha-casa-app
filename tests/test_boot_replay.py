@@ -1396,6 +1396,51 @@ async def test_task_only_record_settings_floor_regenerated_on_heal(
     assert start_ids == ["keep1"]
 
 
+async def test_replay_restores_cross_session_refusal_and_denials(
+    monkeypatch, tmp_path,
+):
+    """INV-MCP-013: a workspace whose settings.json carries the containment
+    floor but neither the cross-session refusal nor the three tool denials
+    (as written before they existed, or edited away) is rewritten by boot
+    replay with both, and the service is (re)started on the rewritten file —
+    replay's regeneration never emits a document without them."""
+    from casa_core import _regenerate_cc_settings, replay_undergoing_engagements
+    from drivers import s6_rc
+
+    svc_root = tmp_path / "svc"; svc_root.mkdir()   # no pair — heal path
+    monkeypatch.setattr(s6_rc, "ENGAGEMENT_SOURCES_ROOT", str(svc_root))
+    monkeypatch.setattr(s6_rc, "write_service_dir", lambda **kw: None)
+    monkeypatch.setattr(s6_rc, "_compile_and_update_locked", AsyncMock())
+    start_ids: list[str] = []
+    async def fake_start(*, engagement_id): start_ids.append(engagement_id)
+    monkeypatch.setattr(s6_rc, "start_service", fake_start)
+
+    rec = _rec("keep1")
+    reg = await _make_registry([rec])
+    driver = _boot_driver(); driver._spawn_background_tasks = lambda r: None
+
+    ws_root = tmp_path / "eng"; ws_dir = ws_root / "keep1"
+    ws_dir.mkdir(parents=True)
+    _seed_current_credential(ws_dir, rec)   # isolate the settings trigger
+    exec_reg = _exec_reg()
+    stale = _regenerate_cc_settings(exec_reg.get("hello-driver"))
+    stale.pop("crossSessionInbound")
+    names = {"SendMessage", "ListAgents", "PushNotification"}
+    stale["permissions"]["deny"] = [
+        t for t in stale["permissions"]["deny"] if t not in names]
+    claude_dir = ws_dir / ".claude"; claude_dir.mkdir()
+    (claude_dir / "settings.json").write_text(json.dumps(stale))
+
+    await replay_undergoing_engagements(
+        registry=reg, driver=driver, executor_registry=exec_reg,
+        engagements_root=str(ws_root))
+
+    settings = json.loads((claude_dir / "settings.json").read_text())
+    assert settings["crossSessionInbound"] == "refuse"
+    assert names <= set(settings["permissions"]["deny"])
+    assert start_ids == ["keep1"]
+
+
 async def test_fast_path_settings_diff_drives_confirmed_cycle(
     monkeypatch, tmp_path,
 ):

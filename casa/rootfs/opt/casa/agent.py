@@ -6,7 +6,6 @@ import asyncio
 import contextlib
 import dataclasses
 import hashlib
-import json
 import logging
 import math
 import time
@@ -39,7 +38,12 @@ from plugin_grants import (
 
 from bus import BusMessage, MessageBus, MessageType
 from channels import ChannelManager, DeliveryOutcome
-from claude_runtime import CLAUDE_CLI_PATH, SDK_MAX_BUFFER_SIZE
+from claude_runtime import (
+    CLAUDE_CLI_PATH,
+    SDK_MAX_BUFFER_SIZE,
+    cli_session_settings,
+    with_cross_session_tools_denied,
+)
 from config import AgentConfig
 from specialist_registry import DelegationComplete
 from hooks import read_evidence_matchers, resolve_hooks
@@ -988,7 +992,7 @@ def build_restricted_webhook_options(
     """
     from tools import create_casa_tools
     allowed = tuple(_RESTRICTED_WEBHOOK_TOOLS)
-    disallowed = list(_RESTRICTED_DISALLOWED_TOOLS)
+    disallowed = with_cross_session_tools_denied(_RESTRICTED_DISALLOWED_TOOLS)
     if delivers_to_operator:
         allowed = tuple(t for t in allowed if t != _RESTRICTED_SEND_TOOL)
         disallowed.append(_RESTRICTED_SEND_TOOL)
@@ -1011,7 +1015,7 @@ def build_restricted_webhook_options(
         tools=[],
         strict_mcp_config=True,
         plugins=[],
-        settings=json.dumps({"disableAllHooks": True}),
+        settings=cli_session_settings({"disableAllHooks": True}),
         can_use_tool=make_fail_closed_can_use_tool(role),
         include_partial_messages=False,
     )
@@ -3289,7 +3293,11 @@ class Agent:
             max_buffer_size=SDK_MAX_BUFFER_SIZE,
             system_prompt=system_prompt,
             allowed_tools=allowed_tools,
-            disallowed_tools=self.config.tools.disallowed,
+            # Code-mandatory, whatever runtime.yaml says: the CLI's
+            # cross-session tools (claude_runtime.CROSS_SESSION_TOOLS).
+            disallowed_tools=with_cross_session_tools_denied(
+                self.config.tools.disallowed),
+            settings=cli_session_settings(),
             permission_mode=self.config.tools.permission_mode or "acceptEdits",
             max_turns=self.config.tools.max_turns,
             mcp_servers=mcp_servers if mcp_servers else {},

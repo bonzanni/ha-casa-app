@@ -14,6 +14,7 @@ from pathlib import Path
 import yaml
 
 from atomic_io import atomic_write_json
+from claude_runtime import CROSS_SESSION_INBOUND, with_cross_session_tools_denied
 from drivers.hook_bridge import translate_hooks_to_settings
 from engagement_uids import (
     UID_BASE, UNALLOCATED_UID, ensure_identity, owner_uid_or_none,
@@ -185,11 +186,33 @@ def _build_cc_permissions(defn) -> dict:
     for t in ("Agent", "Task"):  # Q-1 set (_SUBAGENT_SPAWN_TOOLS)
         if t not in deny:
             deny.append(t)
+    # The CLI's cross-session tools (claude_runtime.CROSS_SESSION_TOOLS).
+    deny = with_cross_session_tools_denied(deny)
     if ("Bash" not in deny
             and not any(a == "Bash" or a.startswith("Bash(") for a in allow)):
         deny.append("Bash")
     return {"allow": allow, "deny": deny,
             "defaultMode": defn.permission_mode or "acceptEdits"}
+
+
+def build_cc_settings(defn, hooks_yaml_data: dict) -> dict:
+    """The ONE constructor of a ``claude_code`` engagement's
+    ``.claude/settings.json`` document: translated hooks, the permissions
+    block (``_build_cc_permissions``, which carries the cross-session tool
+    denials) and ``crossSessionInbound: "refuse"``. Provisioning (both the
+    template and the legacy path) and boot replay's regeneration all call it,
+    so no writer can emit a document without the refusal."""
+    hooks_block = translate_hooks_to_settings(
+        hooks_yaml_data or {},
+        proxy_script_path="/opt/casa/scripts/hook_proxy.sh",
+    )
+    return {
+        "hooks": hooks_block.get("hooks", {}),
+        "permissions": _build_cc_permissions(defn),
+        # Refuse messages from other CLI sessions on this machine; a project
+        # ``refuse`` is the strictest value, so no other source relaxes it.
+        "crossSessionInbound": CROSS_SESSION_INBOUND,
+    }
 
 
 class WorkspaceConfigError(ValueError):
@@ -660,11 +683,9 @@ async def provision_workspace(
 
         # .claude/settings.json with translated hooks (legacy path).
         (ws / ".claude").mkdir(exist_ok=True)
-        settings = translate_hooks_to_settings(
-            hooks_yaml_data, proxy_script_path="/opt/casa/scripts/hook_proxy.sh",
-        )
-        # L-1 (v0.34.2): merge permissions block from defn alongside hooks.
-        settings["permissions"] = _build_cc_permissions(defn)
+        # L-1 (v0.34.2): hooks + permissions (+ the inbound refusal), from
+        # the one constructor every settings writer uses.
+        settings = build_cc_settings(defn, hooks_yaml_data)
         (ws / ".claude" / "settings.json").write_text(
             json.dumps(settings, indent=2), encoding="utf-8",
         )
@@ -1242,13 +1263,7 @@ def render_workspace_template(
     claude_dir = dest / ".claude"
     claude_dir.mkdir(parents=True, exist_ok=True)
     settings_path = claude_dir / "settings.json"
-    hooks_block = translate_hooks_to_settings(
-        hooks_yaml_data, proxy_script_path="/opt/casa/scripts/hook_proxy.sh",
-    )
-    settings = {
-        "hooks": hooks_block.get("hooks", {}),
-        "permissions": _build_cc_permissions(defn),
-    }
+    settings = build_cc_settings(defn, hooks_yaml_data)
     settings_path.write_text(
         json.dumps(settings, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
