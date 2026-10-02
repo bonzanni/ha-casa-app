@@ -22,6 +22,16 @@ is derived from the fetched manifest** — you never pass it.
   `tag_version_mismatch` means the tag doesn't match the remote
   `plugin.json.version` — also a producer error; surface it.
 
+## Profiles
+
+If a target holds one of the plugin's access profiles, the update refuses with
+`profile_missing` (naming the target and the profile) when the new manifest no
+longer declares that profile name — nothing is installed or repointed. Tell
+the operator the only routes: pick a release that declares it, or unassign
+and reassign. A profile that stays declared applies its NEW tool list — the
+result's `profile_tools`, per target — to that target's sessions built from
+now on; a running session keeps the tools it was built with. State both.
+
 ## Do it
 
 1. Confirm the plugin is registered: `plugin_list()` (or

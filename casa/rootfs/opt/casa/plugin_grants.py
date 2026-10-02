@@ -358,12 +358,184 @@ def plugin_tool_names(rp, tool: str) -> tuple:
     """The full runtime names of a resolved plugin's bare *tool* — one per MCP
     server it declares, namespaced exactly like :func:`protected_map` (#1046:
     the eraser a Casa-dispatched erase turn calls). Empty when the plugin
-    declares no MCP server."""
+    declares no MCP server. The expansion itself is
+    ``plugin_store.expand_tool_names`` — the same one the install-time
+    profile validator uses (S8)."""
+    from plugin_store import expand_tool_names
     servers = sorted(_mcp_servers(Path(rp.path) / ".mcp.json"))
-    plugin_seg = sanitize_segment(runtime_name(rp))
-    tool_seg = sanitize_segment(tool)
-    return tuple(f"mcp__plugin_{plugin_seg}_{sanitize_segment(s)}__{tool_seg}"
-                 for s in servers)
+    return tuple(expand_tool_names(runtime_name(rp), servers, tool))
+
+
+# ---------------------------------------------------------------------------
+# S8 plugin access profiles: the plan an options build enforces
+# ---------------------------------------------------------------------------
+# Two questions, two sources. WHICH BYTES load is the loaded artifact's
+# business (the ResolvedPlugin in the build's resolution — a recorded artifact
+# on resume, the current one otherwise): its servers give the guarded
+# namespaces and the expansion. WHAT IS ALLOWED is the LIVE registry's
+# business, read here at build time: the entry's ``profiles`` map names the
+# profile for this build's target, and the live artifact's manifest gives
+# that profile's bare tool list. Nothing is read from a captured resolution
+# or an engagement record except the fallback row (no live assignment).
+#
+# Enforcement is deny-unless-allowed inside each guarded namespace
+# (hooks.profile_guard_matcher); the allow/deny lists only decide visibility
+# (apply_profile_plan). An undeclared, mis-declared or renamed tool and any
+# config-level allow are denied by the barrier before permission rules run.
+
+
+@dataclasses.dataclass(frozen=True)
+class ProfiledPlugin:
+    name: str
+    profile: str
+    # ``mcp__plugin_<p>_<s>__`` for every server of the LOADED artifact.
+    prefixes: tuple
+    # The profile's bare tools expanded over the LOADED artifact's servers.
+    allowed_names: frozenset
+    # provides_tools(loaded) under the prefixes, minus allowed_names —
+    # visibility only (the CLI deny list), never the enforcement boundary.
+    declared_excluded: frozenset
+
+    @property
+    def server_grants(self) -> tuple:
+        return tuple(p[:-2] for p in self.prefixes)
+
+
+@dataclasses.dataclass(frozen=True)
+class ProfilePlan:
+    entries: tuple = ()
+    # Every plugin the build LOADED (profiled or not). A plugin withheld from
+    # the build (an unresolved secret) is absent here, so its recorded
+    # profile is left alone rather than erased as "loaded unprofiled".
+    loaded: tuple = ()
+
+    @property
+    def empty(self) -> bool:
+        return not self.entries
+
+    def effective_profiles(self) -> dict:
+        """``{plugin name: profile | None}`` for every plugin this build
+        loaded — what an engagement record persists, so a later resume's
+        fallback row is the profile the build actually applied (``None`` =
+        loaded with full access), never the one captured before a launch
+        await and never a value for a plugin this build did not load."""
+        by_name = {e.name: e.profile for e in self.entries}
+        return {name: by_name.get(name) for name in self.loaded}
+
+
+def _live_profile_for(name: str, target: str) -> "tuple[bool, str | None, dict | None]":
+    """``(assigned, profile, live_manifest)`` for *name* at *target* from the
+    published snapshot: assigned=False when no live entry assigns the plugin
+    to this target; profile=None when it does but without a profile; the live
+    artifact's manifest (``{}`` when unreadable) when a profile is named."""
+    import plugin_registry
+    snap = plugin_registry.published_snapshot()
+    if snap is None:
+        return False, None, None
+    for e in snap.registry.entries:
+        if not isinstance(e, dict) or e.get("name") != name:
+            continue
+        if target not in (e.get("targets") or []):
+            return False, None, None
+        profiles = e.get("profiles")
+        profile = profiles.get(target) if isinstance(profiles, dict) else None
+        if profile is None:
+            return True, None, None
+        path = (snap.store_root / name
+                / str(e.get("artifact_id")) / ".claude-plugin" / "plugin.json")
+        try:
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            manifest = {}
+        return True, profile, manifest if isinstance(manifest, dict) else {}
+    return False, None, None
+
+
+def _bare_profile_tools(manifest: dict | None, profile: str) -> "list[str] | None":
+    """The bare tool list of *profile* in *manifest*, or None when the
+    manifest declares no such profile (⇒ the namespace is fully denied)."""
+    casa = (manifest or {}).get("casa")
+    profiles = casa.get("profiles") if isinstance(casa, dict) else None
+    tools = profiles.get(profile) if isinstance(profiles, dict) else None
+    if not isinstance(tools, list):
+        return None
+    return [t for t in tools if isinstance(t, str) and t]
+
+
+def profile_plan(resolution, *, target: str) -> ProfilePlan:
+    """The plan for a build of *target* over *resolution*'s LOADED artifacts.
+
+    Per plugin: live entry assigned to *target* with profile P ⇒ P's bare
+    list from the live manifest (absent ⇒ no allowed names); assigned without
+    a profile ⇒ no plan entry (full, as today); not assigned live ⇒ fallback
+    to the plugin's prior binding (``ResolvedPlugin.profile``: the recorded
+    effective profile on a resume, the captured one on a fresh launch) —
+    None ⇒ full as today, set ⇒ no allowed names. Never raises: an
+    unreadable live manifest reads as "profile absent", which denies."""
+    from plugin_store import expand_tool_names
+    entries = []
+    plugins = getattr(resolution, "plugins", None) or []
+    loaded = tuple(rp.name for rp in plugins)
+    if not plugins:
+        return ProfilePlan()
+    for rp in plugins:
+        assigned, live_profile, live_manifest = _live_profile_for(rp.name, target)
+        if assigned:
+            if live_profile is None:
+                continue
+            profile = live_profile
+            bare = _bare_profile_tools(live_manifest, profile)
+        else:
+            prior = getattr(rp, "profile", None)
+            if prior is None:
+                continue
+            profile, bare = prior, None
+        servers = sorted(_mcp_servers(Path(rp.path) / ".mcp.json"))
+        rname = runtime_name(rp)
+        prefixes = tuple(f"mcp__plugin_{sanitize_segment(rname)}_"
+                         f"{sanitize_segment(s)}__" for s in servers)
+        allowed: set = set()
+        for t in bare or []:
+            allowed.update(expand_tool_names(rname, servers, t))
+        manifest = getattr(rp, "manifest", None)
+        casa = manifest.get("casa") if isinstance(manifest, dict) else None
+        provided = casa.get("provides_tools") if isinstance(casa, dict) else None
+        declared = {t for t in (provided if isinstance(provided, list) else [])
+                    if isinstance(t, str) and t.startswith(prefixes)}
+        entries.append(ProfiledPlugin(
+            name=rp.name, profile=profile, prefixes=prefixes,
+            allowed_names=frozenset(allowed),
+            declared_excluded=frozenset(declared - allowed)))
+    return ProfilePlan(entries=tuple(entries), loaded=loaded)
+
+
+def apply_profile_plan(allowed_tools, disallowed_tools, plan: ProfilePlan):
+    """List hygiene for a profiled build — VISIBILITY, never enforcement.
+
+    Per profiled plugin and only within its prefixes: drop every allow that
+    is one of its server grants, a ``<prefix>*`` glob, or a tool-level name
+    under a prefix unless it is in ``allowed_names``; add ``allowed_names``
+    as tool-level allows; add ``declared_excluded`` to the deny list so,
+    where a CLI deny beats an allow, the declared excluded tools leave the
+    model's context. An empty plan returns the inputs unchanged (new lists,
+    same contents). Never mutates its inputs."""
+    allowed = list(allowed_tools)
+    disallowed = list(disallowed_tools)
+    for p in plan.entries:
+        grants = set(p.server_grants)
+
+        def _covered(t: str) -> bool:
+            return (t in grants
+                    or any(t == pre + "*" or t.startswith(pre) for pre in p.prefixes))
+
+        allowed = [t for t in allowed if not _covered(t) or t in p.allowed_names]
+        for t in sorted(p.allowed_names):
+            if t not in allowed:
+                allowed.append(t)
+        for t in sorted(p.declared_excluded):
+            if t not in disallowed:
+                disallowed.append(t)
+    return allowed, disallowed
 
 
 def protected_map(resolution) -> dict[str, dict]:

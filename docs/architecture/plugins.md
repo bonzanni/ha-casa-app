@@ -53,6 +53,13 @@ checksum until an explicit verification, the next snapshot reload — or an inte
 specialist resume, which deep-validates its recorded artifacts automatically. Executor
 resume checks only that the recorded directories still exist.
 
+**An assignment may hold a profile.** Beside `targets`, an entry may carry a sibling
+`profiles` map naming, per target, one of the plugin's manifest-declared tool subsets; a
+session built for that target then permits exactly those tools inside the plugin's
+namespaces, and an entry without the key is full access as before. The map, its validation,
+the plan and the barrier that enforce it, and how the configurator is told about a plugin's
+recommended requirements are [`plugin-access-profiles.md`](plugin-access-profiles.md)'s.
+
 **Approval is per call, not per install, and it does not survive a restart** — the grant a
 protected call consumes, and the challenge that mints it, are
 [`plugin-authorization.md`](plugin-authorization.md)'s subject.

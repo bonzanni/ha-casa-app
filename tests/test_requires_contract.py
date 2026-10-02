@@ -749,6 +749,7 @@ class TestInteractiveRequiresDenial:
         rec = MagicMock()
         rec.id = "eng1"
         eng_reg.create = AsyncMock(return_value=rec)
+        eng_reg.update_plugin_profiles = AsyncMock()  # S8: the launch records the applied profile
         eng_reg.set_channel_state = AsyncMock()
 
         tm.init_tools(
@@ -768,6 +769,7 @@ class TestInteractiveRequiresDenial:
 
         def _spy_builder(
             cfg, *, resolution=None, extra_casa_tools: tuple[str, ...] = (),
+            plan_out=None,  # S8: the launch hands the builder a plan sink
         ):
             captured["resolution"] = resolution
             captured["extra_casa_tools"] = extra_casa_tools

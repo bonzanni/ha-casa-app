@@ -1753,6 +1753,28 @@ class EngagementRegistry:
                 rec.status = "active"
             await self._write_tombstone_locked()
 
+    async def update_plugin_profiles(self, engagement_id: str,
+                                     profiles: dict) -> None:
+        """S8: record the EFFECTIVE plugin access profile a build applied,
+        per plugin name, on the record's ``plugin_artifacts`` rows — what a
+        later resume's fallback row reads when the live registry no longer
+        assigns the plugin to this target. Written after the options are
+        built and before the client starts, so the record never says a
+        profile the build did not enforce. Unknown record ⇒ no-op."""
+        async with self._lock:
+            rec = self._records.get(engagement_id)
+            if rec is None:
+                return
+            # Only rows NAMED in the mapping change: a plugin the build did
+            # not load (withheld) keeps the profile its last loading build
+            # enforced. The write is strict — a caller that cannot record
+            # what it enforces must not open the client.
+            rec.plugin_artifacts = tuple(
+                {**row, "profile": profiles[row.get("name")]}
+                if isinstance(row, dict) and row.get("name") in profiles else row
+                for row in rec.plugin_artifacts)
+            await self._write_tombstone_locked(strict=True)
+
     async def lower_origin_clearance(
         self, engagement_id: str, clearance: str,
     ) -> bool:

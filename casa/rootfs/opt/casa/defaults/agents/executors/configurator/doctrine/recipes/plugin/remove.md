@@ -41,6 +41,16 @@ and `plugin_data_note`.
    revocation at the provider: Casa performed neither of those. If they want
    the external access to end, they revoke it at the provider.
 
+## Requirements: state the consequence once, never block
+
+The result may carry `dependents` — other plugins whose declared requirements
+name this one on the targets you just unassigned or removed — and, on a
+`plugin_remove`, `leftover_requirements`: what the removed plugin's own
+requirements leave assigned to its former targets. Say each once, plainly
+("quarterly recommends Gmail read-only for finance; finance no longer has
+it"), and do NOT unassign or reassign anything on their account: a leftover
+grant is the operator's to keep or drop.
+
 ## A plugin that can erase its own data (`erase_data`)
 
 Some plugins declare an eraser: a tool of their own that erases their data.

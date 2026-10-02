@@ -1105,6 +1105,139 @@ def manifest_callbacks(manifest: dict, plugin_name: str) -> list:
     return callbacks
 
 
+# ---------------------------------------------------------------------------
+# S8 plugin access profiles: ``casa.profiles`` + ``casa.requires``
+# ---------------------------------------------------------------------------
+# A profile is a manifest-declared subset of a plugin's tools, authored as
+# BARE tool names; ``casa.provides_tools`` stays FULLY QUALIFIED and verbatim
+# (the A5 requires-gate contract) and must contain every expansion of every
+# bare name over the artifact's own servers. Membership and subtraction
+# happen in the fully qualified space only (plugin_grants.profile_plan).
+# ``casa.requires`` is a recommendation a plugin makes about another plugin;
+# it is never checked against the registry at install.
+
+_REQUIRES_FIELDS = {"plugin", "profile", "why"}
+_REQUIRES_WHY_MAX = 200
+# A bare tool name as a plugin author writes it: the characters the CLI's
+# namespace keeps as they are, never a separator run (``__``) and never a
+# character sanitisation would silently rewrite — a declaration of the
+# sanitised form must not launder a malformed bare name.
+_BARE_TOOL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+
+
+def expand_tool_names(runtime_name: str, servers, bare: str) -> list[str]:
+    """The fully qualified runtime names of *bare* on each of *servers* —
+    ``mcp__plugin_<plugin>_<server>__<tool>``, every segment sanitized the way
+    the CLI does it. The ONE expansion both the install-time validator and
+    the options builders use, so a profile's tool list and the runtime names
+    the barrier compares against can never drift."""
+    seg = sanitize_segment(runtime_name)
+    tool = sanitize_segment(bare)
+    return [f"mcp__plugin_{seg}_{sanitize_segment(s)}__{tool}" for s in servers]
+
+
+def _profiles_invalid(detail: str) -> StoreError:
+    return StoreError(f"casa.profiles invalid: {detail}",
+                      reason_code="profiles_invalid")
+
+
+def manifest_profiles(manifest: dict, runtime_name: str, root) -> dict:
+    """Strict ``casa.profiles`` extraction: ``{name: [bare tool, ...]}``.
+
+    Absent ⇒ ``{}``. Present-but-malformed raises ``profiles_invalid``: not a
+    non-empty mapping; a name that is ``full`` (reserved) or not a profile
+    name; an empty, duplicated or non-bare tool entry (one containing ``__``
+    or starting with ``mcp__``); no ``casa.provides_tools`` list; a plugin
+    with no MCP server; or any expansion of a bare name over the artifact's
+    servers that ``provides_tools`` does not declare."""
+    from plugin_registry import FULL_PROFILE, PROFILE_NAME_RE
+    casa = manifest.get("casa") if isinstance(manifest, dict) else None
+    if not isinstance(casa, dict) or "profiles" not in casa:
+        return {}
+    profiles = casa.get("profiles")
+    if not isinstance(profiles, dict) or not profiles:
+        raise _profiles_invalid(
+            "must be a non-empty mapping of profile name to tool list")
+    provided = casa.get("provides_tools")
+    if (not isinstance(provided, list)
+            or not all(isinstance(t, str) and t for t in provided)):
+        raise _profiles_invalid(
+            "casa.provides_tools must list the plugin's fully qualified tool "
+            "names when profiles are declared")
+    declared = set(provided)
+    servers = sorted(mcp_servers_map(Path(root) / ".mcp.json"))
+    if not servers:
+        raise _profiles_invalid("the plugin declares no MCP server to profile")
+    out: dict = {}
+    for name, tools in profiles.items():
+        if (not isinstance(name, str) or name == FULL_PROFILE
+                or not PROFILE_NAME_RE.fullmatch(name)):
+            raise _profiles_invalid(f"profile name {name!r}")
+        if not isinstance(tools, list) or not tools:
+            raise _profiles_invalid(f"profile {name!r} must list at least one tool")
+        seen: set = set()
+        for t in tools:
+            if (not isinstance(t, str) or not _BARE_TOOL_RE.fullmatch(t)
+                    or "__" in t or t.startswith("mcp__")):
+                raise _profiles_invalid(
+                    f"profile {name!r}: {t!r} is not a bare tool name")
+            if t in seen:
+                raise _profiles_invalid(f"profile {name!r}: {t!r} listed twice")
+            seen.add(t)
+            for fq in expand_tool_names(runtime_name, servers, t):
+                if fq not in declared:
+                    raise _profiles_invalid(
+                        f"profile {name!r}: tool {t!r} ({fq}) is not declared "
+                        "in casa.provides_tools")
+        out[name] = list(tools)
+    return out
+
+
+def _requires_invalid(detail: str) -> StoreError:
+    return StoreError(f"casa.requires invalid: {detail}",
+                      reason_code="requires_invalid")
+
+
+def manifest_requires(manifest: dict) -> list[dict]:
+    """Strict ``casa.requires`` extraction: ``[{plugin, profile, why}, ...]``
+    with ``profile`` normalized to ``None`` when omitted (= full access).
+    Absent ⇒ ``[]``. Not checked against the registry: a requirement is a
+    recommendation, and the required plugin may be installed later."""
+    from plugin_registry import FULL_PROFILE, NAME_RE, PROFILE_NAME_RE
+    casa = manifest.get("casa") if isinstance(manifest, dict) else None
+    if not isinstance(casa, dict) or "requires" not in casa:
+        return []
+    rows = casa.get("requires")
+    if not isinstance(rows, list):
+        raise _requires_invalid("must be a list")
+    out: list = []
+    seen: set = set()
+    for index, row in enumerate(rows, start=1):
+        if not isinstance(row, dict):
+            raise _requires_invalid(f"entry {index} is not a mapping")
+        unknown = set(row) - _REQUIRES_FIELDS
+        if unknown:
+            raise _requires_invalid(f"entry {index} field {sorted(unknown)[0]}")
+        plugin = row.get("plugin")
+        if not isinstance(plugin, str) or not NAME_RE.fullmatch(plugin):
+            raise _requires_invalid(f"entry {index} field plugin")
+        if plugin in seen:
+            raise _requires_invalid(f"entry {index}: {plugin!r} required twice")
+        seen.add(plugin)
+        why = row.get("why")
+        if (not isinstance(why, str) or not 1 <= len(why) <= _REQUIRES_WHY_MAX
+                or "\n" in why or "\r" in why):
+            raise _requires_invalid(f"entry {index} field why")
+        profile = row.get("profile")
+        if "profile" in row and (
+                not isinstance(profile, str) or profile == FULL_PROFILE
+                or not PROFILE_NAME_RE.fullmatch(profile)):
+            raise _requires_invalid(f"entry {index} field profile")
+        out.append({"plugin": plugin, "profile": profile if "profile" in row else None,
+                    "why": why})
+    return out
+
+
 _JOB_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
 _JOB_FIELDS = {
     "name", "skill", "title", "summary", "batches", "turnsPerBatch", "session",
@@ -1842,6 +1975,12 @@ def validate_manifest(root: Path, expected_name: str, *,
     # #429: same for casa.setupProvides — it RELAXES the withholding gate,
     # so an install must never accept one Casa would have to interpret.
     manifest_setup_provides(manifest)
+    # S8: a PRESENT-but-malformed casa.profiles / casa.requires refuses the
+    # install/update outright (strict; raises profiles_invalid /
+    # requires_invalid). Profile expansion uses the RUNTIME name (manifest_name
+    # when owned) and the artifact's own servers, like triggers and callbacks.
+    manifest_profiles(manifest, manifest_name or expected_name, Path(root))
+    manifest_requires(manifest)
     return manifest
 
 

@@ -229,12 +229,18 @@ class InCasaDriver(DriverProtocol):
         *,
         topic_stream_factory: TopicStreamFactory,
         persist_session_id: SessionIdPersister | None = None,
+        persist_plugin_profiles: "Callable[[str, dict], Awaitable[None]] | None" = None,
         result_observer: "ResultObserver | None" = None,
         record_lookup: Callable[[str], Any] | None = None,
         begin_turn_delivery: "Callable[[str], bool] | None" = None,
     ) -> None:
         self._topic_stream_factory = topic_stream_factory
         self._persist_session_id = persist_session_id
+        # S8: persists the access profile a rebuilt session enforces onto the
+        # record's plugin_artifacts rows — called after the options are built
+        # and BEFORE the client opens, so a later resume's fallback row never
+        # reads a profile the previous build did not apply.
+        self._persist_plugin_profiles = persist_plugin_profiles
         # Task 6 (spec §4.6): optional per-turn cost/usage observer.
         self._result_observer = result_observer
         # #369: live registry lookup (engagement_id -> record | None) consulted
@@ -718,6 +724,23 @@ class InCasaDriver(DriverProtocol):
                 engagement.id[:8], exc,
             )
 
+    async def _persist_applied_profiles(self, engagement: EngagementRecord) -> None:
+        """S8: write the profiles the rebuilt options enforce (what
+        ``build_engagement_resume_options`` left on the record's rows) through
+        the persister, BEFORE the client opens. Strict: a failure propagates
+        and no client opens — a record that cannot say what this build
+        enforces would feed the next resume's fallback a wider profile. The
+        caller fails closed and retries on the next turn, as for any other
+        resume failure."""
+        if self._persist_plugin_profiles is None:
+            return
+        rows = getattr(engagement, "plugin_artifacts", None) or ()
+        if not rows:
+            return
+        profiles = {row.get("name"): row.get("profile")
+                    for row in rows if isinstance(row, dict)}
+        await self._persist_plugin_profiles(engagement.id, profiles)
+
     async def resume(
         self, engagement: EngagementRecord, session_id: str,
     ) -> None:
@@ -746,6 +769,7 @@ class InCasaDriver(DriverProtocol):
         options = await asyncio.to_thread(
             build_engagement_resume_options, engagement, session_id,
         )
+        await self._persist_applied_profiles(engagement)
         client = ClaudeSDKClient(
             sdk_logging.with_stderr_callback(
                 options, engagement_id=engagement.id[:8],
@@ -805,6 +829,7 @@ class InCasaDriver(DriverProtocol):
         options = await asyncio.to_thread(
             build_engagement_resume_options, engagement, None,
         )
+        await self._persist_applied_profiles(engagement)
         client = ClaudeSDKClient(
             sdk_logging.with_stderr_callback(
                 options, engagement_id=engagement.id[:8],

@@ -95,6 +95,34 @@ specialist is never going to declare it, the plugin simply stays pending —
 that is a valid end state, not an error). Report the outcome and
 `emit_completion(...)`.
 
+## Profiles and requirements
+
+A plugin may declare **access profiles** (`casa.profiles`: named subsets of its
+tools) and **requirements** (`casa.requires`: another plugin, optionally one of
+its profiles, and a `why`). Widest access wins, and a requirement only ever
+ADDS access:
+
+- The result's `requirement_candidates` lists each requirement per target with
+  its `state`. `satisfied`: say so ("finance already has Gmail, which covers
+  what quarterly needs") and change nothing. `offer` or `registered_elsewhere`:
+  offer ONE tap — `plugin_assign(name=<required plugin>, target, profile=<the
+  candidate's profile>)` — noting for `registered_elsewhere` that the sign-in
+  is shared and no new sign-in is needed; declining is a valid answer.
+  `not_installed`: mention it. `held_narrower`: the target already holds the
+  plugin with a profile that does not cover the requirement; Casa never widens
+  on its own — state it, and name the only route (unassign, then reassign,
+  which applies to sessions built afterwards). `profile_missing_in_plugin`:
+  the required plugin does not declare that profile; offer nothing under that
+  name.
+- When an assignment you create names a profile, the confirmation ALWAYS
+  states it, in tools (the result's `profile_tools`), and when it applies:
+  "finance gets Gmail read-only: search and read, never send — from its next
+  session". If `profile_tools_denied_by_config` is non-empty, say which of
+  the profile's tools the agent's own configuration still denies; that deny
+  stays, by design.
+- An assignment that already exists is never changed by a requirement or by
+  `profile`; the result reports what the target holds.
+
 ## Setup is Casa's, not yours to route
 
 Some plugins ship an MCP **setup tool** (naming convention `setup_*`, e.g.

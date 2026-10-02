@@ -31,8 +31,10 @@ from claude_agent_sdk import (
 
 import plugin_registry
 from plugin_grants import (
+    apply_profile_plan,
     grants_for_resolution,
     make_fail_closed_can_use_tool,
+    profile_plan,
     sanitized_env_for_resolution,
 )
 
@@ -3269,6 +3271,21 @@ class Agent:
             if grant not in allowed_tools:
                 allowed_tools.append(grant)
 
+        # S8 plugin access profiles: the plan is read HERE, from the live
+        # snapshot, at construction — never carried across an await. The
+        # guard matcher is the barrier (deny unless the exact name is in the
+        # profile); the list hygiene only decides visibility. Both are no-ops
+        # for an unprofiled build.
+        _plan_tier = (self._agent_registry.tier_for_role(self.config.role)
+                      if self._agent_registry is not None else None)
+        _plan = profile_plan(
+            resolution, target=f"{_plan_tier or 'resident'}:{self.config.role}")
+        allowed_tools, _profile_denies = apply_profile_plan(allowed_tools, [], _plan)
+        from hooks import profile_guard_matcher
+        _profile_guard = profile_guard_matcher(_plan)
+        if _profile_guard is not None:
+            hooks["PreToolUse"] = [*hooks.get("PreToolUse", []), _profile_guard]
+
         # Resolve role-aware MCP servers only after every config/plugin grant
         # is known so SDK factories can expose the exact authorized schemas.
         mcp_servers = self._mcp_registry.resolve(
@@ -3296,7 +3313,7 @@ class Agent:
             # Code-mandatory, whatever runtime.yaml says: the CLI's
             # cross-session tools (claude_runtime.CROSS_SESSION_TOOLS).
             disallowed_tools=with_cross_session_tools_denied(
-                self.config.tools.disallowed),
+                [*self.config.tools.disallowed, *_profile_denies]),
             settings=cli_session_settings(),
             permission_mode=self.config.tools.permission_mode or "acceptEdits",
             max_turns=self.config.tools.max_turns,

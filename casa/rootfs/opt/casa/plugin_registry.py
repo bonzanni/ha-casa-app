@@ -31,6 +31,11 @@ SCHEMA_VERSION = 1
 
 TARGET_RE = re.compile(r"^(resident|specialist|executor):[a-z0-9][a-z0-9_-]*$")
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+# S8 plugin access profiles: the name of a manifest-declared tool subset
+# (``casa.profiles``) an assignment may hold. ``full`` is reserved for "no
+# profile" and is never stored — an absent key IS full access.
+PROFILE_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,23}$")
+FULL_PROFILE = "full"
 REVISION_RE = re.compile(r"^(git:[0-9a-f]{40}|legacy-content:[0-9a-f]{64})$")
 BUNDLED_SOURCE = "bundled"
 _SOURCE_TYPES = {"github", BUNDLED_SOURCE}
@@ -201,6 +206,10 @@ def _entry_error(entry: object) -> str | None:
             return "owned_invariant"
         if entry.get("targets") != [owner]:
             return "owned_invariant"
+        # S8: a bundle's own plugins are full by construction — an owned
+        # entry never carries a profile.
+        if "profiles" in entry:
+            return "owned_invariant"
     src = entry.get("source")
     if not isinstance(src, dict):
         return "bad_source"
@@ -228,6 +237,20 @@ def _entry_error(entry: object) -> str | None:
         isinstance(t, str) and TARGET_RE.match(t) for t in targets
     ):
         return "bad_targets"
+    # S8: the OPTIONAL sibling ``profiles`` map — keys ⊆ targets, values are
+    # profile NAMES (never ``full``). Same posture as ``bad_targets``: the
+    # entry is invalid, the registry is not. ``targets`` itself is untouched,
+    # so every consent identity computed over sorted targets is unchanged.
+    if "profiles" in entry:
+        profiles = entry.get("profiles")
+        if not isinstance(profiles, dict):
+            return "bad_profiles"
+        for k, v in profiles.items():
+            if not isinstance(k, str) or k not in targets:
+                return "bad_profiles"
+            if (not isinstance(v, str) or v == FULL_PROFILE
+                    or not PROFILE_NAME_RE.fullmatch(v)):
+                return "bad_profiles"
     expected = compute_artifact_id(
         repo=repo, revision=revision, subdir=subdir, name=name,
     )
@@ -520,6 +543,12 @@ class ResolvedPlugin:
     # runtime_name(rp), not this field directly, to get the effective
     # runtime identity.
     manifest_name: str = ""
+    # S8: the profile NAME the entry's ``profiles`` map holds for the target
+    # this resolution was made for — ``None`` for a target-less
+    # ``resolve_all()``, for an unprofiled target, and for every call site
+    # that threads nothing. The profile's TOOL LIST is never stored here: it
+    # is read from a manifest at options-build time (plugin_grants.profile_plan).
+    profile: "str | None" = None
 
 
 def runtime_name(rp: "ResolvedPlugin") -> str:
@@ -630,6 +659,23 @@ def snapshot_registry() -> RegistryData:
     return _current().registry
 
 
+def published_snapshot():
+    """The snapshot currently published, or ``None`` when none has been —
+    WITHOUT publishing one. S8's live lookups read through this so that an
+    options build or a mutation core never publishes a snapshot as a side
+    effect: the resolver and the mutation sequencer own publication."""
+    return _snapshot
+
+
+def snapshot_store_root() -> Path:
+    """The store root the published snapshot was built against — what an
+    options build or a mutation core reads a LIVE artifact's manifest from
+    (S8 profile plans), so a test that reloads against a private store is
+    honoured. Never publishes: with no snapshot it is the configured root."""
+    snap = _snapshot
+    return snap.store_root if snap is not None else STORE_ROOT
+
+
 def _resolve_entry(entry: dict, snap: "_Snapshot", target: str | None,
                    ) -> tuple[ResolvedPlugin | None, PluginIssue | None,
                               PluginIssue | None]:
@@ -657,11 +703,15 @@ def _resolve_entry(entry: dict, snap: "_Snapshot", target: str | None,
         warning = PluginIssue(name=name, target=target, stage="resolve",
                               reason_code="legacy_provenance",
                               artifact_id=artifact_id)
+    profiles = entry.get("profiles")
+    profile = (profiles.get(target)
+               if target is not None and isinstance(profiles, dict) else None)
     return ResolvedPlugin(
         name=name, artifact_id=artifact_id, path=str(path),
         version=str(manifest.get("version", entry.get("version", ""))),
         manifest=manifest,
         manifest_name=entry.get("manifest_name") or name,
+        profile=profile,
     ), None, warning
 
 
