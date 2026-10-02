@@ -48,6 +48,11 @@ _IDLE_SWEEP_CRON = "0 8 * * *"            # daily 08:00 user TZ
 # the snapshot on the next write — bounds the file while keeping the P32
 # duplicate-task guard and post-mortems working across restarts.
 _TERMINAL_RETENTION_DAYS = 30
+# #1162: the key, inside ``origin["job"]``, of the list of every SDK session a
+# background job's client served. Its writer rotates a job's sessions; the
+# transcript reaper reads it to delete each one once the job is terminal. Both
+# sides name it through this constant, never as a literal.
+JOB_SIDS_KEY = "sids"
 
 
 def _usable_time(value: object) -> bool:

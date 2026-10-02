@@ -2220,8 +2220,7 @@ def _build_specialist_options(
                 *resolved_hooks.get(_event, []), *_matchers]
         _broker_env = result_broker.broker_env(_client_id)
 
-    agent_home = (cfg.cwd
-                  or f"/config/agent-home/{getattr(cfg, 'role', 'unknown')}")
+    agent_home = specialist_cwd(cfg)
 
     # Skills via skills="all" below; strip any config-supplied "Skill"
     # (deprecated) — (f) v0.69.9.
@@ -2319,6 +2318,23 @@ def _build_specialist_options(
 
 
 _PLUGIN_JOB_ROOT = Path("/data/engagements")
+# #1162: the in_casa launch cwds, each built in ONE place. The SDK names a
+# session's project dir after its cwd, so the transcript reaper derives the
+# dir it deletes in from these same constructors — never from a re-typed path.
+EXECUTOR_CWD = "/config"
+
+
+def plugin_job_cwd(engagement_id: str) -> Path:
+    """A plugin job's per-engagement cwd (its own CLI project dir)."""
+    return _PLUGIN_JOB_ROOT / engagement_id / "plugin-job"
+
+
+def specialist_cwd(cfg) -> str:
+    """A specialist's cwd: its configured ``cwd``, else its agent-home."""
+    return (cfg.cwd
+            or f"/config/agent-home/{getattr(cfg, 'role', 'unknown')}")
+
+
 _PLUGIN_JOB_PROMPT = (
     "You are a plugin job worker, not the hosting resident. Casa runs this job "
     "in bounded batches. Do not ask questions: park items needing an answer "
@@ -2362,7 +2378,7 @@ def _build_plugin_job_options(rec, resolution) -> ClaudeAgentOptions:
         ["casa-framework"], role=role,
         allowed_tools=background_jobs.PLUGIN_JOB_CASA_GRANTS)
         if _mcp_registry is not None else {})
-    cwd = _PLUGIN_JOB_ROOT / rec.id / "plugin-job"
+    cwd = plugin_job_cwd(rec.id)
     cwd.mkdir(parents=True, exist_ok=True)
     return ClaudeAgentOptions(
         model=identity["model"], cli_path=CLAUDE_CLI_PATH,
@@ -2540,7 +2556,7 @@ def _build_executor_options(
         max_turns=200,
         mcp_servers=mcp_servers if mcp_servers else {},
         hooks=resolved_hooks,
-        cwd="/config",
+        cwd=EXECUTOR_CWD,
         resume=None,
         setting_sources=["project"],
         skills="all",  # (f) v0.69.9

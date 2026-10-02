@@ -54,7 +54,13 @@ def fsync_directory(directory: str | os.PathLike[str]) -> None:
     except OSError as exc:
         logger.warning("directory fsync (%s) failed: %s", directory, exc)
     finally:
-        os.close(fd)
+        # #1162: the rename has already committed when this runs, so a close
+        # error must not reach the caller as a failed write — a strict caller
+        # would roll its memory back while the disk holds the new content.
+        try:
+            os.close(fd)
+        except OSError as exc:
+            logger.warning("directory close (%s) failed: %s", directory, exc)
 
 
 def atomic_write_text(
