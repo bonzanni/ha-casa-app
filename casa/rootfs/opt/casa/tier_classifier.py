@@ -18,7 +18,12 @@ import dataclasses
 import logging
 from collections.abc import Iterator
 
-from claude_runtime import CLAUDE_CLI_PATH, SDK_MAX_BUFFER_SIZE
+from claude_runtime import (
+    CLAUDE_CLI_PATH,
+    SDK_MAX_BUFFER_SIZE,
+    cli_session_settings,
+    with_cross_session_tools_denied,
+)
 # Re-export the canonical sensitivity-tier set (single source of truth is
 # sensitivity.py:TIERS) so consumers gate on ``from tier_classifier import
 # TIERS, classify_tier`` — classify_tier only ever returns a member of it.
@@ -147,7 +152,9 @@ async def classify_tier(content: str) -> str:
         # doctrine (agent.py).
         system_prompt=SENSITIVITY_PROMPT, max_turns=8,
         tools=[], allowed_tools=[],
-        disallowed_tools=["Bash", "Task", "Agent"],
+        disallowed_tools=with_cross_session_tools_denied(
+            ["Bash", "Task", "Agent"]),
+        settings=cli_session_settings(),
         # NOT bypassPermissions: that makes the SDK pass
         # ``--dangerously-skip-permissions`` to the bundled ``claude`` CLI, which
         # refuses to run as root/sudo — and HA add-ons run as root, so the call

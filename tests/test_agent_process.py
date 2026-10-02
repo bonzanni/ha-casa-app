@@ -2710,7 +2710,8 @@ async def test_untrusted_webhook_trigger_gets_restricted_runtime(tmp_path):
     assert options.tools == []
     assert options.plugins == []
     assert options.setting_sources == []
-    assert json.loads(options.settings) == {"disableAllHooks": True}
+    assert json.loads(options.settings) == {"disableAllHooks": True,
+                                            "crossSessionInbound": "refuse"}
     assert set(options.allowed_tools) == {
         "mcp__casa-framework__recall_memory",
         "mcp__casa-framework__send_message",

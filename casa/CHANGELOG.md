@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.335.2] - 2026-10-02
+
+### Security
+
+- Every agent session Casa starts (Ellen, specialists, executors, background
+  job workers, and one-shot helpers) now runs with the Claude Code CLI's
+  built-in cross-session tools `SendMessage`, `ListAgents` and
+  `PushNotification` turned off, and refuses incoming cross-session messages.
+  Casa's agents talk to each other only through Casa's own delegation, which
+  checks who may ask whom. The CLI's session-to-session messaging bypassed those
+  checks, and Casa never used it. Running coding engagements pick up the change
+  when Casa restarts them after the update.
+
 ## [0.335.1] - 2026-10-02
 
 ### Fixed

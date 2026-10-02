@@ -15,7 +15,12 @@ import json
 import logging
 from typing import Any, Literal
 
-from claude_runtime import CLAUDE_CLI_PATH, SDK_MAX_BUFFER_SIZE
+from claude_runtime import (
+    CLAUDE_CLI_PATH,
+    SDK_MAX_BUFFER_SIZE,
+    cli_session_settings,
+    with_cross_session_tools_denied,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -231,6 +236,8 @@ class Observer:
             system_prompt=system,
             max_turns=1,
             mcp_servers={},
+            disallowed_tools=with_cross_session_tools_denied(()),
+            settings=cli_session_settings(),
         )
         out = ""
         try:

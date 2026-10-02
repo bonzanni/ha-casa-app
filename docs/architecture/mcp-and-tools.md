@@ -232,6 +232,18 @@ in delivering the response itself, which is not a refusal the route produced. Th
 end is outside this rule entirely — it answers over the internal socket in its own status
 codes, and it is the bridge that flattens them.
 
+**INV-MCP-013**: Every Claude CLI session Casa starts hard-denies the CLI's cross-session tools `SendMessage`, `ListAgents` and `PushNotification`, and refuses inbound messages from other CLI sessions, whatever the agent's own tool configuration says.
+
+The pinned CLI offers these tools by default and none of them prompts, so the fail-closed
+tool gate never sees a call; `SendMessage` reaches every CLI session the same OS user runs
+on the machine, which here is every agent. Agent-to-agent work goes through Casa's
+delegation instead. `CROSS_SESSION_TOOLS` in `claude_runtime.py` is merged into the
+disallowed list of every options build, and each passes `crossSessionInbound: "refuse"`
+through `--settings`. A `claude_code` engagement's settings file carries both, and comes
+from one constructor, `build_cc_settings`, which provisioning and boot replay's rewrite
+share. A source sweep pins the exact set of options constructions and refuses one whose
+deny list or settings bypasses the shared helpers.
+
 ## Failure behavior
 
 **An unknown tool name.** Resolution fails and the call is refused; nothing is invoked.

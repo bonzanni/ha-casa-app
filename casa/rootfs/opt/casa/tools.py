@@ -70,7 +70,12 @@ from output_boundary import (
     Admitted, IntentKind, ReadBeforeDescribe, TurnScope, UnadmittedText,
     casa_text,
 )
-from claude_runtime import CLAUDE_CLI_PATH, SDK_MAX_BUFFER_SIZE
+from claude_runtime import (
+    CLAUDE_CLI_PATH,
+    SDK_MAX_BUFFER_SIZE,
+    cli_session_settings,
+    with_cross_session_tools_denied,
+)
 from media_policies import MEDIA_POLICIES
 import plugin_outbox
 from error_kinds import (
@@ -1955,13 +1960,14 @@ _SUBAGENT_SPAWN_TOOLS = ("Agent", "Task")
 
 
 def _with_subagent_spawn_disallowed(disallowed) -> list[str]:
-    """Return ``disallowed`` (any iterable) plus the sub-agent-spawn tools,
+    """Return ``disallowed`` (any iterable) plus the sub-agent-spawn tools and
+    the CLI's cross-session tools (``claude_runtime.CROSS_SESSION_TOOLS``),
     de-duplicated, order-stable."""
     out = list(disallowed)
     for t in _SUBAGENT_SPAWN_TOOLS:
         if t not in out:
             out.append(t)
-    return out
+    return with_cross_session_tools_denied(out)
 
 
 def _resolution_from_recorded(plugin_artifacts) -> "plugin_registry.ResolutionResult":
@@ -2288,6 +2294,7 @@ def _build_specialist_options(
         system_prompt=resolved_system_prompt,
         allowed_tools=allowed_tools,
         disallowed_tools=disallowed_tools,
+        settings=cli_session_settings(),
         permission_mode=cfg.tools.permission_mode or "acceptEdits",
         max_turns=cfg.tools.max_turns if max_turns is None else max_turns,
         mcp_servers=mcp_servers if mcp_servers else {},
@@ -2362,7 +2369,9 @@ def _build_plugin_job_options(rec, resolution) -> ClaudeAgentOptions:
         max_buffer_size=SDK_MAX_BUFFER_SIZE,
         system_prompt=_PLUGIN_JOB_PROMPT,
         allowed_tools=allowed,
-        disallowed_tools=["Agent", "Task", "AskUserQuestion"],
+        disallowed_tools=with_cross_session_tools_denied(
+            ["Agent", "Task", "AskUserQuestion"]),
+        settings=cli_session_settings(),
         permission_mode="default",
         max_turns=rec.origin["job"]["turns_per_batch"],
         mcp_servers=servers, hooks=hooks, cwd=str(cwd), resume=None,
@@ -2526,6 +2535,7 @@ def _build_executor_options(
         system_prompt="",
         allowed_tools=allowed_tools,
         disallowed_tools=disallowed_tools,
+        settings=cli_session_settings(),
         permission_mode=defn.permission_mode or "acceptEdits",
         max_turns=200,
         mcp_servers=mcp_servers if mcp_servers else {},
@@ -12330,6 +12340,8 @@ async def _synthesize_answer(
         system_prompt=_QUERY_ENGAGER_SYSTEM,
         max_turns=1,
         mcp_servers={},
+        disallowed_tools=with_cross_session_tools_denied(()),
+        settings=cli_session_settings(),
         env={"CLAUDE_CODE_MAX_OUTPUT_TOKENS": str(max(1, max_tokens))},
     )
     prompt = (

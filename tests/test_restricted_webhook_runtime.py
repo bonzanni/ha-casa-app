@@ -33,7 +33,8 @@ def test_no_plugins_settings_or_skills():
 
 def test_all_hooks_disabled_via_settings():
     o = _opts()
-    assert json.loads(o.settings) == {"disableAllHooks": True}
+    assert json.loads(o.settings) == {"disableAllHooks": True,
+                                      "crossSessionInbound": "refuse"}
     assert not o.hooks  # no in-process hooks either
 
 

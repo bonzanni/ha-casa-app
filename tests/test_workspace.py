@@ -571,6 +571,11 @@ class TestProvisionWorkspace:
             "Bash(git*)", "Read", "mcp__casa-framework__emit_completion",
         ]
         assert settings["permissions"]["defaultMode"] == "acceptEdits"
+        # The CLI's cross-session tools are denied and inbound messages from
+        # other sessions refused on this path too.
+        assert {"SendMessage", "ListAgents", "PushNotification"} <= set(
+            settings["permissions"]["deny"])
+        assert settings["crossSessionInbound"] == "refuse"
 
     @pytest.mark.skipif(sys.platform == "win32", reason="mkfifo not meaningful on Windows")
     async def test_legacy_path_default_mode_from_defn(self, tmp_path):
