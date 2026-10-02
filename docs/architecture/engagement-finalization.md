@@ -135,8 +135,9 @@ remains until the boot reconcile and reap TTL retire it.
 
 **INV-ENG-022**: Once an `in_casa` engagement's terminal status is on disk, a pass run at scheduler start and every six hours deletes its CLI transcripts — a plugin job's whole per-engagement project folder, or, for a specialist or executor, each session the record names (its current session and every session its background job lists) in that record's own project folder — and selects nothing else. A pass that cannot import the SDK's folder lookup deletes nothing.
 
-Casa owns transcript deletion: the CLI's own cleanup never fires under Casa's SDK
-invocation, and the resident time-to-live sweep
+Casa owns transcript deletion: the CLI's own cleanup never fires for a Casa launch, since
+none loads user settings or passes `cleanupPeriodDays` (INV-MEM-021, in
+[`architecture/memory-lifecycle.md`](memory-lifecycle.md)), and the resident time-to-live sweep
 ([`architecture/memory-lifecycle.md`](memory-lifecycle.md)) only ever reaps resident
 sessions. An `in_casa` session writes `<session>.jsonl` and a `<session>/` folder (its
 subagents and oversized tool results) under the CLI projects root, in a folder named after
@@ -164,11 +165,12 @@ the next pass. The end-to-end test image's mock SDK carries a copy of the same l
 pass runs there as it does in production.
 
 What it does not cover, and these are gaps rather than retention: it never lists a folder or
-selects by age, so sessions no record names stay — a synchronous delegation's, a utility
-one-shot's, the session a clearance downgrade abandons on a specialist or executor
-engagement, any plugin-job folder whose record is gone, and the sessions of a specialist
+selects by age, so sessions no record names stay — the session a clearance downgrade
+abandons on a specialist or executor engagement, any plugin-job folder whose record is gone, and the sessions of a specialist
 that has since been uninstalled (its folder can no longer be derived) or given another
-working directory. A terminal record's row ages out of the tombstone once it is 30 days old,
+working directory. (A delegation deletes its own session as it ends and a utility one-shot
+writes none: INV-ENG-023, in [`architecture/delegation.md`](delegation.md).) A terminal
+record's row ages out of the tombstone once it is 30 days old,
 and the pass never selects a record without one, so a removal that fails for that long is
 not retried.
 

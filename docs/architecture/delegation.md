@@ -188,6 +188,25 @@ record exists — answers `job_busy` (INV-BGJOB-006). A resident-hosted job then
 `<role>:engagement` slot, so running one never makes the resident unavailable
 ([`background-jobs.md`](background-jobs.md)).
 
+**INV-ENG-023**: An ephemeral delegation runs under a session id Casa chooses for that launch and, once its client has exited — on return, error or cancellation — deletes that one session's transcript (`<session>.jsonl` and `<session>/`) from its own project folder, best-effort, and nothing else; the utility one-shots (the observer, the tier classifier, `query_engager`'s synthesis) persist no transcript at all.
+
+Every delegation — synchronous, asynchronous and both voice paths — goes through one
+runner, which starts a fresh CLI session in the specialist's working directory; once the
+call ends nothing resumes or reads that session, because its text has already been
+returned and retained. The folder is shared with the specialist's other sessions —
+concurrent delegations and its `in_casa` engagements — so the runner names its own session
+on its own copy of the options before launch (the shared options builder carries no id:
+engagements launch and resume through it) and deletes only that session, through the SDK,
+in the launch's own working directory. It never lists the folder. The delete waits for the
+client to exit, because the CLI writes its transcript until its process ends, and a failed
+delete is logged and kept: it never changes the delegation's result, error or
+cancellation. The one-shots pass `--no-session-persistence`, since nothing resumes or
+names their sessions afterwards.
+
+What it does not cover: transcripts written before this behaviour existed, a process killed
+between the client's exit and the delete, a cancellation that interrupts the client's exit
+itself (the CLI can then still be writing after the delete), and a delete that fails.
+
 ## Failure behavior
 
 **A delegation names a target the caller does not declare.** Refused before any lookup, so
@@ -248,8 +267,10 @@ the agent-spawn cap. Never copy the marker into a synthesized or scheduled turn'
 - `casa/rootfs/opt/casa/tools.py::_is_agent_context`
 - `casa/rootfs/opt/casa/specialist_limits.py::AgentSpawnLimiter`
 - `casa/rootfs/opt/casa/specialist_limits.py::SpawnToken`
+- `casa/rootfs/opt/casa/tools.py::_delete_own_delegated_transcript`
 
 **Tests**
+- `tests/test_delegated_transcript_delete.py`
 - `tests/test_delegation_acl.py`
 - `tests/test_delegates_block_live_names.py`
 - `tests/test_agent_spawn_limiter.py`

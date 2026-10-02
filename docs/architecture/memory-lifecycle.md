@@ -186,8 +186,9 @@ cover the background retain paths, which are not turns.
 
 **INV-MEM-017**: The time-to-live sweep neither evicts nor reaps a session entry that names a transcript on a bank-writable channel, whatever its age, provenance, claims, or activity timestamp.
 
-The sweep is Casa's only deleter of resident transcripts, and a transcript is the only
-copy of a conversation's turns; the property that licenses deleting it is
+The sweep is Casa's only deleter of resident transcripts — the CLI's own
+age-based cleanup is never enabled by a Casa launch (INV-MEM-021) — and a
+transcript is the only copy of a conversation's turns; the property that licenses deleting it is
 that the conversation's retention is no longer owed, never the age of its
 pointer. On a bank-writable channel the entry's own survival *is* that
 fact: a successful retain removes the entry, a failed one keeps it, so an
@@ -206,7 +207,28 @@ no session id stays evictable — it can protect no bytes. And a transcript
 no pointer names at all is beyond the sweep entirely, so it is neither
 protected nor deleted by this rule: a resumed session's predecessor, a
 pointer whose session id was cleared, and a *successfully* retained
-session all leave one behind.
+session all leave one behind. Nor does it bind the CLI's own cleanup, which
+knows nothing of this hold and would delete a held transcript by age alone;
+INV-MEM-021 is what keeps that cleanup off.
+
+**INV-MEM-021**: No Casa CLI launch loads the user settings source or passes `cleanupPeriodDays` on its settings flag, and the utility one-shots load no settings source at all, so the pinned CLI's own age-based transcript cleanup is never enabled by a Casa launch.
+
+When the CLI enables that cleanup it walks the whole projects root and
+deletes every transcript older than `cleanupPeriodDays` (30 days unless
+set), a transcript INV-MEM-017 holds included. The pinned CLI enables it
+only when the user settings source is loaded or a loaded source sets
+`cleanupPeriodDays`. Residents, specialists, executors, plugin jobs and the
+restricted webhook pin their sources without the user source; the three
+utility one-shots (the observer, the tier classifier and `query_engager`'s
+synthesis) pin none, since they have no project of their own and a project
+file could carry the key. `cleanupPeriodDays` is never put in the shared
+settings flag: there it would enable the cleanup for every launch.
+
+What it does not cover: a `cleanupPeriodDays` written into a project
+settings file a project-sourced launch loads (Casa writes none), a
+managed-policy settings source, and a CLI version whose gate differs. It
+chooses no retention policy: a transcript nothing in Casa names is kept,
+not cleaned.
 
 ## Failure behavior
 
