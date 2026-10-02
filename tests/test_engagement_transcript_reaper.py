@@ -1,8 +1,8 @@
 """#1162: a finished in_casa engagement's CLI transcripts are deleted.
 
-Casa owns deleting the transcripts of the SDK sessions it runs — whether the
-CLI's own ``cleanupPeriodDays`` sweep removes anything under Casa is stated
-beside INV-MEM-017 (``docs/architecture/memory-lifecycle.md``) — but before
+Casa owns deleting the transcripts of the SDK sessions it runs — the CLI's
+own ``cleanupPeriodDays`` sweep is never enabled by a Casa launch through the
+SDK (INV-MEM-021, ``docs/architecture/memory-lifecycle.md``) — but before
 #1162 only resident sessions were ever reaped. Every path here is seeded through the SDK's public cwd → project-key
 mapping under a tmp ``HOME``, never re-typed, so a naming drift cannot leave
 these tests green while nothing is deleted.

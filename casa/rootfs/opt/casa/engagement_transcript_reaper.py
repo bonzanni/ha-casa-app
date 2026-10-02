@@ -1,9 +1,9 @@
 """Deletes a finished in_casa engagement's CLI transcripts (#1162) and a
 plugin job's working dir (#1170).
 
-Casa owns transcript deletion — whether the CLI's own ``cleanupPeriodDays``
-sweep removes anything under Casa is stated beside INV-MEM-017
-(``docs/architecture/memory-lifecycle.md``), and Casa's resident sweep
+Casa owns transcript deletion — the CLI's own ``cleanupPeriodDays`` sweep is
+never enabled by a Casa launch through the SDK (INV-MEM-021,
+``docs/architecture/memory-lifecycle.md``), and Casa's resident sweep
 (``session_sweeper``) only reaps resident sessions. An in_casa engagement
 writes its sessions under ``$HOME/.claude/projects/<project dir named after
 its cwd>``; once the engagement is terminal nothing resumes or reads them
