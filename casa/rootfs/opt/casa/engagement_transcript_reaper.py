@@ -41,9 +41,10 @@ import logging
 import os
 import re
 import shutil
+import sys
 from dataclasses import dataclass
 
-from engagement_registry import JOB_SIDS_KEY
+from engagement_registry import JOB_SIDS_KEY, RETIRED_SIDS_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,7 @@ class _Target:
     cwd: str
     sids: tuple[str, ...] = ()      # empty for a plugin job: the dir goes whole
     whole_dir: bool = False
+    workdir: str | None = None      # a plugin job's /data/engagements/<id>
 
 
 @dataclass
@@ -77,10 +79,16 @@ class _Counts:
 
 
 def _named_sids(rec) -> tuple[str, ...]:
-    job = (rec.origin or {}).get("job")
+    origin = rec.origin or {}
+    job = origin.get("job")
     listed = job.get(JOB_SIDS_KEY) if isinstance(job, dict) else None
-    sids = {rec.sdk_session_id, *(listed if isinstance(listed, list) else ())}
-    return tuple(sorted(s for s in sids if isinstance(s, str) and _SID_RE.match(s)))
+    retired = origin.get(RETIRED_SIDS_KEY)
+    candidates = [rec.sdk_session_id,
+                  *(listed if isinstance(listed, list) else ()),
+                  *(retired if isinstance(retired, list) else ())]
+    # Filtered before the set: a malformed element must not hide the rest.
+    return tuple(sorted({s for s in candidates
+                         if isinstance(s, str) and _SID_RE.match(s)}))
 
 
 def _target_for(rec, counts: _Counts) -> _Target | None:
@@ -90,7 +98,9 @@ def _target_for(rec, counts: _Counts) -> _Target | None:
         counts.skipped += 1
         return None
     if rec.kind == "plugin":
-        return _Target(rec.id, str(tools.plugin_job_cwd(rec.id)), whole_dir=True)
+        cwd = tools.plugin_job_cwd(rec.id)
+        return _Target(rec.id, str(cwd), whole_dir=True,
+                       workdir=str(cwd.parent))
     if rec.kind == "executor":
         cwd = tools.EXECUTOR_CWD
     else:
@@ -135,43 +145,93 @@ def _remove(path: str, counts: _Counts) -> None:
     counts.deleted += 1
 
 
+def _ignore_vanished(func, path, exc) -> None:
+    # 3.11 hands ``onerror`` an exc_info tuple, 3.12+ hands ``onexc`` the
+    # exception. An entry that vanished mid-walk (a concurrent operator delete)
+    # is skipped and the walk goes on; anything else propagates.
+    err = exc[1] if isinstance(exc, tuple) else exc
+    if not isinstance(err, FileNotFoundError):
+        raise err
+
+
+_RMTREE_TOLERANT = ({"onexc": _ignore_vanished} if sys.version_info >= (3, 12)
+                    else {"onerror": _ignore_vanished})
+
+
+def _remove_tree(path: str, counts: _Counts) -> None:
+    """Remove a plugin job's working dir. Already gone counts nothing: every
+    pass re-visits the record, and after the first removal it stays gone."""
+    if not os.path.lexists(path):
+        return
+    if os.path.isdir(path) and not os.path.islink(path):
+        shutil.rmtree(path, **_RMTREE_TOLERANT)
+    else:
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            return
+    counts.deleted += 1
+
+
+def _reap_transcripts(t: _Target, lookup, counts: _Counts) -> None:
+    canonicalize, find_project_dir = lookup
+    project = find_project_dir(canonicalize(t.cwd))
+    if project is None:
+        counts.absent += 1 if t.whole_dir else len(t.sids)
+        return
+    if t.whole_dir:
+        _remove(str(project), counts)
+        return
+    for sid in t.sids:
+        _remove(os.path.join(project, f"{sid}.jsonl"), counts)
+        sibling = os.path.join(project, sid)
+        if os.path.lexists(sibling):
+            _remove(sibling, counts)
+
+
 def _reap(targets: list[_Target], tombstone_path: str, counts: _Counts) -> None:
     try:
         from claude_agent_sdk._internal.sessions import (
             _canonicalize_path,
             _find_project_dir,
         )
+        lookup = (_canonicalize_path, _find_project_dir)
     except ImportError as exc:
+        # Warned on every pass, whatever the targets; only the transcripts
+        # need the lookup, so the pass goes on for the working dirs.
+        lookup = None
         counts.errors += 1
         logger.warning(
             "engagement transcript reap: claude_agent_sdk._internal.sessions "
-            "(_canonicalize_path, _find_project_dir) unavailable — nothing "
-            "deleted this pass: %s", exc)
-        return
+            "(_canonicalize_path, _find_project_dir) unavailable — no "
+            "transcript deleted this pass: %s", exc)
     durable = _durable_terminal_ids(tombstone_path)
     if durable is None:
-        logger.warning(
-            "engagement transcript reap: tombstone %s unreadable — nothing "
-            "selected this pass", tombstone_path)
+        # #1174: a never-written tombstone is the registry's healthy state;
+        # unreadable is worth a warning only when a terminal record waits.
+        if targets:
+            logger.warning(
+                "engagement transcript reap: tombstone %s unreadable — nothing "
+                "selected this pass", tombstone_path)
         counts.unsettled += len(targets)
         return
     for t in targets:
         if t.engagement_id not in durable:
             counts.unsettled += 1
             continue
+        # Each removal is its own failure: neither one gates the other.
+        if t.workdir is not None:
+            try:
+                _remove_tree(t.workdir, counts)
+            except Exception as exc:  # noqa: BLE001 — one record never stops the pass
+                counts.errors += 1
+                logger.warning(
+                    "engagement transcript reap: %s working dir failed: %s",
+                    t.engagement_id[:8], exc)
+        if lookup is None:
+            continue
         try:
-            project = _find_project_dir(_canonicalize_path(t.cwd))
-            if project is None:
-                counts.absent += 1 if t.whole_dir else len(t.sids)
-                continue
-            if t.whole_dir:
-                _remove(str(project), counts)
-                continue
-            for sid in t.sids:
-                _remove(os.path.join(project, f"{sid}.jsonl"), counts)
-                sibling = os.path.join(project, sid)
-                if os.path.lexists(sibling):
-                    _remove(sibling, counts)
+            _reap_transcripts(t, lookup, counts)
         except Exception as exc:  # noqa: BLE001 — one record never stops the pass
             counts.errors += 1
             logger.warning(

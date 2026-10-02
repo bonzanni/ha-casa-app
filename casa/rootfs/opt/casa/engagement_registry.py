@@ -53,6 +53,11 @@ _TERMINAL_RETENTION_DAYS = 30
 # transcript reaper reads it to delete each one once the job is terminal. Both
 # sides name it through this constant, never as a literal.
 JOB_SIDS_KEY = "sids"
+# #1167: the key, on the record's ``origin``, of the list of every SDK session a
+# clearance downgrade abandoned. The clamp records the session it evicts in its
+# own write; the transcript reaper reads the list to delete each one once the
+# engagement is terminal. Both sides name it through this constant.
+RETIRED_SIDS_KEY = "retired_sids"
 
 
 def _usable_time(value: object) -> bool:
@@ -1817,6 +1822,18 @@ class EngagementRegistry:
             # persisted apart.
             rec.context_rebuild_pending = True
             rec.context_generation += 1
+            # #1167: the evicted session is never resumed (the rebuild opens a
+            # fresh one) and the pointer to it is about to be dropped or
+            # overwritten — record it in this same write, so the transcript
+            # reaper still deletes it once the engagement is terminal. Before
+            # the job block: a malformed job field must not cost the record.
+            sid = rec.sdk_session_id
+            if isinstance(sid, str) and sid:
+                retired = rec.origin.get(RETIRED_SIDS_KEY)
+                if not isinstance(retired, list):
+                    retired = rec.origin[RETIRED_SIDS_KEY] = []
+                if sid not in retired:
+                    retired.append(sid)
             # And withhold the LAUNCH MATERIALS on the record itself: task,
             # brief, context and world-state were authored at the creating
             # turn's clearance, and every later render — boot-replay CLAUDE.md
