@@ -1,18 +1,24 @@
-"""Deletes a finished in_casa engagement's CLI transcripts (#1162).
+"""Deletes a finished in_casa engagement's CLI transcripts (#1162) and a
+plugin job's working dir (#1170).
 
-Casa owns transcript deletion: the CLI's own ``cleanupPeriodDays`` sweep never
-fires under Casa's SDK invocation (``session_sweeper``), and that sweep only
-reaps resident sessions. An in_casa engagement writes its sessions under
-``$HOME/.claude/projects/<project dir named after its cwd>``; once the
-engagement is terminal nothing resumes or reads them again.
+Casa owns transcript deletion — whether the CLI's own ``cleanupPeriodDays``
+sweep removes anything under Casa is stated beside INV-MEM-017
+(``docs/architecture/memory-lifecycle.md``), and Casa's resident sweep
+(``session_sweeper``) only reaps resident sessions. An in_casa engagement
+writes its sessions under ``$HOME/.claude/projects/<project dir named after
+its cwd>``; once the engagement is terminal nothing resumes or reads them
+again.
 
-For each terminal ``driver == "in_casa"`` record this pass deletes, and deletes
+For each terminal ``driver == "in_casa"`` record this pass deletes, and selects
 nothing else:
 
 - ``kind == "plugin"``: the job's whole per-engagement project dir (its cwd is
-  unique to the engagement), so every batch's session goes with it;
+  unique to the engagement), so every batch's session goes with it, and its
+  working dir ``/data/engagements/<id>`` (``tools.plugin_job_cwd(id).parent``) —
+  the latter needs no SDK lookup and does not depend on the project dir;
 - specialist / executor: each session the record names —
-  ``sdk_session_id`` and every sid in ``origin["job"][JOB_SIDS_KEY]`` — as
+  ``sdk_session_id``, every sid in ``origin["job"][JOB_SIDS_KEY]`` and every sid
+  a clearance downgrade retired (``origin[RETIRED_SIDS_KEY]``, #1167) — as
   ``<sid>.jsonl`` (any size) and ``<sid>/``, in that record's own project dir.
   Those dirs are shared with other sessions, which are never selected.
 
@@ -25,8 +31,8 @@ named after a pass, or a removal that failed, is handled by the next one.
 
 The project dir is resolved by the SDK's own (private) cwd → dir helpers,
 imported per pass and never at module scope: if an SDK version no longer
-provides them, the pass logs one WARNING and deletes nothing, while Casa boots
-and the job keeps its schedule (an import at module load would crash boot —
+provides them, the pass logs one WARNING and deletes no transcript, while
+Casa boots and the job keeps its schedule (an import at module load would crash boot —
 ``casa_core.main`` imports this module before scheduling it).
 
 Takes neither ``RetainFence`` nor ``TURN_ADMISSION``: it deletes local files

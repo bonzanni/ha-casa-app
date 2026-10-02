@@ -89,7 +89,7 @@ async def test_named_sessions_go_in_the_record_dir_zero_byte_included(
 async def test_nothing_a_terminal_record_does_not_name_is_touched(
         home, tmp_path, monkeypatch):
     """The shared dirs keep every session no terminal record names, however
-    old — a synchronous delegation's, a pre-downgrade one — and a plugin-job
+    old — a synchronous delegation's, say — and a plugin-job
     dir with no record stays too (outside the pass's scope, not retained on
     purpose)."""
     _specialists(monkeypatch, researcher=SimpleNamespace(role="researcher", cwd=""))
@@ -358,8 +358,8 @@ def test_the_reaper_imports_without_the_private_sdk_surface(
 
 async def test_an_unavailable_private_surface_deletes_nothing_and_retries(
         home, tmp_path, monkeypatch, caplog):
-    """No SDK lookup, no deletion: the pass logs ONE warning naming the
-    module, counts one error, touches nothing and returns normally. The next
+    """No SDK lookup, no transcript deletion: the pass logs ONE warning naming
+    the module, counts one error, touches no transcript and returns normally. The next
     pass with the lookup back reaps as usual — nothing was disabled."""
     _specialists(monkeypatch, researcher=SimpleNamespace(role="researcher", cwd=""))
     registry = _registry(tmp_path)

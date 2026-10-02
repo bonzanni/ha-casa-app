@@ -133,7 +133,7 @@ belongs to creation and the finalize path specifically. And the cancellation com
 itself best-effort on the disk side — if the compensating write fails, the on-disk ghost row
 remains until the boot reconcile and reap TTL retire it.
 
-**INV-ENG-022**: Once an `in_casa` engagement's terminal status is on disk, a pass run at scheduler start and every six hours deletes its CLI transcripts — a plugin job's whole per-engagement project folder, or, for a specialist or executor, each session the record names (its current session and every session its background job lists) in that record's own project folder — and selects nothing else. A pass that cannot import the SDK's folder lookup deletes nothing.
+**INV-ENG-022**: Once an `in_casa` engagement's terminal status is on disk, a pass run at scheduler start and every six hours deletes its CLI transcripts — a plugin job's whole per-engagement project folder, or, for a specialist or executor, each session the record names (its current session, every session its background job lists, and every session a clearance downgrade retired from it) in that record's own project folder — and a plugin job's working folder `/data/engagements/<id>`, and selects nothing else. A pass that cannot import the SDK's folder lookup deletes no transcript.
 
 Casa owns transcript deletion: the CLI's own cleanup never fires for an `in_casa` launch, since
 no SDK launch loads user settings or passes `cleanupPeriodDays` (INV-MEM-021, in
@@ -148,7 +148,11 @@ folder comes from the launch's own working-directory constructor run through the
 lookup — a plugin job's folder is unique to the engagement, so it goes whole with every
 batch's session in it; a specialist's folder (its configured working directory, else its
 agent home) and the executors' shared `/config` folder hold other sessions, so only the
-named ones go, a zero-byte file included.
+named ones go, a zero-byte file included. A clearance downgrade (INV-MEM-011) records the
+session it evicts on the record in the clamp's own write, so a restart or the rebuild's new
+session cannot overwrite the only pointer to it first. A plugin job's working folder needs no
+SDK lookup: it goes even when the lookup is missing or the project folder is already gone,
+and an entry an operator's delete removes mid-walk is skipped, not an error.
 
 The condition is the status *on disk*, not in memory: a strict terminal transition whose
 write fails is rolled back to live, and a non-strict one whose write fails leaves the disk
@@ -160,19 +164,18 @@ pass; one record's failure never stops another's.
 The folder lookup is the SDK's own private helper, imported when a pass starts and never
 when the module loads: Casa imports the pass before scheduling it, so an import at load
 would stop Casa booting on any SDK version that lacks the helper. A pass that cannot import
-it logs one warning naming the helper, counts an error, deletes nothing and tries again on
+it logs one warning naming the helper, counts an error, deletes no transcript and tries again on
 the next pass. The end-to-end test image's mock SDK carries a copy of the same lookup, so the
 pass runs there as it does in production.
 
 What it does not cover, and these are gaps rather than retention: it never lists a folder or
-selects by age, so sessions no record names stay — the session a clearance downgrade
-abandons on a specialist or executor engagement, any plugin-job folder whose record is gone, and the sessions of a specialist
-that has since been uninstalled (its folder can no longer be derived) or given another
-working directory. (A delegation deletes its own session as it ends and a utility one-shot
-writes none: INV-ENG-023, in [`architecture/delegation.md`](delegation.md).) A terminal
-record's row ages out of the tombstone once it is 30 days old,
-and the pass never selects a record without one, so a removal that fails for that long is
-not retried.
+selects by age, so sessions no record names stay — any plugin-job folder whose record is
+gone, and the sessions of a specialist that has since been uninstalled (its folder can no
+longer be derived) or given another working directory. (A delegation deletes its own session
+as it ends and a utility one-shot writes none: INV-ENG-023, in
+[`architecture/delegation.md`](delegation.md).) A terminal record's row ages out of the
+tombstone once it is 30 days old, and the pass never selects a record without one, so a
+removal that fails for that long is not retried.
 
 **The completion gate is INV-ENG-003, and it lives in its own document.** A successful
 completion requested through the completion tool is refused over unread, in-flight or
@@ -310,7 +313,8 @@ happened at the transition, not here.
 
 **A transcript removal fails.** It is logged and counted, the pass moves on to the next
 record, and the next pass retries it. A tombstone the pass cannot read selects nothing that
-pass.
+pass, and warns only when a terminal record waits: on an install that has never run an
+engagement the file was never written, which is not a fault.
 
 ## Extension points
 
