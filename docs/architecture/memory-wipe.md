@@ -101,7 +101,9 @@ recreates under the same id, where it stays until that model's next refresh
 replaces it; and a boot-time reconcile pass still running when a wipe lands can
 recreate the bank mid-wipe with an empty model, which the post-wipe pass,
 queued behind it, then reconciles. Neither touches the wipe's order or its
-report.
+report. Conversation transcripts on disk are not removed by the wipe: dropping
+a session pointer forgets the conversation without retaining it, and does not
+delete its transcript.
 
 ## Failure behavior
 

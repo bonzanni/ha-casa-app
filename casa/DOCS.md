@@ -92,7 +92,9 @@ pointer without saving it — closing the "cleared it by hand but items kept
 reappearing" gap. **There is one way to run it: from the add-on terminal, run
 `casactl memory-wipe --yes`** (it refuses without the flag). A conversation or
 engagement already in flight when the wipe runs may still contribute one item
-afterwards; everything durable is removed. Hindsight's mental models are part of
+afterwards. Conversation transcripts on disk are not removed by the wipe:
+forgetting a conversation pointer drops it without saving it, and does not delete
+the conversation's text. Hindsight's mental models are part of
 the bank and go with it; Casa recreates its two right after the wipe (or at
 the next start or wipe, if Hindsight cannot be reached then), and they fill in
 from the emptied bank — except that a refresh Hindsight was already running when the
