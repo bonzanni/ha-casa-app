@@ -113,6 +113,7 @@ RAW_TRANSPORT_FUNCTIONS = {
     ("channels/telegram.py", "_send_rate_limit_reply"): "notice",
     ("channels/telegram.py", "reply"): "notice",                    # #1036 arrival replies
     ("channels/telegram.py", "deliver_operator_message"): "notice",  # S3: a plugin's delivered post, Casa-labelled
+    ("channels/telegram.py", "deliver_desk_notice"): "notice",       # S4: a desk turn's outcome, Casa-composed
     # topic — sequencer-owned engagement-topic methods (out of this boundary)
     ("channels/telegram.py", "edit_topic_message"): "topic",
     ("channels/telegram.py", "edit_topic_message_markup"): "topic",
@@ -148,6 +149,7 @@ CHANNEL_METHOD_CALLERS = {
     ("tools.py", "send_message"): "admitted",
     ("tools.py", "_classify_send"): "admitted",                 # the caption, admitted by send_media
     ("tools.py", "_post"): "admitted",                          # ask_user (both arms) and wipe_memory (casa_text)
+    ("specialist_desk.py", "handle_reply"): "admitted",         # S4: the desk reply, the specialist's admitted text
 }
 _NON_CHANNEL_RECEIVERS = {"bot", "_bot", "bus", "_bus", "self_bus"}
 
@@ -212,7 +214,7 @@ TOPIC_METHODS = {"send_to_topic", "send_to_topic_rich", "send_to_topic_paged",
                  "post_ask_body_rich", "post_options_keyboard", "post_perm_keyboard",
                  "post_topic_message"}
 NOTICE_METHODS = {"deliver_operator_link", "deliver_operator_message",
-                  "deliver_operator_file", "reply"}
+                  "deliver_operator_file", "deliver_desk_notice", "reply"}
 # dispatch — the text becomes a TURN's input, not an emission (Astra r1 item 1)
 DISPATCH_METHODS = {"deliver_system_turn"}
 

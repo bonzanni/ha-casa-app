@@ -269,6 +269,9 @@ judgement and multi-page loop for a message, the kind's media method for a file 
 [`plugin-delivered-slots.md`](plugin-delivered-slots.md) (INV-PLUG-025, -045, -046); all
 three are Casa-composed notices under the output boundary.
 
+**A swipe-reply on a specialist's post** is routed first in the serialised DM handler (ahead of
+`/new`, after the rate decision) to that specialist's desk: [`specialist-desk.md`](specialist-desk.md).
+
 ## Failure behavior
 
 **No secret, or a wrong one, in webhook mode.** The route refuses before parsing. Nothing

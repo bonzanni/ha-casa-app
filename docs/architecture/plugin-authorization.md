@@ -76,6 +76,15 @@ to retry or re-delegate the action and to say nothing about approvals — the ap
 continuation carries the action out. The record is in-process, capped and advisory: losing
 it costs a confusing reply, never an unapproved call.
 
+**A delegated call raised inside a specialist desk turn is approved back to the desk.** The
+identity's advisory `desk_role` rides the challenge record as its destination, read at
+settle time — so a pending challenge the resident's delegation raised and a desk then raised
+again with the identical call is promoted to that desk — and the continuation is dispatched
+to the desk without the slot wait above (the desk's own queue and permit admit it), after
+re-checking that the approver is the operator and the specialist is still delegable
+([`specialist-desk.md`](specialist-desk.md)); the grant key and its single-use binding are
+unchanged.
+
 Every challenge the coordinator raises — the protected-tool one above and the trigger,
 callback, event, specialist-install and persona-install consents alike — shares the
 operator's attention lane with any machine-timed question already waiting there. The lane

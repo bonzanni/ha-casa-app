@@ -719,10 +719,16 @@ class ChallengeCoordinator:
         target_role: str, tool_name: str, canonical_json: str,
         enforcement_role: str, channel: Any, grants: "GrantStore",
         summary: "str | None" = None, display_name: "str | None" = None,
-        engagement_id: str = "",
+        engagement_id: str = "", desk_role: str = "",
     ) -> ChallengeHandle:
         existing = self._entries.get(key)
         if existing is not None:
+            # S4 §7: the identical call raised again from a DESK while the
+            # challenge is pending promotes the record's destination to that
+            # desk — read at settle time, never from the closure that created
+            # the record. The grant key and binding are untouched.
+            if desk_role:
+                existing.req.meta["desk_role"] = desk_role
             return ChallengeHandle(created=False, _challenge=existing)
 
         # Rendering + size validation runs BEFORE any insert [A:§3.4]:
@@ -788,6 +794,9 @@ class ChallengeCoordinator:
                 "grant_key": key,
                 "canonical_args_json": canonical_json,
                 "enforcement_role": enforcement_role,
+                # S4 §7: the desk the continuation returns to, if any — a
+                # mutable destination the finish hook reads at settle time.
+                "desk_role": desk_role or "",
             },
         )
 
@@ -871,6 +880,13 @@ class ChallengeCoordinator:
         # channel's engagement-resume seam) instead of dispatching a synthetic
         # button turn to a resident bus role. The engagement id is bound into the
         # GrantKey too, so the retried call consumes only THIS engagement's grant.
+        def _desk_role() -> str:
+            # S4 §7: read at SETTLE time — a reuse from a desk may have
+            # promoted the destination after this closure was made.
+            meta = getattr(req, "meta", None)
+            value = meta.get("desk_role") if isinstance(meta, dict) else ""
+            return value if isinstance(value, str) else ""
+
         async def _dispatch_continuation(text: str) -> bool:
             if engagement_id:
                 # #663: carry the tap-commit reservation into the seam, which
@@ -880,6 +896,13 @@ class ChallengeCoordinator:
                 return await channel._dispatch_engagement_continuation(
                     engagement_id=engagement_id, text=text,
                     inbound_reservation=inbound_reservation,
+                )
+            desk_role = _desk_role()
+            if desk_role:
+                # S4 §7: back to the desk that (last) asked, not the resident.
+                return await channel._dispatch_desk_continuation(
+                    chat_id=chat_id, user_id=operator_id,
+                    desk_role=desk_role, request_id=rid, text=text,
                 )
             return await channel._dispatch_button_continuation(
                 chat_id=chat_id, user_id=operator_id,
@@ -926,7 +949,10 @@ class ChallengeCoordinator:
             on timeout, as before), on a task of its own: this hook is awaited
             by the broker's global hook drain, which engagement finalization
             and shutdown both wait on. Everything else is delivered inline."""
-            if engagement_id or enforcement_role == target_role or self._stopping:
+            # S4 §7: a desk continuation is admitted by the desk's own queue
+            # and permit; it never waits for the resident's delegation slot.
+            if (engagement_id or enforcement_role == target_role or self._stopping
+                    or _desk_role()):
                 await _deliver(text, fail_text)
                 return
             self._spawn_continuation(self._after_slot(
@@ -1253,6 +1279,11 @@ class GrantIdentity:
     # ledger's owner key for a post made inside it. Advisory, like
     # ``target_role``: never identity, excluded from equality and binding.
     delegation_id: str = field(default="", compare=False)
+    # S4 §7: the specialist desk this delegated turn runs for, from the
+    # reserved ``desk`` marker on the origin — the approval continuation's
+    # destination. Advisory, like ``target_role``: never identity, excluded
+    # from equality and binding; ``target_role`` keeps the resident.
+    desk_role: str = field(default="", compare=False)
 
 
 def resolve_grant_identity(role: str, artifact_id: str = ""):
@@ -1350,11 +1381,14 @@ def resolve_grant_identity(role: str, artifact_id: str = ""):
     if operator_id is None or chat_id is None:
         return None, "unsupported_origin"
     delegation_id = origin.get("_delegation_id")
+    desk = origin.get("desk")
+    desk_role = desk.get("role") if isinstance(desk, dict) else None
     return GrantIdentity(
         operator_id=operator_id, chat_id=chat_id,
         enforcement_role=role, artifact_id=artifact_id,
         engagement_id="", target_role=origin.get("role"),
         delegation_id=delegation_id if isinstance(delegation_id, str) else "",
+        desk_role=desk_role if isinstance(desk_role, str) and desk_role == role else "",
     ), None
 
 
@@ -1432,6 +1466,7 @@ def make_resident_authz_hook(
             async def _authorize(
                 *, deps: "AuthzDeps", operator_id: int, chat_id: int,
                 engagement_id: str, target_role: "str | None",
+                desk_role: str = "",
             ) -> "dict[str, Any]":
                 # #368: only the CONFIGURED operator may satisfy a challenge —
                 # deny OUTRIGHT for any other sender, BEFORE the grant lookup and
@@ -1477,6 +1512,7 @@ def make_resident_authz_hook(
                     summary=protected[tool_name].get("summary"),
                     display_name=deps.display_name,
                     engagement_id=engagement_id,
+                    desk_role=desk_role,
                 )
                 if handle.refused == "args_too_large":
                     return _deny(_DENY_UNRENDERABLE)
@@ -1541,6 +1577,7 @@ def make_resident_authz_hook(
                 chat_id=identity.chat_id,
                 engagement_id=identity.engagement_id,
                 target_role=identity.target_role,
+                desk_role=getattr(identity, "desk_role", "") or "",
             )
         except asyncio.CancelledError:
             raise

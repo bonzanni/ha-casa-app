@@ -303,16 +303,24 @@ class PostLedger:
     FIFO-bounded on owners, like the broker's references: a restart between
     the post and its echo loses the echo, not the post."""
 
-    def __init__(self, max_owners: int = 512) -> None:
+    def __init__(self, max_owners: int = 512, max_events: int | None = None) -> None:
         self._events: "collections.OrderedDict[str, list[PostEvent]]" = collections.OrderedDict()
         self._max_owners = max_owners
+        # S4 §6: a ledger may bound events per owner too, oldest dropped — the
+        # desk's resident echo asks for it (a chat's lines could grow without a
+        # resident turn to drain them); the S3 post ledger does not, and keeps
+        # every event of an owner as before.
+        self._max_events = max_events
         self._lock = threading.Lock()
 
-    def record(self, owner: str, event: PostEvent) -> None:
+    def record(self, owner: str, event: Any) -> None:
         if not owner:
             return
         with self._lock:
-            self._events.setdefault(owner, []).append(event)
+            events = self._events.setdefault(owner, [])
+            events.append(event)
+            if self._max_events is not None:
+                del events[:-self._max_events]
             self._events.move_to_end(owner)
             while len(self._events) > self._max_owners:
                 self._events.popitem(last=False)
@@ -326,6 +334,84 @@ class PostLedger:
 
 
 POSTS = PostLedger()
+
+
+# -- S4 §2: the post map ----------------------------------------------------
+
+@dataclasses.dataclass(frozen=True)
+class PostRecord:
+    """Who posted a message Casa sent on a plugin's or a desk's behalf: the
+    specialist (``role``, the call's enforcement role), the operator it was
+    posted for, and the slot/tool/owner of the post. The route (§3) reads
+    ``role`` and ``operator_id``; nothing here is plugin-authored."""
+    role: str
+    operator_id: int
+    plugin: str
+    slot: str
+    tool_use_id: str
+    owner: str
+    posted_at: float
+    # the delivery kind (OPERATOR_LINK/MESSAGE/FILE, or ``desk_reply``): the
+    # desk's outcome echo names a landed post by it, never by its body
+    kind: str = ""
+
+
+POST_MAP_MAX = 4096
+
+
+class PostMap:
+    """``(chat_id, message_id) → PostRecord`` for every physical message a
+    delivered post produced — each page, each fallback chunk, the media
+    message, the link message, a desk reply's pages — recorded by the channel
+    AS IT LANDS, so a page the operator holds is routable even when a later
+    page failed and the hook withheld the result. Memory-only and
+    FIFO-bounded: a restart forgets it and an entry older than
+    ``POST_MAP_MAX`` newer messages is evicted — a reply on either is a plain
+    message to the resident (the fallback decision 2 names)."""
+
+    def __init__(self, max_entries: int = POST_MAP_MAX) -> None:
+        self._entries: "collections.OrderedDict[tuple[int, int], PostRecord]" = collections.OrderedDict()
+        self._max = max_entries
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _key(chat_id: Any, message_id: Any):
+        if isinstance(chat_id, bool) or isinstance(message_id, bool):
+            return None
+        if not isinstance(chat_id, int) or not isinstance(message_id, int):
+            return None
+        if chat_id <= 0 or message_id <= 0:
+            return None
+        return (chat_id, message_id)
+
+    def record(self, chat_id: Any, message_id: Any, record: PostRecord) -> None:
+        key = self._key(chat_id, message_id)
+        if key is None:
+            return
+        with self._lock:
+            self._entries[key] = record
+            self._entries.move_to_end(key)
+            while len(self._entries) > self._max:
+                self._entries.popitem(last=False)
+
+    def get(self, chat_id: Any, message_id: Any) -> PostRecord | None:
+        key = self._key(chat_id, message_id)
+        if key is None:
+            return None
+        with self._lock:
+            return self._entries.get(key)
+
+    def owned(self, owner: str) -> list[PostRecord]:
+        """Every retained record filed under *owner* (a delegation or desk
+        turn id), in landing order — the complete account of what Casa
+        posted for that turn, whatever the slot's kind (S4 §5.6)."""
+        if not owner:
+            return []
+        with self._lock:
+            return [r for r in self._entries.values() if r.owner == owner]
+
+
+POST_MAP = PostMap()
 
 _MEDIA_WORDS = {
     "document": "a document", "photo": "a photo", "audio": "an audio file",
@@ -935,16 +1021,16 @@ def compose_operator_link(value: str, *, caption: str = "", label: str = ""):
     return link_text + tail, entities, f"{link_text}: {value}{tail}"
 
 
-async def _post_operator_link(chat_id: int, text: str, entities, plain: str):
+async def _post_operator_link(chat_id: int, text: str, entities, plain: str,
+                              post: "PostRecord | None" = None):
     """Reach the Telegram channel the way the delegated authz factory does
-    (``tools._channel_manager``); absent ⇒ ``NOT_DELIVERED``."""
-    import tools as tools_mod
+    (``tools._channel_manager``); absent ⇒ ``NOT_DELIVERED``. ``post`` (S4)
+    is the record the channel files each landed message under."""
     from channels import DeliveryOutcome
-    manager = getattr(tools_mod, "_channel_manager", None)
-    channel = manager.get("telegram") if manager is not None else None
+    channel = _telegram_channel()
     if channel is None:
         return DeliveryOutcome.NOT_DELIVERED
-    return await channel.deliver_operator_link(chat_id, text, entities, plain)
+    return await channel.deliver_operator_link(chat_id, text, entities, plain, post=post)
 
 
 def _telegram_channel():
@@ -955,14 +1041,16 @@ def _telegram_channel():
     return manager.get("telegram") if manager is not None else None
 
 
-async def _post_operator_message(chat_id: int, text: str):
+async def _post_operator_message(chat_id: int, text: str,
+                                 post: "PostRecord | None" = None):
     """S3: the channel judges the whole physical plan of *text* before the
-    first send and posts every page; absent ⇒ ``NOT_DELIVERED``."""
+    first send and posts every page; absent ⇒ ``NOT_DELIVERED``. ``post``
+    (S4) is the record the channel files each landed page under."""
     from channels import DeliveryOutcome
     channel = _telegram_channel()
     if channel is None:
         return DeliveryOutcome.NOT_DELIVERED
-    return await channel.deliver_operator_message(chat_id, text)
+    return await channel.deliver_operator_message(chat_id, text, post=post)
 
 
 def _claim_and_capture(outbox, path: str, kind: str):
@@ -996,7 +1084,8 @@ def _claim_and_capture(outbox, path: str, kind: str):
             logger.warning("operator file claim cleanup failed: %s", type(exc).__name__)
 
 
-async def _post_operator_file(chat_id: int, path: str, kind: str, caption: str):
+async def _post_operator_file(chat_id: int, path: str, kind: str, caption: str,
+                              post: "PostRecord | None" = None):
     """S3: claim *path* from the plugin outbox exactly as ``send_media``
     claims it (the outbox derived from the authenticated engagement, else
     the shared one), run the kind's policy through ``capture``, and send
@@ -1018,7 +1107,8 @@ async def _post_operator_file(chat_id: int, path: str, kind: str, caption: str):
         logger.warning("operator file not sent: %s", why)
         return DeliveryOutcome.NOT_DELIVERED
     content, filename = captured
-    return await channel.deliver_operator_file(chat_id, content, kind, filename, caption)
+    return await channel.deliver_operator_file(chat_id, content, kind, filename, caption,
+                                               post=post)
 
 
 async def _deliver_and_replace(store: ReferenceStore, seg: str, call: _InFlight,
@@ -1048,11 +1138,18 @@ async def _deliver_and_replace(store: ReferenceStore, seg: str, call: _InFlight,
         taken = store.take_for_delivery(call.deposits.get(slot, ""))
         if taken is not None:
             value, caption, label, identity, media_kind = taken
+            # S4 §2: the record the channel files every landed message under
+            # — the identity's role and operator, never anything the plugin
+            # authored.
+            post = PostRecord(
+                role=identity.enforcement_role, operator_id=identity.operator_id,
+                plugin=seg, slot=slot, tool_use_id=call.tool_use_id,
+                owner=_post_owner(identity), posted_at=time.time(), kind=dkind)
             if dkind == OPERATOR_MESSAGE:
                 head = post_label(identity.enforcement_role)
                 text = compose_operator_message(value, head)
                 outcome = await asyncio.wait_for(
-                    _post_operator_message(identity.chat_id, text),
+                    _post_operator_message(identity.chat_id, text, post=post),
                     DELIVERY_TIMEOUT_S)
                 delivered = outcome is DeliveryOutcome.DELIVERED
                 if delivered:
@@ -1064,7 +1161,8 @@ async def _deliver_and_replace(store: ReferenceStore, seg: str, call: _InFlight,
                 head = post_label(identity.enforcement_role)
                 outcome = await asyncio.wait_for(
                     _post_operator_file(identity.chat_id, value, media_kind,
-                                        compose_file_caption(head, caption)),
+                                        compose_file_caption(head, caption),
+                                        post=post),
                     FILE_DELIVERY_TIMEOUT_S)
                 delivered = outcome is DeliveryOutcome.DELIVERED
                 if delivered:
@@ -1074,7 +1172,8 @@ async def _deliver_and_replace(store: ReferenceStore, seg: str, call: _InFlight,
                 text, entities, plain = compose_operator_link(
                     value, caption=caption, label=label)
                 outcome = await asyncio.wait_for(
-                    _post_operator_link(identity.chat_id, text, entities, plain),
+                    _post_operator_link(identity.chat_id, text, entities, plain,
+                                        post=post),
                     DELIVERY_TIMEOUT_S)
                 delivered = outcome is DeliveryOutcome.DELIVERED
     except asyncio.CancelledError:

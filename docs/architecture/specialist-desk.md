@@ -1,0 +1,209 @@
+---
+last_reviewed: 2026-10-02
+---
+
+# The specialist desk
+
+> Code is the source of truth. This file is a map; when it and the code disagree, the code wins.
+
+## Scope
+
+How the operator's swipe-reply on a message Casa posted for a specialist reaches that
+specialist directly — the post map every delivered message is filed in, the route in the
+Telegram DM handler, the desk a specialist keeps with a chat (a bounded dialogue log, reset
+after idle, one use at a time), the desk turn and its reply, what the chat's resident learns
+of it, and where an approval raised inside a desk turn continues. The posts themselves — how
+a plugin's output is deposited and delivered — are
+[`plugin-delivered-slots.md`](plugin-delivered-slots.md); the delegation a resident launches,
+its ACL and its limits are [`delegation.md`](delegation.md); the approval challenge is
+[`plugin-authorization.md`](plugin-authorization.md). Button taps, stored calls and files sent
+as a reply are later slices; the desk is Telegram-only.
+
+## Mental model
+
+**A reply on a specialist's post is that specialist's turn, not the resident's.** When the
+operator swipe-replies on a message Casa posted for a specialist — a plugin's delivered
+message, file or link, or the specialist's own earlier desk reply — Casa hands the operator's
+exact words to that specialist as one desk turn. No resident model turn is spent, nothing is
+retold: the specialist answers in the operator's chat under its own label (`📊 Finance`), and
+the resident learns of the exchange as one body-free line at its next turn. A reply that does
+not meet the route's four conditions — the sender is the authenticated operator, the quoted
+message is retained in the post map for this chat and was posted for this operator, the
+poster is not the chat's own resident, and the poster is a specialist (`is_specialist`: the
+loaded role's `kind`, the same predicate the delegation gate reads) the resident may
+delegate to now — takes the path that existed before, byte for byte. The route runs first in
+the DM handler, ahead of the `/new` interception (so `/new, start over` on a Finance post tells
+Finance to start over), and after the chat's rate decision, taken exactly as today's path
+takes it.
+
+**The post map is filed as messages land.** The channel files every physical message a post
+produces — each page, each plain fallback chunk, the media message, the link message, a desk
+reply's pages — under a record of its poster (the call's enforcement role and operator, the
+slot, the tool-use id, the echo owner), keyed by the canonical int chat id and the Telegram
+message id, the moment that message's send returns. A page the operator holds is therefore
+routable even when a later page failed and the plugin's result was withheld. The map is
+memory-only and count-bounded (4,096 entries, FIFO): a restart forgets it, and an entry
+older than 4,096 newer posted messages is evicted. Both are stated behaviour, not a gap — a
+reply on such a message is a plain message to the resident, which routes it by judgement.
+
+**A desk is a window on a dialogue, not a session.** Each (chat, specialist) pair has a desk:
+an ordered log of exchanges — the operator's words, the resident's brief when it delegated,
+the specialist's delivered text — injected into every desk turn's context as a plain
+`<desk>` block, oldest first. It is not an SDK session resume: the specialist runner runs
+every delegated turn in a fresh CLI session and gives the specialist its memory by prompt
+injection, and the plugin's own store is the state a specialist works from. The desk keeps
+at most twelve exchanges (the oldest dropped), each side clipped to 400 characters with a
+visible `[…]`, the rendered block budgeted to 10,000 characters by dropping whole oldest
+exchanges; a desk idle for an hour starts its next use empty. Every completed turn is an
+exchange, a post-only or silent one included — its specialist side is then a body-free
+marker, never the view.
+
+**One desk, one use at a time, the lock covering the whole use.** Every use of a desk — a
+swipe-reply turn, an approval continuation, and the resident's delegations to that
+specialist from that chat whether sync, degraded or async — runs alone under the desk's lock
+from the idle check and the log read through the run, the classification, the delivery
+bookkeeping and the exchange's commit, in arrival order. The specialist's concurrency permit
+is taken after the lock (it never waits; a refusal is a notice) and released inside the
+lock, before the lock, so the next queued use never wakes to a permit a finished run still
+holds. At most three uses may wait, reserved before any task exists: a fourth swipe-reply or
+continuation gets the busy notice at once, a fourth delegation gets the delegation tool's
+typed busy result, and no task is created for either.
+
+**The reply is the specialist's own words, labelled, under the output boundary.** The runner's
+output is classified exactly as a sync delegation classifies it — a CLI-aborted run yields
+no text — then bounded by the same 20,000-character cap a sync answer gets, admitted under
+the desk's own scope, prefixed with the label line, and sent through the resident reply path
+(`send_response`): rendered, paginated, INV-OUT-001. Its pages join the post map under the
+specialist, so the operator can reply to the reply. A plugin view, package or file the
+specialist produces during the turn reaches the operator through the delivered-slot path,
+verbatim — the desk never retells a view; a turn whose outcome was such a post and whose
+final text is silent posts no reply. A turn with no proven operator-visible outcome at all —
+an empty answer with no proven post and no delivered media, a refused permit, a full queue,
+an abort, an exception, a failed reply send — ends in ONE labelled, body-free Casa notice.
+
+**The resident learns, without a turn.** Each desk turn leaves one Casa line on the chat's
+echo ledger (`📊 Finance answered your reply (2 pages).`, `… could not handle your reply
+(specialist_turn_limit).`), with the delivered-slot echo lines of any post the turn made; the
+resident's next turn in that chat drains them (read-and-clear) and prepends them to its
+prompt, each marked `(front desk)`, at most five then a count, each within 120 characters.
+No narration turn is synthesised; the origin's `user_text` stays raw; nothing is persisted.
+
+**An approval raised inside a desk turn continues the desk.** The desk turn's grant identity
+carries an advisory `desk_role` beside its advisory `target_role` (which stays the resident,
+with its slot-wait semantics); the challenge record carries the destination, and the finish
+hook reads it at settle time, so a pending challenge the resident's delegation raised and a
+desk then raised again with the identical call is promoted to that desk — the operator's one
+approval continues the desk that last asked. The continuation is admitted by the route's own
+conditions at dispatch: the approver is the authenticated operator and the specialist is
+still one the resident may delegate to; otherwise one labelled notice and no specialist run,
+the pending grant left to expire. The grant key and its single-use binding are unchanged.
+
+## Contracts & invariants
+
+**INV-DESK-001**: An operator's Telegram message that quotes a message Casa posted for a specialist's slot in that chat, for that operator, and still retained in its post map, reaches that specialist as one desk turn carrying the operator's exact words — never a resident turn — when the specialist is one the chat's resident may delegate to; every other message, quoting or not, takes the path that existed before.
+
+The four conditions are positive and read from Casa's own state — the authenticated
+operator check the ingress already makes, the post map the channel filed, the chat's default
+resident, the live delegate map the ACL reads — never from text. The route runs first in the
+serialised DM handler and after the chat's rate decision; the desk task is tracked like an
+engagement turn's so the per-chat serial lock is released at once and a stop can drain it.
+The map's retention is the invariant's edge: a restart or eviction makes the reply a plain
+message, by design.
+
+**INV-DESK-002**: A desk turn's reply reaches the operator only as an admitted, labelled, paginated post of the specialist's own completed and bounded text, whose messages join the post map; a turn that produces no proven operator-visible outcome, or whose reply is not proven, ends in one labelled Casa notice; the chat's resident learns of the turn only through a body-free line at its next turn, and no resident model turn is spent on it.
+
+The desk turn's origin is the DM's own context with the three fields the provenance
+classifier needs, the resident's role, the specialist as the executing role, depth one, a
+fresh turn id as `send_media`'s quota key and the delivered-slot echo owner, and the reserved
+`desk` marker; it classifies `dm`/`delegated`, so plugin capabilities, approvals and
+delivered posts inside the turn work exactly as inside a sync delegation. The scope is
+minted for the desk (no inherited obligations) and carried as `origin["turn_scope"]`.
+
+**INV-DESK-003**: A desk's log holds at most twelve bounded exchanges, in arrival order, shared by swipe-replies and the resident's delegations to that specialist from that chat from the first of them — every completed desk turn an exchange — and is empty on the first use after the idle bound or a restart; every use of a desk — a swipe-reply, a continuation, a sync, degraded or async delegation — runs alone under its lock from the log read to the exchange's commit, in arrival order.
+
+A resident's delegation from an operator DM (`desk_for_delegation`: the operator's own Telegram
+turn with no `synthetic` marker — a button continuation or a setup turn delegates as before) to
+a specialist gets or creates the desk and
+runs as one use of it: the resident's arguments are validated exactly as today (task 4,000,
+context 8,000), then the desk block is fitted into what remains of the desk's 12,500-character
+context budget — newest exchanges kept, possibly none — after the resident's own context;
+an async launch or a degraded sync still returns `pending` to the resident at once while its
+task waits for the desk. A delegation launched elsewhere (an engagement, a scheduled or
+webhook turn, another chat), a job batch, and a voice turn touch no desk.
+
+## Failure behavior
+
+**The queue is full, the permit is refused, the run raises, is aborted by the CLI, or
+exceeds the ceiling.** No reply post; one labelled, body-free notice (`📊 Finance could not
+handle your reply (<kind>).`, `📊 Finance is busy; try again in a moment.`); the echo line says
+the same; a failed run is still logged as an exchange with the `[no reply]` marker.
+
+**The turn ends with no proven operator-visible outcome.** The same notice shape (`📊 Finance
+had nothing to add.`). A proven outcome is read from the two records that exist by design
+(`turn_outcomes`): every message Casa posted for the turn, whatever the slot's kind — the post
+map by owner (`PostMap.owned`, each record stamped with its delivery `kind`) — and the sends
+the specialist's turn scope confirmed delivered (one suffices; a later send that failed does not
+erase it — the resident's every-send closing-silence rule is not the desk's). Deliberate silence
+after a proven outcome stays silent; every
+outcome with no S3 echo line of its own (a link post, a send the specialist made itself) adds
+one Casa-composed line per kind, named from the records (`OUTCOME_ECHO`: `📊 Finance posted a
+link to your chat.`, `… sent you a file.`, `… asked you a question.`, `… sent you a
+message.`), never from a body; a message or file post is echoed once, by its S3 line.
+
+**The reply post is not proven.** The exchange is logged (the specialist did answer; a retry
+would re-run it), the notice says `📊 Finance answered; the reply did not go out.`, no retry;
+if the notice itself fails, nothing more is attempted.
+
+**A reply whose quoted message is not retained, by a non-operator, on the resident's own post,
+or in a chat whose id does not normalise.** Today's path, untouched.
+
+**An approval continuation whose desk is no longer delegable, or whose approver is not the
+operator.** One labelled notice (`… could not continue (not delegable).`), the same line in
+the echo, no specialist run; the pending grant expires.
+
+**Casa restarts.** The map, the desks and the echo ledger are gone; the next reply on an
+older post is a plain message to the resident; the next desk turn starts a fresh log.
+
+## Extension points
+
+**Buttons on views and stored calls** (a later slice) land in the same desk: a tap is a use of
+the desk under its lock and queue, the stored call its task.
+
+**A file sent as a reply** (a later slice) routes through the same post map and the same
+conditions, into the specialist's inbox.
+
+**The idle bound** is a module constant until tuning has an evidence base; an app option
+follows.
+
+## Source & test map
+
+<!-- BEGIN SOURCEMAP -->
+<!-- generated by scripts/verify_docs.py --write-nav; do not hand-edit -->
+
+**Source**
+- `casa/rootfs/opt/casa/specialist_desk.py`
+- `casa/rootfs/opt/casa/result_broker.py::PostMap`
+- `casa/rootfs/opt/casa/result_broker.py::PostRecord`
+- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._maybe_route_desk_reply`
+- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._spawn_desk_turn`
+- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._dispatch_desk_continuation`
+- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.deliver_desk_notice`
+- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._record_post`
+- `casa/rootfs/opt/casa/output_boundary.py::TurnScope.for_desk`
+
+**Tests**
+- `tests/test_specialist_desk.py`
+- `tests/test_desk_post_map.py`
+- `tests/test_desk_route.py`
+- `tests/test_desk_turn.py`
+- `tests/test_desk_delegation.py`
+- `tests/test_desk_continuation.py`
+- `tests/test_desk_echo_prompt.py`
+
+**Related**
+- [`architecture/plugin-delivered-slots.md`](../architecture/plugin-delivered-slots.md)
+- [`architecture/delegation.md`](../architecture/delegation.md)
+- [`architecture/plugin-authorization.md`](../architecture/plugin-authorization.md)
+- [`architecture/telegram.md`](../architecture/telegram.md)
+- [`architecture/output-boundary.md`](../architecture/output-boundary.md)
+<!-- END SOURCEMAP -->

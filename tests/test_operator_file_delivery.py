@@ -64,7 +64,7 @@ class _Recorder:
         self.other_sends: list[tuple] = []
         self.chat_id = "42"
 
-    async def deliver_operator_file(self, chat_id, content, kind, filename, caption):
+    async def deliver_operator_file(self, chat_id, content, kind, filename, caption, *, post=None):
         self.deliveries.append((chat_id, content, kind, filename, caption))
         if self.sleep_s:
             await asyncio.sleep(self.sleep_s)

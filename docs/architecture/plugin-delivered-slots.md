@@ -66,6 +66,15 @@ receives: a sync delegation's returned text, or a finished delegation's, engagem
 job's terminal notice. The line never quotes the body, the caption or the file name; the
 operator has the post, the resident has the fact of it.
 
+**Every physical message of a post is filed as it lands.** The hook hands the channel a
+record of the poster (the call's enforcement role and operator, the slot, the tool-use id,
+the echo owner) and the channel files each page, each fallback chunk, the media message and
+the link message under it in the post map the moment its send returns — so the operator's
+swipe-reply on any of them reaches that specialist's desk
+([`specialist-desk.md`](specialist-desk.md)), a page that landed before a later page failed
+included. The map is memory-only and count-bounded; a reply on a forgotten message is a
+plain message to the resident.
+
 **The channel's part for a link.**
 When a plugin tool's result carries a slot declared `operator_link`, the result broker
 composes a single labelled-link message — the label and the destination host as the link

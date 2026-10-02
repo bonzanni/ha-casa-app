@@ -406,6 +406,25 @@ class TurnScope:
         return child
 
     @classmethod
+    def for_desk(cls, origin: dict, *, display_name: str) -> "TurnScope":
+        """S4 §5.2: the scope a specialist desk turn runs under — a fresh
+        scope with the DM's reserved markers and no inherited obligations
+        (there is no launcher turn whose brief could be unread); the
+        specialist's display name, the resident's role (the desk acts on the
+        resident's behalf in the resident's chat)."""
+        from provenance import RESERVED_CONTEXT_KEYS
+        ctx = dict(origin or {})
+        return cls(
+            id=str(ctx.get("_delegation_id") or ""),
+            cid=str(ctx.get("cid") or "-"),
+            role=str(ctx.get("role") or ""),
+            display_name=display_name,
+            channel=str(ctx.get("channel") or ""),
+            message_type=str(ctx.get("message_type") or ""),
+            markers={k: ctx[k] for k in RESERVED_CONTEXT_KEYS if k in ctx},
+        )
+
+    @classmethod
     def for_engagement(cls, eng: Any, *, display_name: str) -> "TurnScope":
         """An engagement's scope, minted on demand from its record (the origin
         persisted with live objects stripped): the persisted note, if any, and

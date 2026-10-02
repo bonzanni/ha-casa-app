@@ -2164,8 +2164,16 @@ class Agent:
             # itself stays raw (it also feeds origin_var + the recall query).
             # Composed via timekeeping so retention's strip_time_envelope
             # (#471) can never drift from what is actually prepended here.
+            # S4 §6: what the specialist desks of this chat did since the
+            # resident's last turn — Casa's own body-free lines, drained once,
+            # ahead of the envelope; the origin's user_text stays raw.
+            import specialist_desk
+            desk_prefix = (
+                specialist_desk.prompt_prefix(msg.context.get("chat_id"))
+                if msg.channel == "telegram" else "")
             prompt_text = (
-                compose_time_envelope(datetime.now(resolve_tz())) + user_text
+                desk_prefix
+                + compose_time_envelope(datetime.now(resolve_tz())) + user_text
             )
 
             # Eligibility gate (spec §4, AR-6/AR-7): a pooled warm turn iff the
