@@ -162,8 +162,9 @@ class WipeReport:
     bank_deleted: bool = False
     residual_note: str = (
         "A conversation or engagement already in flight when the wipe ran "
-        "may still contribute one post-wipe item; everything durable "
-        "(the bank, the retry spool, the session pointers) was removed."
+        "may still contribute one post-wipe item. The bank, the retry spool "
+        "and the session pointers were removed; conversation transcripts on "
+        "disk are not removed by the wipe."
     )
 
     def summary(self) -> str:

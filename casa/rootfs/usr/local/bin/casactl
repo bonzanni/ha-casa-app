@@ -163,6 +163,7 @@ def _cmd_memory_wipe(args: argparse.Namespace) -> int:
             "  - the shared memory bank (every retained fact and summary)\n"
             "  - the durable cold-retain retry spool\n"
             "  - every conversation pointer (dropped WITHOUT saving)\n"
+            "Conversation transcripts on disk are not removed by the wipe.\n"
             "It cannot be undone. Re-run with --yes to proceed.",
             file=sys.stderr,
         )
