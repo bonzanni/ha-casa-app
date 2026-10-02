@@ -7,13 +7,18 @@ mutation-checked regression tests, not red cases; the red case lives in
 
 from __future__ import annotations
 
+import asyncio
 import errno
+import importlib
+import importlib.util
 import json
+import logging
 import os
 import stat
+import sys
 import uuid
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -310,3 +315,146 @@ def test_a_committed_write_is_not_reported_failed_by_the_directory_close(
         monkeypatch.setattr(os, "close", real_close)
 
     assert failed and target.read_text(encoding="utf-8") == "new"
+
+
+# --- The SDK's private lookup is imported per pass, never at module load ---
+
+_PRIVATE = "claude_agent_sdk._internal.sessions"
+_MOCK_SESSIONS = (Path(__file__).resolve().parent.parent / "test-local"
+                  / "mock-claude-sdk" / "claude_agent_sdk" / "_internal"
+                  / "sessions.py")
+
+
+def _private_surface(missing: str | None):
+    """``None`` blocks the module outright; otherwise a stand-in module that
+    lacks exactly the named helper."""
+    if missing is None:
+        return None
+    from claude_agent_sdk._internal import sessions as real
+
+    stand_in = ModuleType(_PRIVATE)
+    for name in ("_canonicalize_path", "_find_project_dir"):
+        if name != missing:
+            setattr(stand_in, name, getattr(real, name))
+    return stand_in
+
+
+@pytest.mark.parametrize(
+    "missing", [None, "_canonicalize_path", "_find_project_dir"])
+def test_the_reaper_imports_without_the_private_sdk_surface(
+        monkeypatch, missing):
+    """``casa_core.main`` imports the reaper before scheduling it, so an
+    import-time dependency on the SDK's private module crashes boot whenever
+    an SDK (or the e2e mock) lacks it. With the module or either helper
+    unavailable, a fresh import of the reaper still succeeds."""
+    monkeypatch.delitem(sys.modules, "engagement_transcript_reaper",
+                        raising=False)
+    monkeypatch.setitem(sys.modules, _PRIVATE, _private_surface(missing))
+
+    reaper = importlib.import_module("engagement_transcript_reaper")
+
+    assert asyncio.iscoroutinefunction(reaper.reap_engagement_transcripts)
+
+
+async def test_an_unavailable_private_surface_deletes_nothing_and_retries(
+        home, tmp_path, monkeypatch, caplog):
+    """No SDK lookup, no deletion: the pass logs ONE warning naming the
+    module, counts one error, touches nothing and returns normally. The next
+    pass with the lookup back reaps as usual — nothing was disabled."""
+    _specialists(monkeypatch, researcher=SimpleNamespace(role="researcher", cwd=""))
+    registry = _registry(tmp_path)
+    ps, ss = _sid(), _sid()
+    plugin = await _record(registry, kind="plugin", sid=ps)
+    await _record(registry, sid=ss)
+    pdir = _project_dir(home, f"/data/engagements/{plugin.id}/plugin-job")
+    sdir = _project_dir(home, "/config/agent-home/researcher")
+    _seed_session(pdir, ps)
+    _seed_session(sdir, ss)
+    before = sorted(str(p) for p in _projects(home).rglob("*"))
+    assert len(before) == 10
+
+    with monkeypatch.context() as m:
+        m.setitem(sys.modules, _PRIVATE, None)
+        with caplog.at_level(logging.DEBUG, logger="engagement_transcript_reaper"):
+            counts = await _reap(registry)
+
+    assert counts == {"deleted": 0, "absent": 0, "skipped": 0,
+                      "unsettled": 0, "errors": 1}
+    assert sorted(str(p) for p in _projects(home).rglob("*")) == before
+    warnings = [r for r in caplog.records
+                if r.name == "engagement_transcript_reaper"
+                and r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert _PRIVATE in warnings[0].getMessage()
+
+    counts = await _reap(registry)
+
+    assert counts["deleted"] == 3 and counts["errors"] == 0
+    assert not pdir.exists() and list(sdir.iterdir()) == []
+
+
+def _load_mock_sessions() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("_mock_sdk_sessions",
+                                                  _MOCK_SESSIONS)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        sys.modules.pop(spec.name, None)
+    return mod
+
+
+async def test_the_e2e_mock_lookup_drives_a_real_reap(
+        home, tmp_path, monkeypatch):
+    """The e2e image runs the reaper on the mock SDK. Its ``_internal``
+    shim must resolve the same dir, not merely make the import succeed: a
+    pass that looks up through the mock's bytes removes a finished plugin
+    job's dir and a specialist's named session, and nothing else."""
+    _specialists(monkeypatch, researcher=SimpleNamespace(role="researcher", cwd=""))
+    registry = _registry(tmp_path)
+    ps, ss, other = _sid(), _sid(), _sid()
+    plugin = await _record(registry, kind="plugin", sid=ps)
+    await _record(registry, sid=ss)
+    pdir = _project_dir(home, f"/data/engagements/{plugin.id}/plugin-job")
+    sdir = _project_dir(home, "/config/agent-home/researcher")
+    _seed_session(pdir, ps)
+    _seed_session(sdir, ss)
+    _seed_session(sdir, other)
+    monkeypatch.setitem(sys.modules, _PRIVATE, _load_mock_sessions())
+
+    counts = await _reap(registry)
+
+    assert counts["deleted"] == 3 and counts["errors"] == 0
+    assert not pdir.exists()
+    assert sorted(p.name for p in sdir.iterdir()) == sorted(
+        [f"{other}.jsonl", other])
+
+
+@pytest.mark.parametrize("config_dir", [False, True])
+@pytest.mark.parametrize("cwd", [
+    "/data/engagements/0123456789abcdef0123456789abcdef/plugin-job",
+    "/config/agent-home/researcher",
+    "/config",
+    "/config/custom home/re.search_er",
+    "/config/agent-home/café",
+    "/config/" + "deep-" * 50 + "home",
+])
+def test_the_e2e_mock_lookup_matches_the_pinned_sdk(
+        home, tmp_path, monkeypatch, cwd, config_dir):
+    """The mock's copy of the SDK's lookup agrees with the real SDK's PUBLIC
+    mapping (``project_key_for_directory``) for Casa's three cwd shapes,
+    punctuation, a non-NFC name and a path past the 200-character hash
+    cut-off, under ``HOME`` and under ``CLAUDE_CONFIG_DIR``. Red when an SDK
+    bump changes the mapping and the shim is not re-synced."""
+    from claude_agent_sdk import project_key_for_directory
+
+    root = home / ".claude"
+    if config_dir:
+        root = tmp_path / "cfg"
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(root))
+    seeded = root / "projects" / project_key_for_directory(cwd)
+    seeded.mkdir(parents=True)
+    mock = _load_mock_sessions()
+
+    assert mock._find_project_dir(mock._canonicalize_path(cwd)) == seeded

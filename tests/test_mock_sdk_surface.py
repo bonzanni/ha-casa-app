@@ -255,6 +255,21 @@ def test_executor_reports_a_missing_module(tmp_path):
     assert len(report["import_errors"]) == 1
     assert "claude_agent_sdk._internal" in report["import_errors"][0]["error"]
 
+def test_the_mock_installs_the_lookup_the_transcript_reaper_imports():
+    """#1162: the reaper imports the SDK's private cwd -> project-dir lookup
+    lazily, per pass, so the import-time guard above does not see it. In the
+    e2e image the mock must still provide it from a real package (a dir
+    without ``__init__.py`` is not installed), or the reaper only ever logs
+    that the lookup is unavailable there."""
+    items = [{"file": "casa/rootfs/opt/casa/engagement_transcript_reaper.py",
+              "line": 0,
+              "stmt": "from claude_agent_sdk._internal.sessions import "
+                      "_canonicalize_path, _find_project_dir"}]
+    report = _execute_against_mock(items, _MOCK_ROOT, _MOCK_ROOT)
+    assert report["succeeded"] == 1, report
+    assert report["import_errors"] == [] and report["invalid_origins"] == [], report
+
+
 def test_mock_options_accept_every_kwarg_build_options_passes():
     mock = _load_mock()
     fields = {f.name for f in dataclasses.fields(mock.ClaudeAgentOptions)}

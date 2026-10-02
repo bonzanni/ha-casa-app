@@ -23,6 +23,12 @@ roll back, is not yet a decision (``_durable_terminal_ids``). Every pass
 re-visits every terminal record — there is no "reaped" marker — so a session
 named after a pass, or a removal that failed, is handled by the next one.
 
+The project dir is resolved by the SDK's own (private) cwd → dir helpers,
+imported per pass and never at module scope: if an SDK version no longer
+provides them, the pass logs one WARNING and deletes nothing, while Casa boots
+and the job keeps its schedule (an import at module load would crash boot —
+``casa_core.main`` imports this module before scheduling it).
+
 Takes neither ``RetainFence`` nor ``TURN_ADMISSION``: it deletes local files
 and retains nothing.
 """
@@ -36,11 +42,6 @@ import os
 import re
 import shutil
 from dataclasses import dataclass
-
-from claude_agent_sdk._internal.sessions import (
-    _canonicalize_path,
-    _find_project_dir,
-)
 
 from engagement_registry import JOB_SIDS_KEY
 
@@ -135,6 +136,18 @@ def _remove(path: str, counts: _Counts) -> None:
 
 
 def _reap(targets: list[_Target], tombstone_path: str, counts: _Counts) -> None:
+    try:
+        from claude_agent_sdk._internal.sessions import (
+            _canonicalize_path,
+            _find_project_dir,
+        )
+    except ImportError as exc:
+        counts.errors += 1
+        logger.warning(
+            "engagement transcript reap: claude_agent_sdk._internal.sessions "
+            "(_canonicalize_path, _find_project_dir) unavailable — nothing "
+            "deleted this pass: %s", exc)
+        return
     durable = _durable_terminal_ids(tombstone_path)
     if durable is None:
         logger.warning(
