@@ -552,10 +552,14 @@ def test_every_sdk_read_loop_declares_how_it_handles_an_api_fault():
         # existing handler suppresses the interjection — the honest outcome
         # for an observer that could not decide.
         "observer.py": (1, "suppresses; an undecidable interjection is dropped"),
-        # Suppresses the prose so it is never streamed into the engagement's
-        # topic, and logs the kind. The engagement's TERMINAL kind is still
-        # the generic one — tracked separately, see #595.
-        "in_casa_driver.py": (1, "suppresses; empty-turn warning is the signal"),
+        # 1) _deliver_turn — suppresses the prose so it is never streamed
+        #    into the engagement's topic, and logs the kind. The engagement's
+        #    TERMINAL kind is still the generic one — tracked separately, see
+        #    #595. 2) _reset_conversation — a fresh job's /clear drain
+        #    (INV-BGJOB-005): folds and streams no text, and anything but a
+        #    confirmed reset with a non-error result raises
+        #    ConversationResetError before the turn is accepted.
+        "in_casa_driver.py": (2, "suppresses; a reset that is not confirmed raises"),
     }
 
     found = {

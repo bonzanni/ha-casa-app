@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-19
+last_reviewed: 2026-10-02
 ---
 
 # Background jobs
@@ -55,7 +55,47 @@ batches. The job ends when the specialist calls `emit_completion`, when the oper
 `/cancel`s it, or when Casa fails it (a batch that raised or was cut off, no progress, or
 the batch cap).
 
+A job also declares how its turns see the conversation, with `session`. `resume`, the
+default, runs every turn in one conversation. `fresh` starts every turn after the launch — a
+batch, an operator message, any later turn — in a fresh conversation that begins with the
+job brief, so no earlier turn's messages are visible to it. The engagement keeps its one
+client: under the turn lock, after the turn is admitted, the driver sends the CLI's `/clear`
+through that client, drains it to its result, and goes on only once the CLI confirmed the
+reset; it then asks the admission again and sends `job_brief(rec)` followed by the turn's
+own text. The brief is the title, the job id, the skill to load, the record's `task`, the
+launch context — recorded verbatim at launch in `origin["job"]["brief_context"]` — and the
+batch rules.
+Every session id a fresh job's client reports, the launch's and each reset's, is appended
+once to `origin["job"]["sids"]` (`engagement_registry.JOB_SIDS_KEY`) and persisted when first
+seen — the list the transcript reaper reads (INV-ENG-022).
+That includes the outgoing id a reset confirmation carries, which is the only frame naming a
+clearance-rebuilt client's own session, and a clearance downgrade leaves the list in place.
+A restart resumes the recorded session exactly as for any job, and the first turn's reset
+then drops that history. Counters, judgment, caps, the sweep, the tool set and the launch
+turn are the same in both modes.
+
 ## Contracts & invariants
+
+**INV-BGJOB-005**: Every turn of a fresh job after its launch is preceded, under the turn lock, by a conversation reset that is confirmed before the turn is accepted, and begins with the job brief built only from the record's task and its clearance-governed launch context; a resume-mode job and every non-job engagement are unchanged.
+
+The reset sits after the turn's admission (a terminal engagement is never reset) and before
+the ticket is accepted and the prompt sent, inside the lock that already serialises every
+turn, so it can never land inside another turn: an operator message arriving mid-batch waits
+on that lock and is then reset and briefed on the same client. It runs on every such turn,
+not only after a served one, which is what makes freshness hold without a counter: after a
+restart the resumed history is dropped by the first turn's reset, and after a clearance
+rebuild the reset is a harmless no-op. The reset awaits, so the admission is asked again,
+synchronously, once it is confirmed: a `/cancel` that committed during the reset refuses the
+turn with nothing accepted and nothing sent. A clearance downgrade drops `brief_context` in
+the same step that withholds the task ([`memory-scoping.md`](memory-scoping.md)), and the
+brief then says the context is withheld, so nothing the clamp withheld returns through it.
+The launch prompt and every brief also carry one `Job id: <engagement id>` line — an
+identifier, not launch material, so it stays through a downgrade — by which a plugin claims
+work and matches the job-end notice, whose delegation id is that same engagement id.
+What it does not cover: the launch turn, which runs its own launch prompt with no reset and
+no brief; and the transcript files of earlier conversations, which stay on disk while the
+job runs — once it is terminal, the transcript reaper deletes every session the list names
+([`engagement-finalization.md`](engagement-finalization.md)).
 
 **INV-BGJOB-001**: A job engagement's next batch is started only while the record is live, the ended turn was not cut off, no turn is queued and no turn delivery is in progress; the previous batch is judged, the batch number chosen and the batch cap checked in the same synchronous step that admits it, and that batch is counted only once the hand-off has been accepted — a refused hand-off leaves every counter untouched.
 
@@ -123,8 +163,8 @@ text the topic and the resident receive, so `/cancel` also reports what the job 
 
 The declaration is strict: `plugin_store.manifest_jobs` refuses a non-list, an unknown
 entry field, a bad or duplicate name, an empty skill, an over-long or multi-line title or
-summary, and a `batches` or `turnsPerBatch` that is not a positive integer (a boolean is not
-one), with `jobs_invalid`; install validation also refuses a job whose
+summary, a `batches` or `turnsPerBatch` that is not a positive integer (a boolean is not
+one), and a `session` other than `resume` or `fresh`, with `jobs_invalid`; install validation also refuses a job whose
 `skills/<skill>/SKILL.md` is missing. An already stored artifact failing the same checks is
 excluded from resolution with that reason.
 
@@ -182,6 +222,14 @@ A failure resuming one job does not stop the others. Engagement permits are not 
 at boot. A launch interrupted during its opening acknowledgement retains the ordinary
 launch cancellation and telling; it does not enter continuation recovery.
 
+**A fresh job's conversation reset fails.** A `/clear` whose drain raises, ends without the
+CLI's reset confirmation, or ends without a clean result fails the turn with
+`ConversationResetError` before its ticket is accepted and before its prompt is sent. It
+takes the delivery task's ordinary failure path, exactly as a failed client query does: the
+topic's `Turn failed` line and the job's `a batch failed: ConversationResetError` finalize
+(INV-BGJOB-002). A CLI that cannot reset its conversation is a broken client, and nothing
+retries it.
+
 **A batch handoff is refused.** `deliver_system_turn` returns false when the engagement is
 terminal, cannot be resumed, or Casa is stopping. It consumes no batch number and adds no
 no-progress judgment. The loop logs the refusal.
@@ -223,12 +271,14 @@ belong in the launch and resume builders; both kinds share the batch loop and la
 - `casa/rootfs/opt/casa/tools.py::build_engagement_resume_options`
 - `casa/rootfs/opt/casa/tools.py::report_job_progress`
 - `casa/rootfs/opt/casa/casa_core.py::_resume_background_jobs`
+- `casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver._reset_conversation`
 
 **Tests**
 - `tests/test_background_jobs_declaration.py`
 - `tests/test_start_job.py`
 - `tests/test_plugin_job_launch.py`
 - `tests/test_background_jobs_loop.py`
+- `tests/test_job_fresh_conversation.py`
 
 **Related**
 - [`architecture/engagements.md`](../architecture/engagements.md)

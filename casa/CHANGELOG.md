@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.336.0] - 2026-10-02
+
+### Added
+
+- A plugin's background job can declare `"session": "fresh"`. Every turn of
+  such a job after its launch (each batch, a message you write in the job's
+  topic, and its completion) then starts from an empty conversation, beginning
+  with a short brief: the job's title and skill, your request, the context it
+  was started with, and the batch rules. A long job no longer drags its whole
+  history into every batch; the plugin keeps its own state, and Casa starts
+  each turn fresh. Jobs that don't
+  declare it behave exactly as before.
+- The job's launch message and every fresh-session brief name the job by its
+  engagement id (`Job id: …`), so a plugin can tell its own job's reports from
+  an older one's.
+
+### Changed
+
+- After a fresh-session job ends, Casa deletes the transcripts of every
+  conversation it ran, not only the last one.
+
 ## [0.335.3] - 2026-10-02
 
 ### Fixed

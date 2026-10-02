@@ -12,6 +12,7 @@ from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
     ClaudeSDKClient,
+    ConversationResetMessage,
     ResultMessage,
     SystemMessage,
     TextBlock,
@@ -25,7 +26,7 @@ from drivers.driver_protocol import DriverProtocol, StaleLaunchError
 from error_kinds import (
     ApiErrorTurn, ErrorKind, api_error_kind, result_api_error_kind,
 )
-from engagement_registry import EngagementRecord
+from engagement_registry import JOB_SIDS_KEY, EngagementRecord
 import sdk_logging
 
 if TYPE_CHECKING:
@@ -76,6 +77,13 @@ def _session_id_from_message(sdk_msg: Any) -> str | None:
     return None
 
 
+def _is_fresh_job(engagement: Any) -> bool:
+    """INV-BGJOB-005: is this engagement a job declared ``session: fresh``?
+    Lazy import, the same way ``tools`` is imported here."""
+    import background_jobs
+    return background_jobs.is_fresh_job(engagement)
+
+
 class DriverNotAliveError(RuntimeError):
     """Raised when a turn is fed to a driver that has no open client."""
 
@@ -92,6 +100,28 @@ class EngagementTerminalError(DriverNotAliveError):
     the ticket is still held, then discharge. The distinct class buys a
     distinct log line and a distinct assertion, nothing more.
     """
+
+
+class ConversationResetError(RuntimeError):
+    """INV-BGJOB-005: a fresh job's turn could not reset its conversation.
+
+    Raised BEFORE the turn's ticket is accepted and before its prompt is sent,
+    when the ``/clear`` drain raised, ended without a
+    ``ConversationResetMessage`` or without a ``ResultMessage``, or ended with
+    an error result. Deliberately an ordinary ``RuntimeError`` and NOT a
+    :class:`DriverNotAliveError`: a CLI that cannot reset its conversation is
+    a broken client, and it takes the delivery task's existing failure path
+    exactly as a failed ``client.query`` does — the "Turn failed" notice and,
+    for a job, the "a batch failed: <kind>" finalize. No new error path."""
+
+
+RESET_COMMAND = "/clear"
+"""The CLI's conversation reset, sent through the engagement's OWN client.
+
+Observed live on the pinned SDK and its bundled CLI: the query yields a
+``ConversationResetMessage`` carrying the OLD session id, then an ``init``
+``SystemMessage`` with a NEW session id and the same tools, then a
+``ResultMessage(subtype="success", num_turns=0)`` — no model call."""
 
 
 LAUNCH_MISSING_RESULT = "missing_result_message"
@@ -808,6 +838,100 @@ class InCasaDriver(DriverProtocol):
 
     # -- internal ---------------------------------------------------------
 
+    async def _observe_session_id(
+        self, engagement: EngagementRecord, sdk_msg: Any,
+    ) -> None:
+        """Record the session id a stream message carries — every turn's and
+        a conversation reset's alike: the in-memory map, the registry's resume
+        pointer and, for a fresh job, the append-only sid ledger."""
+        sid = _session_id_from_message(sdk_msg)
+        if (not sid and isinstance(sdk_msg, ConversationResetMessage)
+                and _is_fresh_job(engagement)):
+            # INV-BGJOB-005, fresh jobs ONLY: a ConversationResetMessage
+            # carries the OUTGOING session's id. After a #369 rebuild the
+            # fresh client's first query is the reset itself, and no ``init``
+            # announces that client's own sid before it — this frame is the
+            # only one that does, so the sid ledger takes it from here. Every
+            # other engagement ignores the frame exactly as before: an
+            # operator who types /clear into a topic must not durably point
+            # the record at the session being cleared.
+            reset_sid = getattr(sdk_msg, "session_id", None)
+            if isinstance(reset_sid, str) and reset_sid:
+                sid = reset_sid
+        if not sid:
+            return
+        self._session_ids[engagement.id] = sid
+        # INV-BGJOB-005: every sid a fresh job's client reports — the launch
+        # sid and each post-reset sid — is appended once to the ledger and
+        # persisted when first seen (the persist below writes the record).
+        # The ledger lives inside origin["job"], where the transcript reaper
+        # reads it to delete every one of them at terminal (#1162).
+        ledger_grew = False
+        if _is_fresh_job(engagement):
+            sids = engagement.origin["job"].setdefault(JOB_SIDS_KEY, [])
+            if sid not in sids:
+                sids.append(sid)
+                ledger_grew = True
+        if (
+            self._persist_session_id is not None
+            and (engagement.sdk_session_id != sid or ledger_grew)
+        ):
+            # #302: mark the ID persisted ONLY after the durable
+            # write succeeded. Setting it on failure defeated the
+            # same-sid retry guard above — the in-memory record
+            # looked current while the registry never received
+            # the ID, and a restart could not resume the session.
+            # On failure the next message carrying the same sid
+            # retries the persist.
+            try:
+                await self._persist_session_id(engagement.id, sid)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Engagement %s persist_session_id failed "
+                    "(retried on the next message): %s",
+                    engagement.id[:8], exc,
+                )
+            else:
+                engagement.sdk_session_id = sid
+
+    async def _reset_conversation(
+        self, engagement: EngagementRecord, client: Any,
+    ) -> None:
+        """INV-BGJOB-005: reset the conversation of the engagement's OWN
+        client in place with :data:`RESET_COMMAND` and drain it to its
+        ``ResultMessage``. The reset is confirmed only by a
+        ``ConversationResetMessage`` and a non-error result; anything else —
+        a raise, a missing confirmation, a missing or error result — raises
+        :class:`ConversationResetError` before the turn is accepted. The new
+        session id is recorded by the same code path as any turn's.
+
+        Never opens, closes, swaps or publishes a client: the caller holds the
+        engagement's turn lock, and that lock is the only serialisation."""
+        reset_seen = False
+        result_msg: Any = None
+        try:
+            await client.query(RESET_COMMAND)
+            async for sdk_msg in client.receive_response():
+                await self._observe_session_id(engagement, sdk_msg)
+                if isinstance(sdk_msg, ConversationResetMessage):
+                    reset_seen = True
+                elif isinstance(sdk_msg, ResultMessage):
+                    result_msg = sdk_msg
+        except Exception as exc:  # noqa: BLE001 — re-raised as the turn's failure
+            raise ConversationResetError(
+                f"the job's conversation could not be reset: {exc}") from exc
+        if not reset_seen:
+            raise ConversationResetError(
+                "the job's conversation could not be reset: the CLI did not "
+                "confirm the reset")
+        if result_msg is None or getattr(result_msg, "is_error", False):
+            raise ConversationResetError(
+                "the job's conversation could not be reset: the reset did not "
+                "end cleanly")
+        logger.info(
+            "Engagement %s conversation reset for a fresh job turn (session=%s)",
+            engagement.id[:8], self._session_ids.get(engagement.id))
+
     async def _deliver_turn(
         self, engagement: EngagementRecord, prompt: str,
         *, inbound_token: object | None = None,
@@ -894,6 +1018,26 @@ class InCasaDriver(DriverProtocol):
                         f"engagement {engagement.id[:8]} is terminal — "
                         "not delivering a turn"
                     )
+                # INV-BGJOB-005: a fresh job's every turn after its launch runs
+                # in a fresh conversation. AFTER the fence above (a terminal
+                # engagement is never reset) and BEFORE acceptance and the
+                # prompt, under this lock that already serialises every turn —
+                # so the reset can never land inside another turn. The launch
+                # turn holds no ticket and gets neither reset nor brief.
+                if inbound_token is not None and _is_fresh_job(engagement):
+                    await self._reset_conversation(engagement, client)
+                    # The drain above AWAITED, so a terminal transition (a
+                    # /cancel) can have committed during it: re-run the #690
+                    # fence synchronously before anything is accepted or sent.
+                    # The reset itself is harmless on a terminal engagement.
+                    if (self._begin_turn_delivery is not None
+                            and not self._begin_turn_delivery(engagement.id)):
+                        raise EngagementTerminalError(
+                            f"engagement {engagement.id[:8]} is terminal — "
+                            "not delivering a turn"
+                        )
+                    import background_jobs
+                    prompt = f"{background_jobs.job_brief(engagement)}\n\n{prompt}"
                 # #649: unread -> accepted, synchronously, before the
                 # hand-off — see _accept_inbound for why not after query().
                 # AFTER the fence: a refused turn leaves its ticket in the
@@ -903,31 +1047,7 @@ class InCasaDriver(DriverProtocol):
                     self._accept_inbound(engagement.id, inbound_token)
                 await client.query(prompt)
                 async for sdk_msg in client.receive_response():
-                    sid = _session_id_from_message(sdk_msg)
-                    if sid:
-                        self._session_ids[engagement.id] = sid
-                    if (
-                        sid
-                        and self._persist_session_id is not None
-                        and engagement.sdk_session_id != sid
-                    ):
-                        # #302: mark the ID persisted ONLY after the durable
-                        # write succeeded. Setting it on failure defeated the
-                        # same-sid retry guard above — the in-memory record
-                        # looked current while the registry never received
-                        # the ID, and a restart could not resume the session.
-                        # On failure the next message carrying the same sid
-                        # retries the persist.
-                        try:
-                            await self._persist_session_id(engagement.id, sid)
-                        except Exception as exc:  # noqa: BLE001
-                            logger.warning(
-                                "Engagement %s persist_session_id failed "
-                                "(retried on the next message): %s",
-                                engagement.id[:8], exc,
-                            )
-                        else:
-                            engagement.sdk_session_id = sid
+                    await self._observe_session_id(engagement, sdk_msg)
                     # Phase 4b dispatch — wrapped in try/except so a
                     # malformed block does not abort the rest of the turn.
                     try:

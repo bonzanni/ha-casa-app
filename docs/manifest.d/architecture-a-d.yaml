@@ -37,18 +37,21 @@
     - casa/rootfs/opt/casa/tools.py::build_engagement_resume_options
     - casa/rootfs/opt/casa/tools.py::report_job_progress
     - casa/rootfs/opt/casa/casa_core.py::_resume_background_jobs
+    - casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver._reset_conversation
   tests:
     - tests/test_background_jobs_declaration.py
     - tests/test_start_job.py
     - tests/test_plugin_job_launch.py
     - tests/test_background_jobs_loop.py
+    - tests/test_job_fresh_conversation.py
   related: [architecture/engagements.md, architecture/delegation.md, architecture/plugins.md, architecture/engagement-turn-admission.md]
-  defines_invariants: [INV-BGJOB-001, INV-BGJOB-002, INV-BGJOB-003, INV-BGJOB-004]
+  defines_invariants: [INV-BGJOB-001, INV-BGJOB-002, INV-BGJOB-003, INV-BGJOB-004, INV-BGJOB-005]
   invariant_tests:
     INV-BGJOB-001: [tests/test_background_jobs_loop.py::test_operator_turns_during_slow_final_edit_respect_cap, tests/test_background_jobs_loop.py::test_operator_precedes_single_next_batch, tests/test_job_sweep.py::test_refusal_preserves_all_accounting, tests/test_job_sweep.py::test_long_batch_and_racing_hook_sweep]
     INV-BGJOB-002: [tests/test_background_jobs_loop.py::test_stuck_guard, tests/test_background_jobs_loop.py::test_reported_progress_resets_stuck, tests/test_background_jobs_loop.py::test_unchanging_counts_do_not_end_a_progressing_job, tests/test_background_jobs_loop.py::test_the_last_report_of_a_batch_decides_it, tests/test_background_jobs_loop.py::test_legacy_job_state_is_judged_under_the_rule_it_ran_under, tests/test_background_jobs_loop.py::test_batch_failure_reports_progress, tests/test_background_jobs_loop.py::test_cancel_stops_batches_and_reports_progress]
     INV-BGJOB-003: [tests/test_job_sweep.py::test_three_failed_continuations_finalize, tests/test_job_sweep.py::test_rebuild_failure_recovers, tests/test_job_sweep.py::test_boot_notice_failure_still_runs_next_batch, tests/test_job_sweep.py::test_stopping_refusal_leaves_live_for_boot]
     INV-BGJOB-004: [tests/test_plugin_job_grants.py::test_plugin_job_offers_and_admits_only_its_two_casa_tools, tests/test_plugin_job_grants.py::test_plugin_job_identity_is_bound_to_its_host_and_artifact, tests/test_plugin_job_launch.py::test_worker_options_record_and_topic]
+    INV-BGJOB-005: [tests/test_job_fresh_conversation.py::test_each_batch_resets_once_then_starts_with_the_brief, tests/test_job_fresh_conversation.py::test_operator_message_waits_then_runs_fresh_on_the_same_client, tests/test_job_fresh_conversation.py::test_brief_context_is_the_launch_context_verbatim_across_batches_and_restart, tests/test_job_fresh_conversation.py::test_restart_turn_is_fresh_and_carries_the_launch_context, tests/test_job_fresh_conversation.py::test_start_job_records_brief_context_only_for_a_fresh_job, tests/test_job_fresh_conversation.py::test_clearance_downgrade_withholds_task_and_context_from_the_brief, tests/test_job_fresh_conversation.py::test_an_unconfirmed_reset_fails_the_turn_before_acceptance, tests/test_job_fresh_conversation.py::test_cancel_committed_during_the_reset_refuses_the_turn, tests/test_job_fresh_conversation.py::test_a_terminal_fresh_job_is_refused_before_any_reset, tests/test_job_fresh_conversation.py::test_a_resume_mode_job_never_resets, tests/test_job_fresh_conversation.py::test_a_non_job_engagement_never_resets, tests/test_job_fresh_conversation.py::test_rebuild_sid_is_ledgered_from_the_reset_message, tests/test_job_fresh_conversation.py::test_a_clearance_downgrade_keeps_the_sid_ledger, tests/test_job_fresh_conversation.py::test_an_operator_clear_on_a_non_fresh_engagement_records_only_the_new_sid, tests/test_job_fresh_conversation.py::test_the_launch_prompt_names_the_job_id_once, tests/test_job_fresh_conversation.py::test_every_fresh_turn_names_the_job_id_once, tests/test_job_fresh_conversation.py::test_a_clearance_downgrade_keeps_the_job_id_in_the_brief, tests/test_job_fresh_conversation.py::test_reaper_deletes_every_fresh_batch_transcript_and_nothing_else, tests/test_job_fresh_conversation.py::test_a_downgraded_fresh_job_keeps_its_pre_downgrade_sids_for_the_reaper, tests/test_job_fresh_conversation.py::test_reaper_removes_a_fresh_plugin_jobs_own_project_dir]
 
 - doc: architecture/callback-delivery.md
   summary: The authorization-callback delivery half — the mtime-clocked publish-once spool, the per-flow attempt ledger and its ack protocol, the consumer verbs, and redelivery until receipt.

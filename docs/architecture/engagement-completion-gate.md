@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-08-23
+last_reviewed: 2026-10-02
 ---
 
 # Engagement completion gate
@@ -162,6 +162,10 @@ acquiring the lock awaits, but once it is held no other coroutine on Casa's loop
 tool call, no terminal transition — runs between the decision and the call. Placing it earlier,
 beside the driver's liveness check, would put the awaiting lock acquisition between the two and
 reopen exactly the window it closes.
+A fresh job's turn is the one place something awaits after that admission: its conversation
+reset runs under the same lock (INV-BGJOB-005, [`background-jobs.md`](background-jobs.md)), so
+the admission is asked again, synchronously, once the reset is confirmed, and that second
+answer is the one immediately before the call.
 
 **That is a weaker claim than the `claude_code` one, and the difference is worth stating
 exactly rather than blurring.** The client call is awaited, and whether it reaches its
