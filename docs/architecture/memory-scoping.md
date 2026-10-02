@@ -57,7 +57,7 @@ ingress pass that lowers the record also: durably marks the context for rebuild 
 the clamp persist in one write, so a crash between them cannot happen), withholds the
 record's own launch materials (task, brief, context, world-state, a fresh job's recorded
 launch context and the text of its pending completion, INV-BGJOB-007 — every later render re-derives from the record, and evicting the session
-while the record still carried them would re-import them), tears the live session down, and drops the resume pointer. Every
+while the record still carried them would re-import them), tears the live session down, and drops the resume pointer — recording the evicted session on the record in that same write, so the terminal transcript pass (INV-ENG-022) deletes it once the engagement ends. Every
 resume path — the steering turn itself, a system continuation, boot replay — refuses to
 resume while the rebuild is pending and establishes a fresh session at the clamped floor
 instead; while it is pending, the old process's tool calls are refused at both dispatch
