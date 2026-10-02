@@ -1,5 +1,47 @@
 # Changelog
 
+## [0.335.3] - 2026-10-02
+
+### Fixed
+
+- Casa now deletes the stored conversations it recorded for finished in-Casa
+  engagements and background jobs (#1162). Until now these files stayed under
+  `/config/cc-home/.claude/projects` indefinitely.
+  - For a plugin job, Casa deletes the job's whole conversation folder.
+  - For a specialist or executor engagement, it deletes only the sessions that
+    engagement's record names, and only from that engagement's own folder.
+    Nothing else in those shared folders is touched.
+  - Engagements that run in their own workspace are unchanged: their
+    conversations are kept inside the workspace and removed with it.
+- When the deletion happens: a pass runs when Casa starts and every six hours
+  after that. Each pass deletes the conversations of every in-Casa engagement whose
+  finished status has been saved. There is no waiting period after an
+  engagement finishes.
+- **The first start after updating** deletes these conversations for every
+  finished in-Casa engagement Casa still has a record of. Casa keeps a finished
+  engagement's record for 30 days after it finishes, sometimes longer. The
+  deletion cannot be undone, so copy anything you want to keep before you
+  update.
+- Some conversations are still left on disk:
+  - the session a clearance downgrade abandons on a specialist or executor
+    engagement (#1167);
+  - synchronous delegations and one-shot helper calls (#1168);
+  - conversations a memory wipe leaves behind (#1169);
+  - conversations of engagements Casa no longer keeps a record of, including
+    leftovers from before this version;
+  - the sessions of a specialist that was uninstalled, or given another working
+    directory, after its engagement started.
+- A finished plugin job's working folder, `/data/engagements/<id>/plugin-job`, is
+  not removed either (#1170). That is the folder the job worked in, not its
+  stored conversation.
+- Cleaning up by hand: you can safely remove a
+  `/config/cc-home/.claude/projects/-data-engagements-<id>-plugin-job` folder,
+  but only for an engagement that is not active or idle.
+  - Never remove a `-config-agent-home-*` folder. A resident's folder holds
+    conversations not yet saved to memory, and a specialist's holds live
+    delegations.
+  - Never remove the `-config` folder either: every in-Casa executor shares it.
+
 ## [0.335.2] - 2026-10-02
 
 ### Security
