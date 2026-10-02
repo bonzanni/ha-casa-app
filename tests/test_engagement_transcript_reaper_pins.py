@@ -458,3 +458,224 @@ def test_the_e2e_mock_lookup_matches_the_pinned_sdk(
     mock = _load_mock_sessions()
 
     assert mock._find_project_dir(mock._canonicalize_path(cwd)) == seeded
+
+
+# --- Cluster R (#1167, #1170, #1174): red cases, specified by Astra --------
+
+_ZERO = {"deleted": 0, "absent": 0, "skipped": 0, "unsettled": 0, "errors": 0}
+
+
+def _tombstone_row(tmp_path: Path, rec_id: str) -> dict:
+    rows = json.loads((tmp_path / "engagements.json").read_text())
+    return {r["id"]: r for r in rows}[rec_id]
+
+
+def _inventory(root: Path) -> list[str]:
+    return sorted(str(p.relative_to(root)) for p in root.rglob("*"))
+
+
+def _reaper_warnings(caplog) -> list[logging.LogRecord]:
+    return [r for r in caplog.records
+            if r.name == "engagement_transcript_reaper"
+            and r.levelno == logging.WARNING]
+
+
+@pytest.mark.parametrize("kind,role,resume_job", [
+    ("specialist", "researcher", False),
+    ("executor", "configurator", False),
+    ("specialist", "researcher", True),
+    ("executor", "configurator", True),
+])
+async def test_clearance_retired_sessions_survive_restart_until_terminal_reap(
+        home, tmp_path, monkeypatch, kind, role, resume_job):
+    """#1167: a session a clearance downgrade abandons is the record's own,
+    built at the old tier and never resumed; it goes with the record at the
+    terminal pass — even when the process restarted between the clamp's
+    write and the pointer clear, and a later session overwrote the pointer.
+    Nothing goes while the record is live."""
+    import tools
+
+    _specialists(monkeypatch, researcher=SimpleNamespace(
+        role="researcher", cwd="/config/custom-home/researcher"))
+    registry = _registry(tmp_path)
+    a, b, c = (_sid() for _ in range(3))
+    origin = {"_origin_clearance": "private"}
+    if resume_job:
+        origin["job"] = {"session": "resume"}
+    rec = await _record(registry, kind=kind, role=role, origin=origin, sid=a,
+                        outcome="active")
+    project = _project_dir(home, "/config/custom-home/researcher"
+                           if kind == "specialist" else tools.EXECUTOR_CWD)
+    other = _project_dir(home, "/config/other-home")
+    for sid in (a, b, c):
+        _seed_session(project, sid)
+        _seed_session(other, sid)
+    unrelated = _sid()
+    _seed_session(project, unrelated)
+    other_before = _inventory(other)
+    selected = [path for sid in (a, b, c)
+                for path in (project / f"{sid}.jsonl", project / sid)]
+
+    assert await registry.lower_origin_clearance(rec.id, "family") is True
+    row = _tombstone_row(tmp_path, rec.id)
+    assert row["origin"]["_origin_clearance"] == "family"
+    assert row["context_rebuild_pending"] is True
+    assert row["sdk_session_id"] == a
+    assert await _reap(registry) == _ZERO
+    assert all(p.exists() for p in selected)
+
+    # Crash gap: the process dies after the clamp's write, before the clear.
+    registry = _registry(tmp_path)
+    await registry.load()
+    assert registry.get(rec.id).sdk_session_id == a
+    assert registry.get(rec.id).origin["_origin_clearance"] == "family"
+    await registry.persist_session_id(rec.id, b)     # the rebuild's session
+    await registry.clear_context_rebuild_pending(rec.id)
+
+    assert await registry.lower_origin_clearance(rec.id, "public") is True
+    await registry.clear_session_id(rec.id)
+    registry = _registry(tmp_path)
+    await registry.load()
+    assert registry.get(rec.id).sdk_session_id is None
+    await registry.persist_session_id(rec.id, c)
+    await registry.clear_context_rebuild_pending(rec.id)
+    assert await _reap(registry) == _ZERO
+    assert all(p.exists() for p in selected)
+
+    await _terminal(registry, rec.id, "completed")
+    row = _tombstone_row(tmp_path, rec.id)
+    assert (row["status"], row["sdk_session_id"]) == ("completed", c)
+    registry = _registry(tmp_path)
+    await registry.load()
+
+    counts = await _reap(registry)
+
+    survivors = [path for path in selected if path.exists()]
+    assert len(survivors) == 0, survivors
+    assert counts == {**_ZERO, "deleted": 6}
+    assert sorted(p.name for p in project.iterdir()) == sorted(
+        [f"{unrelated}.jsonl", unrelated])
+    assert _inventory(other) == other_before
+
+
+@pytest.mark.parametrize("project_present", [False, True])
+@pytest.mark.parametrize(
+    "sdk_surface", ["available", None, "_canonicalize_path", "_find_project_dir"])
+async def test_plugin_workdir_reaped_only_after_durable_terminal_independent_of_sdk(
+        home, tmp_path, monkeypatch, caplog, project_present, sdk_surface):
+    """#1170: a finished resident-hosted plugin job's per-engagement folder
+    (``plugin_job_cwd(id).parent``) goes once its terminal status is on disk —
+    whether or not its CLI project folder exists, and whether or not the
+    SDK's private lookup imports. A live record and a terminal status not yet
+    on disk keep it; a folder already gone counts nothing."""
+    import tools
+
+    monkeypatch.setattr(tools, "_PLUGIN_JOB_ROOT", tmp_path)
+    registry = _registry(tmp_path)
+    ps = _sid()
+    rec = await _record(registry, kind="plugin", sid=ps, outcome="active")
+    cwd = tools.plugin_job_cwd(rec.id)
+    workdir = cwd.parent
+    cwd.mkdir(parents=True)
+    (cwd / "result.txt").write_text("payload", encoding="utf-8")
+    (workdir / "sibling.txt").write_text("payload", encoding="utf-8")
+    project = _project_dir(home, str(cwd))
+    if project_present:
+        _seed_session(project, ps)
+    else:
+        assert not project.exists()
+
+    assert await _reap(registry) == _ZERO
+    assert (cwd / "result.txt").exists() and (workdir / "sibling.txt").exists()
+
+    real_write = registry._write_tombstone
+
+    def _failing(snapshot):
+        raise OSError("fixture write failure")
+
+    monkeypatch.setattr(registry, "_write_tombstone", _failing)
+    await registry.mark_cancelled(rec.id)
+    monkeypatch.setattr(registry, "_write_tombstone", real_write)
+    assert rec.status == "cancelled"
+    assert _tombstone_row(tmp_path, rec.id)["status"] == "active"
+    assert await _reap(registry) == {**_ZERO, "unsettled": 1}
+    assert (cwd / "result.txt").exists() and (workdir / "sibling.txt").exists()
+    assert project.exists() == project_present
+
+    await registry.persist_origin(rec.id)
+    assert _tombstone_row(tmp_path, rec.id)["status"] == "cancelled"
+
+    with monkeypatch.context() as m:
+        if sdk_surface != "available":
+            m.setitem(sys.modules, _PRIVATE, _private_surface(sdk_surface))
+        caplog.clear()
+        with caplog.at_level(logging.DEBUG, logger="engagement_transcript_reaper"):
+            counts = await _reap(registry)
+
+        assert not workdir.exists()
+        if sdk_surface == "available":
+            assert counts == ({**_ZERO, "deleted": 2} if project_present
+                              else {**_ZERO, "deleted": 1, "absent": 1})
+            assert not project.exists()
+        else:
+            assert counts == {**_ZERO, "deleted": 1, "errors": 1}
+            warnings = _reaper_warnings(caplog)
+            assert len(warnings) == 1
+            assert _PRIVATE in warnings[0].getMessage()
+            assert project.exists() == project_present
+
+        counts = await _reap(registry)
+        assert counts == ({**_ZERO, "absent": 1} if sdk_surface == "available"
+                          else {**_ZERO, "errors": 1})
+
+
+async def test_never_written_tombstone_is_quiet_but_waiting_terminal_warns(
+        home, tmp_path, monkeypatch, caplog):
+    """#1174: no tombstone file is the registry's healthy never-written state
+    (``load`` creates none), so a pass with nothing to settle reports
+    nothing; an unreadable tombstone while a terminal record waits still
+    warns once and settles nothing, and a missing SDK lookup still warns
+    with no record at all."""
+    _specialists(monkeypatch, researcher=SimpleNamespace(role="researcher", cwd=""))
+    waiting = tmp_path / "waiting"
+    waiting.mkdir()
+    registry = _registry(waiting)
+    sid = _sid()
+    await _record(registry, sid=sid)
+    project = _project_dir(home, "/config/agent-home/researcher")
+    _seed_session(project, sid)
+    (waiting / "engagements.json").write_text("[", encoding="utf-8")
+    caplog.set_level(logging.DEBUG, logger="engagement_transcript_reaper")
+
+    caplog.clear()
+    counts = await _reap(registry)
+    warnings = _reaper_warnings(caplog)
+    assert counts == {**_ZERO, "unsettled": 1}
+    assert len(warnings) == 1
+    assert "unreadable" in warnings[0].getMessage()
+    assert (project / f"{sid}.jsonl").exists() and (project / sid).is_dir()
+
+    never = tmp_path / "never"
+    never.mkdir()
+    tombstone = never / "engagements.json"
+    registry = _registry(never)
+    await registry.load()
+    assert registry.terminal_records() == []
+    assert not tombstone.exists()
+
+    with monkeypatch.context() as m:
+        m.setitem(sys.modules, _PRIVATE, None)
+        caplog.clear()
+        counts = await _reap(registry)
+    warnings = _reaper_warnings(caplog)
+    assert counts == {**_ZERO, "errors": 1}
+    assert len(warnings) == 1
+    assert _PRIVATE in warnings[0].getMessage()
+    assert not tombstone.exists()
+
+    caplog.clear()
+    counts = await _reap(registry)
+    warnings = _reaper_warnings(caplog)
+    assert len(warnings) == 0, [r.getMessage() for r in warnings]
+    assert counts == _ZERO
+    assert not tombstone.exists()
