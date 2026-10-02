@@ -6279,6 +6279,13 @@ async def start_job(args: dict) -> dict:
     refusal = background_jobs.claim_job_start(host, _engagement_registry)
     if refusal is not None:
         return _result(refusal)
+    if host.kind == "specialist":
+        # S1b: pin the SELECTED plugin's registry identity now, before any
+        # await, so the job guard still sees it when the plugin is unassigned
+        # while the launch awaits (the record's artifact rows come from a later
+        # resolution). No `model`: that key is the resident worker's, and the
+        # record stays a specialist engagement (the worker path keys on kind).
+        origin["plugin_job"] = {"plugin": background_jobs.host_plugin_name(host)}
     try:
         result = await _launch_interactive_engagement(
             role, args.get("task", ""), args.get("context", "") or "", origin,

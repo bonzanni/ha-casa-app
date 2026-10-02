@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.337.0] - 2026-10-02
+
+### Added
+
+- A plugin's background job can declare `"host": "specialist"`. Such a job is
+  always run by a specialist that has the plugin, never by a resident like
+  Ellen, even when the plugin is installed on both. Starting it from Ellen
+  hands it to the specialist, with the specialist's own tools.
+
+### Changed
+
+- At most one background job of a plugin runs at a time, whichever agent hosts
+  it. Two installations of the same plugin now run their jobs one after the
+  other instead of side by side.
+
 ## [0.336.0] - 2026-10-02
 
 ### Added

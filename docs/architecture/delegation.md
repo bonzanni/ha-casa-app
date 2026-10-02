@@ -180,9 +180,10 @@ Quick sync/async delegations retain their chat-and-role scope, independently of 
 engagement slot; the global cap still applies. Boot does not restore permits, so the
 record check also covers resumed engagements.
 
-`start_job` admits one job per installed plugin on top of that, for either host kind: a
-start refused because that plugin already has a job — live, or still inside the window
-before its record exists — answers `job_busy`. A resident-hosted job then takes a
+`start_job` admits one job per installed plugin, and one per plugin manifest name, on top
+of that, for either host kind: a start refused because that plugin, or any installation
+sharing its manifest name, already has a job — live, or still inside the window before its
+record exists — answers `job_busy` (INV-BGJOB-006). A resident-hosted job then takes a
 `plugin-job:<plugin>` scope under the same global cap rather than its host's
 `<role>:engagement` slot, so running one never makes the resident unavailable
 ([`background-jobs.md`](background-jobs.md)).
