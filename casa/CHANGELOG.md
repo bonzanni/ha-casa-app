@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.340.1] - 2026-10-02
+
+### Fixed
+
+- Casa's helper calls — the observer that watches engagements, the check that
+  sorts a memory into its sensitivity tier, and the answer composed for
+  `query_engager` — no longer store a conversation transcript on disk, and no
+  longer load the Claude CLI's settings files. Loading the user settings is
+  what switched on the CLI's own cleanup, which deletes every stored
+  conversation older than 30 days, including one Casa was still holding
+  because it had not yet been saved to memory. Casa's launches of the CLI
+  through the Claude Agent SDK no longer switch that cleanup on (#1181).
+  Executors using the `claude_code` driver are not covered: they start the
+  CLI from their own run script, not through the SDK, under the engagement's
+  own home folder.
+- A task delegated to a specialist now deletes its own stored conversation
+  once the delegation ends, whether it finished, failed or was cancelled, and
+  touches nothing else in the specialist's folder. This is best-effort: if
+  the delete fails, or Casa is stopped before it runs, the file stays
+  (#1168).
+- Conversations stored before this version are not removed.
+
 ## [0.340.0] - 2026-10-02
 
 ### Fixed
