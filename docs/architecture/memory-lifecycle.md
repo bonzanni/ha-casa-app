@@ -186,7 +186,7 @@ cover the background retain paths, which are not turns.
 
 **INV-MEM-017**: The time-to-live sweep neither evicts nor reaps a session entry that names a transcript on a bank-writable channel, whatever its age, provenance, claims, or activity timestamp.
 
-The sweep is Casa's only transcript deleter, and a transcript is the only
+The sweep is Casa's only deleter of resident transcripts, and a transcript is the only
 copy of a conversation's turns; the property that licenses deleting it is
 that the conversation's retention is no longer owed, never the age of its
 pointer. On a bank-writable channel the entry's own survival *is* that

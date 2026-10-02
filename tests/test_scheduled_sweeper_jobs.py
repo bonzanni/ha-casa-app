@@ -118,3 +118,24 @@ def test_workspace_sweep_job_runs_both_workspace_and_topics_passes():
         "the _sweep_workspaces_and_topics closure must be registered as "
         'the id="workspace_sweep" scheduler job'
     )
+
+
+def test_engagement_transcript_reap_is_a_scheduled_coroutine_job():
+    """#1162: the transcript reaper is registered with the scheduler as a
+    coroutine function (same v0.15.2 hazard as the sweepers above), under
+    its own id, first at scheduler start."""
+    from engagement_transcript_reaper import reap_engagement_transcripts
+
+    assert asyncio.iscoroutinefunction(reap_engagement_transcripts)
+    text = _CASA_CORE_SRC.read_text(encoding="utf-8")
+    job = re.search(
+        r"scheduler\.add_job\(\s*reap_engagement_transcripts,"
+        r"(?P<args>.*?)\n    \)",
+        text,
+        re.S,
+    )
+    assert job, ("reap_engagement_transcripts must be registered directly "
+                 "with scheduler.add_job")
+    assert 'id="engagement_transcript_reap"' in job.group("args")
+    assert "args=(engagement_registry,)" in job.group("args")
+    assert "next_run_time=" in job.group("args")

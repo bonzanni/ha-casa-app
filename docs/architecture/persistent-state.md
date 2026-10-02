@@ -150,6 +150,11 @@ and the much shorter `WEBHOOK_SESSION_TTL_DAYS` (default 1). And a boot-time pur
 unconditionally, so webhook conversation continuity deliberately does not survive a
 restart even though the registry file does.
 
+**Engagement transcripts are reaped by the engagement's record, not by a pointer.** Once an
+`in_casa` engagement's terminal status is on disk, a separate pass deletes the CLI sessions
+that record names (INV-ENG-022, `architecture/engagement-finalization.md`); sessions no
+record names are not touched by either pass.
+
 An entry also records the digest of the structural prompt surface the session was
 created with — the delegates, background jobs and executors the agent could reach at
 that moment, and for the butler the names of the Home Assistant tools the facade had
