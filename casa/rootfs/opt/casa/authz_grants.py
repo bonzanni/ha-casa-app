@@ -1248,6 +1248,11 @@ class GrantIdentity:
     # to the identity derived on a later turn of the same operator/chat/role/
     # artifact/engagement.
     target_role: str | None = field(default=None, compare=False)
+    # S3 §6: the sync delegation this delegated turn runs under (the
+    # server-stamped ``_delegation_id`` the child origin carries) — the echo
+    # ledger's owner key for a post made inside it. Advisory, like
+    # ``target_role``: never identity, excluded from equality and binding.
+    delegation_id: str = field(default="", compare=False)
 
 
 def resolve_grant_identity(role: str, artifact_id: str = ""):
@@ -1344,10 +1349,12 @@ def resolve_grant_identity(role: str, artifact_id: str = ""):
     chat_id = strict_positive_id(origin.get("chat_id"))
     if operator_id is None or chat_id is None:
         return None, "unsupported_origin"
+    delegation_id = origin.get("_delegation_id")
     return GrantIdentity(
         operator_id=operator_id, chat_id=chat_id,
         enforcement_role=role, artifact_id=artifact_id,
         engagement_id="", target_role=origin.get("role"),
+        delegation_id=delegation_id if isinstance(delegation_id, str) else "",
     ), None
 
 

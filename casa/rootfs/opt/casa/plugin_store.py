@@ -1636,8 +1636,12 @@ _RC_MAX_SLOTS = 16
 _RC_RESULT_KINDS = ("safe", "capability")
 _RC_ENTRY_KEYS = frozenset({"result", "provides", "consumes", "delivers"})
 # #1015: the closed vocabulary of delivered-slot kinds. `operator_link` is a
-# URL Casa posts to the operator's chat as one labelled-link message.
-_RC_DELIVERS_KINDS = ("operator_link",)
+# URL Casa posts to the operator's chat as one labelled-link message;
+# `operator_message` (S3) a text Casa posts verbatim, as pages headed by the
+# specialist's label; `operator_file` (S3) an outbox file Casa posts through
+# the kind's media policy, captioned with that label. A kind Casa cannot
+# compose a post for is a kind this extractor must refuse.
+_RC_DELIVERS_KINDS = ("operator_link", "operator_message", "operator_file")
 _RC_MAX_DELIVERS = 1
 
 

@@ -410,6 +410,50 @@ def _validate_delivery_filename(name: str, kind: str) -> str | None:
     return name
 
 
+def outbox_for_current_context() -> "plugin_outbox.PluginOutbox | None":
+    """The plugin outbox a media claim is made from, derived from the
+    AUTHENTICATED engagement record bound via ``engagement_var``.
+
+    Containment stage 2 (Task 11): a uid-dropped claude_code engagement's
+    producer plugins can no longer write the SHARED outbox (it stays
+    root-only, never group/world-writable) — they write a PRIVATE
+    per-engagement dir instead, keyed by the record's own ``allocated_uid``,
+    so engagement A can never point a claim at B's private outbox by
+    crafting a path argument. A record with no real uid (legacy/specialist/
+    no-engagement context) uses the shared outbox. ``None`` when no outbox
+    is initialised. Shared by ``send_media`` and the result broker's
+    ``operator_file`` delivery (S3)."""
+    from engagement_uids import owner_uid_or_none
+    eng = engagement_var.get(None)
+    _raw_uid = getattr(eng, "allocated_uid", None) if eng is not None else None
+    eng_uid = (owner_uid_or_none(_raw_uid)
+              if isinstance(_raw_uid, int) else None)
+    if eng_uid is not None:
+        return plugin_outbox.get_engagement_outbox(eng_uid)
+    return plugin_outbox.get_outbox()
+
+
+def _with_post_echo_payload(payload: dict, owner: str) -> dict:
+    """The sync delegation's result, ok or error: the echo rides ``text``
+    when the result has one, else ``message`` — a post proven before the
+    work failed is still a post the resident must learn of."""
+    key = "text" if "text" in payload else "message"
+    payload[key] = _with_post_echo(str(payload.get(key) or ""), owner)
+    return payload
+
+
+def _with_post_echo(text: str, owner: str) -> str:
+    """S3 §6: append the body-free echo of every post a plugin proved under
+    *owner* (a delegation id or an engagement id) to *text* — Casa's own
+    lines after the delegate's answer, drained atomically so a post is
+    echoed once. The text is returned unchanged when nothing was posted."""
+    import result_broker as _rb
+    lines = _rb.echo_lines(_rb.POSTS.drain(owner))
+    if not lines:
+        return text
+    return (f"{text}\n\n" if text else "") + "\n".join(lines)
+
+
 async def _classify_send(ch, content, kind, filename, origin, caption) -> dict:
     """Attempt the channel send and classify the outcome into a payload dict.
     Never raises a send/channel exception (the caller's finally still cleans up
@@ -698,24 +742,12 @@ async def send_media(args: dict) -> dict:
             _commitment = (_scope.open_send("media")
                            if _scope is not None else None)
 
-        # Containment stage 2 (Task 11): a uid-dropped claude_code engagement's
-        # producer plugins can no longer write the SHARED outbox (it stays
-        # root-only, never group/world-writable) — they write a PRIVATE
-        # per-engagement dir instead. Which outbox to claim from is derived
-        # from the AUTHENTICATED engagement record's own `allocated_uid`
-        # (bound via `engagement_var`, never from the caller-submitted
-        # `path`), so engagement A can never point this claim at B's private
-        # outbox by crafting a path argument. A record with no real uid
-        # (legacy/specialist/no-engagement context) keeps using the shared
-        # outbox exactly as before.
-        from engagement_uids import owner_uid_or_none
-        _raw_uid = getattr(eng, "allocated_uid", None) if eng is not None else None
-        eng_uid = (owner_uid_or_none(_raw_uid)
-                  if isinstance(_raw_uid, int) else None)
-        if eng_uid is not None:
-            outbox = plugin_outbox.get_engagement_outbox(eng_uid)
-        else:
-            outbox = plugin_outbox.get_outbox()
+        # Containment stage 2 (Task 11): which outbox to claim from is
+        # derived from the AUTHENTICATED engagement record (bound via
+        # `engagement_var`, never from the caller-submitted `path`) — see
+        # outbox_for_current_context, which the result broker's operator_file
+        # delivery (S3) shares so the two claims cannot drift.
+        outbox = outbox_for_current_context()
         if outbox is None:
             return _result({"status": "error", "kind_error": "internal_error",
                             "message": "outbox not initialised"})
@@ -4212,7 +4244,7 @@ def _attach_completion_callback(
                     agent=record.agent,
                     status="error",
                     kind=failure.kind,
-                    message=failure.message,
+                    message=_with_post_echo(failure.message, record.id),
                     origin=record.origin,
                     elapsed_s=time.time() - record.started_at,
                 )
@@ -4228,6 +4260,9 @@ def _attach_completion_callback(
                         "(spec §4.6)", record.agent, len(text),
                         specialist_limits._MAX_OUTPUT_CHARS,
                     )
+                # S3 §6: the echo rides the notice, after the bounded answer
+                # (Casa's lines are not the delegate's text the cap bounds).
+                bounded = _with_post_echo(bounded, record.id)
                 complete = DelegationComplete(
                     delegation_id=record.id,
                     agent=record.agent,
@@ -4245,7 +4280,7 @@ def _attach_completion_callback(
                 agent=record.agent,
                 status="error",
                 kind=kind,
-                message=str(exc),
+                message=_with_post_echo(str(exc), record.id),
                 origin=record.origin,
                 elapsed_s=time.time() - record.started_at,
             )
@@ -6750,14 +6785,14 @@ async def delegate_to_agent(args: dict) -> dict:
                     "Delegation %s → %s failed status=failed kind=%s (%.2fs)",
                     delegation_id[:8], agent_name, kind, elapsed,
                 )
-                return _result({
+                return _result(_with_post_echo_payload({
                     "status": "error",
                     "delegation_id": delegation_id,
                     "agent": agent_name,
                     "kind": kind,
                     "message": failure.message,
                     "elapsed_s": elapsed,
-                })
+                }, delegation_id))
 
             # The typed kind the caller is told below is also what the ledger
             # records — `fail_delegation(id, exc)` would persist the exception
@@ -6769,14 +6804,14 @@ async def delegate_to_agent(args: dict) -> dict:
                 "Delegation %s → %s failed: %s (%s)",
                 delegation_id[:8], agent_name, kind, exc,
             )
-            return _result({
+            return _result(_with_post_echo_payload({
                 "status": "error",
                 "delegation_id": delegation_id,
                 "agent": agent_name,
                 "kind": kind,
                 "message": str(exc),
                 "elapsed_s": elapsed,
-            })
+            }, delegation_id))
 
         delegated_output = finished.result()
         voice_meta: dict = {}
@@ -6799,14 +6834,14 @@ async def delegate_to_agent(args: dict) -> dict:
                         delegated_output.run_subtype, _KNOWN_RESULT_SUBTYPES),
                     elapsed,
                 )
-                return _result({
+                return _result(_with_post_echo_payload({
                     "status": "error",
                     "delegation_id": delegation_id,
                     "agent": agent_name,
                     "kind": failure.kind,
                     "message": failure.message,
                     "elapsed_s": elapsed,
-                })
+                }, delegation_id))
 
             try:
                 voice_result = parse_voice_job_result(
@@ -6824,14 +6859,14 @@ async def delegate_to_agent(args: dict) -> dict:
                     "reason=%s status=failed (%.2fs)",
                     delegation_id[:8], agent_name, exc, elapsed,
                 )
-                return _result({
+                return _result(_with_post_echo_payload({
                     "status": "error",
                     "delegation_id": delegation_id,
                     "agent": agent_name,
                     "kind": failure.kind,
                     "message": failure.message,
                     "elapsed_s": elapsed,
-                })
+                }, delegation_id))
 
             # The validated structured envelope is durable job data, not Gary
             # context. Persist it once, then resolve the only text allowed onto
@@ -6884,14 +6919,14 @@ async def delegate_to_agent(args: dict) -> dict:
                         delegated_output.run_subtype, _KNOWN_RESULT_SUBTYPES),
                     elapsed,
                 )
-                return _result({
+                return _result(_with_post_echo_payload({
                     "status": "error",
                     "delegation_id": delegation_id,
                     "agent": agent_name,
                     "kind": failure.kind,
                     "message": failure.message,
                     "elapsed_s": elapsed,
-                })
+                }, delegation_id))
             text = delegated_output.text
         # Task 6 (spec §4.6): bound the synchronous result + expose the flag on
         # the wire so the narrating resident can disclose a clipped answer.
@@ -6902,6 +6937,9 @@ async def delegate_to_agent(args: dict) -> dict:
                 "delegated agent %s output truncated: %d > %d chars (spec §4.6)",
                 agent_name, original_text_length, specialist_limits._MAX_OUTPUT_CHARS,
             )
+        # S3 §6: what the plugin posted under this delegation, as body-free
+        # Casa lines after the answer (after the cap: not the delegate's text).
+        text = _with_post_echo(text, delegation_id)
         if not is_voice:
             # #321: the specialist's work is DONE and its answer is in hand —
             # a failed terminal snapshot write must not raise it away (the
@@ -11639,6 +11677,10 @@ async def _finalize_engagement_tail(
     # 4. NOTIFY Ellen (via existing DelegationComplete-shaped pathway)
     if _bus is not None:
         target_role = frozen["origin"].get("role") or "assistant"
+        # S3 §6: a specialist's or job's proven posts, as body-free Casa
+        # lines after the terminal text — the one announcement the creator
+        # is owed (INV-JOB-010) carries them.
+        text = _with_post_echo(text, eng_id)
         complete = DelegationComplete(
             delegation_id=eng_id,
             agent=frozen["role_or_type"],

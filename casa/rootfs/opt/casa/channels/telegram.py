@@ -5044,6 +5044,116 @@ class TelegramChannel(Channel):
         await self._send_one(chat_id, plain, text, entities)
         return DeliveryOutcome.DELIVERED
 
+    # ------------------------------------------------------------------
+    # S3: a specialist's plugin output posted by Casa, labelled, verbatim.
+    # Casa-composed notices like the delivered link: the text is the
+    # plugin's, headed by Casa's label, never model-authored (INV-OUT-001's
+    # notice class).
+    # ------------------------------------------------------------------
+
+    def _plan_operator_message(self, text: str):
+        """The WHOLE physical plan of *text*, judged before the first send:
+        every page ``render_paged`` gives, with the plain chunks a refused
+        page would be resent as. ``None`` — refuse with zero sends — when
+        the plan has more than ``MAX_MESSAGE_PAGES`` pages or any element
+        of it would not reach the operator complete: a page over the
+        budget, a fallback chunk over it, a ``text_link`` destination over
+        one message, or a destination the plain fallback's chunks would
+        carry in pieces. The destination checks read the RENDERED ENTITIES
+        directly: ``_plain_fallback_chunks`` filters an oversized
+        destination silently and returns no sign that it did, and its
+        splitter can cut a fitting destination across two chunks, so a plan
+        judged from its chunks' lengths alone would miss exactly the
+        elements it must refuse."""
+        from result_broker import MAX_MESSAGE_PAGES
+        pages = render_paged(text)
+        if len(pages) > MAX_MESSAGE_PAGES:
+            logger.warning("operator message refused: %d pages over the cap of %d",
+                           len(pages), MAX_MESSAGE_PAGES)
+            return None
+        plan = []
+        for display, entities in pages:
+            if utf16_len(display) > _TG_MAX_LENGTH:
+                logger.warning("operator message refused: a page over the budget")
+                return None
+            chunks = [display]
+            if entities:
+                chunks = self._plain_fallback_chunks(display, entities)
+                if any(utf16_len(chunk) > _TG_MAX_LENGTH for chunk in chunks):
+                    logger.warning("operator message refused: a fallback chunk over the budget")
+                    return None
+                # Each chunk fitting is not each destination arriving. The
+                # destinations are read from the RENDERED ENTITIES and each
+                # must occur WHOLE in some chunk: the helper filters a
+                # destination longer than one message silently (it is then
+                # in no chunk), and its splitter cuts the joined overflow
+                # form at a newline or hard, so two destinations that each
+                # fit can leave the second across two messages. Either way
+                # the plan is refused.
+                for url in missing_link_targets(display, entities):
+                    if not any(url in chunk for chunk in chunks):
+                        logger.warning(
+                            "operator message refused: a link destination the "
+                            "plain fallback would split across messages")
+                        return None
+            plan.append((display, entities, chunks))
+        return plan
+
+    async def deliver_operator_message(self, chat_id: int, text: str) -> DeliveryOutcome:
+        """S3: post *text* — Casa's label line and the plugin's body, as the
+        result broker composed it — to *chat_id*, the chat of a capability
+        call's grant identity, for a slot declared ``operator_message``.
+        Two steps: the plan is judged whole (``_plan_operator_message``),
+        then every page goes in order the way ``send_response``'s
+        MULTI-PAGE loop sends, whatever the page count — ``_send_one``
+        sends the rendered page and, if the platform refuses its entities,
+        resends chunk 1 plain, and this method then sends every remaining
+        fallback chunk itself. The single-page retry with the AUTHORED text
+        is never used: it is not bounded by the page budget. ``DELIVERED``
+        only when every page and every fallback chunk it needed returned
+        normally; a refused plan is ``NOT_DELIVERED`` with zero sends; any
+        exception, on a page or on a tail chunk, propagates and the broker
+        reads it as not proven."""
+        if self._app is None:
+            logger.warning(
+                "Telegram channel not started; cannot deliver operator message")
+            return DeliveryOutcome.NOT_DELIVERED
+        plan = self._plan_operator_message(text)
+        if plan is None:
+            return DeliveryOutcome.NOT_DELIVERED
+        for display, entities, chunks in plan:
+            if not entities:
+                await self._app.bot.send_message(chat_id=chat_id, text=display)
+                continue
+            fell_back = await self._send_one(chat_id, chunks[0], display, entities)
+            if fell_back:
+                for chunk in chunks[1:]:
+                    await self._app.bot.send_message(chat_id=chat_id, text=chunk)
+        return DeliveryOutcome.DELIVERED
+
+    async def deliver_operator_file(
+        self, chat_id: int, content: bytes, kind: str, filename: str, caption: str,
+    ) -> DeliveryOutcome:
+        """S3: send *content* — already claimed from the plugin outbox and
+        passed through the kind's policy by the result broker — as the media
+        *kind* to *chat_id*, through the kind's PTB method exactly as
+        ``send_media`` dispatches, with *caption* (Casa's label line, the
+        plugin's caption beneath) as the bytes it is: no markdown
+        rendering, no entities, no thread id. ``NOT_DELIVERED`` when the
+        channel is not started; ``DELIVERED`` on a normal return; an
+        exception propagates and the broker reads it as not proven."""
+        if self._app is None:
+            logger.warning(
+                "Telegram channel not started; cannot deliver operator file")
+            return DeliveryOutcome.NOT_DELIVERED
+        method = getattr(self._app.bot, MEDIA_POLICIES[kind].ptb_method)
+        await method(
+            chat_id,
+            InputFile(BytesIO(content), filename=filename),
+            caption=caption,
+        )
+        return DeliveryOutcome.DELIVERED
+
     async def send_response(
         self, message: str, context: dict[str, Any],
     ) -> DeliveryOutcome:

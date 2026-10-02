@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-19
+last_reviewed: 2026-10-02
 ---
 
 # Plugin result contract and the capability broker
@@ -14,7 +14,8 @@ a non-adopting plugin's tools before they run and replace a result that arrives 
 and how a capability reference is bound, armed, redeemed and revoked. It does not cover how
 a plugin is installed or assigned ([`plugins.md`](plugins.md)), how its setup tool is
 dispatched ([`plugin-setup.md`](plugin-setup.md)), nor what an agent's prose rule says
-about credentials ([`personality.md`](personality.md)).
+about credentials ([`personality.md`](personality.md)). The slots a tool declares it delivers — a link, a message
+or a file Casa posts to the operator — are [`plugin-delivered-slots.md`](plugin-delivered-slots.md).
 
 ## Mental model
 
@@ -38,7 +39,7 @@ the protected-tool declaration sits on.
 run.** Refusal before execution is what makes this fail-closed: a result that never exists
 has no transcript line, no structured-output sidecar and no model-visible bytes. The exact
 setup tool the plugin declares is exempt, whoever calls it, unless the plugin declares it
-as a capability tool that delivers its link (below) — then it is contracted like any other
+as a capability tool that delivers its link ([`plugin-delivered-slots.md`](plugin-delivered-slots.md)) — then it is contracted like any other
 tool. Should a result for a refused tool arrive anyway, a second hook replaces it with a
 withheld notice that quotes none of its bytes.
 
@@ -56,27 +57,15 @@ reference for that one call and rewrites the argument the tool receives to
 message carries the bare reference and the transcript records that message, not the
 rewritten input, so a parallel tool cannot present the ticket.
 
-**A link the operator must open is delivered by Casa, into the chat the operator asked
-in.** A capability tool may declare one of its slots as `delivers: {slot: "operator_link"}`.
-The producer deposits an `https` URL — with an optional caption and label, validated
-before any reference is minted — and returns the reference exactly as for any capability.
-After the result's structural check passes, the same PostToolUse hook takes the deposit
-once and posts ONE message to the chat of the call's grant identity: a link whose text is
-the label and the destination host, the host printed by Casa from the URL and never
-supplied by the plugin, with the caption beneath. That chat is the operator's chat with
-the resident on a direct turn, a sync delegation from it, or a Casa-dispatched setup turn;
-for a specialist engagement it is the chat the operator asked in, never the engagement's
-topic — an engagement's topic is closed by finalisation and can never show what came of
-the link. Proven delivery replaces the result with a receipt (`casa_delivery.status` is
-`delivered`, every producer field and the reference intact); anything short of proven
-delivery — the channel down, a refused send, an exception, a bound of twenty seconds —
-withholds the result and drops the deposit. The producer's own result is
-**delivery-neutral**: it says a link for the operator was minted and that Casa reports
-whether it arrived, never that it did. That neutrality is load-bearing, because the CLI's
-matcher deadline runs independently of this process: a hook abandoned past it is
-cancelled and the original result reaches the model, so the receipt is the only carrier of
-the positive claim and a result without one claims nothing. A delivered reference is spent
-by the delivery — no tool of the plugin may name the slot in `consumes`.
+**A slot a tool declares it delivers is posted by Casa, never returned to the model.** A
+capability tool may declare one of its slots as `delivers: {slot: kind}` — a link the
+operator must open, or a message or a file a specialist's plugin shows the operator — and
+the same PostToolUse hook, after the structural check, posts the deposit to the chat of the
+call's grant identity and replaces the result with a receipt, or withholds it when delivery
+is not proven. The kinds, each deposit's validation, the plan a message is judged by before
+its first send, the channel's part and the body-free echo the resident's conversation sees
+are in [`plugin-delivered-slots.md`](plugin-delivered-slots.md) (INV-PLUG-025, -026, -028,
+-045, -046).
 
 **What this is not.** It is not an outbound scrubber on the delivery path, not taint
 tracking, and not a defence against a producer that lies in its own declaration — a `safe`
@@ -156,55 +145,6 @@ input carries no result and whose output has no replacement field; the error tex
 the model and the transcript. The housekeeping matcher closes the call and drops its
 deposits. A conforming producer never places a capability in an error.
 
-**INV-PLUG-025**: A capability slot a plugin declares as `operator_link` reaches the operator only as one message Casa posts to the chat of the call's grant identity, after the result's structural check, with the destination host printed by Casa from the URL; the only model-visible statement that it was delivered is the hook's replacement receipt (`casa_delivery.status` equal to `delivered`); when delivery is not proven the result is withheld and the deposit dropped; and the slot's value never appears in the model-visible result, the transcript or the structured-output sidecar.
-
-The delivery is what the deposit's validation exists for: the value must be an `https`
-URL with a hostname, at most 2048 bytes, printable and free of whitespace; the caption at
-most 200 printable characters on one line; the label at most 40, and neither may contain a
-scheme separator, `www.`, or (for the label) anything that reads as a domain — the host
-is Casa's to print. A deposit failing any of these mints no reference, so the result fails
-the structural check and is withheld as any bad capability result is. The message never
-goes through the markdown renderer: label and caption are sent as the bytes they are,
-beside one `text_link` entity whose length is measured in UTF-16 code units. Taking the
-deposit is atomic and once — a taken reference is used, so `arm`, `redeem` and a second
-take all refuse it — and the broker's three matchers carry an explicit sixty-second timeout.
-
-What it does not cover: Casa's process logs. The boundary is the model — keeping the link
-out of the model's context is what stops it being echoed into whatever chat or topic the
-model is in — not the log. A sign-in or approval link is not a bearer credential: opening
-it still requires the account holder's own login at the provider, it expires, and it
-authorises once. So the client library's own loggers (request parameters at debug level,
-an error body that quotes the request) are not policed; Casa's own two warnings on the
-send path name an error's type rather than its text, which is housekeeping, not a
-guarantee. Nor does it cover the hook's own cancellation by the CLI's deadline. Cancellation
-can land inside the channel's send or after the hook returned, so the message may or may
-not have left; the hook drops the deposit and re-raises with no replacement, the model
-holds the delivery-neutral original and reports the link as unconfirmed, and the operator
-may hold a valid link the notice's wording already covers — an unconfirmed delivery, never
-a false positive. Nor does it cover a producer that copies the URL into a field it did
-not declare: the plugin-author trust boundary above.
-
-**INV-PLUG-026**: `delivers` is accepted only on a `capability` tool, names only that tool's own provided slots, at most one, with the closed kind `operator_link`, and a delivered slot is consumed by no tool of the plugin; a setup tool declared as a capability delivers every slot it provides and consumes nothing, and any other capability declaration on a setup tool is malformed.
-
-An older Casa refuses a manifest carrying `delivers` as malformed through the extractor's
-unknown-member check, on every artifact-verification path — the plugin is excluded from
-resolution there, never half-loaded — so a plugin release adopting it requires the Casa
-release that ships it, and says so in its own changelog. The map keeps a setup tool's
-capability entry; only the safe or absent declaration is skipped as exempt.
-
-**INV-PLUG-028**: A result from a call that delivers a slot, with no deposit bound to it and with every slot the call provides present as JSON `null`, passes to the model unchanged, with no receipt and no message; every other result of such a call that fails the structural check is withheld and its deposits dropped, exactly as for any capability result.
-
-A tool that delivers a link does not always make one. A sign-in tool finds the account
-already connected, or a link still outstanding, and must say so. Without this rule
-that answer could reach the model only as a tool error, and a Casa-dispatched setup run
-whose only result is an error counts as not run, so it is retried and then failed. The
-producer states "no link" explicitly: every provided slot present and `null`, and nothing
-deposited. A missing member, an empty string or any other falsy value is not that
-statement, and neither is `null` after a deposit, so a producer that crashed half-way
-or forgot its reference is still withheld. The passed result is an ordinary non-error
-result, so the setup run counts. It adds no exposure a `safe` declaration does not
-already allow: Casa has never scanned a producer's prose.
-
 ## Failure behavior
 
 **A plugin declares no contract.** Every one of its non-setup tools is refused before it
@@ -236,25 +176,8 @@ on an unsupported origin; nothing is deposited.
 **A tool errors.** The failure event fires; the error text reaches the model and the
 transcript; the in-flight call is closed and its deposits dropped.
 
-**A delivered link's deposit is malformed.** No reference is minted (`bad_link`,
-`bad_caption` or `bad_label`, none echoing the value); the producer's result cannot carry
-one and is withheld. For a slot the tool does not deliver, caption and label are ignored
-rather than refused, so a producer library can send them uniformly.
-
-**Delivery is not proven.** The channel is not started, the send returns without proof,
-raises, or exceeds the bound: the result is replaced by a notice telling the model the
-operator may or may not hold a link — if one arrived just now it is valid, otherwise ask
-for a fresh one — and the deposit is dropped. Telegram accepting the message and the
-client raising afterwards reads the same way; that is the one double-telling the design
-accepts, and why the notice promises nothing about what did not arrive. A provider-side
-pending authorisation is orphaned and the next request mints a fresh one.
-
-**A delivered slot is presented to a consuming parameter.** The manifest forbids naming it;
-a reference that reaches arming anyway is used and refused.
-
-**Casa restarts between deposit and hook, or the CLI abandons the hook.** The call is gone
-and the result withheld; on abandonment the neutral original passes through and claims
-nothing (INV-PLUG-025's not-covered clause).
+**A delivered slot's deposit is malformed, its delivery is not proven, or its reference is
+presented to a consumer.** Each is in [`plugin-delivered-slots.md`](plugin-delivered-slots.md).
 
 **A plugin is updated, removed or unassigned.** The references minted under the old
 artifact, or for the unassigned role, are purged in the same lifecycle step that purges
@@ -270,9 +193,8 @@ must fetch a fresh one.
 **A new declaration field** joins the strict extractor beside the existing ones and is
 re-checked on every artifact-verification path; per-plugin degradation, never inference.
 
-**A new delivered-slot kind** joins the closed vocabulary in the extractor, the deposit's
-validation and the hook's composition together; a kind Casa cannot compose a message for
-is a kind the extractor must refuse.
+**A new delivered-slot kind** is an extension of
+[`plugin-delivered-slots.md`](plugin-delivered-slots.md).
 
 **A new session builder that loads plugins** appends the broker's three matchers exactly
 where it appends the authorization hook, passes the same resolution to both, and puts the
@@ -298,8 +220,6 @@ documentation-lookup plugin the plugin-developer relies on.
 - `tests/test_result_broker.py`
 - `tests/test_result_contract.py`
 - `tests/test_result_broker_redcase.py`
-- `tests/test_operator_link_delivery.py`
-- `tests/test_operator_link_no_link_outcome.py`
 
 **Related**
 - [`architecture/plugins.md`](../architecture/plugins.md)
@@ -307,4 +227,5 @@ documentation-lookup plugin the plugin-developer relies on.
 - [`architecture/personality.md`](../architecture/personality.md)
 - [`architecture/mcp-and-tools.md`](../architecture/mcp-and-tools.md)
 - [`architecture/telegram.md`](../architecture/telegram.md)
+- [`architecture/plugin-delivered-slots.md`](../architecture/plugin-delivered-slots.md)
 <!-- END SOURCEMAP -->

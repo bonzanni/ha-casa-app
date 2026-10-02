@@ -22,6 +22,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 |---|---|
 | Telegram message rendering, pagination and its budgets, link-destination fallback, or the UTF-16 measurement | [`architecture/telegram-rendering.md`](architecture/telegram-rendering.md) |
 | Telegram transport, callback namespaces, topic output ordering, or the outbound request boundary | [`architecture/telegram.md`](architecture/telegram.md) |
+| a delivered-slot kind, the deposit validation of a link, message or file, the delivery hook or its receipt, the channel's operator-post methods, or the post echo ledger | [`architecture/plugin-delivered-slots.md`](architecture/plugin-delivered-slots.md) |
 | a launch failure or abort, what a launch rollback removes, or restart replay | [`architecture/engagement-failure-and-restart.md`](architecture/engagement-failure-and-restart.md) |
 | a plugin access profile, the registry profiles map, casa.profiles or casa.requires, the profile plan or guard matcher, requirement candidates, dependents or leftover requirements, or the requirement_unmet warning | [`architecture/plugin-access-profiles.md`](architecture/plugin-access-profiles.md) |
 | a plugin tool result, the result contract, a capability reference or its redemption, or the broker routes | [`architecture/plugin-result-contract.md`](architecture/plugin-result-contract.md) |
