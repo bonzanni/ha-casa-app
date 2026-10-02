@@ -14,14 +14,15 @@ it, each green before the fix and mutation-checked against it:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
-from aiohttp import web
-from aiohttp.test_utils import TestClient, TestServer
+from aiohttp.streams import StreamReader
+from aiohttp.test_utils import make_mocked_request
 
 import agent as agent_mod
 from bus import BusMessage, MessageType
@@ -178,20 +179,25 @@ async def test_invoke_context_cannot_choose_the_recorded_question(tmp_path):
         webhook_secret=_SHARED_SIG_SEED, bus=_AgentBus(agent),
         assistant_role="assistant", role_configs={"assistant": _Cfg()},
     )
-    app = web.Application(middlewares=[cid_middleware])
-    app.router.add_post("/invoke/{agent}", handler)
     body = json.dumps({
         "prompt": "INVOKE_PROMPT",
         "context": {"chat_id": "caller-1", **_PLANTED},
     }).encode()
     sig = hmac.new(_SHARED_SIG_SEED.encode(), body, hashlib.sha256).hexdigest()
+    # In process, through the real middleware and handler: no listening
+    # socket (a sandboxed run cannot bind one).
+    stream = StreamReader(MagicMock(), 2 ** 16,
+                          loop=asyncio.get_running_loop())
+    stream.feed_data(body)
+    stream.feed_eof()
+    request = make_mocked_request(
+        "POST", "/invoke/assistant", payload=stream,
+        match_info={"agent": "assistant"},
+        headers={"Content-Type": "application/json",
+                 "X-Webhook-Signature": sig})
     with patch("sdk_client_pool._default_make_client", _CapturingClient):
-        async with TestClient(TestServer(app)) as client:
-            r = await client.post(
-                "/invoke/assistant", data=body,
-                headers={"Content-Type": "application/json",
-                         "X-Webhook-Signature": sig})
-            assert r.status == 200
+        response = await cid_middleware(request, handler)
+    assert response.status == 200
 
     assert len(_CapturingClient.origins) == 1
     assert _CapturingClient.origins[0]["user_text"] == "INVOKE_PROMPT"
