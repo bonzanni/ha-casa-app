@@ -679,3 +679,150 @@ async def test_never_written_tombstone_is_quiet_but_waiting_terminal_warns(
     assert len(warnings) == 0, [r.getMessage() for r in warnings]
     assert counts == _ZERO
     assert not tombstone.exists()
+
+
+# --- Cluster R: regression pins beside the red cases (green at the fix) ----
+
+async def test_a_retired_session_is_recorded_once_and_survives_a_reload(
+        tmp_path):
+    """#1167: two clamps that both move, with the same session still the
+    pointer, record it once; the list rides the tombstone across a reload."""
+    from engagement_registry import RETIRED_SIDS_KEY
+
+    registry = _registry(tmp_path)
+    a = _sid()
+    rec = await _record(registry, origin={"_origin_clearance": "private"},
+                        sid=a, outcome="active")
+    assert await registry.lower_origin_clearance(rec.id, "family") is True
+    assert await registry.lower_origin_clearance(rec.id, "public") is True
+    assert rec.origin[RETIRED_SIDS_KEY] == [a]
+
+    registry = _registry(tmp_path)
+    await registry.load()
+    assert registry.get(rec.id).origin[RETIRED_SIDS_KEY] == [a]
+
+
+@pytest.mark.parametrize("case", ["no_move", "unstamped", "no_session"])
+async def test_a_clamp_that_retires_nothing_records_nothing(tmp_path, case):
+    """#1167: a clamp that does not move, a record with no stamped clearance,
+    and a record with no session yet add no retired-session entry."""
+    from engagement_registry import RETIRED_SIDS_KEY
+
+    registry = _registry(tmp_path)
+    origin = {} if case == "unstamped" else {"_origin_clearance": "family"}
+    rec = await _record(registry, origin=origin, outcome="active",
+                        sid=None if case == "no_session" else _sid())
+    moved = await registry.lower_origin_clearance(
+        rec.id, "private" if case == "no_move" else "public")
+    assert moved is (case == "no_session")
+    assert RETIRED_SIDS_KEY not in rec.origin
+
+
+async def test_a_malformed_session_list_never_hides_a_valid_session(
+        home, tmp_path, monkeypatch):
+    """#1167: unhashable, non-string or non-list entries in either list name
+    nothing, and the valid sessions beside them are still removed."""
+    from engagement_registry import JOB_SIDS_KEY, RETIRED_SIDS_KEY
+
+    _specialists(monkeypatch, researcher=SimpleNamespace(role="researcher", cwd=""))
+    registry = _registry(tmp_path)
+    job_sid, retired_sid, other = _sid(), _sid(), _sid()
+    await _record(registry, origin={
+        "job": {JOB_SIDS_KEY: [{"x": 1}, job_sid, 5, None]},
+        RETIRED_SIDS_KEY: [["nested"], retired_sid, "not-a-sid"]})
+    await _record(registry, role="researcher", origin={RETIRED_SIDS_KEY: "oops"})
+    spec = _project_dir(home, "/config/agent-home/researcher")
+    for sid in (job_sid, retired_sid, other):
+        _seed_session(spec, sid)
+
+    counts = await _reap(registry)
+
+    assert sorted(p.name for p in spec.iterdir()) == sorted(
+        [f"{other}.jsonl", other])
+    assert counts == {**_ZERO, "deleted": 4}
+
+
+async def _durable_plugin(registry, tmp_path, monkeypatch, home):
+    import tools
+
+    monkeypatch.setattr(tools, "_PLUGIN_JOB_ROOT", tmp_path / "eng")
+    ps = _sid()
+    rec = await _record(registry, kind="plugin", sid=ps)
+    cwd = tools.plugin_job_cwd(rec.id)
+    for name in ("a", "b", "c"):
+        (cwd / name).mkdir(parents=True)
+        (cwd / name / "f.txt").write_text("payload", encoding="utf-8")
+    project = _project_dir(home, str(cwd))
+    _seed_session(project, ps)
+    return cwd.parent, project
+
+
+async def test_an_entry_vanishing_mid_walk_does_not_stop_the_removal(
+        home, tmp_path, monkeypatch):
+    """#1170: an entry a concurrent delete removes between the walk's listing
+    and its unlink is skipped; the walk finishes the rest of the tree in the
+    same pass and nothing is reported as an error."""
+    registry = _registry(tmp_path)
+    workdir, project = await _durable_plugin(registry, tmp_path, monkeypatch, home)
+    real_unlink = os.unlink
+    raced = []
+
+    def _unlink(path, *a, **kw):
+        real_unlink(path, *a, **kw)
+        if not raced:
+            raced.append(path)
+            raise FileNotFoundError(errno.ENOENT, "raced", path)
+
+    monkeypatch.setattr(os, "unlink", _unlink)
+    counts = await _reap(registry)
+    monkeypatch.setattr(os, "unlink", real_unlink)
+
+    assert raced
+    assert not workdir.exists() and not project.exists()
+    assert counts == {**_ZERO, "deleted": 2}
+
+
+async def test_a_failed_removal_is_counted_and_finished_by_the_next_pass(
+        home, tmp_path, monkeypatch):
+    """#1170: a real error part-way through the working dir is an error, not
+    an absence; the transcripts beside it still go, and the next pass finishes
+    the tree."""
+    registry = _registry(tmp_path)
+    workdir, project = await _durable_plugin(registry, tmp_path, monkeypatch, home)
+    real_unlink = os.unlink
+
+    def _unlink(path, *a, **kw):
+        if str(path) == "f.txt" and not failed:
+            failed.append(path)
+            raise PermissionError(errno.EACCES, "denied", path)
+        real_unlink(path, *a, **kw)
+
+    failed: list = []
+    monkeypatch.setattr(os, "unlink", _unlink)
+    counts = await _reap(registry)
+    monkeypatch.setattr(os, "unlink", real_unlink)
+
+    assert failed and workdir.exists() and not project.exists()
+    assert counts == {**_ZERO, "deleted": 1, "errors": 1}
+    assert await _reap(registry) == {**_ZERO, "deleted": 1, "absent": 1}
+    assert not workdir.exists()
+
+
+@pytest.mark.parametrize("failing", ["_remove_tree", "_remove"])
+async def test_the_working_dir_and_the_transcripts_fail_independently(
+        home, tmp_path, monkeypatch, failing):
+    """#1170: either removal failing leaves the other one done."""
+    import engagement_transcript_reaper as reaper
+
+    registry = _registry(tmp_path)
+    workdir, project = await _durable_plugin(registry, tmp_path, monkeypatch, home)
+
+    def _boom(path, counts):
+        raise PermissionError(path)
+
+    monkeypatch.setattr(reaper, failing, _boom)
+    counts = await _reap(registry)
+
+    assert workdir.exists() is (failing == "_remove_tree")
+    assert project.exists() is (failing == "_remove")
+    assert counts == {**_ZERO, "deleted": 1, "errors": 1}
