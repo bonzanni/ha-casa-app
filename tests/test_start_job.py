@@ -145,9 +145,11 @@ async def test_launch_limit_prompt_envelope_and_persistence(runtime):
     await tools.drain_launch_turns()
     client = Client.instances[0]
     assert cli_limit(client.options) == '30'
-    assert client.prompts == [jobs.launch_prompt(DECL, 'Classify the ledger', 'all rows', 30)]
-    assert DECL.title in runtime.bot.create_forum_topic.call_args.kwargs['name']
     rec = runtime.registry.get(result['engagement_id'])
+    # The launch prompt names the job by its engagement id (INV-BGJOB-005).
+    assert client.prompts == [jobs.launch_prompt(DECL, 'Classify the ledger', 'all rows', 30,
+                                                 job_id=rec.id)]
+    assert DECL.title in runtime.bot.create_forum_topic.call_args.kwargs['name']
     assert rec.origin['job'] == jobs.initial_job_state(DECL)
     rows = json.loads(Path(runtime.registry._tombstone_path).read_text())
     assert rows[0]['origin']['job'] == jobs.initial_job_state(DECL)

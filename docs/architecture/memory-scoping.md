@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-08-18
+last_reviewed: 2026-10-02
 ---
 
 # Memory scoping
@@ -55,9 +55,9 @@ already holds. The transcript and the launch-injected archive were built at the 
 a lower-clearance steerer could simply ask the engagement to restate them, so the same locked
 ingress pass that lowers the record also: durably marks the context for rebuild (the flag and
 the clamp persist in one write, so a crash between them cannot happen), withholds the
-record's own launch materials (task, brief, context, world-state — every later render
-re-derives from the record, and evicting the session while the record still carried them
-would re-import them), tears the live session down, and drops the resume pointer. Every
+record's own launch materials (task, brief, context, world-state, and a fresh job's recorded
+launch context — every later render re-derives from the record, and evicting the session
+while the record still carried them would re-import them), tears the live session down, and drops the resume pointer. Every
 resume path — the steering turn itself, a system continuation, boot replay — refuses to
 resume while the rebuild is pending and establishes a fresh session at the clamped floor
 instead; while it is pending, the old process's tool calls are refused at both dispatch

@@ -1805,6 +1805,11 @@ class EngagementRegistry:
             )
             for key in ("brief", "context", "world_state_summary"):
                 rec.origin.pop(key, None)
+            # A fresh job re-states its launch context on every turn
+            # (INV-BGJOB-005); it was authored at the old tier too.
+            job = rec.origin.get("job")
+            if isinstance(job, dict):
+                job.pop("brief_context", None)
             logger.info(
                 "engagement %s read-clearance lowered %s→%s (steered by a "
                 "lower-clearance sender); session context marked for rebuild",

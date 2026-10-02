@@ -58,6 +58,9 @@ class JobDecl:
     summary: str | None
     batches: int | None            # None = unlimited
     turns_per_batch: int | None    # None = the specialist's tools.max_turns
+    # "resume" continues one conversation across turns; "fresh" resets it
+    # before every turn after the launch and re-states the brief (S1).
+    session: str = "resume"
 
 
 @dataclass(frozen=True)
@@ -210,6 +213,7 @@ def jobs_for_target(scope: str) -> dict[str, tuple[JobDecl, Any]]:
                     batches=(None if entry["batches"] == "unlimited"
                              else entry["batches"]),
                     turns_per_batch=entry.get("turnsPerBatch"),
+                    session=entry.get("session", "resume"),
                 ), resolved)
         return jobs
     except Exception:
@@ -265,6 +269,9 @@ def initial_job_state(decl: JobDecl) -> dict:
         "skill": decl.skill,
         "batches": decl.batches,
         "turns_per_batch": decl.turns_per_batch,
+        # Readers use .get("session", "resume"): a record written before the
+        # field existed is a resume-mode job.
+        "session": decl.session,
         "started": 0,
         "judged": 0,
         "stuck": 0,
@@ -282,16 +289,31 @@ def initial_job_state(decl: JobDecl) -> dict:
     }
 
 
-def launch_prompt(decl: JobDecl, task: str, context: str, turns_per_batch: int) -> str:
-    """The launch turn: state the job, acknowledge in one line, do no work."""
+def launch_prompt(decl: JobDecl, task: str, context: str, turns_per_batch: int,
+                  *, job_id: str) -> str:
+    """The launch turn: state the job, acknowledge in one line, do no work.
+
+    ``job_id`` is the engagement id. The launch turn and every fresh turn's
+    brief (``job_brief``) name it, so a plugin can claim work by it and match
+    the job-end notice, whose delegation id is the same engagement id."""
     return (
         f'You are starting the background job "{decl.title}" (skill {decl.skill}).\n'
+        f"Job id: {job_id}\n"
         f"Request: {task}\n"
         f"Context: {context}\n"
         "In THIS turn do no work: reply with one short line saying what you are "
         "about to do, then end your turn.\n"
         "Casa then starts batch 1. How the job runs:\n"
-        f"- Each batch is one turn of at most {turns_per_batch} turns. Load the skill, "
+        + _job_rules(turns_per_batch)
+    )
+
+
+def _job_rules(turns_per_batch: int | None) -> str:
+    """How a job runs — the rules the launch prompt and the job brief share."""
+    limit = (f" of at most {turns_per_batch} turns"
+             if isinstance(turns_per_batch, int) else "")
+    return (
+        f"- Each batch is one turn{limit}. Load the skill, "
         "do one bounded batch, call report_job_progress as your last action, then end "
         "your turn. Casa starts the next batch. Running out of turns only ends the batch.\n"
         "- report_job_progress takes a one-line summary and `progressed`: whether this "
@@ -306,6 +328,55 @@ def launch_prompt(decl: JobDecl, task: str, context: str, turns_per_batch: int) 
         "answer briefly and end your turn; the job then continues.\n"
         "- When nothing is left, call emit_completion with a summary for the operator. "
         "If it is refused because a message is unread, end your turn, read it, then complete."
+    )
+
+
+def job_session(rec: Any) -> str:
+    """The job's declared session mode; a record without one is "resume"."""
+    job = (getattr(rec, "origin", None) or {}).get("job")
+    if not isinstance(job, dict):
+        return "resume"
+    return job.get("session", "resume")
+
+
+def is_fresh_job(rec: Any) -> bool:
+    """Whether *rec* is a job whose turns after the launch start fresh."""
+    return job_session(rec) == "fresh"
+
+
+_CONTEXT_WITHHELD = (
+    "[The launch context is withheld: this engagement's clearance was lowered "
+    "after it started.]")
+
+
+def job_brief(rec: Any) -> str:
+    """The brief a fresh job's every turn after the launch begins with
+    (INV-BGJOB-005).
+
+    Rendered from the record's id and ``task``, the launch context recorded in
+    ``origin["job"]["brief_context"]`` and the declaration fields in
+    ``origin["job"]`` — nothing else. A clearance downgrade replaces ``task``
+    with its withheld notice and drops ``brief_context`` in the same step, so
+    the brief then carries neither."""
+    job = rec.origin["job"]
+    context = job.get("brief_context")
+    if not isinstance(context, str):
+        context = _CONTEXT_WITHHELD
+    elif not context:
+        context = "(none)"
+    return (
+        f'You are running the background job "{job.get("title")}" '
+        f'(skill {job.get("skill")}). This turn starts a fresh conversation: '
+        "nothing from the job's earlier turns is visible here, so load the skill "
+        "again before you work.\n"
+        # An identifier, not launch material: it stays through a clearance
+        # downgrade, which withholds only the task and the context.
+        f"Job id: {rec.id}\n"
+        f"Request: {rec.task}\n"
+        f"Context:\n{context}\n"
+        "What follows this brief is this turn: a batch to run, or a message from "
+        "the operator to answer. How the job runs:\n"
+        + _job_rules(job.get("turns_per_batch"))
     )
 
 

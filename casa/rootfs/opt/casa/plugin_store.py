@@ -1107,8 +1107,12 @@ def manifest_callbacks(manifest: dict, plugin_name: str) -> list:
 
 _JOB_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
 _JOB_FIELDS = {
-    "name", "skill", "title", "summary", "batches", "turnsPerBatch",
+    "name", "skill", "title", "summary", "batches", "turnsPerBatch", "session",
 }
+# How a job's turns after its launch see the conversation: "resume" (the
+# default) continues one conversation, "fresh" resets it before every turn and
+# re-states the job brief (INV-BGJOB-005).
+_JOB_SESSIONS = ("resume", "fresh")
 
 
 def _jobs_invalid(entry: int | None, field: str) -> StoreError:
@@ -1164,6 +1168,8 @@ def manifest_jobs(manifest: dict) -> list[dict]:
                      or not isinstance(turns_per_batch, int)
                      or turns_per_batch < 1)):
             raise _jobs_invalid(index, "turnsPerBatch")
+        if "session" in job and job["session"] not in _JOB_SESSIONS:
+            raise _jobs_invalid(index, "session")
         out.append(dict(job))
     return out
 

@@ -5820,6 +5820,11 @@ async def _launch_interactive_engagement(
     turns_per_batch = cfg.tools.max_turns
     if job is not None:
         origin["job"] = background_jobs.initial_job_state(job)
+        if job.session == "fresh":
+            # INV-BGJOB-005: every later turn of a fresh job re-states the
+            # launch context verbatim (already bounded by _MAX_CONTEXT_CHARS).
+            # Clearance-governed: lower_origin_clearance drops it.
+            origin["job"]["brief_context"] = context_text
         casa_grants += background_jobs.JOB_CASA_GRANTS
         turns_per_batch = job.turns_per_batch or cfg.tools.max_turns
     if plugin_host is not None:
@@ -6050,7 +6055,8 @@ async def _launch_interactive_engagement(
 
             if job is not None:
                 prompt = background_jobs.launch_prompt(
-                    job, task_text, context_text, turns_per_batch)
+                    job, task_text, context_text, turns_per_batch,
+                    job_id=rec.id)
 
             driver = getattr(agent_mod, "active_engagement_driver", None)
             if driver is None:
