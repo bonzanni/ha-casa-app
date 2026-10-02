@@ -1172,6 +1172,27 @@ conversation learns only that the specialist posted something and how large
 it was, never what it said — ask the specialist if you want the detail
 repeated. Needs Casa 0.339.0 or later.
 
+#### Reply to a specialist's post and the specialist answers (v0.341.0)
+
+Swipe-reply (quote) on any message a specialist posted — a report, a file, a
+link, or its own earlier answer — and your words go straight to that
+specialist, not to the assistant: one specialist turn, no retelling. It
+answers in the same chat under its label (`📊 Finance`), and you can reply to
+the answer to keep the thread going. The specialist keeps a short desk thread
+per chat: the last twelve exchanges of the last hour (each side clipped to
+400 characters), including the briefs the assistant sent it by delegation; an
+hour of silence starts the thread fresh. A reply that starts with `/new` on a
+specialist's post goes to the specialist too — `/new` resets the assistant
+only when it is not a reply to a post. Views the specialist's plugin produces
+during the turn still arrive verbatim through the labelled-post path; if the
+specialist has nothing to show, or its turn fails, Casa posts one short
+labelled notice instead. The assistant only learns that the specialist
+answered (and how long the answer was) at your next message to it. One
+specialist turn runs per desk at a time; at most three replies wait behind
+it, and a fourth is told the desk is busy. A reply on a message posted before
+Casa last restarted, or older than the last 4,096 posted messages, is an
+ordinary message to the assistant.
+
 #### Links a plugin needs from you: the vault drop-off (v0.330.0)
 
 Some sign-in steps run the other way: the provider emails you a single-use

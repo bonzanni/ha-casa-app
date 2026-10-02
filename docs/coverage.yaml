@@ -255,6 +255,8 @@
   doc: architecture/specialist-lifecycle.md
 - item: casa/rootfs/opt/casa/specialist_install_consent.py
   doc: architecture/specialist-lifecycle.md
+- item: casa/rootfs/opt/casa/specialist_desk.py
+  doc: architecture/specialist-desk.md
 - item: casa/rootfs/opt/casa/specialist_limits.py
   doc: architecture/delegation.md
 - item: casa/rootfs/opt/casa/specialist_materialize.py

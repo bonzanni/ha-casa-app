@@ -45,6 +45,10 @@ def test_reserved_context_keys_are_exactly_the_spec_set():
         # #283: live-operator marker — an external caller who could set it
         # would exempt itself from the agent-spawn cap.
         "_operator_turn",
+        # S4: the specialist-desk marker a desk turn's origin carries — an
+        # external caller who could set it would route an approval
+        # continuation to a desk of its choosing.
+        "desk",
         # #1015: the role a plugin-setup dispatch is FOR — an external caller
         # who could set it would aim a delivered link at another role.
         "plugin_setup_target",

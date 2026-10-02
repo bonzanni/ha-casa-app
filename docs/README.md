@@ -80,6 +80,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | the mental-model overlay, or the mental models Casa declares and reconciles | [`architecture/memory-mental-models.md`](architecture/memory-mental-models.md) |
 | the plugin file handoff folder, publish or capture, its sweep, or share_inbound_file's handoff side | [`architecture/plugin-handoff.md`](architecture/plugin-handoff.md) |
 | the plugin health report or its regeneration, the operator health notice or DM, health repeat suppression or dedup marks, or the plugin status tool | [`architecture/plugin-health.md`](architecture/plugin-health.md) |
+| the post map, the swipe-reply route, the specialist desk or its bounds, the desk turn or its notices, the resident's front-desk echo, or an approval continuation's destination | [`architecture/specialist-desk.md`](architecture/specialist-desk.md) |
 | the removal disclosure — what plugin_remove, a specialist bundle's owned-set swap or its compensation says a committed removal left behind | [`architecture/plugin-removal.md`](architecture/plugin-removal.md) |
 | the response-shape or prompt-file write guards, or why an edit to a resident's per-agent file is refused | [`architecture/prompt-file-guards.md`](architecture/prompt-file-guards.md) |
 | the setup tool's dispatch obligation or its consent gating | [`architecture/plugin-setup.md`](architecture/plugin-setup.md) |

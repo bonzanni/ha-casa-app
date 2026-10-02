@@ -81,7 +81,7 @@ class _Recorder:
         self.entered = asyncio.Event()
         self.chat_id = "42"
 
-    async def deliver_operator_link(self, chat_id, text, entities, plain):
+    async def deliver_operator_link(self, chat_id, text, entities, plain, *, post=None):
         self.deliveries.append((chat_id, text, entities, plain))
         self.entered.set()
         if self.block is not None:

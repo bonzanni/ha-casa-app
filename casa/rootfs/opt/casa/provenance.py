@@ -42,6 +42,10 @@ CASA_PLUGIN_TURN_TARGETS: dict[str, str] = {
 RESERVED_CONTEXT_KEYS = frozenset({
     "synthetic",
     "button_answer",
+    # S4: the specialist-desk marker a desk turn's origin carries (the role
+    # and chat the approval continuation returns to); stamped only by the
+    # desk itself, never by an ingress.
+    "desk",
     "execution_role",
     "message_type",
     "source",

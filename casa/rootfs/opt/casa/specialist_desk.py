@@ -1,0 +1,584 @@
+"""The specialist desk (S4): the thread one specialist keeps with one chat.
+
+A swipe-reply the operator sends on a message Casa posted for a specialist
+(an ``operator_message``/``operator_file``/``operator_link`` post, or a desk
+reply) reaches that specialist as ONE desk turn carrying the operator's exact
+words — never a resident turn (INV-DESK-001). The desk is a bounded dialogue
+log injected into each turn's prompt, not an SDK session resume: the
+specialist runner runs every delegated turn in a fresh CLI session and gives
+the specialist its memory by prompt injection, and the plugin's own store is
+the state a specialist works from; the desk keeps only the dialogue
+(INV-DESK-003). The reply reaches the operator as the specialist's own
+admitted, labelled, bounded text; a turn with no proven operator-visible
+outcome ends in one labelled Casa notice; the chat's resident learns of the
+turn only through a body-free line at its next turn, and no resident model
+turn is spent on it (INV-DESK-002).
+
+Bounds (design §10): twelve exchanges per desk, 400 characters per side,
+10,000 per rendered block, idle reset after an hour, three waiters per desk,
+task ≤ 4,096 (Telegram's own), quote ≤ 2,000, context ≤ 12,500.
+"""
+from __future__ import annotations
+
+import asyncio
+import collections
+import contextlib
+import dataclasses
+import logging
+import time
+import uuid
+from typing import Any, Callable
+
+logger = logging.getLogger(__name__)
+
+DESK_LOG_EXCHANGES = 12
+DESK_LOG_SIDE_CHARS = 400
+DESK_LOG_CHARS = 10_000
+DESK_IDLE_S = 3600.0
+DESK_QUEUE_MAX = 3
+DESK_TASK_CHARS = 4096
+DESK_QUOTE_CHARS = 2000
+DESK_CONTEXT_CHARS = 12_500
+DESK_FRAMING_CHARS = 500
+CLIP = "[…]"
+POSTED_VIEW = "[posted a view]"
+NO_REPLY = "[no reply]"
+ECHO_OWNER_PREFIX = "desk:"
+PROMPT_PREFIX = "(front desk) "
+# §5.6/§6: the body-free echo line for an outcome of a silent turn that has
+# no S3 echo event of its own, keyed by the outcome's kind — a landed post's
+# delivery kind (`PostRecord.kind`) or a send's intent (`OperatorSend.intent`)
+OUTCOME_ECHO = {"operator_link": "posted a link to your chat.",
+                "media": "sent you a file.", "caption": "sent you a file.",
+                "keyboard": "asked you a question.", "discrete": "sent you a message."}
+OUTCOME_ECHO_OTHER = "sent you something."
+
+
+def clip(text: str, limit: int) -> str:
+    """*text* within *limit* characters, a visible marker when it was cut."""
+    text = text or ""
+    if len(text) <= limit:
+        return text
+    keep = max(limit - len(CLIP), 0)
+    return text[:keep] + CLIP
+
+
+@dataclasses.dataclass
+class Exchange:
+    who: str           # "operator" | "resident" | "specialist"
+    text: str
+    at: float
+
+
+class Desk:
+    """One (chat, specialist) thread: the log, the activity stamp, the lock
+    that serialises every use, and the queue reservation count."""
+
+    def __init__(self, chat_id: int, role: str) -> None:
+        self.chat_id = chat_id
+        self.role = role
+        self.log: list[Exchange] = []
+        self.last_used: float | None = None
+        self.lock = asyncio.Lock()
+        # The queue in RESERVATION order: a use is admitted only when its
+        # reservation is at the head, so a use reserved earlier but whose
+        # task reached the desk later (a delegation still registering) is
+        # never overtaken (arrival order = reservation order).
+        self._queue: "collections.deque[Reservation]" = collections.deque()
+        self._changed = asyncio.Event()
+
+    @property
+    def waiting(self) -> int:
+        return len(self._queue) + self._extra_waiting
+
+    _extra_waiting = 0   # tests that simulate a full queue set ``waiting``
+
+    @waiting.setter
+    def waiting(self, value: int) -> None:
+        self._extra_waiting = max(int(value) - len(self._queue), 0)
+
+    # -- queue (reserved BEFORE any task exists; released on admission) ----
+    def reserve(self) -> "Reservation | None":
+        """One place in the queue, or ``None`` when DESK_QUEUE_MAX are
+        already waiting. The reservation is released ONCE — on admission,
+        or on any exit before it (a cancel while waiting, a task cancelled
+        before its coroutine started: the holder's done-callback)."""
+        if self.waiting >= DESK_QUEUE_MAX:
+            return None
+        reservation = Reservation(self)
+        self._queue.append(reservation)
+        return reservation
+
+    def _unreserve(self, reservation: "Reservation") -> None:
+        try:
+            self._queue.remove(reservation)
+        except ValueError:
+            return
+        self._changed.set()
+
+    @contextlib.asynccontextmanager
+    async def use(self, reservation: "Reservation | None"):
+        """One use of the desk: wait until *reservation* is at the head of
+        the queue (an abandoned place ahead is skipped as it is released),
+        take the lock, release the place, yield; the lock is released on
+        every exit."""
+        if reservation is not None:
+            while self._queue and self._queue[0] is not reservation and not reservation.released:
+                self._changed.clear()
+                await self._changed.wait()
+        async with self.lock:
+            if reservation is not None:
+                reservation.release()
+            yield
+
+    # -- the window (every call below runs under ``lock``) ------------------
+    def begin_use(self, now: float) -> None:
+        """The idle reset: a use that finds the desk idle past DESK_IDLE_S
+        starts from an empty log — inactivity, not a sliding history."""
+        if self.last_used is not None and now - self.last_used > DESK_IDLE_S:
+            self.log = []
+
+    def append(self, who: str, text: str, now: float) -> None:
+        """One side of an exchange, clipped to the side cap; the window keeps
+        the newest DESK_LOG_EXCHANGES entries; ``last_used`` is stamped."""
+        self.log.append(Exchange(who, clip(text, DESK_LOG_SIDE_CHARS), now))
+        del self.log[:-2 * DESK_LOG_EXCHANGES]        # twelve exchanges of two sides
+        self.last_used = now
+
+
+class Reservation:
+    """A place in a desk's queue; ``release`` is idempotent."""
+
+    def __init__(self, desk: Desk) -> None:
+        self._desk = desk
+        self._released = False
+
+    def release(self, *_ignored: Any) -> None:
+        if self._released:
+            return
+        self._released = True
+        self._desk._unreserve(self)
+
+    @property
+    def released(self) -> bool:
+        return self._released
+
+
+class DeskBusy(Exception):
+    """A desk use admitted by the lock found the specialist's permit held by
+    a use outside the desk; the delegation reports ``busy``."""
+
+
+class DeskRegistry:
+    def __init__(self, now: Callable[[], float] = time.time) -> None:
+        self._desks: dict[tuple[int, str], Desk] = {}
+        self.now = now
+
+    def get(self, chat_id: int, role: str) -> Desk | None:
+        return self._desks.get((chat_id, role))
+
+    def get_or_create(self, chat_id: int, role: str) -> Desk:
+        desk = self._desks.get((chat_id, role))
+        if desk is None:
+            desk = Desk(chat_id, role)
+            self._desks[(chat_id, role)] = desk
+        return desk
+
+
+DESKS = DeskRegistry()
+
+
+def _line(exchange: Exchange) -> str:
+    stamp = time.strftime("%H:%M", time.localtime(exchange.at))
+    return f"[{exchange.who} {stamp}] {exchange.text}"
+
+
+def render_block(exchanges: list[Exchange], budget: int = DESK_LOG_CHARS) -> str:
+    """The ``<desk>`` block, budgeted constructively: whole oldest exchanges
+    are dropped until the rendered block fits *budget*; a lone newest
+    exchange that alone exceeds it is clipped to fit. Empty for no log."""
+    kept = list(exchanges)
+    while kept:
+        block = "<desk>\n" + "\n".join(_line(e) for e in kept) + "\n</desk>"
+        if len(block) <= budget:
+            return block
+        if len(kept) > 2:
+            kept = kept[2:]                       # a whole oldest exchange (two sides)
+        elif len(kept) == 2:
+            kept = kept[1:]
+        else:
+            head, tail = "<desk>\n", "\n</desk>"
+            room = max(budget - len(head) - len(tail), 0)
+            return head + clip(_line(kept[0]), room) + tail
+    return ""
+
+
+def fit_block_for_delegation(exchanges: list[Exchange], context_len: int) -> str:
+    """§8: the block fitted into what remains of DESK_CONTEXT_CHARS after the
+    resident's own (already validated) context and the framing — newest
+    exchanges kept, possibly none."""
+    budget = DESK_CONTEXT_CHARS - int(context_len) - DESK_FRAMING_CHARS
+    if budget <= 0:
+        return ""
+    return render_block(exchanges, budget=min(budget, DESK_LOG_CHARS))
+
+
+def label_for(role: str) -> str:
+    """The specialist's label — the same ``📊 <display name>`` a post carries."""
+    import result_broker as rb
+    return rb.post_label(role)
+
+
+def is_specialist(cfg: Any) -> bool:
+    """A desk is a specialist's thread (§3, §8): the loaded role's ``kind`` —
+    required at load to be resident, specialist or executor — is
+    ``specialist``. A resident the chat's resident may delegate to holds no
+    desk; a reply on its post is today's path."""
+    return getattr(cfg, "kind", "") == "specialist"
+
+
+def desk_target_ok(resident_role: str, role: str) -> bool:
+    """The route's live ACL: *role* is a specialist the chat's resident
+    currently declares as a delegate AND is dispatchable now — the same map
+    the delegation ACL and the ``<delegates>`` block read."""
+    import tools as tools_mod
+    if not role or role == resident_role:
+        return False
+    cfg = tools_mod._agent_role_map.get(role)
+    if cfg is None or not is_specialist(cfg):
+        return False
+    return bool(tools_mod.declares_delegate(resident_role, role))
+
+
+# -- §6: the resident's echo -------------------------------------------------
+
+def _echo_ledger():
+    import result_broker as rb
+    return rb.PostLedger(max_events=64)
+
+
+DESK_ECHO = None  # created lazily below (result_broker imports tools lazily)
+
+
+def _ledger():
+    global DESK_ECHO
+    if DESK_ECHO is None:
+        DESK_ECHO = _echo_ledger()
+    return DESK_ECHO
+
+
+def outcome_phrases(kinds) -> list[str]:
+    """The distinct echo phrases for the outcome *kinds*, in first-seen order."""
+    phrases: list[str] = []
+    for kind in kinds:
+        phrase = OUTCOME_ECHO.get(kind, OUTCOME_ECHO_OTHER)
+        if phrase not in phrases:
+            phrases.append(phrase)
+    return phrases
+
+
+def turn_outcomes(turn_id: str, posts, scope) -> tuple[bool, list[str]]:
+    """§5.6: what the turn proved to the operator, from the two records that
+    exist by design — the post map (every message Casa posted for the turn,
+    whatever the slot's kind) and the scope's own delivered sends. Returns
+    (proven, the kinds that carry no S3 echo event of their own): a post the
+    S3 ledger already describes is echoed by its line, not twice."""
+    import result_broker as rb
+    landed = rb.POST_MAP.owned(turn_id)
+    # a send the sender confirmed is what the operator saw; a later one that
+    # failed does not erase it (unlike the resident's closing-silence rule,
+    # which asks for every send — that rule is the resident's, not the desk's)
+    delivered = [send for send in scope.operator_sends if send.delivered]
+    evented = {event.tool_use_id for event in posts}
+    kinds = [r.kind for r in landed if r.tool_use_id not in evented]
+    kinds.extend(send.intent for send in delivered)
+    return bool(posts or landed or delivered), kinds
+
+
+def record_echo(chat_id: int, line: str) -> None:
+    """One body-free Casa line for the chat's resident, drained at its next
+    turn; nothing for a chat id that is not a positive int."""
+    if not isinstance(chat_id, int) or isinstance(chat_id, bool) or chat_id <= 0:
+        return
+    import result_broker as rb
+    _ledger().record(f"{ECHO_OWNER_PREFIX}{chat_id}", clip(line, rb.ECHO_LINE_MAX))
+
+
+def drain_echo_lines(chat_id: int) -> list[str]:
+    """Read-and-clear: at most ECHO_MAX_LINES lines then ``…and N more.``."""
+    import result_broker as rb
+    if not isinstance(chat_id, int) or isinstance(chat_id, bool) or chat_id <= 0:
+        return []
+    events = _ledger().drain(f"{ECHO_OWNER_PREFIX}{chat_id}")
+    lines = [str(e) for e in events[:rb.ECHO_MAX_LINES]]
+    if len(events) > rb.ECHO_MAX_LINES:
+        lines.append(f"…and {len(events) - rb.ECHO_MAX_LINES} more.")
+    return lines
+
+
+def prompt_prefix(chat_id: Any) -> str:
+    """What the resident's next prompt starts with: the drained lines, each
+    marked as Casa's, then a blank line — or nothing."""
+    try:
+        chat = int(chat_id)
+    except (TypeError, ValueError):
+        return ""
+    lines = drain_echo_lines(chat)
+    if not lines:
+        return ""
+    return "".join(f"{PROMPT_PREFIX}{line}\n" for line in lines) + "\n"
+
+
+# -- §8: the resident's delegations are uses of the desk too ------------------
+
+def desk_for_delegation(origin: dict, cfg: Any, agent_name: str) -> Desk | None:
+    """The desk a resident's delegation uses, or ``None``: an authenticated
+    operator's Telegram DM turn (the reserved ``_operator_turn`` marker, a
+    canonical chat id) delegating to a specialist. A scheduled, webhook,
+    engagement or voice turn, a job, or a non-specialist target: no desk."""
+    from provenance import strict_positive_id
+    origin = origin or {}
+    if origin.get("_operator_turn") is not True or origin.get("channel") != "telegram":
+        return None
+    if origin.get("desk") is not None:
+        return None
+    if origin.get("synthetic") is not None:
+        # provenance's rule for a `dm` transport: no synthetic marker — a
+        # button continuation or a setup turn delegates as in v0.340.0
+        return None
+    chat = strict_positive_id(origin.get("chat_id"))
+    if chat is None or not agent_name:
+        return None
+    if not is_specialist(cfg):
+        return None
+    return DESKS.get_or_create(chat, agent_name)
+
+
+async def delegation_use(desk: Desk, *, reservation: "Reservation | None", run: Callable[..., Any],
+                         cfg: Any, task_text: str, context_text: str, scope: str = "",
+                         resolution: Any = None, output_format: Any = None) -> Any:
+    """One delegation as one use of *desk* (§8): the lock first (the queue
+    reservation released on admission — or on any earlier exit), the idle
+    check and the block read under it, the block fitted after the resident's
+    validated context, the specialist's permit acquired AFTER the lock (never
+    waited for: a refusal is ``DeskBusy``, the tool's typed busy result), the
+    run, the exchange committed at the clock of completion, the permit
+    released inside the lock. The runner's output is returned unchanged for
+    the caller's own classification."""
+    import tools as tools_mod
+    try:
+        async with desk.use(reservation):
+            now = DESKS.now()
+            desk.begin_use(now)
+            block = fit_block_for_delegation(desk.log, len(context_text or ""))
+            if block and context_text:
+                context = f"{context_text}\n\n{block}"
+            else:
+                context = block or context_text
+            permit = None
+            limiter = tools_mod._specialist_limiter
+            if limiter is not None and scope:
+                permit = limiter.try_acquire(scope)
+                if permit is None:
+                    raise DeskBusy(f"{cfg.role!r} is busy outside its desk")
+            output = None
+            try:
+                output = await run(cfg, task_text, context, resolution=resolution,
+                                   output_format=output_format)
+            finally:
+                if permit is not None:
+                    permit.release()          # inside the lock, before it is released
+                done = DESKS.now()
+                if output is not None:
+                    text, failure = _outcome_text(output)
+                else:
+                    text, failure = None, "failed"
+                desk.append("resident", task_text, done)
+                desk.append("specialist", text if failure is None and text else NO_REPLY, done)
+            return output
+    finally:
+        if reservation is not None:
+            reservation.release()
+
+
+# -- §5: the desk turn -------------------------------------------------------
+
+def _desk_origin(*, resident_role: str, desk_role: str, chat_id: int, user_id: int,
+                 user_name: str, message_id: Any, cid: str, text: str, turn_id: str) -> dict:
+    """The DM's own Casa-owned context plus the three fields the classifier
+    needs, the resident's role, the specialist as the executing role, depth 1
+    (as after any delegation: the specialist cannot delegate onward; the
+    runner's own increment only deepens it), the turn id as the quota key and echo owner, the
+    operator's words raw, and the reserved desk marker."""
+    return {
+        "role": resident_role,
+        "execution_role": desk_role,
+        "channel": "telegram",
+        "source": "telegram",
+        "message_type": "channel_in",
+        "chat_id": chat_id,
+        "user_id": user_id,
+        "user_name": user_name,
+        "message_id": str(message_id) if message_id is not None else "",
+        "cid": cid,
+        "user_text": text,
+        "delegation_depth": 1,
+        "_delegation_id": turn_id,
+        "_origin_route": "telegram",
+        "_operator_turn": True,
+        "desk": {"role": desk_role, "chat_id": chat_id},
+    }
+
+
+def _compose_context(block: str, quoted_text: str | None, record: Any, now: float) -> str:
+    parts = []
+    if block:
+        parts.append(block)
+    if quoted_text is not None and record is not None:
+        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(getattr(record, "posted_at", now)))
+        parts.append(
+            f"The operator replied to your post (slot {getattr(record, 'slot', '?')}, "
+            f"posted {when}) which read:\n{clip(quoted_text, DESK_QUOTE_CHARS)}")
+    context = "\n\n".join(parts)
+    return context[:DESK_CONTEXT_CHARS]
+
+
+def _outcome_text(output: Any) -> tuple[str | None, str | None]:
+    """``(text, failure_kind)``: the runner's output classified exactly as
+    ``delegate_to_agent`` classifies it — a CLI-aborted run yields no text."""
+    import specialist_limits
+    import tools as tools_mod
+    if getattr(output, "run_aborted", False):
+        return None, tools_mod._run_abort_kind(getattr(output, "run_subtype", None))
+    text, _truncated = specialist_limits.truncate_output(str(getattr(output, "text", "") or ""))
+    return text, None
+
+
+async def handle_reply(
+    *, channel: Any, resident_role: str, chat_id: int, user_id: int, user_name: str,
+    message_id: Any, cid: str, text: str, quoted_text: str | None, record: Any,
+    desk_role: str, continuation: bool = False, reservation: "Reservation | None" = None,
+) -> None:
+    """One desk use: the queue place (handed over by the route, or taken
+    here), the desk lock, the idle reset, the log read, the specialist run on
+    the operator's words with the desk block and the quote as context, the
+    classification, the labelled reply or the one notice, the exchange
+    committed at the clock of completion, the resident's echo — the permit
+    released inside the lock, the reservation and the typing lease released
+    on every exit."""
+    import result_broker as rb
+    import tools as tools_mod
+    from channels import DeliveryOutcome
+    from channels.tg_richtext import render_paged
+    from output_boundary import IntentKind, TurnScope, strips_to_silence
+
+    label = label_for(desk_role)
+    context = {"chat_id": str(chat_id), "cid": cid}
+    desk = DESKS.get_or_create(chat_id, desk_role)
+
+    async def _notice(line: str) -> None:
+        try:
+            await channel.deliver_desk_notice(chat_id, line)
+        except Exception as exc:  # noqa: BLE001 — nothing more is attempted
+            logger.warning("desk notice failed: %s", type(exc).__name__)
+        record_echo(chat_id, line)
+
+    if reservation is None:
+        reservation = desk.reserve()
+        if reservation is None:
+            await _notice(f"{label} is busy; try again in a moment.")
+            channel._release_typing(context, str(chat_id))
+            return
+    try:
+        async with desk.use(reservation):
+            now = DESKS.now()
+            desk.begin_use(now)
+            block = render_block(desk.log)
+            cfg = tools_mod._agent_role_map.get(desk_role)
+            if cfg is None:
+                await _notice(f"{label} could not continue (not delegable).")
+                return
+            turn_id = uuid.uuid4().hex
+            task_text = clip(text or "", DESK_TASK_CHARS)
+            origin = _desk_origin(
+                resident_role=resident_role, desk_role=desk_role, chat_id=chat_id,
+                user_id=user_id, user_name=user_name, message_id=message_id, cid=cid,
+                text=task_text, turn_id=turn_id)
+            origin["turn_scope"] = TurnScope.for_desk(
+                origin, display_name=tools_mod._display_name_for_role(desk_role))
+            context_text = _compose_context(block, quoted_text, record, now)
+            # the permit AFTER the lock; it never waits
+            permit = None
+            limiter = tools_mod._specialist_limiter
+            if limiter is not None:
+                permit = limiter.try_acquire(tools_mod._delegation_scope(origin, desk_role))
+                if permit is None:
+                    await _notice(f"{label} is busy; try again in a moment.")
+                    return
+            output, failure = None, None
+            try:
+                import agent as agent_mod
+                ov = agent_mod.origin_var.set(origin)
+                qk = tools_mod._delegation_quota_key.set(turn_id)
+                try:
+                    run = asyncio.create_task(
+                        tools_mod._run_delegated_agent_bounded(cfg, task_text, context_text))
+                finally:
+                    agent_mod.origin_var.reset(ov)
+                    tools_mod._delegation_quota_key.reset(qk)
+                output = await run
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — the class, never the text
+                failure = tools_mod._classify_error(exc).value
+                logger.warning("desk turn for %s failed: %s", desk_role, type(exc).__name__)
+            finally:
+                if permit is not None:
+                    permit.release()          # inside the lock, before it is released
+            if failure is None:
+                reply_text, failure = _outcome_text(output)
+            posts = rb.POSTS.drain(turn_id)
+            scope = origin["turn_scope"]
+            proven, unevented = turn_outcomes(turn_id, posts, scope)
+            specialist_side = NO_REPLY
+            if failure is not None:
+                await _notice(f"{label} could not handle your reply ({failure}).")
+            elif strips_to_silence(reply_text):
+                if proven:
+                    specialist_side = POSTED_VIEW
+                    # every outcome without an S3 line of its own gets one
+                    # Casa line per kind, named from the records, never
+                    # from the bodies
+                    for phrase in outcome_phrases(unevented):
+                        record_echo(chat_id, f"{label} {phrase}")
+                else:
+                    await _notice(f"{label} had nothing to add.")
+            else:
+                admitted = scope.admit(IntentKind.FINAL_REPLY, reply_text)
+                labelled = admitted.with_text(f"{label}\n{admitted}")
+                post = rb.PostRecord(role=desk_role, operator_id=user_id, plugin="",
+                                     slot="desk", tool_use_id=turn_id, owner=turn_id,
+                                     posted_at=DESKS.now(), kind="desk_reply")
+                delivered = False
+                try:
+                    outcome = await channel.send_response(labelled, {**context, "_post": post})
+                    delivered = outcome is DeliveryOutcome.DELIVERED
+                except Exception as exc:  # noqa: BLE001 — not proven
+                    logger.warning("desk reply send failed: %s", type(exc).__name__)
+                specialist_side = reply_text
+                if delivered:
+                    pages = len(render_paged(labelled))
+                    record_echo(chat_id, f"{label} answered your reply "
+                                         f"({pages} page{'s' if pages != 1 else ''}).")
+                else:
+                    await _notice(f"{label} answered; the reply did not go out.")
+            # the exchange and the idle clock are stamped once the use has
+            # settled — delivery or notice included — never at its start
+            done = DESKS.now()
+            desk.append("operator", task_text, done)
+            desk.append("specialist", specialist_side, done)
+            for line in rb.echo_lines(posts):
+                record_echo(chat_id, line)
+    finally:
+        reservation.release()                 # idempotent: a cancel while waiting
+        channel._release_typing(context, str(chat_id))

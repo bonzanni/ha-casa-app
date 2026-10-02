@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.341.0] - 2026-10-03
+
+### Added
+
+- Swipe-reply on any message a specialist posted — a report, a file, a link
+  or its own answer — and your words go straight to that specialist as one
+  turn, bypassing the assistant; it answers under its label in the same chat,
+  and you can reply to the answer. Each specialist keeps a short desk thread
+  per chat (the last twelve exchanges of the last hour, the assistant's own
+  delegations included) and starts fresh after an hour of silence. When the
+  specialist has nothing to show, or its turn fails, Casa posts one short
+  labelled notice. The assistant learns that the specialist answered, and
+  how long the answer was, at your next message — nothing is retold and no
+  assistant turn is spent. A `/new` reply on a specialist's post goes to the
+  specialist; `/new` resets the assistant only when it is not such a reply.
 ## [0.340.3] - 2026-10-02
 
 ### Fixed

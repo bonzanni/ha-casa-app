@@ -1708,6 +1708,13 @@ class TelegramChannel(Channel):
 
     async def _handle_serialized(self, update: Update, chat_id: str) -> None:
         """Body of ``_handle``, run under ``_chat_serial_locks[chat_id]`` (#317)."""
+        # S4 §3: a swipe-reply on a retained specialist post is that
+        # specialist's turn — judged FIRST, ahead of the /new interception, so
+        # "/new, start over" on a Finance post tells Finance to start over.
+        # Everything that does not route takes the path below, byte for byte.
+        if getattr(update.message, "reply_to_message", None) is not None:
+            if await self._maybe_route_desk_reply(update, chat_id):
+                return
         # /new reset — intercept before rate-limiting or bus dispatch (spec §4.2 #2, C2).
         text = (update.message.text or "").strip()
         # M10 (v0.52.0): tolerate a "/new@botname" mention suffix (defensive —
@@ -1869,6 +1876,121 @@ class TelegramChannel(Channel):
             trusted_user_origin=trusted_origin,
         )
         await self._bus.send(msg)
+
+    # ------------------------------------------------------------------
+    # S4: the specialist desk — a swipe-reply on a specialist's post
+    # ------------------------------------------------------------------
+
+    async def _maybe_route_desk_reply(self, update: Update, chat_id: str) -> bool:
+        """INV-DESK-001: four positive conditions — the sender is the
+        authenticated operator, the quoted message is retained in the post
+        map for this chat and was posted for this operator, the poster is not
+        this chat's resident, and the poster is a specialist the resident may
+        delegate to now — then the chat's rate decision, exactly as today's
+        path takes it, then ONE tracked desk task. ``True`` when the message
+        was consumed here (routed, or rate-limited with the notice)."""
+        import result_broker
+        import specialist_desk
+        quoted = update.message.reply_to_message
+        user = update.effective_user
+        chat = strict_positive_id(chat_id)
+        if chat is None or user is None or not self._sender_is_operator(user):
+            return False
+        record = result_broker.POST_MAP.get(chat, getattr(quoted, "message_id", None))
+        if (record is None or record.operator_id != user.id
+                or record.role == self.default_agent
+                or not specialist_desk.desk_target_ok(self.default_agent, record.role)):
+            return False
+        if self._rate_limiter is not None and self._rate_limiter.enabled:
+            decision = self._rate_limiter.check(chat_id)
+            if not decision.allowed:
+                if decision.should_notify:
+                    logger.info("Telegram rate limit hit for chat_id=%s (desk reply); "
+                                "replying with one-shot notice", chat_id)
+                    await self._send_rate_limit_reply(chat_id)
+                return True
+        reservation = await self._reserve_desk_or_refuse(chat, record.role)
+        if reservation is None:
+            return True
+        cid = new_cid()
+        self._start_typing(chat_id, cid)
+        self._spawn_desk_turn(
+            chat_id=chat, user_id=user.id, user_name=user.first_name or "unknown",
+            message_id=getattr(update.message, "message_id", None), cid=cid,
+            text=update.message.text,
+            quoted_text=(getattr(quoted, "text", None) or getattr(quoted, "caption", None)),
+            record=record, desk_role=record.role, continuation=False,
+            reservation=reservation)
+        return True
+
+    async def _reserve_desk_or_refuse(self, chat_id: int, desk_role: str):
+        """§4: the queue place is taken BEFORE any task exists; a full queue is
+        the busy notice, inline, and no task."""
+        import specialist_desk
+        desk = specialist_desk.DESKS.get_or_create(chat_id, desk_role)
+        reservation = desk.reserve()
+        if reservation is None:
+            line = f"{specialist_desk.label_for(desk_role)} is busy; try again in a moment."
+            await self.deliver_desk_notice(chat_id, line)
+            specialist_desk.record_echo(chat_id, line)
+        return reservation
+
+    def _spawn_desk_turn(self, **kwargs: Any) -> None:
+        """One tracked background task per desk use (the shape of the
+        engagement turn task), so the per-chat serial lock is released at
+        once and a stop can drain it."""
+        import specialist_desk
+        task = asyncio.create_task(specialist_desk.handle_reply(
+            channel=self, resident_role=self.default_agent, **kwargs))
+        self._turn_tasks.add(task)
+        task.add_done_callback(self._turn_tasks.discard)
+        reservation = kwargs.get("reservation")
+        if reservation is not None:
+            # a task cancelled before its coroutine starts has no finally
+            task.add_done_callback(reservation.release)
+
+    async def _dispatch_desk_continuation(
+        self, *, chat_id: int, user_id: int, desk_role: str, request_id: str, text: str,
+    ) -> bool:
+        """§7: an approval raised inside a desk turn continues the DESK — a
+        new desk turn whose task is the continuation text — admitted by the
+        route's own conditions at dispatch time: the approver is the
+        authenticated operator and the specialist is still one the resident
+        may delegate to. Otherwise one labelled notice and no specialist run
+        (the pending grant is left to expire). Returns True when the operator
+        was told either way."""
+        import specialist_desk
+        if (not self._user_id_is_operator(user_id)
+                or not specialist_desk.desk_target_ok(self.default_agent, desk_role)):
+            line = f"{specialist_desk.label_for(desk_role)} could not continue (not delegable)."
+            await self.deliver_desk_notice(chat_id, line)
+            specialist_desk.record_echo(chat_id, line)     # §9: the echo says the same
+            return True
+        reservation = await self._reserve_desk_or_refuse(chat_id, desk_role)
+        if reservation is None:
+            return True
+        cid = new_cid()
+        self._start_typing(str(chat_id), cid)
+        self._spawn_desk_turn(
+            chat_id=chat_id, user_id=user_id, user_name="operator", message_id=None,
+            cid=cid, text=text, quoted_text=None, record=None, desk_role=desk_role,
+            continuation=True, reservation=reservation)
+        return True
+
+    async def deliver_desk_notice(self, chat_id: int, text: str) -> bool:
+        """§9: ONE Casa-composed, labelled, body-free notice to the operator's
+        chat about a desk turn's outcome — a notice, never model text
+        (INV-OUT-001's notice class). A failure is logged and nothing more is
+        attempted."""
+        if self._app is None:
+            logger.warning("Telegram channel not started; cannot deliver desk notice")
+            return False
+        try:
+            await self._app.bot.send_message(chat_id=chat_id, text=text)
+            return True
+        except Exception as exc:  # noqa: BLE001 — a notice fault is logged
+            logger.warning("desk notice failed: %s", type(exc).__name__)
+            return False
 
     # ------------------------------------------------------------------
     # Engagement routing (Task 11)
@@ -4999,18 +5121,37 @@ class TelegramChannel(Channel):
         except TelegramError as exc:
             logger.warning("Final stream disclosure send failed: %s", exc)
 
-    async def _send_one(self, chat_id, original, display, entities, **kw):
+    def _record_post(self, chat_id, sent, post) -> None:
+        """S4 §2: file the message that just landed under *post* in the post
+        map — as it lands, one physical message at a time — so the operator's
+        swipe-reply on it routes to the poster. Nothing without a record (every
+        resident reply today), nothing without a message id (a stub)."""
+        if post is None:
+            return
+        message_id = getattr(sent, "message_id", None)
+        try:
+            chat = int(chat_id)
+        except (TypeError, ValueError):
+            return
+        import result_broker
+        result_broker.POST_MAP.record(chat, message_id, post)
+
+    async def _send_one(self, chat_id, original, display, entities, *,
+                        record=None, **kw):
         """Send one ≤4096 message with entities; on entity BadRequest resend the
         ORIGINAL text plain (exactly one retry — a TimedOut etc. propagates so we
         never duplicate a message Telegram may already have accepted).
 
         Returns True iff that one retry happened, so a caller holding further
         fallback chunks knows whether it owes them — and can commit its own
-        delivery latch BEFORE sending them (#831)."""
+        delivery latch BEFORE sending them (#831). ``record`` (S4), when given,
+        receives the platform's return of each send that succeeded."""
         try:
-            await self._app.bot.send_message(
+            sent = await self._app.bot.send_message(
                 chat_id=chat_id, text=display, entities=entities, **kw,
             )
+            if record is not None:
+                record(sent)
             return False
         except BadRequest as exc:
             # The class only (#1015): a delivered operator link rides through
@@ -5018,13 +5159,15 @@ class TelegramChannel(Channel):
             # refused — a log line must never echo a credential.
             logger.warning("rich-text send fell back to plain: %s",
                            type(exc).__name__)
-            await self._app.bot.send_message(
+            sent = await self._app.bot.send_message(
                 chat_id=chat_id, text=original, **kw,
             )
+            if record is not None:
+                record(sent)
             return True
 
     async def deliver_operator_link(
-        self, chat_id: int, text: str, entities, plain: str,
+        self, chat_id: int, text: str, entities, plain: str, *, post=None,
     ) -> DeliveryOutcome:
         """#1015: post ONE Casa-composed labelled-link message to *chat_id* —
         the chat of a capability call's grant identity — for a plugin slot
@@ -5041,7 +5184,8 @@ class TelegramChannel(Channel):
             logger.warning(
                 "Telegram channel not started; cannot deliver operator link")
             return DeliveryOutcome.NOT_DELIVERED
-        await self._send_one(chat_id, plain, text, entities)
+        await self._send_one(chat_id, plain, text, entities,
+                             record=lambda sent: self._record_post(chat_id, sent, post))
         return DeliveryOutcome.DELIVERED
 
     # ------------------------------------------------------------------
@@ -5099,7 +5243,8 @@ class TelegramChannel(Channel):
             plan.append((display, entities, chunks))
         return plan
 
-    async def deliver_operator_message(self, chat_id: int, text: str) -> DeliveryOutcome:
+    async def deliver_operator_message(self, chat_id: int, text: str, *,
+                                       post=None) -> DeliveryOutcome:
         """S3: post *text* — Casa's label line and the plugin's body, as the
         result broker composed it — to *chat_id*, the chat of a capability
         call's grant identity, for a slot declared ``operator_message``.
@@ -5121,18 +5266,23 @@ class TelegramChannel(Channel):
         plan = self._plan_operator_message(text)
         if plan is None:
             return DeliveryOutcome.NOT_DELIVERED
+        # S4 §2: every physical message is filed under ``post`` as it lands.
+        def _landed(sent):
+            self._record_post(chat_id, sent, post)
         for display, entities, chunks in plan:
             if not entities:
-                await self._app.bot.send_message(chat_id=chat_id, text=display)
+                _landed(await self._app.bot.send_message(chat_id=chat_id, text=display))
                 continue
-            fell_back = await self._send_one(chat_id, chunks[0], display, entities)
+            fell_back = await self._send_one(chat_id, chunks[0], display, entities,
+                                             record=_landed)
             if fell_back:
                 for chunk in chunks[1:]:
-                    await self._app.bot.send_message(chat_id=chat_id, text=chunk)
+                    _landed(await self._app.bot.send_message(chat_id=chat_id, text=chunk))
         return DeliveryOutcome.DELIVERED
 
     async def deliver_operator_file(
         self, chat_id: int, content: bytes, kind: str, filename: str, caption: str,
+        *, post=None,
     ) -> DeliveryOutcome:
         """S3: send *content* — already claimed from the plugin outbox and
         passed through the kind's policy by the result broker — as the media
@@ -5147,11 +5297,12 @@ class TelegramChannel(Channel):
                 "Telegram channel not started; cannot deliver operator file")
             return DeliveryOutcome.NOT_DELIVERED
         method = getattr(self._app.bot, MEDIA_POLICIES[kind].ptb_method)
-        await method(
+        sent = await method(
             chat_id,
             InputFile(BytesIO(content), filename=filename),
             caption=caption,
         )
+        self._record_post(chat_id, sent, post)
         return DeliveryOutcome.DELIVERED
 
     async def send_response(
@@ -5173,27 +5324,39 @@ class TelegramChannel(Channel):
             logger.warning("Telegram channel not started; cannot send message")
             return DeliveryOutcome.NOT_DELIVERED
         pages = render_paged(message)
+        # S4 §2/§5.5: a desk reply's context carries the post record its
+        # pages are filed under as they land; every other reply carries none.
+        post = context.get("_post")
+
+        def _landed(sent):
+            self._record_post(target_chat, sent, post)
         if len(pages) == 1:
             display, entities = pages[0]
             if entities is None:
-                # Delegate's outcome, VERBATIM (#556 design §2.1) — rewrapping
-                # it here is how a delegation path loses the distinction.
-                return await self.send(message, context)
-            await self._send_one(target_chat, message, display, entities)
+                if post is None:
+                    # Delegate's outcome, VERBATIM (#556 design §2.1) — rewrapping
+                    # it here is how a delegation path loses the distinction.
+                    return await self.send(message, context)
+                _landed(await self._app.bot.send_message(
+                    chat_id=target_chat, text=display))
+                context["_delivery_head_sent"] = True
+                return DeliveryOutcome.DELIVERED
+            await self._send_one(target_chat, message, display, entities,
+                                 record=_landed)
             context["_delivery_head_sent"] = True
             return DeliveryOutcome.DELIVERED
         outcome = DeliveryOutcome.NOT_DELIVERED
         for display, entities in pages:
             chunks, fell_back = [display], False
             if entities is None:
-                await self._app.bot.send_message(
-                    chat_id=target_chat, text=display)
+                _landed(await self._app.bot.send_message(
+                    chat_id=target_chat, text=display))
             else:
                 # #831: the plain retry carries this page's link destinations,
                 # which its marker-free display cannot.
                 chunks = self._plain_fallback_chunks(display, entities)
                 fell_back = await self._send_one(
-                    target_chat, chunks[0], display, entities)
+                    target_chat, chunks[0], display, entities, record=_landed)
             # Page 1 carries the notice: once it lands the delivery counts as
             # shown, however the remaining pages fare. Stamped BEFORE the
             # overflow chunks below, so a raising tail cannot erase the fact
@@ -5203,8 +5366,8 @@ class TelegramChannel(Channel):
                 outcome = DeliveryOutcome.DELIVERED
             if fell_back:
                 for chunk in chunks[1:]:
-                    await self._app.bot.send_message(
-                        chat_id=target_chat, text=chunk)
+                    _landed(await self._app.bot.send_message(
+                        chat_id=target_chat, text=chunk))
         return outcome
 
     async def finalize_response_stream(

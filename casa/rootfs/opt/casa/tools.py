@@ -518,6 +518,14 @@ _MEDIA_SEND_DEBITS_MAX_KEYS: int = 512
 _delegation_quota_key: ContextVar[str] = ContextVar(
     "_delegation_quota_key", default="")
 
+# S4 §8: set by delegate_to_agent around its `_prelaunch` call when the
+# delegation is a specialist-desk use, so the concurrency gate leaves the
+# permit to the desk's own use (lock first, permit second). A ContextVar
+# rather than a parameter: the `_prelaunch` seam is monkeypatched by exact
+# five-argument signature in test doubles (the voice-handoff suite's among
+# them), and a new keyword on the call turned one of them into a silent hang.
+_desk_skip_permit: ContextVar[bool] = ContextVar("_desk_skip_permit", default=False)
+
 
 def _debit_specialist_media_send(eng, origin: dict) -> "dict | None":
     """Synchronous specialist-context debit for one send_media attempt.
@@ -4328,7 +4336,9 @@ def _attach_completion_callback(
                 )
                 settle = _complete_delegation_durably(record.id, bounded)
         except Exception as exc:
-            kind = _classify_error(exc).value
+            import specialist_desk as _desk_mod
+            kind = ("busy" if isinstance(exc, _desk_mod.DeskBusy)
+                    else _classify_error(exc).value)
             complete = DelegationComplete(
                 delegation_id=record.id,
                 agent=record.agent,
@@ -4637,7 +4647,7 @@ def _log_delegation_denial(caller_role: str, agent_name: str,
 async def _prelaunch(
     agent_name: str, origin: dict, mode: str,
     task_text: str = "", context_text: str = "",
-    internal_context: bool = False,
+    internal_context: bool = False, skip_permit: bool = False,
 ) -> tuple[str, Any, Any, "specialist_limits.Permit | None", dict | None]:
     """The single unified prelaunch pipeline for delegate_to_agent (spec A4).
 
@@ -4997,7 +5007,11 @@ async def _prelaunch(
                                f"engagement: {title}. Wait for it to finish or /cancel it in its topic.",
                 })
     permit = None
-    if _specialist_limiter is not None:
+    # S4 §8: a delegation that is a use of a specialist desk takes its permit
+    # AFTER the desk lock, inside the desk's own use (lock first, permit
+    # second — a queued delegation is never refused by the permit a running
+    # desk turn rightly holds); the caller says so with ``skip_permit``.
+    if _specialist_limiter is not None and not (skip_permit or _desk_skip_permit.get()):
         scope = _delegation_scope(origin, agent_name, mode)
         permit = _specialist_limiter.try_acquire(scope)
         if permit is None:
@@ -6601,8 +6615,21 @@ async def delegate_to_agent(args: dict) -> dict:
         # #433: `agent_name` is REBOUND to the canonical role id — the ACL
         # accepts a persona display name, and every downstream record,
         # telemetry key, engagement scope and launch target must use the role.
-        agent_name, cfg, resolution, permit, prelaunch_error = await _prelaunch(
-            agent_name, origin, mode, task_text, context_text)
+        # S4 §8: decide BEFORE the concurrency gate whether this delegation
+        # is a desk use (an operator DM turn to a specialist, sync or async),
+        # so the gate leaves the permit to the desk's own use.
+        import specialist_desk as _desk_mod
+        _desk_pre = None
+        if mode in ("sync", "async") and isinstance(agent_name, str) and agent_name:
+            _pre_name = _canonical_delegate_target(agent_name, origin)
+            _desk_pre = _desk_mod.desk_for_delegation(
+                origin, _agent_role_map.get(_pre_name), _pre_name)
+        _skip_tok = _desk_skip_permit.set(_desk_pre is not None)
+        try:
+            agent_name, cfg, resolution, permit, prelaunch_error = await _prelaunch(
+                agent_name, origin, mode, task_text, context_text)
+        finally:
+            _desk_skip_permit.reset(_skip_tok)
     except BaseException:
         if handoff_reservation is not None:
             handoff_reservation.release()
@@ -6628,6 +6655,7 @@ async def delegate_to_agent(args: dict) -> dict:
     # branch only) — released by the same finally as `owned` on any exit
     # before its transfer to the record at create() (design r4).
     spawn_owned = None
+    _desk_reservation = None  # S4 §4: the desk queue place, until transferred
     try:
         is_voice = str(origin.get("channel", "")) == "voice"
         if is_voice and mode == "async":
@@ -6684,6 +6712,27 @@ async def delegate_to_agent(args: dict) -> dict:
                 return _deadline_exceeded_result(delegation_id, agent_name)
 
         started_at = time.time()
+        # S4 §8: a delegation the resident launches from the operator's DM to
+        # a specialist is one use of that specialist's desk — reserved on the
+        # desk's queue BEFORE any task exists; a full queue is the typed busy
+        # result (the permit is released by the lexical guard below) and no
+        # task. Jobs, engagements, scheduled and webhook turns touch no desk.
+        _desk = _desk_pre
+        _desk_scope = ""
+        if _desk is not None:
+            _desk_reservation = _desk.reserve()
+            # the permit was left to the desk's own use (skip_permit above)
+            _desk_scope = _delegation_scope(origin, agent_name, mode)
+        if _desk is not None and _desk_reservation is None:
+            return _result({
+                "status": "error",
+                "kind": "busy",
+                "agent": agent_name,
+                "message": (
+                    f"Agent {agent_name!r} has a full desk queue in this chat — "
+                    "try again shortly."
+                ),
+            })
         # #1038 §7, §3.3: the brief is model text STORED for a later turn to
         # narrate — ANY delegation can detach (a sync one degrades to pending
         # at the wait), so every launch resolves its note now. The note rides
@@ -6756,14 +6805,28 @@ async def delegate_to_agent(args: dict) -> dict:
                 _launch_scope, _note, synchronous=(mode != "async"))
         _ov_tok = _agent_mod.origin_var.set(_child_origin)
         try:
-            task = asyncio.create_task(
-                _run_delegated_agent_bounded(
+            if _desk is not None:
+                # S4 §8: the run as one use of the desk — lock, idle check,
+                # block read, permit after the lock, run, commit.
+                _run_coro = _desk_mod.delegation_use(
+                    _desk, reservation=_desk_reservation,
+                    run=_run_delegated_agent_bounded, cfg=cfg,
+                    task_text=task_text, context_text=context_text,
+                    scope=_desk_scope, resolution=resolution,
+                    output_format=(VOICE_JOB_OUTPUT_FORMAT if is_voice else None))
+            else:
+                _run_coro = _run_delegated_agent_bounded(
                     cfg, task_text, context_text, resolution=resolution,
                     output_format=(VOICE_JOB_OUTPUT_FORMAT
-                                   if is_voice else None)))
+                                   if is_voice else None))
+            task = asyncio.create_task(_run_coro)
         finally:
             _agent_mod.origin_var.reset(_ov_tok)
             _delegation_quota_key.reset(_qk_tok)
+        if _desk_reservation is not None:
+            # a task cancelled before its coroutine starts has no finally
+            task.add_done_callback(_desk_reservation.release)
+            _desk_reservation = None  # __TRANSFER_DESK_RESERVATION__
         if permit is not None:
             task.add_done_callback(_permit_release_callback(permit))
         owned = None  # __TRANSFER_SYNC__
@@ -6829,7 +6892,8 @@ async def delegate_to_agent(args: dict) -> dict:
         finished = next(iter(done))
         if finished.exception() is not None:
             exc = finished.exception()
-            kind = _classify_error(exc).value
+            kind = ("busy" if isinstance(exc, _desk_mod.DeskBusy)
+                    else _classify_error(exc).value)
             elapsed = time.time() - started_at
             if is_voice:
                 failure = JobFailure(
@@ -7042,6 +7106,10 @@ async def delegate_to_agent(args: dict) -> dict:
         # transferred to a created record). Idempotent.
         if spawn_owned is not None:
             spawn_owned.release()
+        # S4 §4: the desk queue place, when still lexically owned (never
+        # transferred to a created task — a cancel during registration).
+        if _desk_reservation is not None:
+            _desk_reservation.release()
 
 
 # ---------------------------------------------------------------------------

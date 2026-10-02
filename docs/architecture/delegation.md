@@ -48,6 +48,14 @@ classify itself as the operator, because absence fails closed.
 within the caller's declared delegates, by role id first and display name second, and every
 `<delegates>` block is rendered from the same live map the ACL resolves against.
 
+**A delegation from the operator's DM to a specialist is a use of that specialist's desk.**
+It gets or creates the desk, runs under the desk's lock as one use (sync, degraded or async
+alike — an async launch still returns `pending` at once while its task waits), has the desk's
+bounded dialogue block fitted into its context after the resident's own validated arguments,
+and commits its brief and the bounded answer as an exchange; a full desk queue is the tool's
+typed `busy` result with no task. The desk, its bounds and the swipe-reply route that shares
+it are [`specialist-desk.md`](specialist-desk.md).
+
 **A brief is text stored for a later turn to narrate, and its disclosure resolves at
 launch.** Every `delegate_to_agent` launch — synchronous ones included, since a synchronous
 wait degrades to pending — and both engagement `create` sites resolve the launching turn's
