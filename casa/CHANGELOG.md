@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.340.3] - 2026-10-02
+
+### Fixed
+
+- A long-term memory wipe now says that it does not remove conversation
+  transcripts on disk. The add-on documentation said that after a wipe
+  "everything durable is removed", and the report shown when a wipe completes
+  said the same. That report, the documentation, and the warning
+  `casactl memory-wipe` prints when run without `--yes` now state that
+  conversation transcripts on disk are not removed by the wipe. What the wipe
+  removes is unchanged: the memory bank, the retry spool and the conversation
+  pointers that existed when it started (#1169).
+
 ## [0.340.2] - 2026-10-02
 
 ### Fixed
