@@ -1089,6 +1089,18 @@ def _approximate_age(seconds: float) -> str | None:
     return f"{int(seconds // 86400)} days"
 
 
+def _chain_root_question(complete: DelegationComplete) -> str:
+    """#1160: the question a narration turn's origin records — the one its
+    completion's origin carried, i.e. the chain's root operator question, and
+    never the synthesized notice (which quotes it). ``''`` when the origin
+    carries none (a legacy row, a boot conversion); a non-string value is
+    rendered the way the notice's own f-string quoted it."""
+    raw = (complete.origin or {}).get("user_text")
+    if raw is None:
+        return ""
+    return raw if isinstance(raw, str) else str(raw)
+
+
 def _replay_time_sentence(complete: DelegationComplete, *, orphan: bool) -> str:
     """When Casa recorded a replayed outcome, as recorded (#1084).
 
@@ -1272,7 +1284,14 @@ class Agent:
             msg.type == MessageType.NOTIFICATION
             and isinstance(msg.content, DelegationComplete)
         )
+        # #1160: a narration turn's origin records the question its completion
+        # carried — the chain's root — never the synthesized notice; read here,
+        # before the rebind, and handed to ``_process`` as an argument only on
+        # this branch, so no context key (settable at an ingress, or left behind
+        # for a later turn) can ever supply it.
+        process_kwargs: dict[str, Any] = {}
         if is_narration:
+            process_kwargs["origin_question"] = _chain_root_question(msg.content)
             msg = self._synthesize_delegation_turn(msg)
 
         # #1038: one scope per dispatched turn — the one place a per-turn
@@ -1329,6 +1348,7 @@ class Agent:
         try:
             text = await self._process(
                 msg, on_token=on_token, turn_report=turn_report,
+                **process_kwargs,
             )
         except Exception as exc:
             error_kind = _classify_error(exc)
@@ -1948,7 +1968,14 @@ class Agent:
         msg: BusMessage,
         on_token: OnTokenCallback | None = None,
         turn_report: dict[str, Any] | None = None,
+        *,
+        origin_question: str | None = None,
     ) -> str | None:
+        # #1160: ``origin_question`` is the question the origin records when it
+        # is not this turn's own text — ``handle_message`` passes it on a turn
+        # synthesized from a delegation completion, and nowhere else. ``None``
+        # (every other turn) records ``str(msg.content)``; ``''`` is a real
+        # value and is recorded as such, never replaced by the turn's body.
         # #650: ``turn_report`` is the retry-consumption carrier OUT of this
         # method — an optional out-param so the ``str | None`` return contract
         # (pinned by many direct callers) stays byte-identical. Written
@@ -1986,7 +2013,9 @@ class Agent:
             # /complete in an engagement topic actually owns the engagement.
             "user_id": msg.context.get("user_id"),
             "cid": cid_var.get(),
-            "user_text": user_text,
+            "user_text": (
+                user_text if origin_question is None else origin_question
+            ),
             # Provenance foundation (A:§1, v0.76.0): message_type/source
             # let turn_provenance() classify transport (dm vs button vs
             # other); execution_role starts equal to `role` here (a direct
