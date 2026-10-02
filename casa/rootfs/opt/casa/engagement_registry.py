@@ -1832,6 +1832,7 @@ class EngagementRegistry:
             job = rec.origin.get("job")
             if isinstance(job, dict):
                 job.pop("brief_context", None)
+                (job.get("completion_pending") or {}).pop("text", None)  # #1180
             logger.info(
                 "engagement %s read-clearance lowered %s→%s (steered by a "
                 "lower-clearance sender); session context marked for rebuild",

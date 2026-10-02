@@ -98,6 +98,21 @@ no brief; and the transcript files of earlier conversations, which stay on disk 
 job runs — once it is terminal, the transcript reaper deletes every session the list names
 ([`engagement-finalization.md`](engagement-finalization.md)).
 
+**INV-BGJOB-007**: A completion a fresh job's worker requested and the completion gate refused for unread input is recorded on the job and named in every later brief until the record is terminal — without its text once the clearance was lowered; while it is recorded, a held ingress reservation holds the next batch back, and a job that reaches its batch cap or the no-progress guard is spared one batch, once per job.
+
+Otherwise the fresh turn that reads the message would forget the `unread_inbound`
+refusal's "read it, then complete".
+`emit_completion` records `origin["job"]["completion_pending"]` (the status and the bounded
+text) at both of its refusal sites, and `job_brief` adds one line naming the status and the
+text's first line and asking for the completion again. Nothing clears it: an accepted
+completion is a terminal transition, and no terminal record is briefed. Its text was authored
+at the job's tier, so a clearance downgrade keeps only the status, and a refusal recorded
+after the downgrade (a turn begun before it) records only the status. The spare covers input
+that never becomes a turn before the limit check — an ingress reservation released without
+a ticket, or a restart, which drops unread tickets — and is marked `pending_spared` with the
+batch's counters. What it does not cover: Casa never completes a job itself, and a
+resume-mode job records nothing — its conversation remembers the refusal.
+
 **INV-BGJOB-001**: A job engagement's next batch is started only while the record is live, the ended turn was not cut off, no turn is queued and no turn delivery is in progress; the previous batch is judged, the batch number chosen and the batch cap checked in the same synchronous step that admits it, and that batch is counted only once the hand-off has been accepted — a refused hand-off leaves every counter untouched.
 
 `background_jobs.job_after_turn` runs after every turn of a job engagement — the launch
@@ -173,6 +188,9 @@ transition has persisted, so a start admitted in that window runs beside it if t
 transition then rolls back.
 
 **INV-BGJOB-002**: A job fails through the engagement finalize funnel, with the reason and its last reported progress, when three consecutive batches report no progress or end without reporting, when a batch would exceed its declared batch cap, when a batch's delivery raises, or when a batch is cut off before finishing.
+
+A fresh job with a recorded pending completion is spared one batch beyond either limit,
+once (INV-BGJOB-007).
 
 A batch makes progress when its LAST `report_job_progress` of that batch said so: a batch
 that reports twice has changed its mind, and the later word is the one it stands by, which
@@ -311,6 +329,7 @@ belong in the launch and resume builders; both kinds share the batch loop and la
 - `tests/test_plugin_job_launch.py`
 - `tests/test_background_jobs_loop.py`
 - `tests/test_job_fresh_conversation.py`
+- `tests/test_job_pending_completion.py`
 - `tests/test_specialist_job_host.py`
 
 **Related**
