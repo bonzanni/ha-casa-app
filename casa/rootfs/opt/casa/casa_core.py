@@ -5785,6 +5785,25 @@ async def main() -> None:
         max_instances=1,
         misfire_grace_time=3600,
     )
+    # #1162: a finished in_casa engagement's CLI transcripts — same cadence,
+    # and first at scheduler start: an interval clock restarts with the
+    # process, so an install restarted more often than every six hours would
+    # otherwise never reach a pass. The registry was loaded long before here.
+    from datetime import datetime as _dt, timezone as _tz
+    from engagement_transcript_reaper import reap_engagement_transcripts
+
+    scheduler.add_job(
+        reap_engagement_transcripts,
+        args=(engagement_registry,),
+        trigger="interval",
+        id="engagement_transcript_reap",
+        hours=6,
+        next_run_time=_dt.now(_tz.utc),
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+        misfire_grace_time=3600,
+    )
     # Authorization-callback spool maintenance.
     #
     # LOCK-STALL AVOIDANCE: the callback HTTP handler runs
