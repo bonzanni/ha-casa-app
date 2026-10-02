@@ -406,21 +406,31 @@ class ProfilePlan:
     entries: tuple = ()
     # Every plugin the build LOADED (profiled or not). A plugin withheld from
     # the build (an unresolved secret) is absent here, so its recorded
-    # profile is left alone rather than erased as "loaded unprofiled".
+    # profile is never erased as "loaded unprofiled".
     loaded: tuple = ()
+    # #1186: ``{name: profile}`` for each plugin the build WITHHELD whose
+    # profile this plan would apply is a name (the live assignment's, or the
+    # prior binding's when no live assignment remains) — recorded so a later
+    # build that loads it from the record never falls back to full. Never
+    # enforced here (the plugin is not loaded) and never ``None``.
+    withheld_profiles: dict = dataclasses.field(default_factory=dict)
 
     @property
     def empty(self) -> bool:
         return not self.entries
 
     def effective_profiles(self) -> dict:
-        """``{plugin name: profile | None}`` for every plugin this build
-        loaded — what an engagement record persists, so a later resume's
+        """What an engagement record persists. ``{plugin name: profile |
+        None}`` for every plugin this build loaded, so a later resume's
         fallback row is the profile the build actually applied (``None`` =
-        loaded with full access), never the one captured before a launch
-        await and never a value for a plugin this build did not load."""
+        loaded with full access) — a profile captured before a launch await
+        reaches it only as the plan's own fallback for a plugin no longer
+        assigned live; plus, for a plugin this build WITHHELD, only a profile NAME
+        (``withheld_profiles``), never ``None`` — so a withheld plugin's row
+        can be narrowed but never erased."""
         by_name = {e.name: e.profile for e in self.entries}
-        return {name: by_name.get(name) for name in self.loaded}
+        return {**self.withheld_profiles,
+                **{name: by_name.get(name) for name in self.loaded}}
 
 
 def _live_profile_for(name: str, target: str) -> "tuple[bool, str | None, dict | None]":
@@ -462,7 +472,7 @@ def _bare_profile_tools(manifest: dict | None, profile: str) -> "list[str] | Non
     return [t for t in tools if isinstance(t, str) and t]
 
 
-def profile_plan(resolution, *, target: str) -> ProfilePlan:
+def profile_plan(resolution, *, target: str, withheld=()) -> ProfilePlan:
     """The plan for a build of *target* over *resolution*'s LOADED artifacts.
 
     Per plugin: live entry assigned to *target* with profile P ⇒ P's bare
@@ -471,13 +481,26 @@ def profile_plan(resolution, *, target: str) -> ProfilePlan:
     to the plugin's prior binding (``ResolvedPlugin.profile``: the recorded
     effective profile on a resume, the captured one on a fresh launch) —
     None ⇒ full as today, set ⇒ no allowed names. Never raises: an
-    unreadable live manifest reads as "profile absent", which denies."""
+    unreadable live manifest reads as "profile absent", which denies.
+
+    *withheld* (#1186): the resolved plugins this build withheld. Each gets
+    the profile name this table would give it — the live assignment's, or,
+    not assigned live, its prior binding's — in ``withheld_profiles``; an
+    unprofiled live assignment or a ``None`` prior adds nothing. Only a
+    profile name is ever added to the record, so a later fallback can
+    narrow, never widen."""
     from plugin_store import expand_tool_names
     entries = []
     plugins = getattr(resolution, "plugins", None) or []
     loaded = tuple(rp.name for rp in plugins)
+    withheld_profiles = {}
+    for rp in withheld:
+        assigned, live_profile, _ = _live_profile_for(rp.name, target)
+        profile = live_profile if assigned else getattr(rp, "profile", None)
+        if profile is not None:
+            withheld_profiles[rp.name] = profile
     if not plugins:
-        return ProfilePlan()
+        return ProfilePlan(withheld_profiles=withheld_profiles)
     for rp in plugins:
         assigned, live_profile, live_manifest = _live_profile_for(rp.name, target)
         if assigned:
@@ -506,7 +529,8 @@ def profile_plan(resolution, *, target: str) -> ProfilePlan:
             name=rp.name, profile=profile, prefixes=prefixes,
             allowed_names=frozenset(allowed),
             declared_excluded=frozenset(declared - allowed)))
-    return ProfilePlan(entries=tuple(entries), loaded=loaded)
+    return ProfilePlan(entries=tuple(entries), loaded=loaded,
+                       withheld_profiles=withheld_profiles)
 
 
 def apply_profile_plan(allowed_tools, disallowed_tools, plan: ProfilePlan):

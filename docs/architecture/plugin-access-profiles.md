@@ -55,7 +55,8 @@ unprofiled plugin produces no plan entry and its build is byte-identical to befo
 profile NAME comes from the live registry entry for the build's own `tier:role`; the bare
 list from that entry's live artifact manifest; the namespaces and the expansion from the
 artifact actually loaded, which on a resume is the recorded one. Nothing is read from a
-resolution captured before an await. When the live registry no longer assigns the plugin to
+resolution captured before an await, except the fallback's prior binding below. When the
+live registry no longer assigns the plugin to
 the target, the plan falls back to the build's prior binding — the recorded effective
 profile on a resume, the captured one on a fresh launch — and a prior profile denies the
 whole namespace rather than widening. Every builder hands the plan it applied back to its
@@ -65,9 +66,12 @@ client starts, and a resume or fresh reopen does the same through the driver's p
 before the client opens — never from a second read a mutation could slip between. The
 write is strict: a record that cannot say what its build enforces does not start — the
 launch aborts with `profile_persist_failed`, a resume fails closed and is retried on the
-next turn. Only the plugins the build LOADED are written; a plugin withheld for an
-unresolved secret keeps the profile its last loading build enforced, so a withheld build
-never widens the next one's fallback. An update that shrinks a profile's list applies to
+next turn. A plugin the build LOADED is written with what the build enforced. A plugin the
+specialist builder WITHHELD for an unresolved secret is written with the profile name the
+same plan would give it — the live assignment's, or, with no live assignment, its prior
+binding's — and only when that is a name; an unprofiled live assignment or a prior of none
+leaves the row as it is. So a profiled plugin withheld at its engagement's first build is
+not left recorded as full, and a withheld build never widens the next one's fallback. An update that shrinks a profile's list applies to
 sessions built after it, and its result names what the new list dropped: the old list
 expanded over the live artifact's servers minus the new list expanded over the new
 artifact's, so a server the update removes counts too.
@@ -90,8 +94,11 @@ Enforced by `profile_plan`, which every builder calls at construction, and by th
 matcher it injects: a call under a guarded namespace is denied unless its exact name is in
 the plan, so an undeclared tool, a renamed server's tool and a config-level allow are all
 denied before permission rules are evaluated. Pinned over the three builders, the recorded
-resume, a launch whose assignment is created during its topic await, and an unprofiled build
-whose option fields are compared with today's.
+resume, a launch whose assignment is created during its topic await, an unprofiled build
+whose option fields are compared with today's, and a profiled plugin withheld at a build —
+a fresh launch or a resume — then unassigned and loaded from the record by a later resume,
+which gets the guarded fallback rather than full access. A build from that fallback permits
+none of the plugin's tools — narrower than the profile, by S8's design.
 
 What it does not cover: a session built BEFORE the assignment or before an update — by
 ruling it keeps its tools until it is next built — and the CLI's own precedence between a
@@ -180,6 +187,7 @@ INV-MCP-013).
 - `tests/test_plugin_profiles_builders.py`
 - `tests/test_plugin_profiles_record.py`
 - `tests/test_plugin_profiles_tools.py`
+- `tests/test_plugin_profiles_withheld.py`
 
 **Related**
 - [`architecture/plugins.md`](../architecture/plugins.md)

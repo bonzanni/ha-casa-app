@@ -1,8 +1,10 @@
 """S8 plugin access profiles — the engagement record stores what was built.
 
-``plugin_artifacts`` rows carry ``"profile"``: the EFFECTIVE profile the build
-applied (the plan's ``effective_profiles()``), never the one captured before a
-launch await. A narrow registry setter persists it, and a resume rebuild
+``plugin_artifacts`` rows carry ``"profile"``: for a plugin the build loaded,
+the EFFECTIVE profile it applied (the plan's ``effective_profiles()``) — a
+profile captured before a launch await only as the plan's fallback for a
+plugin no longer assigned live; a withheld plugin's row is covered by
+``test_plugin_profiles_withheld.py`` (#1186). A narrow registry setter persists it, and a resume rebuild
 re-applies the live plan onto the record before the client opens.
 """
 from __future__ import annotations
@@ -48,7 +50,7 @@ async def test_update_plugin_profiles_on_an_unknown_record_is_a_noop(tmp_path):
 
 def test_resume_rebuild_reapplies_the_live_plan_onto_the_record(tmp_path, monkeypatch):
     """Recorded None + live ``read`` ⇒ the rebuilt options enforce ``read``
-    and the record's row says so; a resume never widens a recorded profile."""
+    and the record's row says so: the live profile wins over a recorded None."""
     import tools as tools_mod
     from config import HooksConfig
     store = tmp_path / "store"
@@ -139,8 +141,9 @@ def test_casa_core_wires_the_profile_persister_into_every_driver():
 
 
 async def test_update_plugin_profiles_touches_only_the_named_rows(tmp_path):
-    """A plugin the build did not load keeps its recorded profile — only rows
-    named in the mapping change (diff round 2, Astra A)."""
+    """Only rows named in the mapping change (diff round 2, Astra A): a plugin
+    the caller does not name keeps its recorded profile. (A build names a
+    withheld plugin only with a profile name — #1186.)"""
     reg = await _registry(tmp_path)
     rec = await reg.create(
         kind="specialist", role_or_type="finance", driver="in_casa",
@@ -156,7 +159,9 @@ async def test_update_plugin_profiles_touches_only_the_named_rows(tmp_path):
 
 def test_resume_with_a_withheld_plugin_keeps_its_recorded_profile(tmp_path, monkeypatch):
     """An artifact withheld for an unresolved secret is NOT loaded by this
-    build; its row must keep the profile the last loading build enforced."""
+    build and its recorded ``read`` is never erased; the live assignment
+    names the same profile, so the row stays ``read`` (#1186 records the
+    plan's profile name for a withheld plugin, never ``None``)."""
     import tools as tools_mod
     from config import HooksConfig
     store = tmp_path / "store"

@@ -236,10 +236,11 @@ class InCasaDriver(DriverProtocol):
     ) -> None:
         self._topic_stream_factory = topic_stream_factory
         self._persist_session_id = persist_session_id
-        # S8: persists the access profile a rebuilt session enforces onto the
-        # record's plugin_artifacts rows — called after the options are built
-        # and BEFORE the client opens, so a later resume's fallback row never
-        # reads a profile the previous build did not apply.
+        # S8: persists the rows a rebuilt session's plan decided (the profile
+        # it enforces for each loaded plugin; for a withheld one, #1186, the
+        # profile name the plan gives it) onto the record's plugin_artifacts
+        # — called after the options are built and BEFORE the client opens,
+        # so a later resume's fallback row never reads a wider profile.
         self._persist_plugin_profiles = persist_plugin_profiles
         # Task 6 (spec §4.6): optional per-turn cost/usage observer.
         self._result_observer = result_observer
@@ -725,8 +726,9 @@ class InCasaDriver(DriverProtocol):
             )
 
     async def _persist_applied_profiles(self, engagement: EngagementRecord) -> None:
-        """S8: write the profiles the rebuilt options enforce (what
-        ``build_engagement_resume_options`` left on the record's rows) through
+        """S8: write the record's rows as ``build_engagement_resume_options``
+        left them (the profiles the rebuilt options enforce; for a withheld
+        plugin, the profile name the plan gives it, #1186) through
         the persister, BEFORE the client opens. Strict: a failure propagates
         and no client opens — a record that cannot say what this build
         enforces would feed the next resume's fallback a wider profile. The
