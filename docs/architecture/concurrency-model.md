@@ -153,7 +153,7 @@ Enforced by `TurnAdmission`, a process-wide readers/writer barrier over turns. T
 the shared side across the same window as their write gate; a wipe or reset holds it
 exclusively. Its drain is bounded and fails closed — turns that do not finish in time abort
 the retirement with nothing deleted, because a wipe that cannot prove it drained everything
-must not report that it deleted everything.
+must not report its deletions as complete.
 
 Joining an in-flight turn used to be the client pool's job, through the session registry's
 reset listener. That listener has exactly one subscriber, the pool's `close_key`, so a turn

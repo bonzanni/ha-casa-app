@@ -30,8 +30,8 @@ retry spool, drops every session pointer *without retaining it* (retiring
 saves first — exactly the residue a wipe must not leave), deletes the bank,
 and reports counts. Both drains are bounded and fail closed: turns or writers
 that do not finish in time abort the wipe with nothing deleted, because a wipe
-that cannot prove it drained everything must not report that it deleted
-everything. The terminal door
+that cannot prove it drained everything must not report its deletions as
+complete. The terminal door
 (`casactl memory-wipe --yes` → `POST /admin/memory/wipe`) is root-gated by
 the same peer-credential check as every admin route; the agent door (the
 `wipe_memory` tool) posts an Approve/Cancel keyboard to the configured

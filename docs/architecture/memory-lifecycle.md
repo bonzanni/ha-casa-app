@@ -14,8 +14,8 @@ protocol that retains it exactly once, the explicit reset, and the durable
 retry spool. How each item is labelled on the way in — its sensitivity tier,
 its speaker provenance, and the content addressing that deduplicates it — is
 [`architecture/memory-labelling.md`](memory-labelling.md). The
-operator-consented wipe that removes everything — its two doors, its consent
-posture, the fence every writer passes through and what it leaves behind — is
+operator-consented wipe that removes long-term memory and leaves conversation
+transcripts on disk — its two doors, its consent posture, the fence every writer passes through and what it leaves behind — is
 [`architecture/memory-wipe.md`](memory-wipe.md). What happens to a stored fact
 on the way back out — rendering and what a caller may claim from a result — is
 [`architecture/memory.md`](memory.md), and who may read it back is
