@@ -11,7 +11,8 @@ last_reviewed: 2026-09-26
 How a durable engagement ends: the single-winner terminal transition, the strictness that
 keeps the persisted and in-memory records agreeing — at creation as well as at the
 terminal flip, including the compensation a cancelled creator owes — the finalization side
-effects behind the flip, and the ordering of what an engagement posts to its topic. What a
+effects behind the flip, the ordering of what an engagement posts to its topic, and where a
+finished `in_casa` engagement's CLI transcripts are deleted. What a
 *successful* completion is refused over, and what each driver counts to answer that, are in
 [`architecture/engagement-completion-gate.md`](engagement-completion-gate.md). What a terminal
 engagement's topic and its engager are told — the outcome mark, the unconfirmed-post
@@ -131,6 +132,38 @@ state, counters) warn and continue if their write fails, so the no-disagreement 
 belongs to creation and the finalize path specifically. And the cancellation compensation is
 itself best-effort on the disk side — if the compensating write fails, the on-disk ghost row
 remains until the boot reconcile and reap TTL retire it.
+
+**INV-ENG-022**: Once an `in_casa` engagement's terminal status is on disk, a pass run at scheduler start and every six hours deletes its CLI transcripts — a plugin job's whole per-engagement project folder, or, for a specialist or executor, each session the record names (its current session and every session its background job lists) in that record's own project folder — and selects nothing else.
+
+Casa owns transcript deletion: the CLI's own cleanup never fires under Casa's SDK
+invocation, and the resident time-to-live sweep
+([`architecture/memory-lifecycle.md`](memory-lifecycle.md)) only ever reaps resident
+sessions. An `in_casa` session writes `<session>.jsonl` and a `<session>/` folder (its
+subagents and oversized tool results) under the CLI projects root, in a folder named after
+the session's working directory; a `claude_code` engagement keeps its transcript inside its
+workspace, which goes with the workspace. Nothing resumes or reads an `in_casa` transcript
+once its record is terminal, so the pass deletes the files the record attributes to it. The
+folder comes from the launch's own working-directory constructor run through the SDK's
+lookup — a plugin job's folder is unique to the engagement, so it goes whole with every
+batch's session in it; a specialist's folder (its configured working directory, else its
+agent home) and the executors' shared `/config` folder hold other sessions, so only the
+named ones go, a zero-byte file included.
+
+The condition is the status *on disk*, not in memory: a strict terminal transition whose
+write fails is rolled back to live, and a non-strict one whose write fails leaves the disk
+saying live — either way a restart would resume the session. Such a record waits for a
+later write. Every pass re-visits every terminal record still loaded, with no "done"
+marker, so a session named after a pass, or a removal that failed, is handled by the next
+pass; one record's failure never stops another's.
+
+What it does not cover, and these are gaps rather than retention: it never lists a folder or
+selects by age, so sessions no record names stay — a synchronous delegation's, a utility
+one-shot's, the session a clearance downgrade abandons on a specialist or executor
+engagement, any plugin-job folder whose record is gone, and the sessions of a specialist
+that has since been uninstalled (its folder can no longer be derived) or given another
+working directory. A terminal record's row ages out of the tombstone once it is 30 days old,
+and the pass never selects a record without one, so a removal that fails for that long is
+not retried.
 
 **The completion gate is INV-ENG-003, and it lives in its own document.** A successful
 completion requested through the completion tool is refused over unread, in-flight or
@@ -266,6 +299,10 @@ and the recompile — and a timeout is logged and stepped over, so the notificat
 retains behind it still run. The engagement's processes are already dead by then: the kill
 happened at the transition, not here.
 
+**A transcript removal fails.** It is logged and counted, the pass moves on to the next
+record, and the next pass retries it. A tombstone the pass cannot read selects nothing that
+pass.
+
 ## Extension points
 
 **A new terminal path** should go through the shared finalize funnel to inherit the
@@ -290,6 +327,7 @@ relative to narration matters. Direct sends exist as a fallback and bypass order
 - `casa/rootfs/opt/casa/tools.py::cancel_engagement`
 - `casa/rootfs/opt/casa/channels/output_sequencer.py::OutputSequencer`
 - `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver`
+- `casa/rootfs/opt/casa/engagement_transcript_reaper.py::reap_engagement_transcripts`
 
 **Tests**
 - `tests/test_emit_completion_tool.py`
@@ -297,6 +335,8 @@ relative to narration matters. Direct sends exist as a fallback and bypass order
 - `tests/test_engagement_registry.py`
 - `tests/test_output_sequencer.py`
 - `tests/test_anchor_narration_buffer.py`
+- `tests/test_engagement_transcript_reaper.py`
+- `tests/test_engagement_transcript_reaper_pins.py`
 
 **Related**
 - [`architecture/engagements.md`](../architecture/engagements.md)
