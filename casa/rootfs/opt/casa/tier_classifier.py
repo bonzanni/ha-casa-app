@@ -22,6 +22,8 @@ from claude_runtime import (
     CLAUDE_CLI_PATH,
     SDK_MAX_BUFFER_SIZE,
     cli_session_settings,
+    ephemeral_extra_args,
+    ephemeral_setting_sources,
     with_cross_session_tools_denied,
 )
 # Re-export the canonical sensitivity-tier set (single source of truth is
@@ -155,6 +157,8 @@ async def classify_tier(content: str) -> str:
         disallowed_tools=with_cross_session_tools_denied(
             ["Bash", "Task", "Agent"]),
         settings=cli_session_settings(),
+        setting_sources=ephemeral_setting_sources(),
+        extra_args=ephemeral_extra_args(),
         # NOT bypassPermissions: that makes the SDK pass
         # ``--dangerously-skip-permissions`` to the bundled ``claude`` CLI, which
         # refuses to run as root/sudo — and HA add-ons run as root, so the call

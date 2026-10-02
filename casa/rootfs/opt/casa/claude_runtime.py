@@ -58,6 +58,31 @@ def cli_session_settings(extra: dict | None = None) -> str:
                        "crossSessionInbound": CROSS_SESSION_INBOUND})
 
 
+def ephemeral_setting_sources() -> list[str]:
+    """The ``setting_sources`` of a utility one-shot (the observer, the tier
+    classifier, query_engager's synthesis): none at all (INV-MEM-021).
+
+    Left unset, the SDK loads the user source, and with it the pinned CLI
+    enables its own age-based cleanup, which walks the whole projects root
+    and deletes any transcript older than ``cleanupPeriodDays`` (default 30)
+    — a resident transcript INV-MEM-017 holds included. The CLI enables that
+    cleanup only when the user source is loaded or a loaded source sets
+    ``cleanupPeriodDays``; a project source is no better, since its file could
+    carry the key, and a one-shot has no project of its own. Never put
+    ``cleanupPeriodDays`` in :func:`cli_session_settings`: passing it as a
+    flag enables the cleanup for every launch."""
+    return []
+
+
+def ephemeral_extra_args() -> dict[str, str | None]:
+    """The ``extra_args`` of a utility one-shot: ``--no-session-persistence``
+    (INV-ENG-023). Nothing resumes or names a one-shot's session afterwards,
+    so it writes no transcript at all. Measured on the pinned CLI under the
+    SDK's stream-json transport: a completed turn returns its reply and
+    leaves nothing under the projects root."""
+    return {"no-session-persistence": None}
+
+
 def verify_effective_cli() -> str:
     """Return the effective CLI version string or fail closed on mismatch."""
     proc = subprocess.run(

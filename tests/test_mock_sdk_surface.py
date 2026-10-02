@@ -281,6 +281,26 @@ def test_mock_options_accept_every_kwarg_build_options_passes():
     )
 
 
+def test_mock_client_adopts_a_chosen_session_id(tmp_path, monkeypatch):
+    """#1168: the delegation runner launches under a Casa-chosen
+    ``session_id`` and deletes that session at the end, so the e2e mock must
+    name its session the way the CLI does — the chosen id, unless resuming."""
+    mock = _load_mock()
+    monkeypatch.setattr(mock, "CALL_LOG", str(tmp_path / "calls.jsonl"))
+    chosen = "44444444-4444-4444-8444-444444444444"
+    opts = mock.ClaudeAgentOptions(session_id=chosen,
+                                   extra_args={"no-session-persistence": None})
+    assert mock.ClaudeSDKClient(opts).session_id == chosen
+    resumed = mock.ClaudeAgentOptions(resume="sess-r", session_id=chosen)
+    assert mock.ClaudeSDKClient(resumed).session_id == "sess-r"
+    assert mock.ClaudeSDKClient(
+        mock.ClaudeAgentOptions()).session_id.startswith("mock-")
+    # Independent defaults: one options object's extra_args is not another's.
+    assert mock.ClaudeAgentOptions().extra_args == {}
+    assert mock.ClaudeAgentOptions().extra_args is not \
+        mock.ClaudeAgentOptions().extra_args
+
+
 def test_mock_exports_streamevent_with_event_payload():
     mock = _load_mock()
     ev = mock.StreamEvent(event={"type": "content_block_delta",

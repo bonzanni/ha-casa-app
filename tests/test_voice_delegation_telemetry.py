@@ -216,7 +216,8 @@ class TestDelegatedPhaseLog:
         monkeypatch.setattr(tools_mod, "ClaudeSDKClient", _FakeClient)
         monkeypatch.setattr(
             tools_mod, "_build_specialist_options",
-            lambda cfg, resolution=None, output_format=None: MagicMock())
+            lambda cfg, resolution=None, output_format=None:
+                tools_mod.ClaudeAgentOptions())
         monkeypatch.setattr(tools_mod, "_agent_role_map", {"mtg": MagicMock()})
 
         cfg = MagicMock()

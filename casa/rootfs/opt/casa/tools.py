@@ -16,7 +16,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager, nullcontext
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from collections import OrderedDict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
@@ -76,6 +76,8 @@ from claude_runtime import (
     CLAUDE_CLI_PATH,
     SDK_MAX_BUFFER_SIZE,
     cli_session_settings,
+    ephemeral_extra_args,
+    ephemeral_setting_sources,
     with_cross_session_tools_denied,
 )
 from media_policies import MEDIA_POLICIES
@@ -3496,6 +3498,33 @@ async def _refresh_health_after_setup_cleared() -> None:
         logger.debug("plugin health refresh wait failed", exc_info=True)
 
 
+def _sdk_delete_session(session_id: str, directory: str) -> None:
+    from claude_agent_sdk import delete_session
+    delete_session(session_id, directory)
+
+
+async def _delete_own_delegated_transcript(
+    session_id: str, directory: str, role: str | None,
+) -> None:
+    """Delete the one session an ephemeral delegation launched (INV-ENG-023):
+    its ``<sid>.jsonl`` and ``<sid>/`` in the launch's own project folder,
+    through the SDK. Never lists the folder, which the specialist's other
+    sessions share. Best-effort: a failure is logged and the file kept.
+
+    A cancellation landing during the await interrupts only the await; the
+    worker thread still finishes the delete."""
+    try:
+        await asyncio.to_thread(_sdk_delete_session, session_id, directory)
+    except FileNotFoundError:
+        # The CLI never wrote one (it failed before its first message).
+        logger.debug("delegated transcript %s: none written", session_id)
+    except Exception as exc:  # noqa: BLE001 — never fails the delegation
+        logger.warning(
+            "delegated agent %s: transcript delete failed (%s); kept",
+            _known_role(role), type(exc).__name__,
+        )
+
+
 async def _run_delegated_agent(
     cfg, task_text: str, context_text: str, resolution=None,
     output_format=None, tool_counts: dict[str, int] | None = None,
@@ -3699,6 +3728,11 @@ async def _run_delegated_agent(
     # observed below is attributed to the artifact this session really ran.
     binding: dict[str, str] = {}
     tool_calls: dict[str, tuple[str, float]] = {}
+    # #1168 (INV-ENG-023): the session this call launches, and the folder its
+    # transcript lands in — set together, before the client exists, so the
+    # delete in `finally` names exactly what was launched or nothing at all.
+    own_sid: str | None = None
+    own_dir: str | None = None
 
     def _options_and_binding():
         res = resolution if resolution is not None \
@@ -3709,6 +3743,12 @@ async def _run_delegated_agent(
                  for rp in (getattr(res, "plugins", None) or [])})
     try:
         options, binding = await asyncio.to_thread(_options_and_binding)
+        # One Casa-chosen session per launch, set HERE and never in
+        # `_build_specialist_options`: in_casa engagements launch and resume
+        # through that builder, and a fixed id there would collide with
+        # `resume`. The project folder is the launch's own cwd.
+        options = replace(options, session_id=str(uuid.uuid4()))
+        own_sid, own_dir = options.session_id, options.cwd
         _ph["options"] = time.monotonic()
         token = agent_mod.origin_var.set(child_origin)
         client_options = (
@@ -3822,6 +3862,13 @@ async def _run_delegated_agent(
             _specialist_telemetry.record_cost(
                 cfg.role, cost_usd=cost_usd, usage=usage,
             )
+        # #1168 (INV-ENG-023): LAST in this `finally`, so it runs only after
+        # the `async with` above has exited — the CLI writes its transcript
+        # until its process ends — on return, raise and cancel alike, and an
+        # await here can never skip the log or the origin reset above.
+        if own_sid and own_dir:
+            await _delete_own_delegated_transcript(
+                own_sid, own_dir, getattr(cfg, "role", None))
 
     # #568: the CLI ended this run by reporting an API-level fault (a safety
     # refusal included) — this specialist never answered. RAISE rather than
@@ -12516,6 +12563,8 @@ async def _synthesize_answer(
         mcp_servers={},
         disallowed_tools=with_cross_session_tools_denied(()),
         settings=cli_session_settings(),
+        setting_sources=ephemeral_setting_sources(),
+        extra_args=ephemeral_extra_args(),
         env={"CLAUDE_CODE_MAX_OUTPUT_TOKENS": str(max(1, max_tokens))},
     )
     prompt = (

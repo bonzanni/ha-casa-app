@@ -19,6 +19,8 @@ from claude_runtime import (
     CLAUDE_CLI_PATH,
     SDK_MAX_BUFFER_SIZE,
     cli_session_settings,
+    ephemeral_extra_args,
+    ephemeral_setting_sources,
     with_cross_session_tools_denied,
 )
 
@@ -238,6 +240,8 @@ class Observer:
             mcp_servers={},
             disallowed_tools=with_cross_session_tools_denied(()),
             settings=cli_session_settings(),
+            setting_sources=ephemeral_setting_sources(),
+            extra_args=ephemeral_extra_args(),
         )
         out = ""
         try:
