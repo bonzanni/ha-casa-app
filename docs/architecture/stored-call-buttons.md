@@ -101,7 +101,16 @@ forms. Nothing is prevented or retried: installed hooks are trusted (as every pl
 **The controller owns the run's processes.** The pinned turn is not driven by the bounded
 delegation wrapper. A `PinnedRun` enters the SDK client, pins a pidfd on the CLI and on
 every descendant it finds at start, and owns the client to the end; the runner never exits
-it. On the turn's normal end the controller starts the SDK's close as a detached task and
+it. During a termination it walks the descendants of every pinned process again — when the
+termination begins, before the execution task is cancelled (a server may exit during that wait
+and reparent its child), and again just before the signals — and pins what a tool call started since —
+a plugin server's ordinary child, such as a shelled-out command — so that it is killed and
+counted like the rest (#1205: a child started after the start-time snapshot had survived the
+kill, reparented to init, with no fault and no notice). A walk that cannot be complete is not
+a confirmation: a proven pinned process other than the CLI that is found exited before Casa
+signalled anything — already dead when the termination began, or dying while the walk ran —
+may have left a child reparented before any walk could see it, so the run is unconfirmed and
+the desk is faulted and told rather than released over a survivor Casa cannot see. On the turn's normal end the controller starts the SDK's close as a detached task and
 confirms every pinned process's exit by pidfd readability under one deadline — nothing
 inside the SDK's teardown is awaited. On the desk turn's ceiling, or when a process is still
 alive after that, the operator is told at once (`✖ failed`), and the controller cancels the
@@ -137,9 +146,19 @@ deadline, or its identity could not be established while pinned, or a callback w
 inside, the desk is *faulted*: every later use of it — reply, tap, delegation — is refused
 at once with a labelled notice (`📊 Finance's desk is faulted; a Casa restart clears it.`),
 the permit is released, an ERROR is logged, and the standing plugin-health report carries a
-`desk_faulted` row against the plugin and the specialist until a restart. A worker a plugin
-daemonises or spawns after the snapshot is outside the pin: that is the plugin's own
-responsibility, an accepted risk rather than a Casa guarantee.
+`desk_faulted` row against the plugin and the specialist until a restart. A worker that a
+plugin deliberately detaches — `setsid`, a double fork — is not a descendant and is outside
+the pin: that is the plugin's own responsibility, an accepted risk rather than a Casa
+guarantee; an ordinary child started after the start-time snapshot is not (it is re-walked at
+termination). What stays uncovered is narrower still, and accepted by the operator's ruling
+under §14.8 (#1205, 2026-10-03): a child started in the instant between the last walk and the
+signals, and three windows in which a server dies around the walks themselves — during a
+still-pending SDK entry when the cancellation reaps it, before Casa's own close began on the
+normal-end path, or while the walk's `/proc` enumeration runs so that it is listed and gone
+before its pidfd is taken — in each of which an ordinary child can be reparented unseen. The
+stricter rule that would close them (any such death leaves the run unconfirmed) was declined
+because it would fault desks until restart on false alarms; these windows are documented, with
+tests marked as expected failures, not fixed.
 
 **The desk and the echo.** A committed tap that reaches execution appends one exchange —
 `[tapped: <label>]` and the receipt's first line, `[posted a proposal]` for a landed `More`,
@@ -149,10 +168,10 @@ desk: a reply on the proposal message routes to the specialist by the post map.
 
 ## Contracts & invariants
 
-**INV-PROP-001**: A tap on a proposal button admits for execution exactly the stored call bound to that button when the proposal was posted — the same tool, the same arguments by value as Casa's pin compares them, with any rewrite by an installed hook told on the receipt and logged, never prevented — at most once per proposal, on a desk that is not released to a later use until the CLI and the plugin servers it started are terminated or the desk is faulted, only when tapped by the operator the proposal was posted for, on the message it was posted as, in the chat it was posted in, and only while the specialist that posted it is still assigned the same plugin artifact with a profile that allows that tool; every other callback is answered and executes nothing.
+**INV-PROP-001**: A tap on a proposal button admits for execution exactly the stored call bound to that button when the proposal was posted — the same tool, the same arguments by value as Casa's pin compares them, with any rewrite by an installed hook told on the receipt and logged, never prevented — at most once per proposal, on a desk that is not released to a later use until the CLI, the plugin servers it started and the ordinary children those servers started by termination time are terminated or the desk is faulted, only when tapped by the operator the proposal was posted for, on the message it was posted as, in the chat it was posted in, and only while the specialist that posted it is still assigned the same plugin artifact with a profile that allows that tool; every other callback is answered and executes nothing.
 
-What it does not cover: a worker a plugin daemonises or spawns after the controller's
-snapshot (the plugin's responsibility); the time between the tap and the desk lock, during
+What it does not cover: a worker a plugin deliberately detaches — `setsid`, a double fork —
+so that it is no descendant of the CLI at termination time (the plugin's responsibility); the time between the tap and the desk lock, during
 which the world may move — the re-checks run after the wait, not before it; the process's own
 exit sweep, which ends every task at once (Casa-wide behaviour, not S5's).
 

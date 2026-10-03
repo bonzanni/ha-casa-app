@@ -360,12 +360,25 @@ class PinnedRun:
             self._unconfirmed_identity = True
             return
         self._cli = _Pinned(pid, fd, proc)
+        self._pin_descendants(pid)
+
+    def _pin_descendants(self, root: int) -> None:
+        """Pin every live descendant of *root* not pinned yet, with a pidfd
+        each and the parent chain validated while pinned. Called once at
+        enter for the CLI, and again at terminate for every pinned process
+        still alive (#1205: a child a tool call starts AFTER enter — a plugin
+        server shelling out — was never pinned, so it survived the kill,
+        reparented to init, and was not counted)."""
         try:
-            descendants = _descendants(pid)
+            descendants = _descendants(root)
         except OSError:
             self._unconfirmed_identity = True
             return
+        known = self.pinned_pids()
+        roots = {p.pid for p in self._all() if p.ours}   # only a PROVEN ancestor vouches
         for child in descendants:
+            if child in known:
+                continue
             try:
                 cfd = _pidfd_open(child)
             except ProcessLookupError:
@@ -379,15 +392,53 @@ class PinnedRun:
             # the pid was reused since the listing) is KEPT and awaited but
             # never signalled, and it keeps the run from being confirmed
             # (Astra, diff round 1: dropping it released a live server)
-            verdict = self._chain_verdict(child, pid, cfd)
+            verdict = self._chain_verdict(child, roots, cfd)
             if verdict == "extinct":
                 os.close(cfd)
                 continue
             self._children.append(_Pinned(child, cfd, ours=(verdict == "ours")))
-            if verdict == "unprovable":
+            known.add(child)
+            if verdict == "ours":
+                roots.add(child)
+            else:
                 self._unconfirmed_identity = True
 
-    def _chain_verdict(self, child: int, root: int, fd: int) -> str:
+    def _repin(self) -> None:
+        """#1205: re-walk the descendants of every pinned process that is
+        still running and pin what was started since enter — twice during a
+        termination: when it begins (before the execution task is cancelled,
+        since a server may exit during that wait and reparent its child) and
+        again just before the signals (a child started during the wait). A
+        worker that detached itself (setsid, a double fork) is not a
+        descendant and stays out of scope (design §14.8).
+
+        An INCOMPLETE scan is not a confirmation (diff round 2, Astra and
+        Terra; coordinator's ruling under §14.8 "bounded best effort, told"):
+        a PROVEN pinned process other than the CLI that the run itself never
+        signalled and that is found exited — before the walk began, or while
+        /proc was being enumerated — may have left a child reparented before
+        any walk could see it, so the run is marked unconfirmed and the desk
+        is faulted and told rather than released over a silent survivor. Only
+        the walks set this, and they run before any signal; a server that
+        exits because Casa signalled the CLI never reaches here. (An
+        unprovable pin already leaves the run unconfirmed, so the flag looks
+        at proven ones only.)"""
+        cli = self._cli
+        proven = [p for p in self._all() if p.ours and p is not cli]
+        for pinned in list(self._all()):
+            if not pinned.exited():
+                self._pin_descendants(pinned.pid)
+        # ONE check, after the enumeration, over EVERY proven pin (diff round 3,
+        # Astra: a death between two separate polls escaped a before/after
+        # comparison) — and only for a death Casa did not cause: once Casa has
+        # started the SDK's close (the normal end's teardown, which stops the
+        # servers) or signalled, a dead server is explained, not an anomaly
+        if self.close_task is None and any(p.exited() for p in proven):
+            logger.warning("pinned run %s: a pinned process exited before Casa signalled or "
+                           "closed anything; the scan cannot be complete", self.run_id)
+            self._unconfirmed_identity = True
+
+    def _chain_verdict(self, child: int, roots: "set[int] | int", fd: int) -> str:
         """``ours`` / ``extinct`` / ``unprovable``. Only the child's OWN pidfd
         proves an exit: a ``/proc`` read that fails (the entry gone, EMFILE, a
         permission error) says nothing about the process, so a child that is
@@ -402,6 +453,8 @@ class PinnedRun:
             # rounds 2–4)
             return "extinct" if probe.exited() else "unprovable"
 
+        if isinstance(roots, int):
+            roots = {roots}
         parent = _ppid(child)
         if parent is None:
             return _unprovable()                    # unreadable (EMFILE, a permission error) — or gone
@@ -412,8 +465,8 @@ class PinnedRun:
             parent = _ppid(cur)
             if parent is None:
                 return _unprovable()                # an ancestor vanished mid-walk
-            if parent == root:
-                return "ours"
+            if parent in roots:
+                return "ours"                       # descends from a pinned process
             cur = parent
         return _unprovable()
 
@@ -454,6 +507,10 @@ class PinnedRun:
         """§5.2.4 (a)–(g). Returns whether EVERY pinned process is confirmed
         exited and every S5 callback has left — False is the faulted desk."""
         loop = asyncio.get_running_loop()
+        # #1205 (Astra, diff round 1): walk the tree BEFORE the cancellation
+        # wait too — a server can exit while (a) waits, reparenting a child
+        # it started, which the later walk would then not even find
+        self._repin()
         # (a) the execution task: cancelled, waited for at most TASK_WAIT_S, then abandoned
         if task is not None and not task.done():
             task.cancel()
@@ -461,6 +518,7 @@ class PinnedRun:
             if not task.done():
                 task.add_done_callback(_consume)
         self._late_pin()
+        self._repin()                                # #1205: children started since enter, or during (a)
         # (b) the CLI: SIGTERM, a grace, SIGKILL — through the pinned fd
         cli = self._cli
         if cli is not None and not cli.exited():

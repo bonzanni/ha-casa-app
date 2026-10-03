@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.342.1] - 2026-10-03
+
+### Fixed
+
+- When a tapped button's plugin call hangs and Casa ends the specialist's
+  run, a command the plugin had started during that call — a child of its
+  own server — is now ended and counted too. Before, only the processes
+  present when the run began were tracked, so such a child could keep running
+  after Casa reported the tap as settled and freed the specialist, with no
+  fault and no notice. If one of the plugin's processes has already died
+  before Casa could look — so a child of it may have slipped out of view —
+  Casa no longer reports the run as cleanly ended: the specialist's desk is
+  marked faulted and you are told, as for any unconfirmed end. A worker a
+  plugin deliberately detaches is still the plugin's own responsibility, as
+  before.
+
 ## [0.342.0] - 2026-10-03
 
 ### Added
