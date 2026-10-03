@@ -181,6 +181,34 @@ def test_a_file_turn_context_never_carries_the_slash_line():
                                task=task) == sd.turn_frame("Ellen", file=True) + "\n\n" + block
 
 
+def test_a_slash_reply_context_at_the_full_block_budget_cuts_nothing():
+    """#1198: at a block of exactly DESK_LOG_CHARS (the most render_block returns), the
+    longest kept resident name, the longest slot a manifest can declare (64 characters)
+    and a full quote, the slash reply's context fits DESK_CONTEXT_CHARS unsliced."""
+    name = "E" * sd.DESK_NAME_CHARS
+    sides = [[who, 395] for _ in range(sd.DESK_LOG_EXCHANGES) for who in ("resident", "specialist")]
+
+    def block_of(sides):
+        return sd.render_block([sd.Exchange(who, who[0] * n, 990.0) for who, n in sides],
+                               resident_name=name)
+
+    i = len(sides) - 1                    # grow the newest sides, each within the side bound
+    while len(block_of(sides)) < sd.DESK_LOG_CHARS:
+        if sides[i][1] == sd.DESK_LOG_SIDE_CHARS:
+            i -= 1
+        sides[i][1] += 1
+    block = block_of(sides)
+    assert len(block) == sd.DESK_LOG_CHARS
+    record = SimpleNamespace(slot="s" * 64, posted_at=900.0)
+    quote = "q" * (sd.DESK_QUOTE_CHARS - 1) + "Z"
+    full = sd._compose_context(block, quote, record, 1000.0, resident_name=name, task="/new")
+    when = sd.time.strftime("%Y-%m-%d %H:%M", sd.time.localtime(900.0))
+    assert full == "\n\n".join([
+        sd.turn_frame(name), sd.SLASH_TASK_LINE, block,
+        f"The operator replied to your post (slot {'s' * 64}, posted {when}) which read:\n" + quote])
+    assert len(full) <= sd.DESK_CONTEXT_CHARS
+
+
 def test_an_idle_desk_starts_empty_on_its_next_use():
     reg, desk = _desk()
     desk.append("operator", "hello", now=1000.0)
