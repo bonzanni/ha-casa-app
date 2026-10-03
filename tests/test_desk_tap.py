@@ -219,6 +219,16 @@ def _echo():
     return sd.drain_echo_lines(OPERATOR)
 
 
+async def test_a_tap_on_a_slash_labelled_button_context_is_the_base_context(env):
+    """#1198: the slash statement is a swipe-reply's; a tap's context is unchanged."""
+    env.desk.append("operator", "earlier question", now=990.0)
+    env.desk.append("specialist", "earlier answer", now=990.0)
+    log = list(env.desk.log)
+    await _tap(env, meta={"options": ["/new", "More"]})
+    (call,) = env.calls
+    assert call.context == sd.turn_frame("Ellen") + "\n\n" + sd.render_block(log, resident_name="Ellen")
+
+
 # --- the happy path: one pinned run, the receipt, the exchange, the echo -----------
 
 async def test_a_tap_runs_one_pinned_turn_on_the_captured_build_input_and_posts_the_receipt(env):

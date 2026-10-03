@@ -9,6 +9,7 @@ echo (INV-DESK-002, INV-DESK-003).
 from __future__ import annotations
 
 import asyncio
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -234,6 +235,70 @@ async def test_a_continuation_turn_has_no_quote_and_joins_the_same_desk(env):
     # decision, not the operator's own words — its frame says so
     assert call.context.startswith(sd.turn_frame("Ellen", continuation=True))
     assert sd.turn_frame("Ellen") not in call.context
+
+
+# --- #1198: a reply starting with "/" is text, not a command --------------------------
+
+def _seed_prior_exchange(env):
+    env.desk.append("operator", "earlier question", now=990.0)
+    env.desk.append("specialist", "earlier answer", now=990.0)
+
+
+def _base_reply_context(log):
+    """The base's context for a reply on `_record()` quoting "📊 Finance\\nQ3 report",
+    frozen independently of `_compose_context`."""
+    when = time.strftime("%Y-%m-%d %H:%M", time.localtime(900.0))
+    return (sd.turn_frame("Ellen") + "\n\n" + sd.render_block(log, resident_name="Ellen")
+            + "\n\n" + f"The operator replied to your post (slot report, posted {when}) "
+            "which read:\n📊 Finance\nQ3 report")
+
+
+@pytest.mark.parametrize("text", ["/new", "/new, start over", "  /new"])
+async def test_slash_reply_explains_no_command_or_reset(env, text):
+    _seed_prior_exchange(env)
+
+    await _reply(env, text=text, continuation=False)
+
+    assert len(env.calls) == 1
+    call = env.calls[0]
+    assert call.task == text
+
+    assert call.context.count("<desk>") == 1
+    assert call.context.count("</desk>") == 1
+    block = call.context.split("<desk>", 1)[1].split("</desk>", 1)[0]
+    assert block.count("earlier question") == 1
+    assert block.count("earlier answer") == 1
+
+    assert len(env.channel.notices) == 0
+    assert len(env.channel.replies) == 1
+    assert [entry.text for entry in env.desk.log] == [
+        "earlier question", "earlier answer",
+        text, "Here you go: **42**",
+    ]
+
+    context = call.context.lower()
+    assert (
+        "not" in context
+        and ("command" in context or "executed" in context)
+        and "reset" in context
+    ), "slash reply context must explain no command execution and no reset"
+
+
+async def test_a_non_slash_reply_context_is_the_base_context_byte_for_byte(env):
+    _seed_prior_exchange(env)
+    log = list(env.desk.log)
+    await _reply(env, text="more detail please")
+    (call,) = env.calls
+    assert call.context == _base_reply_context(log)
+
+
+async def test_a_slash_continuation_context_is_the_base_context_byte_for_byte(env):
+    _seed_prior_exchange(env)
+    log = list(env.desk.log)
+    await _reply(env, text="/new", quoted_text=None, record=None, continuation=True)
+    (call,) = env.calls
+    assert call.context == (sd.turn_frame("Ellen", continuation=True) + "\n\n"
+                            + sd.render_block(log, resident_name="Ellen"))
 
 
 # --- no proven outcome ⇒ one labelled notice -----------------------------------------
