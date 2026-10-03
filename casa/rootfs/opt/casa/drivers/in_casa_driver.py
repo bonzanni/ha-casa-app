@@ -88,6 +88,14 @@ class DriverNotAliveError(RuntimeError):
     """Raised when a turn is fed to a driver that has no open client."""
 
 
+class SessionInvalidatedError(DriverNotAliveError):
+    """#1166: a ticketed turn reached a session a clearance downgrade has
+    invalidated — the record's ``context_rebuild_pending`` is set, or the
+    client the turn captured was replaced while it waited for the turn lock.
+    Raised before the ticket is accepted, so the turn is unread and its
+    delivery owner can wait for the fresh session and send it there."""
+
+
 class EngagementTerminalError(DriverNotAliveError):
     """#690: the registry refused this turn's admission — the record is
     terminal and must not be written to.
@@ -494,6 +502,10 @@ class InCasaDriver(DriverProtocol):
                  else self.admit_inbound(engagement.id, text))
         try:
             if not self.is_alive(engagement):
+                if self._rebuild_pending(engagement):
+                    raise SessionInvalidatedError(
+                        f"engagement {engagement.id[:8]} is between sessions "
+                        "after a clearance downgrade")
                 raise DriverNotAliveError(
                     f"engagement {engagement.id[:8]} has no live client"
                 )
@@ -790,6 +802,27 @@ class InCasaDriver(DriverProtocol):
         finally:
             engagement_var.reset(token)
 
+    def turn_in_progress(self, engagement_id: str) -> bool:
+        """#1166: SYNCHRONOUS — is a turn holding this engagement's turn lock
+        right now? A teardown issued now would wait for it."""
+        lock = self._locks.get(engagement_id)
+        return lock is not None and lock.locked()
+
+    async def wait_turn_idle(self, engagement: EngagementRecord) -> None:
+        """#1166: wait until the turn running in the engagement's current
+        session (if any) has ended — acquire and release its turn lock. Tears
+        nothing down."""
+        lock = self._locks.get(engagement.id)
+        if lock is not None:
+            async with lock:
+                pass
+
+    def _rebuild_pending(self, engagement: EngagementRecord) -> bool:
+        latest = (self._record_lookup(engagement.id)
+                  if self._record_lookup is not None else None)
+        return bool(getattr(latest or engagement, "context_rebuild_pending",
+                            False))
+
     async def invalidate_session(self, engagement: EngagementRecord) -> None:
         """#369 (Sol diff-gate r1+r2): teardown for a clearance downgrade —
         unlike :meth:`cancel` (terminal path, best-effort close), a FAILED
@@ -798,7 +831,28 @@ class InCasaDriver(DriverProtocol):
         an empty map and report teardown "confirmed" over a surviving
         subprocess. Deliveries into the retained client are refused meanwhile
         by the context_rebuild_pending fence, which is set before any caller
-        reaches this method."""
+        reaches this method.
+
+        #1166: it WAITS for the turn running in the session — the turn lock is
+        held from the admission fence to the end of the response stream — so a
+        downgrade never cuts a running turn (a job batch would otherwise end
+        as a failed, cut-off batch). No new turn is admitted meanwhile: every
+        ticketed turn re-checks the flag under that lock (``_deliver_turn``).
+        If the session was replaced or removed while it waited (a cancel, an
+        earlier teardown, a rebuild), the call does nothing: it must never
+        close a session opened after it was asked. The per-turn incomplete
+        observations are NOT popped: their readers own them, and a genuine
+        cut-off observed by the drained turn must still reach its owner."""
+        lock = self._locks.get(engagement.id)
+        if lock is None:
+            await self._close_invalidated(engagement)
+            return
+        async with lock:
+            if self._locks.get(engagement.id) is not lock:
+                return
+            await self._close_invalidated(engagement)
+
+    async def _close_invalidated(self, engagement: EngagementRecord) -> None:
         client = self._clients.get(engagement.id)
         ctx = self._ctx_stack.get(engagement.id)
         if client is not None or ctx is not None:
@@ -810,8 +864,6 @@ class InCasaDriver(DriverProtocol):
         self._ctx_stack.pop(engagement.id, None)
         self._locks.pop(engagement.id, None)
         self._session_ids.pop(engagement.id, None)
-        self._launch_incomplete.pop(engagement.id, None)  # #678 map hygiene
-        self._followup_incomplete.pop(engagement.id, None)  # #692 same
 
     async def open_fresh(self, engagement: EngagementRecord) -> None:
         """#369: open a NEW session for an engagement whose context was
@@ -959,6 +1011,14 @@ class InCasaDriver(DriverProtocol):
             "Engagement %s conversation reset for a fresh job turn (session=%s)",
             engagement.id[:8], self._session_ids.get(engagement.id))
 
+    def _refuse_invalidated(self, engagement: EngagementRecord,
+                            client: Any) -> None:
+        if (self._clients.get(engagement.id) is not client
+                or self._rebuild_pending(engagement)):
+            raise SessionInvalidatedError(
+                f"engagement {engagement.id[:8]}'s session was invalidated by "
+                "a clearance downgrade — not delivering into it")
+
     async def _deliver_turn(
         self, engagement: EngagementRecord, prompt: str,
         *, inbound_token: object | None = None,
@@ -1045,6 +1105,15 @@ class InCasaDriver(DriverProtocol):
                         f"engagement {engagement.id[:8]} is terminal — "
                         "not delivering a turn"
                     )
+                # #1166: a clearance downgrade that landed while this turn
+                # waited for the lock (or a rebuild that replaced the client
+                # it captured) refuses it before acceptance, so no turn
+                # DECIDES to deliver into the invalidated session; its owner
+                # sends it into the fresh one. Same strength as the fence
+                # above: a turn already past this point is "running at clamp
+                # time", the documented residual.
+                if inbound_token is not None:
+                    self._refuse_invalidated(engagement, client)
                 # INV-BGJOB-005: a fresh job's every turn after its launch runs
                 # in a fresh conversation. AFTER the fence above (a terminal
                 # engagement is never reset) and BEFORE acceptance and the
@@ -1063,6 +1132,7 @@ class InCasaDriver(DriverProtocol):
                             f"engagement {engagement.id[:8]} is terminal — "
                             "not delivering a turn"
                         )
+                    self._refuse_invalidated(engagement, client)
                     import background_jobs
                     prompt = f"{background_jobs.job_brief(engagement)}\n\n{prompt}"
                 # #649: unread -> accepted, synchronously, before the

@@ -1949,11 +1949,22 @@ class EngagementRegistry:
         pre-clamp transcript. In-memory first: like the clamp itself, a
         persistence failure must never leave THIS process able to resume, so
         the field stays cleared even when the write fails (logged; the
-        still-set ``context_rebuild_pending`` refuses resume durably)."""
+        still-set ``context_rebuild_pending`` refuses resume durably).
+
+        #1166: the pointer it drops is recorded in the #1167 retired list in
+        the same write, so the transcript reaper still deletes a session first
+        reported by a turn that was running at clamp time."""
         async with self._lock:
             rec = self._records.get(engagement_id)
             if rec is None:
                 return
+            sid = rec.sdk_session_id
+            if isinstance(sid, str) and sid:
+                retired = rec.origin.get(RETIRED_SIDS_KEY)
+                if not isinstance(retired, list):
+                    retired = rec.origin[RETIRED_SIDS_KEY] = []
+                if sid not in retired:
+                    retired.append(sid)
             rec.sdk_session_id = None
             try:
                 await self._write_tombstone_locked(strict=True)

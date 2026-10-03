@@ -319,6 +319,18 @@ async def test_start_job_records_brief_context_only_for_a_fresh_job(runtime, mon
 
 # -- red case 4 -----------------------------------------------------------
 
+async def _rebuild(h):
+    """The #369 rebuild as ``_resume_and_ready`` runs it: tear down, open a
+    fresh floor client, clear the flag — no turn reaches a session while the
+    flag is pending (#1166)."""
+    await h.driver.invalidate_session(h.rec)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(tools, "build_engagement_resume_options",
+                   lambda rec, sid: ClaudeAgentOptions())
+        await h.driver.open_fresh(h.rec)
+    await h.reg.clear_context_rebuild_pending(h.rec.id)
+
+
 async def test_clearance_downgrade_withholds_task_and_context_from_the_brief(fresh):
     h = fresh
     h.rec.origin["_origin_clearance"] = "private"
@@ -326,6 +338,7 @@ async def test_clearance_downgrade_withholds_task_and_context_from_the_brief(fre
     await h.driver.start(h.rec, prompt="Acknowledge the job", options=ClaudeAgentOptions())
     assert await h.reg.lower_origin_clearance(h.rec.id, "public")
     assert "brief_context" not in h.rec.origin["job"]
+    await _rebuild(h)
     h.client.scripts = [[text_frame("ok"), result()]]
     await h.driver.send_user_turn(h.rec, jobs.batch_prompt(1, "Process rows"))
     assert queries(h).count(RESET) == 1
@@ -667,6 +680,7 @@ async def test_a_clearance_downgrade_keeps_the_job_id_in_the_brief(fresh):
     h.client.scripts = [[text_frame("Starting the job"), result()]]
     await h.driver.start(h.rec, prompt="Acknowledge the job", options=ClaudeAgentOptions())
     assert await h.reg.lower_origin_clearance(h.rec.id, "public")
+    await _rebuild(h)
     h.client.scripts = [[text_frame("ok"), result()]]
     await h.driver.send_user_turn(h.rec, jobs.batch_prompt(1, "Process rows"))
     prompt = queries(h)[-1]
@@ -813,6 +827,7 @@ async def test_a_downgraded_fresh_job_keeps_its_pre_downgrade_sids_for_the_reape
     monkeypatch.setattr(tools, "build_engagement_resume_options",
                         lambda rec, sid: ClaudeAgentOptions())
     await h.driver.open_fresh(h.rec)
+    await h.reg.clear_context_rebuild_pending(h.rec.id)
     h.client.sid = rebuilt
     h.client.scripts = [[text_frame("ok"), result()]]
     await h.driver.send_user_turn(h.rec, jobs.batch_prompt(2, "Process rows"))
