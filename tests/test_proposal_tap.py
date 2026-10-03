@@ -430,3 +430,41 @@ async def test_a_failed_keyboard_edit_tells_which_button_won_before_the_dispatch
     assert kinds[:2] == ["edit", "notice"]                          # the telling precedes the dispatch
     assert "☑ No" in order[1][1]
     assert any("☑ No" in s.get("text", "") for s in env.bot.sent)
+
+
+async def test_a_supersede_is_answered_replaced_before_its_finish_task_has_run(env):
+    env.register(meta={"revision": "r1"})
+    env.broker.cancel_where(namespace="proposal", reason="superseded", predicate=lambda r: True)
+    # no loop turn: the finish hook's edit task has not started
+    assert env.bot.edited == []
+    assert await _tap(env, _cq()) == "replaced"
+    await _settle()
+    assert env.taps == []
+
+
+async def test_a_settled_proposal_is_forgotten_at_its_deadline(env, monkeypatch):
+    monkeypatch.setattr(vb, "_RETIRE_S", 0)
+    req = env.register()
+    assert await _tap(env, _cq()) == "✔"
+    await _settle()
+    assert RID in env.ch._proposal_settled
+    req.meta["deadline"] = asyncio.get_running_loop().time() - 1   # the hour is over
+    update = _cq()
+    assert await _tap(env, update) == "expired"
+    assert RID not in env.ch._proposal_settled
+    assert update.callback_query.answer.await_count == 1 and len(env.taps) == 1
+
+
+async def test_the_settled_memory_keeps_a_chats_latest_entries_only(env):
+    import channels.telegram as tg
+    deadline = asyncio.get_running_loop().time() + 3600
+    other = {"chat_id": 7, "deadline": deadline}
+    env.ch._remember_settled_proposal("other", other, {"outcome": "no_answer"})
+    n = tg._PROPOSAL_SETTLED_PER_CHAT + 3
+    for i in range(n):
+        env.ch._remember_settled_proposal(f"r{i}", {"chat_id": OPERATOR, "deadline": deadline},
+                                          {"outcome": "answered"})
+    mine = [k for k, (m, _) in env.ch._proposal_settled.items() if m["chat_id"] == OPERATOR]
+    assert len(mine) == tg._PROPOSAL_SETTLED_PER_CHAT
+    assert mine[0] == "r3" and mine[-1] == f"r{n - 1}"
+    assert env.ch._proposal_settled["other"] == (other, "expired")

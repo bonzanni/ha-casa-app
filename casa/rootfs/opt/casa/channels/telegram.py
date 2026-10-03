@@ -361,6 +361,11 @@ def _parse_callback_data(
 # that floor (never the option/question text).
 _ASK_BUTTON_CAPTION_CAP = 64
 
+# #1201: settled proposals remembered per chat for their tap toast — eight
+# times result_broker.PROPOSAL_MAX_LIVE, since the live bound does not bound
+# how many settle within the hour; an evicted one answers "expired" as before.
+_PROPOSAL_SETTLED_PER_CHAT = 256
+
 # A5 · F-MULTI checkbox glyphs (also the multi decoration prefix the resolver
 # validates against — see ``_classify_button_labels``).
 _MULTI_BOX_ON = "☑"
@@ -932,6 +937,12 @@ class TelegramChannel(Channel):
         # Telegram redelivery (retry after a slow ACK) is processed at most
         # once. OrderedDict used as an insertion-ordered ring buffer.
         self._seen_update_ids: "collections.OrderedDict[int, None]" = (
+            collections.OrderedDict()
+        )
+        # #1201: rid -> (the proposal's own meta dict, its settled toast), kept
+        # until the proposal's deadline so a tap on a settled keyboard answers
+        # what happened after the broker's tombstone is gone. In-process only.
+        self._proposal_settled: "collections.OrderedDict[str, tuple[dict, str]]" = (
             collections.OrderedDict()
         )
         # M9 (v0.52.0): strong refs to in-flight engagement-turn delivery
@@ -2008,7 +2019,12 @@ class TelegramChannel(Channel):
                 return
             chat = cq.message.chat.id
             scope = f"proposal:{chat}"
-            meta = BROKER.get_meta(namespace="proposal", scope=scope, request_id=rid)
+            # #1201: a settled proposal's own meta first — the broker's
+            # tombstone holds a copy from settle time, without the message id
+            # a send that landed after a supersede wrote to the original
+            settled = self._settled_proposal(rid)
+            meta = (settled[0] if settled is not None
+                    else BROKER.get_meta(namespace="proposal", scope=scope, request_id=rid))
             if meta is None:
                 return
             if meta.get("chat_id") != chat:
@@ -2026,6 +2042,9 @@ class TelegramChannel(Channel):
                 return
             deadline = meta.get("deadline")
             if not isinstance(deadline, (int, float)) or asyncio.get_running_loop().time() >= deadline:
+                return
+            if settled is not None:
+                toast = settled[1]          # what happened, only after every check passed
                 return
             claim = BROKER.claim(namespace="proposal", scope=scope, request_id=rid,
                                  option_index=idx, actor_id=cq.from_user.id)
@@ -2114,7 +2133,47 @@ class TelegramChannel(Channel):
             except Exception:  # noqa: BLE001 — never raise into the hook drain
                 logger.exception("proposal tap dispatch failed (rid=%s)", rid[:8])
                 await self.edit_dm_message(chat_id, message_id, f"{text}\n✖ failed")
-        return _finish
+
+        def _settle(outcome: dict) -> Any:
+            # #1201: the broker calls this synchronously inside its own
+            # settlement, so a tap can never see the broker settled and this
+            # memory not yet written; the edits stay in the task it returns
+            self._remember_settled_proposal(rid, getattr(req, "meta", None), outcome)
+            return _finish(outcome)
+        return _settle
+
+    def _remember_settled_proposal(self, rid: str, meta: Any, outcome: Any) -> None:
+        """#1201: record a proposal's settlement for its tap toast — answered
+        is "already answered", a supersede "replaced", anything else (the
+        TTL, a shutdown) "expired", the split the finish hook's own line
+        makes. Bounded: past its deadline an entry is dropped (the admission
+        chain answers "expired" then anyway), and a chat keeps its latest
+        ``_PROPOSAL_SETTLED_PER_CHAT``."""
+        if not isinstance(meta, dict):
+            return
+        o = outcome.get("outcome") if isinstance(outcome, dict) else None
+        if o == "answered":
+            word = "already answered"
+        elif o == "cancelled" and outcome.get("reason") == "superseded":
+            word = "replaced"
+        else:
+            word = "expired"
+        self._prune_settled_proposals()
+        self._proposal_settled[rid] = (meta, word)
+        chat = meta.get("chat_id")
+        same = [k for k, (m, _) in self._proposal_settled.items() if m.get("chat_id") == chat]
+        for k in same[:max(0, len(same) - _PROPOSAL_SETTLED_PER_CHAT)]:
+            del self._proposal_settled[k]
+
+    def _settled_proposal(self, rid: str) -> "tuple[dict, str] | None":
+        self._prune_settled_proposals()
+        return self._proposal_settled.get(rid)
+
+    def _prune_settled_proposals(self) -> None:
+        now = asyncio.get_running_loop().time()
+        for k in [k for k, (m, _) in self._proposal_settled.items()
+                  if not isinstance(m.get("deadline"), (int, float)) or now >= m["deadline"]]:
+            del self._proposal_settled[k]
 
     async def _dispatch_proposal_tap(self, *, meta: dict, idx: int, request_id: str) -> bool:
         """S5 §4.2 steps 2–5: reserve the specialist's desk (a full queue ⇒
