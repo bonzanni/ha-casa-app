@@ -878,12 +878,14 @@ _PRE_RECORD_ORIGIN = {"role": "assistant", "channel": "telegram",
                       "chat_id": "c1", "cid": "x", "user_text": "hi"}
 
 
-def _arm_pre_record_failure(arm, monkeypatch, engage_executor, registry):
+def _arm_pre_record_failure(arm, tmp_path, monkeypatch, engage_executor, registry):
     """Drive one of the four exception arms between topic creation and record
     creation. Returns (launch coroutine factory, the arm's base envelope,
     a check of the seam counts that proves the named arm was the one taken)."""
     import plugin_registry as plugin_registry_mod
     import tools as tools_mod
+    import topic_ledger
+    monkeypatch.setattr(topic_ledger, "LEDGER_PATH", str(tmp_path / "topic-ledger.json"))
     persist = tools_mod._result({"status": "error", "kind": "record_persist_failed",
                                  "message": "persist sentinel"})
     creates: list = []
@@ -954,7 +956,7 @@ async def test_the_stop_drains_a_pre_record_failure_abort(tmp_path, monkeypatch,
     probe = _Probe()
     engage_executor, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
     import tools as tools_mod
-    launch, expected, took_arm = _arm_pre_record_failure(arm, monkeypatch, engage_executor, registry)
+    launch, expected, took_arm = _arm_pre_record_failure(arm, tmp_path, monkeypatch, engage_executor, registry)
     closing = asyncio.Event(); release_close = asyncio.Event(); close_marks: list = []
 
     async def _slow_close(*, thread_id):
@@ -992,7 +994,7 @@ async def test_a_pre_record_failure_after_the_drains_mints_nothing(
     probe = _Probe()
     engage_executor, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
     import tools as tools_mod
-    launch, expected, took_arm = _arm_pre_record_failure(arm, monkeypatch, engage_executor, registry)
+    launch, expected, took_arm = _arm_pre_record_failure(arm, tmp_path, monkeypatch, engage_executor, registry)
     opening = asyncio.Event(); release_open = asyncio.Event()
 
     async def _gated_open(**kw):
