@@ -527,6 +527,67 @@ async def test_tool_nothing_pending(monkeypatch):
     assert payload["rows"] == []
 
 
+async def test_tool_reports_live_specialist_consent(monkeypatch):
+    """#1164 red case: a live specialist install/upgrade keyboard is not
+    "no consent is pending" — the tool names its kind and how it is
+    re-asked, and posts, re-issues and resolves nothing."""
+    import authz_grants
+    from specialist_install_consent import prompt_specialist_install_consent
+
+    telegram = _FakeTelegram()
+    tools = _tool_env(monkeypatch, telegram)
+    for mod in ("trigger_reconcile", "callback_reconcile", "event_reconcile"):
+        _patch_kind(monkeypatch, mod, [])
+
+    inspection = SimpleNamespace(
+        component_id="example", version="1.0.0", slug="example",
+        root_digest="root", receipt_digest="",
+        component_checksum="component", mission="Example",
+        default_persona_ref="default",
+        dependencies=(), plugin_resolutions=(),
+    )
+
+    def unexpected_record(**kwargs):
+        raise AssertionError("consent_reprompt must not commit consent")
+
+    handle = prompt_specialist_install_consent(
+        coordinator=authz_grants.CHALLENGES,
+        channel=telegram, chat_id=100, operator_id=100,
+        inspection=inspection,
+        acks=SimpleNamespace(record=unexpected_record),
+    )
+    challenge = handle._challenge
+    try:
+        assert await asyncio.wait_for(handle.settled_post(), 5) == "posted"
+        assert len(telegram.posts) == 1
+        assert challenge.req.meta["kind"] == "specialist_install_consent"
+        assert not challenge.req._future.done()
+
+        payload = await asyncio.wait_for(_run_tool(tools), 5)
+
+        assert set(payload) == {"ok", "reprompted", "rows", "message"}
+        assert payload["ok"] is True
+        assert payload["reprompted"] == 0
+        assert payload["rows"] == []
+        assert len(telegram.posts) == 1
+        assert not challenge.req._future.done()
+
+        assert payload["message"] != (
+            "no consent is pending — nothing to re-issue"
+        )
+        assert "specialist install/upgrade consent" in payload["message"]
+        assert "specialist_install_inspect" in payload["message"]
+    finally:
+        challenge.broker.cancel(
+            namespace="resident_ask",
+            scope=challenge.scope,
+            request_id=challenge.rid,
+            reason="test_cleanup",
+        )
+        await asyncio.wait_for(challenge.driver, 5)
+        await asyncio.wait_for(challenge.broker.drain_hooks(), 5)
+
+
 async def test_tool_runtime_unavailable(monkeypatch):
     tools = _tool_env(monkeypatch, None, runtime=None)
     payload = await _run_tool(tools)
