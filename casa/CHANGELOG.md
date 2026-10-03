@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.344.3] - 2026-10-03
+
+### Fixed
+- Tapping a proposal button that runs one of a plugin's actions no longer ends with "could not apply your tap (no_call)" just because the plugin's tools had not been loaded yet. The turn a tap runs now offers the plugin's tools in its first request instead of holding them back for a tool search the tap does not allow, and it sends that request only once none of its tool servers is still starting. If the plugin's own server fails to start, the tap still ends with the could-not-apply notice.
+
 ## [0.344.2] - 2026-10-03
 
 ### Fixed
