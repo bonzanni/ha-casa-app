@@ -506,13 +506,19 @@ async def _no_second_run_until_the_first_has_ended(env, survivor):
     second reply must not start a run beside it (it waits, or is refused);
     once the first run has ended, the next reply runs."""
     assert survivor.starts == 1 and survivor.active == 1      # still unwinding
+    faulted = (OPERATOR, sd.faulted_line(sd.label_for("finance")))
     second = asyncio.create_task(_reply(env, text="second"))
     try:
         await asyncio.wait({second}, timeout=0.3)
         assert survivor.starts == 1 and survivor.peak == 1
+        refused = second.done()
+        if refused:                     # refused: the labelled faulted notice, once
+            assert env.channel.notices.count(faulted) == 1
     finally:
         await survivor.end_first()
     await asyncio.wait_for(second, 5)
+    if not refused:                     # it waited: it runs once the first has ended
+        assert survivor.starts == 2 and env.channel.notices.count(faulted) == 0
     before = survivor.starts
     await asyncio.wait_for(_reply(env, text="third"), 5)
     assert survivor.starts == before + 1 and survivor.peak == 1

@@ -329,11 +329,15 @@ async def _no_second_run_until_the_first_has_ended(desk, survivor):
     try:
         await asyncio.wait({second}, timeout=0.3)
         assert survivor.starts == 1 and survivor.peak == 1
+        refused = second.done()
+        if refused:                     # refused: the typed desk_faulted, nothing ran
+            assert isinstance(second.exception(), sd.DeskFaulted)
     finally:
         await survivor.end_first()
     await asyncio.wait({second}, timeout=5)
     assert second.done()
-    second.exception() if not second.cancelled() else None    # retrieved: refused or ran
+    if not refused:                     # it waited: it runs once the first has ended
+        assert second.exception() is None and survivor.starts == 2
     before = survivor.starts
     await asyncio.wait_for(_use(desk, "third"), 5)
     assert survivor.starts == before + 1 and survivor.peak == 1
