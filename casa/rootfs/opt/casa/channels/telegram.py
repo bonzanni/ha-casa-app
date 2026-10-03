@@ -3070,10 +3070,11 @@ class TelegramChannel(Channel):
         """#1166: a clearance rebuild is pending and a turn is still running
         in the session it would tear down — the rebuild must wait for that
         turn, and must not wait under the per-topic lock."""
+        if not self._turn_running_in(rec):
+            return False
         reg = self._engagement_registry
         latest = (reg.get(rec.id) if reg is not None else None) or rec
-        return (bool(getattr(latest, "context_rebuild_pending", False))
-                and self._turn_running_in(latest))
+        return bool(getattr(latest, "context_rebuild_pending", False))
 
     async def _ready_after_drain(
         self, rec, inbound_token, answer_token, release_inbound,
