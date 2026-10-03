@@ -1715,7 +1715,8 @@ class TelegramChannel(Channel):
         """Body of ``_handle``, run under ``_chat_serial_locks[chat_id]`` (#317)."""
         # S4 §3: a swipe-reply on a retained specialist post is that
         # specialist's turn — judged FIRST, ahead of the /new interception, so
-        # "/new, start over" on a Finance post tells Finance to start over.
+        # "/new, start over" on a Finance post is Finance's turn, as text: it
+        # resets nothing, and the desk turn's context says so (#1198).
         # Everything that does not route takes the path below, byte for byte.
         if getattr(update.message, "reply_to_message", None) is not None:
             if await self._maybe_route_desk_reply(update, chat_id):

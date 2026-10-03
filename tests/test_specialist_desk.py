@@ -146,6 +146,69 @@ def test_the_desk_turn_context_says_the_message_is_from_the_same_operator():
     assert full.endswith(sd.clip(quote, sd.DESK_QUOTE_CHARS))           # nothing cut by the cap
 
 
+def test_a_slash_reply_context_carries_its_line_and_still_fits_by_construction():
+    """#1198: the slash line is its own part after the frame, only for a reply
+    task starting with "/", and the cap still holds with nothing cut."""
+    record = SimpleNamespace(slot="report", posted_at=900.0)
+    block = sd.render_block([sd.Exchange("operator", "q", 1.0)], resident_name="Ellen")
+    frame = sd.turn_frame("Ellen")
+    plain = sd._compose_context(block, None, None, 1000.0, resident_name="Ellen")
+    assert sd._compose_context(block, None, None, 1000.0, resident_name="Ellen",
+                               task="  /new") == frame + "\n\n" + sd.SLASH_TASK_LINE + "\n\n" + block
+    for task in ("more", "a /b", "", None):
+        assert sd._compose_context(block, None, None, 1000.0, resident_name="Ellen",
+                                   task=task) == plain
+    assert sd._compose_context(block, None, None, 1000.0, resident_name="Ellen",
+                               continuation=True, task="/new") == (
+        sd.turn_frame("Ellen", continuation=True) + "\n\n" + block)
+    big = sd.render_block([sd.Exchange("operator", "a" * 400, 1.0 + i) for i in range(24)],
+                          resident_name="N" * 500)
+    quote = "q" * 5000
+    full = sd._compose_context(big, quote, record, 1000.0, resident_name="N" * 500, task="/new")
+    assert len(full) <= sd.DESK_CONTEXT_CHARS
+    assert sd.SLASH_TASK_LINE in full
+    assert full.endswith(sd.clip(quote, sd.DESK_QUOTE_CHARS))           # nothing cut by the cap
+
+
+def test_a_file_turn_context_never_carries_the_slash_line():
+    """#1198 x S6: a file turn's task is Casa's note (``[casa file] …``), so a caption
+    starting with "/" leaves the file frame and the block alone."""
+    block = sd.render_block([sd.Exchange("operator", "q", 1.0)], resident_name="Ellen")
+    task = ("[casa file] The operator sent you a file: s.pdf (PDF, 10 bytes). It is in your "
+            "inbox at /x/s.pdf. File it with your plugin and report what you did.\n"
+            "The operator wrote: /new")
+    assert sd._compose_context(block, None, None, 1000.0, resident_name="Ellen", file=True,
+                               task=task) == sd.turn_frame("Ellen", file=True) + "\n\n" + block
+
+
+def test_a_slash_reply_context_at_the_full_block_budget_cuts_nothing():
+    """#1198: at a block of exactly DESK_LOG_CHARS (the most render_block returns), the
+    longest kept resident name, the longest slot a manifest can declare (64 characters)
+    and a full quote, the slash reply's context fits DESK_CONTEXT_CHARS unsliced."""
+    name = "E" * sd.DESK_NAME_CHARS
+    sides = [[who, 395] for _ in range(sd.DESK_LOG_EXCHANGES) for who in ("resident", "specialist")]
+
+    def block_of(sides):
+        return sd.render_block([sd.Exchange(who, who[0] * n, 990.0) for who, n in sides],
+                               resident_name=name)
+
+    i = len(sides) - 1                    # grow the newest sides, each within the side bound
+    while len(block_of(sides)) < sd.DESK_LOG_CHARS:
+        if sides[i][1] == sd.DESK_LOG_SIDE_CHARS:
+            i -= 1
+        sides[i][1] += 1
+    block = block_of(sides)
+    assert len(block) == sd.DESK_LOG_CHARS
+    record = SimpleNamespace(slot="s" * 64, posted_at=900.0)
+    quote = "q" * (sd.DESK_QUOTE_CHARS - 1) + "Z"
+    full = sd._compose_context(block, quote, record, 1000.0, resident_name=name, task="/new")
+    when = sd.time.strftime("%Y-%m-%d %H:%M", sd.time.localtime(900.0))
+    assert full == "\n\n".join([
+        sd.turn_frame(name), sd.SLASH_TASK_LINE, block,
+        f"The operator replied to your post (slot {'s' * 64}, posted {when}) which read:\n" + quote])
+    assert len(full) <= sd.DESK_CONTEXT_CHARS
+
+
 def test_an_idle_desk_starts_empty_on_its_next_use():
     reg, desk = _desk()
     desk.append("operator", "hello", now=1000.0)

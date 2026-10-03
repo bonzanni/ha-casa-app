@@ -9,6 +9,7 @@ echo (INV-DESK-002, INV-DESK-003).
 from __future__ import annotations
 
 import asyncio
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -234,6 +235,98 @@ async def test_a_continuation_turn_has_no_quote_and_joins_the_same_desk(env):
     # decision, not the operator's own words — its frame says so
     assert call.context.startswith(sd.turn_frame("Ellen", continuation=True))
     assert sd.turn_frame("Ellen") not in call.context
+
+
+# --- #1198: a reply starting with "/" is text, not a command --------------------------
+
+def _seed_prior_exchange(env):
+    env.desk.append("operator", "earlier question", now=990.0)
+    env.desk.append("specialist", "earlier answer", now=990.0)
+
+
+def _base_reply_context(log):
+    """The base's context for a reply on `_record()` quoting "📊 Finance\\nQ3 report",
+    frozen independently of `_compose_context`."""
+    when = time.strftime("%Y-%m-%d %H:%M", time.localtime(900.0))
+    return (sd.turn_frame("Ellen") + "\n\n" + sd.render_block(log, resident_name="Ellen")
+            + "\n\n" + f"The operator replied to your post (slot report, posted {when}) "
+            "which read:\n📊 Finance\nQ3 report")
+
+
+@pytest.mark.parametrize("text", ["/new", "/new, start over", "  /new"])
+async def test_slash_reply_explains_no_command_or_reset(env, text):
+    _seed_prior_exchange(env)
+
+    await _reply(env, text=text, continuation=False)
+
+    assert len(env.calls) == 1
+    call = env.calls[0]
+    assert call.task == text
+
+    assert call.context.count("<desk>") == 1
+    assert call.context.count("</desk>") == 1
+    block = call.context.split("<desk>", 1)[1].split("</desk>", 1)[0]
+    assert block.count("earlier question") == 1
+    assert block.count("earlier answer") == 1
+
+    assert len(env.channel.notices) == 0
+    assert len(env.channel.replies) == 1
+    assert [entry.text for entry in env.desk.log] == [
+        "earlier question", "earlier answer",
+        text, "Here you go: **42**",
+    ]
+
+    context = call.context.lower()
+    assert (
+        "not" in context
+        and ("command" in context or "executed" in context)
+        and "reset" in context
+    ), "slash reply context must explain no command execution and no reset"
+
+
+async def test_a_non_slash_reply_context_is_the_base_context_byte_for_byte(env):
+    _seed_prior_exchange(env)
+    log = list(env.desk.log)
+    await _reply(env, text="more detail please")
+    (call,) = env.calls
+    assert call.context == _base_reply_context(log)
+
+
+async def test_a_slash_continuation_context_is_the_base_context_byte_for_byte(env):
+    _seed_prior_exchange(env)
+    log = list(env.desk.log)
+    await _reply(env, text="/new", quoted_text=None, record=None, continuation=True)
+    (call,) = env.calls
+    assert call.context == (sd.turn_frame("Ellen", continuation=True) + "\n\n"
+                            + sd.render_block(log, resident_name="Ellen"))
+
+
+async def test_a_slash_reply_at_the_largest_name_slot_log_and_quote_cuts_nothing(env):
+    """#1198 (candidate finding): the slash line is framing, so at the largest resident
+    name, slot, block and quote the context still fits DESK_CONTEXT_CHARS, the block and
+    the quote whole."""
+    name = "E" * sd.DESK_NAME_CHARS
+    tools_mod._agent_role_map["assistant"].character = SimpleNamespace(name=name)
+    for i in range(sd.DESK_LOG_EXCHANGES):
+        # the resident's delegations, labelled with its 40-char name: a 9,984-char block
+        env.desk.append("resident", "r" * 395, now=990.0)
+        env.desk.append("specialist", "s" * 395, now=990.0)
+    record = rb.PostRecord(role="finance", operator_id=OPERATOR, plugin="probe",
+                           slot="s" * 64, tool_use_id="call-1", owner="d-1", posted_at=900.0)
+    quote = "q" * (sd.DESK_QUOTE_CHARS - 1) + "Z"
+    log = list(env.desk.log)
+    assert len(sd.render_block(log, resident_name=name)) == 9984
+
+    await _reply(env, text="/new", quoted_text=quote, record=record)
+
+    (call,) = env.calls
+    assert call.task == "/new"
+    assert len(call.context) <= sd.DESK_CONTEXT_CHARS
+    when = time.strftime("%Y-%m-%d %H:%M", time.localtime(900.0))
+    assert call.context == (sd.turn_frame(name) + "\n\n" + sd.SLASH_TASK_LINE + "\n\n"
+                            + sd.render_block(log, resident_name=name) + "\n\n"
+                            + f"The operator replied to your post (slot {'s' * 64}, "
+                            f"posted {when}) which read:\n" + quote)      # nothing cut
 
 
 # --- no proven outcome ⇒ one labelled notice -----------------------------------------

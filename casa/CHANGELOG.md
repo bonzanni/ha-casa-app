@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.343.2] - 2026-10-03
+
+### Fixed
+- A swipe-reply starting with `/`, such as `/new`, that goes to a specialist is still handled as plain text, and it still resets nothing. The specialist is now told so: its turn's context says the message was not run as a command, nothing was reset, and earlier exchanges still stand. Until now it was told nothing about the slash, and could answer as if a reset had happened. Taps on a specialist's buttons and files sent to a specialist are unchanged. (#1198)
+
 ## [0.343.1] - 2026-10-03
 
 ### Fixed
