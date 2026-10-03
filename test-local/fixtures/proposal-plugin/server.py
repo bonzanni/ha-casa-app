@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """PLAY fixture plugin for stored-call buttons (S5). Stdlib-only stdio
-JSON-RPC MCP server with three tools:
+JSON-RPC MCP server with five tools:
 
 - ``offer``  — deposits a proposal through Casa's broker (the
   ``operator_proposal`` slot): a question with the buttons Yes / No / More.
@@ -11,6 +11,11 @@ JSON-RPC MCP server with three tools:
 - ``more``   — the ``More`` exception: page 2 deposits another proposal
   (its own buttons, its More naming page 3); page 3 and beyond answer the
   contract's no-post shape ``{"proposal": null, "note": "no more entries"}``.
+- ``offer_hang`` — deposits a proposal with one button, ``Hang``, naming
+  ``hang``: the live check of the hung-call path.
+- ``hang``   — the stored call that never returns: it starts one child
+  process (a ``sleep``, so the termination path has a descendant to account
+  for), records both pids into the plugin data directory, then blocks.
 
 The broker is reached the way every Casa plugin reaches it: the Unix socket
 and client id Casa puts in the server's environment (``CASA_BROKER_SOCKET``,
@@ -22,7 +27,9 @@ import http.client
 import json
 import os
 import socket
+import subprocess
 import sys
+import time
 
 PROTOCOL_VERSION = "2024-11-05"
 RENDER_ID = "r-1"
@@ -51,6 +58,18 @@ TOOLS = {
             "type": "object",
             "properties": {"page": {"type": "integer"}, "render_id": {"type": "string"}},
             "required": ["page", "render_id"],
+        },
+    },
+    "offer_hang": {
+        "description": "Offer the operator a button whose call never returns (hung-call test).",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    "hang": {
+        "description": "Start a child process and block forever (hung-call test).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"render_id": {"type": "string"}},
+            "required": ["render_id"],
         },
     },
 }
@@ -125,7 +144,25 @@ def tool_more(args: dict) -> dict:
     return {"proposal": deposit(_page(page)), "note": f"page {page} posted"}
 
 
-HANDLERS = {"offer": tool_offer, "apply": tool_apply, "more": tool_more}
+def tool_offer_hang(_args: dict) -> dict:
+    proposal = {
+        "text": f"Run the hung-call test? (render {RENDER_ID})",
+        "buttons": [{"label": "Hang", "call": {"tool": "hang", "arguments": {"render_id": RENDER_ID}}}],
+    }
+    return {"proposal": deposit(proposal), "note": "proposal posted"}
+
+
+def tool_hang(args: dict) -> dict:
+    child = subprocess.Popen(["sleep", "3600"])
+    with open(os.path.join(_data_dir(), "hang.jsonl"), "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"server_pid": os.getpid(), "child_pid": child.pid,
+                             "render_id": args.get("render_id"), "at": time.time()}) + "\n")
+    while True:
+        time.sleep(3600)
+
+
+HANDLERS = {"offer": tool_offer, "apply": tool_apply, "more": tool_more,
+            "offer_hang": tool_offer_hang, "hang": tool_hang}
 
 
 def _result(id_, payload):
@@ -141,7 +178,7 @@ def handle(req: dict):
     if method == "initialize":
         return _result(id_, {"protocolVersion": PROTOCOL_VERSION,
                              "capabilities": {"tools": {}},
-                             "serverInfo": {"name": "proposal-fixture", "version": "0.1.0"}})
+                             "serverInfo": {"name": "proposal-fixture", "version": "0.2.0"}})
     if method == "notifications/initialized":
         return None
     if method == "tools/list":
