@@ -6555,6 +6555,32 @@ async def _launch_interactive_engagement(
             spawn_owned.release()
 
 
+async def _start_job_on_host(host: Any, task: str, context: str, origin: dict) -> dict:
+    """S6 §3.3 — the ONE job launcher, from the resolved host onward: the claim
+    (INV-BGJOB-006), the specialist's plugin pin before any await, the one
+    launch owner with ``plugin_host`` only for a resident host, and the claim's
+    release in ``finally``. ``start_job`` calls it after its own refusals; the
+    scheduled fire (``start_scheduled_job``) calls it with a scheduled origin —
+    one place knows how a job is launched, not two edits that must agree."""
+    role, job = host.role, host.decl
+    refusal = background_jobs.claim_job_start(host, _engagement_registry)
+    if refusal is not None:
+        return _result(refusal)
+    if host.kind == "specialist":
+        # S1b: pin the SELECTED plugin's registry identity now, before any
+        # await, so the job guard still sees it when the plugin is unassigned
+        # while the launch awaits (the record's artifact rows come from a later
+        # resolution). No `model`: that key is the resident worker's, and the
+        # record stays a specialist engagement (the worker path keys on kind).
+        origin["plugin_job"] = {"plugin": background_jobs.host_plugin_name(host)}
+    try:
+        return await _launch_interactive_engagement(
+            role, task, context, origin,
+            job=job, plugin_host=host if host.kind == "resident" else None)
+    finally:
+        background_jobs.release_job_start(background_jobs.host_plugin_name(host))
+
+
 @tool(
     "start_job",
     "Start a background job listed in <jobs>; it runs in batches in its own topic "
@@ -6576,23 +6602,7 @@ async def start_job(args: dict) -> dict:
             "status": "error", "kind": "job_not_declared",
             "message": "Startable jobs: " + (", ".join(names) or "none"),
         })
-    role, job = host.role, host.decl
-    refusal = background_jobs.claim_job_start(host, _engagement_registry)
-    if refusal is not None:
-        return _result(refusal)
-    if host.kind == "specialist":
-        # S1b: pin the SELECTED plugin's registry identity now, before any
-        # await, so the job guard still sees it when the plugin is unassigned
-        # while the launch awaits (the record's artifact rows come from a later
-        # resolution). No `model`: that key is the resident worker's, and the
-        # record stays a specialist engagement (the worker path keys on kind).
-        origin["plugin_job"] = {"plugin": background_jobs.host_plugin_name(host)}
-    try:
-        result = await _launch_interactive_engagement(
-            role, args.get("task", ""), args.get("context", "") or "", origin,
-            job=job, plugin_host=host if host.kind == "resident" else None)
-    finally:
-        background_jobs.release_job_start(background_jobs.host_plugin_name(host))
+    result = await _start_job_on_host(host, args.get("task", ""), args.get("context", "") or "", origin)
     payload = json.loads(result["content"][0]["text"])
     if payload.get("kind") == "busy":
         payload["message"] = "Casa is at its concurrent-work limit. Try again shortly."
