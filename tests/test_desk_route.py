@@ -209,7 +209,7 @@ async def test_a_full_queue_reply_is_refused_inline_with_no_task(routed, monkeyp
     await ch._handle(_update("more"), None)
     assert ch._turn_tasks == set() and spawned.await_count == 0
     (sent,) = ch._app.bot.sent
-    assert sent["text"].startswith("📊 ") and "busy" in sent["text"]
+    assert sent["text"].startswith("📊 ") and "desk was full" in sent["text"]
     assert await _drain_bus(bus) == [] and desk.waiting == sd.DESK_QUEUE_MAX
 
 
@@ -242,7 +242,7 @@ async def test_a_full_queue_continuation_is_refused_inline_with_no_task(routed):
         chat_id=OPERATOR, user_id=OPERATOR, desk_role="finance", request_id="r-1", text="go")
     assert ok is True and ch._turn_tasks == set() and spawned.await_count == 0
     (sent,) = ch._app.bot.sent
-    assert "busy" in sent["text"] and sent["text"].startswith("📊 ")
+    assert "desk was full" in sent["text"] and sent["text"].startswith("📊 ")
 
 
 async def test_a_refused_continuation_also_echoes_to_the_resident(routed, monkeypatch):
