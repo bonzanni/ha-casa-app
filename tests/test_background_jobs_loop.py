@@ -647,7 +647,7 @@ async def _until(predicate):
 async def test_cancel_during_the_drain_interrupts_the_batch(harness, monkeypatch):
     h = harness
     old, fresh, release = await _downgrade(h, monkeypatch)
-    await h.operator("Correction")
+    await asyncio.wait_for(h.operator("Correction"), 2)
     assert not old.closed  # the batch is waited for, not cut
     # The wait runs outside the topic lock, so /cancel is not held behind it.
     await asyncio.wait_for(h.operator("/cancel"), 2)
@@ -668,7 +668,7 @@ async def test_a_failed_rebuild_after_the_drain_tells_once_and_keeps_the_job(
         await h.driver.invalidate_session(rec)
         raise RuntimeError("no fresh session")
     old, fresh, release = await _downgrade(h, monkeypatch, rebuild=broken)
-    await h.operator("Correction")
+    await asyncio.wait_for(h.operator("Correction"), 2)
     release.set()
     await h.drain()
     assert h.rec.status in ("active", "idle")
@@ -691,7 +691,7 @@ async def test_a_readiness_failure_after_the_drain_tells_once_and_keeps_the_job(
     async def unwritable(eid):
         raise OSError("disk full")
     monkeypatch.setattr(h.reg, "clear_context_rebuild_pending", unwritable)
-    await h.operator("Correction")
+    await asyncio.wait_for(h.operator("Correction"), 2)
     release.set()
     await h.drain()
     assert h.rec.status in ("active", "idle")
@@ -716,7 +716,7 @@ async def test_a_message_queued_before_the_downgrade_goes_to_the_fresh_session(
     h.channel.chat_id = 77  # the next post is the operator's: no clamp
     await h.operator("Before")
     h.channel.chat_id = 100
-    await h.operator("Correction")  # now a member: the clamp lands
+    await asyncio.wait_for(h.operator("Correction"), 2)  # a member: the clamp lands
     release.set()
     await _until(lambda: len(fresh.prompts) == 3)
     hold_two.set()
@@ -763,7 +763,7 @@ async def test_an_interactive_turn_running_at_the_downgrade_completes(
     await h.operator("Question")
     await asyncio.wait_for(entered.wait(), 5)
     h.channel.chat_id = 100
-    await h.operator("Correction")
+    await asyncio.wait_for(h.operator("Correction"), 2)
     release.set()
     await h.drain()
     assert old.prompts == ["Engage", "Question"]
@@ -771,3 +771,22 @@ async def test_an_interactive_turn_running_at_the_downgrade_completes(
     shown = h.topic() + "\n".join(e["text"] for e in h.bot.edits)
     assert "Part two" in shown and "Answer" in shown
     assert "did not finish" not in shown
+
+
+async def test_the_teardown_waits_for_the_running_turn_and_spares_a_replacement(
+        harness, monkeypatch):
+    h = harness
+    old, fresh, release = await _downgrade(h, monkeypatch)
+    waiting = [asyncio.create_task(h.driver.invalidate_session(h.rec))
+               for _ in range(2)]
+    for _ in range(20):
+        await asyncio.sleep(0)
+    # A teardown never closes the session under its running turn.
+    assert not old.closed and not any(t.done() for t in waiting)
+    # The session is replaced while both teardowns still wait on its lock:
+    # they must leave alone the session they were not asked about.
+    await h.driver.cancel(h.rec)
+    await h.driver.open_fresh(h.rec)
+    release.set()
+    await asyncio.wait_for(asyncio.gather(*waiting), 5)
+    assert h.driver.is_alive(h.rec) and not fresh.closed
