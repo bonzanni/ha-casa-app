@@ -171,8 +171,10 @@ routing table has to meet it where it is.
 
 Never hand-edit a generated block or file: `llms.txt`, the invariant index — which shards by
 family letter across `doctrine/invariants.md` (A-E), `doctrine/invariants-f-m.md` (F-M),
-`doctrine/invariants-n-r.md` (N-R) and `doctrine/invariants-s-z.md` (S-Z), because one file
-outgrew the index ceiling and then a shard did, twice. A shard's name states the range of
+`doctrine/invariants-n-pk.md` (N-PK), `doctrine/invariants-pl-r.md` (PL-R) and
+`doctrine/invariants-s-z.md` (S-Z), because one file outgrew the index ceiling and then a
+shard did, three times; a bound may be finer than a letter (`PL`) when one family is most of
+a range. A shard's name states the range of
 family letters it OWNS, so a shard that is split is RENAMED rather than left claiming a range
 it no longer holds; `doctrine/invariants.md` keeps its generic name as the entry point — the
 routing

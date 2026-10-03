@@ -76,9 +76,13 @@
   kind: generated
   summary: Every INV-* id in families F-M, its statement, and the file that defines it.
 
-- doc: doctrine/invariants-n-r.md
+- doc: doctrine/invariants-n-pk.md
   kind: generated
-  summary: Every INV-* id in families N-R, its statement, and the file that defines it.
+  summary: Every INV-* id in families N-PK, its statement, and the file that defines it.
+
+- doc: doctrine/invariants-pl-r.md
+  kind: generated
+  summary: Every INV-* id in families PL-R, its statement, and the file that defines it.
 
 - doc: doctrine/invariants-s-z.md
   kind: generated
