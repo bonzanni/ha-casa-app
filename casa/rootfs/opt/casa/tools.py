@@ -6581,6 +6581,85 @@ async def _start_job_on_host(host: Any, task: str, context: str, origin: dict) -
         background_jobs.release_job_start(background_jobs.host_plugin_name(host))
 
 
+async def start_scheduled_job(role: str, trig: Any) -> None:
+    """S6 §3.3 (INV-TRIG-022): a scheduled trigger whose target is a plugin job.
+    No resident turn: the host is resolved now (it may have changed since the
+    entry was written), the operator's identity and clearance are built exactly
+    as the DM ingress builds them for the authenticated operator, the origin
+    carries what the job's delivered slots and the recall gate read, and the
+    ONE launcher starts the job. A fire that cannot start it tells the operator
+    once — the admission decision as a past event at this occurrence — through
+    the hosting specialist's label (the resident's when there is no host); with
+    no operator to tell, it only logs. Nothing is retried before the next
+    occurrence."""
+    import authz_grants
+    import background_jobs
+    import ingress_identity as ingress_mod
+    import specialist_desk as sd
+    from log_cid import new_cid
+    from provenance import scheduled_delivery_markers
+    import scheduled_asks
+
+    cfg = _agent_role_map.get(role)
+    delegates = [d.agent for d in (getattr(cfg, "delegates", None) or [])]
+    host = background_jobs.find_job_host(str(trig.job), role, delegates)
+    identity = authz_grants._live_operator_identity()
+    if identity is None:
+        logger.warning("scheduled job %s for %s: no operator to tell; not started", trig.name, role)
+        return
+    chat_id, user_id = identity
+    title = str(getattr(getattr(host, "decl", None), "title", "") or trig.job)
+    label = sd.label_for(host.role) if host is not None else sd.label_for(role)
+
+    async def tell(reason: str) -> None:
+        line = sd.bounded_line('{label}: "{title}" did not start — ' + reason,
+                               label=label, fields={"title": title})
+        channel = _telegram_channel()
+        try:
+            if channel is not None:
+                await channel.deliver_desk_notice(chat_id, line)
+        except Exception as exc:  # noqa: BLE001 — nothing more is attempted
+            logger.warning("scheduled job notice failed: %s", type(exc).__name__)
+        sd.record_echo(chat_id, line)
+
+    if host is None:
+        await tell("no host was available at this occurrence.")
+        return
+    try:
+        trusted = ingress_mod.ingress_identity(
+            "telegram", sender_id=str(user_id),
+            sender_display_name="operator",
+            sender_is_operator=True)
+        clearance = trusted.server_origin.clearance
+    except Exception:  # noqa: BLE001 — no identity ⇒ the "no operator" refusal (C2)
+        logger.warning("scheduled job %s for %s: operator identity unavailable; not started",
+                       trig.name, role, exc_info=True)
+        return
+    origin = {
+        "role": role, "execution_role": role, "channel": trig.channel,
+        "source": "scheduler", "message_type": "scheduled",
+        "chat_id": chat_id, "user_id": user_id, "user_name": "operator",
+        "cid": new_cid(), "trigger": trig.name,
+        "_origin_route": "telegram", "_origin_clearance": clearance,
+        **scheduled_delivery_markers(
+            trig.channel, scheduled_asks.epoch_for(role, f"{trig.type}-{trig.name}")),
+        "_scheduled_job": True,
+    }
+    result = await _start_job_on_host(host, str(trig.task or title), str(trig.context or ""), origin)
+    try:
+        payload = json.loads(result["content"][0]["text"])
+    except Exception:  # noqa: BLE001 — an unreadable result is a failed launch
+        payload = {"status": "error", "kind": "unknown"}
+    if payload.get("status") == "error":
+        kind = str(payload.get("kind") or "unknown")
+        reason = {
+            "job_busy": "another job of this plugin held the claim at this occurrence.",
+            "busy": "Casa was at its work limit at this occurrence.",
+            "job_not_declared": "no host was available at this occurrence.",
+        }.get(kind, f"({kind}).")
+        await tell(reason)
+
+
 @tool(
     "start_job",
     "Start a background job listed in <jobs>; it runs in batches in its own topic "

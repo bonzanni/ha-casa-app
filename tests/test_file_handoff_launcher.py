@@ -15,7 +15,9 @@ pytestmark = pytest.mark.asyncio
 
 
 def test_start_job_has_no_launch_path_of_its_own():
-    src = inspect.getsource(tools_mod.start_job.handler)
+    module = inspect.getsource(tools_mod)
+    start = module.index("async def start_job(args: dict) -> dict:")
+    src = module[start:module.index("\n@tool(", start)]              # the tool's own body, not the fence
     assert "_launch_interactive_engagement(" not in src
     assert src.count("_start_job_on_host(") == 1
     assert "claim_job_start(" not in src and "release_job_start(" not in src
