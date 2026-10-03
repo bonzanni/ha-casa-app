@@ -4560,6 +4560,29 @@ def _missing_required_plugins(required: list[str], plugins) -> list[str]:
     return [p for p in required if p not in names]
 
 
+def _with_late_assignments(admitted, fresh):
+    """#1179: *admitted* (the requires gate's resolution) plus each plugin in
+    *fresh* (a resolve taken after the topic exists) that it lacks by registry
+    name AND by runtime name — two entries sharing a runtime name would share
+    one MCP namespace. Add-only: every admitted entry is kept as the gate's own
+    object and nothing is re-checked, so no denial can follow the topic. With
+    nothing to add, *admitted* itself is returned."""
+    names = {rp.name for rp in admitted.plugins}
+    runtime = {plugin_registry.runtime_name(rp) for rp in admitted.plugins}
+    added = []
+    for rp in fresh.plugins:
+        rt = plugin_registry.runtime_name(rp)
+        if rp.name in names or rt in runtime:
+            continue
+        names.add(rp.name)
+        runtime.add(rt)
+        added.append(rp)
+    if not added:
+        return admitted
+    import dataclasses
+    return dataclasses.replace(admitted, plugins=[*admitted.plugins, *added])
+
+
 def _display_name_for_role(role: str) -> str:
     """*role*'s persona display name, else *role* itself."""
     cfg = _agent_role_map.get(role)
@@ -4829,9 +4852,12 @@ async def _prelaunch(
       wired, independent of whether ``resolution`` is ``None`` — a permit
       does not depend on the requires gate having run.
       Callers with a non-``None`` resolution MUST reuse it verbatim
-      (``_build_specialist_options(cfg, resolution=resolution)`` and the
-      interactive engagement-record binding) rather than re-resolving, so
-      the gate's decision and what actually launches never drift. The
+      (``_build_specialist_options(cfg, resolution=resolution)``) rather
+      than re-resolving, so the gate's decision and what actually launches
+      never drift. The one exception is the interactive engagement launch,
+      whose session is built after the topic await: it keeps every plugin
+      this resolution admitted and may only ADD plugins assigned since
+      (#1179, ``_with_late_assignments``) — never drop or re-check one. The
       caller (``delegate_to_agent``) owns the permit's lifetime from here.
       Legacy sync/non-voice async tasks use ``_permit_release_callback``;
       accepted async voice jobs transfer the permit to ``JobRegistry`` at
@@ -6246,8 +6272,26 @@ async def _launch_interactive_engagement(
         # never disagree with what the requires gate actually validated.
         # `resolution` (from `_prelaunch`) is None whenever `cfg.requires` is
         # empty, in which case this resolves fresh exactly as before Task 5.
-        if resolution is not None:
+        # #1179: the gate resolved BEFORE the topic await, and this session is
+        # built after it, so a requires target resolves here too and ADDS what
+        # was assigned in between (`_with_late_assignments`) — keeping every
+        # plugin the gate admitted. Synchronous on purpose (no new await between
+        # the topic and the record), and a failed resolve keeps the gate's set:
+        # nothing here may fail after the topic exists.
+        if plugin_host is not None:
             _spec_res = resolution
+        elif resolution is not None:
+            try:
+                _spec_tier = (_agent_registry.tier_for_role(agent_name)
+                              if _agent_registry is not None else None) or "specialist"
+                _spec_res = _with_late_assignments(
+                    resolution,
+                    plugin_registry.resolve_for(f"{_spec_tier}:{agent_name}"))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "specialist %s launch: post-topic plugin resolve failed, "
+                    "launching with the requires gate's set: %s", agent_name, exc)
+                _spec_res = resolution
         else:
             _spec_tier = (_agent_registry.tier_for_role(agent_name)
                           if _agent_registry is not None else None) or "specialist"
