@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.344.5] - 2026-10-03
+
+### Fixed
+
+- A background job start that arrives while another job of the same plugin is
+  still saving that it has ended is now refused as busy, as it is while that
+  job runs. Before, such a start went ahead, and if the save then failed, the
+  ended job came back as running beside the new one: two jobs of one plugin
+  at once. This holds whichever agent starts the job, a specialist starting
+  one of its own plugins' jobs included, and when a schedule starts it. Once
+  the save has finished, the plugin is free again if the job ended, and still
+  busy if the failed save brought the job back.
+
 ## [0.344.4] - 2026-10-04
 
 ### Fixed
