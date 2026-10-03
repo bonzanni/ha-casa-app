@@ -13,6 +13,7 @@ would.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from types import SimpleNamespace
 
@@ -502,13 +503,19 @@ async def test_a_more_proposal_withheld_or_not_delivered_is_the_refusal_notice(e
 
 
 async def test_a_more_tool_that_posted_nothing_has_its_own_text_as_the_receipt(env):
+    # #1200: the capture the real hook makes for the contract's no-post shape — its
+    # ``receipt`` sentence is what the operator reads, not the JSON around it
+    response = json.dumps({"proposal": None, "receipt": "no more entries"})
+
     async def respond(call):
-        call.owner.resolve(pr.Capture("no_post", '{"proposal": null, "note": "no more entries"}'))
+        call.owner.resolve(rb._capture_of(env.build.contract_map, "mcp__plugin_probe_probe__more",
+                                          {"tool_response": response}, {}, False))
         return tools_mod.DelegatedOutput(text="")
     env.respond = respond
     await _tap(env, idx=1)
+    assert len(env.calls) == 1
     (message, context), = env.channel.replies
-    assert str(message) == f'{LABEL}\n{{"proposal": null, "note": "no more entries"}}'
+    assert str(message) == f"{LABEL}\nno more entries"
     assert context["_post"].kind == "receipt"
     assert env.channel.notices == [] and env.channel.marks == []
     assert _echo() == [f"{LABEL} applied your tap (More)."]

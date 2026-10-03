@@ -1225,7 +1225,9 @@ buttons, each naming one of the plugin's own tools with fixed arguments. Casa
 posts it labelled, like any specialist post. When you tap, Casa runs that one
 call and nothing else: a short specialist turn in which only that exact tool
 with those exact arguments is allowed — any other call is denied — and the
-plugin's own answer comes back to you, labelled, as the receipt. A tap by
+plugin's own answer comes back to you, labelled, as the receipt (a plugin
+that answers with a JSON object can give the sentence you see as its
+`receipt`; otherwise you see its answer as it is). A tap by
 anyone else, on an old or restarted keyboard, or a second tap, does nothing
 but show a short toast; a button whose plugin has since been updated,
 unassigned, narrowed or is being erased is refused with the reason. If the

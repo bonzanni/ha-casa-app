@@ -161,7 +161,7 @@ async def test_the_server_offers_applies_and_pages_through_the_real_deposit_rout
         assert p2["buttons"][2]["call"]["arguments"]["page"] == more_args["page"] + 1
         assert p2["buttons"][3] == {"label": "📎 Add a document", "arm_file": True}
         last = await srv.tool("more", p2["buttons"][2]["call"]["arguments"])
-        assert last == {"proposal": None, "note": "no more entries"}
+        assert last == {"proposal": None, "receipt": "no more entries"}
         # offer_hang: one button naming hang, admitted by the same deposit rule
         store.close_call("c1", "call-more")
         _open(store, cmap, "offer_hang", "call-hang")

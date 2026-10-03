@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.343.1] - 2026-10-03
+
+### Fixed
+
+- After you tap a specialist's proposal button, the receipt you get is now the
+  plugin's readable sentence instead of raw JSON, when the plugin's answer is a
+  JSON object with a `receipt` text at its top level that is not blank. This
+  covers the receipt of an ordinary call button and of a More button that has
+  nothing more to show. An answer without such a `receipt` is shown as before.
+
 ## [0.343.0] - 2026-10-03
 
 ### Added
