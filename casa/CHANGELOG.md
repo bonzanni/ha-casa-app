@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.344.2] - 2026-10-03
+
+### Fixed
+
+- Settling a proposal removes its buttons. If one of them is still on your
+  screen and you tap it, Casa now tells you what happened to the proposal
+  instead of saying "expired". On a proposal you already answered, it says
+  "already answered" until the proposal's hour is up. Before, it soon switched
+  to "expired". On a proposal that a newer one replaced, it says "replaced".
+  The tap still does nothing else.
+- Casa keeps this in memory for a limited number of each chat's most recently
+  settled proposals. A tap after a Casa restart or after the proposal's hour
+  still says "expired". A tap on an older proposal it no longer remembers
+  gets the same answer as before this change. A tap by anyone else still says
+  "not for you".
+
 ## [0.344.1] - 2026-10-03
 
 ### Fixed
