@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-10-02
+last_reviewed: 2026-10-03
 ---
 
 # The specialist desk
@@ -57,6 +57,19 @@ visible `[…]`, the rendered block budgeted to 10,000 characters by dropping wh
 exchanges; a desk idle for an hour starts its next use empty. Every completed turn is an
 exchange, a post-only or silent one included — its specialist side is then a body-free
 marker, never the view.
+
+**The block is written from the specialist's side.** It opens with a fixed frame line
+(`DESK_FRAME`) saying these are the specialist's own recent exchanges in this chat, not a
+transcript of other parties, and each side is labelled by party as the specialist sees it:
+`[14:02] the operator: …`, `[14:02] you: …`, and a resident's brief as `[14:02] Ellen, on
+the operator's behalf: …` (the caller's display name, clipped to 40 characters). A desk
+turn's context opens with `turn_frame`: the task is the operator's own message to the
+specialist, now, from the same operator as in the exchanges shown, and the resident did not
+write or relay it — or, for an approval continuation, Casa's note of the operator's decision.
+The frame and the labels are counted in the block's budget like any other text, so the
+bounds above are unchanged; a budget too small to hold the tags and the frame renders no
+block rather than overrunning. Only the rendering names the parties: the log stores what it
+stored.
 
 **One desk, one use at a time, the lock covering the whole use.** Every use of a desk — a
 swipe-reply turn, an approval continuation, and the resident's delegations to that

@@ -132,6 +132,7 @@ async def test_a_reply_runs_one_specialist_turn_and_posts_the_labelled_admitted_
     assert call.cfg is tools_mod._agent_role_map["finance"]
     assert call.task == "  more detail please "                       # exact words
     assert "<desk>" not in call.context                               # first use: no log
+    assert call.context.startswith(sd.turn_frame("Ellen"))            # #1192: the same operator, now
     assert "The operator replied to your post" in call.context
     assert "📊 Finance\nQ3 report" in call.context
     (message, context), = env.channel.replies
@@ -196,7 +197,8 @@ async def test_turns_serialise_and_the_second_sees_the_first_exchange(env):
     gate.set()
     await asyncio.gather(t1, t2)
     assert active["max"] == 1
-    assert "[operator" in env.calls[1].context and "first" in env.calls[1].context
+    assert "] the operator: first" in env.calls[1].context
+    assert "] you: answer 1" in env.calls[1].context
     assert "answer 1" in env.calls[1].context
     assert [e.text for e in env.desk.log] == ["first", "answer 1", "second", "answer 2"]
 
@@ -225,6 +227,10 @@ async def test_a_continuation_turn_has_no_quote_and_joins_the_same_desk(env):
     (call,) = env.calls
     assert "The operator replied" not in call.context and "earlier" in call.context
     assert call.task == "[authorization approved]: call it"
+    # #1192: an approval continuation's task is Casa's note of the operator's
+    # decision, not the operator's own words — its frame says so
+    assert call.context.startswith(sd.turn_frame("Ellen", continuation=True))
+    assert sd.turn_frame("Ellen") not in call.context
 
 
 # --- no proven outcome ⇒ one labelled notice -----------------------------------------

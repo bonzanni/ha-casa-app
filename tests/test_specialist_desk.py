@@ -56,11 +56,94 @@ def test_the_rendered_block_is_budgeted_by_dropping_whole_oldest_exchanges():
     assert len(block) <= sd.DESK_LOG_CHARS == 10_000
     kept = [line for line in block.splitlines() if line.startswith("[")]
     assert len(kept) < 48 and len(kept) % 2 == 0                        # whole exchanges only
-    assert kept[0].split("] ", 1)[1].startswith("q") and kept[-1].split("] ", 1)[1].startswith("a23")
+    assert kept[0].split(": ", 1)[1].startswith("q") and kept[-1].split(": ", 1)[1].startswith("a23")
     # a lone newest exchange over the budget is clipped to fit
-    small = sd.render_block([sd.Exchange("operator", "z" * 300, 1.0)], budget=120)
-    assert len(small) <= 120 and small.startswith("<desk>")
+    head = len("<desk>\n" + sd.DESK_FRAME + "\n") + len("\n</desk>")
+    small = sd.render_block([sd.Exchange("operator", "z" * 300, 1.0)], budget=head + 120)
+    assert len(small) <= head + 120 and small.startswith("<desk>") and sd.CLIP in small
+    # a budget that cannot hold the frame renders nothing rather than overrun
+    assert sd.render_block([sd.Exchange("operator", "z", 1.0)], budget=head - 1) == ""
     assert sd.render_block([]) == ""
+
+
+# --- #1192: the block is the specialist's OWN conversation -------------------------
+
+def _stamp(at):
+    import time
+    return time.strftime("%H:%M", time.localtime(at))
+
+
+def test_the_block_frames_the_log_as_the_specialists_own_exchanges_with_party_labels():
+    log = [sd.Exchange("operator", "what is 2+2?", 1000.0),
+           sd.Exchange("specialist", "4", 1000.0),
+           sd.Exchange("resident", "draft the march invoice", 2000.0),
+           sd.Exchange("specialist", "drafted", 2000.0)]
+    block = sd.render_block(log, resident_name="Ellen")
+    lines = block.splitlines()
+    assert lines[0] == "<desk>" and lines[1] == sd.DESK_FRAME and lines[-1] == "</desk>"
+    assert "your own" in sd.DESK_FRAME and "not a transcript" in sd.DESK_FRAME
+    assert lines[2:-1] == [
+        f"[{_stamp(1000.0)}] the operator: what is 2+2?",
+        f"[{_stamp(1000.0)}] you: 4",
+        f"[{_stamp(2000.0)}] Ellen, on the operator's behalf: draft the march invoice",
+        f"[{_stamp(2000.0)}] you: drafted"]
+    # the stored log is untouched: only the rendering names the parties
+    assert [e.who for e in log] == ["operator", "specialist", "resident", "specialist"]
+    for old in ("[operator ", "[specialist ", "[resident "):
+        assert old not in block
+
+
+def test_the_framed_block_keeps_every_bound_with_the_longest_labels():
+    name = "N" * 500                                         # a resident name is clipped
+    sides = []
+    for i in range(sd.DESK_LOG_EXCHANGES):
+        sides.append(sd.Exchange("resident", f"r{i:02d}" + "a" * 396, 1000.0 + i))
+        sides.append(sd.Exchange("specialist", f"s{i:02d}" + "a" * 396, 1000.0 + i))
+    block = sd.render_block(sides, resident_name=name)
+    assert len(block) <= sd.DESK_LOG_CHARS == 10_000
+    kept = [line for line in block.splitlines() if line.startswith("[")]
+    assert len(kept) % 2 == 0 and kept[-1].split(": ", 1)[1].startswith("s11")
+    label = kept[0].split("] ", 1)[1].split(": ", 1)[0]
+    assert label == sd.clip(name, sd.DESK_NAME_CHARS) + ", on the operator's behalf"
+    # the operator/specialist window at saturation keeps as many exchanges as before #1192
+    sides = []
+    for i in range(sd.DESK_LOG_EXCHANGES):
+        sides.append(sd.Exchange("operator", "a" * 400, 1000.0 + i))
+        sides.append(sd.Exchange("specialist", "a" * 400, 1000.0 + i))
+    kept = [line for line in sd.render_block(sides).splitlines() if line.startswith("[")]
+    assert len(kept) == 2 * 11
+    # the delegation's fitted budget holds the frame too
+    for ctx in (0, 4000, 8000):
+        fitted = sd.fit_block_for_delegation(sides, context_len=ctx)
+        assert len(fitted) <= min(sd.DESK_CONTEXT_CHARS - ctx - sd.DESK_FRAMING_CHARS, sd.DESK_LOG_CHARS)
+        assert fitted.startswith("<desk>\n" + sd.DESK_FRAME + "\n")
+
+
+def test_the_desk_turn_context_says_the_message_is_from_the_same_operator():
+    record = SimpleNamespace(slot="report", posted_at=900.0)
+    block = sd.render_block([sd.Exchange("operator", "q", 1.0), sd.Exchange("specialist", "a", 1.0)],
+                            resident_name="Ellen")
+    context = sd._compose_context(block, "📊 Finance\nQ3", record, 1000.0, resident_name="Ellen")
+    frame = sd.turn_frame("Ellen")
+    assert context.startswith(frame + "\n\n" + block)
+    assert "from the operator" in frame and "same operator" in frame and "now" in frame
+    assert "Ellen did not write or relay it" in frame and "<desk>" not in frame
+    assert len(frame) <= sd.DESK_FRAMING_CHARS // 2
+    cont = sd.turn_frame("Ellen", continuation=True)
+    assert cont != frame and "Casa" in cont and "decision" in cont and "same operator" in cont
+    assert len(cont) <= sd.DESK_FRAMING_CHARS // 2 and "<desk>" not in cont
+    assert sd._compose_context(block, None, None, 1000.0, resident_name="Ellen",
+                               continuation=True) == cont + "\n\n" + block
+    # first use: the frame alone, no block
+    assert sd._compose_context("", None, None, 1000.0, resident_name="Ellen") == frame
+    # the whole context fits its cap by construction at the largest block and quote
+    big = sd.render_block([sd.Exchange("operator", "a" * 400, 1.0 + i) for i in range(24)],
+                          resident_name="N" * 500)
+    assert len(big) > sd.DESK_LOG_CHARS - 500
+    quote = "q" * 5000
+    full = sd._compose_context(big, quote, record, 1000.0, resident_name="N" * 500)
+    assert len(full) <= sd.DESK_CONTEXT_CHARS
+    assert full.endswith(sd.clip(quote, sd.DESK_QUOTE_CHARS))           # nothing cut by the cap
 
 
 def test_an_idle_desk_starts_empty_on_its_next_use():
