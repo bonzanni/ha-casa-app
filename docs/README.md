@@ -54,6 +54,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | engagement lifecycle, engagement launch, or the driver protocol | [`architecture/engagements.md`](architecture/engagements.md) |
 | hook resolution or authentication, hook policy parameters or fallbacks, or the containment-floor snapshot | [`architecture/hook-resolution.md`](architecture/hook-resolution.md) |
 | how a deferred answer reaches a device, the delivery frame protocol, leases or TTLs, per-device ordering, or what a voice result may disclose | [`architecture/voice-delivery.md`](architecture/voice-delivery.md) |
+| how many jobs of one plugin may be live or starting at once, the job_busy refusal, or the claim that covers a job start before its record exists | [`architecture/background-job-occupancy.md`](architecture/background-job-occupancy.md) |
 | installing or removing a persona, where a persona ref may resolve, persona install consent or its revocation, applying a persona override, or the persona sweep | [`architecture/persona-lifecycle.md`](architecture/persona-lifecycle.md) |
 | job persistence, restart recovery, or what a stop does to a delegation | [`architecture/jobs-and-delivery.md`](architecture/jobs-and-delivery.md) |
 | logging, correlation ids, redaction, or a health surface | [`architecture/observability.md`](architecture/observability.md) |
