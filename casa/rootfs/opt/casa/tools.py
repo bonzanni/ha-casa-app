@@ -2204,8 +2204,12 @@ def _build_specialist_options(
     :meth:`Agent._process` (agent.py step 4). Degrades to empty-dict
     when the registry is not bound (legacy callers / test harnesses)."""
     from hooks import resolve_hooks
+    import agent_inbox
 
-    resolved_hooks = resolve_hooks(cfg.hooks, default_cwd=cfg.cwd)
+    # S6 §2.3: an inbox specialist reads its own ready/ and has the two
+    # inbound-file tools — path and tools from the one constructor (INV-FILE-002)
+    _inbox_prefixes, _inbox_tools = agent_inbox.grants_for(getattr(cfg, "role", ""))
+    resolved_hooks = resolve_hooks(cfg.hooks, default_cwd=cfg.cwd, extra_readable=_inbox_prefixes)
     # Sol #5: inject the /config/plugins + settings.json guard code-side (like
     # residents — agent.py step 5). A delegated specialist with Bash could
     # otherwise `echo > /config/plugins/registry.json`, bypassing validation and
@@ -2346,6 +2350,9 @@ def _build_specialist_options(
         if grant not in allowed_tools:
             allowed_tools.append(grant)
     for grant in extra_casa_tools:
+        if grant not in allowed_tools:
+            allowed_tools.append(grant)
+    for grant in _inbox_tools:                       # S6 §2.3, the same condition as the path
         if grant not in allowed_tools:
             allowed_tools.append(grant)
 

@@ -1203,7 +1203,7 @@ class Agent:
         import agent_inbox
         self._resolved_hooks = resolve_hooks(
             config.hooks, default_cwd=config.cwd,
-            extra_readable=agent_inbox.readable_prefixes(config.role),
+            extra_readable=agent_inbox.grants_for(config.role)[0],   # S6: the one constructor
         )
 
         # Warm SDK-client pool (spec 2026-07-11, AR-1..AR-10). One warm

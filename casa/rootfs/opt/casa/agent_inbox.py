@@ -610,6 +610,25 @@ def get_inbox(role: str) -> Inbox | None:
     return _inboxes.get(role)
 
 
+INBOX_TOOLS: tuple[str, ...] = (
+    "mcp__casa-framework__list_inbound_files",
+    "mcp__casa-framework__share_inbound_file",
+)
+
+
+def grants_for(role: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """What having an inbox grants, from ONE place (S6 design §2.3): the
+    role's own ``ready/`` as a readable prefix AND the two inbound-file tools
+    — ``((), ())`` for a role without an inbox. Both the resident builder and
+    the delegated builder call this; a specialist's tool permissions are
+    derived separately from its hooks, so granting the path alone would let a
+    desk turn reach a file it cannot file (INV-FILE-002)."""
+    inbox = _inboxes.get(role)
+    if inbox is None:
+        return (), ()
+    return (inbox.ready_dir,), INBOX_TOOLS
+
+
 def readable_prefixes(role: str) -> tuple[str, ...]:
     """The read grant for ``role``: exactly its ``ready/`` directory if it has an
     inbox, otherwise nothing. Every other agent keeps an empty readable list."""
