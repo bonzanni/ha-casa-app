@@ -2664,17 +2664,15 @@ class Agent:
             if _pending_budget is not None:
                 self._budget_tracker.record(*_pending_budget)
 
-            # The turn reached its end: the reply above was produced and
-            # delivered. Read by the setup-outcome report in the finally — a
-            # raising or cancelled turn never sets it, so availability-only
-            # evidence cannot consume an obligation whose reply was lost.
-            turn_state["completed"] = True
             return response_text or None
         finally:
             # #521: correlate a Casa-dispatched setup turn's outcome with its
             # episode — in the finally so success, a raising turn, AND a
             # cancelled one (role teardown cancels in-flight dispatches) all
-            # report. Synchronous + never raises by contract.
+            # report. Synchronous + never raises by contract. This runs
+            # BEFORE `handle_message` admits, suppresses or delivers the
+            # reply (#1012), so the report carries tool evidence only — never
+            # a fact about what the operator received.
             self._report_setup_outcome(msg, turn_state)
             # #1046: an erase-marked turn that ends without its eraser's
             # result answers the waiting episode now (same contract).
@@ -2743,7 +2741,6 @@ class Agent:
             plugin_setup_episodes.report_dispatch_outcome(
                 episode_id, tools_used_ok=used_ok,
                 tools_attempted=attempted, available_tools=available,
-                turn_completed=bool(turn_state.get("completed")),
                 delegated_ok_targets=delegated_ok)
         except Exception:  # noqa: BLE001 — the reply is already produced
             logger.exception("setup-episode outcome report failed")

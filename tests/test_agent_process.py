@@ -2775,6 +2775,82 @@ def _capture_reports(monkeypatch=None):
         yield calls
 
 
+class TestSetupOutcomeThroughHandleMessage:
+    """#1012, end to end: the report runs from `_process`'s finally, before
+    `handle_message` admits, suppresses or delivers the reply. A dispatched
+    setup turn whose init listed the tool and that never called it must
+    return the row to pending whatever became of the reply; a non-error
+    result consumes it whatever the reply."""
+
+    @staticmethod
+    def _store(tmp_path, monkeypatch):
+        import plugin_setup_episodes as pse
+        monkeypatch.setattr(pse, "STORE_PATH", tmp_path / "episodes.json")
+        pse._save({"schema_version": pse._SCHEMA_VERSION, "rounds": {},
+                   "episodes": [{
+                       "id": "ep-521", "plugin": "gm", "artifact_id": "a1",
+                       "gen": 0, "status": "dispatched", "gate": "released",
+                       "attempts": 1, "expected_tool": _SETUP_NS,
+                       "last_error": ""}]})
+        return pse
+
+    @pytest.mark.parametrize("reply,outcome", [
+        ("<silent/>", None),
+        ("", None),
+        ("Nothing to do here.", DeliveryOutcome.NOT_DELIVERED),
+        ("Nothing to do here.", DeliveryOutcome.DELIVERED),
+    ])
+    async def test_listed_uncalled_returns_to_pending(
+            self, tmp_path, monkeypatch, reply, outcome):
+        pse = self._store(tmp_path, monkeypatch)
+        agent = _make_agent(tmp_path, role="assistant")
+        stub = _StubTelegramChannel()
+        if outcome is not None:
+            stub.send_response.return_value = outcome
+            stub.finalize_response_stream.return_value = outcome
+        agent._channel_manager.register(stub)
+        ScriptedToolClient.reset([
+            _mk_init("sid-1012", ["Read", _SETUP_NS]),
+            _mk_assistant(reply),
+            _mk_result("sid-1012"),
+        ])
+        with patch("sdk_client_pool._default_make_client",
+                   ScriptedToolClient):
+            await agent.handle_message(_setup_msg("123"))
+        rows = pse.episodes()
+        assert len(rows) == 1
+        assert rows[0]["status"] == "pending"
+        assert rows[0]["execution_retries"] == 1
+        assert rows[0]["attempts"] == 0
+        assert rows[0]["gate"] == "released"
+        assert "dispatch_outcome" not in rows[0]
+
+    async def test_tool_ran_then_silent_stays_consumed(
+            self, tmp_path, monkeypatch):
+        # Designed behaviour: a non-error setup-tool result consumes the row
+        # whatever the reply; the run is the obligation, and a re-dispatch
+        # would re-run a setup tool that already ran.
+        pse = self._store(tmp_path, monkeypatch)
+        agent = _make_agent(tmp_path, role="assistant")
+        stub = _StubTelegramChannel()
+        agent._channel_manager.register(stub)
+        ScriptedToolClient.reset([
+            _mk_init("sid-1012b", ["Read", _SETUP_NS]),
+            _mk_tool_use("t1", _SETUP_NS),
+            _mk_tool_result("t1", is_error=False, text="already_connected"),
+            _mk_assistant("<silent/>"),
+            _mk_result("sid-1012b"),
+        ])
+        with patch("sdk_client_pool._default_make_client",
+                   ScriptedToolClient):
+            await agent.handle_message(_setup_msg("123"))
+        rows = pse.episodes()
+        assert len(rows) == 1
+        assert rows[0]["status"] == "dispatched"
+        assert rows[0]["dispatch_outcome"] == "tool_ran"
+        assert int(rows[0].get("execution_retries") or 0) == 0
+
+
 class TestSetupOutcomeReport:
     async def test_tool_ran_reports_used_ok(self, tmp_path):
         agent = _make_agent(tmp_path)
@@ -2792,7 +2868,6 @@ class TestSetupOutcomeReport:
             "tools_used_ok": {_SETUP_NS},
             "tools_attempted": {_SETUP_NS},
             "available_tools": {"Read", _SETUP_NS},
-            "turn_completed": True,
             "delegated_ok_targets": set(),
         })]
 
@@ -2811,7 +2886,6 @@ class TestSetupOutcomeReport:
             "tools_used_ok": set(),
             "tools_attempted": set(),
             "available_tools": {"Read"},
-            "turn_completed": True,
             "delegated_ok_targets": set(),
         })]
 
@@ -2867,7 +2941,6 @@ class TestSetupOutcomeReport:
                 await agent._process(_setup_msg("op-6"))
         assert len(calls) == 1
         assert calls[0][1]["tools_used_ok"] == set()
-        assert calls[0][1]["turn_completed"] is False
 
     async def test_cancelled_turn_still_reports(self, tmp_path):
         # Sol design r1 S1: role teardown cancels in-flight dispatches;
@@ -2887,7 +2960,6 @@ class TestSetupOutcomeReport:
         assert len(calls) == 1
         # Evidence collected before the cancel still counts (tool DID run).
         assert calls[0][1]["tools_used_ok"] == {_SETUP_NS}
-        assert calls[0][1]["turn_completed"] is False
 
     async def test_delegation_targets_are_reported_canonicalised(self, tmp_path):
         # Diff r3, Astra S1: a courier turn whose delegation to the intended
@@ -2925,11 +2997,10 @@ class TestSetupOutcomeReport:
         assert calls[0][1]["delegated_ok_targets"] == {"weather"}
         assert calls[0][1]["tools_used_ok"] == {courier}
 
-    async def test_cancelled_before_any_call_reports_uncompleted(self, tmp_path):
+    async def test_cancelled_before_any_call_reports_no_result(self, tmp_path):
         # Diff r1, Astra S1: init lists the tool, the turn is cancelled before
-        # any call. The report must say the turn did not complete, so the
-        # store cannot consume the obligation on availability alone — the
-        # reply the availability rule relies on was never produced.
+        # any call. The report still runs and carries no result, which the
+        # store treats as not evidenced (#1012: only a result consumes).
         agent = _make_agent(tmp_path)
         ScriptedToolClient.reset([
             _mk_init("sid-g", [_SETUP_NS, "Read"]),
@@ -2943,7 +3014,6 @@ class TestSetupOutcomeReport:
             "tools_used_ok": set(),
             "tools_attempted": set(),
             "available_tools": {_SETUP_NS, "Read"},
-            "turn_completed": False,
             "delegated_ok_targets": set(),
         })]
 

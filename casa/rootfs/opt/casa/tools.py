@@ -19147,6 +19147,19 @@ def _episode_sentence(row: dict) -> str:
         "stale": "setup started and stopped partway",
         "refused": "setup was not allowed to run",
     }.get(status, f"setup is {status}")
+    # #1183: `dispatched` is the store's one consumed status, so an unmarked
+    # row is either in flight or was consumed before the mark existed; the
+    # mark the outcome report writes says which arm consumed it. A courier
+    # row evidenced a delegation, never the specialist's run of the tool.
+    if status == "dispatched":
+        outcome = row.get("dispatch_outcome")
+        if outcome == "tool_ran":
+            said = "setup ran (the dispatched setup turn ran the setup tool)"
+        elif outcome == "delegated":
+            target = row.get("courier_target")
+            if isinstance(target, str) and target:
+                said = (f"setup was handed to '{target}' "
+                        "(the delegation completed)")
     # #1003: a row settled by turn evidence records a successful run of the
     # setup tool by the assistant's own hand, whatever status a later removal
     # left on it. Said independently of `status`; no claim about the

@@ -1063,16 +1063,19 @@ async def test_report_tool_ran_keeps_episode_consumed(wired):
 
 
 @pytest.mark.asyncio
-async def test_report_tool_available_unattempted_keeps_episode_consumed(
-        wired):
-    # The invariant is "consumed ⇒ the tool was available to the turn" —
-    # an available tool the agent chose not to call is the agent's own
-    # reply's business, not a dispatch failure.
+async def test_report_tool_available_unattempted_marks_retryable(wired):
+    # #1012: a tool the init listed that the turn never called evidences
+    # nothing. The report runs before the reply is admitted or delivered, so
+    # "the agent's reply told the operator" was never a fact it could see.
     ep = await _dispatched(wired)
     pse.report_dispatch_outcome(
         ep["id"], tools_used_ok=set(), tools_attempted=set(),
         available_tools={_NS, "Read"})
-    assert pse.episodes()[0]["status"] == "dispatched"
+    row = pse.episodes()[0]
+    assert row["status"] == "pending"
+    assert row["gate"] == "released"
+    assert row["execution_retries"] == 1
+    assert "dispatch_outcome" not in row
 
 
 @pytest.mark.asyncio
@@ -1318,53 +1321,86 @@ async def test_report_courier_tool_available_unattempted_marks_retryable(wired):
     # "listed but uncalled ⇒ consumed" leaked a silent spend through a
     # cancelled turn, then through a silent or undelivered reply. For a
     # courier the rule is CUT: a delegation tool the assistant did not call
-    # evidences nothing, whether or not the turn completed.
+    # evidences nothing (and, since #1012, for a resident tool too).
     ep = await _courier_dispatched(wired)
     pse.report_dispatch_outcome(
         ep["id"], tools_used_ok=set(), tools_attempted=set(),
-        available_tools={_COURIER, "Read"}, turn_completed=True)
+        available_tools={_COURIER, "Read"})
     row = pse.episodes()[0]
     assert row["status"] == "pending"
     assert row["execution_retries"] == 1
     await _drain_pending(wired)
     pse.report_dispatch_outcome(
         ep["id"], tools_used_ok=set(), tools_attempted=set(),
-        available_tools={_COURIER, "Read"}, turn_completed=False)
+        available_tools={_COURIER, "Read"})
     assert pse.episodes()[0]["status"] == "pending"
     assert pse.episodes()[0]["execution_retries"] == 2
     # Positive control: the one thing that consumes a courier row.
     await _drain_pending(wired)
     pse.report_dispatch_outcome(
         ep["id"], tools_used_ok={_COURIER}, tools_attempted={_COURIER},
-        available_tools={_COURIER}, turn_completed=False,
-        delegated_ok_targets={"finance"})
+        available_tools={_COURIER}, delegated_ok_targets={"finance"})
     assert pse.episodes()[0]["status"] == "dispatched"
-
-
-@pytest.mark.asyncio
-async def test_report_uncompleted_turn_available_unattempted_marks_retryable(
-        wired):
-    # Diff r1, Astra S1, resident tier: a session whose init listed the setup
-    # tool, cancelled before any call. Availability alone used to consume the
-    # obligation although the cancel prevented the reply the rule relies on.
-    ep = await _dispatched(wired)
-    pse.report_dispatch_outcome(
-        ep["id"], tools_used_ok=set(), tools_attempted=set(),
-        available_tools={_NS, "Read"}, turn_completed=False)
-    row = pse.episodes()[0]
-    assert row["status"] == "pending"
-    assert row["execution_retries"] == 1
 
 
 @pytest.mark.asyncio
 async def test_report_uncompleted_turn_with_a_result_keeps_consumed(wired):
-    # A positive result collected before the cancel still counts (the tool
-    # DID run): completion gates only the availability-alone branch.
+    # A positive result collected before a cancel or raise still counts (the
+    # tool DID run): the caller reports whatever evidence it holds from its
+    # `finally`, and the store needs no completion fact to consume on it.
     ep = await _dispatched(wired)
     pse.report_dispatch_outcome(
         ep["id"], tools_used_ok={_NS}, tools_attempted={_NS},
-        available_tools={_NS}, turn_completed=False)
+        available_tools={_NS})
+    row = pse.episodes()[0]
+    assert row["status"] == "dispatched"
+    assert row["dispatch_outcome"] == "tool_ran"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_outcome_mark_is_status_only(wired):
+    # #1183: the consuming mark is read by the status tool alone. A marked row
+    # stays owed to a re-delivered dispatched turn, stays in the evidence
+    # watch, is not retired as untracked, and keeps losing to turn evidence.
+    ep = await _dispatched(wired)
+    pse.report_dispatch_outcome(
+        ep["id"], tools_used_ok={_NS}, tools_attempted={_NS},
+        available_tools={_NS})
+    row = pse.episodes()[0]
+    assert row["dispatch_outcome"] == "tool_ran"
+    assert "settled_by" not in row
+    assert pse.dispatch_still_owed(ep["id"]) is True
+    assert _NS in pse._watch_from(pse._load())
+    await pse._worker_pass()
     assert pse.episodes()[0]["status"] == "dispatched"
+    assert len(wired["dispatches"]) == 1 and wired["notes"] == []
+
+
+@pytest.mark.asyncio
+async def test_dispatch_outcome_mark_is_dropped_when_a_report_reopens(wired):
+    # A later non-evidenced report on the same id (a re-delivered dispatched
+    # turn that ran nothing) returns the row to pending; it must not keep a
+    # mark claiming an earlier consumption, nor carry it once failed.
+    from tools import _episode_sentence
+    ep = await _dispatched(wired)
+    pse.report_dispatch_outcome(
+        ep["id"], tools_used_ok={_NS}, tools_attempted={_NS},
+        available_tools={_NS})
+    assert pse.episodes()[0]["dispatch_outcome"] == "tool_ran"
+    pse.report_dispatch_outcome(
+        ep["id"], tools_used_ok=set(), tools_attempted={_NS},
+        available_tools={_NS})
+    row = pse.episodes()[0]
+    assert row["status"] == "pending" and "dispatch_outcome" not in row
+    await _drain_pending(wired)
+    pse._update_episode(ep["id"], dispatch_outcome="tool_ran",
+                        execution_retries=2)
+    pse.report_dispatch_outcome(
+        ep["id"], tools_used_ok=set(), tools_attempted=set(),
+        available_tools=None)
+    row = pse.episodes()[0]
+    assert row["status"] == "failed" and "dispatch_outcome" not in row
+    assert "setup ran" not in _episode_sentence(row)
 
 
 @pytest.mark.asyncio
