@@ -363,7 +363,9 @@ _ASK_BUTTON_CAPTION_CAP = 64
 
 # #1201: settled proposals remembered per chat for their tap toast — eight
 # times result_broker.PROPOSAL_MAX_LIVE, since the live bound does not bound
-# how many settle within the hour; an evicted one answers "expired" as before.
+# how many settle within the hour. A tap on one dropped from this bound takes
+# the broker's path, as before: "already answered" while an answered
+# proposal's tombstone lasts (verdict_broker._RETIRE_S), "expired" otherwise.
 _PROPOSAL_SETTLED_PER_CHAT = 256
 
 # A5 · F-MULTI checkbox glyphs (also the multi decoration prefix the resolver
@@ -940,8 +942,10 @@ class TelegramChannel(Channel):
             collections.OrderedDict()
         )
         # #1201: rid -> (the proposal's own meta dict, its settled toast), kept
-        # until the proposal's deadline so a tap on a settled keyboard answers
-        # what happened after the broker's tombstone is gone. In-process only.
+        # until the proposal's deadline, or until the per-chat bound
+        # (_PROPOSAL_SETTLED_PER_CHAT) drops it first, so a tap on a settled
+        # keyboard answers what happened after the broker's tombstone is gone.
+        # In-process only.
         self._proposal_settled: "collections.OrderedDict[str, tuple[dict, str]]" = (
             collections.OrderedDict()
         )
