@@ -497,3 +497,97 @@ async def test_restart_resumes_next_batch(harness, monkeypatch, tmp_path):
     assert h.batches() == [jobs.batch_prompt(2, "Process rows")]
     assert '↻ Resuming "Process rows" after a restart.' in h.topic()
     h.assert_terminal("completed", "All rows handled")
+
+
+class ClosableClient(Client):
+    """A client whose held stream ENDS when it is closed, as a real SDK stream
+    does when its transport goes away — the base `Client` never ends a held
+    stream, which is why nothing caught #1166."""
+
+    def __init__(self):
+        super().__init__()
+        self.closed_event = asyncio.Event()
+
+    async def close(self):
+        self.closed = True
+        self.closed_event.set()
+
+    async def receive_response(self):
+        for item in self.current:
+            if self.closed:
+                return
+            if isinstance(item, Exception):
+                raise item
+            if callable(item):
+                step = asyncio.ensure_future(item())
+                closed = asyncio.ensure_future(self.closed_event.wait())
+                await asyncio.wait({step, closed}, return_when=asyncio.FIRST_COMPLETED)
+                closed.cancel()
+                if not step.done():
+                    step.cancel()
+                    await asyncio.gather(step, return_exceptions=True)
+                    return
+                step.result()
+            else:
+                yield item
+
+
+# #1166: a member's post lowers a running job's clearance mid-batch. The running
+# batch is not cut by the teardown; the member's message reaches the model after
+# the context reset, in the fresh floor session, and the next batch runs there.
+@pytest.mark.parametrize("ingress_teardown", [True, False], ids=["ingress", "rebuild-only"])
+async def test_clearance_downgrade_keeps_a_running_job_alive(harness, monkeypatch, ingress_teardown):
+    h = harness
+    note = "[Context reset]"
+    clients = [ClosableClient(), ClosableClient()]
+    made = []
+
+    def factory(options):
+        made.append(clients[len(made)])
+        return made[-1]
+    monkeypatch.setattr("drivers.in_casa_driver.ClaudeSDKClient", factory)
+    monkeypatch.setattr(tools, "build_engagement_resume_options",
+                        lambda rec, sid: ClaudeAgentOptions(resume=sid))
+    if ingress_teardown:
+        async def invalidate(rec):
+            await h.driver.invalidate_session(rec)
+        h.channel._driver_invalidate_session = invalidate
+
+    async def rebuild(rec):
+        await h.driver.invalidate_session(rec)
+        await h.driver.open_fresh(rec)
+        return note
+    h.channel._engagement_context_rebuilder = rebuild
+    h.rec.origin["_origin_clearance"] = "private"
+    old, fresh = clients
+    h.client = old
+    entered, release = asyncio.Event(), asyncio.Event()
+    batch_two, hold_two = asyncio.Event(), asyncio.Event()
+
+    async def hold():
+        entered.set()
+        await release.wait()
+
+    async def second():
+        batch_two.set()
+        await hold_two.wait()
+    old.scripts = [[text_frame("Working"), hold, h.report, result()]]
+    fresh.scripts = [[text_frame("Answer"), result()], [second, result()]]
+    await h.start()
+    await asyncio.wait_for(entered.wait(), 5)
+    await h.operator("Correction")  # user 77 is not the operator (chat 100)
+    release.set()
+    for _ in range(2000):
+        if batch_two.is_set() or h.rec.status not in ("active", "idle"):
+            break
+        await asyncio.sleep(.001)
+    status, old_prompts, fresh_prompts = h.rec.status, list(old.prompts), list(fresh.prompts)
+    hold_two.set()
+    assert status in ("active", "idle"), (status, old_prompts, fresh_prompts, h.topic())
+    assert h.rec.origin["_origin_clearance"] == "public"
+    assert len(made) == 2
+    assert old_prompts == ["Acknowledge the job", jobs.batch_prompt(1, "Process rows")]
+    assert fresh_prompts == [f"{note}\n\nCorrection", jobs.batch_prompt(2, "Process rows")]
+    assert old.closed
+    assert "a batch stopped before finishing" not in h.topic()
+    assert h.bot.closed == []
