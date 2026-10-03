@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -593,3 +594,129 @@ async def test_a_fresh_specialist_hosted_job_runs_end_to_end_and_is_reaped(
         assert not (project / sid).exists(), sid
     assert _snapshot(project) == keep
     assert counts["deleted"] == 6 and counts["errors"] == 0
+
+
+# ---------------------------------------------------------------------------
+# #1173: a job whose strict terminal write is pending still occupies its
+# plugin and manifest name (INV-BGJOB-006)
+# ---------------------------------------------------------------------------
+
+_LEDGER_JOB = {"name": "ledger:classify", "title": "Classify"}
+
+
+def _ledger_host(kind, role, installed, name="scan"):
+    decl = jobs.JobDecl(qualified_name=f"ledger:{name}", plugin="ledger", name=name,
+                        skill=f"ledger:{name}", title=name.title(), summary=None,
+                        batches=None, turns_per_batch=None)
+    return jobs.JobHost(kind=kind, role=role, decl=decl,
+                        plugin=SimpleNamespace(name=installed))
+
+
+def _live_ledger_jobs(reg):
+    return sum(1 for r in reg.active_and_idle()
+               if jobs.job_manifest_name((r.origin.get("job") or {}).get("name")) == "ledger")
+
+
+async def _specialist_ledger_job(tmp_path, limiter, prior):
+    """A live specialist-hosted `finance.ledger` job holding its role's permit."""
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "engagements.json"), bus=None)
+    rec = await reg.create("specialist", "finance", "in_casa", "classify",
+                           {"job": dict(_LEDGER_JOB),
+                            "plugin_job": {"plugin": "finance.ledger"}}, 7)
+    rec.permit = limiter.try_acquire("finance:engagement")
+    assert rec.permit is not None
+    if prior == "idle":
+        await reg.mark_idle(rec.id)
+    assert rec.status == prior
+    return reg, rec
+
+
+# Every contender's permit scope differs from the record's `finance:engagement`,
+# so the held permit refuses none of them: only the job guard can.
+_CONTENDERS = [("resident", "assistant", "finance.ledger"),
+               ("resident", "assistant", "ledger"),
+               ("specialist", "backup", "finance.ledger"),
+               ("specialist", "backup", "ledger")]
+
+
+@pytest.mark.parametrize("contender", _CONTENDERS, ids=lambda c: f"{c[0]}-{c[2]}")
+@pytest.mark.parametrize("outcome", ["completed", "cancelled", "error"])
+@pytest.mark.parametrize("prior", ["active", "idle"])
+async def test_a_start_during_a_pending_strict_terminal_write_is_refused(
+        tmp_path, monkeypatch, prior, outcome, contender):
+    """A start that lands while the job's strict terminal write is pending is
+    refused `job_busy`; the write then fails, the record rolls back to live,
+    and exactly one live job carries the manifest name. At the base the start
+    was admitted and, carried through its create, left two."""
+    from specialist_limits import SpecialistLimiter
+
+    limiter = SpecialistLimiter(2)
+    reg, rec = await _specialist_ledger_job(tmp_path, limiter, prior)
+    host = _ledger_host(*contender)
+    plugin = jobs.host_plugin_name(host)
+    jobs.release_job_start(plugin)
+    entered, release = threading.Event(), threading.Event()
+    real_write = reg._write_tombstone
+
+    def held_then_failed(snapshot):
+        entered.set()
+        release.wait(10)
+        raise OSError("disk full")
+
+    monkeypatch.setattr(reg, "_write_tombstone", held_then_failed)
+    transition = asyncio.ensure_future(
+        reg.try_transition_terminal(rec.id, outcome, strict=True))
+    refusal, claimed_during = None, None
+    try:
+        assert await asyncio.to_thread(entered.wait, 10)
+        assert reg.active_and_idle() == []          # the status filter is unchanged
+        refusal = jobs.claim_job_start(host, reg)
+        claimed_during = plugin in jobs._pending_plugin_job_starts
+        if host.kind == "resident":
+            permit, busy = jobs.acquire_job_permit(host, limiter)
+        else:
+            permit, busy = limiter.try_acquire(f"{host.role}:engagement"), None
+        assert permit is not None and busy is None  # cross-scope: not the permit's job
+        permit.release()
+    finally:
+        release.set()
+        with pytest.raises(OSError):
+            await transition
+        monkeypatch.setattr(reg, "_write_tombstone", real_write)
+    try:
+        if refusal is None:
+            # What the admitted launch does next: its record commits after the
+            # rollback, beside the restored one.
+            await reg.create("specialist", host.role, "in_casa", "scan",
+                             {"job": {"name": host.decl.qualified_name, "title": "Scan"},
+                              "plugin_job": {"plugin": plugin}}, 8)
+    finally:
+        jobs.release_job_start(plugin)
+
+    # One tuple, so the base shows every wrong count at once: (None, True, 2).
+    assert ((refusal or {}).get("kind"), claimed_during, _live_ledger_jobs(reg)) == (
+        "job_busy", False, 1)
+    assert refusal["engagement_id"] == rec.id
+    assert rec.status == prior
+    assert plugin not in jobs._pending_plugin_job_starts
+
+
+@pytest.mark.parametrize("contender", _CONTENDERS, ids=lambda c: f"{c[0]}-{c[2]}")
+async def test_a_durably_ended_job_frees_its_plugin_at_once(tmp_path, contender):
+    """The other half of the rule: once the strict terminal write has
+    committed, the job no longer occupies anything and a start is admitted."""
+    from specialist_limits import SpecialistLimiter
+
+    limiter = SpecialistLimiter(2)
+    reg, rec = await _specialist_ledger_job(tmp_path, limiter, "active")
+    host = _ledger_host(*contender)
+    plugin = jobs.host_plugin_name(host)
+    jobs.release_job_start(plugin)
+    assert await reg.try_transition_terminal(rec.id, "completed", strict=True)
+    try:
+        assert jobs.claim_job_start(host, reg) is None
+        assert plugin in jobs._pending_plugin_job_starts
+    finally:
+        jobs.release_job_start(plugin)
+    assert _live_ledger_jobs(reg) == 0
+    assert rec.permit is None or limiter.try_acquire("finance:engagement") is not None
