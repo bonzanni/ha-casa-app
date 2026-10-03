@@ -21,6 +21,7 @@ MUST_BE_EXECUTABLE = [
     "scripts/gate.sh",
     "scripts/run-gitleaks.sh",
     "scripts/setup-dev.sh",
+    "scripts/suite-lock.sh",
     "scripts/sweep-text.sh",
 ]
 

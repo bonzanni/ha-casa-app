@@ -50,7 +50,12 @@ SUITE_LOCK := /tmp/casa-suite.lock
 # UNCONDITIONAL on purpose. A probed lock that expands to empty when flock is
 # missing degrades silently to concurrent unlocked suites -- the same failure
 # shape as the cage below, which is why both now fail loudly instead.
-LOCK := flock -w 1800 $(SUITE_LOCK)
+# scripts/suite-lock.sh is that same `flock -w 1800`, plus one change: it names
+# the holder (pid, cwd, elapsed, CPU) when the wait starts and when it expires,
+# and a timeout exits 75 with "suite lock timeout". A bare flock left a
+# hung suite in another worktree holding the lock for over an hour, and all the
+# caller saw was `make: *** Error 1`.
+LOCK := scripts/suite-lock.sh $(SUITE_LOCK) 1800
 
 # Without this guard the cage would DEGRADE to an uncaged 12-worker run
 # wherever systemd-run cannot reach a user bus. On a 23G box that is the OOM
