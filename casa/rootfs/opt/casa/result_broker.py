@@ -318,6 +318,7 @@ def proposal_ok(value: Any, call: Any) -> tuple[dict | None, str | None]:
         return None, "bad_proposal"
     seg, server = entry.plugin_seg, servers[0]
     resolved = []
+    arm_buttons = 0
     for button in buttons:
         if not isinstance(button, dict):
             return None, "bad_proposal"
@@ -325,6 +326,16 @@ def proposal_ok(value: Any, call: Any) -> tuple[dict | None, str | None]:
         if (not isinstance(label, str) or not label.strip()
                 or len(label) > PROPOSAL_LABEL_CHARS or not _text_ok(label, PROPOSAL_LABEL_CHARS)):
             return None, "bad_proposal"
+        # S6 §2.4: a button is EITHER a stored call OR an `arm_file` button — never both,
+        # never neither; at most one arm button per proposal (it counts toward the six)
+        if "arm_file" in button:
+            if button.get("arm_file") is not True or "call" in button:
+                return None, "bad_proposal"
+            arm_buttons += 1
+            if arm_buttons > 1:
+                return None, "bad_proposal"
+            resolved.append({"label": label, "arm_file": True})
+            continue
         spec = button.get("call")
         if not isinstance(spec, dict):
             return None, "bad_proposal"
@@ -1297,7 +1308,11 @@ async def _post_proposal(identity, seg: str, slot: str, call: _InFlight, proposa
         "deadline": loop.time() + PROPOSAL_TTL_S, "chat_id": chat_id,
         "operator_id": int(identity.operator_id), "role": role,
         "artifact_id": str(getattr(identity, "artifact_id", "") or ""),
-        "plugin_seg": seg, "calls": [dict(b["call"]) for b in proposal["buttons"]],
+        "plugin_seg": seg,
+        # S6 §2.4: `calls` keeps one entry per button (None at an arm_file index, so every
+        # reader keeps its indexing); `kinds` is the parallel per-button kind
+        "calls": [dict(b["call"]) if "call" in b else None for b in proposal["buttons"]],
+        "kinds": ["arm_file" if b.get("arm_file") else "call" for b in proposal["buttons"]],
         "revision": revision, "label": head, "text": text, "options": list(labels),
         "message_id": None, "owner": _post_owner(identity), "_scope": scope,
     }

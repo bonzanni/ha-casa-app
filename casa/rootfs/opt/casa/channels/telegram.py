@@ -2014,8 +2014,8 @@ class TelegramChannel(Channel):
                 return
             if meta.get("message_id") != getattr(cq.message, "message_id", None):
                 return
-            calls = meta.get("calls") or []
-            if idx is None or not (0 <= idx < len(calls)):
+            options = meta.get("options") or []
+            if idx is None or not (0 <= idx < len(options)):      # S6: by the buttons, not the calls
                 toast = "invalid"
                 return
             expected = meta.get("operator_id")
@@ -2034,6 +2034,18 @@ class TelegramChannel(Channel):
                 return
             if BROKER.commit(claim):
                 toast = "✔"
+                kinds = meta.get("kinds") or []
+                if idx < len(kinds) and kinds[idx] == "arm_file":
+                    # S6 §2.4: the arming is written HERE, synchronously, before any
+                    # await — the finish hook runs as a separate task and a file can
+                    # arrive before it; a later arming replaces this one (R4-1: no
+                    # message follows; the edited keyboard is the acknowledgement)
+                    self._armings[chat] = {
+                        "chat_id": chat, "operator_id": expected,
+                        "role": str(meta.get("role") or ""),
+                        "artifact_id": str(meta.get("artifact_id") or ""),
+                        "expires_at": time.monotonic() + self.FILE_ARM_TTL_S,
+                    }
         finally:
             t = asyncio.create_task(_safe_answer(cq, toast))
             try:
@@ -2071,6 +2083,20 @@ class TelegramChannel(Channel):
             idx = outcome.get("option_index")
             labels = meta.get("options") or []
             label = labels[idx] if isinstance(idx, int) and 0 <= idx < len(labels) else "?"
+            kinds = meta.get("kinds") or []
+            if isinstance(idx, int) and idx < len(kinds) and kinds[idx] == "arm_file":
+                # S6 §2.4 / R4-1: an arm_file tap edits the keyboard and sends NOTHING; a
+                # failed edit is told with past facts only — never "applying your tap",
+                # never where the next file goes; nothing is dispatched
+                import specialist_desk
+                edited = await self.edit_dm_message(chat_id, message_id, f"{text}\n☑ {label}")
+                if not edited:
+                    logger.warning("arm_file keyboard edit failed (rid=%s); telling by notice", rid[:8])
+                    await self.deliver_desk_notice(chat_id, specialist_desk.bounded_line(
+                        "{label} ☑ {button} — the buttons could not be cleared.",
+                        label=specialist_desk.label_for(str(meta.get("role") or "")),
+                        fields={"button": label}))
+                return
             edited = await self.edit_dm_message(chat_id, message_id, f"{text}\n☑ {label}")
             if not edited:
                 # the keyboard could not be edited away (Terra, diff round 5):
