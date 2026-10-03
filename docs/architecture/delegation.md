@@ -54,7 +54,8 @@ alike — an async launch still returns `pending` at once while its task waits),
 bounded dialogue block fitted into its context after the resident's own validated arguments,
 and commits its brief and the bounded answer as an exchange; a full desk queue is the tool's
 typed `busy` result with no task, and a faulted desk — one a stored-call turn's processes could
-not be confirmed to have left — is the typed `desk_faulted` result, refused before any queue
+not be confirmed to have left, or one whose earlier use's run is still unwinding past its
+teardown bound — is the typed `desk_faulted` result, refused before any queue
 place and for sync, degraded and async alike. The desk, its bounds and the swipe-reply route
 that shares it are [`specialist-desk.md`](specialist-desk.md); the faulted desk is
 [`stored-call-buttons.md`](stored-call-buttons.md).
