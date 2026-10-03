@@ -22,6 +22,9 @@ from output_boundary import Admitted
 
 pytestmark = pytest.mark.asyncio
 
+# the real bounded runner, captured before any fixture replaces it (#1197)
+_REAL_BOUNDED = tools_mod._run_delegated_agent_bounded
+
 OPERATOR = 42
 LABEL = "📊 Finance"
 
@@ -443,3 +446,99 @@ async def test_one_delivered_send_is_an_outcome_even_when_a_later_send_failed(en
     assert env.channel.replies == [] and env.channel.notices == []
     assert env.desk.log[-1].text == sd.POSTED_VIEW
     assert sd.prompt_prefix(OPERATOR) == "(front desk) 📊 Finance sent you a file.\n\n"
+
+
+# --- #1197: a run cut off past its teardown bound keeps the desk ----------------
+
+class _Survivor:
+    """`tools._run_delegated_agent` whose FIRST run keeps going after it is
+    cancelled, until ``release`` is set — an unwind that outlives the bounded
+    runner's teardown bound. Later runs answer at once. Counts runs started
+    and the most ever running together."""
+
+    def __init__(self):
+        self.release = asyncio.Event()
+        self.starts = 0
+        self.active = 0
+        self.peak = 0
+        self.tasks = []
+
+    async def run(self, cfg, task_text, context_text, resolution=None,
+                  output_format=None, tool_counts=None):
+        self.starts += 1
+        first = self.starts == 1
+        self.active += 1
+        self.peak = max(self.peak, self.active)
+        self.tasks.append(asyncio.current_task())
+        try:
+            while first and not self.release.is_set():
+                try:
+                    await self.release.wait()
+                except asyncio.CancelledError:
+                    pass                      # still unwinding
+            return tools_mod.DelegatedOutput(text="late" if first else "answer")
+        finally:
+            self.active -= 1
+
+    async def started(self):
+        for _ in range(200):
+            if self.starts:
+                return
+            await asyncio.sleep(0.01)
+        raise AssertionError("the first run never started")
+
+    async def end_first(self):
+        self.release.set()
+        await asyncio.gather(*self.tasks, return_exceptions=True)
+
+
+def _survive(monkeypatch):
+    survivor = _Survivor()
+    monkeypatch.setattr(tools_mod, "_run_delegated_agent_bounded", _REAL_BOUNDED)
+    monkeypatch.setattr(tools_mod, "_run_delegated_agent", survivor.run)
+    monkeypatch.setattr(tools_mod, "_DELEGATION_CEILING_S", 0.05)
+    monkeypatch.setattr(tools_mod, "_CEILING_TEARDOWN_BOUND_S", 0.05)
+    return survivor
+
+
+async def _no_second_run_until_the_first_has_ended(env, survivor):
+    """The first reply has returned while its run is still executing: a
+    second reply must not start a run beside it (it waits, or is refused);
+    once the first run has ended, the next reply runs."""
+    assert survivor.starts == 1 and survivor.active == 1      # still unwinding
+    second = asyncio.create_task(_reply(env, text="second"))
+    try:
+        await asyncio.wait({second}, timeout=0.3)
+        assert survivor.starts == 1 and survivor.peak == 1
+    finally:
+        await survivor.end_first()
+    await asyncio.wait_for(second, 5)
+    before = survivor.starts
+    await asyncio.wait_for(_reply(env, text="third"), 5)
+    assert survivor.starts == before + 1 and survivor.peak == 1
+    assert not env.desk.lock.locked() and not env.desk.faulted
+
+
+async def test_a_reply_cut_off_at_the_ceiling_keeps_its_desk_until_its_run_has_ended(env, monkeypatch):
+    survivor = _survive(monkeypatch)
+    try:
+        await asyncio.wait_for(_reply(env), 5)
+        timeouts = [n for n in env.channel.notices if "(timeout)" in n[1]]
+        assert len(timeouts) == 1                               # INV-DESK-002's one notice
+        assert [e.text for e in env.desk.log][-1] == sd.NO_REPLY
+        await _no_second_run_until_the_first_has_ended(env, survivor)
+    finally:
+        await survivor.end_first()
+
+
+async def test_a_cancelled_reply_keeps_its_desk_until_its_run_has_ended(env, monkeypatch):
+    survivor = _survive(monkeypatch)
+    try:
+        first = asyncio.create_task(_reply(env))
+        await survivor.started()
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(first, 5)
+        await _no_second_run_until_the_first_has_ended(env, survivor)
+    finally:
+        await survivor.end_first()
