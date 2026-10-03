@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.342.3] - 2026-10-03
+
+### Fixed
+- A background job you started no longer ends as failed when someone else posts in its topic. Such a post can lower the job's clearance and reset its context, and that reset used to cut off the batch that was running. Now the running batch finishes first, the post is answered after the reset, and the job carries on from there. A specialist reply that is in progress in its topic when such a post arrives also finishes now instead of being cut off. Claude Code engagements are unchanged. (#1166)
+
 ## [0.342.2] - 2026-10-03
 
 ### Fixed
