@@ -319,6 +319,16 @@ async def test_a_failure_captures_the_error_class_only(env):
     assert owner.captured == pr.Capture("error", "tool_error")
 
 
+async def test_a_safe_json_response_uses_its_receipt_sentence(env):
+    # #1200: a dict-returning tool reaches the hook as its JSON text; the operator's
+    # receipt is the response's ``receipt`` sentence, not the JSON around it
+    owner = _owner()
+    hook = rb.make_result_hook(_map(), client_id="c1", store=env.store, owner=owner)
+    response = json.dumps({"applied": True, "receipt": "applied yes to r-1 at revision 1"})
+    assert await hook(_post(APPLY, ARGS, response), "t1", {}) == {}
+    assert owner.captured == pr.Capture("receipt", "applied yes to r-1 at revision 1")
+
+
 async def test_the_more_exceptions_capture_is_the_hooks_effective_result_never_the_raw_response(env):
     cases = []
     for name, response, expect in [
