@@ -122,6 +122,22 @@ with one Casa line above it (`⚠ the CLI reported this call's arguments changed
 installed hook`), the echo says the same, and an ERROR names the run, the tool and both
 forms. Nothing is prevented or retried: installed hooks are trusted (as every plugin is).
 
+**The stored tool is in the turn's first request.** The pinned turn has one prompt, and the
+pin admits no call but the stored one, so the stored tool must already be callable when that
+prompt is sent (#1220). Two things would hide it. The CLI defers every MCP tool that is not
+`alwaysLoad` while `ToolSearch` is on the surface — whatever the number of tools — and the
+pin denies the `ToolSearch` that would load it, so the pinned build disallows `ToolSearch`,
+once; without it the CLI loads every tool up front. Ordinary specialist turns keep it
+(`tools.py`, the ruling above `_SUBAGENT_SPAWN_TOOLS`). And the CLI starts plugin MCP servers in
+the background: a server still connecting or listing its tools contributes none to the
+request being built. So after the controller enters the client, the pinned runner asks the
+CLI for its MCP status (`_await_mcp_servers_settled`) and sends the prompt only once no server
+is `pending`. `pending` lasts through the connect and the tool listing, each bounded by the
+CLI's own MCP timeout; a server that failed is settled too, and the turn then has no stored
+tool to call — a refusal notice. The tap's ceiling bounds the whole turn, the wait included.
+Measured on the pinned CLI version: these are its behaviours, not Casa's, and a CLI bump
+re-measures them.
+
 **The controller owns the run's processes.** The pinned turn is not driven by the bounded
 delegation wrapper. A `PinnedRun` enters the SDK client, pins a pidfd on the CLI and on
 every descendant it finds at start, and owns the client to the end; the runner never exits
@@ -206,6 +222,8 @@ exit sweep, which ends every task at once (Casa-wide behaviour, not S5's).
 
 **INV-PROP-003**: A keyboard with stored calls exists only for a deposit from a tool declaring the `operator_proposal` slot, whose calls name the same plugin's declared tools with fixed reference-free arguments within the bounds, and whose message was proven delivered; a proposal that did not land holds no stored call, a chat holds at most 32 live proposals, and a proposal expires after one hour.
 
+**INV-PROP-004**: A pinned stored-call turn is built with `ToolSearch` disallowed, and its one prompt is sent only after the CLI's MCP status lists no server of the session as pending; an ordinary specialist turn's build adds no `ToolSearch` denial and its prompt is sent without asking for MCP status.
+
 **INV-FILE-003**: A `📎` tap arms the next file in that chat for the specialist whose proposal carried the button, for the operator who tapped, for at most ten minutes; the arming exists from the moment the tap is committed, before the keyboard is edited or anything is sent; exactly one file consumes it; a later arming replaces it; a restart forgets it; and Casa sends no message about an arming — the edited keyboard is the whole acknowledgement, and the only text a tap can produce is the past-fact line that the buttons could not be cleared.
 
 ## Failure behavior
@@ -286,6 +304,7 @@ not done here; the bounded termination path stays simple.
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.deliver_operator_proposal`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.mark_proposal`
 - `casa/rootfs/opt/casa/tools.py::_capture_build_input`
+- `casa/rootfs/opt/casa/tools.py::_await_mcp_servers_settled`
 
 **Tests**
 - `tests/test_stored_calls.py`
