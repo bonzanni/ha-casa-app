@@ -692,6 +692,7 @@ async def handle_reply(
     *, channel: Any, resident_role: str, chat_id: int, user_id: int, user_name: str,
     message_id: Any, cid: str, text: str, quoted_text: str | None, record: Any,
     desk_role: str, continuation: bool = False, reservation: "Reservation | None" = None,
+    file_name: "str | None" = None,
 ) -> None:
     """One desk use: the queue place (handed over by the route, or taken
     here), the desk lock, the idle reset, the log read, the specialist run on
@@ -710,21 +711,41 @@ async def handle_reply(
     context = {"chat_id": str(chat_id), "cid": cid}
     desk = DESKS.get_or_create(chat_id, desk_role)
 
-    async def _notice(line: str) -> None:
-        try:
-            await channel.deliver_desk_notice(chat_id, line)
-        except Exception as exc:  # noqa: BLE001 — nothing more is attempted
-            logger.warning("desk notice failed: %s", type(exc).__name__)
+    async def _tell(tail: str, *, notice: bool = False, receipt: bool = True,
+                    fields: "dict[str, Any] | None" = None, raw: bool = False) -> None:
+        """S6 §2.2: the ONE place a desk turn records anything — the notice to
+        the operator (when asked) and the resident's echo, the same string,
+        composed by ``bounded_line`` (§2.6). A file-started turn (``file_name``
+        set) carries the receipt once per record; a raw S3 line keeps its own
+        label. Nothing else in this function may call ``record_echo`` or
+        ``deliver_desk_notice`` (pinned)."""
+        if raw and (file_name is None or not receipt):
+            line = tail
+        else:
+            body = tail[len(label) + 1:] if raw and tail.startswith(label + " ") else tail
+            values = dict(fields or {})
+            if file_name is not None:
+                values.setdefault("name", file_name)
+            if file_name is not None and receipt:
+                template = "{label} received your file {name}; " + body
+            else:
+                template = "{label}" + ("" if body.startswith("'") else " ") + body
+            line = bounded_line(template, label=label, fields=values)
+        if notice:
+            try:
+                await channel.deliver_desk_notice(chat_id, line)
+            except Exception as exc:  # noqa: BLE001 — nothing more is attempted
+                logger.warning("desk notice failed: %s", type(exc).__name__)
         record_echo(chat_id, line)
 
     if reservation is None:
         if desk.faulted:
-            await _notice(faulted_line(label))
+            await _tell(faulted_line(label), notice=True, raw=True, receipt=False)
             channel._release_typing(context, str(chat_id))
             return
         reservation = desk.reserve()
         if reservation is None:
-            await _notice(f"{label} is busy; try again in a moment.")
+            await _tell("'s desk was full when the place was requested.", notice=True, receipt=False)
             channel._release_typing(context, str(chat_id))
             return
     try:
@@ -732,15 +753,16 @@ async def handle_reply(
             if desk.faulted:
                 # S5 §14.8: a reply queued before the fault finds it here,
                 # before the idle reset, the run and any permit
-                await _notice(faulted_line(label))
+                await _tell(faulted_line(label), notice=True, raw=True, receipt=False)
                 return
             now = DESKS.now()
             desk.begin_use(now)
             resident_name = tools_mod._display_name_for_role(resident_role)
             block = render_block(desk.log, resident_name=resident_name)
             cfg = tools_mod._agent_role_map.get(desk_role)
-            if cfg is None:
-                await _notice(f"{label} could not continue (not delegable).")
+            # S6 §2.2: loaded AND still declared a delegate (desk_target_ok), under the lock
+            if cfg is None or not desk_target_ok(resident_role, desk_role):
+                await _tell("could not continue (not delegable).", notice=True, receipt=False)
                 return
             turn_id = uuid.uuid4().hex
             task_text = clip(text or "", DESK_TASK_CHARS)
@@ -759,7 +781,9 @@ async def handle_reply(
             if limiter is not None:
                 permit = limiter.try_acquire(tools_mod._delegation_scope(origin, desk_role))
                 if permit is None:
-                    await _notice(f"{label} is busy; try again in a moment.")
+                    # S6 §2.2: a past event; no exchange is opened
+                    await _tell("was at its concurrent-work limit when the turn was attempted.",
+                                notice=True, receipt=False)
                     return
             output, failure = None, None
             runs: list = []
@@ -792,7 +816,8 @@ async def handle_reply(
             proven, unevented = turn_outcomes(turn_id, posts, scope)
             specialist_side = NO_REPLY
             if failure is not None:
-                await _notice(f"{label} could not handle your reply ({failure}).")
+                what = "your file {name}" if file_name is not None else "your reply"
+                await _tell(f"could not handle {what} ({failure}).", notice=True, receipt=False)
             elif strips_to_silence(reply_text):
                 if proven:
                     specialist_side = POSTED_VIEW
@@ -800,9 +825,9 @@ async def handle_reply(
                     # Casa line per kind, named from the records, never
                     # from the bodies
                     for phrase in outcome_phrases(unevented):
-                        record_echo(chat_id, f"{label} {phrase}")
+                        await _tell(phrase)
                 else:
-                    await _notice(f"{label} had nothing to add.")
+                    await _tell("had nothing to add.", notice=True)
             else:
                 admitted = scope.admit(IntentKind.FINAL_REPLY, reply_text)
                 labelled = admitted.with_text(f"{label}\n{admitted}")
@@ -818,17 +843,18 @@ async def handle_reply(
                 specialist_side = reply_text
                 if delivered:
                     pages = len(render_paged(labelled))
-                    record_echo(chat_id, f"{label} answered your reply "
-                                         f"({pages} page{'s' if pages != 1 else ''}).")
+                    count = f"({pages} page{'s' if pages != 1 else ''})."
+                    await _tell(("answered " if file_name is not None else "answered your reply ") + count)
                 else:
-                    await _notice(f"{label} answered; the reply did not go out.")
+                    # S6 §2.2: a page may have landed — unconfirmed, not "did not go out"
+                    await _tell("answered; complete delivery could not be confirmed.", notice=True)
             # the exchange and the idle clock are stamped once the use has
             # settled — delivery or notice included — never at its start
             done = DESKS.now()
             desk.append("operator", task_text, done)
             desk.append("specialist", specialist_side, done)
             for line in rb.echo_lines(posts):
-                record_echo(chat_id, line)
+                await _tell(line, raw=True)
     finally:
         reservation.release()                 # idempotent: a cancel while waiting
         channel._release_typing(context, str(chat_id))
