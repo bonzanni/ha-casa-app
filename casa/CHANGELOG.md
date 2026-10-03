@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.344.6] - 2026-10-04
+
+### Fixed
+
+- A specialist's reply or a delegation that Casa cuts off at its time limit, or
+  cancels, no longer leaves behind a process one of its plugins started. Before,
+  a plugin tool's helper (for example a command it ran that was still waiting)
+  kept running after the turn ended, unnoticed, and could still hold a file or
+  a connection when the specialist took its next turn. Casa now ends every
+  process the turn started before the turn is over, and logs an error naming
+  any it cannot confirm gone.
+
 ## [0.344.5] - 2026-10-03
 
 ### Fixed

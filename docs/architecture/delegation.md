@@ -222,6 +222,29 @@ What it does not cover: transcripts written before this behaviour existed, a pro
 between the client's exit and the delete, a cancellation that interrupts the client's exit
 itself (the CLI can then still be writing after the delete), and a delete that fails.
 
+**INV-ENG-024**: A delegated run that the wall-clock ceiling ends, or that is cancelled from outside, leaves no proven descendant of its CLI running once the runner has raised — a process a plugin server started after the session began included — and a process it cannot confirm gone is logged at ERROR with the role and the pids.
+
+Desk replies and every delegation go through `_run_delegated_agent_bounded`, which owns a
+`pinned_run.ProcessTree` for the run, the same process owner a stored-call tap's `PinnedRun`
+is ([`stored-call-buttons.md`](stored-call-buttons.md)). The run pins its CLI by pidfd, and
+the descendants it finds with their parent chain validated, the moment its session exists;
+a run ended while its client is still starting is pinned from the transport's process when
+its termination begins.
+Before the run is cancelled the tree is walked again while the CLI still lives, because the
+SDK's close signals the CLI only: its servers then see end-of-file and exit, and a helper a
+server started is reparented to init where no later walk can find it. After the run's own
+teardown — bounded exactly as before — the tree is walked once more, the CLI is sent SIGTERM
+and then SIGKILL if it is still there, every proven descendant SIGKILL, all through the
+pinned fds, and every exit is confirmed by pidfd readability under one deadline. That
+cleanup is its own task: a second cancel of the runner is absorbed and never interrupts it,
+and a caller that stops waiting leaves it running to its end.
+
+What it does not cover: a run that ends normally, whose servers' background helpers are not
+walked; the timing windows around the walks and a helper that leaves the process tree
+(`setsid`, a double fork), which [`stored-call-buttons.md`](stored-call-buttons.md) states
+for taps; and an unconfirmed run, which is logged but neither faults the desk nor changes
+the reply's or the delegation's outcome.
+
 ## Failure behavior
 
 **A delegation names a target the caller does not declare.** Refused before any lookup, so
@@ -283,9 +306,12 @@ the agent-spawn cap. Never copy the marker into a synthesized or scheduled turn'
 - `casa/rootfs/opt/casa/specialist_limits.py::AgentSpawnLimiter`
 - `casa/rootfs/opt/casa/specialist_limits.py::SpawnToken`
 - `casa/rootfs/opt/casa/tools.py::_delete_own_delegated_transcript`
+- `casa/rootfs/opt/casa/tools.py::_reap_bounded_tree`
+- `casa/rootfs/opt/casa/pinned_run.py::ProcessTree`
 
 **Tests**
 - `tests/test_delegated_transcript_delete.py`
+- `tests/test_bounded_run_processes.py`
 - `tests/test_delegation_acl.py`
 - `tests/test_delegates_block_live_names.py`
 - `tests/test_agent_spawn_limiter.py`

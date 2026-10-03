@@ -560,6 +560,16 @@ _pinned_run: ContextVar["Any | None"] = ContextVar("_pinned_run", default=None)
 # signature across the suite. Non-desk callers leave it None.
 _desk_run_sink: ContextVar["list | None"] = ContextVar("_desk_run_sink", default=None)
 
+# #1212: the ``pinned_run.ProcessTree`` ``_run_delegated_agent_bounded`` owns for
+# the run it creates — set around that create_task and reset at once, read and
+# cleared by the run at its entry, so a run nested inside it gets its own. A
+# ContextVar for the same reason as ``_desk_run_sink``.
+_bounded_tree: ContextVar["Any | None"] = ContextVar("_bounded_tree", default=None)
+
+# #1212: the post-teardown cleanups still running (a strong reference: a caller
+# that stopped waiting must not let one be collected mid-kill)
+_REAPS: set = set()
+
 
 def _debit_specialist_media_send(eng, origin: dict) -> "dict | None":
     """Synchronous specialist-context debit for one send_media attempt.
@@ -3902,6 +3912,11 @@ async def _run_delegated_agent(
     own_dir: str | None = None
     # S5 §5.2.4: a pinned one-call turn's controller, when this run is one
     _owner = _pinned_run.get()
+    # #1212: the bounded runner's process owner for this run, cleared here so
+    # a run nested inside this one gets its own (a tap's controller owns its
+    # processes itself)
+    _tree = _bounded_tree.get() if _owner is None else None
+    _bounded_tree.set(None)
 
     def _options_and_binding():
         res = resolution if resolution is not None \
@@ -3941,7 +3956,11 @@ async def _run_delegated_agent(
                 _client_cm = nullcontext(client)
             else:
                 _client_cm = ClaudeSDKClient(client_options)
+                if _tree is not None:
+                    _tree.attach(_client_cm)      # #1212: a late pin finds the CLI
             async with _client_cm as client:
+                if _tree is not None:
+                    _tree.pin_client()            # #1212: the CLI and its servers, now
                 _ph["connect"] = time.monotonic()
                 if _owner is not None:
                     await _await_mcp_servers_settled(client)    # #1220
@@ -5431,13 +5450,23 @@ async def _run_delegated_agent_bounded(
     the bound; a specialist-desk use learns of that task through
     ``_desk_run_sink`` and keeps its desk refused until it ends (#1197).
 
+    #1212: either way, too, the processes the run's CLI started are Casa's to
+    end, not the SDK close's (which signals the CLI only): the run's
+    ``ProcessTree`` is re-walked before the cancel, and after the teardown
+    every process it pinned is signalled and confirmed gone — a cleanup that
+    a re-cancel of this task cannot interrupt (``_reap_bounded_tree``).
+
     Both bounds are read off the module at call time so tests can
     monkeypatch them."""
+    import pinned_run
     tool_counts: dict[str, int] = {}
     sink = _desk_run_sink.get()
+    role = _known_role(getattr(cfg, "role", None))
+    tree = pinned_run.ProcessTree(run_id=f"bounded-{uuid.uuid4().hex[:12]}")
     # #1197: the inner task is created with no sink, so a run nested inside it
-    # never reports into the desk's
+    # never reports into the desk's; #1212: and with this run's tree
     sink_tok = _desk_run_sink.set(None)
+    tree_tok = _bounded_tree.set(tree)
     try:
         inner = asyncio.create_task(
             _run_delegated_agent(cfg, task_text, context_text,
@@ -5445,12 +5474,23 @@ async def _run_delegated_agent_bounded(
                                  output_format=output_format,
                                  tool_counts=tool_counts))
     finally:
+        _bounded_tree.reset(tree_tok)
         _desk_run_sink.reset(sink_tok)
     if sink is not None:
         sink.append(inner)
     ceiling = _DELEGATION_CEILING_S
     if not math.isfinite(ceiling) or ceiling <= 0:
         ceiling = 600.0  # fail closed to the shipped default, never hang
+    try:
+        return await _bounded_wait(inner, tree, ceiling, tool_counts, role)
+    finally:
+        if not tree.reaping:
+            tree.close_fds()
+
+
+async def _bounded_wait(inner: asyncio.Task, tree: Any, ceiling: float,
+                        tool_counts: dict[str, int], role: str) -> DelegatedOutput:
+    """``_run_delegated_agent_bounded``'s wait, cancel and teardown."""
     try:
         done, pending = await asyncio.wait({inner}, timeout=ceiling)
     except asyncio.CancelledError:
@@ -5459,6 +5499,7 @@ async def _run_delegated_agent_bounded(
         # Retrieve that exception without rendering it so private task/result
         # content cannot reach the event loop's exception handler.
         inner.add_done_callback(_retrieve_late_task_exception)
+        tree.begin_termination()          # #1212: the walk while the CLI lives
         inner.cancel()
         # Await the actual unwind so the permit (released by the OUTER
         # task's done-callback) never frees while the delegated work is
@@ -5473,9 +5514,11 @@ async def _run_delegated_agent_bounded(
                 "%.0fs teardown bound — permit will free early (S-2)",
                 _CEILING_TEARDOWN_BOUND_S,
             )
+        await _reap_bounded_tree(tree, role)
         raise
     if pending:
         inner.add_done_callback(_retrieve_late_task_exception)
+        tree.begin_termination()          # #1212: the walk while the CLI lives
         inner.cancel()
         if not await _await_task_teardown(inner, _CEILING_TEARDOWN_BOUND_S):
             logger.warning(
@@ -5483,10 +5526,25 @@ async def _run_delegated_agent_bounded(
                 "%.0fs teardown bound — permit will free early (S-2)",
                 _CEILING_TEARDOWN_BOUND_S,
             )
+        await _reap_bounded_tree(tree, role)
         raise DelegationCeilingExceeded(
             f"delegated turn exceeded the {ceiling:.0f}s wall-clock "
             f"ceiling and was cancelled (S-2 runaway backstop)", tool_counts)
     return inner.result()
+
+
+async def _reap_bounded_tree(tree: Any, role: str) -> None:
+    """#1212 §3.3 steps 3–6 as their OWN task, awaited through
+    ``_await_task_teardown``: a re-cancel of the runner is absorbed and never
+    reaches the kill, and a wait that outlives its bound leaves the task
+    running detached — it closes the fds itself, and logs at ERROR when the
+    processes could not be confirmed gone."""
+    tree.reaping = True
+    task = asyncio.create_task(tree.reap(role))
+    _REAPS.add(task)
+    task.add_done_callback(_REAPS.discard)
+    task.add_done_callback(_retrieve_late_task_exception)
+    await _await_task_teardown(task, tree.GRACE_S + tree.EXIT_WAIT_S + 1.0)
 
 
 async def _await_task_teardown(inner: asyncio.Task, bound_s: float) -> bool:
