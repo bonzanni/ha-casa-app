@@ -111,6 +111,10 @@ class _Harness:
             async def query(self, prompt):
                 return None
 
+            async def get_mcp_status(self):
+                # #1220: a pinned turn asks before its query; nothing pending
+                return {"mcpServers": []}
+
             async def receive_response(self):
                 h.entered_receive.set()
                 if h.mode == "raise":
