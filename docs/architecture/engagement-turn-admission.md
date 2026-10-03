@@ -46,6 +46,13 @@ writer — or their own cancellation — had just deliberately ended, which INV-
 and the only writer racing that window is the coroutine that created the record moments
 earlier. The launch turn's owner stays INV-ENG-011.
 
+The `in_casa` follow-up turn is refused at that same point for one other reason: the
+session it would be sent into was invalidated by a clearance downgrade while the turn waited
+for the turn lock. Either the rebuild is still pending, or the client the turn captured was
+replaced. The ticket is not accepted, so the message is still unread, and the delivery task
+waits for the fresh session and sends the same message there (INV-MEM-011,
+[`architecture/memory-scoping.md`](memory-scoping.md)).
+
 The admission sits between opening the engagement's stdin FIFO for writing — which succeeds
 only once its CLI is reading — and writing the first byte, which is the first thing that CLI
 can observe. That is the only instant at which the delivery is certain and the engagement

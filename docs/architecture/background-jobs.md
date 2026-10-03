@@ -127,6 +127,13 @@ one batch is queued or running. A restart resume and the periodic job sweep call
 they are committed and persisted only after the channel accepts the hand-off. A refused
 hand-off changes no batch or progress counters.
 
+A member's post that lowers the job's clearance mid-batch leaves the running batch to
+finish. The batch is judged by the usual rule, and it cannot report progress after the
+downgrade because its tool calls are refused while the rebuild is pending. The member's
+message is then delivered into the fresh session. Being queued, it holds the next batch back,
+so that batch runs after the message, in the fresh session (INV-MEM-011,
+[`memory-scoping.md`](memory-scoping.md)).
+
 What it does not cover: an operator message that arrives after a batch's quiet check and
 before that batch is admitted queues behind the batch and is read one batch later.
 
@@ -187,7 +194,7 @@ record leaves `active_and_idle()` the moment its terminal transition begins, bef
 transition has persisted, so a start admitted in that window runs beside it if the
 transition then rolls back.
 
-**INV-BGJOB-002**: A job fails through the engagement finalize funnel, with the reason and its last reported progress, when three consecutive batches report no progress or end without reporting, when a batch would exceed its declared batch cap, when a batch's delivery raises, or when a batch is cut off before finishing.
+**INV-BGJOB-002**: A job fails through the engagement finalize funnel, with the reason and its last reported progress, when three consecutive batches report no progress or end without reporting, when a batch would exceed its declared batch cap, when a batch's delivery raises, or when a batch is cut off before finishing — and a clearance downgrade never cuts a running batch.
 
 A fresh job with a recorded pending completion is spared one batch beyond either limit,
 once (INV-BGJOB-007).
