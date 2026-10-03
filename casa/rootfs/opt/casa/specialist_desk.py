@@ -78,6 +78,84 @@ def clip(text: str, limit: int) -> str:
     return text[:keep] + CLIP
 
 
+# -- S6 §2.6: one bounded composer for every line the slice introduces or changes ----------
+
+FIELD_MIN_CHARS = 8          # the least a label or a display field keeps (then CLIP)
+
+
+def bounded_line(template: str, *, label: str, fields: "dict[str, Any] | None" = None,
+                 limit: "int | None" = None) -> str:
+    """ONE string for the notice and the resident's echo, within the echo cap:
+    the literal text of *template* (the outcome clause and its connectives) is
+    reserved first, then the label and the display fields — ``{label}`` and
+    ``{<field>}`` placeholders — share what remains, each keeping at least
+    ``FIELD_MIN_CHARS`` and clipped with the marker. A notice composed any other
+    way lost its outcome when ``record_echo`` clipped it at 120 (S6 design §2.6:
+    the echo-budget shape, found in three review rounds, generalised here)."""
+    import result_broker as rb
+    cap = rb.ECHO_LINE_MAX if limit is None else int(limit)
+    values = {"label": str(label or "")}
+    for key, value in (fields or {}).items():
+        values[str(key)] = str(value if value is not None else "")
+    literal = template
+    for key in values:
+        literal = literal.replace("{" + key + "}", "")
+    budget = max(0, cap - len(literal))
+    keys = list(values)
+    floor = min(FIELD_MIN_CHARS, budget // max(1, len(keys)))
+    alloc = {k: min(len(values[k]), floor) for k in keys}
+    remaining = budget - sum(alloc.values())
+    need = [k for k in keys if len(values[k]) > alloc[k]]
+    while need and remaining > 0:
+        share = max(1, remaining // len(need))
+        progressed = False
+        for key in list(need):
+            extra = min(share, len(values[key]) - alloc[key], remaining)
+            if extra > 0:
+                alloc[key] += extra
+                remaining -= extra
+                progressed = True
+            if alloc[key] >= len(values[key]):
+                need.remove(key)
+        if not progressed:
+            break
+    out = template
+    for key in keys:
+        value = values[key]
+        out = out.replace("{" + key + "}", value if alloc[key] >= len(value) else clip(value, alloc[key]))
+    return out
+
+
+_FILE_OUTCOME_CLAUSES = {
+    # agent_inbox.Outcome value -> the past-event clause after "could not take <name>: "
+    "too_large": "over {cap} MB.",
+    "mismatch": "not a {kind}.",
+    "full": "inbox full ({files} files / {mb} MB).",
+    "download_failed": "Telegram did not hand it over.",
+    "local_path": "could not be saved; nothing kept.",
+    "storage_failed": "could not be saved; nothing kept.",
+}
+
+
+def file_outcome(label: str, name: str, outcome: Any, *, kind: str = "file") -> "str | None":
+    """The labelled, past-event line for a routed file's receipt outcome — Casa's
+    own composer over ``agent_inbox.Outcome``, never Ellen's first-person
+    ``_inbound_reply`` texts (S6 design §2.1). ``None`` for a stored file (the
+    desk turn speaks for it); an UNCERTAIN outcome claims neither that the file
+    was kept nor that it was not (INV-INBOX-005)."""
+    import agent_inbox
+    value = getattr(outcome, "value", outcome)
+    if value == agent_inbox.Outcome.STORED.value:
+        return None
+    if value == agent_inbox.Outcome.UNCERTAIN.value:
+        return bounded_line("{label} could not confirm that {name} was saved — it may or may not be in its inbox.",
+                            label=label, fields={"name": name})
+    clause = _FILE_OUTCOME_CLAUSES.get(value, "could not be saved; nothing kept.").format(
+        cap=agent_inbox.CAP_BYTES // (1024 * 1024), kind=kind, files=agent_inbox.MAX_FILES,
+        mb=agent_inbox.MAX_BYTES // (1024 * 1024))
+    return bounded_line("{label} could not take {name}: " + clause, label=label, fields={"name": name})
+
+
 @dataclasses.dataclass
 class Exchange:
     who: str           # "operator" | "resident" | "specialist"
