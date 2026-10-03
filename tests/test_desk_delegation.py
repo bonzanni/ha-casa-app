@@ -367,3 +367,30 @@ async def test_a_cancelled_delegation_keeps_its_desk_until_its_run_has_ended(env
         await _no_second_run_until_the_first_has_ended(desk, survivor)
     finally:
         await survivor.end_first()
+
+
+async def test_a_sticky_fault_set_while_a_cut_off_delegation_unwinds_outlives_that_run(env, monkeypatch):
+    """#1197 must never clear S5's sticky fault: a desk faulted while a
+    cut-off delegation's run is still unwinding stays faulted, with S5's own
+    reason, after that run has ended — the next delegation is the typed
+    refusal and starts no run."""
+    survivor = _survive(monkeypatch)
+    desk = sd.DESKS.get_or_create(OPERATOR, "finance")
+    try:
+        with pytest.raises(tools_mod.DelegationCeilingExceeded):
+            await asyncio.wait_for(_use(desk), 5)
+        assert survivor.active == 1                              # still unwinding
+        assert desk.faulted == sd.UNWINDING and desk.fault is None
+        fault = sd.DeskFault(run_id="r-1", plugin="probe", since=1000.0,
+                             reason="run r-1: termination unconfirmed (normal)")
+        desk.fault = fault
+        await survivor.end_first()
+        assert survivor.active == 0                              # the cut-off run has ended
+        assert desk.fault is fault and desk.faulted == fault.reason
+        before = survivor.starts
+        with pytest.raises(sd.DeskFaulted):
+            await asyncio.wait_for(_use(desk, "after the run ended"), 5)
+        assert survivor.starts == before                         # refused: nothing ran
+        assert desk.fault is fault and not desk.lock.locked()
+    finally:
+        await survivor.end_first()

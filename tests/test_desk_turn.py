@@ -548,3 +548,31 @@ async def test_a_cancelled_reply_keeps_its_desk_until_its_run_has_ended(env, mon
         await _no_second_run_until_the_first_has_ended(env, survivor)
     finally:
         await survivor.end_first()
+
+
+async def test_a_sticky_fault_set_while_a_cut_off_run_unwinds_outlives_that_run(env, monkeypatch):
+    """#1197 must never clear S5's sticky fault: a desk faulted ("termination
+    unconfirmed", refused until restart) while a cut-off reply's run is still
+    unwinding stays faulted, with S5's own reason and health row, after that
+    run has ended — and the next reply is refused and starts no run."""
+    survivor = _survive(monkeypatch)
+    try:
+        await asyncio.wait_for(_reply(env), 5)
+        assert survivor.active == 1                              # still unwinding
+        assert env.desk.faulted == sd.UNWINDING and env.desk.fault is None
+        assert sd.DESKS.faulted() == []                          # unwinding: no health row
+        fault = sd.DeskFault(run_id="r-1", plugin="probe", since=1000.0,
+                             reason="run r-1: termination unconfirmed (normal)")
+        env.desk.fault = fault
+        await survivor.end_first()
+        assert survivor.active == 0                              # the cut-off run has ended
+        assert env.desk.fault is fault and env.desk.faulted == fault.reason
+        assert sd.DESKS.faulted() == [env.desk]
+        faulted = (OPERATOR, sd.faulted_line(sd.label_for("finance")))
+        before = survivor.starts
+        await asyncio.wait_for(_reply(env, text="after the run ended"), 5)
+        assert survivor.starts == before                         # refused: nothing ran
+        assert env.channel.notices.count(faulted) == 1
+        assert env.desk.fault is fault and not env.desk.lock.locked()
+    finally:
+        await survivor.end_first()
