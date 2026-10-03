@@ -725,8 +725,9 @@ class TestInteractiveRequiresDenial:
         """Interactive success mirror of the sync builder-identity test: the
         requires gate passes, and the SAME ResolutionResult from _prelaunch
         reaches BOTH the engagement-record binding and the options builder,
-        with plugin_registry.resolve_for called EXACTLY ONCE across the whole
-        interactive path — no double-resolve (r1-review Minor 2)."""
+        with plugin_registry.resolve_for called once by the gate and once more
+        after the topic exists (#1179: that second resolve may only ADD a late
+        assignment; with none, the gate's object passes through unchanged)."""
         import agent as agent_mod
         import tools as tm
 
@@ -811,5 +812,7 @@ class TestInteractiveRequiresDenial:
             "mcp__casa-framework__query_engager",
             "mcp__casa-framework__emit_completion",
         )
-        # Exactly one resolve across the whole interactive path.
-        assert resolve_calls == ["specialist:finance"]
+        # #1179: the gate's resolve, then one after the topic exists (it adds
+        # what was assigned in between; here nothing was, so the gate's own
+        # object reaches the builder, above).
+        assert resolve_calls == ["specialist:finance", "specialist:finance"]

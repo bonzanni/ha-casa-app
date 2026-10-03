@@ -60,9 +60,12 @@ branch is chosen only when no engagement is bound and the calling role's loaded 
 `specialist`; every other caller resolves hosts exactly as before.
 
 What it does not cover: a plugin unassigned from the specialist while the launch awaits topic
-creation — the launch then records the post-unassign resolution, exactly as a resident's
-start of the same job does ([`background-jobs.md`](background-jobs.md), INV-BGJOB-006). A
-tap never starts a job ([`stored-call-buttons.md`](stored-call-buttons.md)).
+creation — the launch then records the post-unassign resolution for a specialist with no
+`requires:` block, and for one that declares `requires:` keeps every plugin its requires gate
+admitted, the environment filter aside ([`plugin-runtime.md`](plugin-runtime.md),
+INV-PLUG-008) — in both cases exactly as a resident's start of the same job does
+([`background-jobs.md`](background-jobs.md), INV-BGJOB-006). A tap never starts a job
+([`stored-call-buttons.md`](stored-call-buttons.md)).
 
 ## Failure behavior
 

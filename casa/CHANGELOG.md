@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.344.1] - 2026-10-03
+
+### Fixed
+- A plugin assigned to a specialist that declares `requires:` while Casa is opening one of its engagements or background jobs (after its required plugins are checked, before the engagement's topic exists) is now part of that engagement: it is loaded when the engagement starts and kept when it resumes, as it already was for every other specialist. Previously it stayed missing for the engagement's whole life.
+
 ## [0.344.0] - 2026-10-03
 
 ### Added
