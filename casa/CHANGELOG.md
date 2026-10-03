@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.341.2] - 2026-10-03
+
+### Fixed
+
+- When you reply to a specialist's post, the specialist now reads its earlier
+  exchanges with you as its own conversation with you: the log is labelled
+  "the operator", "you" and "Ellen, on the operator's behalf", and the turn
+  says the message comes from you, the same operator. Before, it read them as
+  a transcript of other people's conversation and hedged its answers.
+  Closes #1192.
+
 ## [0.341.1] - 2026-10-02
 
 ### Fixed

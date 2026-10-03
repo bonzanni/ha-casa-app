@@ -17,6 +17,12 @@ turn is spent on it (INV-DESK-002).
 Bounds (design §10): twelve exchanges per desk, 400 characters per side,
 10,000 per rendered block, idle reset after an hour, three waiters per desk,
 task ≤ 4,096 (Telegram's own), quote ≤ 2,000, context ≤ 12,500.
+
+#1192: the log is rendered from the specialist's point of view — a frame
+line saying these are its OWN exchanges in this chat, and party labels
+(``the operator``, ``you``, ``<resident>, on the operator's behalf``) — and
+a desk turn's context opens with a line saying the message is from that same
+operator, now. Only the rendering changed; the log stores what it stored.
 """
 from __future__ import annotations
 
@@ -40,6 +46,7 @@ DESK_TASK_CHARS = 4096
 DESK_QUOTE_CHARS = 2000
 DESK_CONTEXT_CHARS = 12_500
 DESK_FRAMING_CHARS = 500
+DESK_NAME_CHARS = 40          # a resident's display name inside a label or a frame
 CLIP = "[…]"
 POSTED_VIEW = "[posted a view]"
 NO_REPLY = "[no reply]"
@@ -188,18 +195,51 @@ class DeskRegistry:
 DESKS = DeskRegistry()
 
 
-def _line(exchange: Exchange) -> str:
+# #1192: the block's first line. The specialist read the earlier entries as a
+# transcript of other parties relayed by the resident; the frame says whose
+# conversation this is, and the labels name each party from the specialist's
+# own point of view. A constant: its length is part of every block's budget.
+DESK_FRAME = ("These are your own recent exchanges in this chat, oldest first — not a "
+              "transcript of other parties. \"you\" is you; \"the operator\" is the person "
+              "you work for in this chat; a name followed by \"on the operator's behalf\" is "
+              "the chat's assistant asking you something for the operator.")
+OPERATOR_LABEL = "the operator"
+SPECIALIST_LABEL = "you"
+RESIDENT_FALLBACK = "the assistant"
+
+
+def _resident_name(name: str | None) -> str:
+    """The resident's display name for a label or a frame, bounded."""
+    return clip((name or "").strip() or RESIDENT_FALLBACK, DESK_NAME_CHARS)
+
+
+def _label(who: str, resident_name: str) -> str:
+    if who == "operator":
+        return OPERATOR_LABEL
+    if who == "specialist":
+        return SPECIALIST_LABEL
+    if who == "resident":
+        return f"{resident_name}, on the operator's behalf"
+    return who
+
+
+def _line(exchange: Exchange, resident_name: str = RESIDENT_FALLBACK) -> str:
     stamp = time.strftime("%H:%M", time.localtime(exchange.at))
-    return f"[{exchange.who} {stamp}] {exchange.text}"
+    return f"[{stamp}] {_label(exchange.who, resident_name)}: {exchange.text}"
 
 
-def render_block(exchanges: list[Exchange], budget: int = DESK_LOG_CHARS) -> str:
-    """The ``<desk>`` block, budgeted constructively: whole oldest exchanges
-    are dropped until the rendered block fits *budget*; a lone newest
-    exchange that alone exceeds it is clipped to fit. Empty for no log."""
+def render_block(exchanges: list[Exchange], budget: int = DESK_LOG_CHARS,
+                 resident_name: str | None = None) -> str:
+    """The ``<desk>`` block — the frame line, then one labelled line per
+    side — budgeted constructively: whole oldest exchanges are dropped until
+    the rendered block fits *budget*; a lone newest exchange that alone
+    exceeds it is clipped to fit. Empty for no log, and empty when *budget*
+    cannot hold the tags and the frame (never an overrun)."""
+    name = _resident_name(resident_name)
+    head, tail = "<desk>\n" + DESK_FRAME + "\n", "\n</desk>"
     kept = list(exchanges)
     while kept:
-        block = "<desk>\n" + "\n".join(_line(e) for e in kept) + "\n</desk>"
+        block = head + "\n".join(_line(e, name) for e in kept) + tail
         if len(block) <= budget:
             return block
         if len(kept) > 2:
@@ -207,20 +247,39 @@ def render_block(exchanges: list[Exchange], budget: int = DESK_LOG_CHARS) -> str
         elif len(kept) == 2:
             kept = kept[1:]
         else:
-            head, tail = "<desk>\n", "\n</desk>"
-            room = max(budget - len(head) - len(tail), 0)
-            return head + clip(_line(kept[0]), room) + tail
+            room = budget - len(head) - len(tail)
+            if room <= 0:
+                return ""
+            return head + clip(_line(kept[0], name), room) + tail
     return ""
 
 
-def fit_block_for_delegation(exchanges: list[Exchange], context_len: int) -> str:
+def turn_frame(resident_name: str | None, continuation: bool = False) -> str:
+    """#1192: the desk turn's opening context line — the task is the
+    operator's own message to the specialist, now, the same operator as in
+    the exchanges shown, not something the resident relayed. An approval
+    continuation's task is Casa's note of the operator's decision, not the
+    operator's words, and its frame says that instead."""
+    name = _resident_name(resident_name)
+    if continuation:
+        return ("The task above is Casa's note of the operator's decision on your request, "
+                "made in this chat now — the same operator as in your earlier exchanges, "
+                f"if any are shown. {name} did not write or relay it.")
+    return ("The task above is a message from the operator, written to you directly in "
+            "this chat now, as a reply to you — the same operator as in your earlier "
+            f"exchanges, if any are shown. {name} did not write or relay it.")
+
+
+def fit_block_for_delegation(exchanges: list[Exchange], context_len: int,
+                             resident_name: str | None = None) -> str:
     """§8: the block fitted into what remains of DESK_CONTEXT_CHARS after the
     resident's own (already validated) context and the framing — newest
     exchanges kept, possibly none."""
     budget = DESK_CONTEXT_CHARS - int(context_len) - DESK_FRAMING_CHARS
     if budget <= 0:
         return ""
-    return render_block(exchanges, budget=min(budget, DESK_LOG_CHARS))
+    return render_block(exchanges, budget=min(budget, DESK_LOG_CHARS),
+                        resident_name=resident_name)
 
 
 def label_for(role: str) -> str:
@@ -366,11 +425,16 @@ async def delegation_use(desk: Desk, *, reservation: "Reservation | None", run: 
     released inside the lock. The runner's output is returned unchanged for
     the caller's own classification."""
     import tools as tools_mod
+    # the caller the runner itself names ("Context from <caller>"), read at
+    # entry, before any await, from the task's own origin snapshot
+    caller = str(tools_mod._snapshot_origin().get("role") or "")
+    resident_name = tools_mod._display_name_for_role(caller) if caller else None
     try:
         async with desk.use(reservation):
             now = DESKS.now()
             desk.begin_use(now)
-            block = fit_block_for_delegation(desk.log, len(context_text or ""))
+            block = fit_block_for_delegation(desk.log, len(context_text or ""),
+                                             resident_name=resident_name)
             if block and context_text:
                 context = f"{context_text}\n\n{block}"
             else:
@@ -430,8 +494,12 @@ def _desk_origin(*, resident_role: str, desk_role: str, chat_id: int, user_id: i
     }
 
 
-def _compose_context(block: str, quoted_text: str | None, record: Any, now: float) -> str:
-    parts = []
+def _compose_context(block: str, quoted_text: str | None, record: Any, now: float,
+                     resident_name: str | None = None, continuation: bool = False) -> str:
+    """The desk turn's context: the turn frame (#1192) first, then the block,
+    then the quote — at most DESK_CONTEXT_CHARS by construction (frame and
+    quote header within DESK_FRAMING_CHARS), the slice only a backstop."""
+    parts = [turn_frame(resident_name, continuation)]
     if block:
         parts.append(block)
     if quoted_text is not None and record is not None:
@@ -493,7 +561,8 @@ async def handle_reply(
         async with desk.use(reservation):
             now = DESKS.now()
             desk.begin_use(now)
-            block = render_block(desk.log)
+            resident_name = tools_mod._display_name_for_role(resident_role)
+            block = render_block(desk.log, resident_name=resident_name)
             cfg = tools_mod._agent_role_map.get(desk_role)
             if cfg is None:
                 await _notice(f"{label} could not continue (not delegable).")
@@ -506,7 +575,9 @@ async def handle_reply(
                 text=task_text, turn_id=turn_id)
             origin["turn_scope"] = TurnScope.for_desk(
                 origin, display_name=tools_mod._display_name_for_role(desk_role))
-            context_text = _compose_context(block, quoted_text, record, now)
+            context_text = _compose_context(block, quoted_text, record, now,
+                                            resident_name=resident_name,
+                                            continuation=continuation)
             # the permit AFTER the lock; it never waits
             permit = None
             limiter = tools_mod._specialist_limiter

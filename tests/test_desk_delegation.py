@@ -85,10 +85,21 @@ async def test_a_sync_delegation_from_the_operator_dm_reads_and_writes_the_desk(
     (call,) = env.calls
     assert call.task == "draft invoice"
     assert call.context.startswith("lesina march")                 # the resident's context first
-    assert "<desk>" in call.context and "earlier words" in call.context
+    assert "<desk>" in call.context and "] the operator: earlier words" in call.context
+    assert sd.DESK_FRAME in call.context                            # #1192: its own exchanges
+    assert sd.turn_frame("assistant") not in call.context          # a delegation is not the operator writing
     assert [(e.who, e.text) for e in desk.log] == [
         ("operator", "earlier words"), ("resident", "draft invoice"), ("specialist", "answer 1")]
     assert desk.last_used == 5000.0 and not desk.lock.locked() and desk.waiting == 0
+
+
+async def test_a_later_delegation_labels_the_residents_brief_on_the_operators_behalf(env):
+    await _delegate(task="first brief")
+    await _delegate(task="second brief")
+    second = env.calls[1].context
+    # the caller's display name (the fixture's resident has none: its role)
+    assert "] assistant, on the operator's behalf: first brief" in second
+    assert "] you: answer 1" in second
 
 
 async def test_the_thread_begins_with_the_first_delegation(env):
