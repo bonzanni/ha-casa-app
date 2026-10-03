@@ -1248,6 +1248,63 @@ async def test_reconcile_cb_resumes_the_captured_engagement(monkeypatch, tmp_pat
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["upgrade", "install", None])
+@pytest.mark.parametrize("delivery_result", [1, 0])
+async def test_reconcile_cb_continuation_matches_inspect_mode(
+    monkeypatch, tmp_path, mode, delivery_result,
+) -> None:
+    # #1150/#1163: the post-Approve continuation follows the inspect's mode.
+    # An upgrade continues with upgrade.md step 3 (specialist_upgrade) --
+    # specialist_install_commit refuses an installed slug (active_present) and
+    # the upgrade recipe wires no delegation. An install keeps its literal.
+    from tools import specialist_install_inspect, engagement_var
+
+    delivered = []
+    rec = SimpleNamespace(id="eng-abc", driver="in_casa", status="active")
+    registry = SimpleNamespace(get=lambda eid: rec if eid == rec.id else None)
+
+    async def _deliver(r, text):
+        delivered.append((r, text))
+        return delivery_result
+
+    _wire_inspect(
+        monkeypatch, tmp_path,
+        channel=_resume_channel(registry=registry, deliver=_deliver),
+    )
+    cap = _capture_reconcile(monkeypatch)
+    args = {"repo": "owner/repo", "ref": "main"}
+    if mode is not None:
+        args["mode"] = mode
+    if mode == "upgrade":
+        args["target_slug"] = "mtg"
+
+    token = engagement_var.set(SimpleNamespace(id=rec.id))
+    try:
+        payload = _payload(await specialist_install_inspect.handler(args))
+    finally:
+        engagement_var.reset(token)
+
+    assert payload["consent"] == "keyboard_posted", "CONSENT_POSTED"
+    outcome = await cap["reconcile_cb"]()
+    assert len(delivered) == 1, "ONE_CONTINUATION"
+    assert delivered[0][0] is rec, "CAPTURED_ENGAGEMENT"
+    assert outcome is bool(delivery_result), "DELIVERY_BOOL"
+
+    text = delivered[0][1]
+    if mode == "upgrade":
+        assert "specialist_upgrade" in text, "UPGRADE_TOOL_REQUIRED"
+        assert text.count("specialist_install_commit") == 0, "NO_INSTALL_COMMIT"
+        assert text.count("wire delegation") == 0, "NO_DELEGATION_WIRING"
+    else:
+        assert text == (
+            "The operator approved the install consent for "
+            "specialist:mtg. Continue the recipe now without "
+            "waiting for further input: call specialist_install_commit with "
+            "the staged values, then finish the recipe (wire delegation, "
+            "config_git_commit, casa_reload, emit_completion)."
+        ), "INSTALL_LITERAL_UNCHANGED"
+
+@pytest.mark.asyncio
 async def test_reconcile_cb_swallows_a_delivery_failure(monkeypatch, tmp_path) -> None:
     from tools import specialist_install_inspect, engagement_var
 
