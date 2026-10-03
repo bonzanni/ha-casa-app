@@ -1080,6 +1080,24 @@ class ChallengeCoordinator:
         if self._entries.get(ch.key) is ch:
             del self._entries[ch.key]
 
+    # -- read-only liveness (#1164) -------------------------------------------
+
+    def live_kinds(self, *, chat_id: int, operator_id: int) -> list[str]:
+        """The distinct kinds (sorted) of the challenges still open for this
+        operator's DM — a request that has not settled, whether its keyboard
+        is on screen or still being posted. Liveness reads the REQUEST, never
+        ``_entries`` membership: an entry outlives its request until the
+        second latch lands. Only the kind is returned — no key, subject,
+        arguments, requester or count — and nothing is touched."""
+        kinds = set()
+        for ch in list(self._entries.values()):
+            meta = ch.req.meta
+            if (not ch.req._future.done()
+                    and meta.get("chat_id") == chat_id
+                    and meta.get("operator_id") == operator_id):
+                kinds.add(str(meta.get("kind")))
+        return sorted(kinds)
+
     # -- cancellation / drain ----------------------------------------------
 
     def cancel_matching(

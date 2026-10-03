@@ -18995,6 +18995,29 @@ async def event_ack_revoke(args: dict) -> dict:
         })
 
 
+# #1164: how consent_reprompt names a keyboard it does not re-issue. Kind
+# literals come from the code that registers each challenge, never from a
+# model; an authorization request is named by its existence alone.
+_OPEN_KEYBOARD_LABELS = {
+    "specialist_install_consent": (
+        "a specialist install/upgrade consent — re-asked by "
+        "specialist_install_inspect (it needs the inspection)"),
+    "persona_install_consent": (
+        "a persona install consent — re-asked by persona_install_inspect"),
+    "plugin_erase_choice": (
+        "an uninstall erase-data question — re-asked by plugin_remove / "
+        "specialist_uninstall called without erase_data"),
+    "authz": "an authorization request — the operator answers it there",
+    "trigger_consent": "a plugin trigger consent",
+    "callback_consent": "a plugin callback consent",
+    "event_consent": "a plugin event consent",
+}
+
+
+def _open_keyboard_label(kind: str) -> str:
+    return _OPEN_KEYBOARD_LABELS.get(kind, f"a {kind} keyboard")
+
+
 @tool(
     "consent_reprompt",
     "Re-issue the operator's pending plugin-consent DM keyboards (trigger, "
@@ -19003,7 +19026,10 @@ async def event_ack_revoke(args: dict) -> dict:
     "question asked any other way (ask_user, an engagement ask) commits "
     "nothing however it is answered. Posts nothing for consents the "
     "operator explicitly DENIED (those re-prompt only on the next plugin "
-    "mutation or casa_reload) and reports each pending consent's outcome.",
+    "mutation or casa_reload) and reports each pending consent's outcome. "
+    "Any other keyboard still open in the operator DM (a specialist or "
+    "persona install consent, an erase-data question, an authorization "
+    "request) is named by kind, never re-issued.",
     {"type": "object", "properties": {}},
 )
 async def consent_reprompt(args: dict) -> dict:
@@ -19025,7 +19051,9 @@ async def consent_reprompt(args: dict) -> dict:
         channel_manager = getattr(runtime, "channel_manager", None)
         channel = channel_manager.get("telegram") if channel_manager else None
         import trigger_consent
-        if channel is None or trigger_consent.operator_identity(channel) is None:
+        op = (trigger_consent.operator_identity(channel)
+              if channel is not None else None)
+        if op is None:
             return _result({
                 "ok": False, "kind": "dm_unreachable",
                 "message": ("no operator DM is reachable — a consent "
@@ -19097,17 +19125,33 @@ async def consent_reprompt(args: dict) -> dict:
                         "channel recovers"),
         })
     denied = [r for r in rows if r.get("status") == "denied"]
+    # #1164: every other keyboard still open in the operator DM, by kind —
+    # read, never re-issued. A plugin kind is left out only when a row above
+    # already says its keyboard is on screen. The coordinator is resolved at
+    # call time, as the reconcilers resolve it.
+    import authz_grants
+    shown = {f"{r.get('kind')}_consent" for r in rows
+             if r.get("status") in ("posted", "already_pending")}
+    live = authz_grants.CHALLENGES.live_kinds(chat_id=op[0],
+                                              operator_id=op[1])
+    others = [k for k in live if k not in shown]
     message = (
         f"{posted} consent keyboard(s) (re)posted to the operator DM"
         if posted else
         ("a consent keyboard is already open in the operator DM"
          if any(r.get("status") == "already_pending" for r in rows)
-         else "no consent is pending — nothing to re-issue"))
+         else ("no plugin consent needed re-issuing" if others
+               else "no consent is pending — nothing to re-issue")))
     if denied:
         message += (
             f"; {len(denied)} consent(s) were DENIED by the operator and "
             "were NOT re-issued — a new plugin mutation or casa_reload "
             "re-asks")
+    if others:
+        message += (
+            "; still open or being posted in the operator DM, and NOT "
+            "re-issued by consent_reprompt: "
+            + "; ".join(_open_keyboard_label(k) for k in others))
     return _result({"ok": True, "reprompted": posted, "rows": rows,
                     "message": message})
 

@@ -588,6 +588,162 @@ async def test_tool_reports_live_specialist_consent(monkeypatch):
         await asyncio.wait_for(challenge.broker.drain_hooks(), 5)
 
 
+
+_NOTHING = "no consent is pending — nothing to re-issue"
+
+
+def _open_challenge(channel, kind, *, key=None, chat_id=100, operator_id=100,
+                    meta_extra=None, text="challenge"):
+    import authz_grants
+    return authz_grants.CHALLENGES.register_challenge(
+        key or ("t1164", kind, chat_id, operator_id), chat_id=chat_id,
+        operator_id=operator_id, channel=channel, challenge_text=text,
+        kind=kind, meta_extra=meta_extra)
+
+
+async def _close(*handles):
+    for h in handles:
+        ch = h._challenge
+        ch.broker.cancel(namespace="resident_ask", scope=ch.scope,
+                         request_id=ch.rid, reason="test_cleanup")
+        await asyncio.wait_for(ch.driver, 5)
+        await asyncio.wait_for(ch.broker.drain_hooks(), 5)
+
+
+async def test_tool_nothing_live_message_unchanged(monkeypatch):
+    """#1164 companion: with no keyboard open of any kind the answer is the
+    unchanged literal."""
+    telegram = _FakeTelegram()
+    tools = _tool_env(monkeypatch, telegram)
+    for m in ("trigger_reconcile", "callback_reconcile", "event_reconcile"):
+        _patch_kind(monkeypatch, m, [])
+    payload = await _run_tool(tools)
+    assert payload == {"ok": True, "reprompted": 0, "rows": [],
+                       "message": _NOTHING}
+    assert telegram.posts == []
+
+
+@pytest.mark.parametrize("kind, needle", [
+    ("persona_install_consent", "persona_install_inspect"),
+    ("plugin_erase_choice", "called without erase_data"),
+    ("authz", "an authorization request"),
+    ("future_kind", "a future_kind keyboard"),
+])
+async def test_tool_names_every_other_live_kind(monkeypatch, kind, needle):
+    """#1164: the rule is general over the coordinator's kinds, an unknown
+    one included; nothing is posted or resolved by the call."""
+    telegram = _FakeTelegram()
+    tools = _tool_env(monkeypatch, telegram)
+    for m in ("trigger_reconcile", "callback_reconcile", "event_reconcile"):
+        _patch_kind(monkeypatch, m, [])
+    h = _open_challenge(telegram, kind)
+    try:
+        assert await h.settled_post() == "posted"
+        payload = await _run_tool(tools)
+        assert payload["ok"] is True and payload["reprompted"] == 0
+        assert payload["rows"] == []
+        assert payload["message"].startswith(
+            "no plugin consent needed re-issuing; still open")
+        assert payload["message"].count(needle) == 1
+        assert len(telegram.posts) == 1
+        assert not h._challenge.req._future.done()
+    finally:
+        await _close(h)
+
+
+async def test_tool_authz_discloses_only_existence(monkeypatch):
+    """#1164 privilege bar: a live authorization request is named by its
+    existence alone — no tool, argument, requester or count."""
+    telegram = _FakeTelegram()
+    tools = _tool_env(monkeypatch, telegram)
+    for m in ("trigger_reconcile", "callback_reconcile", "event_reconcile"):
+        _patch_kind(monkeypatch, m, [])
+    sentinels = ("SENTINEL_TOOL_9f2", "SENTINEL_ARG_77c", "SENTINEL_ROLE_c41")
+    meta = {"tool_name": sentinels[0], "canonical_json": sentinels[1],
+            "target_role": sentinels[2]}
+    hs = [_open_challenge(telegram, "authz", key=("t1164", n),
+                          meta_extra=meta, text=" ".join(sentinels))
+          for n in range(2)]
+    try:
+        for h in hs:
+            assert await h.settled_post() == "posted"
+        raw = json.dumps(await _run_tool(tools))
+        for s in sentinels:
+            assert raw.count(s) == 0
+        assert raw.count("an authorization request") == 1
+    finally:
+        await _close(*hs)
+
+
+async def test_tool_live_plugin_kind_reported_unless_a_row_shows_it(
+        monkeypatch):
+    """#1164 seam: a DENIED consent's keyboard re-asked by the lifecycle is
+    live but reported `denied`, so it is named; a kind a posted or
+    already_pending row shows is not named twice."""
+    telegram = _FakeTelegram()
+    tools = _tool_env(monkeypatch, telegram)
+    _patch_kind(monkeypatch, "trigger_reconcile", [
+        {"kind": "trigger", "plugin": "gmail", "name": "t",
+         "handle": _handle("posted", created=False)}])
+    _patch_kind(monkeypatch, "callback_reconcile", [
+        {"kind": "callback", "plugin": "gmail", "name": "x",
+         "status": "denied"}])
+    _patch_kind(monkeypatch, "event_reconcile", [])
+    hs = [_open_challenge(telegram, "callback_consent"),
+          _open_challenge(telegram, "trigger_consent")]
+    try:
+        for h in hs:
+            assert await h.settled_post() == "posted"
+        payload = await _run_tool(tools)
+        msg = payload["message"]
+        assert payload["ok"] is True
+        assert msg.startswith("a consent keyboard is already open")
+        assert msg.count("DENIED") == 1
+        assert msg.count("a plugin callback consent") == 1
+        assert msg.count("trigger consent") == 0
+    finally:
+        await _close(*hs)
+
+
+async def test_live_kinds_reads_the_request_and_the_operator():
+    """#1164: liveness is the unresolved REQUEST, not `_entries` membership
+    (an entry outlives its request until both latches land), filtered to
+    the operator's DM chat and id."""
+    import authz_grants
+    gate = asyncio.Event()
+
+    class _SlowPost(_FakeTelegram):
+        async def post_dm_keyboard(self, **kw):
+            await gate.wait()
+            return await super().post_dm_keyboard(**kw)
+
+    slow = _SlowPost()
+    tg = _FakeTelegram()
+    settled = _open_challenge(slow, "authz", key="settled")
+    pending = _open_challenge(slow, "persona_install_consent", key="pending")
+    other_chat = _open_challenge(tg, "plugin_erase_choice", key="oc",
+                                 chat_id=200, operator_id=100)
+    other_op = _open_challenge(tg, "trigger_consent", key="oo",
+                               chat_id=100, operator_id=300)
+    co = authz_grants.CHALLENGES
+    try:
+        await asyncio.sleep(0)
+        ch = settled._challenge
+        ch.broker.cancel(namespace="resident_ask", scope=ch.scope,
+                         request_id=ch.rid, reason="test")
+        assert "settled" in co._entries          # second latch not landed
+        assert co.live_kinds(chat_id=100, operator_id=100) == [
+            "persona_install_consent"]           # in flight, not posted
+        assert co.live_kinds(chat_id=200, operator_id=100) == [
+            "plugin_erase_choice"]
+        assert co.live_kinds(chat_id=100, operator_id=300) == [
+            "trigger_consent"]
+    finally:
+        gate.set()
+        await _close(pending, other_chat, other_op)
+        await asyncio.wait_for(settled._challenge.driver, 5)
+
+
 async def test_tool_runtime_unavailable(monkeypatch):
     tools = _tool_env(monkeypatch, None, runtime=None)
     payload = await _run_tool(tools)
