@@ -329,6 +329,61 @@ async def test_a_safe_json_response_uses_its_receipt_sentence(env):
     assert owner.captured == pr.Capture("receipt", "applied yes to r-1 at revision 1")
 
 
+@pytest.mark.parametrize("response, expected", [
+    # the CLI's other projection: text blocks, joined before parsing
+    ([{"type": "text", "text": '{"applied": true, '}, {"type": "text", "text": '"receipt": "ok"}'}],
+     "ok"),
+    (json.dumps({"receipt": "  kept as given \n"}), "  kept as given \n"),
+    # everything else is the response text verbatim
+    (json.dumps({"applied": True}), json.dumps({"applied": True})),
+    (json.dumps({"receipt": 7}), json.dumps({"receipt": 7})),
+    (json.dumps({"receipt": " \n "}), json.dumps({"receipt": " \n "})),
+    (json.dumps({"note": "no more entries"}), json.dumps({"note": "no more entries"})),
+    (json.dumps({"meta": {"receipt": "nested"}}), json.dumps({"meta": {"receipt": "nested"}})),
+    (json.dumps(["receipt"]), json.dumps(["receipt"])),
+    ("{not json", "{not json"),
+])
+async def test_a_safe_response_without_a_receipt_sentence_is_its_text_verbatim(env, response, expected):
+    owner = _owner()
+    hook = rb.make_result_hook(_map(), client_id="c1", store=env.store, owner=owner)
+    assert await hook(_post(APPLY, ARGS, response), "t1", {}) == {}
+    assert owner.captured == pr.Capture("receipt", expected)
+
+
+async def test_a_receipt_is_read_only_within_the_parse_ceiling_and_a_too_deep_response_is_verbatim(env):
+    over = json.dumps({"receipt": "r", "pad": "x" * rb.MAX_RESPONSE_BYTES})
+    deep = '{"receipt": "r", "n": ' + "[" * 100_000 + "]" * 100_000 + "}"
+    for response in (over, deep):
+        owner = _owner()
+        hook = rb.make_result_hook(_map(), client_id="c1", store=env.store, owner=owner)
+        assert await hook(_post(APPLY, ARGS, response), "t1", {}) == {}
+        assert owner.captured == pr.Capture("receipt", response)
+
+
+async def test_a_receipt_member_never_changes_a_more_results_outcome(env):
+    # a landed proposal stays the receipt; a slot that is not null stays withheld
+    owner = _owner(runtime_name=MORE, canonical='{"page":2}')
+    hook = rb.make_result_hook(_map(), client_id="c1", store=env.store, owner=owner)
+    _open(env.store, call="c-landed", tool=MORE)
+    ref, err = env.store.deposit(client_id="c1", slot=SLOT, value=json.dumps(_proposal()))
+    assert err is None
+    await hook(_post(MORE, {"page": 2}, json.dumps({SLOT: ref, "receipt": "not shown"})), "c-landed", {})
+    assert owner.captured == pr.Capture("delivered") and len(env.rec.proposals) == 1
+    owner = _owner(runtime_name=MORE, canonical='{"page":2}')
+    hook = rb.make_result_hook(_map(), client_id="c1", store=env.store, owner=owner)
+    _open(env.store, call="c-bad", tool=MORE)
+    out = await hook(_post(MORE, {"page": 2}, json.dumps({SLOT: "", "receipt": "not shown"})), "c-bad", {})
+    assert "casa_result_withheld" in out["hookSpecificOutput"]["updatedToolOutput"]
+    assert owner.captured.kind == "withheld" and "not shown" not in owner.captured.text
+    # the accepted no-post shape: its receipt sentence
+    owner = _owner(runtime_name=MORE, canonical='{"page":2}')
+    hook = rb.make_result_hook(_map(), client_id="c1", store=env.store, owner=owner)
+    _open(env.store, call="c-none", tool=MORE)
+    out = await hook(_post(MORE, {"page": 2}, json.dumps({SLOT: None, "receipt": "no more entries"})),
+                     "c-none", {})
+    assert out == {} and owner.captured == pr.Capture("no_post", "no more entries")
+
+
 async def test_the_more_exceptions_capture_is_the_hooks_effective_result_never_the_raw_response(env):
     cases = []
     for name, response, expect in [

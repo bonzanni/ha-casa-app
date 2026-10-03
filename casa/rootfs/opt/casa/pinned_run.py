@@ -50,13 +50,14 @@ class Capture:
     """How the watched call ended (design §5.4), as the hooks resolve it at
     their END with their OWN effective result:
 
-    - ``receipt``   — a ``safe`` tool's response text (the receipt);
+    - ``receipt``   — a ``safe`` tool's receipt: its response's ``receipt``
+      sentence when it carries one, else the response text (#1200);
     - ``delivered`` — the ``More`` exception's proposal landed (the hook's
       delivery receipt): the landed proposal IS the operator-visible receipt;
     - ``withheld``  — the ``More`` result was refused or its post not proven
       (``text`` = the reason);
-    - ``no_post``   — the ``More`` tool's contract no-post shape: its own text
-      is the receipt;
+    - ``no_post``   — the ``More`` tool's contract no-post shape: its own
+      ``receipt`` sentence, else its own text, is the receipt;
     - ``error``     — the failure hook: the error's CLASS only;
     - ``no_call``   — the turn ended with no executed call;
     - ``timed_out`` — the ceiling, with termination confirmed and nothing

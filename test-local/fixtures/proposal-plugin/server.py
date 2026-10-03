@@ -6,11 +6,13 @@ JSON-RPC MCP server with five tools:
   ``operator_proposal`` slot): a question with the buttons Yes / No / More.
 - ``apply``  — the stored call the Yes and No buttons name: records the
   arguments it received into the plugin data directory and answers with a
-  plain receipt; an ``expected_revision`` other than the current one is a
-  refusal IN the receipt (the plugin's own revision guard), never an error.
+  JSON object whose ``receipt`` sentence is what Casa posts as the receipt;
+  an ``expected_revision`` other than the current one is a refusal IN the
+  receipt (the plugin's own revision guard), never an error.
 - ``more``   — the ``More`` exception: page 2 deposits another proposal
   (its own buttons, its More naming page 3); page 3 and beyond answer the
-  contract's no-post shape ``{"proposal": null, "note": "no more entries"}``.
+  contract's no-post shape with a receipt sentence,
+  ``{"proposal": null, "receipt": "no more entries"}``.
 - ``offer_hang`` — deposits a proposal with one button, ``Hang``, naming
   ``hang``: the live check of the hung-call path.
 - ``hang``   — the stored call that never returns: it starts one child
@@ -149,7 +151,7 @@ def tool_apply(args: dict) -> dict:
 def tool_more(args: dict) -> dict:
     page = args.get("page")
     if not isinstance(page, int) or page > 2:
-        return {"proposal": None, "note": "no more entries"}
+        return {"proposal": None, "receipt": "no more entries"}
     return {"proposal": deposit(_page(page)), "note": f"page {page} posted"}
 
 
@@ -206,7 +208,7 @@ def handle(req: dict):
     if method == "initialize":
         return _result(id_, {"protocolVersion": PROTOCOL_VERSION,
                              "capabilities": {"tools": {}},
-                             "serverInfo": {"name": "proposal-fixture", "version": "0.2.0"}})
+                             "serverInfo": {"name": "proposal-fixture", "version": "0.4.0"}})
     if method == "notifications/initialized":
         return None
     if method == "tools/list":

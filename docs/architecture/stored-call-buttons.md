@@ -31,7 +31,9 @@ the operator taps, no ordinary model turn runs and no model decides anything: Ca
 short *pinned* specialist turn whose prompt names the one call and whose hooks allow exactly
 that call — the stored tool with the stored arguments, byte for byte in canonical JSON —
 and deny every other call and any second call. The plugin's own response is the receipt,
-posted labelled; a plugin refusal (its revision guard) is a receipt too. Nothing the model
+posted labelled — its `receipt` sentence when the response's text is a JSON object carrying
+a non-blank string `receipt`, otherwise the text verbatim; a plugin refusal (its revision
+guard) is a receipt too. Nothing the model
 writes reaches the operator or the resident; the pinned turn retains nothing into memory.
 
 **Which calls a button may store.** At deposit, every button's tool must be a declared tool
@@ -99,7 +101,11 @@ in the list for every non-plugin tool. The capture resolves at the END of the re
 with the hook's own effective result: a `safe` tool's response text; for `More`, the
 delivery receipt of the proposal it just posted (the landed proposal is then the sole
 visible receipt), the withheld replacement, or the no-post pass whose own text is the
-receipt. A denied call never reaches a post-hook, so a denied call is never a receipt. A
+receipt. A passed-through text (the `safe` response, the no-post) that parses as a JSON
+object with a non-blank string `receipt` is captured as that string, as given; anything else
+— plain text, another JSON shape, a text over the broker's parse ceiling or nested too deep
+to parse — is captured verbatim. The member is read only here: it never changes which kind
+a `More` result is. A denied call never reaches a post-hook, so a denied call is never a receipt. A
 validated capture is authoritative over the turn's own ending — a model that then hit its
 turn limit, stalled or aborted still produced the receipt. The CLI's reported post-hook
 input is compared with the stored canonical: on a difference the receipt is still posted,
@@ -187,7 +193,7 @@ so that it is no descendant of the CLI at termination time (the plugin's respons
 which the world may move — the re-checks run after the wait, not before it; the process's own
 exit sweep, which ends every task at once (Casa-wide behaviour, not S5's).
 
-**INV-PROP-002**: No ordinary model turn runs on a tap; between the tap and the receipt exactly one pinned specialist turn may run, and in it exactly one tool call can execute — the stored tool with the stored arguments, canonical JSON for canonical JSON — on a specialist session the existing builder built from the captured input, under the desk lock; every other call, and any second call, is denied before it runs; nothing the model writes reaches the operator or is retained; the receipt is the executed call's own response, posted labelled and bounded, the plugin's refusal included; a turn with no executed call is a refusal notice with no retry; the resident learns of it only by a body-free echo line.
+**INV-PROP-002**: No ordinary model turn runs on a tap; between the tap and the receipt exactly one pinned specialist turn may run, and in it exactly one tool call can execute — the stored tool with the stored arguments, canonical JSON for canonical JSON — on a specialist session the existing builder built from the captured input, under the desk lock; every other call, and any second call, is denied before it runs; nothing the model writes reaches the operator or is retained; the receipt is the executed call's own response — its `receipt` sentence when the response's text is a JSON object carrying a non-blank string `receipt`, otherwise the text verbatim — posted labelled and bounded, the plugin's refusal included; a turn with no executed call is a refusal notice with no retry; the resident learns of it only by a body-free echo line.
 
 **INV-PROP-003**: A keyboard with stored calls exists only for a deposit from a tool declaring the `operator_proposal` slot, whose calls name the same plugin's declared tools with fixed reference-free arguments within the bounds, and whose message was proven delivered; a proposal that did not land holds no stored call, a chat holds at most 32 live proposals, and a proposal expires after one hour.
 
@@ -213,8 +219,8 @@ through the bounded termination path; a receipt that lands during the hold is po
 it, with the applied echo line.
 
 **A `More` proposal was withheld or not proven.** The refusal notice with the reason; a
-`More` that posted nothing (the contract's no-post shape) is a success whose own text is the
-receipt.
+`More` that posted nothing (the contract's no-post shape) is a success whose own text — its
+`receipt` sentence when it carries one — is the receipt.
 
 **The receipt's send fails.** `📊 Finance applied your tap; the receipt did not go out.` —
 the call ran; the exchange carries the receipt; the applied echo line.
