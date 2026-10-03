@@ -534,6 +534,15 @@ _desk_skip_permit: ContextVar[bool] = ContextVar("_desk_skip_permit", default=Fa
 # seams are monkeypatched by signature across the suite.
 _pinned_run: ContextVar["Any | None"] = ContextVar("_pinned_run", default=None)
 
+# #1197: a list bound by a specialist-desk use (``specialist_desk.handle_reply``
+# around its create_task of the bounded runner, ``delegation_use`` around its
+# call) into which ``_run_delegated_agent_bounded`` puts the inner task it
+# creates — so the desk, not the runner, can tell a run that ended from one
+# still unwinding past the teardown bound. A ContextVar for the same reason as
+# the three above: the bounded runner is monkeypatched by its five-argument
+# signature across the suite. Non-desk callers leave it None.
+_desk_run_sink: ContextVar["list | None"] = ContextVar("_desk_run_sink", default=None)
+
 
 def _debit_specialist_media_send(eng, origin: dict) -> "dict | None":
     """Synchronous specialist-context debit for one send_media attempt.
@@ -5311,14 +5320,27 @@ async def _run_delegated_agent_bounded(
     delegated work is still unwinding (preserves the pre-S-2 release
     timing exactly).
 
+    Either way it can return while the inner task is still unwinding past
+    the bound; a specialist-desk use learns of that task through
+    ``_desk_run_sink`` and keeps its desk refused until it ends (#1197).
+
     Both bounds are read off the module at call time so tests can
     monkeypatch them."""
     tool_counts: dict[str, int] = {}
-    inner = asyncio.create_task(
-        _run_delegated_agent(cfg, task_text, context_text,
-                             resolution=resolution,
-                             output_format=output_format,
-                             tool_counts=tool_counts))
+    sink = _desk_run_sink.get()
+    # #1197: the inner task is created with no sink, so a run nested inside it
+    # never reports into the desk's
+    sink_tok = _desk_run_sink.set(None)
+    try:
+        inner = asyncio.create_task(
+            _run_delegated_agent(cfg, task_text, context_text,
+                                 resolution=resolution,
+                                 output_format=output_format,
+                                 tool_counts=tool_counts))
+    finally:
+        _desk_run_sink.reset(sink_tok)
+    if sink is not None:
+        sink.append(inner)
     ceiling = _DELEGATION_CEILING_S
     if not math.isfinite(ceiling) or ceiling <= 0:
         ceiling = 600.0  # fail closed to the shipped default, never hang

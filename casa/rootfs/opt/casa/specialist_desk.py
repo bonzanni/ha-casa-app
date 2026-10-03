@@ -53,6 +53,7 @@ CLIP = "[…]"
 POSTED_VIEW = "[posted a view]"
 NO_REPLY = "[no reply]"
 ECHO_OWNER_PREFIX = "desk:"
+UNWINDING = "an earlier run is still unwinding"   # #1197: the desk's refusal reason
 # S5: the pinned one-call turn (stored-call buttons)
 STORED_CALL_RECEIPT_CHARS = 4000
 NO_RECEIPT = "[no receipt]"
@@ -107,6 +108,10 @@ class Desk:
         # S5 §14.8: set when a pinned run's termination stayed unconfirmed at
         # its deadline; every later use is refused at once until restart.
         self.fault: DeskFault | None = None
+        # #1197: the inner task of a use that left while it was still
+        # unwinding past the bounded runner's teardown bound; the desk is
+        # refused, like a faulted one, until that task has ended.
+        self._unwinding: asyncio.Task | None = None
         # The queue in RESERVATION order: a use is admitted only when its
         # reservation is at the head, so a use reserved earlier but whose
         # task reached the desk later (a delegation still registering) is
@@ -116,8 +121,14 @@ class Desk:
 
     @property
     def faulted(self) -> str | None:
-        """The fault's reason, or None — the one truth every use checks."""
-        return self.fault.reason if self.fault is not None else None
+        """The fault's reason, or None — the one truth every use checks.
+        A run still unwinding (#1197) refuses the desk as a fault does, and
+        only until it has ended: it is not a ``fault`` (no health row)."""
+        if self.fault is not None:
+            return self.fault.reason
+        if self._unwinding is not None and not self._unwinding.done():
+            return UNWINDING
+        return None
 
     @faulted.setter
     def faulted(self, reason: str | None) -> None:
@@ -145,6 +156,14 @@ class Desk:
         reservation = Reservation(self)
         self._queue.append(reservation)
         return reservation
+
+    def hold_unwinding(self, runs: list) -> None:
+        """#1197: called under the lock as a use leaves, before its permit is
+        released — a run the bounded runner gave up waiting for refuses the
+        desk until it ends. Synchronous: no later use can enter first."""
+        for run in runs:
+            if not run.done():
+                self._unwinding = run
 
     def _unreserve(self, reservation: "Reservation") -> None:
         try:
@@ -511,10 +530,14 @@ async def delegation_use(desk: Desk, *, reservation: "Reservation | None", run: 
                 if permit is None:
                     raise DeskBusy(f"{cfg.role!r} is busy outside its desk")
             output = None
+            runs: list = []
+            sink_tok = tools_mod._desk_run_sink.set(runs)
             try:
                 output = await run(cfg, task_text, context, resolution=resolution,
                                    output_format=output_format)
             finally:
+                tools_mod._desk_run_sink.reset(sink_tok)
+                desk.hold_unwinding(runs)     # #1197: before the permit and the lock
                 if permit is not None:
                     permit.release()          # inside the lock, before it is released
                 done = DESKS.now()
@@ -661,16 +684,19 @@ async def handle_reply(
                     await _notice(f"{label} is busy; try again in a moment.")
                     return
             output, failure = None, None
+            runs: list = []
             try:
                 import agent as agent_mod
                 ov = agent_mod.origin_var.set(origin)
                 qk = tools_mod._delegation_quota_key.set(turn_id)
+                sk = tools_mod._desk_run_sink.set(runs)
                 try:
                     run = asyncio.create_task(
                         tools_mod._run_delegated_agent_bounded(cfg, task_text, context_text))
                 finally:
                     agent_mod.origin_var.reset(ov)
                     tools_mod._delegation_quota_key.reset(qk)
+                    tools_mod._desk_run_sink.reset(sk)
                 output = await run
             except asyncio.CancelledError:
                 raise
@@ -678,6 +704,7 @@ async def handle_reply(
                 failure = tools_mod._classify_error(exc).value
                 logger.warning("desk turn for %s failed: %s", desk_role, type(exc).__name__)
             finally:
+                desk.hold_unwinding(runs)     # #1197: before the permit and the lock
                 if permit is not None:
                     permit.release()          # inside the lock, before it is released
             if failure is None:
