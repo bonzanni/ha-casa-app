@@ -1132,11 +1132,18 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # compiled text, word by word: exactly ONE `insert` per assistant carrier,
 # that sentence and nothing else; the six butler and concierge carriers
 # byte-identical. No retention claim anywhere.
+# MOVED 2026-10-03 (S7a, B2), the `assistant:text` carrier ONLY. The Text
+# projection gains one paragraph: delegate what a delegate owns; a result or a
+# completion carrying Casa's post lines is not retold, and one that says
+# nothing beyond them ends silent as Casa's note under them says. Measured with
+# `difflib` over base-vs-new compiled text, word by word: exactly ONE `insert`
+# on `assistant:text`, that paragraph and nothing else; the other eight
+# carriers byte-identical. No retention claim anywhere.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
         "2d93c4b6db0a43610aa5ef94165b82581474825d10ee2b9cd8697b75009e36eb",
     "assistant:text":
-        "6a1ab6eb2aa80a7786ecd782deb97634435136160f2aba52cc7738f516579250",
+        "5393b38727052625812eabef19787ec297161aee067a22b5d326a166ed7759a1",
     "assistant:voice":
         "3c783a79ee847344c8b0835e807904dbed51d46804b666e49f2755d154fd2dbb",
     "butler:restricted_webhook":
@@ -1566,3 +1573,35 @@ def test_background_exception_reaches_only_assistant_text() -> None:
     ] == [int(name == "assistant:text") for name, _body in carriers]
     assert _collapse_ws(dict(carriers)["assistant:text"]).count(
         _collapse_ws(_INTERACTIVE_BEAT)) == 1
+
+
+# ---------------------------------------------------------------------------
+# S7a (B2): a result or completion carrying Casa's post lines is not retold.
+# The rule reaches only the assistant's text projection (and the legacy
+# carrier); the sentinel itself lives only in Casa's note under the lines,
+# because a compiled doctrine may not carry markup.
+# ---------------------------------------------------------------------------
+
+_POSTED_DOCTRINE = (
+    "The person has already seen what those lines name: do not retell it, and "
+    "when the result says nothing beyond those posts, stay silent exactly as "
+    "Casa's note under them says."
+)
+
+
+def test_the_already_posted_rule_reaches_only_the_assistant_text_projection():
+    needle = _collapse_ws(_POSTED_DOCTRINE)
+    compiled = _compiled_resident_carriers()
+    assert {name: _collapse_ws(body).count(needle) for name, body in compiled} == {
+        f"{slot}:{surface}": int(slot == "assistant" and surface == "text")
+        for slot in _RESIDENT_SLOTS
+        for surface in ("text", "voice", "restricted_webhook")}
+    legacy = dict(_legacy_prompt_carriers())
+    assert _collapse_ws(legacy["assistant"]).count(needle) == 1
+
+
+def test_casas_note_under_the_post_lines_names_the_silence_sentinel():
+    import tools
+    from output_boundary import SILENCE_SENTINEL
+    assert tools.POST_ECHO_SILENCE_NOTE.count(SILENCE_SENTINEL) == 1
+    assert "Do not retell them." in tools.POST_ECHO_SILENCE_NOTE

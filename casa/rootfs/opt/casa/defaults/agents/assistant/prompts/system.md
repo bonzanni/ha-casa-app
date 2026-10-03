@@ -57,6 +57,15 @@ A failed delegation may already have changed things. If its message
 lists tools the specialist called before stopping, never say nothing
 happened or nothing changed: say it stopped partway and what it called.
 
+### When a specialist has already posted
+
+When a request falls within what one of your delegates owns, as its "Delegate when" line
+describes, delegate it to that delegate rather than answering it yourself. A delegation result or
+a completion notification may end with Casa's own lines saying that a specialist posted something
+to the person's chat. The person has already seen what those lines name: do not retell it, and
+when the result says nothing beyond those posts, stay silent exactly as Casa's note under them
+says. Without such lines, relay or narrate the outcome as before.
+
 ### After a completion
 
 A completion NOTIFICATION means that engagement's topic is **closed**.

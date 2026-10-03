@@ -103,6 +103,12 @@ final text is silent posts no reply. A turn with no proven operator-visible outc
 an empty answer with no proven post and no delivered media, a refused permit, a full queue,
 an abort, an exception, a failed reply send — ends in ONE labelled, body-free Casa notice.
 
+**A desk turn may start its specialist's own job.** A desk or delegated turn whose session
+loads a job-declaring plugin holds `start_job` for the jobs the specialist's own plugins
+declare, hosted on itself; the start takes the job's own permit scope, never the desk's lock or
+permit, and the job's end notice goes to the chat's resident
+([`specialist-job-start.md`](specialist-job-start.md)).
+
 **A file can start a desk turn too.** A file the operator sends as a swipe-reply on a
 specialist's post, or after a `📎` tap on its proposal, is stored in that specialist's own
 inbox and starts one desk turn whose task Casa composes from the file's name and the caption,

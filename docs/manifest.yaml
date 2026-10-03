@@ -44,6 +44,10 @@
   kind: meta
   summary: Manifest shard — the stored-call buttons document, born in its own shard because the S shard stands just under the 40 KB index ceiling.
 
+- doc: manifest.d/architecture-specialist-job-start.yaml
+  kind: meta
+  summary: Manifest shard — the specialist job-start document, born in its own shard because the S shard stands just under the 40 KB index ceiling.
+
 - doc: manifest.d/architecture-t-z.yaml
   kind: meta
   summary: Manifest shard — architecture documents T-Z.

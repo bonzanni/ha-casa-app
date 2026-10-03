@@ -210,6 +210,7 @@ class _Reference:
     label: str = ""
     media_kind: str = ""          # S3: operator_file only — a MEDIA_POLICIES key
     proposal: Any = None          # S5: the parsed, validated proposal object
+    filename: str = ""            # S7a: operator_file only — the delivered name, validated
 
     def __repr__(self) -> str:      # never the value
         return (f"_Reference(slot={self.slot!r}, armed={self.armed is not None}, "
@@ -631,7 +632,8 @@ class ReferenceStore:
     def deposit(self, *, client_id: str, slot: str, value: str,
                 caption: str | None = None,
                 label: str | None = None,
-                kind: Any = None) -> tuple[str | None, str | None]:
+                kind: Any = None,
+                filename: Any = None) -> tuple[str | None, str | None]:
         """Bind ``value`` to the UNIQUE in-flight capability call of
         ``client_id`` whose contract provides ``slot``; mint and return a
         reference. Zero or more than one such call ⇒ refused (fail closed).
@@ -647,8 +649,11 @@ class ReferenceStore:
         kind ignored — the plugin cannot influence the label);
         ``operator_file`` (S3) — ``kind`` a media-policy key (``bad_kind``)
         and an optional caption whose COMPOSED form fits the cap
-        (``bad_caption``); the path itself is judged at delivery, never
-        read here. For any other slot every extra member is ignored, so a
+        (``bad_caption``), and (S7a, INV-PLUG-047) an optional delivered
+        ``filename``: refused ``filename_not_declared`` unless the call's
+        entry declares ``"filename": true``, else ``bad_filename`` unless
+        ``send_media``'s own predicate accepts it for the kind; the path
+        itself is judged at delivery, never read here. For any other slot every extra member is ignored, so a
         producer library can send them uniformly."""
         with self._lock:
             self._sweep_locked()
@@ -663,7 +668,7 @@ class ReferenceStore:
                 return None, "no_identity"
             if slot in call.deposits:
                 return None, "slot_already_deposited"
-            caption_s, label_s, kind_s = "", "", ""
+            caption_s, label_s, kind_s, filename_s = "", "", "", ""
             proposal_obj = None
             dkind = call.delivers.get(slot)
             if dkind == OPERATOR_MESSAGE:
@@ -682,6 +687,14 @@ class ReferenceStore:
                         return None, "bad_caption"
                     caption_s = caption
                 kind_s = kind
+                if filename is not None and filename != "":
+                    if not getattr(call.entry, "filename", False):
+                        return None, "filename_not_declared"
+                    import tools as tools_mod
+                    if (not isinstance(filename, str)
+                            or tools_mod._validate_delivery_filename(filename, kind) is None):
+                        return None, "bad_filename"
+                    filename_s = filename
             elif dkind is not None:
                 # Only a DELIVERED slot judges the metadata (type included):
                 # for any other slot both fields are ignored whatever they
@@ -702,7 +715,7 @@ class ReferenceStore:
                 value=value, slot=slot, identity=call.identity,
                 minted_at=now, expires_at=now + reference_ttl_s(),
                 caption=caption_s, label=label_s, media_kind=kind_s,
-                proposal=proposal_obj)
+                proposal=proposal_obj, filename=filename_s)
             call.deposits[slot] = ref
             return ref, None
 
@@ -711,7 +724,8 @@ class ReferenceStore:
         the reference must exist, be unexpired, unused and unarmed; it is
         marked used (so ``arm``, ``redeem`` and a second take all refuse it;
         the next sweep removes it) and its value blanked. Returns
-        ``(value, caption, label, identity, media_kind, proposal)`` or ``None``."""
+        ``(value, caption, label, identity, media_kind, proposal, filename)``
+        or ``None``."""
         with self._lock:
             self._sweep_locked()
             r = self._refs.get(reference)
@@ -719,7 +733,8 @@ class ReferenceStore:
                 return None
             r.used = True
             value, r.value = r.value, ""
-            return value, r.caption, r.label, r.identity, r.media_kind, r.proposal
+            return (value, r.caption, r.label, r.identity, r.media_kind, r.proposal,
+                    r.filename)
 
     def validate_result(self, call: _InFlight, parsed: dict) -> bool:
         """True iff every declared slot of ``call`` is present in ``parsed``
@@ -1221,9 +1236,10 @@ async def _post_operator_proposal(chat_id: int, text: str, labels: list, rid: st
     return await channel.deliver_operator_proposal(chat_id, text, labels, rid, post=post)
 
 
-def _claim_and_capture(outbox, path: str, kind: str):
+def _claim_and_capture(outbox, path: str, kind: str, delivered_name: str = ""):
     """ONE synchronous unit, run off the loop: claim *path*, validate the
-    delivered name for *kind*, capture the bytes through the kind's policy,
+    staged name for *kind* (S7a: the deposit's validated *delivered_name*,
+    when given, is only the name the file is sent under — never which file), capture the bytes through the kind's policy,
     and remove the claim in its own ``finally``. Returns ``((content,
     filename), None)`` or ``(None, why)``. One unit because cancelling a
     thread does not stop it: if the caller's bound ends while the claim is
@@ -1240,6 +1256,7 @@ def _claim_and_capture(outbox, path: str, kind: str):
         filename = tools_mod._validate_delivery_filename(os.path.basename(path), kind)
         if filename is None:
             return None, f"name not valid for kind {kind}"
+        filename = delivered_name or filename
         try:
             content = outbox.capture(claim, kind)
         except OutboxError as exc:
@@ -1253,7 +1270,7 @@ def _claim_and_capture(outbox, path: str, kind: str):
 
 
 async def _post_operator_file(chat_id: int, path: str, kind: str, caption: str,
-                              post: "PostRecord | None" = None):
+                              post: "PostRecord | None" = None, delivered_name: str = ""):
     """S3: claim *path* from the plugin outbox exactly as ``send_media``
     claims it (the outbox derived from the authenticated engagement, else
     the shared one), run the kind's policy through ``capture``, and send
@@ -1270,7 +1287,8 @@ async def _post_operator_file(chat_id: int, path: str, kind: str, caption: str,
     outbox = tools_mod.outbox_for_current_context()
     if outbox is None:
         return DeliveryOutcome.NOT_DELIVERED
-    captured, why = await asyncio.to_thread(_claim_and_capture, outbox, path, kind)
+    captured, why = await asyncio.to_thread(_claim_and_capture, outbox, path, kind,
+                                            delivered_name)
     if captured is None:
         logger.warning("operator file not sent: %s", why)
         return DeliveryOutcome.NOT_DELIVERED
@@ -1401,7 +1419,7 @@ async def _deliver_and_replace(store: ReferenceStore, seg: str, call: _InFlight,
     try:
         taken = store.take_for_delivery(call.deposits.get(slot, ""))
         if taken is not None:
-            value, caption, label, identity, media_kind, proposal = taken
+            value, caption, label, identity, media_kind, proposal, filename = taken
             # S4 §2: the record the channel files every landed message under
             # — the identity's role and operator, never anything the plugin
             # authored.
@@ -1426,7 +1444,7 @@ async def _deliver_and_replace(store: ReferenceStore, seg: str, call: _InFlight,
                 outcome = await asyncio.wait_for(
                     _post_operator_file(identity.chat_id, value, media_kind,
                                         compose_file_caption(head, caption),
-                                        post=post),
+                                        post=post, delivered_name=filename),
                     FILE_DELIVERY_TIMEOUT_S)
                 delivered = outcome is DeliveryOutcome.DELIVERED
                 if delivered:
@@ -1745,7 +1763,8 @@ def build_broker_deposit_handler(store: ReferenceStore | None = None):
         ref, err = store.deposit(client_id=client, slot=slot, value=value,
                                  caption=body.get("caption"),
                                  label=body.get("label"),
-                                 kind=body.get("kind"))
+                                 kind=body.get("kind"),
+                                 filename=body.get("filename"))
         if err:
             return _bad(err)
         return web.json_response({"reference": ref})

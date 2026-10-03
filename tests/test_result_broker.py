@@ -204,7 +204,7 @@ def test_take_for_delivery_is_once_and_refuses_used_expired_and_armed():
     ref, _ = _dep(store, caption="c", label="Open it")
     store.close_call("c1", "link-1")
     taken = store.take_for_delivery(ref)
-    assert taken == (URL, "c", "Open it", _identity(), "", None)   # S5: + the proposal object
+    assert taken == (URL, "c", "Open it", _identity(), "", None, "")   # S5: + the proposal object; S7a: + filename
     assert store._refs[ref].used is True and store._refs[ref].value == ""
     assert store.take_for_delivery(ref) is None                    # once
     assert store.arm(reference=ref, identity=_identity(), slot="approval_link",

@@ -411,6 +411,13 @@ runs per installed plugin. Casa checks open jobs once a minute and restarts one 
 has stalled; a job it cannot get moving again is ended and reported rather than left
 sitting there.
 
+A specialist can also start its own plugins' jobs itself (v0.344.0). When you reply
+to one of its posts, or the assistant passes it your request, and the work is a job
+one of its own plugins declares, it starts that job on itself — never another
+agent's job — and the assistant still tells you how it ended. A button never starts
+a job: ask for the work in words. When the specialist has already posted its answer
+to your chat, the assistant does not repeat it.
+
 **A scheduled job (v0.343.0).** A schedule can start a plugin job directly instead of
 asking the assistant to. In the assistant's `triggers.yaml`, a `cron`, `interval` or
 `date` entry carries `job: <plugin>:<job>` in place of a prompt, with an optional `task`
@@ -1181,7 +1188,9 @@ export — instead of having the assistant retell it. It declares the slot as
 `operator_message` (text, up to 12,000 characters, with no control characters
 but newline and tab) or `operator_file` (a file it wrote to its outbox, with
 the media `kind` it is — `document`, `photo`, `audio`, `voice`, `zip` or
-`text` — and an optional one-line `caption`), and deposits it like any
+`text` — an optional one-line `caption`, and, since v0.344.0, an optional
+`filename` for the name you see when the plugin declares `"filename": true` on that
+tool), and deposits it like any
 capability. Casa posts it to the chat you asked in, headed by `📊` and the
 specialist's name — the plugin cannot change or hide that line — and the
 assistant gets a receipt instead of the text, so nothing is paraphrased on the

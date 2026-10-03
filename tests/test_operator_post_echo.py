@@ -182,7 +182,7 @@ def test_the_helper_appends_the_drained_lines_after_the_text_or_leaves_it(fresh_
     fresh_ledger.record("d-1", _event(tool_use_id="call-2", pages=None, media_kind="text"))
     assert tools_mod._with_post_echo("answer", "d-1") == (
         "answer\n\n📊 Finance posted to your chat (2 pages).\n"
-        "📊 Finance posted a text file to your chat.")
+        "📊 Finance posted a text file to your chat.\n" + tools_mod.POST_ECHO_SILENCE_NOTE)
     assert tools_mod._with_post_echo("answer", "d-1") == "answer"     # drained
     assert tools_mod._with_post_echo("", "none") == ""
 
@@ -218,7 +218,7 @@ async def test_a_sync_delegations_returned_text_carries_the_echo_after_the_answe
         _origin())
     payload = json.loads(result["content"][0]["text"])
     assert payload["status"] == "ok"
-    assert payload["text"] == "invoice drafted\n\n📊 Finance posted to your chat (2 pages)."
+    assert payload["text"] == "invoice drafted\n\n📊 Finance posted to your chat (2 pages)." + "\n" + tools_mod.POST_ECHO_SILENCE_NOTE
     assert fresh_ledger.drain(payload["delegation_id"]) == []
 
 
@@ -241,7 +241,7 @@ async def test_a_finished_engagements_notice_carries_the_echo_after_its_text(tmp
                                artifacts=[], next_steps=[], driver=None)
     assert bus.notify.await_count == 1
     complete = bus.notify.await_args.args[0].content
-    assert complete.text == "all good\n\n📊 Finance posted a document to your chat."
+    assert complete.text == "all good\n\n📊 Finance posted a document to your chat." + "\n" + tools_mod.POST_ECHO_SILENCE_NOTE
     assert fresh_ledger.drain(rec.id) == []
 
 
@@ -270,7 +270,7 @@ async def test_a_completed_async_delegations_notice_carries_the_echo(tmp_path, f
     await task
     _priority, _sequence, message = await asyncio.wait_for(bus.queues["assistant"].get(), 5)
     assert isinstance(message.content, DelegationComplete)
-    assert message.content.text == "done\n\n📊 Finance posted to your chat (3 pages)."
+    assert message.content.text == "done\n\n📊 Finance posted to your chat (3 pages)." + "\n" + tools_mod.POST_ECHO_SILENCE_NOTE
     assert fresh_ledger.drain("delegation-echo") == []
 
 
@@ -314,7 +314,7 @@ async def test_a_sync_delegation_that_fails_after_a_proven_post_still_echoes_it(
         _origin())
     payload = json.loads(result["content"][0]["text"])
     assert payload["status"] == "error"
-    assert payload["message"].endswith("\n\n📊 Finance posted to your chat (2 pages).")
+    assert payload["message"].endswith("\n\n📊 Finance posted to your chat (2 pages)." + "\n" + tools_mod.POST_ECHO_SILENCE_NOTE)
     assert fresh_ledger.drain(payload["delegation_id"]) == []
 
 
@@ -349,5 +349,5 @@ async def test_a_completion_notice_for_failed_work_still_echoes_a_proven_post(tm
     _priority, _sequence, message = await asyncio.wait_for(bus.queues["assistant"].get(), 5)
     assert isinstance(message.content, DelegationComplete)
     assert message.content.status == "error"
-    assert message.content.message.endswith("\n\n📊 Finance posted a text file to your chat.")
+    assert message.content.message.endswith("\n\n📊 Finance posted a text file to your chat." + "\n" + tools_mod.POST_ECHO_SILENCE_NOTE)
     assert fresh_ledger.drain("delegation-fail") == []

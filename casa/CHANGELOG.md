@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.344.0] - 2026-10-03
+
+### Added
+
+- A specialist can start a background job that one of its own plugins declares,
+  on itself, from a reply to its post or from a request the assistant passes it.
+  It can never start another agent's job, and it cannot start one from a button
+  tap. The job runs exactly as one the assistant started, and the assistant
+  still gets the outcome when it ends.
+- A plugin can choose the name a file it sends you arrives under, separate from
+  the name it stored the file under. It must declare `"filename": true` on that
+  tool, so a Casa older than this release refuses to load the plugin instead of
+  silently using the stored name. The name is checked the same way as a
+  `send_media` file name.
+
+### Changed
+
+- When a specialist has already posted its answer to your chat, the assistant no
+  longer repeats it. She stays silent unless she has something to add.
+- The assistant hands a request about something a specialist owns to that
+  specialist instead of answering it herself.
+
 ## [0.343.2] - 2026-10-03
 
 ### Fixed
