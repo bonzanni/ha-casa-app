@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.342.2] - 2026-10-03
+
+### Fixed
+- A specialist could be running twice on one desk. When a swipe-reply to a specialist, or a delegation the assistant makes to a specialist from your own Telegram DM, was cut off at its time limit or cancelled, and the specialist's run was still finishing after Casa stopped waiting for it, the next reply or delegation on that desk could start a second run beside it. Now that desk refuses later uses until the cut-off run has ended: a reply gets the same notice as a faulted desk, and a delegation gets the `desk_faulted` result. Once the run has ended, the desk works again with no restart. Delegations that do not go through a desk are unchanged. (#1197)
+
 ## [0.342.1] - 2026-10-03
 
 ### Fixed
