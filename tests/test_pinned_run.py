@@ -66,14 +66,17 @@ class _Process:
 
 
 class _FakeClient:
-    def __init__(self, pid, *, hang_exit=False):
+    def __init__(self, pid, *, hang_exit=False, hang_enter=False):
         self.process = _Process(pid)
         self._transport = types.SimpleNamespace(_process=self.process)
         self.entered = self.exits = 0
         self.hang_exit = hang_exit
+        self.hang_enter = hang_enter
 
     async def __aenter__(self):
         self.entered += 1
+        if self.hang_enter:
+            await asyncio.sleep(3600)                   # the CLI started; its initialisation hangs
         return self
 
     async def __aexit__(self, *a):
@@ -720,3 +723,366 @@ async def test_a_deferred_delete_never_runs_while_the_writer_is_alive_even_past_
         os.kill(pid, 9)
     await asyncio.wait_for(task, 5)
     assert ran == [False]                                   # once, after the exit
+
+
+# --- #1205: a child started AFTER enter (a tool call's shell-out) is pinned at terminate ------
+
+CHILD_ON_DEMAND = r"""
+import subprocess, sys, time
+g = subprocess.Popen([sys.executable, "-c", "import time\nwhile True: time.sleep(1)"])
+print(g.pid, flush=True)
+for line in sys.stdin:                      # 'spawn' -> start another grandchild, print its pid
+    if line.strip() == "spawn":
+        late = subprocess.Popen([sys.executable, "-c", "import time\nwhile True: time.sleep(1)"])
+        print(late.pid, flush=True)
+while True:
+    time.sleep(1)
+"""
+
+
+@pytest.fixture
+def tree_on_demand():
+    """A fixture tree whose child spawns a further grandchild when told to."""
+    proc = subprocess.Popen([sys.executable, "-c", CHILD_ON_DEMAND], stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE, text=True)
+    grandchild = int(proc.stdout.readline().strip())
+    spawned: list[int] = []
+
+    def spawn() -> int:
+        proc.stdin.write("spawn\n")
+        proc.stdin.flush()
+        pid = int(proc.stdout.readline().strip())
+        spawned.append(pid)
+        return pid
+    yield types.SimpleNamespace(proc=proc, pid=proc.pid, grandchild=grandchild, spawn=spawn)
+    for pid in (*spawned, grandchild, proc.pid):
+        try:
+            os.kill(pid, 9)
+        except ProcessLookupError:
+            pass
+    try:
+        proc.wait(timeout=5)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        fd = pr._pidfd_open(pid)
+    except ProcessLookupError:
+        return False                                   # gone (or reaped between the two calls)
+    try:
+        return not pr._Pinned(pid, fd).exited()
+    finally:
+        os.close(fd)
+
+
+async def test_a_child_started_after_enter_is_pinned_killed_and_counted_at_terminate(tree_on_demand, monkeypatch):
+    owner = _owner()
+    await _enter(owner, tree_on_demand)
+    assert tree_on_demand.grandchild in owner.pinned_pids()
+    late = tree_on_demand.spawn()                       # the plugin server's tool call shells out
+    assert late not in owner.pinned_pids()              # not known at enter — the #1205 gap
+    monkeypatch.setattr(pr.PinnedRun, "EXIT_WAIT_S", 5.0)
+    assert await owner.terminate() is True
+    assert late in owner.pinned_pids()                  # re-walked at terminate, while the parents lived
+    assert _alive(late) is False                        # killed and confirmed, not reparented to init
+    assert owner.alive() is False
+    pids = [p.pid for p in owner._all()]
+    assert len(pids) == len(set(pids))                  # the re-walk pins each process once
+
+
+# --- #1205 (Astra, diff round 1): the server EXITS during the cancellation wait --------------
+
+SERVER_ON_DEMAND = r"""
+import subprocess, sys, time
+late = None
+for line in sys.stdin:                      # 'spawn' -> a child; 'die' -> exit at once
+    cmd = line.strip()
+    if cmd == "spawn":
+        late = subprocess.Popen([sys.executable, "-c", "import time\nwhile True: time.sleep(1)"])
+        print(late.pid, flush=True)
+    elif cmd == "die":
+        sys.exit(0)
+"""
+
+CLI_WITH_SERVER = r"""
+import subprocess, sys
+srv = subprocess.Popen([sys.executable, "-c", %r], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                       text=True)
+print(srv.pid, flush=True)
+for line in sys.stdin:                      # relay 'spawn' / 'die' to the server; survive it
+    try:
+        srv.stdin.write(line); srv.stdin.flush()
+    except (BrokenPipeError, OSError):
+        pass
+    if line.strip() == "spawn":
+        print(srv.stdout.readline().strip(), flush=True)
+    elif line.strip() == "die":
+        srv.wait()                          # the CLI reaps its server and stays alive
+while True:
+    import time; time.sleep(1)
+""" % SERVER_ON_DEMAND
+
+
+@pytest.fixture
+def tree_with_server():
+    """CLI -> server -> (late child on command); the server exits on 'die'."""
+    proc = subprocess.Popen([sys.executable, "-c", CLI_WITH_SERVER], stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE, text=True)
+    server = int(proc.stdout.readline().strip())
+    spawned: list[int] = []
+
+    def spawn() -> int:
+        proc.stdin.write("spawn\n"); proc.stdin.flush()
+        pid = int(proc.stdout.readline().strip()); spawned.append(pid); return pid
+
+    def kill_server() -> None:
+        proc.stdin.write("die\n"); proc.stdin.flush()
+        for _ in range(50):
+            if not _alive(server):
+                return
+            time.sleep(0.05)
+    yield types.SimpleNamespace(proc=proc, pid=proc.pid, server=server, spawn=spawn,
+                                kill_server=kill_server)
+    for pid in (*spawned, server, proc.pid):
+        try:
+            os.kill(pid, 9)
+        except ProcessLookupError:
+            pass
+    try:
+        proc.wait(timeout=5)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+async def test_a_late_child_whose_server_exits_during_the_cancellation_wait_is_still_pinned_and_killed(tree_with_server, monkeypatch):
+    owner = _owner()
+    await _enter(owner, tree_with_server)
+    assert tree_with_server.server in owner.pinned_pids()
+    late = tree_with_server.spawn()                    # started by the server, after enter
+    monkeypatch.setattr(pr.PinnedRun, "EXIT_WAIT_S", 5.0)
+
+    async def execution():
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            tree_with_server.kill_server()             # the server dies while (a) waits for the task
+            raise
+    task = asyncio.create_task(execution())
+    await asyncio.sleep(0)
+    # the walk before the cancel pinned the child, so it is killed with the rest — but the
+    # server died under a live CLI without Casa signalling it, so the scan cannot be known
+    # complete: the run is UNCONFIRMED (faulted, told), never a silent release (round 2 ruling)
+    assert await owner.terminate(task) is False
+    assert late in owner.pinned_pids()                 # pinned before the cancel, while its server lived
+    assert _alive(late) is False                       # and killed — not left to init
+
+
+async def test_a_child_started_during_the_cancellation_wait_is_pinned_by_the_walk_before_the_signals(tree_with_server, monkeypatch):
+    owner = _owner()
+    await _enter(owner, tree_with_server)
+    monkeypatch.setattr(pr.PinnedRun, "EXIT_WAIT_S", 5.0)
+    born: list[int] = []
+
+    async def execution():
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            born.append(tree_with_server.spawn())          # the tool call shells out while (a) waits
+            raise
+    task = asyncio.create_task(execution())
+    await asyncio.sleep(0)
+    assert await owner.terminate(task) is True
+    assert born and born[0] in owner.pinned_pids()       # the walk just before the signals found it
+    assert _alive(born[0]) is False
+
+
+# --- #1205 (round 2): a scan during which a pinned ancestor dies is INCOMPLETE ---------------
+
+async def test_a_server_that_dies_during_the_walks_enumeration_leaves_the_run_unconfirmed(tree_with_server, monkeypatch):
+    """Astra, diff round 2: the server exits while /proc is being enumerated, before the
+    late child's parent is read — no walk can find the child; Casa must not confirm."""
+    owner = _owner()
+    await _enter(owner, tree_with_server)
+    late = tree_with_server.spawn()
+    monkeypatch.setattr(pr.PinnedRun, "GRACE_S", 0.2)
+    monkeypatch.setattr(pr.PinnedRun, "EXIT_WAIT_S", 0.5)
+    real_descendants = pr._descendants
+    fired = []
+
+    def dying_walk(pid):
+        out = real_descendants(pid)
+        if not fired:                                  # the server dies mid-enumeration, once
+            fired.append(1)
+            tree_with_server.kill_server()
+            return [p for p in out if p != late]       # …so the child's parent was never read
+        return out
+    monkeypatch.setattr(pr, "_descendants", dying_walk)
+    assert await owner.terminate() is False            # an incomplete scan is not a confirmation
+    assert late not in owner.pinned_pids()             # it was indeed never seen
+    assert _alive(late)                                # and it survived — hence the fault, told
+
+
+async def test_a_proven_child_already_dead_at_terminates_entry_before_any_signal_leaves_the_run_unconfirmed(tree_with_server, monkeypatch):
+    """Terra, diff round 2: the server exits in the instant before the first walk; Casa
+    cannot vouch for that server's subtree and must not confirm."""
+    owner = _owner()
+    await _enter(owner, tree_with_server)
+    late = tree_with_server.spawn()
+    tree_with_server.kill_server()                     # dead before terminate() is even called
+    monkeypatch.setattr(pr.PinnedRun, "GRACE_S", 0.2)
+    monkeypatch.setattr(pr.PinnedRun, "EXIT_WAIT_S", 0.5)
+    assert await owner.terminate() is False
+    assert _alive(late)
+
+
+async def test_a_server_that_exits_because_casa_signalled_the_cli_does_not_trip_the_incomplete_scan_flag(tree_with_server, monkeypatch):
+    """The coordinator's negative (round 2 ruling): the flag is for deaths the run did not
+    cause; servers dying after Casa's SIGTERM to the CLI are the normal kill, confirmed."""
+    owner = _owner()
+    await _enter(owner, tree_with_server, hang_exit=True)
+    tree_with_server.spawn()
+    monkeypatch.setattr(pr, "_active_children", lambda: set())
+    monkeypatch.setattr(pr.PinnedRun, "EXIT_WAIT_S", 5.0)
+    assert await owner.terminate() is True
+    assert owner.alive() is False
+    owner.close_task.cancel()
+
+
+async def test_a_server_that_dies_during_the_second_walks_enumeration_leaves_the_run_unconfirmed(tree_with_server, monkeypatch):
+    """The walk just before the signals: a death during ITS enumeration is caught by that
+    walk's own before/after comparison (nothing runs after it but the signals)."""
+    owner = _owner()
+    await _enter(owner, tree_with_server)
+    late = tree_with_server.spawn()
+    monkeypatch.setattr(pr.PinnedRun, "GRACE_S", 0.2)
+    monkeypatch.setattr(pr.PinnedRun, "EXIT_WAIT_S", 0.5)
+    real_descendants = pr._descendants
+    calls = []
+
+    def dying_on_second_walk(pid):
+        out = real_descendants(pid)
+        calls.append(pid)
+        if calls.count(tree_with_server.pid) == 2:        # the CLI's second walk
+            tree_with_server.kill_server()
+            return [p for p in out if p != late]
+        return out
+    monkeypatch.setattr(pr, "_descendants", dying_on_second_walk)
+    assert await owner.terminate() is False
+
+
+async def test_a_server_stopped_by_casas_own_sdk_close_does_not_fault_the_terminated_desk(tree_with_server, monkeypatch):
+    """Astra, diff round 3: the normal end starts the SDK close, which stops the servers while
+    the CLI lingers; the fallback terminate() must not read those deaths as an anomaly."""
+    owner = _owner()
+    client = await _enter(owner, tree_with_server, hang_exit=True)
+    monkeypatch.setattr(pr, "_active_children", lambda: set())
+    monkeypatch.setattr(pr.PinnedRun, "EXIT_WAIT_S", 0.3)
+    assert await owner.finish() is False                       # the CLI (and server) linger: unconfirmed end
+    assert owner.close_task is not None                        # Casa's close has begun
+    tree_with_server.kill_server()                             # …and it stops the server, CLI still alive
+    monkeypatch.setattr(pr.PinnedRun, "EXIT_WAIT_S", 5.0)
+    assert await owner.terminate() is True                     # terminated cleanly, nothing survives
+    assert owner.alive() is False
+    owner.close_task.cancel()
+
+
+async def test_a_server_dying_between_two_polls_before_the_walk_is_still_an_incomplete_scan(tree_with_server, monkeypatch):
+    """Astra, diff round 3: alive at one poll, dead at the next, before the enumeration — the
+    check runs once, after the walk, over every proven pin."""
+    owner = _owner()
+    await _enter(owner, tree_with_server)
+    late = tree_with_server.spawn()
+    monkeypatch.setattr(pr.PinnedRun, "GRACE_S", 0.2)
+    monkeypatch.setattr(pr.PinnedRun, "EXIT_WAIT_S", 0.5)
+    real = pr._Pinned.exited
+    seen = []
+
+    def exited(self):
+        out = real(self)
+        if self.pid == tree_with_server.server and not seen:
+            seen.append(1)
+            tree_with_server.kill_server()                     # dies right after being polled alive
+            # the walk that follows will not find the (now reparented) late child
+        return out
+    monkeypatch.setattr(pr._Pinned, "exited", exited)
+    confirmed = await owner.terminate()
+    # either the walk still caught the child (killed) or the scan was judged incomplete
+    # (unconfirmed): what must never happen is a confirmed end with the child alive
+    assert not (confirmed and _alive(late))
+    assert confirmed is False or not _alive(late)
+
+
+# --- #1205 (round 4): ACCEPTED RESIDUES, not fixed. These cases describe what the declined
+# generalisation of "incomplete" would have required (anything in the tree when Casa first acts
+# ends accounted for). By the operator's ruling the windows are documented under §14.8 instead;
+# the cases are expected failures and may pass by timing ------------------------------------------
+
+@pytest.mark.xfail(strict=False, reason="#1205 round 4: an accepted §14.8 residue by operator ruling (2026-10-03) — a timing window around the termination-time walks, so the case can pass by timing; documented, not fixed")
+async def test_terminate_during_a_pending_entry_pins_the_tree_before_the_cancel_can_orphan_it(tree_with_server, monkeypatch):
+    """Astra, round 4 (1): the entry still pending at terminate — the first walk must see the
+    tree (late_pin first), or the cancel reaps the server and the child escapes."""
+    owner = _owner()
+    client = _FakeClient(tree_with_server.pid, hang_enter=True)
+    enter = asyncio.create_task(owner.enter(None, client_factory=lambda options: client))
+    await asyncio.sleep(0.05)
+    late = tree_with_server.spawn()
+    monkeypatch.setattr(pr.PinnedRun, "EXIT_WAIT_S", 5.0)
+
+    async def execution():
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            tree_with_server.kill_server()                     # the cancel takes the server down
+            raise
+    task = asyncio.create_task(execution())
+    await asyncio.sleep(0)
+    confirmed = await owner.terminate(task)
+    assert not (confirmed and _alive(late))                    # never a confirmed end over a survivor
+    assert late in owner.pinned_pids() or confirmed is False
+    enter.cancel()
+    try:
+        await enter
+    except (asyncio.CancelledError, Exception):  # noqa: BLE001
+        pass
+
+
+@pytest.mark.xfail(strict=False, reason="#1205 round 4: an accepted §14.8 residue by operator ruling (2026-10-03) — a timing window around the termination-time walks, so the case can pass by timing; documented, not fixed")
+async def test_a_server_dead_before_casas_close_began_is_not_hidden_by_the_close_exemption(tree_with_server, monkeypatch):
+    """Astra, round 4 (2): the audit runs before Casa's first own action — a death that
+    preceded finish()'s close is recorded, and the fallback terminate() stays unconfirmed."""
+    owner = _owner()
+    client = await _enter(owner, tree_with_server, hang_exit=True)
+    late = tree_with_server.spawn()
+    tree_with_server.kill_server()                             # dies before Casa does anything
+    monkeypatch.setattr(pr, "_active_children", lambda: set())
+    monkeypatch.setattr(pr.PinnedRun, "EXIT_WAIT_S", 0.3)
+    assert await owner.finish() is False
+    monkeypatch.setattr(pr.PinnedRun, "GRACE_S", 0.2)
+    confirmed = await owner.terminate()
+    assert confirmed is False                                  # the pre-close death was recorded
+    assert _alive(late)                                        # …which is why: it escaped the walks
+    owner.close_task.cancel()
+
+
+@pytest.mark.xfail(strict=False, reason="#1205 round 4: an accepted §14.8 residue by operator ruling (2026-10-03) — a timing window around the termination-time walks, so the case can pass by timing; documented, not fixed")
+async def test_a_listed_descendant_that_vanishes_before_its_pidfd_leaves_a_termination_walk_unconfirmed(tree_with_server, monkeypatch):
+    """Terra, round 4: listed by /proc, gone before pidfd_open — exit or reparent, Casa cannot
+    tell at termination time, so the scan is incomplete (enter-time handling unchanged)."""
+    owner = _owner()
+    await _enter(owner, tree_with_server)
+    late = tree_with_server.spawn()
+    monkeypatch.setattr(pr.PinnedRun, "GRACE_S", 0.2)
+    monkeypatch.setattr(pr.PinnedRun, "EXIT_WAIT_S", 0.5)
+    real_open = pr._pidfd_open
+    hit = []
+
+    def vanishing_open(pid):
+        if pid == late and not hit:
+            hit.append(1)
+            raise ProcessLookupError(pid)                      # "extinct" as far as the walk can see
+        return real_open(pid)
+    monkeypatch.setattr(pr, "_pidfd_open", vanishing_open)
+    assert await owner.terminate() is False
