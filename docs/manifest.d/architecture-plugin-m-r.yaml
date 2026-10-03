@@ -84,7 +84,7 @@
   related: [architecture/plugin-setup.md, architecture/plugins.md, architecture/configuration.md]
   defines_invariants: [INV-PLUG-008, INV-PLUG-009]
   invariant_tests:
-    INV-PLUG-008: [tests/test_agent_plugin_binding.py::test_env_unresolved_plugin_withheld_from_options, tests/test_plugin_setup_episodes.py::test_secrets_gate_holds_dispatch_until_ready]
+    INV-PLUG-008: [tests/test_agent_plugin_binding.py::test_env_unresolved_plugin_withheld_from_options, tests/test_plugin_setup_episodes.py::test_secrets_gate_holds_dispatch_until_ready, tests/test_pin_1179_late_assignment.py::TestLateAssignmentDuringTopicAwait::test_requires_target_records_and_launches_the_late_plugin, tests/test_late_assignment_add_only.py::TestLateAssignmentIsAddOnly::test_an_unassignment_in_the_window_drops_nothing_and_aborts_nothing]
     INV-PLUG-009: [tests/test_agent_plugin_binding.py::test_specialist_options_load_the_setup_provisioning_plugin, tests/test_agent_plugin_binding.py::test_specialist_options_pin_declared_vars_to_empty_strings, tests/test_agent_plugin_binding.py::test_resident_options_load_and_pin_the_declared_vars, tests/test_plugin_grants.py::test_setup_secrets_ready_admits_the_deadlocked_plugin, tests/test_engagement_plugin_artifacts.py::test_run_script_pins_declared_vars_as_empty_exports, tests/test_engagement_plugin_artifacts.py::test_boot_reconciliation_render_gets_the_same_overlay]
 - doc: architecture/plugin-setup-dispatch-gate.md
   summary: The gate a released setup obligation passes through before dispatch — the recomputation of the applied state a reconcile has written, and the overlay reads that fence the bus send.
