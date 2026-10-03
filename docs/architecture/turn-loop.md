@@ -136,10 +136,10 @@ queued behind that turn finds the row settled rather than asking for the setup a
 that handover clears a failed obligation, the handler also regenerates the plugin-health
 report before it reads the next message, so the reply's health notice reads the new report.
 These are [`architecture/plugin-setup-turn.md`](plugin-setup-turn.md)'s (INV-PLUG-023,
-INV-PLUG-030); the loop only orders them. A third is a mark, not an action: the turn records that it completed only as
-its last step, after the reply is produced and delivered, and the setup-outcome report the
-loop makes in its `finally` carries that mark, so a turn that raised or was cancelled
-reports itself as never having replied (INV-PLUG-012, INV-PLUG-024).
+INV-PLUG-030); the loop only orders them. A third is an ordering fact: the setup-outcome
+report the loop makes in its `finally` runs before the message handler admits, suppresses
+or delivers the reply, so it carries the turn's tool evidence and never what the operator
+received (INV-PLUG-012, INV-PLUG-024).
 
 The streak half guards against a poisoned resume: each trusted turn that resumed its
 conversation commits a health note — while still holding the per-key session write gate,

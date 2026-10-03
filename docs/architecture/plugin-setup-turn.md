@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-16
+last_reviewed: 2026-10-03
 ---
 
 # The dispatched setup turn
@@ -19,10 +19,10 @@ link the setup tool produces becomes is [`plugin-result-contract.md`](plugin-res
 
 **Bus acceptance is not evidence.** Acceptance marks the obligation `dispatched` before the
 turn runs, and that used to be terminal even when the turn had no setup tool to call. Now
-the turn reports back what it actually evidenced: a non-error result from the tool, or a
-completed turn whose session listed the tool, keeps a resident row consumed; anything
-less returns it to `pending` with its released verdict kept, under a bounded budget, and
-exhaustion fails it with a note naming the manual run. A courier turn — the assistant
+the turn reports back what it actually evidenced: only a non-error result from the tool
+keeps a resident row consumed; anything less returns it to `pending` with its released
+verdict kept, under a bounded budget, and exhaustion fails it with a note naming the
+manual run. A courier turn — the assistant
 delegating a specialist's setup — is judged on its delegation, by target, and on nothing
 else. An ordinary turn in which the resident ran the setup tool itself settles the row
 from that evidence, so the next reload does not ask again.
@@ -38,13 +38,15 @@ protected tool the target calls be approved through the operator's keyboard.
 
 ## Contracts & invariants
 
-**INV-PLUG-012**: A resident-execution setup obligation rests consumed (`dispatched`) only when its dispatched turn positively evidenced the setup tool — the tool produced a non-error result, or the turn completed with the session's init listing the tool and no attempted call erring without one; a turn with no such evidence (including one that raised or was cancelled, whose listed-but-uncalled tool evidences nothing because no reply was produced) returns the obligation to `pending` with its released verdict intact, boundedly, and past the bound it fails with an operator note rather than being silently spent.
+**INV-PLUG-012**: A resident-execution setup obligation rests consumed (`dispatched`) only when its dispatched turn produced a non-error result of the setup tool; a turn with no such result — the tool absent from the session, availability unknown, every attempted call an error, the turn raising or cancelled, or the tool listed by the session's init and never called, whatever became of the turn's reply — returns the obligation to `pending` with its released verdict intact, boundedly, and past the bound it fails with an operator note rather than being silently spent.
 
 **INV-PLUG-023**: A released resident-execution setup obligation is also consumed when its setup tool produces a non-error result in any turn of the executing resident, provided the invocation is proven to follow the release and to run in a session built on the obligation's exact artifact — a finite `tool_use` timestamp not earlier than the row's finite `released_ts`, and the executing agent instance's own plugin binding carrying that artifact while the registry still resolves to it; a row so settled (`settled_by`) is never re-dispatched, a dispatched turn that finds it settled once it holds the session gate does not run, and a later toolless report from the dispatched turn cannot reopen it — evidence that proves less (an earlier invocation, an unstamped or non-finite stamp, another artifact, another role, another tool, a specialist target) settles nothing, and evidence from a delegated session settles no `pending` or `dispatched` row.
 
 **INV-PLUG-030**: A `failed` or `stale` setup obligation of the current installation — released, unsettled, and not stamped by a removal — is cleared (`dispatched`, `settled_by`, with the role that ran it) when its setup tool produces a non-error result in a session of the plugin's executing role, of either tier, whether an ordinary resident turn or a delegated session: the invocation must not precede the row's finite `released_ts` (for a row released before that stamp existed, its finite failure stamp), the session's own binding must carry the row's artifact while the registry still resolves to it, and the tool must be the one the dispatch composes; a cleared row leaves plugin health, the persisted report is regenerated under the plugin lock every live regeneration holds and waited for, boundedly, before the turn that ran the tool continues, and it is neither re-dispatched nor re-armed by the reconcile sweep; a `refused` row, a removal-stamped row, and evidence from any other role, artifact or tool clear nothing.
 
 **INV-PLUG-024**: A specialist-target setup obligation, whose dispatched turn is a courier turn asking the assistant to delegate the setup to the specialist, rests consumed (`dispatched`) only when that courier turn produced a non-error `delegate_to_agent` result whose target, canonicalised as the delegation ACL resolves it, is the row's specialist — a delegation to any other agent, an errored one, and a listed but uncalled delegation tool all evidence nothing for a courier, whether or not the turn completed; a courier turn with no such result (including one that raised, was cancelled, or replied with silence) returns the obligation to `pending` with its released verdict intact, under the same bounded budget as a resident turn, and past the bound it fails with an operator note naming the delegation that could not be made; the delegation tool is recorded under its own key, never as the row's expected setup tool, so no ordinary turn's delegation result can settle a specialist-target row; and a `dispatched` row that carries neither an expected tool nor a courier key and no settlement mark — one no turn will ever report on — is retired by the next worker pass as `failed` with a reason naming the manual run and one operator note, never re-dispatched.
+
+**INV-PLUG-048**: A `dispatched` setup obligation whose dispatched turn's report consumed it carries which evidence did — a non-error setup-tool result for a resident row, a non-error delegation to the row's own specialist for a courier row — and the status tool then describes it as having run, or as handed to that specialist, never as still running, and never claims for a courier row that the setup tool ran; a `dispatched` row with no such report still reads "setup is running"; a report that returns the row to `pending` or fails it leaves no such mark on it; the mark is read by nothing but the status tool, so it neither settles the row nor changes whether a dispatched turn still owes it, and a row settled by turn evidence reads as that settlement.
 
 **INV-PLUG-027**: An origin carrying one of Casa's plugin-turn markers — `plugin_setup`, or the `plugin_erase` marker of an erase turn — yields a grant identity only when it is Telegram-shaped, addressed to the operator as configured at the time of the call, read on a direct or delegated turn, and its Casa-stamped target for that marker (`plugin_setup_target`, `plugin_erase_target`) equals the executing role; the same origin read from an engagement record yields none, at launch and on resume; every other synthetic marker yields none; the markers and the targets cannot be supplied from outside Casa; and a turn carrying either marker can delegate only in `sync` mode, so no engagement is ever created from it.
 
@@ -90,14 +92,18 @@ artifact's MCP server failed to come up in a session built moments after an agen
 reconstruction, so the one automatic run was silently spent. Now the turn itself reports
 back (INV-PLUG-012): the agent correlates the episode marker on the dispatched turn with
 what the turn actually evidenced — a non-error result from the tool consumes the
-obligation; a completed turn whose init listed the tool consumes it too (an available tool
-the agent chose not to call is its reply's business); anything else — the tool absent,
-availability unknown, every attempted call an error, the turn raising or cancelled before
-it could reply — returns the row to `pending` with its released verdict kept, and the next
-reload or reconcile kick re-dispatches. Completion matters for the availability rule
-alone: that rule rests on the agent's reply reporting what it chose, and a raising or
-cancelled turn produced no reply, so listing without a call evidences nothing there while
-a non-error result collected before the cancel still counts. Deliberately no immediate retry: the broken session is
+obligation, and nothing else does: the tool absent, availability unknown, every attempted
+call an error, the turn raising or cancelled, and a tool the init listed that the turn
+never called all return the row to `pending` with its released verdict kept, and the next
+reload or reconcile kick re-dispatches. A non-error result collected before a cancel still
+counts — the report runs from the turn's `finally`. Until #1012 a completed turn whose
+init listed the tool consumed the row too, on the premise that the agent's reply would
+tell the operator why it did not call it; but the report runs before the message handler
+admits, suppresses or delivers that reply, so a silent, empty or undelivered reply spent
+the obligation with nothing run and nobody told. The rule was cut to its one positive
+fact, as the courier rule had been, at the cost that an agent which sees the tool and
+declines to call it is re-dispatched within the budget and then produces the failure
+note. Deliberately no immediate retry: the broken session is
 usually a warm one that would fail identically, and the healer in practice is the next
 agent reload. The budget is bounded; exhausting it fails the obligation with a note naming
 the manual run.
@@ -128,7 +134,20 @@ prompt when the obligation is settled, and the dispatched turn's own report is a
 a settled row. Turns on different session keys are not serialised against each other, so
 a setup run from another channel while a dispatch is already executing can still be
 followed by that dispatch's run. The status tool reads a settled row as "setup ran (the
-assistant ran the setup tool itself)" whatever status a later removal leaves on it. A specialist-target dispatch stays delivery-only as far as the SETUP tool goes — the
+assistant ran the setup tool itself)" whatever status a later removal leaves on it.
+
+**A consumed setup reads as still running.** `dispatched` is the store's one consumed
+status: bus acceptance writes it before the turn runs, and a consuming report leaves it in
+place, so until #1183 the status tool described every consumed obligation as "setup is
+running" for good. The consuming report now writes an outcome mark on the row
+(INV-PLUG-048) — `tool_ran` for a resident row, `delegated` for a courier row — and the
+status tool reads a marked `dispatched` row as "setup ran (the dispatched setup turn ran
+the setup tool)" or "setup was handed to '<specialist>' (the delegation completed)". The
+mark is not `settled_by`: that key means an ordinary turn ran the tool, and settlement, the
+evidence watch and the dispatched turn's pre-run check all read it, while the mark changes
+none of them. A row the same report returns to `pending` or fails drops the mark, and a
+row with no report yet, or consumed before the mark existed, still reads "setup is
+running". A specialist-target dispatch stays delivery-only as far as the SETUP tool goes — the
 assistant is just the delegation courier there, and its own session says nothing about the
 specialist's — but the courier turn does say whether the delegation went through.
 
@@ -169,10 +188,10 @@ consumes the row (the specialist's own reply, relayed by the assistant, reports 
 result), and nothing else does — a delegation to some other agent, an errored one, an
 absent or merely listed-but-uncalled one, all return the row to `pending` under the same
 bounded budget a resident row has, and exhaustion fails it with a note naming the
-delegation that could not be made. The resident rule's "listed but uncalled is the reply's
-business" clause is not carried over: that clause rests on the reply reaching the
-operator, the report runs before silence suppression and delivery, and for a courier the
-delegation *is* the turn, so there is no reply for it to be the business of. The keys are
+delegation that could not be made. Neither tier counts a listed-but-uncalled tool: that
+rule rested on the reply reaching the operator, and the report runs before silence
+suppression and delivery — it was never carried over to the courier, for which the
+delegation *is* the turn, and #1012 cut it from the resident tier too. The keys are
 deliberately not `expected_tool`: that name feeds the ordinary-turn evidence watch, and a
 specialist target must stay outside settlement (INV-PLUG-023). A `dispatched` row that
 carries neither key and no settlement mark — one dispatched before the courier keys existed,
