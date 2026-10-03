@@ -85,7 +85,9 @@ answered, replaced, or ended otherwise (the deadline, a shutdown) — until the 
 a tap that passes the same chain answers "already answered", "replaced" or "expired" for
 the proposal's whole hour; only after every check has passed, so someone else is still
 told "not for you". The memory lives in the process and keeps a chat's latest 256 settled
-proposals; one it no longer holds answers "expired".
+proposals (`_PROPOSAL_SETTLED_PER_CHAT`). A tap on one it has dropped from that bound is answered
+from the broker's record, as before the memory existed: "already answered" while an answered
+proposal's record lasts (`_RETIRE_S`, 60 seconds from its settlement), "expired" otherwise.
 
 **A tap is one desk use, re-checked under the lock on one captured build input.** Under the
 specialist's desk lock, immediately before the session build, Casa captures ONCE exactly the
