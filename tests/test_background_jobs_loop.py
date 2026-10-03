@@ -563,15 +563,21 @@ async def test_clearance_downgrade_keeps_a_running_job_alive(harness, monkeypatc
     h.client = old
     entered, release = asyncio.Event(), asyncio.Event()
     batch_two, hold_two = asyncio.Event(), asyncio.Event()
+    late_reports = []
 
     async def hold():
         entered.set()
         await release.wait()
 
+    async def late_report():
+        # The running batch keeps its turn, not its tools (INV-MEM-011).
+        late_reports.append(payload(await tools.report_job_progress.handler(
+            {"summary": "Handled rows", "progressed": True})))
+
     async def second():
         batch_two.set()
         await hold_two.wait()
-    old.scripts = [[text_frame("Working"), hold, h.report, result()]]
+    old.scripts = [[text_frame("Working"), hold, late_report, result()]]
     fresh.scripts = [[text_frame("Answer"), result()], [second, result()]]
     await h.start()
     await asyncio.wait_for(entered.wait(), 5)
@@ -589,5 +595,6 @@ async def test_clearance_downgrade_keeps_a_running_job_alive(harness, monkeypatc
     assert old_prompts == ["Acknowledge the job", jobs.batch_prompt(1, "Process rows")]
     assert fresh_prompts == [f"{note}\n\nCorrection", jobs.batch_prompt(2, "Process rows")]
     assert old.closed
+    assert [r.get("kind") for r in late_reports] == ["engagement_context_rebuilding"]
     assert "a batch stopped before finishing" not in h.topic()
     assert h.bot.closed == []
