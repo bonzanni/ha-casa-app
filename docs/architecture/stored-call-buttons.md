@@ -68,17 +68,26 @@ and a live record (chat, operator, role, artifact, plugin segment, the stored ca
 text) — so a tap can never find a keyboard the broker does not know. At most 32 live
 proposals per chat; the 33rd deposit is withheld. A non-empty `revision` supersedes the
 earlier live proposals of the same chat, plugin and role carrying the same revision (their
-keyboards are edited to `↻ replaced`). A post that is not proven unregisters at once and
+keyboards are edited to `↻ replaced`, and a tap on one answers "replaced"). A post that is not proven unregisters at once and
 withholds the result. A Casa restart empties the broker: a tap on an older keyboard answers
 "expired".
 
 **The tap's admission is a chain, fail closed, nothing claimed before every check passes.**
-The callback's message and sender are present; the record is live; its chat is the
-callback's chat; the message id is the message the keyboard was posted as; the index names a
-button; the tapper is the operator the proposal was posted for and is still the configured
+The callback's message and sender are present; the record is known (live, or settled and
+remembered — below); its chat is the callback's chat; the message id is the message the
+keyboard was posted as; the index names a button; the tapper is the operator the proposal was posted for and is still the configured
 operator; the deadline has not passed. Then one claim and one commit — a second tap is
 "already answered". The handler edits nothing and dispatches nothing: the finish hook the
 post installed edits the keyboard away first (`☑ <label>`), then reserves the desk.
+A settled proposal's answer does not end with the broker's short-lived record of it: at the
+moment of settlement the channel remembers the proposal's own record and what happened —
+answered, replaced, or ended otherwise (the deadline, a shutdown) — until the deadline, so
+a tap that passes the same chain answers "already answered", "replaced" or "expired" for
+the proposal's whole hour; only after every check has passed, so someone else is still
+told "not for you". The memory lives in the process and keeps a chat's latest 256 settled
+proposals (`_PROPOSAL_SETTLED_PER_CHAT`). A tap on one it has dropped from that bound is answered
+from the broker's record, as before the memory existed: "already answered" while an answered
+proposal's record lasts (`_RETIRE_S`, 60 seconds from its settlement), "expired" otherwise.
 
 **A tap is one desk use, re-checked under the lock on one captured build input.** Under the
 specialist's desk lock, immediately before the session build, Casa captures ONCE exactly the
@@ -202,8 +211,9 @@ exit sweep, which ends every task at once (Casa-wide behaviour, not S5's).
 ## Failure behavior
 
 **A callback by someone else, in the wrong chat, on another message, with a bad index, after
-expiry, after a restart, or a second tap.** A toast only — `expired`, `invalid`, `not for
-you`, `already answered`; the keyboard is untouched, nothing runs.
+expiry, after a restart, a second tap, or a tap on a replaced proposal.** A toast only —
+`expired`, `invalid`, `not for you`, `already answered`, `replaced`; the keyboard is
+untouched, nothing runs.
 
 **A re-check fails** (not delegable, plugin unassigned, plugin changed, profile, plugin
 erasing, undeclared, protected, transport). `✖ <reason>` on the keyboard, one labelled
@@ -241,10 +251,10 @@ be cleared.`: it names no destination and nothing is applied.
 
 **A proposal superseded while its own send is in flight.** The finish hook finds no message
 id yet and leaves the terminal line for the poster, which applies `↻ replaced` the moment the
-message lands; no live record remains for it.
+message lands; no live record remains for it, and a tap on it answers "replaced".
 
-**Casa restarts.** The broker, the post map, the desks and their faults are gone; a tap on
-an older keyboard answers "expired".
+**Casa restarts.** The broker, the settled-proposal memory, the post map, the desks and
+their faults are gone; a tap on an older keyboard answers "expired".
 
 ## Extension points
 

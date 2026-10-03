@@ -214,12 +214,105 @@ async def test_a_tap_after_expiry_or_after_a_restart_is_expired(env):
     assert await _tap(env, _cq()) == "expired"
 
 
-async def test_a_superseded_proposal_is_edited_and_a_tap_on_it_is_expired(env):
+async def test_a_superseded_proposal_is_edited_and_a_tap_on_it_is_replaced(env):
     env.register(meta={"revision": "r1"})
     env.broker.cancel_where(namespace="proposal", reason="superseded", predicate=lambda r: True)
     await _settle()
     assert "↻" in env.bot.edited[-1]["text"]
-    assert await _tap(env, _cq()) == "expired"
+    assert await _tap(env, _cq()) == "replaced"
+    assert env.taps == []
+
+
+# --- #1201: a tap on a settled keyboard says what happened, for the proposal's whole hour ---
+
+def _live_meta(env):
+    return env.broker.get_meta(namespace="proposal", scope=f"proposal:{OPERATOR}", request_id=RID)
+
+
+def _restart(env):
+    vb.BROKER = vb.VerdictBroker()                   # the broker is empty…
+    env.ch = _channel()                              # …and so is the channel
+
+
+@pytest.mark.parametrize("retired", [False, True], ids=["tombstone", "retired"])
+@pytest.mark.parametrize("settled", ["answered", "superseded"])
+@pytest.mark.parametrize("case", ["operator", "someone else", "deconfigured", "other message",
+                                  "restart"])
+async def test_a_tap_on_a_settled_proposal_answers_what_happened(env, monkeypatch, settled,
+                                                                   retired, case):
+    if retired:
+        monkeypatch.setattr(vb, "_RETIRE_S", 0)      # set BEFORE the settlement
+    req = env.register(meta={"revision": "r1"})
+    if settled == "answered":
+        first = _cq()
+        assert await _tap(env, first) == "✔"
+        assert first.callback_query.answer.await_count == 1
+    else:
+        assert env.broker.cancel_where(namespace="proposal", reason="superseded",
+                                       predicate=lambda r: True) == [RID]
+    await _settle()
+    assert len(env.taps) == (1 if settled == "answered" else 0)
+    if settled == "superseded":
+        assert len(env.bot.edited) == 1 and "↻ replaced" in env.bot.edited[0]["text"]
+    assert asyncio.get_running_loop().time() < req.meta["deadline"]   # inside the proposal's hour
+    assert (_live_meta(env) is None) is retired      # the tombstone really is gone (or there)
+    update = _cq()
+    if case == "someone else":
+        update = _cq(user_id=99)
+    elif case == "deconfigured":
+        env.ch._user_id_is_operator = lambda uid: False
+    elif case == "other message":
+        update = _cq(message_id=502)
+    elif case == "restart":
+        _restart(env)
+    before = list(env.taps)
+    toast = await _tap(env, update)
+    await _settle()
+    assert update.callback_query.answer.await_count == 1
+    assert env.taps == before
+    expected = {"operator": "already answered" if settled == "answered" else "replaced",
+                "someone else": "not for you", "deconfigured": "not for you",
+                "other message": "expired", "restart": "expired"}[case]
+    assert toast == expected
+
+
+@pytest.mark.parametrize("retired", [False, True], ids=["tombstone", "retired"])
+@pytest.mark.parametrize("ending", ["timeout", "no_answer", "casa_shutdown"])
+async def test_a_tap_on_a_proposal_ended_otherwise_is_expired(env, monkeypatch, ending, retired):
+    if retired:
+        monkeypatch.setattr(vb, "_RETIRE_S", 0)
+    req = env.register(meta={"revision": "r1"})
+    if ending == "no_answer":
+        env.broker._on_timeout(req.key)
+    elif ending == "casa_shutdown":
+        env.broker.cancel_all(reason="casa_shutdown")
+    else:
+        env.broker.cancel(namespace="proposal", scope=f"proposal:{OPERATOR}", request_id=RID,
+                          reason="timeout")
+    await _settle()
+    assert (_live_meta(env) is None) is retired
+    update = _cq()
+    assert await _tap(env, update) == "expired"
+    await _settle()
+    assert update.callback_query.answer.await_count == 1
+    assert env.taps == []
+
+
+@pytest.mark.parametrize("retired", [False, True], ids=["tombstone", "retired"])
+async def test_a_proposal_superseded_during_its_send_answers_replaced_on_the_landed_message(
+        env, monkeypatch, retired):
+    if retired:
+        monkeypatch.setattr(vb, "_RETIRE_S", 0)
+    req = env.register(meta={"revision": "r1", "message_id": None})    # the send is in flight
+    env.broker.cancel_where(namespace="proposal", reason="superseded", predicate=lambda r: True)
+    await _settle()
+    req.meta["message_id"] = 501                     # the send lands (the poster's own write)
+    assert (_live_meta(env) is None) is retired
+    update = _cq()
+    assert await _tap(env, update) == "replaced"
+    await _settle()
+    assert update.callback_query.answer.await_count == 1
+    assert env.taps == []
 
 
 async def test_a_full_desk_queue_refuses_the_tap_with_the_busy_line_and_no_task(env):
@@ -337,3 +430,41 @@ async def test_a_failed_keyboard_edit_tells_which_button_won_before_the_dispatch
     assert kinds[:2] == ["edit", "notice"]                          # the telling precedes the dispatch
     assert "☑ No" in order[1][1]
     assert any("☑ No" in s.get("text", "") for s in env.bot.sent)
+
+
+async def test_a_supersede_is_answered_replaced_before_its_finish_task_has_run(env):
+    env.register(meta={"revision": "r1"})
+    env.broker.cancel_where(namespace="proposal", reason="superseded", predicate=lambda r: True)
+    # no loop turn: the finish hook's edit task has not started
+    assert env.bot.edited == []
+    assert await _tap(env, _cq()) == "replaced"
+    await _settle()
+    assert env.taps == []
+
+
+async def test_a_settled_proposal_is_forgotten_at_its_deadline(env, monkeypatch):
+    monkeypatch.setattr(vb, "_RETIRE_S", 0)
+    req = env.register()
+    assert await _tap(env, _cq()) == "✔"
+    await _settle()
+    assert RID in env.ch._proposal_settled
+    req.meta["deadline"] = asyncio.get_running_loop().time() - 1   # the hour is over
+    update = _cq()
+    assert await _tap(env, update) == "expired"
+    assert RID not in env.ch._proposal_settled
+    assert update.callback_query.answer.await_count == 1 and len(env.taps) == 1
+
+
+async def test_the_settled_memory_keeps_a_chats_latest_entries_only(env):
+    import channels.telegram as tg
+    deadline = asyncio.get_running_loop().time() + 3600
+    other = {"chat_id": 7, "deadline": deadline}
+    env.ch._remember_settled_proposal("other", other, {"outcome": "no_answer"})
+    n = tg._PROPOSAL_SETTLED_PER_CHAT + 3
+    for i in range(n):
+        env.ch._remember_settled_proposal(f"r{i}", {"chat_id": OPERATOR, "deadline": deadline},
+                                          {"outcome": "answered"})
+    mine = [k for k, (m, _) in env.ch._proposal_settled.items() if m["chat_id"] == OPERATOR]
+    assert len(mine) == tg._PROPOSAL_SETTLED_PER_CHAT
+    assert mine[0] == "r3" and mine[-1] == f"r{n - 1}"
+    assert env.ch._proposal_settled["other"] == (other, "expired")
