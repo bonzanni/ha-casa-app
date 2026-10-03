@@ -34,6 +34,7 @@ What this module deliberately does NOT do:
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 import errno
 import json
 import logging
@@ -675,6 +676,41 @@ async def wire(scheduler, root: str, *, role: str) -> None:
         return
     # Installed last: a failure at any step above leaves no inbox, so no grant.
     _inboxes[role] = inbox
+    global _root  # noqa: PLW0603
+    _root = root
+
+
+_root: str | None = None     # the inbox root the boot wiring used (for a reload's provisioning)
+
+
+def wired_root() -> str | None:
+    return _root
+
+
+def provision_delegate_inboxes(root: str, resident_cfg: Any, *, specialist_roles) -> list[str]:
+    """S6 §2.3: an inbox for every specialist the resident declares as a delegate
+    and that is loaded — provisioned once (an existing inbox is kept), at boot
+    after the resident's own and again on a reload that adds a delegate. A
+    failure leaves THAT role without an inbox (its routed files are refused,
+    never redirected) and does not stop the others. Returns the roles
+    provisioned by this call."""
+    global _root  # noqa: PLW0603
+    _root = root
+    done: list[str] = []
+    declared = [getattr(d, "agent", None) for d in (getattr(resident_cfg, "delegates", None) or [])]
+    for role in declared:
+        if not role or role not in specialist_roles or role in _inboxes:
+            continue
+        try:
+            inbox = open_inbox(role, root)
+            inbox.reclaim_staging()
+        except Exception:  # noqa: BLE001 — one role never stops another
+            logger.warning("agent inbox for specialist %s could not be provisioned; its "
+                           "inbound files are refused", role, exc_info=True)
+            continue
+        _inboxes[role] = inbox
+        done.append(role)
+    return done
 
 
 def _reset_for_tests() -> None:

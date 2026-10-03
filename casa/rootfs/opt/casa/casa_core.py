@@ -4559,6 +4559,13 @@ async def main() -> None:
     import agent_inbox
     await agent_inbox.wire(
         scheduler, os.path.join(DATA_DIR, "agent-inbox"), role=assistant_role)
+    # S6 §2.3: one inbox per specialist the Telegram default agent declares as a
+    # delegate, so a file replied to that specialist's post is stored for IT.
+    if assistant_role in role_configs:
+        await asyncio.to_thread(
+            agent_inbox.provision_delegate_inboxes,
+            os.path.join(DATA_DIR, "agent-inbox"), role_configs[assistant_role],
+            specialist_roles=set(specialist_configs))
 
     # Plan 4b §5.1 — ensure every loaded in_casa resident or specialist
     # agent has an agent-home with default plugins seeded from

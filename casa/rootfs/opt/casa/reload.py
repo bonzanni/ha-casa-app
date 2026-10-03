@@ -1140,6 +1140,18 @@ def _refresh_role_map(runtime: Any, *, context: str) -> list[str]:
     try:
         from tools import sync_agent_role_map
         sync_agent_role_map(runtime)
+        # S6 §2.3: a reload that adds a delegate provisions its inbox then
+        try:
+            import agent_inbox
+            _root = agent_inbox.wired_root()
+            _residents = dict(getattr(runtime, "role_configs", {}) or {})
+            _registry = getattr(runtime, "specialist_registry", None)
+            if _root and "assistant" in _residents and _registry is not None:
+                agent_inbox.provision_delegate_inboxes(
+                    _root, _residents["assistant"],
+                    specialist_roles=set(_registry.all_configs()))
+        except Exception:  # noqa: BLE001 — provisioning never fails a reload
+            logger.warning("delegate inbox provisioning on reload failed", exc_info=True)
         actions.append("refresh_role_map")
     except Exception as exc:  # noqa: BLE001 — log but don't fail the caller
         logger.warning("role-map refresh failed (%s): %s", context, exc)
