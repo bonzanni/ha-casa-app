@@ -1205,8 +1205,9 @@ the answer to keep the thread going. The specialist keeps a short desk thread
 per chat: the last twelve exchanges of the last hour (each side clipped to
 400 characters), including the briefs the assistant sent it by delegation; an
 hour of silence starts the thread fresh. A reply that starts with `/new` on a
-specialist's post goes to the specialist too — `/new` resets the assistant
-only when it is not a reply to a post. Views the specialist's plugin produces
+specialist's post goes to the specialist too, as plain text — it resets
+nothing, and the specialist is told so; `/new` resets the assistant only when
+it is not a reply to a post. Views the specialist's plugin produces
 during the turn still arrive verbatim through the labelled-post path; if the
 specialist has nothing to show, or its turn fails, Casa posts one short
 labelled notice instead. The assistant only learns that the specialist

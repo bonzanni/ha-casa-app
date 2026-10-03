@@ -146,6 +146,30 @@ def test_the_desk_turn_context_says_the_message_is_from_the_same_operator():
     assert full.endswith(sd.clip(quote, sd.DESK_QUOTE_CHARS))           # nothing cut by the cap
 
 
+def test_a_slash_reply_context_carries_its_line_and_still_fits_by_construction():
+    """#1198: the slash line is its own part after the frame, only for a reply
+    task starting with "/", and the cap still holds with nothing cut."""
+    record = SimpleNamespace(slot="report", posted_at=900.0)
+    block = sd.render_block([sd.Exchange("operator", "q", 1.0)], resident_name="Ellen")
+    frame = sd.turn_frame("Ellen")
+    plain = sd._compose_context(block, None, None, 1000.0, resident_name="Ellen")
+    assert sd._compose_context(block, None, None, 1000.0, resident_name="Ellen",
+                               task="  /new") == frame + "\n\n" + sd.SLASH_TASK_LINE + "\n\n" + block
+    for task in ("more", "a /b", "", None):
+        assert sd._compose_context(block, None, None, 1000.0, resident_name="Ellen",
+                                   task=task) == plain
+    assert sd._compose_context(block, None, None, 1000.0, resident_name="Ellen",
+                               continuation=True, task="/new") == (
+        sd.turn_frame("Ellen", continuation=True) + "\n\n" + block)
+    big = sd.render_block([sd.Exchange("operator", "a" * 400, 1.0 + i) for i in range(24)],
+                          resident_name="N" * 500)
+    quote = "q" * 5000
+    full = sd._compose_context(big, quote, record, 1000.0, resident_name="N" * 500, task="/new")
+    assert len(full) <= sd.DESK_CONTEXT_CHARS
+    assert sd.SLASH_TASK_LINE in full
+    assert full.endswith(sd.clip(quote, sd.DESK_QUOTE_CHARS))           # nothing cut by the cap
+
+
 def test_an_idle_desk_starts_empty_on_its_next_use():
     reg, desk = _desk()
     desk.append("operator", "hello", now=1000.0)

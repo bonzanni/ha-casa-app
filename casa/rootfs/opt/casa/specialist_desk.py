@@ -54,6 +54,10 @@ POSTED_VIEW = "[posted a view]"
 NO_REPLY = "[no reply]"
 ECHO_OWNER_PREFIX = "desk:"
 UNWINDING = "an earlier run is still unwinding"   # #1197: the desk's refusal reason
+# #1198: a swipe-reply starting with "/" reaches the specialist as text — the
+# route runs ahead of the /new interception — and the desk turn's context says so
+SLASH_TASK_LINE = ('The task starts with "/" but is plain text: Casa did not run it as a '
+                   "command, and it reset nothing — any earlier exchanges shown still stand.")
 # S5: the pinned one-call turn (stored-call buttons)
 STORED_CALL_RECEIPT_CHARS = 4000
 NO_RECEIPT = "[no receipt]"
@@ -668,11 +672,15 @@ def _desk_origin(*, resident_role: str, desk_role: str, chat_id: int, user_id: i
 
 def _compose_context(block: str, quoted_text: str | None, record: Any, now: float,
                      resident_name: str | None = None, continuation: bool = False,
-                     file: bool = False) -> str:
-    """The desk turn's context: the turn frame (#1192) first, then the block,
-    then the quote — at most DESK_CONTEXT_CHARS by construction (frame and
-    quote header within DESK_FRAMING_CHARS), the slice only a backstop."""
+                     file: bool = False, task: str | None = None) -> str:
+    """The desk turn's context: the turn frame (#1192) first, then — for an
+    operator's reply ``task`` starting with "/" — the slash line (#1198), then
+    the block, then the quote — at most DESK_CONTEXT_CHARS by construction
+    (frame, slash line and quote header within DESK_FRAMING_CHARS), the slice
+    only a backstop."""
     parts = [turn_frame(resident_name, continuation, file)]
+    if not continuation and task is not None and task.lstrip().startswith("/"):
+        parts.append(SLASH_TASK_LINE)
     if block:
         parts.append(block)
     if quoted_text is not None and record is not None:
@@ -785,7 +793,7 @@ async def handle_reply(
             context_text = _compose_context(block, quoted_text, record, now,
                                             resident_name=resident_name,
                                             continuation=continuation,
-                                            file=file_name is not None)
+                                            file=file_name is not None, task=task_text)
             # the permit AFTER the lock; it never waits
             permit = None
             limiter = tools_mod._specialist_limiter

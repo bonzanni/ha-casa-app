@@ -33,9 +33,9 @@ message is retained in the post map for this chat and was posted for this operat
 poster is not the chat's own resident, and the poster is a specialist (`is_specialist`: the
 loaded role's `kind`, the same predicate the delegation gate reads) the resident may
 delegate to now — takes the path that existed before, byte for byte. The route runs first in
-the DM handler, ahead of the `/new` interception (so `/new, start over` on a Finance post tells
-Finance to start over), and after the chat's rate decision, taken exactly as today's path
-takes it.
+the DM handler, ahead of the `/new` interception (so `/new, start over` on a Finance post is
+Finance's turn, as text: it resets nothing, neither the resident nor the desk), and after the
+chat's rate decision, taken exactly as today's path takes it.
 
 **The post map is filed as messages land.** The channel files every physical message a post
 produces — each page, each plain fallback chunk, the media message, the link message, a desk
@@ -70,7 +70,10 @@ write or relay it — or, for an approval continuation, Casa's note of the opera
 The frame and the labels are counted in the block's budget like any other text, so the
 bounds above are unchanged; a budget too small to hold the tags and the frame renders no
 block rather than overrunning. Only the rendering names the parties: the log stores what it
-stored.
+stored. When the operator's reply starts with `/` (leading spaces aside), `turn_frame` is
+followed by one more line (`SLASH_TASK_LINE`): Casa did not run it as a command and it reset
+nothing. The task itself stays the operator's exact words, and a tap or a continuation never
+carries the line.
 
 **One desk, one use at a time, the lock covering the whole use.** Every use of a desk — a
 swipe-reply turn, an approval continuation, and the resident's delegations to that
