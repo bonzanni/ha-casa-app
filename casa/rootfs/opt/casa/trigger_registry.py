@@ -249,6 +249,15 @@ class TriggerRegistry:
                         f"{trig.channel!r} not registered on this agent "
                         f"(channels={channels})"
                     )
+                if getattr(trig, "job", "") and trig.channel != "telegram":
+                    # S6 (INV-TRIG-022, C6): a job trigger runs only on telegram; the
+                    # schema and the typed upsert refuse it first, this is the last guard.
+                    # Startability is deliberately NOT checked here (R1-2): a boot must
+                    # never fail for a job that is no longer startable — the fire tells.
+                    raise TriggerError(
+                        f"agent {role!r} trigger {trig.name!r}: a job trigger runs only "
+                        f"on telegram (channel={trig.channel!r})"
+                    )
                 self._register_scheduled(role, trig)
             elif trig.type == "webhook":
                 # Release A: webhook triggers are served EXCLUSIVELY by the
@@ -283,7 +292,14 @@ class TriggerRegistry:
                 self._in_flight.discard(job_id)
 
         async def _dispatch() -> None:
-            msg = BusMessage(
+            if getattr(trig, "job", ""):
+                # S6 §3.3 (INV-TRIG-022): a job trigger starts the job directly through
+                # the one launcher — no BusMessage, no resident turn; refusals are told
+                # by the launcher's caller, once, as a past event
+                import tools as tools_mod
+                await tools_mod.start_scheduled_job(role, trig)
+            else:
+                await self._bus.send(BusMessage(
                 type=MessageType.SCHEDULED,
                 source="scheduler",
                 target=role,
@@ -306,8 +322,7 @@ class TriggerRegistry:
                             role, f"{trig.type}-{trig.name}"),
                         note=getattr(trig, "output_note", "") or ""),
                 },
-            )
-            await self._bus.send(msg)
+                ))
 
             if trig.one_shot:
                 # #396 / INV-TRIG-009. Ordering is load-bearing: the bus send

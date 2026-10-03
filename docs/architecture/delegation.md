@@ -58,7 +58,8 @@ not be confirmed to have left, or one whose earlier use's run is still unwinding
 teardown bound — is the typed `desk_faulted` result, refused before any queue
 place and for sync, degraded and async alike. The desk, its bounds and the swipe-reply route
 that shares it are [`specialist-desk.md`](specialist-desk.md); the faulted desk is
-[`stored-call-buttons.md`](stored-call-buttons.md).
+[`stored-call-buttons.md`](stored-call-buttons.md). A file the operator addresses to the specialist
+starts a use of the same desk; its route is [`inbound-files.md`](inbound-files.md).
 
 **A brief is text stored for a later turn to narrate, and its disclosure resolves at
 launch.** Every `delegate_to_agent` launch — synchronous ones included, since a synchronous

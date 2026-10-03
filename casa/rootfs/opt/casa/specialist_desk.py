@@ -78,6 +78,84 @@ def clip(text: str, limit: int) -> str:
     return text[:keep] + CLIP
 
 
+# -- S6 §2.6: one bounded composer for every line the slice introduces or changes ----------
+
+FIELD_MIN_CHARS = 8          # the least a label or a display field keeps (then CLIP)
+
+
+def bounded_line(template: str, *, label: str, fields: "dict[str, Any] | None" = None,
+                 limit: "int | None" = None) -> str:
+    """ONE string for the notice and the resident's echo, within the echo cap:
+    the literal text of *template* (the outcome clause and its connectives) is
+    reserved first, then the label and the display fields — ``{label}`` and
+    ``{<field>}`` placeholders — share what remains, each keeping at least
+    ``FIELD_MIN_CHARS`` and clipped with the marker. A notice composed any other
+    way lost its outcome when ``record_echo`` clipped it at 120 (S6 design §2.6:
+    the echo-budget shape, found in three review rounds, generalised here)."""
+    import result_broker as rb
+    cap = rb.ECHO_LINE_MAX if limit is None else int(limit)
+    values = {"label": str(label or "")}
+    for key, value in (fields or {}).items():
+        values[str(key)] = str(value if value is not None else "")
+    literal = template
+    for key in values:
+        literal = literal.replace("{" + key + "}", "")
+    budget = max(0, cap - len(literal))
+    keys = list(values)
+    floor = min(FIELD_MIN_CHARS, budget // max(1, len(keys)))
+    alloc = {k: min(len(values[k]), floor) for k in keys}
+    remaining = budget - sum(alloc.values())
+    need = [k for k in keys if len(values[k]) > alloc[k]]
+    while need and remaining > 0:
+        share = max(1, remaining // len(need))
+        progressed = False
+        for key in list(need):
+            extra = min(share, len(values[key]) - alloc[key], remaining)
+            if extra > 0:
+                alloc[key] += extra
+                remaining -= extra
+                progressed = True
+            if alloc[key] >= len(values[key]):
+                need.remove(key)
+        if not progressed:
+            break
+    out = template
+    for key in keys:
+        value = values[key]
+        out = out.replace("{" + key + "}", value if alloc[key] >= len(value) else clip(value, alloc[key]))
+    return out
+
+
+_FILE_OUTCOME_CLAUSES = {
+    # agent_inbox.Outcome value -> the past-event clause after "could not take <name>: "
+    "too_large": "over {cap} MB.",
+    "mismatch": "not a {kind}.",
+    "full": "inbox full ({files} files / {mb} MB).",
+    "download_failed": "Telegram did not hand it over.",
+    "local_path": "could not be saved; nothing kept.",
+    "storage_failed": "could not be saved; nothing kept.",
+}
+
+
+def file_outcome(label: str, name: str, outcome: Any, *, kind: str = "file") -> "str | None":
+    """The labelled, past-event line for a routed file's receipt outcome — Casa's
+    own composer over ``agent_inbox.Outcome``, never Ellen's first-person
+    ``_inbound_reply`` texts (S6 design §2.1). ``None`` for a stored file (the
+    desk turn speaks for it); an UNCERTAIN outcome claims neither that the file
+    was kept nor that it was not (INV-INBOX-005)."""
+    import agent_inbox
+    value = getattr(outcome, "value", outcome)
+    if value == agent_inbox.Outcome.STORED.value:
+        return None
+    if value == agent_inbox.Outcome.UNCERTAIN.value:
+        return bounded_line("{label} could not confirm that {name} was saved — it may or may not be in its inbox.",
+                            label=label, fields={"name": name})
+    clause = _FILE_OUTCOME_CLAUSES.get(value, "could not be saved; nothing kept.").format(
+        cap=agent_inbox.CAP_BYTES // (1024 * 1024), kind=kind, files=agent_inbox.MAX_FILES,
+        mb=agent_inbox.MAX_BYTES // (1024 * 1024))
+    return bounded_line("{label} could not take {name}: " + clause, label=label, fields={"name": name})
+
+
 @dataclasses.dataclass
 class Exchange:
     who: str           # "operator" | "resident" | "specialist"
@@ -335,13 +413,19 @@ def render_block(exchanges: list[Exchange], budget: int = DESK_LOG_CHARS,
     return ""
 
 
-def turn_frame(resident_name: str | None, continuation: bool = False) -> str:
+def turn_frame(resident_name: str | None, continuation: bool = False, file: bool = False) -> str:
     """#1192: the desk turn's opening context line — the task is the
     operator's own message to the specialist, now, the same operator as in
     the exchanges shown, not something the resident relayed. An approval
     continuation's task is Casa's note of the operator's decision, not the
     operator's words, and its frame says that instead."""
     name = _resident_name(resident_name)
+    if file:
+        # S6 (diff round 3, Terra): a file turn's task is Casa's note of the file — by a
+        # swipe-reply or after a 📎 tap — not the operator's own words
+        return ("The task above is Casa's note that the operator sent you a file in this chat "
+                "now, with the operator's own words if they wrote any — the same operator as in "
+                f"your earlier exchanges, if any are shown. {name} did not write or relay it.")
     if continuation:
         return ("The task above is Casa's note of the operator's decision on your request, "
                 "made in this chat now — the same operator as in your earlier exchanges, "
@@ -583,11 +667,12 @@ def _desk_origin(*, resident_role: str, desk_role: str, chat_id: int, user_id: i
 
 
 def _compose_context(block: str, quoted_text: str | None, record: Any, now: float,
-                     resident_name: str | None = None, continuation: bool = False) -> str:
+                     resident_name: str | None = None, continuation: bool = False,
+                     file: bool = False) -> str:
     """The desk turn's context: the turn frame (#1192) first, then the block,
     then the quote — at most DESK_CONTEXT_CHARS by construction (frame and
     quote header within DESK_FRAMING_CHARS), the slice only a backstop."""
-    parts = [turn_frame(resident_name, continuation)]
+    parts = [turn_frame(resident_name, continuation, file)]
     if block:
         parts.append(block)
     if quoted_text is not None and record is not None:
@@ -614,6 +699,7 @@ async def handle_reply(
     *, channel: Any, resident_role: str, chat_id: int, user_id: int, user_name: str,
     message_id: Any, cid: str, text: str, quoted_text: str | None, record: Any,
     desk_role: str, continuation: bool = False, reservation: "Reservation | None" = None,
+    file_name: "str | None" = None,
 ) -> None:
     """One desk use: the queue place (handed over by the route, or taken
     here), the desk lock, the idle reset, the log read, the specialist run on
@@ -632,21 +718,44 @@ async def handle_reply(
     context = {"chat_id": str(chat_id), "cid": cid}
     desk = DESKS.get_or_create(chat_id, desk_role)
 
-    async def _notice(line: str) -> None:
-        try:
-            await channel.deliver_desk_notice(chat_id, line)
-        except Exception as exc:  # noqa: BLE001 — nothing more is attempted
-            logger.warning("desk notice failed: %s", type(exc).__name__)
+    async def _tell(tail: str, *, notice: bool = False, receipt: bool = True,
+                    fields: "dict[str, Any] | None" = None, raw: bool = False,
+                    outcome: "str | None" = None) -> None:
+        """S6 §2.2: the ONE place a desk turn records anything — the notice to
+        the operator (when asked) and the resident's echo, the same string,
+        composed by ``bounded_line`` (§2.6). A file-started turn (``file_name``
+        set) carries the receipt once per record; a raw S3 line keeps its own
+        label. Nothing else in this function may call ``record_echo`` or
+        ``deliver_desk_notice`` (pinned)."""
+        if raw and (file_name is None or not receipt):
+            line = tail
+        else:
+            # a raw S3 line re-labelled for a file turn: its outcome comes apart from its
+            # label (rb.echo_parts), never by stripping a label the event may not carry
+            body = outcome if outcome is not None else tail
+            values = dict(fields or {})
+            if file_name is not None:
+                values.setdefault("name", file_name)
+            if file_name is not None and receipt:
+                template = "{label} received your file {name}; " + body
+            else:
+                template = "{label}" + ("" if body.startswith("'") else " ") + body
+            line = bounded_line(template, label=label, fields=values)
+        if notice:
+            try:
+                await channel.deliver_desk_notice(chat_id, line)
+            except Exception as exc:  # noqa: BLE001 — nothing more is attempted
+                logger.warning("desk notice failed: %s", type(exc).__name__)
         record_echo(chat_id, line)
 
     if reservation is None:
         if desk.faulted:
-            await _notice(faulted_line(label))
+            await _tell(faulted_line(label), notice=True, raw=True, receipt=False)
             channel._release_typing(context, str(chat_id))
             return
         reservation = desk.reserve()
         if reservation is None:
-            await _notice(f"{label} is busy; try again in a moment.")
+            await _tell("'s desk was full when the place was requested.", notice=True, receipt=False)
             channel._release_typing(context, str(chat_id))
             return
     try:
@@ -654,15 +763,16 @@ async def handle_reply(
             if desk.faulted:
                 # S5 §14.8: a reply queued before the fault finds it here,
                 # before the idle reset, the run and any permit
-                await _notice(faulted_line(label))
+                await _tell(faulted_line(label), notice=True, raw=True, receipt=False)
                 return
             now = DESKS.now()
             desk.begin_use(now)
             resident_name = tools_mod._display_name_for_role(resident_role)
             block = render_block(desk.log, resident_name=resident_name)
             cfg = tools_mod._agent_role_map.get(desk_role)
-            if cfg is None:
-                await _notice(f"{label} could not continue (not delegable).")
+            # S6 §2.2: loaded AND still declared a delegate (desk_target_ok), under the lock
+            if cfg is None or not desk_target_ok(resident_role, desk_role):
+                await _tell("could not continue (not delegable).", notice=True, receipt=False)
                 return
             turn_id = uuid.uuid4().hex
             task_text = clip(text or "", DESK_TASK_CHARS)
@@ -674,14 +784,17 @@ async def handle_reply(
                 origin, display_name=tools_mod._display_name_for_role(desk_role))
             context_text = _compose_context(block, quoted_text, record, now,
                                             resident_name=resident_name,
-                                            continuation=continuation)
+                                            continuation=continuation,
+                                            file=file_name is not None)
             # the permit AFTER the lock; it never waits
             permit = None
             limiter = tools_mod._specialist_limiter
             if limiter is not None:
                 permit = limiter.try_acquire(tools_mod._delegation_scope(origin, desk_role))
                 if permit is None:
-                    await _notice(f"{label} is busy; try again in a moment.")
+                    # S6 §2.2: a past event; no exchange is opened
+                    await _tell("was at its concurrent-work limit when the turn was attempted.",
+                                notice=True, receipt=False)
                     return
             output, failure = None, None
             runs: list = []
@@ -714,7 +827,8 @@ async def handle_reply(
             proven, unevented = turn_outcomes(turn_id, posts, scope)
             specialist_side = NO_REPLY
             if failure is not None:
-                await _notice(f"{label} could not handle your reply ({failure}).")
+                what = "your file {name}" if file_name is not None else "your reply"
+                await _tell(f"could not handle {what} ({failure}).", notice=True, receipt=False)
             elif strips_to_silence(reply_text):
                 if proven:
                     specialist_side = POSTED_VIEW
@@ -722,9 +836,9 @@ async def handle_reply(
                     # Casa line per kind, named from the records, never
                     # from the bodies
                     for phrase in outcome_phrases(unevented):
-                        record_echo(chat_id, f"{label} {phrase}")
+                        await _tell(phrase)
                 else:
-                    await _notice(f"{label} had nothing to add.")
+                    await _tell("had nothing to add.", notice=True)
             else:
                 admitted = scope.admit(IntentKind.FINAL_REPLY, reply_text)
                 labelled = admitted.with_text(f"{label}\n{admitted}")
@@ -740,17 +854,18 @@ async def handle_reply(
                 specialist_side = reply_text
                 if delivered:
                     pages = len(render_paged(labelled))
-                    record_echo(chat_id, f"{label} answered your reply "
-                                         f"({pages} page{'s' if pages != 1 else ''}).")
+                    count = f"({pages} page{'s' if pages != 1 else ''})."
+                    await _tell(("answered " if file_name is not None else "answered your reply ") + count)
                 else:
-                    await _notice(f"{label} answered; the reply did not go out.")
+                    # S6 §2.2: a page may have landed — unconfirmed, not "did not go out"
+                    await _tell("answered; complete delivery could not be confirmed.", notice=True)
             # the exchange and the idle clock are stamped once the use has
             # settled — delivery or notice included — never at its start
             done = DESKS.now()
             desk.append("operator", task_text, done)
             desk.append("specialist", specialist_side, done)
-            for line in rb.echo_lines(posts):
-                record_echo(chat_id, line)
+            for line, (_, outcome) in zip(rb.echo_lines(posts), rb.echo_parts(posts)):
+                await _tell(line, raw=True, outcome=outcome)
     finally:
         reservation.release()                 # idempotent: a cancel while waiting
         channel._release_typing(context, str(chat_id))

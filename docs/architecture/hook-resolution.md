@@ -63,10 +63,10 @@ whose readable and writable lists are the agent's `cwd`, or empty when it has no
 empty list denies every path. Its `extra_readable` argument is appended to the readable list
 of *every* `path_scope` entry it builds — default bundle and explicit hooks file alike — and
 never to `writable`. `Agent` passes it only for the Telegram default agent, with exactly that
-agent's inbound-file `ready/` directory, and an empty tuple for every other role; the
-delegated-specialist and in-casa executor builds pass nothing, so neither resolves a wider
-scope than its own configuration or snapshot. The grant's contract is INV-INBOX-002 in
-[`inbound-files.md`](inbound-files.md).
+role's own inbound-file `ready/` directory for a role that has an inbox — the Telegram default
+agent and the specialists it declares as delegates — and an empty tuple for every other role;
+the in-casa executor build passes nothing, so it never resolves a wider scope than its
+snapshot. The grant's contract is INV-FILE-002 in [`inbound-files.md`](inbound-files.md).
 
 **Two post-tool matchers record evidence rather than deciding anything.**
 `read_evidence_matchers(role)` adds a `PostToolUse` and a `PostToolUseFailure` matcher on

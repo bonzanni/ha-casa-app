@@ -45,6 +45,10 @@
           "prompt_file": {"type": "string", "minLength": 1, "pattern": "\\.md$"},
           "clearance":   {"type": "string", "enum": ["public", "friends", "family"]},
           "auth":        {"$ref": "#/$defs/auth"},
+          "job":         {"type": "string", "pattern": "^[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+$",
+                          "$comment": "S6: a scheduled entry whose target is a plugin job (<manifest name>:<job name>) — the fire starts the job directly through the one launcher, with no resident turn (INV-TRIG-022). Exclusive with prompt/prompt_file; task/context require it; forbids clearance; channel must be telegram."},
+          "task":        {"type": "string", "maxLength": 4000},
+          "context":     {"type": "string", "maxLength": 8000},
           "managed_by":  {
             "$comment": "#398 release 2: provenance as DATA. Present only on entries the resident's own reminder tools created — written by set_reminder and by nothing else (there is deliberately no migration out of the retired reminders.yaml — the old file must be cleared before this version is deployed). The schema cannot authenticate authorship: it makes the marker EXPRESSIBLE, and any writer of this file could set it. What it buys is that ownership is stated rather than guessed. NEVER inferred from an entry's own content: the name, `type: date` and `one_shot` are all shapes an operator may legitimately author, and inferring from them is what produced three rounds of findings in #396. Absent is the default and means the entry is the operator's, so the enum is deliberately single-valued — an \"operator\" marker would invert that default. This field is what bounds the reminder writer, the overdue sweep, the reverse job reconciliation and the post-fire cleanup to entries the agent owns, now that all of them read the operator's shared triggers.yaml.",
             "type": "string",
@@ -62,9 +66,11 @@
             "then": {
               "required": ["minutes", "channel"],
               "oneOf": [
-                {"required": ["prompt"], "not": {"required": ["prompt_file"]}},
-                {"required": ["prompt_file"], "not": {"required": ["prompt"]}}
-              ]
+                {"required": ["prompt"], "not": {"anyOf": [{"required": ["prompt_file"]}, {"required": ["job"]}]}},
+                {"required": ["prompt_file"], "not": {"anyOf": [{"required": ["prompt"]}, {"required": ["job"]}]}},
+                {"required": ["job"], "not": {"anyOf": [{"required": ["prompt"]}, {"required": ["prompt_file"]}]}}
+              ],
+              "dependentRequired": {"task": ["job"], "context": ["job"]}
             }
           },
           {
@@ -72,20 +78,27 @@
             "then": {
               "required": ["schedule", "channel"],
               "oneOf": [
-                {"required": ["prompt"], "not": {"required": ["prompt_file"]}},
-                {"required": ["prompt_file"], "not": {"required": ["prompt"]}}
-              ]
+                {"required": ["prompt"], "not": {"anyOf": [{"required": ["prompt_file"]}, {"required": ["job"]}]}},
+                {"required": ["prompt_file"], "not": {"anyOf": [{"required": ["prompt"]}, {"required": ["job"]}]}},
+                {"required": ["job"], "not": {"anyOf": [{"required": ["prompt"]}, {"required": ["prompt_file"]}]}}
+              ],
+              "dependentRequired": {"task": ["job"], "context": ["job"]}
             }
           },
           {
             "$comment": "#396: a point-in-time reminder. `at` is an ISO-8601 instant WITH offset. Cron has no year field, so a dated one-shot written as cron is an ANNUAL trigger in disguise — this type is what removes that trap. A date trigger is one-shot BY DEFINITION (one_shot must be true). #398 release 2 DELETED the `^reminder-` name requirement: it existed only because post-fire cleanup was bounded to that prefix, and cleanup is now bounded by `managed_by` instead. Requiring it was worse than redundant — it forced an operator's own dated one-shot to wear an agent-looking name, which is exactly the ambiguity that made prefix inference unsafe. `prompt_file` is forbidden because the sweep delivers the stored prompt verbatim and has no agent_dir to resolve a file against.",
             "if": {"properties": {"type": {"const": "date"}}},
             "then": {
-              "required": ["at", "channel", "one_shot", "prompt"],
+              "required": ["at", "channel", "one_shot"],
               "not": {"required": ["prompt_file"]},
               "properties": {
                 "one_shot": {"const": true}
-              }
+              },
+              "oneOf": [
+                {"required": ["prompt"], "not": {"required": ["job"]}},
+                {"required": ["job"], "not": {"required": ["prompt"]}}
+              ],
+              "dependentRequired": {"task": ["job"], "context": ["job"]}
             }
           },
           {
@@ -93,13 +106,21 @@
             "if": {"required": ["type"], "properties": {"type": {"const": "webhook"}}},
             "then": {"not": {"anyOf": [
               {"required": ["prompt"]},
-              {"required": ["prompt_file"]}
+              {"required": ["prompt_file"]},
+              {"required": ["job"]},
+              {"required": ["task"]},
+              {"required": ["context"]}
             ]}}
           },
           {
             "$comment": "#396: one_shot is meaningful ONLY for date triggers. Allowing it on cron/interval would promise a self-removal that cannot happen — the cleanup callback only removes the entry it just fired, so a recurring one would survive and re-fire after every restart. Deliberately NOT tied to `managed_by` (#398 release 2): an operator may author a dated one-shot of their own, and the two fields answer different questions — one_shot is what the trigger does, managed_by is who owns it.",
             "if": {"required": ["one_shot"], "properties": {"one_shot": {"const": true}}},
             "then": {"properties": {"type": {"const": "date"}}}
+          },
+          {
+            "$comment": "S6: a job entry forbids clearance (a webhook-only read-clearance; C5/R2-1) and runs only on telegram (C6).",
+            "if": {"required": ["job"]},
+            "then": {"not": {"required": ["clearance"]}, "properties": {"channel": {"const": "telegram"}}}
           }
         ]
       }

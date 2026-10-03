@@ -295,7 +295,7 @@ PLUGIN_DOC = "architecture/plugin-triggers.md"
 RESIDENT_SCHEMA_PASSAGES = [
     "v2 forbids a webhook `path` (the wildcard route provides it), while legacy "
     "v1 required one",
-    "a scheduled trigger takes exactly one of an inline prompt or a prompt file",
+    "a scheduled trigger takes exactly one of an inline prompt, a prompt file or a plugin job",
 ]
 
 TRIGGER_CONSENT_MODULE = "casa/rootfs/opt/casa/trigger_consent.py"

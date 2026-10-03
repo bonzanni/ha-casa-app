@@ -940,6 +940,10 @@ class TelegramChannel(Channel):
         # can interrupt it); each task keeps a ref here + a done-callback that
         # discards it. Cancelled in stop().
         self._turn_tasks: set[asyncio.Task] = set()
+        # S6 §2.4 / §5: the 📎 armings (one per chat, memory-only) and the per-(chat, specialist)
+        # file-intake locks (FIFO) — a file is judged, stored and given its desk place under one
+        self._armings: dict = {}
+        self._intake_locks: dict = {}
         # Injectable collaborators (wired at startup by Task 22; tests assign AsyncMocks).
         self._engagement_registry = None
         self._observer = None
@@ -1937,7 +1941,9 @@ class TelegramChannel(Channel):
             return None
         reservation = desk.reserve()
         if reservation is None:
-            line = f"{specialist_desk.label_for(desk_role)} is busy; try again in a moment."
+            # S6 §2.2: a past event, composed within the echo cap (one-line S4 rewording)
+            line = specialist_desk.bounded_line("{label}'s desk was full when the place was requested.",
+                                                label=specialist_desk.label_for(desk_role))
             await self.deliver_desk_notice(chat_id, line)
             specialist_desk.record_echo(chat_id, line)
         return reservation
@@ -2008,8 +2014,8 @@ class TelegramChannel(Channel):
                 return
             if meta.get("message_id") != getattr(cq.message, "message_id", None):
                 return
-            calls = meta.get("calls") or []
-            if idx is None or not (0 <= idx < len(calls)):
+            options = meta.get("options") or []
+            if idx is None or not (0 <= idx < len(options)):      # S6: by the buttons, not the calls
                 toast = "invalid"
                 return
             expected = meta.get("operator_id")
@@ -2028,6 +2034,18 @@ class TelegramChannel(Channel):
                 return
             if BROKER.commit(claim):
                 toast = "✔"
+                kinds = meta.get("kinds") or []
+                if idx < len(kinds) and kinds[idx] == "arm_file":
+                    # S6 §2.4: the arming is written HERE, synchronously, before any
+                    # await — the finish hook runs as a separate task and a file can
+                    # arrive before it; a later arming replaces this one (R4-1: no
+                    # message follows; the edited keyboard is the acknowledgement)
+                    self._armings[chat] = {
+                        "chat_id": chat, "operator_id": expected,
+                        "role": str(meta.get("role") or ""),
+                        "artifact_id": str(meta.get("artifact_id") or ""),
+                        "expires_at": time.monotonic() + self.FILE_ARM_TTL_S,
+                    }
         finally:
             t = asyncio.create_task(_safe_answer(cq, toast))
             try:
@@ -2065,6 +2083,20 @@ class TelegramChannel(Channel):
             idx = outcome.get("option_index")
             labels = meta.get("options") or []
             label = labels[idx] if isinstance(idx, int) and 0 <= idx < len(labels) else "?"
+            kinds = meta.get("kinds") or []
+            if isinstance(idx, int) and idx < len(kinds) and kinds[idx] == "arm_file":
+                # S6 §2.4 / R4-1: an arm_file tap edits the keyboard and sends NOTHING; a
+                # failed edit is told with past facts only — never "applying your tap",
+                # never where the next file goes; nothing is dispatched
+                import specialist_desk
+                edited = await self.edit_dm_message(chat_id, message_id, f"{text}\n☑ {label}")
+                if not edited:
+                    logger.warning("arm_file keyboard edit failed (rid=%s); telling by notice", rid[:8])
+                    await self.deliver_desk_notice(chat_id, specialist_desk.bounded_line(
+                        "{label} ☑ {button} — the buttons could not be cleared.",
+                        label=specialist_desk.label_for(str(meta.get("role") or "")),
+                        fields={"button": label}))
+                return
             edited = await self.edit_dm_message(chat_id, message_id, f"{text}\n☑ {label}")
             if not edited:
                 # the keyboard could not be edited away (Terra, diff round 5):
@@ -3507,6 +3539,13 @@ class TelegramChannel(Channel):
                         "This one wasn't saved.")
             return
 
+        # S6 §2.1: WHO the file is addressed to — resolved before the classification
+        # refusal, synchronously (an arming is consumed here whatever follows)
+        address = self._file_address(chat_id, user, msg)
+        if address is not None:
+            await self._route_addressed_file(chat_id, user, msg, address)
+            return
+
         cls = _classify_inbound(msg)
         if not cls.accept:
             await reply(cls.refusal)
@@ -3533,6 +3572,113 @@ class TelegramChannel(Channel):
         logger.info("inbound file: outcome=%s bytes=%d",
                     receipt.outcome.value, receipt.size)
         await reply(_inbound_reply(receipt, cls))
+
+    FILE_ARM_TTL_S = 600.0
+
+    def _file_address(self, chat_id: Any, user: Any, msg: Any):
+        """S6 §2.1 step 1 — exactly one of: a swipe-reply on a retained specialist post for
+        this operator (``("reply", record, role)``); a live 📎 arming in this chat for this
+        operator (``("armed", None, role)``, consumed here — expired or not — before any
+        await); or ``None``: the file is the default agent's, today's path."""
+        import result_broker
+        chat = strict_positive_id(chat_id)
+        if chat is None or user is None:
+            return None
+        # the arming arms the NEXT file, whichever route that file takes: it is spent
+        # here, before the reply check, so a swipe-reply file cannot leave it live for a
+        # later file (INV-FILE-003; diff round 1, Terra)
+        arming = self._armings.pop(chat, None)
+        quoted = getattr(msg, "reply_to_message", None)
+        if quoted is not None:
+            record = result_broker.POST_MAP.get(chat, getattr(quoted, "message_id", None))
+            if (record is not None and record.operator_id == getattr(user, "id", None)
+                    and record.role != self.default_agent):
+                return ("reply", record, record.role)
+        if (arming is not None and arming.get("operator_id") == getattr(user, "id", None)
+                and float(arming.get("expires_at", 0.0)) > time.monotonic()):
+            return ("armed", None, str(arming.get("role") or ""))
+        return None
+
+    async def _route_addressed_file(self, chat_id: Any, user: Any, msg: Any, address: tuple) -> None:
+        """S6 §2.1 step 2, under the per-(chat, specialist) intake lock (§5): delegable now,
+        an inbox, an accepted kind, the download into THAT specialist's inbox, the
+        post-download re-check, the desk place — then ONE desk turn with a Casa-composed
+        task. Every refusal is a completed event, told once and echoed with the same
+        string; nothing here ever reaches the default agent's inbox (F1)."""
+        import agent_inbox
+        import specialist_desk as sd
+        kind, record, role = address
+        chat = strict_positive_id(chat_id)
+        label = sd.label_for(role)
+        cls = _classify_inbound(msg)
+        doc = getattr(msg, "document", None)
+        name = cls.display_name or getattr(doc, "file_name", None) or "your file"
+        ext = (cls.ext or "").lstrip(".").upper() or "file"
+
+        async def tell(line: str) -> None:
+            try:
+                await self.deliver_desk_notice(chat, line)
+            except Exception as exc:  # noqa: BLE001 — nothing more is attempted
+                logger.warning("file route notice failed: %s", type(exc).__name__)
+            sd.record_echo(chat, line)
+
+        lock = self._intake_locks.setdefault((chat, role), asyncio.Lock())
+        async with lock:
+            if not sd.desk_target_ok(self.default_agent, role):
+                await tell(sd.bounded_line("{label} could not take your file (not delegable).", label=label))
+                return
+            inbox = agent_inbox.get_inbox(role)
+            if inbox is None:
+                await tell(sd.bounded_line("{label} could not take your file (storage).", label=label))
+                return
+            if not cls.accept:
+                await tell(sd.bounded_line("{label} could not take {name}: it was not a kind it can read.",
+                                           label=label, fields={"name": name}))
+                return
+            bot = self.bot
+            try:
+                receipt = await inbox.receive(
+                    lambda cap: agent_inbox.fetch_telegram_file(bot, cls.file_id, cap),
+                    ext=cls.ext, display_name=cls.display_name, declared_size=cls.declared_size)
+            except Exception:  # noqa: BLE001 — the outcome is unknown, never "absent"
+                logger.warning("routed file: unexpected failure", exc_info=True)
+                receipt = agent_inbox.Receipt(agent_inbox.Outcome.UNCERTAIN)
+            logger.info("routed file: role=%s outcome=%s bytes=%d", role, receipt.outcome.value, receipt.size)
+            line = sd.file_outcome(label, name, receipt.outcome, kind=ext)
+            if line is not None:
+                await tell(line)
+                return
+            stored_path = os.path.join(inbox.ready_dir, receipt.name)
+            if not sd.desk_target_ok(self.default_agent, role):
+                await tell(sd.bounded_line(
+                    "{label} stored {name} in its inbox but was not delegable at the post-download check.",
+                    label=label, fields={"name": name}))
+                return
+            desk = sd.DESKS.get_or_create(chat, role)
+            if desk.faulted:
+                await tell(sd.faulted_line(label))
+                return
+            reservation = desk.reserve()
+            if reservation is None:
+                await tell(sd.bounded_line(
+                    "{label} stored {name} in its inbox; its desk was full when the place was requested.",
+                    label=label, fields={"name": name}))
+                return
+        # the place is taken; the turn runs outside the intake lock
+        task = (f"[casa file] The operator sent you a file: {name} ({ext}, {receipt.size} bytes). "
+                f"It is in your inbox at {stored_path}. File it with your plugin and report what you did.")
+        caption = getattr(msg, "caption", None)
+        if caption:
+            task += f"\nThe operator wrote: {caption}"
+        quoted = getattr(msg, "reply_to_message", None) if kind == "reply" else None
+        quoted_text = (getattr(quoted, "text", None) or getattr(quoted, "caption", None)) if quoted else None
+        cid = new_cid()
+        self._start_typing(str(chat), cid)
+        self._spawn_desk_turn(
+            chat_id=chat, user_id=user.id, user_name=getattr(user, "first_name", None) or "unknown",
+            message_id=getattr(msg, "message_id", None), cid=cid, text=task, quoted_text=quoted_text,
+            record=record, desk_role=role, continuation=False, reservation=reservation,
+            file_name=name)
 
     async def _maybe_redirect_main_feed(self, user_id: int | None) -> None:
         if user_id is None:

@@ -2204,8 +2204,16 @@ def _build_specialist_options(
     :meth:`Agent._process` (agent.py step 4). Degrades to empty-dict
     when the registry is not bound (legacy callers / test harnesses)."""
     from hooks import resolve_hooks
+    import agent_inbox
 
-    resolved_hooks = resolve_hooks(cfg.hooks, default_cwd=cfg.cwd)
+    # S6 §2.3: an inbox specialist reads its own ready/ and has the two
+    # inbound-file tools — path and tools from the one constructor (INV-FILE-002)
+    # the coordinator's ruling R-D1 (a): only a desk or delegated turn gets the inbox; a job or
+    # engagement build — the only callers that pass launch grants — gets neither the
+    # path nor the tools, and the #541 dispatch ceiling stays as it is
+    _inbox_prefixes, _inbox_tools = agent_inbox.delegated_build_grants(
+        cfg, engagement=bool(extra_casa_tools))
+    resolved_hooks = resolve_hooks(cfg.hooks, default_cwd=cfg.cwd, extra_readable=_inbox_prefixes)
     # Sol #5: inject the /config/plugins + settings.json guard code-side (like
     # residents — agent.py step 5). A delegated specialist with Bash could
     # otherwise `echo > /config/plugins/registry.json`, bypassing validation and
@@ -2348,6 +2356,9 @@ def _build_specialist_options(
     for grant in extra_casa_tools:
         if grant not in allowed_tools:
             allowed_tools.append(grant)
+    for grant in _inbox_tools:                       # S6 §2.3, the same condition as the path
+        if grant not in allowed_tools:
+            allowed_tools.append(grant)
 
     # S8 plugin access profiles: the plan is read HERE from the live snapshot
     # at construction (a recorded-artifact resume reaches this builder too —
@@ -2378,8 +2389,13 @@ def _build_specialist_options(
             *resolved_hooks.get("PreToolUse", [])]
 
     if _mcp_registry is not None:
+        # S6 (diff round 1, Astra): a granted inbox tool needs the server that
+        # exposes it, whatever the config's own server list says
+        _server_names = list(cfg.mcp_server_names)
+        if _inbox_tools and "casa-framework" not in _server_names:
+            _server_names.append("casa-framework")
         mcp_servers = _mcp_registry.resolve(
-            cfg.mcp_server_names,
+            _server_names,
             role=getattr(cfg, "role", ""),
             allowed_tools=allowed_tools,
         )
@@ -6548,6 +6564,111 @@ async def _launch_interactive_engagement(
             spawn_owned.release()
 
 
+async def _start_job_on_host(host: Any, task: str, context: str, origin: dict) -> dict:
+    """S6 §3.3 — the ONE job launcher, from the resolved host onward: the claim
+    (INV-BGJOB-006), the specialist's plugin pin before any await, the one
+    launch owner with ``plugin_host`` only for a resident host, and the claim's
+    release in ``finally``. ``start_job`` calls it after its own refusals; the
+    scheduled fire (``start_scheduled_job``) calls it with a scheduled origin —
+    one place knows how a job is launched, not two edits that must agree."""
+    role, job = host.role, host.decl
+    refusal = background_jobs.claim_job_start(host, _engagement_registry)
+    if refusal is not None:
+        return _result(refusal)
+    if host.kind == "specialist":
+        # S1b: pin the SELECTED plugin's registry identity now, before any
+        # await, so the job guard still sees it when the plugin is unassigned
+        # while the launch awaits (the record's artifact rows come from a later
+        # resolution). No `model`: that key is the resident worker's, and the
+        # record stays a specialist engagement (the worker path keys on kind).
+        origin["plugin_job"] = {"plugin": background_jobs.host_plugin_name(host)}
+    try:
+        return await _launch_interactive_engagement(
+            role, task, context, origin,
+            job=job, plugin_host=host if host.kind == "resident" else None)
+    finally:
+        background_jobs.release_job_start(background_jobs.host_plugin_name(host))
+
+
+async def start_scheduled_job(role: str, trig: Any) -> None:
+    """S6 §3.3 (INV-TRIG-022): a scheduled trigger whose target is a plugin job.
+    No resident turn: the host is resolved now (it may have changed since the
+    entry was written), the operator's identity and clearance are built exactly
+    as the DM ingress builds them for the authenticated operator, the origin
+    carries what the job's delivered slots and the recall gate read, and the
+    ONE launcher starts the job. A fire that cannot start it tells the operator
+    once — the admission decision as a past event at this occurrence — through
+    the hosting specialist's label (the resident's when there is no host); with
+    no operator to tell, it only logs. Nothing is retried before the next
+    occurrence."""
+    import authz_grants
+    import background_jobs
+    import ingress_identity as ingress_mod
+    import specialist_desk as sd
+    from log_cid import new_cid
+    from provenance import scheduled_delivery_markers
+    import scheduled_asks
+
+    cfg = _agent_role_map.get(role)
+    delegates = [d.agent for d in (getattr(cfg, "delegates", None) or [])]
+    host = background_jobs.find_job_host(str(trig.job), role, delegates)
+    identity = authz_grants._live_operator_identity()
+    if identity is None:
+        logger.warning("scheduled job %s for %s: no operator to tell; not started", trig.name, role)
+        return
+    chat_id, user_id = identity
+    title = str(getattr(getattr(host, "decl", None), "title", "") or trig.job)
+    label = sd.label_for(host.role) if host is not None else sd.label_for(role)
+
+    async def tell(reason: str) -> None:
+        line = sd.bounded_line('{label}: "{title}" did not start — ' + reason,
+                               label=label, fields={"title": title})
+        channel = _channel_manager.get("telegram") if _channel_manager is not None else None
+        try:
+            if channel is not None:
+                await channel.deliver_desk_notice(chat_id, line)
+        except Exception as exc:  # noqa: BLE001 — nothing more is attempted
+            logger.warning("scheduled job notice failed: %s", type(exc).__name__)
+        sd.record_echo(chat_id, line)
+
+    if host is None:
+        await tell("no host was available at this occurrence.")
+        return
+    try:
+        trusted = ingress_mod.ingress_identity(
+            "telegram", sender_id=str(user_id),
+            sender_display_name="operator",
+            sender_is_operator=True)
+        clearance = trusted.server_origin.clearance
+    except Exception:  # noqa: BLE001 — no identity ⇒ the "no operator" refusal (C2)
+        logger.warning("scheduled job %s for %s: operator identity unavailable; not started",
+                       trig.name, role, exc_info=True)
+        return
+    origin = {
+        "role": role, "execution_role": role, "channel": trig.channel,
+        "source": "scheduler", "message_type": "scheduled",
+        "chat_id": chat_id, "user_id": user_id, "user_name": "operator",
+        "cid": new_cid(), "trigger": trig.name,
+        "_origin_route": "telegram", "_origin_clearance": clearance,
+        **scheduled_delivery_markers(
+            trig.channel, scheduled_asks.epoch_for(role, f"{trig.type}-{trig.name}")),
+        "_scheduled_job": True,
+    }
+    result = await _start_job_on_host(host, str(trig.task or title), str(trig.context or ""), origin)
+    try:
+        payload = json.loads(result["content"][0]["text"])
+    except Exception:  # noqa: BLE001 — an unreadable result is a failed launch
+        payload = {"status": "error", "kind": "unknown"}
+    if payload.get("status") == "error":
+        kind = str(payload.get("kind") or "unknown")
+        reason = {
+            "job_busy": "another job of this plugin held the claim at this occurrence.",
+            "busy": "Casa was at its work limit at this occurrence.",
+            "job_not_declared": "no host was available at this occurrence.",
+        }.get(kind, f"({kind}).")
+        await tell(reason)
+
+
 @tool(
     "start_job",
     "Start a background job listed in <jobs>; it runs in batches in its own topic "
@@ -6570,22 +6691,7 @@ async def start_job(args: dict) -> dict:
             "message": "Startable jobs: " + (", ".join(names) or "none"),
         })
     role, job = host.role, host.decl
-    refusal = background_jobs.claim_job_start(host, _engagement_registry)
-    if refusal is not None:
-        return _result(refusal)
-    if host.kind == "specialist":
-        # S1b: pin the SELECTED plugin's registry identity now, before any
-        # await, so the job guard still sees it when the plugin is unassigned
-        # while the launch awaits (the record's artifact rows come from a later
-        # resolution). No `model`: that key is the resident worker's, and the
-        # record stays a specialist engagement (the worker path keys on kind).
-        origin["plugin_job"] = {"plugin": background_jobs.host_plugin_name(host)}
-    try:
-        result = await _launch_interactive_engagement(
-            role, args.get("task", ""), args.get("context", "") or "", origin,
-            job=job, plugin_host=host if host.kind == "resident" else None)
-    finally:
-        background_jobs.release_job_start(background_jobs.host_plugin_name(host))
+    result = await _start_job_on_host(host, args.get("task", ""), args.get("context", "") or "", origin)
     payload = json.loads(result["content"][0]["text"])
     if payload.get("kind") == "busy":
         payload["message"] = "Casa is at its concurrent-work limit. Try again shortly."
@@ -13080,6 +13186,10 @@ _TRIGGER_ENTRY_FIELDS = {
     "prompt_file": {"type": "string"},
     "clearance": {"type": "string",
                   "enum": ["public", "friends", "family"]},
+    # S6: a scheduled entry that starts a plugin job instead of a resident turn
+    "job": {"type": "string"},
+    "task": {"type": "string"},
+    "context": {"type": "string"},
     "auth": {"type": "object", "properties": {
         "mode": {"type": "string",
                  "enum": ["hmac_body", "static_header", "timestamped_hmac"]},
@@ -13139,6 +13249,20 @@ async def config_trigger_upsert(args: dict) -> dict:
         return err
 
     entry = {k: args[k] for k in _TRIGGER_ENTRY_FIELDS if k in args}
+    if entry.get("job"):
+        # S6 §3.2: a job entry is judged here, at the write — the launcher's own
+        # text-channel rule, then startability by THIS resident now (the fire
+        # judges it again at every occurrence; registration never does, R1-2)
+        if str(entry.get("channel") or "") != "telegram":
+            return _result({"status": "error", "kind": "job_needs_text_channel",
+                            "message": "A scheduled job runs only on telegram."})
+        import background_jobs
+        cfg = _agent_role_map.get(role)
+        delegates = [d.agent for d in (getattr(cfg, "delegates", None) or [])]
+        if background_jobs.find_job_host(str(entry["job"]), role, delegates) is None:
+            names = [h.decl.qualified_name for h in background_jobs.startable_jobs(role, delegates)]
+            return _result({"status": "error", "kind": "job_not_declared",
+                            "message": "Startable jobs: " + (", ".join(names) or "none")})
     import reminders
     try:
         # Off the loop, under trigger_write_lock.PASS_LOCK (#458). This edit

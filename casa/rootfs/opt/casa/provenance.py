@@ -125,6 +125,7 @@ RESERVED_CONTEXT_KEYS = frozenset({
     # both are stamped by Casa's own dispatch sites only.
     "_turn_scope",
     "_inherited_note",
+    "_scheduled_job",          # S6: a job trigger's fire, never a chat message
 })
 
 

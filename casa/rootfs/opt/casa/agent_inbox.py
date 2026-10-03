@@ -34,6 +34,7 @@ What this module deliberately does NOT do:
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 import errno
 import json
 import logging
@@ -610,6 +611,41 @@ def get_inbox(role: str) -> Inbox | None:
     return _inboxes.get(role)
 
 
+INBOX_TOOLS: tuple[str, ...] = (
+    "mcp__casa-framework__list_inbound_files",
+    "mcp__casa-framework__share_inbound_file",
+)
+
+
+def grants_for(role: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """What having an inbox grants, from ONE place (S6 design §2.3): the
+    role's own ``ready/`` as a readable prefix AND the two inbound-file tools
+    — ``((), ())`` for a role without an inbox. Both the resident builder and
+    the delegated builder call this; a specialist's tool permissions are
+    derived separately from its hooks, so granting the path alone would let a
+    desk turn reach a file it cannot file (INV-FILE-002)."""
+    inbox = _inboxes.get(role)
+    if inbox is None:
+        return (), ()
+    return (inbox.ready_dir,), INBOX_TOOLS
+
+
+def delegated_build_grants(cfg, *, engagement: bool) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """The ONE rule for the delegated builder (diff rounds 1–3 found the same
+    grant three times, each from a different caller — generalised here):
+    a job or engagement build gets nothing (coordinator's ruling R-D1 (a));
+    any other build of an inbox role gets its own ``ready/`` as a readable
+    prefix; only a SPECIALIST also gets the two inbound-file tools — a
+    resident's tools stay what its own configuration lists, wherever it runs
+    (INV-FILE-002)."""
+    if engagement:
+        return (), ()
+    prefixes, tools = grants_for(getattr(cfg, "role", ""))
+    if getattr(cfg, "kind", "") != "specialist":
+        tools = ()
+    return prefixes, tools
+
+
 def readable_prefixes(role: str) -> tuple[str, ...]:
     """The read grant for ``role``: exactly its ``ready/`` directory if it has an
     inbox, otherwise nothing. Every other agent keeps an empty readable list."""
@@ -656,6 +692,41 @@ async def wire(scheduler, root: str, *, role: str) -> None:
         return
     # Installed last: a failure at any step above leaves no inbox, so no grant.
     _inboxes[role] = inbox
+    global _root  # noqa: PLW0603
+    _root = root
+
+
+_root: str | None = None     # the inbox root the boot wiring used (for a reload's provisioning)
+
+
+def wired_root() -> str | None:
+    return _root
+
+
+def provision_delegate_inboxes(root: str, resident_cfg: Any, *, specialist_roles) -> list[str]:
+    """S6 §2.3: an inbox for every specialist the resident declares as a delegate
+    and that is loaded — provisioned once (an existing inbox is kept), at boot
+    after the resident's own and again on a reload that adds a delegate. A
+    failure leaves THAT role without an inbox (its routed files are refused,
+    never redirected) and does not stop the others. Returns the roles
+    provisioned by this call."""
+    global _root  # noqa: PLW0603
+    _root = root
+    done: list[str] = []
+    declared = [getattr(d, "agent", None) for d in (getattr(resident_cfg, "delegates", None) or [])]
+    for role in declared:
+        if not role or role not in specialist_roles or role in _inboxes:
+            continue
+        try:
+            inbox = open_inbox(role, root)
+            inbox.reclaim_staging()
+        except Exception:  # noqa: BLE001 — one role never stops another
+            logger.warning("agent inbox for specialist %s could not be provisioned; its "
+                           "inbound files are refused", role, exc_info=True)
+            continue
+        _inboxes[role] = inbox
+        done.append(role)
+    return done
 
 
 def _reset_for_tests() -> None:

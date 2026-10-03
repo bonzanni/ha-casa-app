@@ -20,7 +20,8 @@ callbacks* share that shape but produce no turn and grant no access, and are
 registration, firing and one-shot cleanup described here — not the webhook, overlay or
 consent machinery. Who may write one, how a due one is delivered, and what happens to one
 whose moment passed while Casa was down are their own subject:
-[`architecture/reminders.md`](reminders.md).
+[`architecture/reminders.md`](reminders.md). A scheduled entry whose target is a plugin job
+instead of a prompt is [`job-triggers.md`](job-triggers.md)'s.
 
 ## Mental model
 
@@ -317,7 +318,8 @@ registration, receipted, reported per slot — is
 
 **A resident trigger file has its own schema rails**: v2 forbids a webhook `path` (the
 wildcard route provides it), while legacy v1 required one, and a scheduled trigger takes
-exactly one of an inline prompt or a prompt file.
+exactly one of an inline prompt, a prompt file or a plugin job (`job`; see
+[`job-triggers.md`](job-triggers.md)).
 
 **A new plugin trigger** is not this document's. What such a trigger must declare, the
 rails on that declaration, how its secret is backed, the operator approval that gates it

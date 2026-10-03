@@ -287,23 +287,23 @@ async def test_a_failed_reply_send_is_logged_and_noticed(env):
     env.channel.fail_send = True
     await _reply(env)
     assert len(env.channel.replies) == 1
-    assert env.channel.notices == [(OPERATOR, LABEL + " answered; the reply did not go out.")]
+    assert env.channel.notices == [(OPERATOR, LABEL + " answered; complete delivery could not be confirmed.")]
     assert [e.text for e in env.desk.log] == ["  more detail please ", "Here you go: **42**"]
-    assert "did not go out" in sd.prompt_prefix(OPERATOR)
+    assert "could not be confirmed" in sd.prompt_prefix(OPERATOR)
 
 
 async def test_a_refused_permit_is_a_busy_notice_and_runs_nothing(env):
     env.limiter.refuse = True
     await _reply(env)
     assert env.calls == [] and env.channel.replies == []
-    assert env.channel.notices == [(OPERATOR, LABEL + " is busy; try again in a moment.")]
+    assert env.channel.notices == [(OPERATOR, LABEL + " was at its concurrent-work limit when the turn was attempted.")]
     assert env.desk.log == [] and not env.desk.lock.locked() and env.desk.waiting == 0
 
 
 async def test_a_full_queue_is_refused_before_any_run(env):
     env.desk.waiting = sd.DESK_QUEUE_MAX
     await _reply(env)
-    assert env.calls == [] and env.channel.notices == [(OPERATOR, LABEL + " is busy; try again in a moment.")]
+    assert env.calls == [] and env.channel.notices == [(OPERATOR, LABEL + "'s desk was full when the place was requested.")]
     assert env.desk.waiting == sd.DESK_QUEUE_MAX and env.channel.released == [(str(OPERATOR), "cid-1")]
 
 

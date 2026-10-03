@@ -64,6 +64,14 @@ TOOLS = {
         "description": "Offer the operator a button whose call never returns (hung-call test).",
         "inputSchema": {"type": "object", "properties": {}},
     },
+    "ingest_document": {
+        "description": "Ingest a document the operator sent: pass the path share_inbound_file returned.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+        },
+    },
     "hang": {
         "description": "Start a child process and block forever (hung-call test).",
         "inputSchema": {
@@ -110,6 +118,7 @@ def _page(page: int) -> dict:
             {"label": "No", "call": {"tool": "apply", "arguments": {"choice": "no", **binding}}},
             {"label": "More", "call": {"tool": "more",
                                        "arguments": {"page": page + 1, "render_id": RENDER_ID}}},
+            {"label": "📎 Add a document", "arm_file": True},      # S6: arms the next file for this specialist
         ],
         "revision": f"{RENDER_ID}:{REVISION}",
     }
@@ -144,6 +153,24 @@ def tool_more(args: dict) -> dict:
     return {"proposal": deposit(_page(page)), "note": f"page {page} posted"}
 
 
+def tool_ingest_document(args: dict) -> dict:
+    """S6: a minimal observable ingestion — the specialist hands over the path
+    share_inbound_file published into Casa's handoff folder; the fixture copies
+    it into its data dir and reports name and size."""
+    import shutil
+    src = str(args.get("path") or "")
+    if not src or not os.path.isfile(src):
+        return {"ingested": False, "receipt": f"no such file: {src!r}"}
+    dest_dir = os.path.join(_data_dir(), "ingested")
+    os.makedirs(dest_dir, exist_ok=True)
+    dest = os.path.join(dest_dir, os.path.basename(src))
+    shutil.copyfile(src, dest)
+    size = os.path.getsize(dest)
+    with open(os.path.join(_data_dir(), "ingested.jsonl"), "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"name": os.path.basename(src), "size": size, "at": time.time()}) + "\n")
+    return {"ingested": True, "receipt": f"ingested {os.path.basename(src)} ({size} bytes)"}
+
+
 def tool_offer_hang(_args: dict) -> dict:
     proposal = {
         "text": f"Run the hung-call test? (render {RENDER_ID})",
@@ -162,7 +189,8 @@ def tool_hang(args: dict) -> dict:
 
 
 HANDLERS = {"offer": tool_offer, "apply": tool_apply, "more": tool_more,
-            "offer_hang": tool_offer_hang, "hang": tool_hang}
+            "offer_hang": tool_offer_hang, "hang": tool_hang,
+            "ingest_document": tool_ingest_document}
 
 
 def _result(id_, payload):

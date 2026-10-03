@@ -318,6 +318,7 @@ def proposal_ok(value: Any, call: Any) -> tuple[dict | None, str | None]:
         return None, "bad_proposal"
     seg, server = entry.plugin_seg, servers[0]
     resolved = []
+    arm_buttons = 0
     for button in buttons:
         if not isinstance(button, dict):
             return None, "bad_proposal"
@@ -325,6 +326,16 @@ def proposal_ok(value: Any, call: Any) -> tuple[dict | None, str | None]:
         if (not isinstance(label, str) or not label.strip()
                 or len(label) > PROPOSAL_LABEL_CHARS or not _text_ok(label, PROPOSAL_LABEL_CHARS)):
             return None, "bad_proposal"
+        # S6 §2.4: a button is EITHER a stored call OR an `arm_file` button — never both,
+        # never neither; at most one arm button per proposal (it counts toward the six)
+        if "arm_file" in button:
+            if button.get("arm_file") is not True or "call" in button:
+                return None, "bad_proposal"
+            arm_buttons += 1
+            if arm_buttons > 1:
+                return None, "bad_proposal"
+            resolved.append({"label": label, "arm_file": True})
+            continue
         spec = button.get("call")
         if not isinstance(spec, dict):
             return None, "bad_proposal"
@@ -514,25 +525,40 @@ _MEDIA_WORDS = {
 }
 
 
+def echo_parts(events: list[PostEvent]) -> list[tuple[str, str]]:
+    """The echo lines' parts, ``(label, outcome)``: one per proven post, at most
+    ECHO_MAX_LINES, then ``("", "…and N more.")``. A composer that re-labels a
+    line (S6's file turn) takes the outcome from here, never by stripping a
+    label off the rendered line — the event's label may differ from the
+    turn's (diff round 1, Astra)."""
+    parts: list[tuple[str, str]] = []
+    for event in events[:ECHO_MAX_LINES]:
+        if getattr(event, "buttons", None) is not None:
+            n = event.buttons
+            tail = f"posted a proposal to your chat ({n} button{'s' if n != 1 else ''})."
+        elif event.media_kind:
+            tail = f"posted {_MEDIA_WORDS.get(event.media_kind, 'a file')} to your chat."
+        else:
+            pages = event.pages or 1
+            tail = f"posted to your chat ({pages} page{'s' if pages != 1 else ''})."
+        parts.append((event.label, tail))
+    if len(events) > ECHO_MAX_LINES:
+        parts.append(("", f"…and {len(events) - ECHO_MAX_LINES} more."))
+    return parts
+
+
 def echo_lines(events: list[PostEvent]) -> list[str]:
     """§6: one Casa-authored line per proven post, at most ECHO_MAX_LINES
     then ``…and N more.``, each within ECHO_LINE_MAX characters; the label,
     the kind and the page count or media kind — nothing plugin-authored."""
     lines: list[str] = []
-    for event in events[:ECHO_MAX_LINES]:
-        if getattr(event, "buttons", None) is not None:
-            n = event.buttons
-            tail = f" posted a proposal to your chat ({n} button{'s' if n != 1 else ''})."
-        elif event.media_kind:
-            tail = f" posted {_MEDIA_WORDS.get(event.media_kind, 'a file')} to your chat."
-        else:
-            pages = event.pages or 1
-            tail = f" posted to your chat ({pages} page{'s' if pages != 1 else ''})."
-        room = ECHO_LINE_MAX - len(tail)
-        label = event.label if len(event.label) <= room else event.label[:room - 1] + "…"
-        lines.append(label + tail)
-    if len(events) > ECHO_MAX_LINES:
-        lines.append(f"…and {len(events) - ECHO_MAX_LINES} more.")
+    for label, tail in echo_parts(events):
+        if not label:
+            lines.append(tail)
+            continue
+        room = ECHO_LINE_MAX - len(tail) - 1
+        label = label if len(label) <= room else label[:room - 1] + "…"
+        lines.append(f"{label} {tail}")
     return lines
 
 
@@ -1297,7 +1323,11 @@ async def _post_proposal(identity, seg: str, slot: str, call: _InFlight, proposa
         "deadline": loop.time() + PROPOSAL_TTL_S, "chat_id": chat_id,
         "operator_id": int(identity.operator_id), "role": role,
         "artifact_id": str(getattr(identity, "artifact_id", "") or ""),
-        "plugin_seg": seg, "calls": [dict(b["call"]) for b in proposal["buttons"]],
+        "plugin_seg": seg,
+        # S6 §2.4: `calls` keeps one entry per button (None at an arm_file index, so every
+        # reader keeps its indexing); `kinds` is the parallel per-button kind
+        "calls": [dict(b["call"]) if "call" in b else None for b in proposal["buttons"]],
+        "kinds": ["arm_file" if b.get("arm_file") else "call" for b in proposal["buttons"]],
         "revision": revision, "label": head, "text": text, "options": list(labels),
         "message_id": None, "owner": _post_owner(identity), "_scope": scope,
     }

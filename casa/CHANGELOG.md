@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.343.0] - 2026-10-03
+
+### Added
+
+- A file sent as a swipe-reply on a specialist's post now goes to that
+  specialist: it is saved in the specialist's own file inbox and starts one
+  specialist turn about it, with your caption as your words. A plugin can also
+  offer a `📎 Add a document` button on its proposal; after a tap, the next
+  file you send in that chat within ten minutes goes to that specialist the
+  same way. Nothing is sent about the tap itself; the button is ticked. A file
+  the specialist cannot take is never handed to the assistant instead — you
+  get one labelled line saying what happened.
+- A scheduled trigger can start a plugin job directly: a `cron`, `interval` or
+  `date` entry with `job: <plugin>:<job>` (and optional `task`, `context`)
+  starts the job at each occurrence with your own access, with no assistant
+  turn first. A job entry runs on Telegram only and may not carry `clearance`.
+  If the job cannot start at an occurrence you get one labelled line saying
+  why.
+
+### Changed
+
+- Three specialist notices now state what happened rather than what to do:
+  "📊 Finance's desk was full when the place was requested.", "… was at its
+  concurrent-work limit when the turn was attempted." and "… answered;
+  complete delivery could not be confirmed." (formerly "is busy; try again in
+  a moment." and "the reply did not go out.").
+
 ## [0.342.3] - 2026-10-03
 
 ### Fixed
