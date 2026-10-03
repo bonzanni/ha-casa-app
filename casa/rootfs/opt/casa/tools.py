@@ -435,6 +435,17 @@ def outbox_for_current_context() -> "plugin_outbox.PluginOutbox | None":
     return plugin_outbox.get_outbox()
 
 
+# S7a (B2): the one Casa-authored note under the post echoes a resident reads
+# in a sync delegation's result or a completion notice — the person has seen
+# those posts, so a result that adds nothing to them ends in silence. The
+# resident's doctrine names the rule in words; the sentinel itself lives only
+# here, in Casa's text (a compiled doctrine may not carry markup).
+POST_ECHO_SILENCE_NOTE = (
+    "(Casa: the person has already seen these posts in their chat. Do not retell "
+    "them. If the rest of this result says nothing beyond them, reply with exactly "
+    "<silent/>.)")
+
+
 def _with_post_echo_payload(payload: dict, owner: str) -> dict:
     """The sync delegation's result, ok or error: the echo rides ``text``
     when the result has one, else ``message`` — a post proven before the
@@ -453,7 +464,7 @@ def _with_post_echo(text: str, owner: str) -> str:
     lines = _rb.echo_lines(_rb.POSTS.drain(owner))
     if not lines:
         return text
-    return (f"{text}\n\n" if text else "") + "\n".join(lines)
+    return (f"{text}\n\n" if text else "") + "\n".join([*lines, POST_ECHO_SILENCE_NOTE])
 
 
 async def _classify_send(ch, content, kind, filename, origin, caption) -> dict:
@@ -525,6 +536,12 @@ _delegation_quota_key: ContextVar[str] = ContextVar(
 # five-argument signature in test doubles (the voice-handoff suite's among
 # them), and a new keyword on the call turned one of them into a silent hang.
 _desk_skip_permit: ContextVar[bool] = ContextVar("_desk_skip_permit", default=False)
+# S7a (INV-BGJOB-008): set ONLY around the one ``_prelaunch`` call of a
+# specialist's start of its own job (``_launch_interactive_engagement``), so
+# that call skips the two gates a self-start has no use for — the delegation
+# ACL (no other agent is targeted) and the depth cap. Reset before any task is
+# created, so nothing the launch spawns inherits it.
+_self_host_prelaunch: ContextVar[bool] = ContextVar("_self_host_prelaunch", default=False)
 
 # S5 §5.2: the ``PinnedRun`` of a stored-call tap, set by
 # ``specialist_desk.handle_tap`` around its create_task of the delegated
@@ -2119,6 +2136,10 @@ SPECIALIST_CASA_GRANTS: tuple[str, ...] = (
 # it universally would over-grant e.g. the configurator (Sol review r1).
 MANDATORY_BRIDGE_CASA_GRANTS: tuple[str, ...] = SPECIALIST_CASA_GRANTS
 
+# S7a: the one grant a specialist's desk or delegated build may be offered for
+# starting its own plugins' jobs (``background_jobs.offers_start_job``).
+START_JOB_GRANT: str = "mcp__casa-framework__start_job"
+
 
 # Bridge grant-gate helper (imported by internal_handlers). The casa-framework
 # tools an authenticated engagement may invoke over the internal socket = the
@@ -2359,6 +2380,14 @@ def _build_specialist_options(
     for grant in _inbox_tools:                       # S6 §2.3, the same condition as the path
         if grant not in allowed_tools:
             allowed_tools.append(grant)
+    # S7a §3.1 (INV-BGJOB-008): a specialist's desk or delegated build that
+    # loads a job-declaring plugin is offered start_job — visibility only;
+    # the handler decides which job at the call. On a tap the S5 pin refuses it.
+    _job_tools = ((START_JOB_GRANT,) if background_jobs.offers_start_job(
+        cfg, resolution, engagement=bool(extra_casa_tools)) else ())
+    for grant in _job_tools:
+        if grant not in allowed_tools:
+            allowed_tools.append(grant)
 
     # S8 plugin access profiles: the plan is read HERE from the live snapshot
     # at construction (a recorded-artifact resume reaches this builder too —
@@ -2392,7 +2421,7 @@ def _build_specialist_options(
         # S6 (diff round 1, Astra): a granted inbox tool needs the server that
         # exposes it, whatever the config's own server list says
         _server_names = list(cfg.mcp_server_names)
-        if _inbox_tools and "casa-framework" not in _server_names:
+        if (_inbox_tools or _job_tools) and "casa-framework" not in _server_names:
             _server_names.append("casa-framework")
         mcp_servers = _mcp_registry.resolve(
             _server_names,
@@ -4838,6 +4867,10 @@ async def _prelaunch(
     # raising TypeError out of the authorization boundary.
     if not isinstance(agent_name, str):
         agent_name = ""
+    # S7a: a specialist starting its OWN job targets itself — no delegation,
+    # so neither the ACL nor the depth cap applies; every later gate does.
+    self_host = bool(_self_host_prelaunch.get() and caller_cfg is not None
+                     and agent_name == caller_role)
 
     # #433: accept a delegate's PERSONA DISPLAY NAME as well as its role id.
     # Casa advertises both to the model — `_render_delegates_block` names the
@@ -4853,7 +4886,7 @@ async def _prelaunch(
     # display name happens to be another delegate's role id cannot shadow it.
     # A name matching two declared delegates is REFUSED, not guessed —
     # picking one silently is the failure mode this fix exists to remove.
-    if caller_cfg is not None and agent_name not in declared:
+    if not self_host and caller_cfg is not None and agent_name not in declared:
         candidates = _declared_name_candidates(agent_name, declared)
         if len(candidates) > 1:
             _log_delegation_denial(caller_role, agent_name, "delegation_ambiguous_name")
@@ -4870,7 +4903,7 @@ async def _prelaunch(
             # and launch target uses the role id, never the display name.
             agent_name = candidates[0]
 
-    if caller_cfg is None or agent_name not in declared:
+    if not self_host and (caller_cfg is None or agent_name not in declared):
         _log_delegation_denial(caller_role, agent_name, "delegation_not_declared")
         return None, None, None, None, _result({
             "status": "error", "kind": "delegation_not_declared",
@@ -4962,7 +4995,7 @@ async def _prelaunch(
     # origin (interactive children are depth-stamped on the record, and
     # in_casa turns inherit the parent task's origin_var, not the record's).
     current_depth = _effective_delegation_depth(origin)
-    if current_depth >= _MAX_DELEGATION_DEPTH:
+    if not self_host and current_depth >= _MAX_DELEGATION_DEPTH:
         return None, None, None, None, _result({
             "status": "error",
             "kind": "delegation_depth_exceeded",
@@ -6055,13 +6088,20 @@ async def _launch_interactive_engagement(
     agent_name: str, task_text: str, context_text: str, origin: dict,
     *, job: background_jobs.JobDecl | None = None,
     plugin_host: background_jobs.JobHost | None = None,
+    self_host: bool = False,
 ) -> dict:
-    """One launch owner for specialists and resident-hosted plugin workers."""
+    """One launch owner for specialists and resident-hosted plugin workers.
+    ``self_host`` (S7a): a specialist starting its own job — the prelaunch
+    skips the ACL and the depth cap, and the record is stamped at depth 1."""
     import agent as agent_mod
 
     if plugin_host is None:
-        agent_name, cfg, resolution, permit, error = await _prelaunch(
-            agent_name, origin, "interactive", task_text, context_text)
+        _self_tok = _self_host_prelaunch.set(self_host)
+        try:
+            agent_name, cfg, resolution, permit, error = await _prelaunch(
+                agent_name, origin, "interactive", task_text, context_text)
+        finally:
+            _self_host_prelaunch.reset(_self_tok)
         if error is not None:
             return error
     else:
@@ -6135,7 +6175,10 @@ async def _launch_interactive_engagement(
         # operator-initiated children run at depth 1 too (they may still
         # engage_executor — that path is deliberately depth-exempt and
         # cap-bounded instead).
-        origin["delegation_depth"] = _effective_delegation_depth(origin) + 1
+        # S7a: a specialist's own job is never deeper than one, as a
+        # resident-started job is — it cannot delegate onward either way.
+        origin["delegation_depth"] = (
+            1 if self_host else _effective_delegation_depth(origin) + 1)
         # Task 6 (spec §4.6): the `owned` lexical ownership guard (try/finally
         # around this whole body) releases `permit` on ANY exit before launch
         # transfer — including a CancelledError raised at any await below and
@@ -6564,7 +6607,8 @@ async def _launch_interactive_engagement(
             spawn_owned.release()
 
 
-async def _start_job_on_host(host: Any, task: str, context: str, origin: dict) -> dict:
+async def _start_job_on_host(host: Any, task: str, context: str, origin: dict,
+                             *, self_host: bool = False) -> dict:
     """S6 §3.3 — the ONE job launcher, from the resolved host onward: the claim
     (INV-BGJOB-006), the specialist's plugin pin before any await, the one
     launch owner with ``plugin_host`` only for a resident host, and the claim's
@@ -6585,7 +6629,8 @@ async def _start_job_on_host(host: Any, task: str, context: str, origin: dict) -
     try:
         return await _launch_interactive_engagement(
             role, task, context, origin,
-            job=job, plugin_host=host if host.kind == "resident" else None)
+            job=job, plugin_host=host if host.kind == "resident" else None,
+            **({"self_host": True} if self_host else {}))
     finally:
         background_jobs.release_job_start(background_jobs.host_plugin_name(host))
 
@@ -6671,8 +6716,9 @@ async def start_scheduled_job(role: str, trig: Any) -> None:
 
 @tool(
     "start_job",
-    "Start a background job listed in <jobs>; it runs in batches in its own topic "
-    "and you are notified when it ends.",
+    "Start a background job: one listed in <jobs>, or, for a specialist, one its own "
+    "plugins declare. It runs in batches in its own topic, and the chat's resident is "
+    "notified when it ends.",
     {"job": str, "task": str, "context": str},
 )
 async def start_job(args: dict) -> dict:
@@ -6681,17 +6727,33 @@ async def start_job(args: dict) -> dict:
         return _result({"status": "error", "kind": "job_needs_text_channel"})
     caller = str(origin.get("execution_role") or origin.get("role", ""))
     cfg = _agent_role_map.get(caller)
-    delegates = [d.agent for d in (getattr(cfg, "delegates", None) or [])]
-    host = background_jobs.find_job_host(args.get("job", ""), caller, delegates)
+    # S7a (INV-BGJOB-008): a specialist's own desk or delegated turn (no
+    # engagement bound) starts only a job its own plugins declare, hosted on
+    # itself; every other caller resolves hosts exactly as before.
+    import specialist_desk
+    self_host = (engagement_var.get(None) is None
+                 and specialist_desk.is_specialist(cfg))
+    if self_host:
+        hosts = background_jobs.own_job_hosts(caller)
+        host = next((h for h in hosts
+                     if h.decl.qualified_name == args.get("job", "")), None)
+        # the work's origin: the calling turn's, without the two markers that
+        # identify the calling turn (its desk use, its quota and echo key)
+        origin = {k: v for k, v in origin.items()
+                  if k not in ("desk", "_delegation_id")}
+    else:
+        delegates = [d.agent for d in (getattr(cfg, "delegates", None) or [])]
+        host = background_jobs.find_job_host(args.get("job", ""), caller, delegates)
     if host is None:
-        names = [host.decl.qualified_name for host in
-                 background_jobs.startable_jobs(caller, delegates)]
+        names = [h.decl.qualified_name for h in (
+            hosts if self_host else background_jobs.startable_jobs(caller, delegates))]
         return _result({
             "status": "error", "kind": "job_not_declared",
             "message": "Startable jobs: " + (", ".join(names) or "none"),
         })
     role, job = host.role, host.decl
-    result = await _start_job_on_host(host, args.get("task", ""), args.get("context", "") or "", origin)
+    result = await _start_job_on_host(host, args.get("task", ""), args.get("context", "") or "", origin,
+                                      **({"self_host": True} if self_host else {}))
     payload = json.loads(result["content"][0]["text"])
     if payload.get("kind") == "busy":
         payload["message"] = "Casa is at its concurrent-work limit. Try again shortly."

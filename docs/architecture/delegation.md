@@ -35,7 +35,9 @@ delegation — ephemeral or interactive — cannot call the delegation tool agai
 *agent-spawn cap* bounds fan-out: engagements created from agent context, whatever the
 path, draw from one small global pool of live slots. The executor launch path is
 deliberately outside the depth cap (launching executors is what that tool is for) and
-inside the spawn cap.
+inside the spawn cap. A specialist starting a job its own plugins declare, hosted on itself,
+is not a delegation either: it passes neither the ACL nor the depth cap, and it stays inside
+the spawn cap ([`specialist-job-start.md`](specialist-job-start.md)).
 
 **Operator exemption is positive, never inferred.** The spawn cap exempts a turn only when
 it carries the reserved `_operator_turn` origin marker, stamped exclusively by the Telegram

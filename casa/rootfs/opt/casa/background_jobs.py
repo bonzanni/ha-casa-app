@@ -239,33 +239,40 @@ def acquire_job_permit(host: "JobHost", limiter: Any):
 # Declaration and listing
 # ---------------------------------------------------------------------------
 
+def _declared_jobs(plugins: Iterable[Any]) -> dict[str, tuple[JobDecl, Any]]:
+    """The jobs declared by *plugins* (resolved plugins), keyed by qualified
+    name."""
+    from plugin_store import manifest_jobs
+
+    jobs: dict[str, tuple[JobDecl, Any]] = {}
+    for resolved in plugins:
+        manifest = resolved.manifest
+        plugin = manifest["name"]
+        for entry in manifest_jobs(manifest):
+            qualified_name = f"{plugin}:{entry['name']}"
+            jobs[qualified_name] = (JobDecl(
+                qualified_name=qualified_name,
+                plugin=plugin,
+                name=entry["name"],
+                skill=f"{plugin}:{entry['skill']}",
+                title=entry["title"],
+                summary=entry.get("summary"),
+                batches=(None if entry["batches"] == "unlimited"
+                         else entry["batches"]),
+                turns_per_batch=entry.get("turnsPerBatch"),
+                session=entry.get("session", "resume"),
+                host=entry.get("host"),
+            ), resolved)
+    return jobs
+
+
 def jobs_for_target(scope: str) -> dict[str, tuple[JobDecl, Any]]:
     """The jobs declared by the plugins resolved for *scope*
     (``specialist:<role>`` or ``resident:<role>``), keyed by qualified name."""
     try:
         import plugin_registry
-        from plugin_store import manifest_jobs
 
-        jobs: dict[str, tuple[JobDecl, Any]] = {}
-        for resolved in plugin_registry.resolve_for(scope).plugins:
-            manifest = resolved.manifest
-            plugin = manifest["name"]
-            for entry in manifest_jobs(manifest):
-                qualified_name = f"{plugin}:{entry['name']}"
-                jobs[qualified_name] = (JobDecl(
-                    qualified_name=qualified_name,
-                    plugin=plugin,
-                    name=entry["name"],
-                    skill=f"{plugin}:{entry['skill']}",
-                    title=entry["title"],
-                    summary=entry.get("summary"),
-                    batches=(None if entry["batches"] == "unlimited"
-                             else entry["batches"]),
-                    turns_per_batch=entry.get("turnsPerBatch"),
-                    session=entry.get("session", "resume"),
-                    host=entry.get("host"),
-                ), resolved)
-        return jobs
+        return _declared_jobs(plugin_registry.resolve_for(scope).plugins)
     except Exception:
         logger.warning("Could not list background jobs for %s", scope,
                        exc_info=True)
@@ -300,6 +307,42 @@ def startable_jobs(caller_role: str, delegate_roles: Iterable[str]) -> list[JobH
                 names.add(name)
                 found.append(JobHost("specialist", role, decl, plugin))
     return found
+
+
+def own_job_hosts(role: str) -> list[JobHost]:
+    """S7a (INV-BGJOB-008): the jobs a SPECIALIST may start itself — those
+    declared by the plugins assigned to it and loadable now, i.e. after the
+    env withholding every session build applies (the set the job's own
+    session loads; ruling O), each hosted by the specialist. Never the
+    resident's scope, never a delegate's."""
+    try:
+        import plugin_registry
+        from plugin_grants import withhold_env_unresolved
+
+        resolution, _ = withhold_env_unresolved(
+            plugin_registry.resolve_for(f"specialist:{role}"),
+            context=f"specialist {role} start_job")
+        return [JobHost("specialist", role, decl, plugin)
+                for decl, plugin in _declared_jobs(resolution.plugins).values()]
+    except Exception:
+        logger.warning("Could not list own background jobs for %s", role,
+                       exc_info=True)
+        return []
+
+
+def offers_start_job(cfg: Any, resolution: Any, *, engagement: bool) -> bool:
+    """S7a §3.1: a specialist's desk or delegated build (not a job or
+    engagement build — the same condition as S6's inbox grant) is offered
+    ``start_job`` when the plugins it loads declare a job. Visibility only:
+    which job may start is decided at the call (``own_job_hosts``)."""
+    if engagement or getattr(cfg, "kind", "") != "specialist":
+        return False
+    try:
+        return bool(_declared_jobs(getattr(resolution, "plugins", ()) or ()))
+    except Exception:  # noqa: BLE001 — a declaration error offers nothing
+        logger.warning("Could not read job declarations for %s",
+                       getattr(cfg, "role", "?"), exc_info=True)
+        return False
 
 
 def find_job_host(job: str, caller_role: str,

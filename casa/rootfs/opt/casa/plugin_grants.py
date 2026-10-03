@@ -644,6 +644,9 @@ class ToolContract:
     servers: tuple = ()
     wire_name: str = ""
     transport: str = ""
+    # S7a (INV-PLUG-047): the entry declares `"filename": true` — its
+    # operator_file deposit may carry the name the operator sees.
+    filename: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -754,7 +757,7 @@ def result_contract_map(resolution) -> ResultContractMap:
                     consumes=dict(entry["consumes"]),
                     delivers=dict(entry.get("delivers") or {}),
                     servers=tuple(origins), wire_name=str(name),
-                    transport=transport)
+                    transport=transport, filename=bool(entry.get("filename")))
     return ResultContractMap(tools=tools, plugins=plugins)
 
 

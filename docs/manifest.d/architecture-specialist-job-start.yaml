@@ -1,0 +1,15 @@
+# Manifest shard: the specialist job-start document (born in its own shard: the S shard
+# stands just under the index ceiling).
+- doc: architecture/specialist-job-start.md
+  summary: A specialist starts a background job its own plugins declare, hosted on itself, from a desk or delegated turn — the build that offers start_job, the call-time host resolution, the two launch gates a self-start skips, and the turn's origin the job runs with.
+  when_changing: which specialist turns are offered start_job, how a specialist's start_job resolves its job and host, the gates a specialist's own start passes, or the origin a specialist-started job records
+  covers:
+    - casa/rootfs/opt/casa/background_jobs.py::own_job_hosts
+    - casa/rootfs/opt/casa/background_jobs.py::offers_start_job
+    - casa/rootfs/opt/casa/tools.py::start_job
+  tests:
+    - tests/test_specialist_start_job.py
+  related: [architecture/background-jobs.md, architecture/specialist-desk.md, architecture/delegation.md, architecture/stored-call-buttons.md]
+  defines_invariants: [INV-BGJOB-008]
+  invariant_tests:
+    INV-BGJOB-008: [tests/test_specialist_start_job.py::test_a_specialist_turn_starts_its_own_job_hosted_on_itself, tests/test_specialist_start_job.py::test_a_member_turn_starts_the_job_at_the_members_clearance, tests/test_specialist_start_job.py::test_a_job_the_specialists_own_plugins_do_not_declare_is_not_startable, tests/test_specialist_start_job.py::test_an_unknown_job_names_only_the_specialists_own_jobs, tests/test_specialist_start_job.py::test_a_start_inside_a_desk_turn_takes_the_engagement_permit_without_waiting, tests/test_specialist_start_job.py::test_a_voice_delegation_cannot_start_a_job, tests/test_specialist_start_job.py::test_a_specialist_engagement_turn_is_refused_at_dispatch, tests/test_specialist_start_job.py::test_a_delegated_build_loading_a_job_plugin_offers_start_job, tests/test_specialist_start_job.py::test_a_job_or_engagement_build_never_offers_start_job, tests/test_specialist_start_job.py::test_a_build_with_no_job_plugin_is_unchanged, tests/test_specialist_start_job.py::test_a_resident_delegated_build_never_offers_start_job, tests/test_specialist_start_job.py::test_own_plugins_are_those_assigned_and_loadable_at_the_call]

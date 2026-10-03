@@ -1634,7 +1634,7 @@ _RC_PARAM_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
 _RC_MAX_TOOLS = 64
 _RC_MAX_SLOTS = 16
 _RC_RESULT_KINDS = ("safe", "capability")
-_RC_ENTRY_KEYS = frozenset({"result", "provides", "consumes", "delivers"})
+_RC_ENTRY_KEYS = frozenset({"result", "provides", "consumes", "delivers", "filename"})
 # #1015: the closed vocabulary of delivered-slot kinds. `operator_link` is a
 # URL Casa posts to the operator's chat as one labelled-link message;
 # `operator_message` (S3) a text Casa posts verbatim, as pages headed by the
@@ -1717,7 +1717,7 @@ def manifest_result_contract(manifest: dict) -> dict | None:
         if unknown:
             raise _rc_error(
                 f"tool {name!r}: unknown member(s) {unknown}; allowed: "
-                "result, provides, consumes, delivers")
+                "result, provides, consumes, delivers, filename")
         kind = entry.get("result")
         if kind not in _RC_RESULT_KINDS:
             raise _rc_error(
@@ -1777,6 +1777,20 @@ def manifest_result_contract(manifest: dict) -> dict | None:
                         f"tool {name!r}: delivers[{slot!r}] must be one of "
                         f"{list(_RC_DELIVERS_KINDS)}, got {dkind!r}")
                 delivers[slot] = dkind
+        # S7a (INV-PLUG-047): `"filename": true` — this tool's operator_file
+        # deposit may carry the name the operator sees. Accepted only as the
+        # literal true, only on a tool delivering an operator_file slot; a
+        # Casa without it refuses the member above, so a plugin relying on it
+        # is never half-loaded there.
+        filename = False
+        if "filename" in entry:
+            if entry.get("filename") is not True:
+                raise _rc_error(f"tool {name!r}: filename must be true when present")
+            if "operator_file" not in delivers.values():
+                raise _rc_error(
+                    f"tool {name!r}: filename is allowed only on a tool delivering "
+                    "an operator_file slot")
+            filename = True
         if setup_tool is not None and sanitized == sanitize_segment(setup_tool):
             # #1015: a setup tool is either exempt (safe, consumes nothing)
             # or a fully delivered capability (every provided slot delivered,
@@ -1792,7 +1806,10 @@ def manifest_result_contract(manifest: dict) -> dict | None:
                     "delivering every slot it provides with no consumes")
         provided.update(provides)
         out[name] = {"result": kind, "provides": provides,
-                     "consumes": consumes, "delivers": delivers}
+                     "consumes": consumes, "delivers": delivers,
+                     # present only when declared: an undeclared entry
+                     # normalises exactly as before S7a
+                     **({"filename": True} if filename else {})}
     delivered_slots = {slot for entry in out.values() for slot in entry["delivers"]}
     for name, entry in out.items():
         for param, slot in entry["consumes"].items():

@@ -213,6 +213,27 @@ no plugin caption is still labelled.
 What it does not cover: the slot as a `consumes` target — a delivered reference is spent by
 the delivery, as a link's is — and the bytes' fate once Telegram has them.
 
+**INV-PLUG-047**: An `operator_file` deposit may carry a delivered name only when its tool's result-contract entry declares `"filename": true`, a declaration accepted only on a tool delivering an `operator_file` slot; the name is judged at deposit by the same predicate `send_media` applies to its own `filename`, before any reference is minted, and it changes only the name the file is sent under — never which staged file is claimed, read or removed; a deposit with no name delivers under the staged file's basename as before.
+
+A plugin stages each file under a name of its own, unique so that two sends never consume
+each other's file, and the operator should still receive it under a name they chose. The
+deposit's optional `filename` is that name. A tool entry that wants it declares
+`"filename": true`; the extractor accepts the member only as the literal `true` and only
+when the entry's `delivers` names an `operator_file` slot (`result_contract_invalid`
+otherwise). A Casa that predates the member refuses it through the unknown-member check on
+every artifact-verification path, so a plugin relying on it is never loaded there and never
+silently delivers under its storage name, the same way `delivers` was introduced. At deposit
+an absent, `null` or empty name changes nothing; a name on a tool that does not declare it is
+refused `filename_not_declared`; a declared name must be a string that
+`_validate_delivery_filename` accepts for the kind (a basename with no `/`, no NUL and no
+character below U+0020, at most 255 bytes, an extension the kind allows), else
+`bad_filename`. A refused name mints no reference. At delivery the staged path is claimed,
+its own name checked and its bytes captured exactly as before; only the name the channel
+sends under changes. The receipt and the echo line never name the file.
+
+What it does not cover: `send_media`'s predicate does not refuse U+007F or the C1 controls,
+and this slot uses that predicate unchanged. Choosing unique staging names is the plugin's.
+
 **What the resident's conversation sees of a post.** On proven delivery of a message or
 file the hook appends one event — the call's tool-use id, plugin, slot, label, and page
 count or media kind — to an in-memory ledger keyed by the call's owner: the engagement id
@@ -225,7 +246,11 @@ the lines to its returned text after the delegate's answer; a finished delegatio
 engagement's or job's terminal notice carries them after its text. The echo follows the
 post, not the work's outcome: a delegation that fails or is aborted after a proven post
 carries the lines on its error result or error notice, after the message. Each line is at most 120
-characters, at most five lines then a count, and carries only Casa-derived metadata. The
+characters, at most five lines then a count, and carries only Casa-derived metadata. One
+Casa note follows the lines (`POST_ECHO_SILENCE_NOTE`): the person has already seen these
+posts, so a result that says nothing beyond them is answered with the silence sentinel —
+the resident's doctrine states the rule in words, and the sentinel itself lives only in that
+note. The
 ledger dies with the process, like the broker's references: a restart between the post and
 its echo loses the echo, not the post.
 
@@ -299,6 +324,7 @@ compose a post for is a kind the extractor must refuse.
 - `tests/test_operator_link_no_link_outcome.py`
 - `tests/test_operator_message_delivery.py`
 - `tests/test_operator_file_delivery.py`
+- `tests/test_operator_file_filename.py`
 - `tests/test_operator_post_echo.py`
 - `tests/test_result_contract.py`
 

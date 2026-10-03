@@ -248,6 +248,12 @@ an older keyboard answers "expired".
 
 ## Extension points
 
+**A tap never starts a job.** The pinned turn's session is a specialist's delegated build, so it
+is offered `start_job` when the specialist's plugins declare a job, but the pin refuses every
+call except the stored one, and a stored call is a plugin tool. A plugin that wants a tap to
+lead to work posts a proposal or a line, and the operator's next typed ask — a desk turn —
+starts it ([`specialist-job-start.md`](specialist-job-start.md)).
+
 **Reusing the controller** for the desk-reply early-release overlap (#1197) is possible but
 not done here; the bounded termination path stays simple.
 
