@@ -470,9 +470,12 @@ without opening “invoice.pdf” in this turn.* (with your assistant's name). T
 the text as it streams and goes away if she opens the file before finishing. A reminder
 she sets, or a task she hands to another agent, without opening the file carries the line
 with it, so the message that fires later is prefixed *Casa: Ellen wrote this without
-opening “invoice.pdf”.* Opening any one of the listed files clears it for the rest of the
-turn. Her own words are never held back or changed — the line is added, nothing is
-taken away. A reply about a file she neither listed nor tried to open carries no line;
+opening “invoice.pdf”.* Opening any one of the listed files — or handing one to a plugin,
+for example to file it — clears it for the rest of the turn. With several files listed and
+none opened, the line counts them: *Casa: Ellen answered without opening any of the 3
+files it listed.* A file you send to a specialist by replying to its post is that turn's
+own file, and the line names only it. Her own words are never held back or changed — the
+line is added, nothing is taken away. A reply about a file she neither listed nor tried to open carries no line;
 that case is still down to her instructions.
 
 ## Voice pipeline

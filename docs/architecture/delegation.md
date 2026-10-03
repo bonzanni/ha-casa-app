@@ -67,7 +67,7 @@ starts a use of the same desk; its route is [`inbound-files.md`](inbound-files.m
 launch.** Every `delegate_to_agent` launch — synchronous ones included, since a synchronous
 wait degrades to pending — and both engagement `create` sites resolve the launching turn's
 obligation against the brief now (`_launch_note`): when the launcher had listed inbound files
-and read none, the record's origin carries the resolved note as the plain string
+and neither opened nor shared any, the record's origin carries the resolved note as the plain string
 `_inherited_note`, which survives persistence where the live scope does not, and the pending
 result reports it as `casa_note` on either arm — async, or a synchronous wait that degraded. The
 child does not run under the parent's live scope: the launch binds the task's context to a

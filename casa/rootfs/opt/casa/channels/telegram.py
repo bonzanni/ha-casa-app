@@ -3742,7 +3742,7 @@ class TelegramChannel(Channel):
             chat_id=chat, user_id=user.id, user_name=getattr(user, "first_name", None) or "unknown",
             message_id=getattr(msg, "message_id", None), cid=cid, text=task, quoted_text=quoted_text,
             record=record, desk_role=role, continuation=False, reservation=reservation,
-            file_name=name)
+            file_name=name, file_path=stored_path)
 
     async def _maybe_redirect_main_feed(self, user_id: int | None) -> None:
         if user_id is None:

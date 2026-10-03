@@ -66,7 +66,10 @@ capture from it.
 **Sharing an inbound file copies it.** `share_inbound_file(path)` takes a path exactly as
 `list_inbound_files` shows it, publishes a copy as producer `casa` under the operator's
 filename, and returns the handoff path plus the seven-day retention. The inbox copy is
-untouched and keeps its own retention. A file with no recorded operator name is named by its
+untouched and keeps its own retention. A share that published its copy counts, for the
+turn that made it, as acting on that file: it clears the "answered without opening" line as a
+successful `Read` does ([`output-boundary.md`](output-boundary.md)); a refused or failed share
+records nothing. A file with no recorded operator name is named by its
 kind: an image as `photo.<ext>`, any other file (a document whose display record is missing)
 as `file.<ext>`. The tool's description
 tells the agent to share whenever a plugin tool needs one of those files, without asking the
