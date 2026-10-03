@@ -35,8 +35,9 @@ from those rows left some record invisible, and a second job beside it.
 The in-process claim that covers the window before a record exists is keyed by the
 installed plugin AND by the manifest name, so concurrent starts of any two jobs of one
 plugin are serialised. A specialist-hosted job also records the selected plugin's registry
-name as `origin["plugin_job"] = {"plugin": <name>}`, taken from the host `find_job_host`
-chose before the launch awaits anything, with no `model` key: the record stays a
+name as `origin["plugin_job"] = {"plugin": <name>}`, taken from the selected host —
+`find_job_host`'s, or `own_job_hosts`' for a specialist's own start — before the launch
+awaits anything, with no `model` key: the record stays a
 `kind="specialist"` engagement, and the resident worker's builder and resume keep keying on
 `kind="plugin"`.
 
