@@ -634,6 +634,16 @@ class ToolContract:
     # #1015: {slot: kind} — the ONE provided slot (at most) Casa itself
     # delivers to the operator's chat after the result's structural check.
     delivers: dict = dataclasses.field(default_factory=dict)
+    # S5 §2: the identities a stored call needs beside the runtime name —
+    # EVERY ``.mcp.json`` server key whose expansion produced this runtime
+    # name (``sanitize_segment`` collapses distinct keys such as ``a.b`` and
+    # ``a_b`` into one name, so multiplicity is recorded here and a stored
+    # call is refused when it is not exactly one), the bare declared name the
+    # server dispatches on, and the transport of that server (``stdio`` when
+    # its entry has ``command``, else ``http``; a stored call needs stdio).
+    servers: tuple = ()
+    wire_name: str = ""
+    transport: str = ""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -687,7 +697,8 @@ def result_contract_map(resolution) -> ResultContractMap:
     tools: dict = {}
     plugins: dict = {}
     for rp in getattr(resolution, "plugins", None) or []:
-        servers = sorted(_mcp_servers(Path(rp.path) / ".mcp.json"))
+        servers_cfg = _mcp_servers(Path(rp.path) / ".mcp.json")
+        servers = sorted(servers_cfg)
         if not servers:
             continue
         plugin_seg = sanitize_segment(runtime_name(rp))
@@ -720,20 +731,30 @@ def result_contract_map(resolution) -> ResultContractMap:
             continue
         for name, entry in contract["tools"].items():
             tool_seg = sanitize_segment(name)
+            # S5 §2: the server keys collapsing onto each runtime name, so
+            # the stored-call predicate can refuse an ambiguous one.
+            by_full: dict[str, list[str]] = {}
             for server in servers:
-                full = (f"mcp__plugin_{plugin_seg}_"
-                        f"{sanitize_segment(server)}__{tool_seg}")
+                by_full.setdefault(
+                    f"mcp__plugin_{plugin_seg}_{sanitize_segment(server)}__{tool_seg}",
+                    []).append(server)
+            for full, origins in by_full.items():
                 if full in setup_names and entry["result"] != "capability":
                     # The exempt setup tool (declared safe) is never
                     # contracted; a setup tool declared as a CAPABILITY
                     # (#1015: it delivers its link) is mapped like any other,
                     # or no setup entry could ever reach either hook.
                     continue
+                cfg = servers_cfg.get(origins[0]) if len(origins) == 1 else None
+                transport = ("" if cfg is None else
+                             "stdio" if isinstance(cfg, dict) and cfg.get("command") else "http")
                 tools[full] = ToolContract(
                     artifact_id=artifact_id, plugin_seg=plugin_seg,
                     kind=entry["result"], provides=tuple(entry["provides"]),
                     consumes=dict(entry["consumes"]),
-                    delivers=dict(entry.get("delivers") or {}))
+                    delivers=dict(entry.get("delivers") or {}),
+                    servers=tuple(origins), wire_name=str(name),
+                    transport=transport)
     return ResultContractMap(tools=tools, plugins=plugins)
 
 

@@ -15,3 +15,6 @@ test-local/options.json
 test-local/fixtures/**/workspace/
 test-local/fixtures/**/data/
 venv_test/
+
+# S5 real-CLI gate: evidence files belong in the private review record, never here
+test-local/real-cli/evidence/

@@ -173,6 +173,8 @@
   doc: architecture/plugin-runtime.md
 - item: casa/rootfs/opt/casa/plugin_erase_consent.py
   doc: architecture/plugin-erasure.md
+- item: casa/rootfs/opt/casa/pinned_run.py
+  doc: architecture/stored-call-buttons.md
 - item: casa/rootfs/opt/casa/plugin_erasure.py
   doc: architecture/plugin-erasure.md
 - item: casa/rootfs/opt/casa/plugin_events.py
@@ -275,6 +277,8 @@
   doc: architecture/specialist-lifecycle.md
 - item: casa/rootfs/opt/casa/system_requirements/tarball.py
   doc: architecture/specialist-lifecycle.md
+- item: casa/rootfs/opt/casa/stored_calls.py
+  doc: architecture/stored-call-buttons.md
 - item: casa/rootfs/opt/casa/text_util.py
   doc: architecture/telegram-rendering.md
 - item: casa/rootfs/opt/casa/tokens.py

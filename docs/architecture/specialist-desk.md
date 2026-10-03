@@ -16,8 +16,9 @@ of it, and where an approval raised inside a desk turn continues. The posts them
 a plugin's output is deposited and delivered — are
 [`plugin-delivered-slots.md`](plugin-delivered-slots.md); the delegation a resident launches,
 its ACL and its limits are [`delegation.md`](delegation.md); the approval challenge is
-[`plugin-authorization.md`](plugin-authorization.md). Button taps, stored calls and files sent
-as a reply are later slices; the desk is Telegram-only.
+[`plugin-authorization.md`](plugin-authorization.md). Button taps and the stored calls they
+execute are [`stored-call-buttons.md`](stored-call-buttons.md); files sent as a reply are a
+later slice; the desk is Telegram-only.
 
 ## Mental model
 
@@ -179,8 +180,10 @@ older post is a plain message to the resident; the next desk turn starts a fresh
 
 ## Extension points
 
-**Buttons on views and stored calls** (a later slice) land in the same desk: a tap is a use of
-the desk under its lock and queue, the stored call its task.
+**Buttons on a specialist's post** land in the same desk: a tap is a use of the desk under its
+lock and queue, the stored call its task, and a desk whose pinned run could not be confirmed
+terminated is *faulted* — every later use refused until restart
+([`stored-call-buttons.md`](stored-call-buttons.md)).
 
 **A file sent as a reply** (a later slice) routes through the same post map and the same
 conditions, into the specialist's inbox.

@@ -65,7 +65,8 @@ call's grant identity and replaces the result with a receipt, or withholds it wh
 is not proven. The kinds, each deposit's validation, the plan a message is judged by before
 its first send, the channel's part and the body-free echo the resident's conversation sees
 are in [`plugin-delivered-slots.md`](plugin-delivered-slots.md) (INV-PLUG-025, -026, -028,
--045, -046).
+-045, -046); a proposal with stored-call buttons, and the pinned turn a tap on one runs, are
+[`stored-call-buttons.md`](stored-call-buttons.md).
 
 **What this is not.** It is not an outbound scrubber on the delivery path, not taint
 tracking, and not a defence against a producer that lies in its own declaration — a `safe`

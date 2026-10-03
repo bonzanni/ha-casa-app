@@ -1193,6 +1193,29 @@ it, and a fourth is told the desk is busy. A reply on a message posted before
 Casa last restarted, or older than the last 4,096 posted messages, is an
 ordinary message to the assistant.
 
+#### Buttons on a specialist's post (v0.342.0)
+
+A specialist's plugin can offer you a decision as buttons under its message —
+"Pair invoice 17 with the Adobe payment? [Yes] [No] [More]" — by declaring a
+slot of the kind `operator_proposal` and depositing the text with one to six
+buttons, each naming one of the plugin's own tools with fixed arguments. Casa
+posts it labelled, like any specialist post. When you tap, Casa runs that one
+call and nothing else: a short specialist turn in which only that exact tool
+with those exact arguments is allowed — any other call is denied — and the
+plugin's own answer comes back to you, labelled, as the receipt. A tap by
+anyone else, on an old or restarted keyboard, or a second tap, does nothing
+but show a short toast; a button whose plugin has since been updated,
+unassigned, narrowed or is being erased is refused with the reason. If the
+turn hits its time limit, Casa tells you at once, ends the turn's processes
+and frees the specialist; in the rare case it cannot confirm they ended, that
+specialist's desk is put out of service in that chat ("faulted") until the
+next Casa restart, and the health report says so. If an installed hook changed
+the call's arguments on the way, the receipt still arrives with a warning line
+above it. A proposal expires after an hour; at most 32 live ones per chat. The
+assistant learns only that you tapped and whether it applied. Typing your
+answer as a reply to the proposal still works as before. Needs Casa 0.342.0 or
+later.
+
 #### Links a plugin needs from you: the vault drop-off (v0.330.0)
 
 Some sign-in steps run the other way: the provider emails you a single-use

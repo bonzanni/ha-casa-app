@@ -330,7 +330,7 @@ def test_a_message_or_file_delivery_is_normalized_like_a_link(kind):
     })})
     assert out["tools"]["post"]["delivers"] == {"report": kind}
     assert plugin_store._RC_DELIVERS_KINDS == (
-        "operator_link", "operator_message", "operator_file")
+        "operator_link", "operator_message", "operator_file", "operator_proposal")
 
 
 @pytest.mark.parametrize("manifest", [

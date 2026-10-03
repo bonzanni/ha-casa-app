@@ -29,7 +29,8 @@ from typing import Any, Callable, Coroutine
 
 logger = logging.getLogger(__name__)
 
-_VALID_NAMESPACES = frozenset({"permission", "engagement_ask", "resident_ask"})
+_VALID_NAMESPACES = frozenset({"permission", "engagement_ask", "resident_ask",
+                               "proposal"})     # S5: a stored-call keyboard (DM-scoped)
 
 # Tombstone retention window (seconds). Tests monkeypatch this module
 # attribute directly, so retirement always reads it as `_RETIRE_S` at fire

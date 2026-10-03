@@ -269,7 +269,8 @@ def _escape_mdv2_pre(text: str) -> str:
 
 # Telegram hard-caps callback_data at 64 bytes.
 _CALLBACK_DATA_MAX_BYTES = 64
-_CALLBACK_NAMESPACES = ("permission", "engagement_ask", "resident_ask")
+_CALLBACK_NAMESPACES = ("permission", "engagement_ask", "resident_ask",
+                        "proposal")       # S5: a stored-call keyboard (DM-scoped)
 
 
 async def _safe_answer(cq: Any, text: str) -> None:
@@ -1928,6 +1929,12 @@ class TelegramChannel(Channel):
         the busy notice, inline, and no task."""
         import specialist_desk
         desk = specialist_desk.DESKS.get_or_create(chat_id, desk_role)
+        if desk.faulted:
+            # S5 §14.8: no queueing on a faulted desk
+            line = specialist_desk.faulted_line(specialist_desk.label_for(desk_role))
+            await self.deliver_desk_notice(chat_id, line)
+            specialist_desk.record_echo(chat_id, line)
+            return None
         reservation = desk.reserve()
         if reservation is None:
             line = f"{specialist_desk.label_for(desk_role)} is busy; try again in a moment."
@@ -1976,6 +1983,150 @@ class TelegramChannel(Channel):
             cid=cid, text=text, quoted_text=None, record=None, desk_role=desk_role,
             continuation=True, reservation=reservation)
         return True
+
+    async def _on_proposal_callback(self, cq: Any, rid: str, idx: int | None) -> None:
+        """S5 §4.1: the tap's admission, fail closed, nothing claimed before
+        every check passes — presence, the live record, the chat, the
+        MESSAGE the keyboard was posted as, the index, the operator (the one
+        the proposal was posted for AND still the operator now), S5's own
+        deadline — then claim and commit once. The handler NEVER edits or
+        dispatches: the finish hook installed at post time owns everything
+        after the commit, as the resident_ask contract does."""
+        from verdict_broker import BROKER
+
+        toast = "expired"
+        try:
+            if (cq.message is None or getattr(cq.message, "chat", None) is None
+                    or cq.from_user is None):
+                return
+            chat = cq.message.chat.id
+            scope = f"proposal:{chat}"
+            meta = BROKER.get_meta(namespace="proposal", scope=scope, request_id=rid)
+            if meta is None:
+                return
+            if meta.get("chat_id") != chat:
+                return
+            if meta.get("message_id") != getattr(cq.message, "message_id", None):
+                return
+            calls = meta.get("calls") or []
+            if idx is None or not (0 <= idx < len(calls)):
+                toast = "invalid"
+                return
+            expected = meta.get("operator_id")
+            if (expected is None or cq.from_user.id != expected
+                    or not self._user_id_is_operator(cq.from_user.id)):
+                toast = "not for you"
+                return
+            deadline = meta.get("deadline")
+            if not isinstance(deadline, (int, float)) or asyncio.get_running_loop().time() >= deadline:
+                return
+            claim = BROKER.claim(namespace="proposal", scope=scope, request_id=rid,
+                                 option_index=idx, actor_id=cq.from_user.id)
+            if isinstance(claim, str):
+                toast = {"duplicate": "already answered", "stale": "expired",
+                         "forbidden": "not for you"}[claim]
+                return
+            if BROKER.commit(claim):
+                toast = "✔"
+        finally:
+            t = asyncio.create_task(_safe_answer(cq, toast))
+            try:
+                await asyncio.shield(t)
+            except asyncio.CancelledError:
+                await t
+                raise
+
+    def proposal_finish_hook(self, *, rid: str, req: Any) -> Callable[[dict], Any]:
+        """S5 §4.2/§4.4: the one owner of what follows a proposal's
+        settlement. A tap: the keyboard edited away FIRST with the chosen
+        label, then the desk hand-off; every other outcome — the TTL, a
+        supersede, a cancel — only edits the keyboard. The meta is read at
+        settle time from the broker's own dict."""
+        async def _finish(outcome: dict) -> None:
+            meta = getattr(req, "meta", None) or {}
+            chat_id, message_id = meta.get("chat_id"), meta.get("message_id")
+            text = str(meta.get("text") or meta.get("label") or "")
+            o = outcome.get("outcome") if isinstance(outcome, dict) else None
+            if o != "answered":
+                reason = outcome.get("reason") if isinstance(outcome, dict) else None
+                line = "↻ replaced" if reason == "superseded" else "⌛ expired"
+                if not isinstance(message_id, int):
+                    # settled while its own send is still in flight (a
+                    # supersede racing the post): the poster applies this
+                    # terminal line the moment the message lands
+                    meta["settled_line"] = line
+                    return
+                if not isinstance(chat_id, int):
+                    return
+                await self.edit_dm_message(chat_id, message_id, f"{text}\n{line}")
+                return
+            if not isinstance(chat_id, int) or not isinstance(message_id, int):
+                return
+            idx = outcome.get("option_index")
+            labels = meta.get("options") or []
+            label = labels[idx] if isinstance(idx, int) and 0 <= idx < len(labels) else "?"
+            edited = await self.edit_dm_message(chat_id, message_id, f"{text}\n☑ {label}")
+            if not edited:
+                # the keyboard could not be edited away (Terra, diff round 5):
+                # the operator still sees which button won BEFORE any effect —
+                # one labelled notice names it; the commit already excludes a
+                # second execution, so the stale buttons only answer a toast
+                import specialist_desk
+                logger.warning("proposal keyboard edit failed (rid=%s); telling by notice", rid[:8])
+                await self.deliver_desk_notice(
+                    chat_id, f"{specialist_desk.label_for(str(meta.get('role') or ''))} ☑ {label} — "
+                             "applying your tap (the buttons could not be cleared).")
+            try:
+                await self._dispatch_proposal_tap(meta=meta, idx=idx, request_id=rid)
+            except Exception:  # noqa: BLE001 — never raise into the hook drain
+                logger.exception("proposal tap dispatch failed (rid=%s)", rid[:8])
+                await self.edit_dm_message(chat_id, message_id, f"{text}\n✖ failed")
+        return _finish
+
+    async def _dispatch_proposal_tap(self, *, meta: dict, idx: int, request_id: str) -> bool:
+        """S5 §4.2 steps 2–5: reserve the specialist's desk (a full queue ⇒
+        the busy line on the keyboard and the busy notice, nothing runs), take
+        the typing lease, and spawn ``specialist_desk.handle_tap`` as one
+        tracked desk use with the reservation's done-callback."""
+        import specialist_desk
+        chat_id, desk_role = int(meta["chat_id"]), str(meta.get("role") or "")
+        label = specialist_desk.label_for(desk_role)
+        desk = specialist_desk.DESKS.get_or_create(chat_id, desk_role)
+        if desk.faulted:
+            line = specialist_desk.faulted_line(label)
+            await self.deliver_desk_notice(chat_id, line)
+            specialist_desk.record_echo(chat_id, line)
+            await self.mark_proposal(meta, "✖ faulted")
+            return True
+        reservation = desk.reserve()
+        if reservation is None:
+            labels = meta.get("options") or []
+            button = str(labels[idx]) if isinstance(idx, int) and 0 <= idx < len(labels) else "?"
+            await self.deliver_desk_notice(
+                chat_id, f"{label} is busy; the specialist will propose again, or type your verdict.")
+            # §10: the resident's line names the refused tap, as the desk's own refusals do
+            specialist_desk.record_echo(chat_id, f"{label} refused your tap ({button}): busy.")
+            await self.mark_proposal(meta, "✖ busy")
+            return True
+        cid = new_cid()
+        self._start_typing(str(chat_id), cid)
+        task = asyncio.create_task(specialist_desk.handle_tap(
+            channel=self, resident_role=self.default_agent, chat_id=chat_id,
+            user_id=int(meta["operator_id"]), cid=cid, desk_role=desk_role, meta=meta,
+            idx=idx, request_id=request_id, reservation=reservation))
+        self._turn_tasks.add(task)
+        task.add_done_callback(self._turn_tasks.discard)
+        task.add_done_callback(reservation.release)
+        return True
+
+    async def mark_proposal(self, meta: dict, line: str) -> None:
+        """S5 §10: the proposal message's last line — ``☑ <label>`` replaced
+        by ``✖ <reason>`` or ``⌛ expired`` — edited in place from the live
+        meta's text; the keyboard stays gone."""
+        chat_id, message_id = meta.get("chat_id"), meta.get("message_id")
+        if not isinstance(chat_id, int) or not isinstance(message_id, int):
+            return
+        await self.edit_dm_message(chat_id, message_id, f"{meta.get('text', '')}\n{line}")
 
     async def deliver_desk_notice(self, chat_id: int, text: str) -> bool:
         """§9: ONE Casa-composed, labelled, body-free notice to the operator's
@@ -3314,6 +3465,11 @@ class TelegramChannel(Channel):
         # BEFORE any engagement/topic lookup and returns.
         if ns == "resident_ask":
             await self._on_resident_callback(cq, request_id, idx)
+            return
+        # S5 §4.1: a proposal keyboard is DM-scoped too — its own single-owner
+        # branch BEFORE any topic lookup; it owns every presence check.
+        if ns == "proposal":
+            await self._on_proposal_callback(cq, request_id, idx)
             return
 
         if cq.from_user is None:
@@ -5279,6 +5435,46 @@ class TelegramChannel(Channel):
                 for chunk in chunks[1:]:
                     _landed(await self._app.bot.send_message(chat_id=chat_id, text=chunk))
         return DeliveryOutcome.DELIVERED
+
+    async def deliver_operator_proposal(self, chat_id: int, text: str, labels: list,
+                                        rid: str, *, post=None):
+        """S5 §3.3: post *text* (Casa's label line and the proposal body, as the
+        result broker composed it — ONE page by the deposit's rule) with one
+        button per label, ``callback_data = v1|proposal|<rid>|<i>``, rendered
+        rich with the plain fallback ``post_dm_keyboard`` uses, and file the
+        sent message under *post* (so a swipe-reply on the proposal routes to
+        the specialist's desk). Returns the message id, or ``None`` when
+        nothing landed."""
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+        if self._app is None:
+            logger.warning("Telegram channel not started; cannot deliver operator proposal")
+            return None
+        # the text is the broker's composition of a validated deposit (the S3
+        # delivered-slot class, as ``deliver_operator_message``): not model text
+        kbd = InlineKeyboardMarkup([
+            [InlineKeyboardButton(text=str(label), callback_data=f"v1|proposal|{rid}|{i}")]
+            for i, label in enumerate(labels)])
+        display, entities = render(text)
+        try:
+            if entities is not None:
+                try:
+                    msg = await self._app.bot.send_message(
+                        chat_id=chat_id, text=display, entities=entities, reply_markup=kbd)
+                except BadRequest as exc:
+                    logger.warning("deliver_operator_proposal rich send fell back to plain "
+                                   "(chat=%s): %s", chat_id, exc)
+                    msg = await self._app.bot.send_message(
+                        chat_id=chat_id, text=text, reply_markup=kbd)
+            else:
+                msg = await self._app.bot.send_message(
+                    chat_id=chat_id, text=text, reply_markup=kbd)
+        except Exception as exc:  # noqa: BLE001 — not proven
+            logger.warning("deliver_operator_proposal send failed (chat=%s): %s", chat_id, exc)
+            return None
+        self._record_post(chat_id, msg, post)
+        mid = getattr(msg, "message_id", None)
+        return mid if isinstance(mid, int) else None
 
     async def deliver_operator_file(
         self, chat_id: int, content: bytes, kind: str, filename: str, caption: str,
