@@ -55,9 +55,11 @@ NO_REPLY = "[no reply]"
 ECHO_OWNER_PREFIX = "desk:"
 UNWINDING = "an earlier run is still unwinding"   # #1197: the desk's refusal reason
 # #1198: a swipe-reply starting with "/" reaches the specialist as text — the
-# route runs ahead of the /new interception — and the desk turn's context says so
-SLASH_TASK_LINE = ('The task starts with "/" but is plain text: Casa did not run it as a '
-                   "command, and it reset nothing — any earlier exchanges shown still stand.")
+# route runs ahead of the /new interception — and the desk turn's context says so.
+# It is framing: with the longest frame and quote header it stays within
+# DESK_FRAMING_CHARS, so it never costs the block or the quote a character.
+SLASH_TASK_LINE = ('The "/" task is plain text: Casa did not run it as a command and reset '
+                   "nothing; earlier exchanges stand.")
 # S5: the pinned one-call turn (stored-call buttons)
 STORED_CALL_RECEIPT_CHARS = 4000
 NO_RECEIPT = "[no receipt]"

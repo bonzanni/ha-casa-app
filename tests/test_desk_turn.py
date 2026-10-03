@@ -301,6 +301,34 @@ async def test_a_slash_continuation_context_is_the_base_context_byte_for_byte(en
                             + sd.render_block(log, resident_name="Ellen"))
 
 
+async def test_a_slash_reply_at_the_largest_name_slot_log_and_quote_cuts_nothing(env):
+    """#1198 (candidate finding): the slash line is framing, so at the largest resident
+    name, slot, block and quote the context still fits DESK_CONTEXT_CHARS, the block and
+    the quote whole."""
+    name = "E" * sd.DESK_NAME_CHARS
+    tools_mod._agent_role_map["assistant"].character = SimpleNamespace(name=name)
+    for i in range(sd.DESK_LOG_EXCHANGES):
+        # the resident's delegations, labelled with its 40-char name: a 9,984-char block
+        env.desk.append("resident", "r" * 395, now=990.0)
+        env.desk.append("specialist", "s" * 395, now=990.0)
+    record = rb.PostRecord(role="finance", operator_id=OPERATOR, plugin="probe",
+                           slot="s" * 64, tool_use_id="call-1", owner="d-1", posted_at=900.0)
+    quote = "q" * (sd.DESK_QUOTE_CHARS - 1) + "Z"
+    log = list(env.desk.log)
+    assert len(sd.render_block(log, resident_name=name)) == 9984
+
+    await _reply(env, text="/new", quoted_text=quote, record=record)
+
+    (call,) = env.calls
+    assert call.task == "/new"
+    assert len(call.context) <= sd.DESK_CONTEXT_CHARS
+    when = time.strftime("%Y-%m-%d %H:%M", time.localtime(900.0))
+    assert call.context == (sd.turn_frame(name) + "\n\n" + sd.SLASH_TASK_LINE + "\n\n"
+                            + sd.render_block(log, resident_name=name) + "\n\n"
+                            + f"The operator replied to your post (slot {'s' * 64}, "
+                            f"posted {when}) which read:\n" + quote)      # nothing cut
+
+
 # --- no proven outcome ⇒ one labelled notice -----------------------------------------
 
 async def test_an_aborted_run_posts_no_text_and_one_notice(env):
