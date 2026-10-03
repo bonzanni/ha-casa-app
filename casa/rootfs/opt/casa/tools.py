@@ -13087,6 +13087,10 @@ _TRIGGER_ENTRY_FIELDS = {
     "prompt_file": {"type": "string"},
     "clearance": {"type": "string",
                   "enum": ["public", "friends", "family"]},
+    # S6: a scheduled entry that starts a plugin job instead of a resident turn
+    "job": {"type": "string"},
+    "task": {"type": "string"},
+    "context": {"type": "string"},
     "auth": {"type": "object", "properties": {
         "mode": {"type": "string",
                  "enum": ["hmac_body", "static_header", "timestamped_hmac"]},
@@ -13146,6 +13150,20 @@ async def config_trigger_upsert(args: dict) -> dict:
         return err
 
     entry = {k: args[k] for k in _TRIGGER_ENTRY_FIELDS if k in args}
+    if entry.get("job"):
+        # S6 §3.2: a job entry is judged here, at the write — the launcher's own
+        # text-channel rule, then startability by THIS resident now (the fire
+        # judges it again at every occurrence; registration never does, R1-2)
+        if str(entry.get("channel") or "") != "telegram":
+            return _result({"status": "error", "kind": "job_needs_text_channel",
+                            "message": "A scheduled job runs only on telegram."})
+        import background_jobs
+        cfg = _agent_role_map.get(role)
+        delegates = [d.agent for d in (getattr(cfg, "delegates", None) or [])]
+        if background_jobs.find_job_host(str(entry["job"]), role, delegates) is None:
+            names = [h.decl.qualified_name for h in background_jobs.startable_jobs(role, delegates)]
+            return _result({"status": "error", "kind": "job_not_declared",
+                            "message": "Startable jobs: " + (", ".join(names) or "none")})
     import reminders
     try:
         # Off the loop, under trigger_write_lock.PASS_LOCK (#458). This edit

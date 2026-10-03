@@ -367,6 +367,9 @@ def spec_from_entry(entry: dict, *, prompt: "str | None" = None) -> "TriggerSpec
         one_shot=bool(entry.get("one_shot", False)),
         managed_by=str(entry.get("managed_by", "") or ""),
         output_note=str(entry.get("output_note", "") or ""),
+        job=str(entry.get("job", "") or ""),
+        task=str(entry.get("task", "") or ""),
+        context=str(entry.get("context", "") or ""),
     )
 
 

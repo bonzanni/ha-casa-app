@@ -529,6 +529,11 @@ class TriggerSpec:
     # where the turn's scope registers it and prepends it to whatever the
     # model sends. Empty for every other trigger.
     output_note: str = ""
+    # S6 (INV-TRIG-022): a scheduled entry whose target is a plugin job — the fire
+    # starts the job directly, no resident turn; empty for every other trigger
+    job: str = ""
+    task: str = ""
+    context: str = ""
 
 
 @dataclass

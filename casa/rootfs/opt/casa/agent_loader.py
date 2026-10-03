@@ -1143,6 +1143,7 @@ def _build_triggers(
     for t in (data.get("triggers") or []):
         trig_name = t.get("name", "?")
         if t.get("type") in ("interval", "cron", "date"):
+            # S6: a job entry carries no prompt; _resolve_prose yields "" for it
             prompt_text = _resolve_prose(
                 t, field="prompt", agent_dir=agent_dir,
                 source_label=f"triggers.yaml::{trig_name}",
