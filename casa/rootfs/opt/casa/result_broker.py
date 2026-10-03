@@ -64,6 +64,7 @@ import collections
 import dataclasses
 import hmac
 import json
+import uuid
 import logging
 import os
 import re
@@ -116,6 +117,22 @@ OPERATOR_LINK = "operator_link"
 # measured 4, 7 and 11 pages).
 OPERATOR_MESSAGE = "operator_message"
 OPERATOR_FILE = "operator_file"
+# S5: a proposal — text, buttons, and per button the exact plugin tool call a
+# tap commits; posted labelled with an inline keyboard, the calls held by
+# Casa under the broker's ``proposal`` namespace (design §2–§3).
+OPERATOR_PROPOSAL = "operator_proposal"
+PROPOSAL_TTL_S = 3600.0          # the desk's idle bound: a proposal older than a dialogue is stale
+PROPOSAL_MAX_LIVE = 32           # live proposals per chat; the 33rd deposit is withheld
+PROPOSAL_TEXT_CHARS = 4000
+PROPOSAL_MAX_BUTTONS = 6
+PROPOSAL_LABEL_CHARS = 32
+PROPOSAL_REVISION_CHARS = 64
+# S5 (Astra, diff rounds 2–3): the composed post leaves room for the longest
+# line Casa appends when the keyboard settles — `\n☑ <label>` with a label of
+# PROPOSAL_LABEL_CHARS characters that may each be an astral code point (two
+# UTF-16 units); `\n✖ <reason>`, `\n⌛ expired` and `\n↻ replaced` are shorter —
+# else a maximal proposal could never be settled
+PROPOSAL_SETTLE_RESERVE = 1 + 2 + 2 * PROPOSAL_LABEL_CHARS
 MAX_MESSAGE_CHARS = 12_000
 MAX_MESSAGE_PAGES = 6
 # The COMPOSED file caption — Casa's label line, a newline, the plugin's
@@ -172,6 +189,12 @@ class _InFlight:
     opened_at: float
     deposits: dict = dataclasses.field(default_factory=dict)   # slot -> ref
     delivers: dict = dataclasses.field(default_factory=dict)   # slot -> kind (#1015)
+    # S5 §2: a proposal's buttons name OTHER tools of the plugin, judged at
+    # deposit against the session's own contract and protected maps and the
+    # depositing tool's entry (its server) — recorded here at admission.
+    contract_map: Any = None
+    protected: Any = None
+    entry: Any = None
 
 
 @dataclasses.dataclass
@@ -186,6 +209,7 @@ class _Reference:
     caption: str = ""             # #1015: delivered slots only, validated
     label: str = ""
     media_kind: str = ""          # S3: operator_file only — a MEDIA_POLICIES key
+    proposal: Any = None          # S5: the parsed, validated proposal object
 
     def __repr__(self) -> str:      # never the value
         return (f"_Reference(slot={self.slot!r}, armed={self.armed is not None}, "
@@ -254,6 +278,76 @@ def _file_caption_ok(value: Any, label: str) -> bool:
     return len(label) + 1 + len(value) <= MAX_FILE_CAPTION_CHARS
 
 
+def proposal_ok(value: Any, call: Any) -> tuple[dict | None, str | None]:
+    """S5 §2: the deposit-time judgement of a proposal — the JSON-encoded
+    object, its text and buttons within bounds, every button's call resolved
+    against the DEPOSITING call's own plugin and server through
+    ``stored_calls`` (never a string the plugin supplies beyond the bare
+    name), the argument grammar, the revision, and the one-physical-message
+    rule on the composed post. Returns ``(parsed, None)`` with each button's
+    call replaced by its resolved identities and canonical form, or
+    ``(None, reason)``."""
+    import stored_calls as sc
+    from channels.tg_richtext import render_paged
+    from text_util import utf16_len
+    if not isinstance(value, str) or len(value.encode("utf-8")) > MAX_VALUE_BYTES:
+        return None, "bad_proposal"
+    try:
+        obj = json.loads(value)
+    except ValueError:
+        return None, "bad_proposal"
+    if not isinstance(obj, dict):
+        return None, "bad_proposal"
+    text = obj.get("text")
+    if not isinstance(text, str) or not text.strip() or len(text) > PROPOSAL_TEXT_CHARS:
+        return None, "bad_proposal"
+    if not _message_ok(text):
+        return None, "bad_proposal"
+    buttons = obj.get("buttons")
+    if not isinstance(buttons, list) or not 1 <= len(buttons) <= PROPOSAL_MAX_BUTTONS:
+        return None, "bad_proposal"
+    revision = obj.get("revision", "")
+    if revision is None:
+        revision = ""
+    if not isinstance(revision, str) or len(revision) > PROPOSAL_REVISION_CHARS:
+        return None, "bad_proposal"
+    entry = getattr(call, "entry", None)
+    servers = tuple(getattr(entry, "servers", ()) or ())
+    if (call.identity is None or entry is None or len(servers) != 1
+            or getattr(call, "contract_map", None) is None):
+        return None, "bad_proposal"
+    seg, server = entry.plugin_seg, servers[0]
+    resolved = []
+    for button in buttons:
+        if not isinstance(button, dict):
+            return None, "bad_proposal"
+        label = button.get("label")
+        if (not isinstance(label, str) or not label.strip()
+                or len(label) > PROPOSAL_LABEL_CHARS or not _text_ok(label, PROPOSAL_LABEL_CHARS)):
+            return None, "bad_proposal"
+        spec = button.get("call")
+        if not isinstance(spec, dict):
+            return None, "bad_proposal"
+        arguments = spec.get("arguments", {})
+        if arguments is None:
+            arguments = {}
+        if sc.arguments_ok(arguments) is not None:
+            return None, "bad_proposal"
+        stored, why = sc.resolve_stored_call(
+            spec.get("tool"), contract_map=call.contract_map,
+            protected=getattr(call, "protected", None) or {}, seg=seg, server=server)
+        if stored is None:
+            return None, "bad_proposal"
+        resolved.append({"label": label, "call": {
+            "server": stored.server, "wire_name": stored.wire_name,
+            "runtime_name": stored.runtime_name, "proposal": stored.proposal,
+            "arguments": arguments, "canonical": sc.canonical_json(arguments)}})
+    composed = compose_operator_message(text, post_label(call.identity.enforcement_role))
+    if len(render_paged(composed)) != 1 or utf16_len(composed) > 4096 - PROPOSAL_SETTLE_RESERVE:
+        return None, "bad_proposal"
+    return {"text": text, "buttons": resolved, "revision": revision}, None
+
+
 def post_label(role: str) -> str:
     """The label Casa heads a specialist's post with: the glyph and the
     persona display name the ``<delegates>`` block advertises for *role*
@@ -292,6 +386,7 @@ class PostEvent:
     label: str
     pages: int | None
     media_kind: str | None
+    buttons: int | None = None     # S5: a proposal's button count
 
 
 class PostLedger:
@@ -425,7 +520,10 @@ def echo_lines(events: list[PostEvent]) -> list[str]:
     the kind and the page count or media kind — nothing plugin-authored."""
     lines: list[str] = []
     for event in events[:ECHO_MAX_LINES]:
-        if event.media_kind:
+        if getattr(event, "buttons", None) is not None:
+            n = event.buttons
+            tail = f" posted a proposal to your chat ({n} button{'s' if n != 1 else ''})."
+        elif event.media_kind:
             tail = f" posted {_MEDIA_WORDS.get(event.media_kind, 'a file')} to your chat."
         else:
             pages = event.pages or 1
@@ -481,7 +579,8 @@ class ReferenceStore:
     # -- in-flight calls --------------------------------------------------
     def open_call(self, *, client_id: str, artifact_id: str, tool_name: str,
                   tool_use_id: str, identity, provides: tuple,
-                  delivers: dict | None = None) -> None:
+                  delivers: dict | None = None, contract_map: Any = None,
+                  protected: Any = None, entry: Any = None) -> None:
         """Register a ``capability`` call at admission. The identity is stored
         HERE, atomically with the call, so a deposit can bind it: the plugin's
         deposit request carries no identity and asserts none. ``delivers``
@@ -493,7 +592,8 @@ class ReferenceStore:
                 client_id=client_id, artifact_id=artifact_id,
                 tool_name=tool_name, tool_use_id=tool_use_id,
                 identity=identity, provides=tuple(provides),
-                opened_at=self._now(), delivers=dict(delivers or {}))
+                opened_at=self._now(), delivers=dict(delivers or {}),
+                contract_map=contract_map, protected=protected, entry=entry)
 
     def close_call(self, client_id: str, tool_use_id: str):
         """Close a call (PostToolUse / PostToolUseFailure). Returns the record
@@ -538,10 +638,15 @@ class ReferenceStore:
             if slot in call.deposits:
                 return None, "slot_already_deposited"
             caption_s, label_s, kind_s = "", "", ""
+            proposal_obj = None
             dkind = call.delivers.get(slot)
             if dkind == OPERATOR_MESSAGE:
                 if not _message_ok(value):
                     return None, "bad_message"
+            elif dkind == OPERATOR_PROPOSAL:
+                proposal_obj, _why = proposal_ok(value, call)
+                if proposal_obj is None:
+                    return None, "bad_proposal"
             elif dkind == OPERATOR_FILE:
                 if not isinstance(kind, str) or kind not in MEDIA_POLICIES:
                     return None, "bad_kind"
@@ -570,7 +675,8 @@ class ReferenceStore:
             self._refs[ref] = _Reference(
                 value=value, slot=slot, identity=call.identity,
                 minted_at=now, expires_at=now + reference_ttl_s(),
-                caption=caption_s, label=label_s, media_kind=kind_s)
+                caption=caption_s, label=label_s, media_kind=kind_s,
+                proposal=proposal_obj)
             call.deposits[slot] = ref
             return ref, None
 
@@ -579,7 +685,7 @@ class ReferenceStore:
         the reference must exist, be unexpired, unused and unarmed; it is
         marked used (so ``arm``, ``redeem`` and a second take all refuse it;
         the next sweep removes it) and its value blanked. Returns
-        ``(value, caption, label, identity, media_kind)`` or ``None``."""
+        ``(value, caption, label, identity, media_kind, proposal)`` or ``None``."""
         with self._lock:
             self._sweep_locked()
             r = self._refs.get(reference)
@@ -587,7 +693,7 @@ class ReferenceStore:
                 return None
             r.used = True
             value, r.value = r.value, ""
-            return value, r.caption, r.label, r.identity, r.media_kind
+            return value, r.caption, r.label, r.identity, r.media_kind, r.proposal
 
     def validate_result(self, call: _InFlight, parsed: dict) -> bool:
         """True iff every declared slot of ``call`` is present in ``parsed``
@@ -756,7 +862,15 @@ _NOT_DELIVERED_REASONS = {
     OPERATOR_MESSAGE: _REASON_MESSAGE_NOT_DELIVERED,
     OPERATOR_FILE: _REASON_FILE_NOT_DELIVERED,
 }
-_KIND_WORDS = {OPERATOR_LINK: "link", OPERATOR_MESSAGE: "message", OPERATOR_FILE: "file"}
+_REASON_PROPOSAL_NOT_DELIVERED = (
+    "casa could not post the proposal to the operator's chat; it was withheld "
+    "and holds no stored call — do not retry blindly")
+_REASON_PROPOSAL_TOO_MANY = (
+    "casa withheld the proposal: too many open proposals in this chat; let the "
+    "operator answer or let them expire")
+_NOT_DELIVERED_REASONS[OPERATOR_PROPOSAL] = _REASON_PROPOSAL_NOT_DELIVERED
+_KIND_WORDS = {OPERATOR_LINK: "link", OPERATOR_MESSAGE: "message", OPERATOR_FILE: "file",
+               OPERATOR_PROPOSAL: "proposal"}
 
 _DENY_NON_ADOPTING = (
     "not executed: this plugin has not adopted the Casa result contract "
@@ -864,8 +978,15 @@ def make_plugin_admission_hook(
     authz_hook: Callable | None = None,
     protected: dict | None = None,
     store: ReferenceStore | None = None,
+    owner=None,
 ) -> Callable[..., Awaitable[dict[str, Any]]]:
     """The composite PreToolUse callback for plugin tools (#792 §3.3).
+
+    ``owner`` (S5 §5.3): on a pinned one-call turn the ``PinnedRun`` whose pin
+    is this hook's FIRST check — a plugin call that is not the stored call is
+    denied here, before the erase binding, the fence, protection, the
+    authorization decision (which posts a challenge) or reference arming;
+    the body runs inside the owner's guard (sealed ⇒ no effect).
 
     In order: contract admission (setup exemption; non-adopting or undeclared
     ⇒ deny before execution; a capability call registers in flight), then the
@@ -877,11 +998,16 @@ def make_plugin_admission_hook(
     store = store or STORE
     protected = protected or {}
 
-    async def _hook(input_data, tool_use_id, context):
+    async def _body(input_data, tool_use_id, context):
         tool_name = (input_data or {}).get("tool_name", "")
         if not isinstance(tool_name, str) or not tool_name.startswith(PLUGIN_TOOL_PREFIX):
             return {}
         try:
+            if owner is not None:
+                # S5 §5.3: the pin, before anything with a side effect
+                why = owner.pin(tool_name, (input_data or {}).get("tool_input") or {})
+                if why is not None:
+                    return _deny(why)
             seg = contract_map.plugin_seg_of(tool_name)
             plugin = contract_map.plugins.get(seg) if seg is not None else None
             entry = contract_map.tools.get(tool_name) if plugin is not None else None
@@ -954,7 +1080,10 @@ def make_plugin_admission_hook(
                     client_id=client_id, artifact_id=entry.artifact_id,
                     tool_name=tool_name, tool_use_id=str(tool_use_id or ""),
                     identity=identity, provides=entry.provides,
-                    delivers=getattr(entry, "delivers", None))
+                    delivers=getattr(entry, "delivers", None),
+                    # S5 §2: a proposal's buttons are judged against the
+                    # session's own maps and this tool's server
+                    contract_map=contract_map, protected=protected, entry=entry)
             if entry.consumes:
                 updated = dict(tool_input)
                 armed_any = False
@@ -990,6 +1119,8 @@ def make_plugin_admission_hook(
                 tool_name, role)
             return _deny(_DENY_INTERNAL)
 
+    _hook = owner.guard(_body) if owner is not None else _body
+    _hook._casa_pinned = owner                        # type: ignore[attr-defined]
     _hook._casa_result_broker = "admission"          # type: ignore[attr-defined]
     _hook._casa_result_broker_client = client_id     # type: ignore[attr-defined]
     if authz_hook is not None:
@@ -1053,6 +1184,17 @@ async def _post_operator_message(chat_id: int, text: str,
     return await channel.deliver_operator_message(chat_id, text, post=post)
 
 
+async def _post_operator_proposal(chat_id: int, text: str, labels: list, rid: str,
+                                  post: "PostRecord | None" = None):
+    """S5: the channel posts the labelled text with one button per label
+    (``v1|proposal|<rid>|<i>``) and files the sent message under *post*;
+    returns the message id, or ``None`` when nothing landed."""
+    channel = _telegram_channel()
+    if channel is None:
+        return None
+    return await channel.deliver_operator_proposal(chat_id, text, labels, rid, post=post)
+
+
 def _claim_and_capture(outbox, path: str, kind: str):
     """ONE synchronous unit, run off the loop: claim *path*, validate the
     delivered name for *kind*, capture the bytes through the kind's policy,
@@ -1111,8 +1253,99 @@ async def _post_operator_file(chat_id: int, path: str, kind: str, caption: str,
                                                post=post)
 
 
+async def _post_proposal(identity, seg: str, slot: str, call: _InFlight, proposal: dict,
+                         head: str, post: "PostRecord", warning: str | None = None) -> tuple:
+    """S5 §3: ONE synchronous block — count, supersede by revision, register
+    with the finish hook — then the post; a post that is not proven
+    unregisters at once (``unregister`` fires no hook; nothing is on screen).
+    Returns ``(delivered, detail, event, withheld_reason)``.
+
+    ``warning`` (§14.7, the ``More`` exception with a rewritten input): the
+    tell line is composed INTO the message above the label when the result
+    still fits one page; otherwise the proposal lands without it and the
+    tell goes out as ONE labelled desk notice right after the post — the
+    landed proposal stays the sole visible receipt and the tell is never
+    silently dropped."""
+    from channels.tg_richtext import render_paged
+    from text_util import utf16_len
+    from verdict_broker import BROKER
+    chat_id, role = int(identity.chat_id), str(identity.enforcement_role)
+    scope = f"proposal:{chat_id}"
+    revision = str(proposal.get("revision") or "")
+    labels = [b["label"] for b in proposal["buttons"]]
+    text = compose_operator_message(proposal["text"], head)
+    tell_after = False
+    if warning:
+        with_tell = f"{warning}\n{text}"
+        if len(render_paged(with_tell)) == 1 and utf16_len(with_tell) <= 4096 - PROPOSAL_SETTLE_RESERVE:
+            text = with_tell
+        else:
+            tell_after = True
+    # the synchronous block: no await between the count and the register
+    if len(BROKER.pending(namespace="proposal", scope=scope)) >= PROPOSAL_MAX_LIVE:
+        return False, {}, None, _REASON_PROPOSAL_TOO_MANY
+    if revision:
+        BROKER.cancel_where(
+            namespace="proposal", reason="superseded",
+            predicate=lambda req: (req.scope == scope
+                                   and req.meta.get("plugin_seg") == seg
+                                   and req.meta.get("role") == role
+                                   and req.meta.get("revision") == revision))
+    rid = uuid.uuid4().hex
+    loop = asyncio.get_running_loop()
+    meta = {
+        "deadline": loop.time() + PROPOSAL_TTL_S, "chat_id": chat_id,
+        "operator_id": int(identity.operator_id), "role": role,
+        "artifact_id": str(getattr(identity, "artifact_id", "") or ""),
+        "plugin_seg": seg, "calls": [dict(b["call"]) for b in proposal["buttons"]],
+        "revision": revision, "label": head, "text": text, "options": list(labels),
+        "message_id": None, "owner": _post_owner(identity), "_scope": scope,
+    }
+    req, _created = BROKER.register(
+        namespace="proposal", scope=scope, request_id=rid,
+        timeout_s=PROPOSAL_TTL_S, detached=True, supersede=False, meta=meta)
+    channel = _telegram_channel()
+    factory = getattr(channel, "proposal_finish_hook", None)
+    if factory is not None:
+        BROKER.set_finish_hook(req, factory(rid=rid, req=req))
+    delivered = False
+    try:
+        mid = await asyncio.wait_for(
+            _post_operator_proposal(chat_id, text, labels, rid, post=post),
+            DELIVERY_TIMEOUT_S)
+        delivered = isinstance(mid, int) and not isinstance(mid, bool)
+        if delivered:
+            req.meta["message_id"] = mid        # the broker's own dict, by reference
+    finally:
+        if not delivered:
+            BROKER.unregister(namespace="proposal", scope=scope, request_id=rid)
+    if not delivered:
+        return False, {}, None, None
+    settled = req.meta.get("settled_line")
+    if settled:
+        # the record settled (superseded, expired) while this send was in
+        # flight: its keyboard landed after the finish hook ran, so the
+        # terminal line is applied here, where the message id is known
+        mark = getattr(channel, "mark_proposal", None)
+        if mark is not None:
+            try:
+                await asyncio.wait_for(mark(req.meta, settled), DELIVERY_TIMEOUT_S)
+            except Exception as exc:  # noqa: BLE001 — the post is proven; the mark is logged
+                logger.warning("late proposal mark failed: %s", type(exc).__name__)
+    if tell_after:
+        notice = getattr(channel, "deliver_desk_notice", None)
+        if notice is not None:
+            try:
+                await asyncio.wait_for(notice(chat_id, f"{head} {warning}"), DELIVERY_TIMEOUT_S)
+            except Exception as exc:  # noqa: BLE001 — the post is proven; the tell is logged
+                logger.warning("proposal tell notice failed: %s", type(exc).__name__)
+    n = len(labels)
+    event = PostEvent(call.tool_use_id, seg, slot, head, None, None, buttons=n)
+    return True, {"proposal_id": rid, "buttons": n}, event, None
+
+
 async def _deliver_and_replace(store: ReferenceStore, seg: str, call: _InFlight,
-                               parsed: dict) -> dict[str, Any]:
+                               parsed: dict, warning: str | None = None) -> dict[str, Any]:
     """#1015, after the structural check passed: take the delivered slot's
     deposit once, post it, and REPLACE the result — with the receipt on
     proven delivery, with the not-delivered notice on anything else (the
@@ -1133,11 +1366,12 @@ async def _deliver_and_replace(store: ReferenceStore, seg: str, call: _InFlight,
     delivered = False
     detail: dict[str, Any] = {}
     event: PostEvent | None = None
+    withheld_reason: str | None = None
     identity = None
     try:
         taken = store.take_for_delivery(call.deposits.get(slot, ""))
         if taken is not None:
-            value, caption, label, identity, media_kind = taken
+            value, caption, label, identity, media_kind, proposal = taken
             # S4 §2: the record the channel files every landed message under
             # — the identity's role and operator, never anything the plugin
             # authored.
@@ -1168,6 +1402,10 @@ async def _deliver_and_replace(store: ReferenceStore, seg: str, call: _InFlight,
                 if delivered:
                     detail = {"kind": media_kind}
                     event = PostEvent(call.tool_use_id, seg, slot, head, None, media_kind)
+            elif dkind == OPERATOR_PROPOSAL:
+                head = post_label(identity.enforcement_role)
+                delivered, detail, event, withheld_reason = await _post_proposal(
+                    identity, seg, slot, call, proposal, head, post, warning=warning)
             else:
                 text, entities, plain = compose_operator_link(
                     value, caption=caption, label=label)
@@ -1190,7 +1428,8 @@ async def _deliver_and_replace(store: ReferenceStore, seg: str, call: _InFlight,
         if not delivered:
             store.drop_call_deposits(call)
     if not delivered:
-        return _withheld(seg, _NOT_DELIVERED_REASONS.get(dkind, _REASON_LINK_NOT_DELIVERED))
+        return _withheld(seg, withheld_reason
+                         or _NOT_DELIVERED_REASONS.get(dkind, _REASON_LINK_NOT_DELIVERED))
     if event is not None:
         POSTS.record(_post_owner(identity), event)
     receipt = dict(parsed)
@@ -1201,16 +1440,24 @@ async def _deliver_and_replace(store: ReferenceStore, seg: str, call: _InFlight,
 
 
 def make_result_hook(
-    contract_map, *, client_id: str, store: ReferenceStore | None = None,
+    contract_map, *, client_id: str, store: ReferenceStore | None = None, owner=None,
 ) -> Callable[..., Awaitable[dict[str, Any]]]:
     """The PostToolUse callback (#792 §3.3): the second boundary. Any
     exception is the withheld replacement, never a pass. A ``capability``
     result whose call delivers a slot (#1015) is, after the structural
     check, replaced by the delivery receipt or the not-delivered notice —
-    never passed as returned."""
+    never passed as returned.
+
+    ``owner`` (S5 §5.4): on a pinned one-call turn, the stored call's
+    reported input is compared with the stored canonical at ENTRY (trust and
+    tell, §14.7: told and logged at ERROR, never prevented) and the watch is
+    resolved at the END with this hook's OWN effective result — the
+    response text for a ``safe`` tool, the delivery receipt / the withheld
+    replacement / the no-post pass for the ``More`` exception — inside the
+    owner's guard."""
     store = store or STORE
 
-    async def _hook(input_data, tool_use_id, context):
+    async def _body(input_data, tool_use_id, context, warning=None):
         tool_name = (input_data or {}).get("tool_name", "")
         if not isinstance(tool_name, str) or not tool_name.startswith(PLUGIN_TOOL_PREFIX):
             return {}
@@ -1252,7 +1499,7 @@ def make_result_hook(
                 return _withheld(seg, _REASON_BAD_CAPABILITY)
             if not call.delivers:
                 return {}
-            return await _deliver_and_replace(store, seg, call, parsed)
+            return await _deliver_and_replace(store, seg, call, parsed, warning=warning)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 — fail closed
@@ -1261,20 +1508,81 @@ def make_result_hook(
                 tool_name)
             return _withheld(seg, _REASON_BAD_CAPABILITY)
 
+    if owner is None:
+        _hook = _body
+    else:
+        async def _hook(input_data, tool_use_id, context):
+            tool_name = (input_data or {}).get("tool_name", "")
+            mine = tool_name == owner.runtime_name
+            warning = None
+            if mine:
+                from stored_calls import TELL_LINE, canonical_json
+                try:
+                    reported = canonical_json((input_data or {}).get("tool_input") or {})
+                except (TypeError, ValueError):
+                    reported = "<unserialisable>"
+                if reported != owner.canonical:
+                    owner.rewritten = True
+                    logger.error(
+                        "stored call %s: the CLI reported this call's arguments changed by "
+                        "an installed hook (tool=%s stored=%s reported=%s)",
+                        owner.run_id, tool_name, owner.canonical, reported)
+                warning = TELL_LINE if owner.rewritten else None
+            out = await _body(input_data, tool_use_id, context, warning)
+            if mine:
+                owner.resolve(_capture_of(contract_map, tool_name, input_data, out,
+                                          owner.rewritten))
+            return out
+        _hook = owner.guard(_hook)
+    _hook._casa_pinned = owner                        # type: ignore[attr-defined]
     _hook._casa_result_broker = "result"             # type: ignore[attr-defined]
     return _hook
 
 
+def _capture_of(contract_map, tool_name: str, input_data, out, rewritten: bool):
+    """S5 §5.4: the result hook's EFFECTIVE result as a ``Capture`` — never the
+    raw response of a delivering tool (a broker reference must not be
+    posted)."""
+    from pinned_run import Capture
+    entry = contract_map.tools.get(tool_name)
+    if not out:
+        kind = "receipt" if entry is None or entry.kind == "safe" else "no_post"
+        return Capture(kind, _response_text((input_data or {}).get("tool_response")) or "",
+                       rewritten)
+    body = (out.get("hookSpecificOutput") or {}).get("updatedToolOutput") if isinstance(out, dict) else None
+    parsed = None
+    if isinstance(body, str):
+        # the hook's OWN replacement, not a raw response: no size ceiling (a
+        # receipt is the producer's result PLUS Casa's delivery field, so a
+        # response at the raw ceiling has a receipt above it), and Casa's
+        # delivery status read FIRST — the producer's fields ride inside the
+        # receipt, and one of them may carry Casa's withheld key by accident
+        # (Astra, diff round 1)
+        try:
+            parsed = json.loads(body)
+        except ValueError:
+            parsed = None
+    if isinstance(parsed, dict):
+        delivery = parsed.get("casa_delivery")
+        if isinstance(delivery, dict) and delivery.get("status") == "delivered":
+            return Capture("delivered", rewritten=rewritten)
+        if parsed.get("casa_result_withheld"):
+            return Capture("withheld", str(parsed.get("reason") or "withheld"), rewritten)
+    return Capture("withheld", "unexpected result", rewritten)
+
+
 def make_failure_hook(
-    contract_map, *, client_id: str, store: ReferenceStore | None = None,
+    contract_map, *, client_id: str, store: ReferenceStore | None = None, owner=None,
 ) -> Callable[..., Awaitable[dict[str, Any]]]:
     """PostToolUseFailure housekeeping: the event carries no ``tool_response``
     and its output has no replacement field (measured: an MCP tool error
     fires this event and the error text reaches the model), so this only
-    closes the in-flight call so its deposits do not outlive it."""
+    closes the in-flight call so its deposits do not outlive it. ``owner``
+    (S5 §5.4): the stored call's failure resolves the watch as ``error`` with
+    a class token only — never the error text, which may be the plugin's."""
     store = store or STORE
 
-    async def _hook(input_data, tool_use_id, context):
+    async def _body(input_data, tool_use_id, context):
         try:
             tool_name = (input_data or {}).get("tool_name", "")
             if isinstance(tool_name, str) and tool_name.startswith(PLUGIN_TOOL_PREFIX):
@@ -1292,6 +1600,17 @@ def make_failure_hook(
                              (input_data or {}).get("tool_name"))
         return {}
 
+    if owner is None:
+        _hook = _body
+    else:
+        async def _hook(input_data, tool_use_id, context):
+            out = await _body(input_data, tool_use_id, context)
+            if (input_data or {}).get("tool_name") == owner.runtime_name:
+                from pinned_run import Capture
+                owner.resolve(Capture("error", "tool_error", owner.rewritten))
+            return out
+        _hook = owner.guard(_hook)
+    _hook._casa_pinned = owner                        # type: ignore[attr-defined]
     _hook._casa_result_broker = "failure"            # type: ignore[attr-defined]
     return _hook
 
@@ -1299,14 +1618,20 @@ def make_failure_hook(
 def broker_matchers(
     role: str, resolution, *, client_id: str,
     authz_hook: Callable | None = None, protected: dict | None = None,
-    store: ReferenceStore | None = None,
+    store: ReferenceStore | None = None, owner=None,
 ) -> dict[str, list]:
     """The three ``HookMatcher`` lists a plugin-bearing SDK session appends —
-    code-side, beside the authz hook, never from a hooks document."""
+    code-side, beside the authz hook, never from a hooks document. ``owner``
+    (S5): on a pinned one-call turn the contract map is the one the tap
+    CAPTURED under the desk lock — never rebuilt here — and the three
+    callbacks run inside the owner's guard."""
     from claude_agent_sdk import HookMatcher
-    from plugin_grants import result_contract_map
 
-    contract_map = result_contract_map(resolution)
+    if owner is not None:
+        contract_map = owner.build_input.contract_map
+    else:
+        from plugin_grants import result_contract_map
+        contract_map = result_contract_map(resolution)
     # #1015: the timeout is set explicitly — the result hook now awaits a
     # Telegram send (bounded by DELIVERY_TIMEOUT_S) and the CLI cancels a
     # hook past this deadline and proceeds with the ORIGINAL result.
@@ -1315,13 +1640,15 @@ def broker_matchers(
             matcher=PLUGIN_TOOL_MATCHER, timeout=HOOK_TIMEOUT_S,
             hooks=[make_plugin_admission_hook(
                 role, contract_map, client_id=client_id,
-                authz_hook=authz_hook, protected=protected, store=store)])],
+                authz_hook=authz_hook, protected=protected, store=store, owner=owner)])],
         "PostToolUse": [HookMatcher(
             matcher=PLUGIN_TOOL_MATCHER, timeout=HOOK_TIMEOUT_S,
-            hooks=[make_result_hook(contract_map, client_id=client_id, store=store)])],
+            hooks=[make_result_hook(contract_map, client_id=client_id, store=store,
+                                    owner=owner)])],
         "PostToolUseFailure": [HookMatcher(
             matcher=PLUGIN_TOOL_MATCHER, timeout=HOOK_TIMEOUT_S,
-            hooks=[make_failure_hook(contract_map, client_id=client_id, store=store)])],
+            hooks=[make_failure_hook(contract_map, client_id=client_id, store=store,
+                                     owner=owner)])],
     }
 
 

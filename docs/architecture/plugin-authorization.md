@@ -83,7 +83,9 @@ again with the identical call is promoted to that desk — and the continuation 
 to the desk without the slot wait above (the desk's own queue and permit admit it), after
 re-checking that the approver is the operator and the specialist is still delegable
 ([`specialist-desk.md`](specialist-desk.md)); the grant key and its single-use binding are
-unchanged.
+unchanged. On a pinned stored-call turn the stored-call pin runs as the admission hook's FIRST
+check, so a protected tool that is not the stored call is denied before the authorization
+decision — no challenge is posted for it ([`stored-call-buttons.md`](stored-call-buttons.md)).
 
 Every challenge the coordinator raises — the protected-tool one above and the trigger,
 callback, event, specialist-install and persona-install consents alike — shares the

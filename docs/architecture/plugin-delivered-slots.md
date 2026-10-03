@@ -102,6 +102,12 @@ outbox and passed through the kind's media policy, through the kind's method wit
 composed caption as plain text — no rendering, no entities, no thread id (INV-PLUG-046).
 Both are Casa-composed notices under the output boundary, like the delivered link.
 
+**A fourth kind, `operator_proposal`, is a decision offered as buttons.** The deposit is a
+one-page text with one to six buttons, each a stored call of the same plugin; the post is
+registered with the verdict broker before it is sent, and a tap executes exactly the stored
+call through one pinned specialist turn — [`stored-call-buttons.md`](stored-call-buttons.md)
+(INV-PROP-001, -002, -003).
+
 ## Contracts & invariants
 
 **INV-PLUG-025**: A capability slot a plugin declares as `operator_link` reaches the operator only as one message Casa posts to the chat of the call's grant identity, after the result's structural check, with the destination host printed by Casa from the URL; the only model-visible statement that it was delivered is the hook's replacement receipt (`casa_delivery.status` equal to `delivered`); when delivery is not proven the result is withheld and the deposit dropped; and the slot's value never appears in the model-visible result, the transcript or the structured-output sidecar.

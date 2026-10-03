@@ -1,0 +1,15 @@
+{
+  "name": "proposal-fixture",
+  "version": "0.1.0",
+  "description": "PLAY fixture for stored-call buttons: offer proposes a decision as buttons, apply records the tap it received, more pages the proposal twice and then reports no more entries.",
+  "casa": {
+    "resultContract": {
+      "version": 1,
+      "tools": {
+        "offer": {"result": "capability", "provides": ["proposal"], "delivers": {"proposal": "operator_proposal"}},
+        "apply": {"result": "safe"},
+        "more": {"result": "capability", "provides": ["proposal"], "delivers": {"proposal": "operator_proposal"}}
+      }
+    }
+  }
+}

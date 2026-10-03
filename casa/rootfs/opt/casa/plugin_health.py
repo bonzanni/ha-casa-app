@@ -330,6 +330,8 @@ _REASON_PHRASES = {
     "system_requirement_missing": "is missing a program it needs",
     "setup_episode_pending": "has a setup step still to finish",
     "setup_episode_failed": "could not finish setting up",
+    # S5 §14.8: a stored-call turn's processes could not be confirmed ended
+    "desk_faulted": "has a faulted specialist desk — a Casa restart clears it",
     "setup_episode_stale": "started setting up and stopped partway",
     "setup_episode_refused": "was not allowed to finish setting up",
     # #747: the registry-global row (name "*") the setup-episode store emits

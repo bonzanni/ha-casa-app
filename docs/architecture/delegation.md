@@ -53,8 +53,11 @@ It gets or creates the desk, runs under the desk's lock as one use (sync, degrad
 alike — an async launch still returns `pending` at once while its task waits), has the desk's
 bounded dialogue block fitted into its context after the resident's own validated arguments,
 and commits its brief and the bounded answer as an exchange; a full desk queue is the tool's
-typed `busy` result with no task. The desk, its bounds and the swipe-reply route that shares
-it are [`specialist-desk.md`](specialist-desk.md).
+typed `busy` result with no task, and a faulted desk — one a stored-call turn's processes could
+not be confirmed to have left — is the typed `desk_faulted` result, refused before any queue
+place and for sync, degraded and async alike. The desk, its bounds and the swipe-reply route
+that shares it are [`specialist-desk.md`](specialist-desk.md); the faulted desk is
+[`stored-call-buttons.md`](stored-call-buttons.md).
 
 **A brief is text stored for a later turn to narrate, and its disclosure resolves at
 launch.** Every `delegate_to_agent` launch — synchronous ones included, since a synchronous

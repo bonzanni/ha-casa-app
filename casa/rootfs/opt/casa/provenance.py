@@ -46,6 +46,10 @@ RESERVED_CONTEXT_KEYS = frozenset({
     # and chat the approval continuation returns to); stamped only by the
     # desk itself, never by an ingress.
     "desk",
+    # S5: the stored-call marker a pinned one-call turn's origin carries
+    # (the run id, the runtime name, the canonical arguments, the label);
+    # stamped only by the desk's tap handler, never by an ingress.
+    "stored_call",
     "execution_role",
     "message_type",
     "source",

@@ -289,3 +289,14 @@ async def test_the_prelaunch_seam_keeps_its_five_argument_call(env, monkeypatch)
     payload = await _delegate()
     assert payload["kind"] == "probe" and seen["skip"] is True
     assert tools_mod._desk_skip_permit.get() is False                # reset after the call
+
+
+async def test_a_faulted_desk_is_the_typed_desk_faulted_result_before_any_queue_place(env):
+    """S5 §14.8: a delegation to a faulted desk is refused at once — sync and
+    async alike — with no reservation, no task and no exchange."""
+    desk = sd.DESKS.get_or_create(OPERATOR, "finance")
+    desk.faulted = "run abc: termination unconfirmed"
+    for mode in ("sync", "async"):
+        payload = await _delegate(mode=mode)
+        assert payload == {**payload, "status": "error", "kind": "desk_faulted", "agent": "finance"}
+    assert env.calls == [] and desk.waiting == 0 and desk.log == []

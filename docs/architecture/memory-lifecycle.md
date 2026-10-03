@@ -89,7 +89,10 @@ future caller that skips the builder and the policy check would bypass both.
 
 **INV-MEM-016**: A delegated specialist answer the terminal evidence does not certify complete — an aborted run, a terminal fault, or an answer the model did not finish — is never retained to the shared bank; the caller's own non-blank task turn is submitted independently of the answer.
 
-The runner records the whole terminal shape once, beside the returned text, and
+A stored-call pinned turn ([`stored-call-buttons.md`](stored-call-buttons.md)) submits
+nothing at all — neither the Casa-composed task nor the model's text — since its only
+operator-visible outcome is the plugin's receipt. The runner records the whole terminal
+shape once, beside the returned text, and
 assembles the answer turn only when a single completeness predicate on that
 evidence says the model finished. The predicate is deliberately wider than the
 run's own reported verdict, in three ways. A result carrying an error flag while

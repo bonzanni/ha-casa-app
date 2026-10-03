@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.342.0] - 2026-10-03
+
+### Added
+
+- A specialist's plugin can offer you a decision as buttons under its message
+  — "Pair invoice 17 with the Adobe payment? [Yes] [No] [More]" — and a tap
+  runs exactly the one plugin call that button stood for, nothing else: a
+  short specialist turn in which only that tool with those arguments is
+  allowed, with the plugin's own answer posted back to you labelled as the
+  receipt. A tap by anyone else, a second tap, or a tap on a keyboard from
+  before a restart does nothing but show a toast; a button whose plugin has
+  since changed, been unassigned, narrowed or is being erased is refused with
+  the reason. A turn that overruns its limit is told at once and its
+  processes ended; a desk whose processes could not be confirmed ended is
+  faulted until the next restart and reported in plugin health. Plugins
+  declare the new `operator_proposal` kind; see DOCS "Buttons on a
+  specialist's post".
+
 ## [0.341.2] - 2026-10-03
 
 ### Fixed

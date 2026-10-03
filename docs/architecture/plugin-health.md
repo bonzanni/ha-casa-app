@@ -167,7 +167,10 @@ replaced one false report with a worse one — all-clear, while ingress was shut
 
 A plugin's recommendation its target does not hold is a WARNING row, `requirement_unmet`,
 recomputed on every regeneration and rendered with the plugin, the profile, where it stands
-and the author's `why` ([`plugin-access-profiles.md`](plugin-access-profiles.md)).
+and the author's `why` ([`plugin-access-profiles.md`](plugin-access-profiles.md)). A
+specialist desk a stored-call turn left faulted is a `desk_faulted` row against the plugin
+and the specialist, read fresh from the desk registry on every regeneration and standing
+until a restart clears the desk ([`stored-call-buttons.md`](stored-call-buttons.md)).
 
 ## Contracts & invariants
 

@@ -526,6 +526,14 @@ _delegation_quota_key: ContextVar[str] = ContextVar(
 # them), and a new keyword on the call turned one of them into a silent hang.
 _desk_skip_permit: ContextVar[bool] = ContextVar("_desk_skip_permit", default=False)
 
+# S5 §5.2: the ``PinnedRun`` of a stored-call tap, set by
+# ``specialist_desk.handle_tap`` around its create_task of the delegated
+# runner; the options builder consumes its captured build input instead of
+# deriving its own, injects the pin, and the runner lets it own the client.
+# A ContextVar for the same reason as the two above: the runner and builder
+# seams are monkeypatched by signature across the suite.
+_pinned_run: ContextVar["Any | None"] = ContextVar("_pinned_run", default=None)
+
 
 def _debit_specialist_media_send(eng, origin: dict) -> "dict | None":
     """Synchronous specialist-context debit for one send_media attempt.
@@ -2135,6 +2143,32 @@ def _delegated_resolution(cfg):
     return plugin_registry.resolve_for(f"{_tier}:{_role}")
 
 
+def _capture_build_input(cfg):
+    """S5 §4.2.3: ONE capture, under the desk lock, of exactly the derivations
+    that decide WHICH artifacts and tools a delegated session of *cfg* admits
+    — in the builder's own order: the resolution, the env withholding, the
+    protected map, the contract map, the profile plan. The tap's re-checks
+    read it and the pinned builder consumes it unchanged (no second resolve,
+    no rebuild — a replacement artifact carrying the same tool name could
+    otherwise be reached after the check)."""
+    from pinned_run import BuildInput
+    from plugin_grants import (
+        profile_plan, protected_map, result_contract_map, withhold_env_unresolved,
+    )
+    _role = getattr(cfg, "role", "unknown")
+    _tier = (_agent_registry.tier_for_role(_role)
+             if _agent_registry is not None else None) or "specialist"
+    resolution, withheld = withhold_env_unresolved(
+        _delegated_resolution(cfg), context=f"delegated {_role} options")
+    protected = protected_map(resolution)
+    contract_map = result_contract_map(resolution)
+    target = f"{_tier}:{_role}"
+    plan = profile_plan(resolution, target=target, withheld=[rp for rp, _ in withheld])
+    return BuildInput(cfg=cfg, resolution=resolution, withheld=tuple(withheld),
+                      protected=protected, contract_map=contract_map, plan=plan,
+                      target=target)
+
+
 def _build_specialist_options(
     cfg,
     *,
@@ -2213,19 +2247,30 @@ def _build_specialist_options(
     # engagement record + the options share ONE resolve (no create-vs-builder
     # drift), and a resumed engagement rebuilds from its RECORDED artifacts.
     _role = getattr(cfg, "role", "unknown")
-    if resolution is None:
-        resolution = _delegated_resolution(cfg)
-    # #424 r2 (Terra 2): a delegated specialist's build is a session build
-    # like any other — withhold plugins whose required env vars are
-    # unresolved (INV-PLUG-008), or the delegation starts their MCP servers
-    # with literal ${VAR} placeholders. The helper filters a COPY (never the
-    # caller's resolution: H7b shares that object with the engagement
-    # record), so grants/protected_map below derive from what the session
-    # actually loads. Re-resolved fresh per delegation, so a plugin_env
-    # reload takes effect on the next delegation without further ceremony.
-    from plugin_grants import withhold_env_unresolved
-    resolution, _withheld = withhold_env_unresolved(
-        resolution, context=f"delegated {_role} options")
+    # S5 §4.2.3: on a pinned one-call turn the tap captured — under the desk
+    # lock, after its re-checks — the resolution (already env-withheld), the
+    # withheld list, the protected map, the contract map and the profile
+    # plan. This builder consumes them UNCHANGED: nothing is resolved,
+    # filtered, mapped or planned again, so a replacement artifact carrying
+    # the same tool name cannot be reached after the check.
+    _owner = _pinned_run.get()
+    if _owner is not None:
+        resolution = _owner.build_input.resolution
+        _withheld = list(_owner.build_input.withheld)
+    else:
+        if resolution is None:
+            resolution = _delegated_resolution(cfg)
+        # #424 r2 (Terra 2): a delegated specialist's build is a session build
+        # like any other — withhold plugins whose required env vars are
+        # unresolved (INV-PLUG-008), or the delegation starts their MCP servers
+        # with literal ${VAR} placeholders. The helper filters a COPY (never the
+        # caller's resolution: H7b shares that object with the engagement
+        # record), so grants/protected_map below derive from what the session
+        # actually loads. Re-resolved fresh per delegation, so a plugin_env
+        # reload takes effect on the next delegation without further ceremony.
+        from plugin_grants import withhold_env_unresolved
+        resolution, _withheld = withhold_env_unresolved(
+            resolution, context=f"delegated {_role} options")
     sdk_plugins = [{"type": "local", "path": rp.path}
                    for rp in resolution.plugins]
 
@@ -2239,8 +2284,11 @@ def _build_specialist_options(
     from authz_grants import (
         AuthzDeps, CHALLENGES, GRANTS, make_resident_authz_hook,
     )
-    from plugin_grants import protected_map
-    _protected = protected_map(resolution)
+    if _owner is not None:
+        _protected = _owner.build_input.protected
+    else:
+        from plugin_grants import protected_map
+        _protected = protected_map(resolution)
     _authz_role = getattr(cfg, "role", "unknown")
     _authz_hook = None
     if _protected:
@@ -2273,7 +2321,7 @@ def _build_specialist_options(
         _client_id = result_broker.new_client_id()
         for _event, _matchers in result_broker.broker_matchers(
                 _authz_role, resolution, client_id=_client_id,
-                authz_hook=_authz_hook, protected=_protected).items():
+                authz_hook=_authz_hook, protected=_protected, owner=_owner).items():
             resolved_hooks[_event] = [
                 *resolved_hooks.get(_event, []), *_matchers]
         _broker_env = result_broker.broker_env(_client_id)
@@ -2296,8 +2344,11 @@ def _build_specialist_options(
     # at construction (a recorded-artifact resume reaches this builder too —
     # the loaded artifact gives the namespaces, the live entry the profile).
     # The guard matcher is the barrier; the list hygiene decides visibility.
-    _plan = profile_plan(resolution, target=f"{_hook_tier}:{_role}",
-                         withheld=[rp for rp, _ in _withheld])
+    if _owner is not None:
+        _plan = _owner.build_input.plan                  # S5: captured, never re-read
+    else:
+        _plan = profile_plan(resolution, target=f"{_hook_tier}:{_role}",
+                             withheld=[rp for rp, _ in _withheld])
     if plan_out is not None:
         plan_out.append(_plan)
     allowed_tools, _profile_denies = apply_profile_plan(allowed_tools, [], _plan)
@@ -2306,6 +2357,16 @@ def _build_specialist_options(
     if _profile_guard is not None:
         resolved_hooks["PreToolUse"] = [
             *resolved_hooks.get("PreToolUse", []), _profile_guard]
+    if _owner is not None:
+        # S5 §5.3: the pin for every NON-plugin tool (built-ins, ToolSearch,
+        # Skill, the messaging and desk tools) — FIRST, before every other
+        # PreToolUse matcher; the plugin admission hook carries the same pin
+        # as its own first check, because the CLI runs matching hooks
+        # concurrently and one hook's deny does not stop its siblings.
+        from claude_agent_sdk import HookMatcher
+        resolved_hooks["PreToolUse"] = [
+            HookMatcher(matcher=None, hooks=[_owner.pin_hook]),
+            *resolved_hooks.get("PreToolUse", [])]
 
     if _mcp_registry is not None:
         mcp_servers = _mcp_registry.resolve(
@@ -3480,6 +3541,13 @@ _SETUP_CLEARED_REFRESH_WAIT_S = 10.0
 _SETUP_CLEARED_REFRESHES: set = set()
 
 
+async def _refresh_plugin_health_live() -> None:
+    """A live, guarded regeneration of the plugin-health report, waited for
+    with a bound — the same unit a cleared setup obligation uses (S5 §14.8:
+    a faulted desk's row lands at once, not at the next mutation)."""
+    await _refresh_health_after_setup_cleared()
+
+
 async def _refresh_health_after_setup_cleared() -> None:
     """#1052: a setup evidence cleared a failed obligation — regenerate the
     persisted plugin-health report now, so the reply that follows the run
@@ -3748,6 +3816,8 @@ async def _run_delegated_agent(
     # delete in `finally` names exactly what was launched or nothing at all.
     own_sid: str | None = None
     own_dir: str | None = None
+    # S5 §5.2.4: a pinned one-call turn's controller, when this run is one
+    _owner = _pinned_run.get()
 
     def _options_and_binding():
         res = resolution if resolution is not None \
@@ -3775,7 +3845,19 @@ async def _run_delegated_agent(
             if output_format is not None else nullcontext()
         )
         with sdk_log_guard:
-            async with ClaudeSDKClient(client_options) as client:
+            if _owner is not None:
+                # S5 §5.2.4: the controller enters the client, pins the CLI
+                # and its descendants, and OWNS it to the end — this runner
+                # never enters, exits or disconnects it (a cancelled `async
+                # with` and the controller's close would otherwise tear the
+                # same client down concurrently). The transcript is the
+                # controller's to delete after termination is confirmed.
+                client = await _owner.enter(client_options, client_factory=ClaudeSDKClient)
+                _owner.transcript = (own_sid, own_dir) if own_sid and own_dir else None
+                _client_cm = nullcontext(client)
+            else:
+                _client_cm = ClaudeSDKClient(client_options)
+            async with _client_cm as client:
                 _ph["connect"] = time.monotonic()
                 await client.query(prompt)
                 _ph["query"] = time.monotonic()
@@ -3881,7 +3963,7 @@ async def _run_delegated_agent(
         # the `async with` above has exited — the CLI writes its transcript
         # until its process ends — on return, raise and cancel alike, and an
         # await here can never skip the log or the origin reset above.
-        if own_sid and own_dir:
+        if own_sid and own_dir and _owner is None:
             await _delete_own_delegated_transcript(
                 own_sid, own_dir, getattr(cfg, "role", None))
 
@@ -3982,7 +4064,10 @@ async def _run_delegated_agent(
     # session registry, so the freshness reaper never sees them; the retain is
     # explicit. It is best-effort and detached: reaching this block is not
     # evidence that anything was stored.
-    if cfg.memory.token_budget > 0:
+    # S5 §5.2.5: a stored-call turn retains NOTHING — the resident could
+    # otherwise learn model-authored content through the shared bank, outside
+    # the body-free echo; the operator sees the receipt, nothing else.
+    if cfg.memory.token_budget > 0 and not parent.get("stored_call"):
         sem = getattr(agent_mod, "active_semantic_memory", None)
         if sem is not None:
             # INV-MEM-016: admission is PER TURN (#708) — the CALLER's task
@@ -4338,6 +4423,7 @@ def _attach_completion_callback(
         except Exception as exc:
             import specialist_desk as _desk_mod
             kind = ("busy" if isinstance(exc, _desk_mod.DeskBusy)
+                    else "desk_faulted" if isinstance(exc, _desk_mod.DeskFaulted)
                     else _classify_error(exc).value)
             complete = DelegationComplete(
                 delegation_id=record.id,
@@ -6719,6 +6805,19 @@ async def delegate_to_agent(args: dict) -> dict:
         # task. Jobs, engagements, scheduled and webhook turns touch no desk.
         _desk = _desk_pre
         _desk_scope = ""
+        if _desk is not None and getattr(_desk, "faulted", None):
+            # S5 §14.8: a faulted desk refuses every use at once — sync,
+            # degraded and async alike (an async launch must not return
+            # ``pending`` for a desk that will never run it).
+            return _result({
+                "status": "error",
+                "kind": "desk_faulted",
+                "agent": agent_name,
+                "message": (
+                    f"Agent {agent_name!r}'s desk in this chat is faulted; "
+                    "a Casa restart clears it."
+                ),
+            })
         if _desk is not None:
             _desk_reservation = _desk.reserve()
             # the permit was left to the desk's own use (skip_permit above)
@@ -6893,6 +6992,7 @@ async def delegate_to_agent(args: dict) -> dict:
         if finished.exception() is not None:
             exc = finished.exception()
             kind = ("busy" if isinstance(exc, _desk_mod.DeskBusy)
+                    else "desk_faulted" if isinstance(exc, _desk_mod.DeskFaulted)
                     else _classify_error(exc).value)
             elapsed = time.time() - started_at
             if is_voice:
@@ -14161,6 +14261,13 @@ def _regenerate_plugin_health(extra_issues: list) -> None:
                 for reason in reasons:
                     _add(name, None, reason,
                          detail=_env_detail_for(verify, reason))
+    # S5 §14.8: a faulted specialist desk (a stored call's processes
+    # unconfirmed ended) is a RECOMPUTABLE runtime row — read fresh from the
+    # desk registry on every regeneration, standing until a restart clears
+    # the desk, never passed as a one-shot extra.
+    import specialist_desk
+    for issue in specialist_desk.faulted_desk_issues():
+        _add(issue.name, issue.target, issue.reason_code, detail=issue.detail)
     # #211: a registered plugin targeting a NOT-yet-installed specialist is
     # the documented plugin-before-specialist install order — WARNING-class
     # ("target_pending"), never a blocking issue. RECOMPUTABLE like the
