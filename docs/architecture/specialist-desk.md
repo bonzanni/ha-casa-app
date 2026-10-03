@@ -101,7 +101,8 @@ an abort, an exception, a failed reply send — ends in ONE labelled, body-free 
 
 **A file can start a desk turn too.** A file the operator sends as a swipe-reply on a
 specialist's post, or after a `📎` tap on its proposal, is stored in that specialist's own
-inbox and starts one desk turn whose task Casa composes from the file's name and the caption
+inbox and starts one desk turn whose task Casa composes from the file's name and the caption,
+framed as Casa's note of the file rather than as the operator's own reply
 ([`inbound-files.md`](inbound-files.md)). It is the same use of the same desk; only its lines
 differ: every line it records carries the receipt first, such as `📊 Finance received your
 file statement.pdf; answered (1 page).`, and a failed run says `… could not handle your file

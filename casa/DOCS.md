@@ -1248,9 +1248,11 @@ A plugin can also put a `📎 Add a document` button on its proposal (a button w
 `"arm_file": true` instead of a call); tap it, and the next file you send in that chat
 within ten minutes goes to that specialist the same way. The tap only ticks the button;
 no message follows it. A later 📎 tap replaces the earlier one, a text message leaves it
-waiting, and a restart forgets it.
+waiting, the next file uses it up even when it is a reply to another post (the reply
+decides where that file goes), and a restart forgets it.
 
-The specialist can read and share only its own inbox; the assistant keeps hers. Files the
+The specialist can read and share only its own inbox, in its replies and when the assistant
+delegates to it, not in its background jobs; the assistant keeps hers. Files the
 specialist could not take — not a kind it reads, its inbox full, the specialist no longer
 assigned to the assistant — are never passed to the assistant instead: you get one
 labelled line saying what happened, and a file already saved stays in the specialist's

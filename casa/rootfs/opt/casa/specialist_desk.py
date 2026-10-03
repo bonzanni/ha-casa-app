@@ -413,13 +413,19 @@ def render_block(exchanges: list[Exchange], budget: int = DESK_LOG_CHARS,
     return ""
 
 
-def turn_frame(resident_name: str | None, continuation: bool = False) -> str:
+def turn_frame(resident_name: str | None, continuation: bool = False, file: bool = False) -> str:
     """#1192: the desk turn's opening context line — the task is the
     operator's own message to the specialist, now, the same operator as in
     the exchanges shown, not something the resident relayed. An approval
     continuation's task is Casa's note of the operator's decision, not the
     operator's words, and its frame says that instead."""
     name = _resident_name(resident_name)
+    if file:
+        # S6 (diff round 3, Terra): a file turn's task is Casa's note of the file — by a
+        # swipe-reply or after a 📎 tap — not the operator's own words
+        return ("The task above is Casa's note that the operator sent you a file in this chat "
+                "now, with the operator's own words if they wrote any — the same operator as in "
+                f"your earlier exchanges, if any are shown. {name} did not write or relay it.")
     if continuation:
         return ("The task above is Casa's note of the operator's decision on your request, "
                 "made in this chat now — the same operator as in your earlier exchanges, "
@@ -661,11 +667,12 @@ def _desk_origin(*, resident_role: str, desk_role: str, chat_id: int, user_id: i
 
 
 def _compose_context(block: str, quoted_text: str | None, record: Any, now: float,
-                     resident_name: str | None = None, continuation: bool = False) -> str:
+                     resident_name: str | None = None, continuation: bool = False,
+                     file: bool = False) -> str:
     """The desk turn's context: the turn frame (#1192) first, then the block,
     then the quote — at most DESK_CONTEXT_CHARS by construction (frame and
     quote header within DESK_FRAMING_CHARS), the slice only a backstop."""
-    parts = [turn_frame(resident_name, continuation)]
+    parts = [turn_frame(resident_name, continuation, file)]
     if block:
         parts.append(block)
     if quoted_text is not None and record is not None:
@@ -712,7 +719,8 @@ async def handle_reply(
     desk = DESKS.get_or_create(chat_id, desk_role)
 
     async def _tell(tail: str, *, notice: bool = False, receipt: bool = True,
-                    fields: "dict[str, Any] | None" = None, raw: bool = False) -> None:
+                    fields: "dict[str, Any] | None" = None, raw: bool = False,
+                    outcome: "str | None" = None) -> None:
         """S6 §2.2: the ONE place a desk turn records anything — the notice to
         the operator (when asked) and the resident's echo, the same string,
         composed by ``bounded_line`` (§2.6). A file-started turn (``file_name``
@@ -722,7 +730,9 @@ async def handle_reply(
         if raw and (file_name is None or not receipt):
             line = tail
         else:
-            body = tail[len(label) + 1:] if raw and tail.startswith(label + " ") else tail
+            # a raw S3 line re-labelled for a file turn: its outcome comes apart from its
+            # label (rb.echo_parts), never by stripping a label the event may not carry
+            body = outcome if outcome is not None else tail
             values = dict(fields or {})
             if file_name is not None:
                 values.setdefault("name", file_name)
@@ -774,7 +784,8 @@ async def handle_reply(
                 origin, display_name=tools_mod._display_name_for_role(desk_role))
             context_text = _compose_context(block, quoted_text, record, now,
                                             resident_name=resident_name,
-                                            continuation=continuation)
+                                            continuation=continuation,
+                                            file=file_name is not None)
             # the permit AFTER the lock; it never waits
             permit = None
             limiter = tools_mod._specialist_limiter
@@ -853,8 +864,8 @@ async def handle_reply(
             done = DESKS.now()
             desk.append("operator", task_text, done)
             desk.append("specialist", specialist_side, done)
-            for line in rb.echo_lines(posts):
-                await _tell(line, raw=True)
+            for line, (_, outcome) in zip(rb.echo_lines(posts), rb.echo_parts(posts)):
+                await _tell(line, raw=True, outcome=outcome)
     finally:
         reservation.release()                 # idempotent: a cancel while waiting
         channel._release_typing(context, str(chat_id))

@@ -90,3 +90,32 @@ def test_handle_reply_records_only_through_its_one_emitter():
     assert "record_echo(" in emitter and "deliver_desk_notice(" in emitter
     assert "record_echo(" not in rest and "deliver_desk_notice(" not in rest
     assert "_notice(" not in rest or "def _notice" not in rest        # no second notice helper
+
+
+async def test_a_post_events_outcome_survives_a_label_that_differs_from_the_turns(env):
+    """Diff round 1, Astra: the event line's label was stripped by comparing it with the
+    turn's cached label; a label renamed during the turn (a persona reload) left the event's
+    own label in the text, unbudgeted, and the clip ate the outcome. The composer now takes
+    each event's outcome apart from its label."""
+    renamed = "📊 " + "R" * 62                                        # 64 chars, the display-name cap
+    long_name = "q" * 196 + ".pdf"
+
+    async def respond(call):
+        rb.POSTS.record(call.turn_id, rb.PostEvent("c", "probe", "proposal", renamed, None, None, buttons=3))
+        return tools_mod.DelegatedOutput(text="<silent/>")
+    env.respond = respond
+    await _reply(env, file_name=long_name)
+    echo = _echo()                                                  # read-and-clear: read once
+    assert "posted a proposal to your chat (3 buttons)." in echo, echo
+    assert echo.count("received your file") == 1
+
+
+async def test_a_file_turn_is_framed_as_casas_note_of_a_file_never_as_a_reply(env):
+    """Diff round 3, Terra: a file turn's task is Casa's note that a file arrived (whether by a
+    swipe-reply or after a 📎 tap), so the frame must not call it the operator's own message
+    'as a reply to you'."""
+    await _reply(env, text="[casa file] The operator sent you a file: invoice.pdf", file_name=FILE)
+    call = env.calls[-1]
+    assert call.context.startswith(sd.turn_frame("Ellen", file=True))
+    assert "as a reply to you" not in call.context
+    assert sd.turn_frame("Ellen") not in call.context

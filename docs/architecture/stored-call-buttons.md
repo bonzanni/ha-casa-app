@@ -52,8 +52,8 @@ both keys, at most one per proposal, counting toward the six. Its tap runs the s
 chain and commit, then writes an *arming* for that chat, synchronously and before any await: the
 next non-text message the same operator sends there within ten minutes goes to the proposing
 specialist's inbox as if it were a reply to its post ([`inbound-files.md`](inbound-files.md)).
-A later arming replaces it, a text message leaves it, the first file consumes it, a restart
-forgets it. The finish hook only edits the keyboard to `☑ <label>`: no turn runs, nothing is
+A later arming replaces it, a text message leaves it, the first file consumes it — a
+swipe-reply file too, which still goes where the reply points — and a restart forgets it. The finish hook only edits the keyboard to `☑ <label>`: no turn runs, nothing is
 dispatched, and by the operator's ruling no message about the arming is ever sent.
 
 **Register, then post; bound; supersede.** The composed post — label line and text — must

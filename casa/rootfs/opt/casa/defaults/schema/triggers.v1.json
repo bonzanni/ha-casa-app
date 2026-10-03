@@ -4,471 +4,123 @@
   "$comment": "Accepts schema_version 1 (legacy; webhook requires path) and 2 (per-trigger auth + clearance; path forbidden). Filename kept for loader-path stability.",
   "type": "object",
   "additionalProperties": false,
-  "required": [
-    "schema_version",
-    "triggers"
-  ],
+  "required": ["schema_version", "triggers"],
   "$defs": {
     "auth": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "mode"
-      ],
+      "required": ["mode"],
       "properties": {
-        "mode": {
-          "type": "string",
-          "enum": [
-            "hmac_body",
-            "static_header",
-            "timestamped_hmac"
-          ]
-        },
-        "header": {
-          "type": "string",
-          "pattern": "^[!#$%&'*+._`|~0-9A-Za-z-]+$"
-        },
-        "tolerance_secs": {
-          "type": "integer",
-          "minimum": 60,
-          "maximum": 3600
-        },
-        "secret_owner": {
-          "type": "string",
-          "enum": [
-            "casa",
-            "provider"
-          ]
-        }
+        "mode": {"type": "string", "enum": ["hmac_body", "static_header", "timestamped_hmac"]},
+        "header": {"type": "string", "pattern": "^[!#$%&'*+._`|~0-9A-Za-z-]+$"},
+        "tolerance_secs": {"type": "integer", "minimum": 60, "maximum": 3600},
+        "secret_owner": {"type": "string", "enum": ["casa", "provider"]}
       },
       "allOf": [
         {
-          "if": {
-            "required": [
-              "secret_owner"
-            ],
-            "properties": {
-              "secret_owner": {
-                "const": "provider"
-              }
-            }
-          },
-          "then": {
-            "properties": {
-              "mode": {
-                "const": "timestamped_hmac"
-              }
-            }
-          }
+          "if": {"required": ["secret_owner"], "properties": {"secret_owner": {"const": "provider"}}},
+          "then": {"properties": {"mode": {"const": "timestamped_hmac"}}}
         }
       ]
     }
   },
   "properties": {
-    "schema_version": {
-      "enum": [
-        1,
-        2
-      ]
-    },
+    "schema_version": {"enum": [1, 2]},
     "triggers": {
       "type": "array",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": [
-          "name",
-          "type"
-        ],
+        "required": ["name", "type"],
         "properties": {
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 248,
-            "pattern": "^(?!plg-)[a-zA-Z0-9_-]+$"
-          },
-          "type": {
-            "type": "string",
-            "enum": [
-              "interval",
-              "cron",
-              "webhook",
-              "date"
-            ]
-          },
-          "minutes": {
-            "type": "integer",
-            "minimum": 1
-          },
-          "schedule": {
-            "type": "string",
-            "minLength": 1
-          },
-          "at": {
-            "type": "string",
-            "minLength": 1
-          },
-          "one_shot": {
-            "type": "boolean"
-          },
-          "path": {
-            "type": "string",
-            "pattern": "^/.+"
-          },
-          "channel": {
-            "type": "string"
-          },
-          "prompt": {
-            "type": "string",
-            "minLength": 1
-          },
-          "prompt_file": {
-            "type": "string",
-            "minLength": 1,
-            "pattern": "\\.md$"
-          },
-          "clearance": {
-            "type": "string",
-            "enum": [
-              "public",
-              "friends",
-              "family"
-            ]
-          },
-          "auth": {
-            "$ref": "#/$defs/auth"
-          },
-          "managed_by": {
+          "name":        {"type": "string", "minLength": 1, "maxLength": 248, "pattern": "^(?!plg-)[a-zA-Z0-9_-]+$"},
+          "type":        {"type": "string", "enum": ["interval", "cron", "webhook", "date"]},
+          "minutes":     {"type": "integer", "minimum": 1},
+          "schedule":    {"type": "string", "minLength": 1},
+          "at":          {"type": "string", "minLength": 1},
+          "one_shot":    {"type": "boolean"},
+          "path":        {"type": "string", "pattern": "^/.+"},
+          "channel":     {"type": "string"},
+          "prompt":      {"type": "string", "minLength": 1},
+          "prompt_file": {"type": "string", "minLength": 1, "pattern": "\\.md$"},
+          "clearance":   {"type": "string", "enum": ["public", "friends", "family"]},
+          "auth":        {"$ref": "#/$defs/auth"},
+          "job":         {"type": "string", "pattern": "^[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+$",
+                          "$comment": "S6: a scheduled entry whose target is a plugin job (<manifest name>:<job name>) — the fire starts the job directly through the one launcher, with no resident turn (INV-TRIG-022). Exclusive with prompt/prompt_file; task/context require it; forbids clearance; channel must be telegram."},
+          "task":        {"type": "string", "maxLength": 4000},
+          "context":     {"type": "string", "maxLength": 8000},
+          "managed_by":  {
             "$comment": "#398 release 2: provenance as DATA. Present only on entries the resident's own reminder tools created — written by set_reminder and by nothing else (there is deliberately no migration out of the retired reminders.yaml — the old file must be cleared before this version is deployed). The schema cannot authenticate authorship: it makes the marker EXPRESSIBLE, and any writer of this file could set it. What it buys is that ownership is stated rather than guessed. NEVER inferred from an entry's own content: the name, `type: date` and `one_shot` are all shapes an operator may legitimately author, and inferring from them is what produced three rounds of findings in #396. Absent is the default and means the entry is the operator's, so the enum is deliberately single-valued — an \"operator\" marker would invert that default. This field is what bounds the reminder writer, the overdue sweep, the reverse job reconciliation and the post-fire cleanup to entries the agent owns, now that all of them read the operator's shared triggers.yaml.",
             "type": "string",
-            "enum": [
-              "agent"
-            ]
+            "enum": ["agent"]
           },
           "output_note": {
             "$comment": "#1038: the resolved disclosure a reminder owes the turn that sends it — 'Casa: Ellen wrote this without opening “invoice.pdf”.' — written by set_reminder when the authoring turn had listed an inbound file and opened none, and by nothing else. Like managed_by it is provenance as DATA: the schema makes it expressible, the one constructor (reminders.spec_from_entry) carries it to the spec, and the dispatch sites stamp it into the firing turn's context, whose scope prepends it to whatever the model sends. Absent means nothing is owed.",
             "type": "string",
             "minLength": 1
-          },
-          "job": {
-            "type": "string",
-            "pattern": "^[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+$",
-            "$comment": "S6: a scheduled entry whose target is a plugin job (<manifest name>:<job name>) — the fire starts the job directly through the one launcher, with no resident turn (INV-TRIG-022). Exclusive with prompt/prompt_file; task/context require it; forbids clearance; channel must be telegram."
-          },
-          "task": {
-            "type": "string",
-            "maxLength": 4000
-          },
-          "context": {
-            "type": "string",
-            "maxLength": 8000
           }
         },
         "allOf": [
           {
-            "if": {
-              "properties": {
-                "type": {
-                  "const": "interval"
-                }
-              }
-            },
+            "if": {"properties": {"type": {"const": "interval"}}},
             "then": {
-              "required": [
-                "minutes",
-                "channel"
-              ],
+              "required": ["minutes", "channel"],
               "oneOf": [
-                {
-                  "required": [
-                    "prompt"
-                  ],
-                  "not": {
-                    "anyOf": [
-                      {
-                        "required": [
-                          "prompt_file"
-                        ]
-                      },
-                      {
-                        "required": [
-                          "job"
-                        ]
-                      }
-                    ]
-                  }
-                },
-                {
-                  "required": [
-                    "prompt_file"
-                  ],
-                  "not": {
-                    "anyOf": [
-                      {
-                        "required": [
-                          "prompt"
-                        ]
-                      },
-                      {
-                        "required": [
-                          "job"
-                        ]
-                      }
-                    ]
-                  }
-                },
-                {
-                  "required": [
-                    "job"
-                  ],
-                  "not": {
-                    "anyOf": [
-                      {
-                        "required": [
-                          "prompt"
-                        ]
-                      },
-                      {
-                        "required": [
-                          "prompt_file"
-                        ]
-                      }
-                    ]
-                  }
-                }
+                {"required": ["prompt"], "not": {"anyOf": [{"required": ["prompt_file"]}, {"required": ["job"]}]}},
+                {"required": ["prompt_file"], "not": {"anyOf": [{"required": ["prompt"]}, {"required": ["job"]}]}},
+                {"required": ["job"], "not": {"anyOf": [{"required": ["prompt"]}, {"required": ["prompt_file"]}]}}
               ],
-              "dependentRequired": {
-                "task": [
-                  "job"
-                ],
-                "context": [
-                  "job"
-                ]
-              }
+              "dependentRequired": {"task": ["job"], "context": ["job"]}
             }
           },
           {
-            "if": {
-              "properties": {
-                "type": {
-                  "const": "cron"
-                }
-              }
-            },
+            "if": {"properties": {"type": {"const": "cron"}}},
             "then": {
-              "required": [
-                "schedule",
-                "channel"
-              ],
+              "required": ["schedule", "channel"],
               "oneOf": [
-                {
-                  "required": [
-                    "prompt"
-                  ],
-                  "not": {
-                    "anyOf": [
-                      {
-                        "required": [
-                          "prompt_file"
-                        ]
-                      },
-                      {
-                        "required": [
-                          "job"
-                        ]
-                      }
-                    ]
-                  }
-                },
-                {
-                  "required": [
-                    "prompt_file"
-                  ],
-                  "not": {
-                    "anyOf": [
-                      {
-                        "required": [
-                          "prompt"
-                        ]
-                      },
-                      {
-                        "required": [
-                          "job"
-                        ]
-                      }
-                    ]
-                  }
-                },
-                {
-                  "required": [
-                    "job"
-                  ],
-                  "not": {
-                    "anyOf": [
-                      {
-                        "required": [
-                          "prompt"
-                        ]
-                      },
-                      {
-                        "required": [
-                          "prompt_file"
-                        ]
-                      }
-                    ]
-                  }
-                }
+                {"required": ["prompt"], "not": {"anyOf": [{"required": ["prompt_file"]}, {"required": ["job"]}]}},
+                {"required": ["prompt_file"], "not": {"anyOf": [{"required": ["prompt"]}, {"required": ["job"]}]}},
+                {"required": ["job"], "not": {"anyOf": [{"required": ["prompt"]}, {"required": ["prompt_file"]}]}}
               ],
-              "dependentRequired": {
-                "task": [
-                  "job"
-                ],
-                "context": [
-                  "job"
-                ]
-              }
+              "dependentRequired": {"task": ["job"], "context": ["job"]}
             }
           },
           {
             "$comment": "#396: a point-in-time reminder. `at` is an ISO-8601 instant WITH offset. Cron has no year field, so a dated one-shot written as cron is an ANNUAL trigger in disguise — this type is what removes that trap. A date trigger is one-shot BY DEFINITION (one_shot must be true). #398 release 2 DELETED the `^reminder-` name requirement: it existed only because post-fire cleanup was bounded to that prefix, and cleanup is now bounded by `managed_by` instead. Requiring it was worse than redundant — it forced an operator's own dated one-shot to wear an agent-looking name, which is exactly the ambiguity that made prefix inference unsafe. `prompt_file` is forbidden because the sweep delivers the stored prompt verbatim and has no agent_dir to resolve a file against.",
-            "if": {
-              "properties": {
-                "type": {
-                  "const": "date"
-                }
-              }
-            },
+            "if": {"properties": {"type": {"const": "date"}}},
             "then": {
-              "required": [
-                "at",
-                "channel",
-                "one_shot"
-              ],
-              "not": {
-                "required": [
-                  "prompt_file"
-                ]
-              },
+              "required": ["at", "channel", "one_shot"],
+              "not": {"required": ["prompt_file"]},
               "properties": {
-                "one_shot": {
-                  "const": true
-                }
+                "one_shot": {"const": true}
               },
               "oneOf": [
-                {
-                  "required": [
-                    "prompt"
-                  ],
-                  "not": {
-                    "required": [
-                      "job"
-                    ]
-                  }
-                },
-                {
-                  "required": [
-                    "job"
-                  ],
-                  "not": {
-                    "required": [
-                      "prompt"
-                    ]
-                  }
-                }
+                {"required": ["prompt"], "not": {"required": ["job"]}},
+                {"required": ["job"], "not": {"required": ["prompt"]}}
               ],
-              "dependentRequired": {
-                "task": [
-                  "job"
-                ],
-                "context": [
-                  "job"
-                ]
-              }
+              "dependentRequired": {"task": ["job"], "context": ["job"]}
             }
           },
           {
             "$comment": "#608: a webhook turn is built from the trigger NAME and the request payload (casa_core's webhook dispatch); `prompt`/`prompt_file` are never read for one — agent_loader._build_triggers sets prompt_text = \"\" and says so. The field was accepted here and offered on config_trigger_upsert's typed surface, so the model wrote an operator's instruction into it, the writer persisted it, the commit recorded it and the dispatch discarded it, with no warning at any layer. Refusing it here is what turns that silent drop into an error the configurator relays while the operator is still in the conversation. `required: [type]` is deliberate and unlike the sibling clauses: without it this condition also matches an entry that OMITS type, and the resulting forbidden-prompt complaint would mask the real fault (the missing type). Readers do NOT get this rejection — agent_loader.validate_persisted strips the field with a warning first, because a document already carrying one predates this rule and must keep loading.",
-            "if": {
-              "required": [
-                "type"
-              ],
-              "properties": {
-                "type": {
-                  "const": "webhook"
-                }
-              }
-            },
-            "then": {
-              "not": {
-                "anyOf": [
-                  {
-                    "required": [
-                      "prompt"
-                    ]
-                  },
-                  {
-                    "required": [
-                      "prompt_file"
-                    ]
-                  },
-                  {
-                    "required": [
-                      "job"
-                    ]
-                  },
-                  {
-                    "required": [
-                      "task"
-                    ]
-                  },
-                  {
-                    "required": [
-                      "context"
-                    ]
-                  }
-                ]
-              }
-            }
+            "if": {"required": ["type"], "properties": {"type": {"const": "webhook"}}},
+            "then": {"not": {"anyOf": [
+              {"required": ["prompt"]},
+              {"required": ["prompt_file"]},
+              {"required": ["job"]},
+              {"required": ["task"]},
+              {"required": ["context"]}
+            ]}}
           },
           {
             "$comment": "#396: one_shot is meaningful ONLY for date triggers. Allowing it on cron/interval would promise a self-removal that cannot happen — the cleanup callback only removes the entry it just fired, so a recurring one would survive and re-fire after every restart. Deliberately NOT tied to `managed_by` (#398 release 2): an operator may author a dated one-shot of their own, and the two fields answer different questions — one_shot is what the trigger does, managed_by is who owns it.",
-            "if": {
-              "required": [
-                "one_shot"
-              ],
-              "properties": {
-                "one_shot": {
-                  "const": true
-                }
-              }
-            },
-            "then": {
-              "properties": {
-                "type": {
-                  "const": "date"
-                }
-              }
-            }
+            "if": {"required": ["one_shot"], "properties": {"one_shot": {"const": true}}},
+            "then": {"properties": {"type": {"const": "date"}}}
           },
           {
             "$comment": "S6: a job entry forbids clearance (a webhook-only read-clearance; C5/R2-1) and runs only on telegram (C6).",
-            "if": {
-              "required": [
-                "job"
-              ]
-            },
-            "then": {
-              "not": {
-                "required": [
-                  "clearance"
-                ]
-              },
-              "properties": {
-                "channel": {
-                  "const": "telegram"
-                }
-              }
-            }
+            "if": {"required": ["job"]},
+            "then": {"not": {"required": ["clearance"]}, "properties": {"channel": {"const": "telegram"}}}
           }
         ]
       }
@@ -477,31 +129,15 @@
   "allOf": [
     {
       "$comment": "v1 legacy: webhook triggers require path (unchanged behavior).",
-      "if": {
-        "properties": {
-          "schema_version": {
-            "const": 1
-          }
-        }
-      },
+      "if": {"properties": {"schema_version": {"const": 1}}},
       "then": {
         "properties": {
           "triggers": {
             "items": {
               "allOf": [
                 {
-                  "if": {
-                    "properties": {
-                      "type": {
-                        "const": "webhook"
-                      }
-                    }
-                  },
-                  "then": {
-                    "required": [
-                      "path"
-                    ]
-                  }
+                  "if": {"properties": {"type": {"const": "webhook"}}},
+                  "then": {"required": ["path"]}
                 }
               ]
             }
@@ -511,33 +147,15 @@
     },
     {
       "$comment": "v2: webhook triggers forbid path (served at /webhook/<name>).",
-      "if": {
-        "properties": {
-          "schema_version": {
-            "const": 2
-          }
-        }
-      },
+      "if": {"properties": {"schema_version": {"const": 2}}},
       "then": {
         "properties": {
           "triggers": {
             "items": {
               "allOf": [
                 {
-                  "if": {
-                    "properties": {
-                      "type": {
-                        "const": "webhook"
-                      }
-                    }
-                  },
-                  "then": {
-                    "not": {
-                      "required": [
-                        "path"
-                      ]
-                    }
-                  }
+                  "if": {"properties": {"type": {"const": "webhook"}}},
+                  "then": {"not": {"required": ["path"]}}
                 }
               ]
             }

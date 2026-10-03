@@ -6,53 +6,18 @@
     "resultContract": {
       "version": 1,
       "tools": {
-        "offer": {
-          "result": "capability",
-          "provides": [
-            "proposal"
-          ],
-          "delivers": {
-            "proposal": "operator_proposal"
-          }
-        },
-        "apply": {
-          "result": "safe"
-        },
-        "more": {
-          "result": "capability",
-          "provides": [
-            "proposal"
-          ],
-          "delivers": {
-            "proposal": "operator_proposal"
-          }
-        },
-        "offer_hang": {
-          "result": "capability",
-          "provides": [
-            "proposal"
-          ],
-          "delivers": {
-            "proposal": "operator_proposal"
-          }
-        },
-        "hang": {
-          "result": "safe"
-        },
-        "ingest_document": {
-          "result": "safe"
-        }
+        "offer": {"result": "capability", "provides": ["proposal"], "delivers": {"proposal": "operator_proposal"}},
+        "apply": {"result": "safe"},
+        "more": {"result": "capability", "provides": ["proposal"], "delivers": {"proposal": "operator_proposal"}},
+        "offer_hang": {"result": "capability", "provides": ["proposal"], "delivers": {"proposal": "operator_proposal"}},
+        "hang": {"result": "safe"},
+        "ingest_document": {"result": "safe"}
       }
     },
     "jobs": [
-      {
-        "name": "fixture-check",
-        "skill": "fixture-check",
-        "title": "Fixture check",
-        "summary": "Posts one line through the delivered slot so a scheduled job trigger can be seen to fire.",
-        "batches": 1,
-        "turnsPerBatch": 2
-      }
+      {"name": "fixture-check", "skill": "fixture-check", "title": "Fixture check",
+       "summary": "Posts one line through the delivered slot so a scheduled job trigger can be seen to fire.",
+       "batches": 1, "turnsPerBatch": 2}
     ]
   }
 }

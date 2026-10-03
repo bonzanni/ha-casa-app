@@ -630,6 +630,22 @@ def grants_for(role: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
     return (inbox.ready_dir,), INBOX_TOOLS
 
 
+def delegated_build_grants(cfg, *, engagement: bool) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """The ONE rule for the delegated builder (diff rounds 1–3 found the same
+    grant three times, each from a different caller — generalised here):
+    a job or engagement build gets nothing (coordinator's ruling R-D1 (a));
+    any other build of an inbox role gets its own ``ready/`` as a readable
+    prefix; only a SPECIALIST also gets the two inbound-file tools — a
+    resident's tools stay what its own configuration lists, wherever it runs
+    (INV-FILE-002)."""
+    if engagement:
+        return (), ()
+    prefixes, tools = grants_for(getattr(cfg, "role", ""))
+    if getattr(cfg, "kind", "") != "specialist":
+        tools = ()
+    return prefixes, tools
+
+
 def readable_prefixes(role: str) -> tuple[str, ...]:
     """The read grant for ``role``: exactly its ``ready/`` directory if it has an
     inbox, otherwise nothing. Every other agent keeps an empty readable list."""

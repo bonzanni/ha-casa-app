@@ -3584,13 +3584,16 @@ class TelegramChannel(Channel):
         chat = strict_positive_id(chat_id)
         if chat is None or user is None:
             return None
+        # the arming arms the NEXT file, whichever route that file takes: it is spent
+        # here, before the reply check, so a swipe-reply file cannot leave it live for a
+        # later file (INV-FILE-003; diff round 1, Terra)
+        arming = self._armings.pop(chat, None)
         quoted = getattr(msg, "reply_to_message", None)
         if quoted is not None:
             record = result_broker.POST_MAP.get(chat, getattr(quoted, "message_id", None))
             if (record is not None and record.operator_id == getattr(user, "id", None)
                     and record.role != self.default_agent):
                 return ("reply", record, record.role)
-        arming = self._armings.pop(chat, None)
         if (arming is not None and arming.get("operator_id") == getattr(user, "id", None)
                 and float(arming.get("expires_at", 0.0)) > time.monotonic()):
             return ("armed", None, str(arming.get("role") or ""))

@@ -2208,7 +2208,11 @@ def _build_specialist_options(
 
     # S6 §2.3: an inbox specialist reads its own ready/ and has the two
     # inbound-file tools — path and tools from the one constructor (INV-FILE-002)
-    _inbox_prefixes, _inbox_tools = agent_inbox.grants_for(getattr(cfg, "role", ""))
+    # the coordinator's ruling R-D1 (a): only a desk or delegated turn gets the inbox; a job or
+    # engagement build — the only callers that pass launch grants — gets neither the
+    # path nor the tools, and the #541 dispatch ceiling stays as it is
+    _inbox_prefixes, _inbox_tools = agent_inbox.delegated_build_grants(
+        cfg, engagement=bool(extra_casa_tools))
     resolved_hooks = resolve_hooks(cfg.hooks, default_cwd=cfg.cwd, extra_readable=_inbox_prefixes)
     # Sol #5: inject the /config/plugins + settings.json guard code-side (like
     # residents — agent.py step 5). A delegated specialist with Bash could
@@ -2385,8 +2389,13 @@ def _build_specialist_options(
             *resolved_hooks.get("PreToolUse", [])]
 
     if _mcp_registry is not None:
+        # S6 (diff round 1, Astra): a granted inbox tool needs the server that
+        # exposes it, whatever the config's own server list says
+        _server_names = list(cfg.mcp_server_names)
+        if _inbox_tools and "casa-framework" not in _server_names:
+            _server_names.append("casa-framework")
         mcp_servers = _mcp_registry.resolve(
-            cfg.mcp_server_names,
+            _server_names,
             role=getattr(cfg, "role", ""),
             allowed_tools=allowed_tools,
         )

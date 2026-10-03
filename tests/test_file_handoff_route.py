@@ -186,3 +186,19 @@ async def test_a_reply_on_a_post_retained_for_another_operator_is_not_addressed(
     assert routed.spawned.await_count == 0 and ai.get_inbox(FIN).list_files() == []
     [reply] = _replies(routed.bot)
     assert reply.startswith("Got statement-q3.pdf") and len(wired.list_files()) == 1   # today's path
+
+
+async def test_a_swipe_reply_file_spends_a_live_arming_and_still_goes_to_the_replied_specialist(routed, wired):
+    """INV-FILE-003 (diff round 1, Terra): the arming arms the NEXT file; a swipe-reply file
+    is that next file — the reply decides where it goes, and the arming is spent, so a later
+    unaddressed file is the default agent's again."""
+    routed.ch._armings[OPERATOR] = {"chat_id": OPERATOR, "operator_id": OPERATOR, "role": "records",
+                                    "artifact_id": "art", "expires_at": time.monotonic() + 600}
+    await routed.ch._on_non_text_message(_update(_reply_msg(name="a.pdf")))
+    await _settle(routed.ch)
+    assert routed.spawned.await_count == 1
+    assert routed.spawned.await_args.kwargs["file_name"] == "a.pdf"
+    assert len(ai.get_inbox(FIN).list_files()) == 1                     # the reply decided
+    assert OPERATOR not in routed.ch._armings                            # and the arming is spent
+    await routed.ch._on_non_text_message(_update(_plain_msg(name="b.pdf")))
+    assert routed.spawned.await_count == 1 and len(wired.list_files()) == 1   # b.pdf is Ellen's
