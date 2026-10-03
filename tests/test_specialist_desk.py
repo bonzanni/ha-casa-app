@@ -170,6 +170,17 @@ def test_a_slash_reply_context_carries_its_line_and_still_fits_by_construction()
     assert full.endswith(sd.clip(quote, sd.DESK_QUOTE_CHARS))           # nothing cut by the cap
 
 
+def test_a_file_turn_context_never_carries_the_slash_line():
+    """#1198 x S6: a file turn's task is Casa's note (``[casa file] …``), so a caption
+    starting with "/" leaves the file frame and the block alone."""
+    block = sd.render_block([sd.Exchange("operator", "q", 1.0)], resident_name="Ellen")
+    task = ("[casa file] The operator sent you a file: s.pdf (PDF, 10 bytes). It is in your "
+            "inbox at /x/s.pdf. File it with your plugin and report what you did.\n"
+            "The operator wrote: /new")
+    assert sd._compose_context(block, None, None, 1000.0, resident_name="Ellen", file=True,
+                               task=task) == sd.turn_frame("Ellen", file=True) + "\n\n" + block
+
+
 def test_an_idle_desk_starts_empty_on_its_next_use():
     reg, desk = _desk()
     desk.append("operator", "hello", now=1000.0)

@@ -72,8 +72,9 @@ bounds above are unchanged; a budget too small to hold the tags and the frame re
 block rather than overrunning. Only the rendering names the parties: the log stores what it
 stored. When the operator's reply starts with `/` (leading spaces aside), `turn_frame` is
 followed by one more line (`SLASH_TASK_LINE`): Casa did not run it as a command and it reset
-nothing. The task itself stays the operator's exact words, and a tap or a continuation never
-carries the line.
+nothing. The task itself stays the operator's exact words, and a tap, a continuation or a
+file's turn (whose task is Casa's note, opening `[casa file]`, even when the caption starts
+with `/`) never carries the line.
 
 **One desk, one use at a time, the lock covering the whole use.** Every use of a desk — a
 swipe-reply turn, an approval continuation, and the resident's delegations to that
