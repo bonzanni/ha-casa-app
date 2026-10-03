@@ -96,6 +96,7 @@ async def test_a_reply_on_a_specialist_post_stores_in_that_inbox_and_starts_one_
     assert kw["text"].startswith("[casa file] The operator sent you a file: statement-q3.pdf")
     assert "The operator wrote: the Q3 invoice" in kw["text"]
     assert kw["record"] is not None and stored.path in kw["text"]
+    assert kw["file_path"] == stored.path        # #1218: the desk turn's own file
 
 
 async def test_an_unaddressed_file_takes_todays_path_byte_for_byte(routed, wired):

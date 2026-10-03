@@ -709,7 +709,7 @@ async def handle_reply(
     *, channel: Any, resident_role: str, chat_id: int, user_id: int, user_name: str,
     message_id: Any, cid: str, text: str, quoted_text: str | None, record: Any,
     desk_role: str, continuation: bool = False, reservation: "Reservation | None" = None,
-    file_name: "str | None" = None,
+    file_name: "str | None" = None, file_path: "str | None" = None,
 ) -> None:
     """One desk use: the queue place (handed over by the route, or taken
     here), the desk lock, the idle reset, the log read, the specialist run on
@@ -792,6 +792,9 @@ async def handle_reply(
                 text=task_text, turn_id=turn_id)
             origin["turn_scope"] = TurnScope.for_desk(
                 origin, display_name=tools_mod._display_name_for_role(desk_role))
+            if file_name is not None and file_path:
+                # #1218: the file this turn received is its whole obligation
+                origin["turn_scope"].receive_files(((file_path, file_name),))
             context_text = _compose_context(block, quoted_text, record, now,
                                             resident_name=resident_name,
                                             continuation=continuation,

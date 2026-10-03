@@ -116,7 +116,10 @@ framed as Casa's note of the file rather than as the operator's own reply
 ([`inbound-files.md`](inbound-files.md)). It is the same use of the same desk; only its lines
 differ: every line it records carries the receipt first, such as `📊 Finance received your
 file statement.pdf; answered (1 page).`, and a failed run says `… could not handle your file
-statement.pdf (<kind>).`
+statement.pdf (<kind>).` The turn's scope is armed over that one file before the run starts,
+so its "answered without opening" line names only that file and clears when the specialist
+opens it or shares it with a plugin, whatever else the inbox holds
+([`output-boundary.md`](output-boundary.md)).
 
 **Every line a desk turn records goes through one emitter.** The notice to the operator and
 the resident's echo are the same string, composed once by `bounded_line`, which keeps the

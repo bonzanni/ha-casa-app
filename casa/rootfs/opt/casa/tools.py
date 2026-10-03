@@ -8220,7 +8220,9 @@ async def list_inbound_files(args: dict) -> dict:
                             f"{_inbox_days()} days.")
     # #1038: this is the tool that shows the model the paths, so it is the
     # tool that arms the disclosure — from the records it lists, never from
-    # the rendered text. Discharged by a successful Read of any listed file.
+    # the rendered text. Discharged by a successful Read of any listed file,
+    # or by handing one to a plugin (#1218). On a turn that received a file of
+    # its own, the scope keeps that file alone (``TurnScope.arm``).
     _scope = _current_scope(_origin)
     if _scope is not None:
         _scope.arm(ReadBeforeDescribe(
@@ -8257,6 +8259,7 @@ async def share_inbound_file(args: dict) -> dict:
     import casa_handoff
     import plugin_handoff
 
+    _origin = _snapshot_origin()   # #1218: the entry snapshot, like every emitter
     inbox = _inbox_for_executing_agent()
     if inbox is None:
         return _text_result("You have no inbound files to share — files sent in "
@@ -8284,6 +8287,11 @@ async def share_inbound_file(args: dict) -> dict:
             src=match.path, root=root)
     except casa_handoff.HandoffError as exc:
         return _text_result(f"The file could not be shared: {exc}")
+    # #1218: the copy exists — handing the file to a plugin acts on it, so it
+    # discharges the turn's "answered without opening" obligation as a Read does
+    _scope = _current_scope(_origin)
+    if _scope is not None:
+        _scope.note_handed_off(match.path)
     return _text_result(
         f'Shared "{out["filename"]}". Pass this path to the plugin tool:\n'
         f'{out["path"]}\nThe shared copy is kept {casa_handoff.RETENTION_S // 86400} days.')

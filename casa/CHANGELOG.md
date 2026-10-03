@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.344.4] - 2026-10-04
+
+### Fixed
+
+- The line Casa puts above a reply that was written without opening a file you
+  sent is true again. When you send a file to a specialist, by replying to one
+  of its posts or after the 📎 button, the line covers only that file. It
+  names the file, and it no longer counts everything else in that
+  specialist's inbox: before, a one-file turn could say "…any of the 17 files
+  you sent in this turn".
+- Handing a file to a plugin now counts as acting on it. A specialist that
+  files your document with its plugin no longer gets the line.
+- When the assistant lists files from earlier messages and opens none, the
+  line now says "…any of the N files it listed" instead of claiming you sent
+  them in this turn.
+
 ## [0.344.3] - 2026-10-03
 
 ### Fixed

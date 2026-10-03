@@ -94,7 +94,9 @@ own `/data/agent-inbox/<role>/ready/`, the post-download re-check, the specialis
 ([`specialist-desk.md`](specialist-desk.md)). Then one desk turn of that specialist runs with a
 Casa-composed task — the file's name, kind, size and path, and the operator's caption as the
 operator's words — and the specialist lists its inbox, shares the file into the handoff folder
-and calls its plugin's ingest tool, as the default agent does today. Every refusal is one
+and calls its plugin's ingest tool, as the default agent does today. That file is the turn's
+own: the "answered without opening" line can name it alone, and sharing it counts as acting on
+it ([`output-boundary.md`](output-boundary.md)). Every refusal is one
 labelled notice, a completed event composed within the resident-echo cap, echoed to the
 resident in the same words; a routed file draws no channel reply of its own.
 

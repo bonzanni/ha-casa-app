@@ -37,7 +37,7 @@ operator-facing is a heuristic with false positives, so the surface a model read
 calling is the only place the guarantee can be made.
 
 **A reminder set without opening the file it is about carries that fact to the turn that
-sends it.** When the setting turn had listed inbound files and read none, `set_reminder`
+sends it.** When the setting turn had listed inbound files and neither opened nor shared any, `set_reminder`
 resolves the disclosure at creation into the entry's `output_note` — `Casa: <persona> wrote
 this without opening “<file>”.` — beside the unchanged prompt, and reports it in its result.
 Every route that builds the entry's `TriggerSpec` — the boot loader, the immediate

@@ -118,8 +118,9 @@ def test_several_listed_files_none_read_names_the_count_not_the_files():
     s = _scope()
     s.arm(ob.ReadBeforeDescribe(files=(INVOICE, STATEMENT)))
     a = s.admit(K.FINAL_REPLY, "Both are fine.")
-    assert a.text == ("Casa: Ellen answered without opening any of the 2 files you "
-                      "sent in this turn.\n\nBoth are fine.")
+    # #1218 (ruling A): listed files are counted as listed, never as "sent in this turn"
+    assert a.text == ("Casa: Ellen answered without opening any of the 2 files it "
+                      "listed.\n\nBoth are fine.")
 
 
 def test_a_read_attempt_on_an_unlisted_inbox_file_arms_the_obligation():

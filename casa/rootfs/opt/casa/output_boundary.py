@@ -12,11 +12,14 @@ returns what the operator will see plus a record of what changed.
 Obligations are a closed, Casa-owned set; the model can never add one.
 
 * :class:`ReadBeforeDescribe` — armed by ``list_inbound_files`` (the tool that
-  shows the model inbound paths) or by a ``Read`` attempt on an inbox path;
-  discharged when any listed file was read successfully (#1036 ruling, operator
-  2026-09-22: any-one-read). Remedy: a Casa line at the head of every emission,
-  or — for a payload STORED for a later turn to send — a resolved note carried
-  beside the payload.
+  shows the model inbound paths) or by a ``Read`` attempt on an inbox path; on
+  a turn that RECEIVED a file (an S6 file desk turn) armed at the start over
+  that file alone, and nothing else widens it (#1218). Discharged when any
+  armed file was read successfully or handed to a plugin by
+  ``share_inbound_file`` (#1036 ruling, operator 2026-09-22: any-one-read;
+  #1218: a hand-off acts on the file). Remedy: a Casa line at the head of every
+  emission, or — for a payload STORED for a later turn to send — a resolved
+  note carried beside the payload; its count says how the files were armed.
 * :class:`InheritedNote` — the resolved note of a payload authored by an
   earlier turn, re-registered on the turn that sends it, so that turn's model
   cannot paraphrase it away. Never discharged.
@@ -285,9 +288,21 @@ class Obligation:
 @dataclass
 class ReadBeforeDescribe(Obligation):
     """The turn was shown these inbound files (``(path, display_name)``) and
-    must open one before what it says about them is delivered bare."""
+    must open one before what it says about them is delivered bare.
+
+    ``source`` is how the given files were armed — ``"own"`` (the turn received
+    them), ``"listed"`` (``list_inbound_files`` showed them) or ``"tried"`` (a
+    ``Read`` attempt on an inbox path the turn never listed) — and ``sources``
+    keeps it per file across merges, so the line's count says what it counts
+    (#1218)."""
 
     files: tuple[tuple[str, str], ...]
+    source: str = "listed"
+    sources: dict[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        for path, _ in self.files:
+            self.sources.setdefault(path, self.source)
 
 
 @dataclass(frozen=True)
@@ -318,6 +333,9 @@ class DestinationOperatorOnly(Obligation):
 class Evidence:
     read_ok: set[str] = field(default_factory=set)
     read_failed: set[str] = field(default_factory=set)
+    # #1218: inbox files the turn handed to a plugin (``share_inbound_file``
+    # published the copy) — acting on a file, as a read is
+    handed_off: set[str] = field(default_factory=set)
 
 
 def _norm(path: str) -> str:
@@ -450,14 +468,35 @@ class TurnScope:
         if isinstance(obligation, ReadBeforeDescribe):
             current = self._read_before_describe()
             if current is not None:
-                seen = {p for p, _ in current.files}
-                current.files = current.files + tuple(
-                    f for f in obligation.files if f[0] not in seen)
+                own = "own" in current.sources.values()
+                if obligation.source == "own" and not own:
+                    # #1218: the turn's own files ARE its obligation; what a
+                    # listing armed before them is not
+                    current.files, current.sources = (), {}
+                elif own and obligation.source != "own":
+                    return              # nothing widens a turn's own files
+                seen = {_norm(p) for p, _ in current.files}
+                for f in obligation.files:
+                    if _norm(f[0]) not in seen:
+                        seen.add(_norm(f[0]))
+                        current.files = current.files + (f,)
+                        current.sources[f[0]] = obligation.source
                 return
         self.obligations.append(obligation)
 
+    def receive_files(self, files: tuple[tuple[str, str], ...]) -> None:
+        """#1218: the files this turn RECEIVED (an S6 file desk turn), armed
+        before the turn runs: the obligation covers them alone."""
+        self.arm(ReadBeforeDescribe(
+            files=tuple((_norm(p), n) for p, n in files), source="own"))
+
     def note_read_ok(self, path: str) -> None:
         self.evidence.read_ok.add(_norm(path))
+
+    def note_handed_off(self, path: str) -> None:
+        """#1218: ``share_inbound_file`` published a copy of this inbox file
+        for a plugin — the turn acted on it."""
+        self.evidence.handed_off.add(_norm(path))
 
     def note_read_failed(self, path: str) -> None:
         self.evidence.read_failed.add(_norm(path))
@@ -465,7 +504,8 @@ class TurnScope:
     def note_read_attempt(self, path: str, *, display_name: str) -> None:
         """A ``Read`` aimed at an inbox file the turn never listed (a path
         copied from an earlier listing) makes this a file turn too."""
-        self.arm(ReadBeforeDescribe(files=((_norm(path), display_name),)))
+        self.arm(ReadBeforeDescribe(files=((_norm(path), display_name),),
+                                    source="tried"))
 
     @property
     def streaming_allowed(self) -> bool:
@@ -542,7 +582,8 @@ class TurnScope:
         rbd = self._read_before_describe()
         if rbd is None or not rbd.files:
             return ()
-        if any(_norm(p) in self.evidence.read_ok for p, _ in rbd.files):
+        acted = self.evidence.read_ok | self.evidence.handed_off
+        if any(_norm(p) in acted for p, _ in rbd.files):
             return ()
         return rbd.files
 
@@ -595,8 +636,9 @@ class TurnScope:
         stored_note: list[str] = list(head)
         unread = self._undischarged_files()
         if unread:
-            head.append(self._answered_line(unread))
-            stored_note.append(self._wrote_line(unread))
+            sources = self._read_before_describe().sources
+            head.append(self._answered_line(unread, sources))
+            stored_note.append(self._wrote_line(unread, sources))
         if kind is IntentKind.STORED:
             note = "\n\n".join(stored_note)
             return Admitted(text=text, scope_id=self.id, kind=kind,
@@ -620,13 +662,18 @@ class TurnScope:
             return name
         return (self.role or "Casa")[:_NAME_MAX]
 
-    def _answered_line(self, unread: tuple[tuple[str, str], ...]) -> str:
-        return (f"Casa: {self._persona()} answered without opening "
-                f"{_which(unread)} in this turn.")
+    def _answered_line(self, unread: tuple[tuple[str, str], ...],
+                       sources: dict[str, str]) -> str:
+        which, own = _which(unread, sources)
+        # "in this turn" only where it is true of the files: one named file
+        # (it qualifies the answering) or files the turn received (#1218)
+        when = " in this turn" if len(unread) == 1 or own else ""
+        return f"Casa: {self._persona()} answered without opening {which}{when}."
 
-    def _wrote_line(self, unread: tuple[tuple[str, str], ...]) -> str:
-        return (f"Casa: {self._persona()} wrote this without opening "
-                f"{_which(unread)}.")
+    def _wrote_line(self, unread: tuple[tuple[str, str], ...],
+                    sources: dict[str, str]) -> str:
+        which, _own = _which(unread, sources)
+        return f"Casa: {self._persona()} wrote this without opening {which}."
 
 
 # The persona name a disclosure line may carry — `authz_grants._DISPLAY_NAME_MAX`,
@@ -635,10 +682,24 @@ class TurnScope:
 _NAME_MAX = 64
 
 
-def _which(unread: tuple[tuple[str, str], ...]) -> str:
+# #1218: how a count of several files is worded, by how they were armed
+_HOW = {frozenset({"listed"}): "it listed",
+        frozenset({"tried"}): "it tried to open",
+        frozenset({"listed", "tried"}): "it listed or tried to open"}
+
+
+def _which(unread: tuple[tuple[str, str], ...],
+           sources: dict[str, str]) -> tuple[str, bool]:
+    """The files the line names, and whether they are the turn's own. Only a
+    turn's own files are ones "you sent"; one file is named whatever its
+    source."""
+    kinds = frozenset(sources.get(p, "listed") for p, _ in unread)
+    own = kinds == {"own"}
     if len(unread) == 1:
-        return f"“{unread[0][1]}”"
-    return f"any of the {len(unread)} files you sent"
+        return f"“{unread[0][1]}”", own
+    if own:
+        return f"any of the {len(unread)} files you sent", True
+    return f"any of the {len(unread)} files {_HOW[kinds - {'own'}]}", False
 
 
 def _display_name(config: Any) -> str:
