@@ -42,6 +42,7 @@
     - casa/rootfs/opt/casa/background_jobs.py::running_job_for_plugin
     - casa/rootfs/opt/casa/background_jobs.py::running_job_for_manifest
     - casa/rootfs/opt/casa/background_jobs.py::claim_plugin_job_start
+    - casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.job_occupants
     - casa/rootfs/opt/casa/tools.py::_start_job_on_host
   tests:
     - tests/test_specialist_job_host.py
@@ -49,4 +50,4 @@
   related: [architecture/background-jobs.md, architecture/delegation.md, architecture/job-triggers.md]
   defines_invariants: [INV-BGJOB-006]
   invariant_tests:
-    INV-BGJOB-006: [tests/test_specialist_job_host.py::test_unassign_during_topic_creation_still_blocks, tests/test_specialist_job_host.py::test_legacy_markerless_record_without_its_declaring_row_blocks, tests/test_specialist_job_host.py::test_legacy_record_without_manifest_name_blocks, tests/test_specialist_job_host.py::test_concurrent_starts_of_one_manifest_claim_once, tests/test_specialist_job_host.py::test_installations_sharing_a_manifest_name_serialise, tests/test_specialist_job_host.py::test_the_marker_names_the_plugin_selected_at_start_not_a_later_resolution, tests/test_specialist_job_host.py::test_specialist_job_record_blocks_a_second_start, tests/test_specialist_job_host.py::test_an_incidental_artifact_does_not_block_its_own_plugin]
+    INV-BGJOB-006: [tests/test_specialist_job_host.py::test_unassign_during_topic_creation_still_blocks, tests/test_specialist_job_host.py::test_legacy_markerless_record_without_its_declaring_row_blocks, tests/test_specialist_job_host.py::test_legacy_record_without_manifest_name_blocks, tests/test_specialist_job_host.py::test_concurrent_starts_of_one_manifest_claim_once, tests/test_specialist_job_host.py::test_installations_sharing_a_manifest_name_serialise, tests/test_specialist_job_host.py::test_the_marker_names_the_plugin_selected_at_start_not_a_later_resolution, tests/test_specialist_job_host.py::test_specialist_job_record_blocks_a_second_start, tests/test_specialist_job_host.py::test_an_incidental_artifact_does_not_block_its_own_plugin, tests/test_specialist_job_host.py::test_a_start_during_a_pending_strict_terminal_write_is_refused, tests/test_specialist_job_host.py::test_a_durably_ended_job_frees_its_plugin_at_once, tests/test_specialist_job_host.py::test_the_pending_window_opens_at_the_commit_and_closes_when_the_write_settles, tests/test_specialist_job_host.py::test_an_unrelated_plugin_starts_while_another_jobs_terminal_write_is_pending, tests/test_specialist_job_host.py::test_the_installed_plugin_check_also_counts_a_pending_terminal_write]

@@ -457,6 +457,12 @@ class EngagementRegistry:
         # failure owes a rollback, so it must never be unset (AttributeError in
         # an except block) or carry a previous write's verdict.
         self._last_tombstone_ok = False
+        # #1173: ids whose STRICT terminal transition is committed in memory
+        # but whose write has not settled. Such a record has left
+        # ``active_and_idle()`` and may still roll back to live, so it keeps
+        # occupying its plugin for the job guards (``job_occupants``).
+        # In-process only: never persisted, empty at boot.
+        self._terminal_pending: set[str] = set()
         # #599: injected owner that discharges a terminal record's uid-quiesce
         # obligation — ``async def (record) -> bool`` (True == observed
         # extinct). Optional so every existing construction site and test keeps
@@ -617,6 +623,15 @@ class EngagementRegistry:
 
     def active_and_idle(self) -> list[EngagementRecord]:
         return [r for r in self._records.values() if r.status in ("active", "idle")]
+
+    def job_occupants(self) -> list[EngagementRecord]:
+        """#1173: the records that occupy a plugin for the job guards — the
+        live ones, plus any whose strict terminal write is still pending,
+        which a failed write would put back live. Synchronous, like
+        ``active_and_idle``, so ``claim_job_start`` reads it and claims with
+        no suspension between."""
+        return [r for r in self._records.values()
+                if r.status in ("active", "idle") or r.id in self._terminal_pending]
 
     def terminal_records(self) -> list[EngagementRecord]:
         """v0.79.0 (§3): terminal records, for the boot spool-reconciliation
@@ -1578,8 +1593,19 @@ class EngagementRegistry:
                 rec.origin["error_kind"] = error_kind or "emit_completion_error"
                 rec.origin["error_message"] = error_message
             self._stamp_shutdown_reason(rec)
+            # #1173: from this synchronous commit until the write below
+            # settles, the record still occupies its plugin for the job guards.
+            self._terminal_pending.add(rec.id)
 
             async def _mutate_and_persist() -> bool:
+                try:
+                    return await _persist()
+                finally:
+                    # After the restore (a failed write leaves the record live)
+                    # or the durable commit; before the caller resumes.
+                    self._terminal_pending.discard(rec.id)
+
+            async def _persist() -> bool:
                 try:
                     await self._write_tombstone_locked(strict=True)
                 # BaseException, not Exception (Sol, diff review r2): the

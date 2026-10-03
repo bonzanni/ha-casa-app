@@ -18,12 +18,12 @@ slot and the concurrency permits are in [`delegation.md`](delegation.md).
 
 **A plugin's jobs run one at a time.** `start_job`, and a scheduled trigger that starts a job,
 ask `background_jobs.claim_job_start` first; it refuses with `job_busy` while another job of
-the same plugin or manifest name is live or starting, and otherwise claims the window before
+the same plugin or manifest name is live, starting, or still writing its end, and otherwise claims the window before
 the new job's record exists until the launch has created it or failed.
 
 ## Contracts & invariants
 
-**INV-BGJOB-006**: At most one job per plugin manifest name is live or starting, whichever host kind runs it and whatever the record's shape: `start_job` refuses with `job_busy` while a live job record's qualified job name carries the requested job's manifest name, or while another start of that manifest name is inside its pre-record window.
+**INV-BGJOB-006**: At most one job per plugin manifest name is live or starting, whichever host kind runs it and whatever the record's shape: `start_job` refuses with `job_busy` while a job record whose qualified job name carries the requested job's manifest name is live or its strict terminal write is still pending, or while another start of that manifest name is inside its pre-record window.
 
 `background_jobs.claim_job_start` keeps the older per-installed-plugin check and adds this
 one, which reads only `origin["job"]["name"]` — the text before its first `:` — because every
@@ -42,10 +42,17 @@ chose before the launch awaits anything, with no `model` key: the record stays a
 
 The accepted trade-off: distinct installations of one plugin — the same manifest name under
 different registry names — never run jobs at the same time; they run one after the other.
-A plugin's jobs also run one at a time across all its job names. What it does not cover: a
-record leaves `active_and_idle()` the moment its terminal transition begins, before that
-transition has persisted, so a start admitted in that window runs beside it if the
-transition then rolls back.
+A plugin's jobs also run one at a time across all its job names.
+
+A job whose strict terminal write is still pending keeps occupying its plugin and its
+manifest name. Its terminal status is committed in memory before the write, so the record has
+already left `active_and_idle()`, and a failed write puts it back live. Both checks therefore
+read `EngagementRegistry.job_occupants()` — the live records plus those whose strict terminal
+write has not settled — and a start in that window is refused `job_busy` whichever host kind
+or permit scope it would use. The window closes when the write settles, by success, rollback
+or cancellation, so a job whose end was written frees its plugin at once.
+`active_and_idle()` itself is unchanged: the sweep, the delegation slot and boot still read
+only live records.
 
 ## Failure behavior
 
@@ -68,6 +75,7 @@ window carries neither.
 - `casa/rootfs/opt/casa/background_jobs.py::running_job_for_plugin`
 - `casa/rootfs/opt/casa/background_jobs.py::running_job_for_manifest`
 - `casa/rootfs/opt/casa/background_jobs.py::claim_plugin_job_start`
+- `casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.job_occupants`
 - `casa/rootfs/opt/casa/tools.py::_start_job_on_host`
 
 **Tests**
