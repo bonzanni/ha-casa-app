@@ -81,7 +81,11 @@ is taken after the lock (it never waits; a refusal is a notice) and released ins
 lock, before the lock, so the next queued use never wakes to a permit a finished run still
 holds. At most three uses may wait, reserved before any task exists: a fourth swipe-reply or
 continuation gets the busy notice at once, a fourth delegation gets the delegation tool's
-typed busy result, and no task is created for either.
+typed busy result, and no task is created for either. A run cut off — at the ceiling, or by a
+cancellation of the use — whose unwind outlives the runner's teardown bound still ends its use
+(the permit released inside the lock, the ceiling's notice and `[no reply]` exchange as below),
+but the desk then refuses every later use, as a faulted desk does, until that run has ended:
+it is not a fault (no health row, no restart needed), and the next use after the run ends runs.
 
 **The reply is the specialist's own words, labelled, under the output boundary.** The runner's
 output is classified exactly as a sync delegation classifies it — a CLI-aborted run yields
@@ -133,7 +137,7 @@ fresh turn id as `send_media`'s quota key and the delivered-slot echo owner, and
 delivered posts inside the turn work exactly as inside a sync delegation. The scope is
 minted for the desk (no inherited obligations) and carried as `origin["turn_scope"]`.
 
-**INV-DESK-003**: A desk's log holds at most twelve bounded exchanges, in arrival order, shared by swipe-replies and the resident's delegations to that specialist from that chat from the first of them — every completed desk turn an exchange — and is empty on the first use after the idle bound or a restart; every use of a desk — a swipe-reply, a continuation, a sync, degraded or async delegation — runs alone under its lock from the log read to the exchange's commit, in arrival order.
+**INV-DESK-003**: A desk's log holds at most twelve bounded exchanges, in arrival order, shared by swipe-replies and the resident's delegations to that specialist from that chat from the first of them — every completed desk turn an exchange — and is empty on the first use after the idle bound or a restart; every use of a desk — a swipe-reply, a continuation, a sync, degraded or async delegation — runs alone under its lock from the log read to the exchange's commit, in arrival order, and no later use starts a run while an earlier use's run, cut off at the ceiling or by a cancellation, is still unwinding — the desk refuses it until that run has ended.
 
 A resident's delegation from an operator DM (`desk_for_delegation`: the operator's own Telegram
 turn with no `synthetic` marker — a button continuation or a setup turn delegates as before) to

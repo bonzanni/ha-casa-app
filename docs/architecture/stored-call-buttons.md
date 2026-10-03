@@ -158,7 +158,10 @@ normal-end path, or while the walk's `/proc` enumeration runs so that it is list
 before its pidfd is taken — in each of which an ordinary child can be reparented unseen. The
 stricter rule that would close them (any such death leaves the run unconfirmed) was declined
 because it would fault desks until restart on false alarms; these windows are documented, with
-tests marked as expected failures, not fixed.
+tests marked as expected failures, not fixed. A desk is also refused, without
+being faulted, while a swipe-reply's or a delegation's run that outlived its teardown bound is
+still unwinding ([`specialist-desk.md`](specialist-desk.md)): the same notice and typed result,
+no health row, and it ends when that run does.
 
 **The desk and the echo.** A committed tap that reaches execution appends one exchange —
 `[tapped: <label>]` and the receipt's first line, `[posted a proposal]` for a landed `More`,
