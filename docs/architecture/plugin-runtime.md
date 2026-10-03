@@ -81,12 +81,14 @@ topic exists* (one filter feeding the record and the launch), and every later bu
 including resume — re-applies current-environment admission control; an environment
 change after that admission point — even one that RESOLVES a variable moments later — is
 not re-admitted into this engagement, and a change during the engagement can still make a
-build differ from the record. For a specialist that declares `requires:`, that set is
-the one its requires gate admitted before the topic was created plus each plugin a
-resolve taken once the topic exists returns beyond it (by registry name and by runtime
-name), so a plugin assigned while the topic is being created joins the engagement and
-nothing the gate admitted is dropped or re-checked (#1179); a plugin assigned after that
-resolve joins the next engagement, as for every specialist. Wiring a
+build differ from the record. For a specialist that declares `requires:`, the set that
+filter receives is the one its requires gate admitted before the topic was created plus
+each plugin a resolve taken once the topic exists returns beyond it (by registry name and
+by runtime name), so a plugin assigned while the topic is being created joins the
+engagement, and nothing the gate admitted is re-checked against `requires:` or dropped
+for having been unassigned meanwhile — only that environment filter can still withhold
+one (#1179); a plugin assigned after that resolve joins the next engagement, as for every
+specialist. Wiring a
 secret mid-engagement does not make the plugin appear on resume when it was withheld at
 creation — a new engagement picks it up.
 
