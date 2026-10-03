@@ -2323,17 +2323,23 @@ class TelegramChannel(Channel):
                         # and does not skip the pointer drop — the persisted
                         # context_rebuild_pending flag (set by the clamp itself)
                         # is what refuses the old session either way.
-                        if self._driver_invalidate_session is not None:
-                            try:
-                                await self._driver_invalidate_session(rec)
-                            except Exception:  # noqa: BLE001 — flag fails closed
-                                logger.warning(
-                                    "engagement %s session invalidation failed "
-                                    "after clearance downgrade (rebuild flag "
-                                    "still blocks resume)", rec.id[:8],
-                                    exc_info=True,
-                                )
-                        await self._engagement_registry.clear_session_id(rec.id)
+                        # #1166: an in_casa turn running in the session is
+                        # not cut — the teardown and the pointer drop happen
+                        # after it ends, in the delivery task's rebuild,
+                        # outside this lock (see _rebuild_waits_for_turn).
+                        if not self._turn_running_in(rec):
+                            if self._driver_invalidate_session is not None:
+                                try:
+                                    await self._driver_invalidate_session(rec)
+                                except Exception:  # noqa: BLE001 — flag fails closed
+                                    logger.warning(
+                                        "engagement %s session invalidation "
+                                        "failed after clearance downgrade "
+                                        "(rebuild flag still blocks resume)",
+                                        rec.id[:8], exc_info=True,
+                                    )
+                            await self._engagement_registry.clear_session_id(
+                                rec.id)
 
                     # v0.79.0 (§3, F2/F5): an inbound operator message is a causal
                     # event, visible on Telegram the instant it arrives. SEAL open
@@ -2472,7 +2478,13 @@ class TelegramChannel(Channel):
                     # v0.79.0 (§3, F2/F5): the high-water advance + narration
                     # seal happened at TRUE handler entry above (before command
                     # handling and any suspension).
-                    if not await self._resume_and_ready(rec):
+                    # #1166: a pending rebuild over a running in_casa turn is
+                    # not run here — it would wait for the turn under this
+                    # lock (and a /cancel with it). The delivery task drains
+                    # the turn, then runs the readiness step itself.
+                    await_rebuild = self._rebuild_waits_for_turn(rec)
+                    if not await_rebuild and not await self._resume_and_ready(
+                            rec):
                         return
 
                     # M9 (v0.52.0): deliver the user turn in a tracked background
@@ -2514,7 +2526,8 @@ class TelegramChannel(Channel):
                                 tg_message_id=getattr(msg, "message_id", None),
                                 answer_token=answer_token,
                                 inbound_reserved=inbound_reserved,
-                                inbound_token=inbound_token))
+                                inbound_token=inbound_token,
+                                await_rebuild=await_rebuild))
                         self._turn_tasks.add(task)
                         task.add_done_callback(self._turn_tasks.discard)
                         # Task-end backstop for cancelled-before-first-step.
@@ -2850,6 +2863,7 @@ class TelegramChannel(Channel):
         inbound_reserved: bool = False,
         inbound_token: object | None = None,
         system_turn: bool = False,
+        await_rebuild: bool = False,
     ) -> None:
         """M9 (v0.52.0): run one engagement user-turn to completion.
 
@@ -2873,6 +2887,15 @@ class TelegramChannel(Channel):
         #1141: ``system_turn`` is True only when ``deliver_system_turn``
         spawned this task. It reaches ``_report_incomplete_turn``, which
         treats a system turn into a job engagement as a batch turn.
+
+        #1166: ``await_rebuild`` is True when the spawner found a clearance
+        rebuild pending over a running in_casa turn and left the readiness
+        step to this task (``_ready_after_drain``). The same step runs once
+        when the driver refuses the turn as sent to an invalidated session
+        (``SessionInvalidatedError``) — a turn admitted before the downgrade
+        and queued on the old session's lock — and the same text is sent again.
+        Neither ever reaches the job finalizer below: the readiness step owns
+        its own failures.
 
         v0.83.0 (§A3, Sol r9-1/r10-2): this task OWNS the answered reservation
         after hand-off. The enqueue DISPOSITION drives its fate — an ACCEPTED
@@ -2900,19 +2923,49 @@ class TelegramChannel(Channel):
                 except Exception:  # noqa: BLE001
                     logger.debug("release_inbound failed", exc_info=True)
 
-        # #369: a just-rebuilt context gets its preamble (context-reset note +
-        # floor-refetched archive) prepended to the first delivered turn.
-        preamble = self._rebuild_preambles.pop(rec.id, None)
-        if preamble:
-            text = f"{preamble}\n\n{text}"
-        try:
+        async def _ready() -> bool:
+            try:
+                return await self._ready_after_drain(
+                    rec, inbound_token, answer_token, _release_inbound)
+            except BaseException:
+                background_jobs.turn_owner_finished(rec.id)
+                raise
+
+        if await_rebuild and not await _ready():
+            background_jobs.turn_owner_finished(rec.id)
+            return
+
+        async def _send():
+            # #369: a just-rebuilt context gets its preamble (context-reset
+            # note + floor-refetched archive) prepended to the first delivered
+            # turn — popped only once the session it goes to is ready.
+            preamble = self._rebuild_preambles.pop(rec.id, None)
+            sent = f"{preamble}\n\n{text}" if preamble else text
             if inbound_token is not None:
-                disposition = await self._driver_send_user_turn(
-                    rec, text, tg_message_id=tg_message_id,
+                return await self._driver_send_user_turn(
+                    rec, sent, tg_message_id=tg_message_id,
                     inbound_token=inbound_token)
-            else:
-                disposition = await self._driver_send_user_turn(
-                    rec, text, tg_message_id=tg_message_id)
+            return await self._driver_send_user_turn(
+                rec, sent, tg_message_id=tg_message_id)
+
+        from drivers.in_casa_driver import SessionInvalidatedError
+        try:
+            try:
+                disposition = await _send()
+            except SessionInvalidatedError:
+                if not await self._ready_after_drain(
+                        rec, inbound_token, answer_token, _release_inbound):
+                    return
+                try:
+                    disposition = await _send()
+                except SessionInvalidatedError as exc:
+                    logger.warning(
+                        "turn for %s refused twice by an invalidated session: "
+                        "%s", rec.id[:8], exc)
+                    _release_inbound()
+                    await self._settle_lost_inbound(rec, inbound_token)
+                    await self._rollback_answer(rec, answer_token)
+                    return
             _release_inbound()
             # #649: on the success path the driver already discharged the
             # ticket at its evidence frame — this is the idempotent safety.
@@ -3005,6 +3058,69 @@ class TelegramChannel(Channel):
             self._turn_tasks.add(task)
             task.add_done_callback(self._turn_tasks.discard)
 
+    def _turn_running_in(self, rec) -> bool:
+        """#1166: is an in_casa turn running in this engagement's session?
+        claude_code (and an unwired or mock driver) reads False."""
+        if getattr(rec, "driver", None) == "claude_code":
+            return False
+        probe = getattr(self._engagement_driver, "turn_in_progress", None)
+        return probe is not None and probe(rec.id) is True
+
+    def _rebuild_waits_for_turn(self, rec) -> bool:
+        """#1166: a clearance rebuild is pending and a turn is still running
+        in the session it would tear down — the rebuild must wait for that
+        turn, and must not wait under the per-topic lock."""
+        if not self._turn_running_in(rec):
+            return False
+        reg = self._engagement_registry
+        latest = (reg.get(rec.id) if reg is not None else None) or rec
+        return bool(getattr(latest, "context_rebuild_pending", False))
+
+    async def _ready_after_drain(
+        self, rec, inbound_token, answer_token, release_inbound,
+    ) -> bool:
+        """#1166: the readiness step a delivery task runs itself when the
+        session its turn is for was invalidated under a running turn — wait
+        for that turn to end, then run ``_resume_and_ready`` under the topic
+        lock (its rebuild branch tears the old session down and opens the
+        fresh one). True: deliver. Otherwise this step has settled the turn,
+        mirroring ``handle_update``'s pre-hand-off paths: a False result
+        already told the operator (or the record is terminal) and the ticket
+        is discharged with no second telling; an exception gets the one
+        bounded lost-inbound telling. Never the job finalizer — nothing was
+        sent, so no batch failed."""
+        try:
+            wait = getattr(self._engagement_driver, "wait_turn_idle", None)
+            if wait is not None:
+                await wait(rec)
+            lock = self._engagement_handler_locks.setdefault(
+                rec.topic_id, asyncio.Lock())
+            async with lock:
+                ready = await self._resume_and_ready(rec)
+        except asyncio.CancelledError:
+            release_inbound()
+            await self._settle_lost_inbound(rec, inbound_token)
+            await self._rollback_answer(rec, answer_token)
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("engagement %s could not be readied after a "
+                           "clearance downgrade: %s", rec.id[:8], exc)
+            release_inbound()
+            await self._settle_lost_inbound(rec, inbound_token)
+            await self._rollback_answer(rec, answer_token)
+            return False
+        if ready:
+            return True
+        release_inbound()
+        await self._rollback_answer(rec, answer_token)
+        if (inbound_token is not None
+                and self._driver_discharge_inbound is not None):
+            try:
+                self._driver_discharge_inbound(rec, inbound_token)
+            except Exception:  # noqa: BLE001
+                logger.debug("inbound discharge failed", exc_info=True)
+        return False
+
     async def _resume_and_ready(self, rec) -> bool:
         """Resume-if-suspended + lifecycle gate for one engagement turn, run
         UNDER the per-topic handler lock (``_engagement_handler_locks[topic]``).
@@ -3045,6 +3161,12 @@ class TelegramChannel(Channel):
                     "engagement %s needs a context rebuild but no rebuilder "
                     "is wired — refusing delivery", rec.id[:8])
                 return False
+            # #1166: drop the pre-clamp session pointer here too — a turn
+            # that was running at clamp time (and was waited for, not cut)
+            # can have re-persisted it or reported one first seen after the
+            # clamp; the registry retires the pointer it drops.
+            if reg is not None and rec.driver != "claude_code":
+                await reg.clear_session_id(rec.id)
             try:
                 preamble = await self._engagement_context_rebuilder(rec)
             except Exception as exc:  # noqa: BLE001 — fail closed, retry next turn
@@ -3283,7 +3405,9 @@ class TelegramChannel(Channel):
             lock = self._engagement_handler_locks.setdefault(
                 rec.topic_id, asyncio.Lock())
             async with lock:
-                if not await self._resume_and_ready(rec):
+                await_rebuild = self._rebuild_waits_for_turn(rec)
+                if not await_rebuild and not await self._resume_and_ready(
+                        rec):
                     logger.info(
                         "post-consent auto-resume skipped for engagement %s — "
                         "not deliverable (terminal/unresumable); operator can "
@@ -3300,7 +3424,8 @@ class TelegramChannel(Channel):
                 # here — is what lets the follow-up owner tell a job's batch
                 # turn from an operator's message in the same topic.
                 task = asyncio.create_task(self._deliver_turn_bg(
-                    rec, text, inbound_token=inbound_token, system_turn=True))
+                    rec, text, inbound_token=inbound_token, system_turn=True,
+                    await_rebuild=await_rebuild))
                 self._turn_tasks.add(task)
                 task.add_done_callback(self._turn_tasks.discard)
                 # Task-end backstop for a cancelled-before-first-step task.

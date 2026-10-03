@@ -66,8 +66,18 @@ children carrying its pre-clamp task. A read already in flight when the clamp la
 re-filtered at the new clearance after it returns, and a launch caught mid-start aborts
 rather than deliver a prompt rendered from pre-clamp materials.
 
+The teardown never cuts an `in_casa` turn that is already running: it waits for that turn to
+end. The wait does not run under the per-topic handler lock, so a `/cancel` still interrupts
+the turn. When a turn is running, the ingress skips the eager teardown and the steering
+message's delivery task waits for the turn, then runs the rebuild itself. That rebuild drops
+the session pointer again, since the finished turn can have written it back. A turn that was
+waiting for the turn lock when the clamp landed is refused before it is accepted and is sent
+into the fresh session instead. A batch of a background job is therefore never ended by a
+downgrade ([`background-jobs.md`](background-jobs.md)).
+
 What the eviction deliberately does not do: content already posted to the topic stays
-posted, and a turn already running at clamp time may still complete into the topic —
+posted, and a turn already running at clamp time completes into the topic, its tool calls
+refused while the rebuild is pending —
 engagement topics are readable by every supergroup member regardless, so both are
 disclosures the topic already carried. A nested engagement spawned before the clamp keeps
 its own record's clearance (steering its topic clamps it the same way). And it only moves a
@@ -109,7 +119,8 @@ also cannot un-share what was already disclosed before a lower-clearance sender 
 Enforced by the clamp setting the rebuild flag and withholding the record's launch materials
 under one strict persist; by the resume core and boot replay routing a flagged record to a
 fresh-session rebuild instead of a resume; by the internal-socket handler and the in-process
-tool fence refusing a flagged record; and by the post-await re-filter and the drivers'
+tool fence refusing a flagged record; by the `in_casa` turn lock, under which a waiting turn
+re-checks the flag and the live session before it is accepted; and by the post-await re-filter and the drivers'
 last-instant launch gates, which close the calls already in flight when the clamp lands.
 
 What it does not cover: output of a turn already running at clamp time, content already

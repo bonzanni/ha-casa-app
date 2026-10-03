@@ -497,3 +497,296 @@ async def test_restart_resumes_next_batch(harness, monkeypatch, tmp_path):
     assert h.batches() == [jobs.batch_prompt(2, "Process rows")]
     assert '↻ Resuming "Process rows" after a restart.' in h.topic()
     h.assert_terminal("completed", "All rows handled")
+
+
+class ClosableClient(Client):
+    """A client whose held stream ENDS when it is closed, as a real SDK stream
+    does when its transport goes away — the base `Client` never ends a held
+    stream, which is why nothing caught #1166."""
+
+    def __init__(self):
+        super().__init__()
+        self.closed_event = asyncio.Event()
+
+    async def close(self):
+        self.closed = True
+        self.closed_event.set()
+
+    async def receive_response(self):
+        for item in self.current:
+            if self.closed:
+                return
+            if isinstance(item, Exception):
+                raise item
+            if callable(item):
+                step = asyncio.ensure_future(item())
+                closed = asyncio.ensure_future(self.closed_event.wait())
+                await asyncio.wait({step, closed}, return_when=asyncio.FIRST_COMPLETED)
+                closed.cancel()
+                if not step.done():
+                    step.cancel()
+                    await asyncio.gather(step, return_exceptions=True)
+                    return
+                step.result()
+            else:
+                yield item
+
+
+# #1166: a member's post lowers a running job's clearance mid-batch. The running
+# batch is not cut by the teardown; the member's message reaches the model after
+# the context reset, in the fresh floor session, and the next batch runs there.
+@pytest.mark.parametrize("ingress_teardown", [True, False], ids=["ingress", "rebuild-only"])
+async def test_clearance_downgrade_keeps_a_running_job_alive(harness, monkeypatch, ingress_teardown):
+    h = harness
+    note = "[Context reset]"
+    clients = [ClosableClient(), ClosableClient()]
+    made = []
+
+    def factory(options):
+        made.append(clients[len(made)])
+        return made[-1]
+    monkeypatch.setattr("drivers.in_casa_driver.ClaudeSDKClient", factory)
+    monkeypatch.setattr(tools, "build_engagement_resume_options",
+                        lambda rec, sid: ClaudeAgentOptions(resume=sid))
+    if ingress_teardown:
+        async def invalidate(rec):
+            await h.driver.invalidate_session(rec)
+        h.channel._driver_invalidate_session = invalidate
+
+    async def rebuild(rec):
+        await h.driver.invalidate_session(rec)
+        await h.driver.open_fresh(rec)
+        return note
+    h.channel._engagement_context_rebuilder = rebuild
+    h.rec.origin["_origin_clearance"] = "private"
+    old, fresh = clients
+    h.client = old
+    entered, release = asyncio.Event(), asyncio.Event()
+    batch_two, hold_two = asyncio.Event(), asyncio.Event()
+    late_reports = []
+
+    async def hold():
+        entered.set()
+        await release.wait()
+
+    async def late_report():
+        # The running batch keeps its turn, not its tools (INV-MEM-011).
+        late_reports.append(payload(await tools.report_job_progress.handler(
+            {"summary": "Handled rows", "progressed": True})))
+
+    async def second():
+        batch_two.set()
+        await hold_two.wait()
+    old.scripts = [[text_frame("Working"), hold, late_report, result()]]
+    fresh.scripts = [[text_frame("Answer"), result()], [second, result()]]
+    await h.start()
+    await asyncio.wait_for(entered.wait(), 5)
+    await h.operator("Correction")  # user 77 is not the operator (chat 100)
+    release.set()
+    for _ in range(2000):
+        if batch_two.is_set() or h.rec.status not in ("active", "idle"):
+            break
+        await asyncio.sleep(.001)
+    status, old_prompts, fresh_prompts = h.rec.status, list(old.prompts), list(fresh.prompts)
+    hold_two.set()
+    assert status in ("active", "idle"), (status, old_prompts, fresh_prompts, h.topic())
+    assert h.rec.origin["_origin_clearance"] == "public"
+    assert len(made) == 2
+    assert old_prompts == ["Acknowledge the job", jobs.batch_prompt(1, "Process rows")]
+    assert fresh_prompts == [f"{note}\n\nCorrection", jobs.batch_prompt(2, "Process rows")]
+    assert old.closed
+    assert [r.get("kind") for r in late_reports] == ["engagement_context_rebuilding"]
+    assert "a batch stopped before finishing" not in h.topic()
+    assert h.bot.closed == []
+
+
+async def _downgrade(h, monkeypatch, *, rebuild=None, first_sid="session"):
+    """A job stamped private, two closable clients, batch 1 held mid-stream;
+    returns (old, fresh, release). The ingress teardown is wired."""
+    clients = [ClosableClient(), ClosableClient()]
+    made = []
+
+    def factory(options):
+        made.append(clients[len(made)])
+        return made[-1]
+    monkeypatch.setattr("drivers.in_casa_driver.ClaudeSDKClient", factory)
+    monkeypatch.setattr(tools, "build_engagement_resume_options",
+                        lambda rec, sid: ClaudeAgentOptions(resume=sid))
+
+    async def invalidate(rec):
+        await h.driver.invalidate_session(rec)
+    h.channel._driver_invalidate_session = invalidate
+
+    async def default_rebuild(rec):
+        await h.driver.invalidate_session(rec)
+        await h.driver.open_fresh(rec)
+        return "[Context reset]"
+    h.channel._engagement_context_rebuilder = rebuild or default_rebuild
+    h.rec.origin["_origin_clearance"] = "private"
+    old, fresh = clients
+    h.client = old
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def hold():
+        entered.set()
+        await release.wait()
+    end = ResultMessage("success", 1, 1, False, 1, first_sid)
+    old.scripts = [[text_frame("Working"), hold, end]]
+    await h.start()
+    await asyncio.wait_for(entered.wait(), 5)
+    return old, fresh, release
+
+
+async def _until(predicate):
+    for _ in range(2000):
+        if predicate():
+            return
+        await asyncio.sleep(.001)
+
+
+async def test_cancel_during_the_drain_interrupts_the_batch(harness, monkeypatch):
+    h = harness
+    old, fresh, release = await _downgrade(h, monkeypatch)
+    await asyncio.wait_for(h.operator("Correction"), 2)
+    assert not old.closed  # the batch is waited for, not cut
+    # The wait runs outside the topic lock, so /cancel is not held behind it.
+    await asyncio.wait_for(h.operator("/cancel"), 2)
+    assert old.closed and h.rec.status == "cancelled"
+    release.set()
+    await h.drain()
+    assert fresh.prompts == []
+    assert len(h.bot.closed) == 1
+    assert "a batch stopped before finishing" not in h.topic()
+    assert jobs.turn_owners(h.rec.id) == 0
+
+
+async def test_a_failed_rebuild_after_the_drain_tells_once_and_keeps_the_job(
+        harness, monkeypatch):
+    h = harness
+
+    async def broken(rec):
+        await h.driver.invalidate_session(rec)
+        raise RuntimeError("no fresh session")
+    old, fresh, release = await _downgrade(h, monkeypatch, rebuild=broken)
+    await asyncio.wait_for(h.operator("Correction"), 2)
+    release.set()
+    await h.drain()
+    assert h.rec.status in ("active", "idle")
+    assert h.rec.context_rebuild_pending
+    assert old.prompts[-1] == jobs.batch_prompt(1, "Process rows")
+    assert fresh.prompts == []
+    topic = h.topic()
+    assert topic.count("re-establishing its context") == 1
+    assert "could not be delivered" not in topic
+    assert "a batch failed" not in topic
+    assert h.driver.inbound_unread_texts(h.rec.id) == []
+    assert jobs.turn_owners(h.rec.id) == 0
+
+
+async def test_a_readiness_failure_after_the_drain_tells_once_and_keeps_the_job(
+        harness, monkeypatch):
+    h = harness
+    old, fresh, release = await _downgrade(h, monkeypatch)
+
+    async def unwritable(eid):
+        raise OSError("disk full")
+    monkeypatch.setattr(h.reg, "clear_context_rebuild_pending", unwritable)
+    await asyncio.wait_for(h.operator("Correction"), 2)
+    release.set()
+    await h.drain()
+    assert h.rec.status in ("active", "idle")
+    assert fresh.prompts == []
+    topic = h.topic()
+    assert topic.count("could not be delivered") == 1
+    assert "a batch failed" not in topic
+    assert h.driver.inbound_unread_texts(h.rec.id) == []
+    assert jobs.turn_owners(h.rec.id) == 0
+
+
+async def test_a_message_queued_before_the_downgrade_goes_to_the_fresh_session(
+        harness, monkeypatch):
+    h = harness
+    old, fresh, release = await _downgrade(h, monkeypatch, first_sid="late-sid")
+    hold_two = asyncio.Event()
+
+    async def second():
+        await hold_two.wait()
+    fresh.scripts = [[text_frame("A1"), result()], [text_frame("A2"), result()],
+                     [second, result()]]
+    h.channel.chat_id = 77  # the next post is the operator's: no clamp
+    await h.operator("Before")
+    h.channel.chat_id = 100
+    await asyncio.wait_for(h.operator("Correction"), 2)  # a member: the clamp lands
+    release.set()
+    await _until(lambda: len(fresh.prompts) == 3)
+    hold_two.set()
+    assert old.prompts == ["Acknowledge the job", jobs.batch_prompt(1, "Process rows")]
+    assert len(fresh.prompts) == 3, fresh.prompts
+    assert sorted(p.removeprefix("[Context reset]\n\n") for p in fresh.prompts[:2]) == [
+        "Before", "Correction"]
+    assert sum(p.startswith("[Context reset]") for p in fresh.prompts) == 1
+    assert fresh.prompts[2] == jobs.batch_prompt(2, "Process rows")
+    # The pointer the drained batch reported after the clamp is retired too.
+    assert "late-sid" in h.rec.origin["retired_sids"]
+    assert h.rec.status in ("active", "idle")
+
+
+@pytest.mark.parametrize("harness", ["specialist"], indirect=True)
+async def test_an_interactive_turn_running_at_the_downgrade_completes(
+        harness, monkeypatch):
+    h = harness
+    h.rec.origin.pop("job")
+    clients = [ClosableClient(), ClosableClient()]
+    made = []
+    monkeypatch.setattr("drivers.in_casa_driver.ClaudeSDKClient",
+                        lambda options: made.append(clients[len(made)]) or made[-1])
+    monkeypatch.setattr(tools, "build_engagement_resume_options",
+                        lambda rec, sid: ClaudeAgentOptions(resume=sid))
+
+    async def rebuild(rec):
+        await h.driver.invalidate_session(rec)
+        await h.driver.open_fresh(rec)
+        return "[Context reset]"
+    h.channel._engagement_context_rebuilder = rebuild
+    h.rec.origin["_origin_clearance"] = "private"
+    old, fresh = clients
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def hold():
+        entered.set()
+        await release.wait()
+    old.scripts = [[text_frame("Hello"), result()],
+                   [text_frame("Part one"), hold, text_frame("Part two"), result()]]
+    fresh.scripts = [[text_frame("Answer"), result()]]
+    await h.driver.start(h.rec, prompt="Engage", options=ClaudeAgentOptions())
+    h.channel.chat_id = 77
+    await h.operator("Question")
+    await asyncio.wait_for(entered.wait(), 5)
+    h.channel.chat_id = 100
+    await asyncio.wait_for(h.operator("Correction"), 2)
+    release.set()
+    await h.drain()
+    assert old.prompts == ["Engage", "Question"]
+    assert fresh.prompts == ["[Context reset]\n\nCorrection"]
+    shown = h.topic() + "\n".join(e["text"] for e in h.bot.edits)
+    assert "Part two" in shown and "Answer" in shown
+    assert "did not finish" not in shown
+
+
+async def test_the_teardown_waits_for_the_running_turn_and_spares_a_replacement(
+        harness, monkeypatch):
+    h = harness
+    old, fresh, release = await _downgrade(h, monkeypatch)
+    waiting = [asyncio.create_task(h.driver.invalidate_session(h.rec))
+               for _ in range(2)]
+    for _ in range(20):
+        await asyncio.sleep(0)
+    # A teardown never closes the session under its running turn.
+    assert not old.closed and not any(t.done() for t in waiting)
+    # The session is replaced while both teardowns still wait on its lock:
+    # they must leave alone the session they were not asked about.
+    await h.driver.cancel(h.rec)
+    await h.driver.open_fresh(h.rec)
+    release.set()
+    await asyncio.wait_for(asyncio.gather(*waiting), 5)
+    assert h.driver.is_alive(h.rec) and not fresh.closed

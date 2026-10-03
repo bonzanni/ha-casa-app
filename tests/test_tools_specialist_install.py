@@ -1778,6 +1778,9 @@ def _662_channel(registry, edits):
     chan.edit_dm_message = _edit_dm_message
     chan._resume_and_ready = MethodType(TelegramChannel._resume_and_ready, chan)
     chan.deliver_system_turn = MethodType(TelegramChannel.deliver_system_turn, chan)
+    chan._rebuild_waits_for_turn = MethodType(
+        TelegramChannel._rebuild_waits_for_turn, chan)
+    chan._turn_running_in = MethodType(TelegramChannel._turn_running_in, chan)
     return chan
 
 
