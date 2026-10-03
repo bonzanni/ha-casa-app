@@ -2439,6 +2439,13 @@ def _build_specialist_options(
     # the same list, BEFORE the sub-agent and cross-session clamps.
     disallowed_tools = _with_subagent_spawn_disallowed(
         [*cfg.tools.disallowed, *_profile_denies])
+    if _owner is not None and "ToolSearch" not in disallowed_tools:
+        # #1220: with ToolSearch on the surface the pinned CLI defers every
+        # MCP tool that is not alwaysLoad, and the pin denies the one
+        # ToolSearch that would load the stored tool, so the turn could never
+        # call it. Without ToolSearch the CLI loads every tool up front. Only
+        # here: ordinary turns keep it (the ruling above _SUBAGENT_SPAWN_TOOLS).
+        disallowed_tools.append("ToolSearch")
 
     # #459: the boot-time `agent_capabilities` line (specialist_registry.py)
     # reports only the role.yaml DECLARATION — for a specialist whose tools
@@ -3662,6 +3669,29 @@ async def _delete_own_delegated_transcript(
         )
 
 
+# #1220: how often a pinned turn asks the CLI whether its MCP servers settled
+_MCP_SETTLE_POLL_S = 0.25
+
+
+async def _await_mcp_servers_settled(client) -> None:
+    """Return once the CLI's MCP status lists no server as ``pending``.
+
+    #1220: the CLI starts plugin MCP servers in the background and a server
+    still connecting or listing its tools contributes none to the request
+    being built, so a pinned turn — one prompt, one allowed call — asking
+    before the stored tool's server is ready could only end with no call.
+    ``pending`` lasts through the connect and the tool listing, each bounded
+    by the CLI's own MCP timeout, so this ends; a server that failed is
+    settled too, and the turn then finds no stored tool (the refusal notice).
+    The tap's ceiling bounds the whole turn, this wait included."""
+    while True:
+        status = await client.get_mcp_status()
+        if not any(s.get("status") == "pending"
+                   for s in status.get("mcpServers", [])):
+            return
+        await asyncio.sleep(_MCP_SETTLE_POLL_S)
+
+
 async def _run_delegated_agent(
     cfg, task_text: str, context_text: str, resolution=None,
     output_format=None, tool_counts: dict[str, int] | None = None,
@@ -3913,6 +3943,8 @@ async def _run_delegated_agent(
                 _client_cm = ClaudeSDKClient(client_options)
             async with _client_cm as client:
                 _ph["connect"] = time.monotonic()
+                if _owner is not None:
+                    await _await_mcp_servers_settled(client)    # #1220
                 await client.query(prompt)
                 _ph["query"] = time.monotonic()
                 async for sdk_msg in client.receive_response():
