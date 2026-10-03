@@ -228,3 +228,102 @@ async def test_the_unpinned_runner_still_exits_its_client_retains_and_deletes(ru
     for _ in range(3):
         await asyncio.sleep(0)
     assert len(runner_env.retains) == 1                          # the positive control retains
+
+
+# --- #1220: the stored tool is in the pinned turn's first request -----------------------------
+
+def test_pinned_builder_disallows_toolsearch_once_without_changing_ordinary_build(bound):
+    """#1220: with ToolSearch on the surface the pinned CLI defers every MCP tool,
+    and the pin denies the one ToolSearch that would load the stored tool, so
+    the turn ends ``no_call``. The pinned build takes ToolSearch off the
+    surface; an ordinary build of the same config keeps it (tools.py's
+    ``_SUBAGENT_SPAWN_TOOLS`` ruling)."""
+    cfg = _specialist_cfg()
+    build = _build_input(cfg, ResolutionResult(registry_valid=True, plugins=[]))
+    pinned = _pinned(_owner(build), tools_mod._build_specialist_options, cfg)
+    ordinary = tools_mod._build_specialist_options(cfg, resolution=build.resolution)
+    assert pinned.disallowed_tools.count("ToolSearch") == 1
+    assert ordinary.disallowed_tools.count("ToolSearch") == 0
+    # a config that already denies it: still exactly once on both
+    cfg.tools.disallowed = [*cfg.tools.disallowed, "ToolSearch"]
+    pinned = _pinned(_owner(build), tools_mod._build_specialist_options, cfg)
+    ordinary = tools_mod._build_specialist_options(cfg, resolution=build.resolution)
+    assert pinned.disallowed_tools.count("ToolSearch") == 1
+    assert ordinary.disallowed_tools.count("ToolSearch") == 1
+
+
+def _install_status(monkeypatch, h, statuses, order, *, cli_pid=None):
+    """``_install`` plus an MCP status sequence and an order log of the
+    client calls the runner makes."""
+    _install(monkeypatch, h, cli_pid=cli_pid)
+    base = tools_mod.ClaudeSDKClient
+    seq = list(statuses)
+
+    class _Client(base):
+        async def __aenter__(self):
+            order.append("enter")
+            return await super().__aenter__()
+
+        async def get_mcp_status(self):
+            order.append("status")
+            return seq.pop(0) if len(seq) > 1 else seq[0]
+
+        async def query(self, prompt):
+            order.append("query")
+            return await super().query(prompt)
+
+        async def __aexit__(self, *exc):
+            order.append("exit")
+            return await super().__aexit__(*exc)
+
+    monkeypatch.setattr(tools_mod, "ClaudeSDKClient", _Client)
+
+
+_PENDING = {"mcpServers": [{"name": "a", "status": "connected"},
+                           {"name": "b", "status": "pending"}]}
+_SETTLED = {"mcpServers": [{"name": "a", "status": "connected"},
+                           {"name": "b", "status": "connected"}]}
+
+
+async def test_pinned_runner_queries_once_after_all_servers_settle(runner_env):
+    """#1220: plugin MCP servers connect in the background, so a server still
+    starting contributes no tool to the pinned turn's first and only request.
+    The pinned runner asks for the MCP status and sends its one query only
+    when no server is still pending — the second server here, so a check of
+    the first entry alone would query early. An ordinary run never asks."""
+    cfg, monkeypatch = runner_env.cfg, runner_env.monkeypatch
+    cli = subprocess.Popen([sys.executable, "-c", "import time\nwhile True: time.sleep(1)"])
+    try:
+        h = _Harness()
+        order: list[str] = []
+        _install_status(monkeypatch, h, [_PENDING, _PENDING, _SETTLED], order, cli_pid=cli.pid)
+        build = _build_input(cfg, ResolutionResult(registry_valid=True, plugins=[]))
+        owner = _owner(build)
+        tok = tools_mod._pinned_run.set(owner)
+        try:
+            out = await _with_origin(
+                tools_mod._run_delegated_agent(cfg, "task", "", resolution=build.resolution),
+                _origin(stored_call={"run_id": "run-w", "runtime_name": "x", "canonical": "{}",
+                                     "label": "Yes"}))
+        finally:
+            tools_mod._pinned_run.reset(tok)
+        assert out.text == "answer"
+        assert len(h.launches) == 1
+        assert order == ["enter", "status", "status", "status", "query"]
+        assert await owner.finish() is True
+    finally:
+        try:
+            os.kill(cli.pid, 9)
+        except ProcessLookupError:
+            pass
+        cli.wait(timeout=5)
+
+    # the ordinary control: no status request, one query
+    h = _Harness()
+    order = []
+    _install_status(monkeypatch, h, [_PENDING], order)
+    out = await _with_origin(tools_mod._run_delegated_agent(cfg, "task", "", resolution=None),
+                             _origin())
+    assert out.text == "answer"
+    assert len(h.launches) == 1
+    assert order == ["enter", "query", "exit"]
