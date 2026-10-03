@@ -1,17 +1,58 @@
 {
   "name": "proposal-fixture",
-  "version": "0.2.0",
-  "description": "PLAY fixture for stored-call buttons: offer proposes a decision as buttons, apply records the tap it received, more pages the proposal twice and then reports no more entries; offer_hang and hang exercise the hung-call path.",
+  "version": "0.3.0",
+  "description": "PLAY fixture for stored-call buttons and S6: offer proposes a decision as buttons (with a 📎 Add a document button), apply records the tap it received, more pages the proposal twice and then reports no more entries; offer_hang and hang exercise the hung-call path; ingest_document records a handed-off file; the fixture-check job posts one line.",
   "casa": {
     "resultContract": {
       "version": 1,
       "tools": {
-        "offer": {"result": "capability", "provides": ["proposal"], "delivers": {"proposal": "operator_proposal"}},
-        "apply": {"result": "safe"},
-        "more": {"result": "capability", "provides": ["proposal"], "delivers": {"proposal": "operator_proposal"}},
-        "offer_hang": {"result": "capability", "provides": ["proposal"], "delivers": {"proposal": "operator_proposal"}},
-        "hang": {"result": "safe"}
+        "offer": {
+          "result": "capability",
+          "provides": [
+            "proposal"
+          ],
+          "delivers": {
+            "proposal": "operator_proposal"
+          }
+        },
+        "apply": {
+          "result": "safe"
+        },
+        "more": {
+          "result": "capability",
+          "provides": [
+            "proposal"
+          ],
+          "delivers": {
+            "proposal": "operator_proposal"
+          }
+        },
+        "offer_hang": {
+          "result": "capability",
+          "provides": [
+            "proposal"
+          ],
+          "delivers": {
+            "proposal": "operator_proposal"
+          }
+        },
+        "hang": {
+          "result": "safe"
+        },
+        "ingest_document": {
+          "result": "safe"
+        }
       }
-    }
+    },
+    "jobs": [
+      {
+        "name": "fixture-check",
+        "skill": "fixture-check",
+        "title": "Fixture check",
+        "summary": "Posts one line through the delivered slot so a scheduled job trigger can be seen to fire.",
+        "batches": 1,
+        "turnsPerBatch": 2
+      }
+    ]
   }
 }

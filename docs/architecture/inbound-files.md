@@ -78,6 +78,26 @@ after it is released, so a slow disk never stalls another arrival. An acknowledg
 deleted only by age: an hourly sweep removes files seven days after publication, dated from
 the Casa-generated name rather than from `mtime`, so nothing can re-date one.
 
+## A file for a specialist (S6)
+
+A file follows the same rule as a reply. The non-text handler resolves WHO the file is
+addressed to before it classifies it: a swipe-reply on a retained specialist post for this
+operator, or a live `📎 Add a document` arming in this chat ([`stored-call-buttons.md`](stored-call-buttons.md))
+— and otherwise the file is the default agent's, exactly as before. An addressed file is
+judged under one per-(chat, specialist) intake lock, from the eligibility check through the
+desk place, so two files to one specialist are filed in the order they were sent and a reload
+that removes the specialist during a download cannot store a second file for it: delegable now
+(`desk_target_ok`), an inbox for that specialist (provisioned at boot for every specialist the
+default agent declares as a delegate, and on a reload that adds one — a failure leaves that role
+without an inbox and redirects nothing), an accepted kind, the download into that specialist's
+own `/data/agent-inbox/<role>/ready/`, the post-download re-check, the specialist's desk place
+([`specialist-desk.md`](specialist-desk.md)). Then one desk turn of that specialist runs with a
+Casa-composed task — the file's name, kind, size and path, and the operator's caption as the
+operator's words — and the specialist lists its inbox, shares the file into the handoff folder
+and calls its plugin's ingest tool, as the default agent does today. Every refusal is one
+labelled notice, a completed event composed within the resident-echo cap, echoed to the
+resident in the same words; a routed file draws no channel reply of its own.
+
 ## Contracts & invariants
 
 **INV-INBOX-001**: `ready/` holds only regular, single-link files Casa wrote under a Casa-generated name — publication creates the file exclusively without following links and checks it by descriptor before an atomic rename through a pinned directory descriptor, and the sweep removes, logging at WARN, any other entry it finds.
@@ -90,14 +110,17 @@ What it does not cover: a process running as root in the same container can writ
 `ready/` directly, and in the window before the next sweep a planted link is admitted by the
 lexical prefix check. This is not a sandbox against such a process.
 
-**INV-INBOX-002**: The inbound-file read grant is exactly the Telegram default agent's `ready/` directory, appended to the readable list of every `path_scope` entry that agent resolves — the default bundle and an explicit hooks file alike — and it never adds a writable prefix or reaches any other agent.
+**INV-FILE-002**: A role's hooks carry the inbound-file read grant exactly for its own `ready/` directory, and its allowed tools the two inbound-file tools, when that role has an inbox — the Telegram default agent and the specialists it declares as delegates — appended to every `path_scope` readable list it resolves, both from the one constructor `agent_inbox.grants_for`; no role's grant reaches another role's folder, the grant never adds a writable prefix, and a role without an inbox resolves with nothing appended and neither tool selected.
 
 `staging/`, `meta/`, the role directory itself and paths that climb out of `ready/` stay
 denied, as does every other path the agent could not read before — the one separate
 admission, a session's own oversized tool results, is INV-MCP-012 in
 [`hook-resolution.md`](hook-resolution.md) and is not part of this grant. An inbox that fails to
-provision grants nothing, and uploads are then answered with the storage refusal. The
-delegated-specialist and in-casa executor hook builds pass no grant at all.
+provision grants nothing, and files for that role are refused with the storage line, never
+redirected. The in-casa executor hook build passes no grant at all. The tools are granted where
+a specialist's permissions are decided — its allowed list and the framework server's selected
+tools — not through the hook, since a specialist's tool permissions are derived separately from
+its hooks (S6).
 
 What it does not cover: the grant is standing rather than per turn, and a document once read
 stays in that session's history like any other tool result — a later turn of the same
@@ -124,46 +147,26 @@ outcome is unknown rather than that nothing was kept. Display metadata is writte
 publication and is best-effort: a missing display name falls back to Casa's name and is never
 a failure.
 
-**INV-INBOX-006**: Every non-text message posted in the operator's chat — any chat, when no chat id is configured — ends in a stored file or a reply, and none of them starts an agent turn.
+**INV-FILE-001**: A non-text message in the operator's chat is ADDRESSED to a specialist when it is a swipe-reply on a retained post of that specialist for this operator, or when it arrives while this operator's `📎` arming for that specialist is live; an addressed file is judged under the per-(chat, specialist) intake lock — delegable now, an inbox, an accepted kind, the download into THAT specialist's inbox, delegable still, a desk place — and starts exactly one desk turn of that specialist, never a resident turn; when any step refuses, the file is stored in no other inbox and the operator is told once, labelled, as a completed event; files addressed to one specialist from one chat take their desk places in the order they were sent; every non-text message addressed to nobody takes the path that existed before, and no non-text message starts a resident turn.
 
-The reply is an acknowledgement, a refusal that says why, or — when the outcome is unknown —
-the uncertainty reply. There is no silent list in that chat: chat notices such as a pin or a
-title change are answered too, with wording that does not call them files. An exception the
-handler did not anticipate draws the uncertainty reply rather than none, since it may have
-struck after publication. The handler is registered on new messages only, so an edited message
-or caption draws nothing, and its filter is disjoint from the text handler's, so each update
-reaches exactly one of them.
+The address is resolved before the classification refusal, synchronously, and an arming is
+consumed there whatever follows; the default agent's path is byte for byte what it was,
+including its reply (an acknowledgement, a refusal that says why, or the uncertainty reply).
+A routed file draws no channel reply of its own: the desk turn's labelled reply, or the one
+labelled notice when no turn runs, is what the operator sees — the specialist is not
+delegable (nothing downloaded), it has no inbox (nothing downloaded), the kind is not one the
+inbox reads, the upload was refused (Casa's own past-event line per outcome — an uncertain save
+claims neither kept nor lost, INV-INBOX-005 — never the default agent's first-person reply),
+delegability was lost at the post-download check (stored), the desk was full when the place
+was requested (stored), or the desk is faulted (stored). The desk turn's task is Casa-composed
+— the file's name, kind, size and path in the specialist's inbox, and the operator's caption as
+the operator's words — and the specialist files it with its own tools, as the default agent
+does today. The resident learns of each outcome by the same body-free line.
 
-Outside that chat the channel follows its text path. An update from any other chat is logged
-and dropped, never answered. In the engagement supergroup only a person's content draws the
-reply pointing at the direct chat; topic notices — many of them caused by Casa's own topic
-actions — and bot messages draw nothing.
+What it does not cover: a file sent in an engagement topic (refused today, unchanged); files
+for residents other than the Telegram default agent; a `📎` arming across a restart (memory-only,
+like the proposal keyboards — the next file is the default agent's).
 
-What it does not cover: a reply whose send fails is logged and not retried — except for
-Telegram's flood control, whose stated wait is honoured once, capped at ten seconds.
-
-**The tool reports; it does not read.** `list_inbound_files` takes no arguments and returns,
-newest first, each file's display name, kind, size, age and absolute path, and states that
-listing a file is not reading it. It resolves the inbox of the agent executing the turn — the
-origin's `execution_role`, falling back to `role` — so any agent without an inbox, including an
-agent the Telegram default agent delegated to, is told it has no inbound files and is shown no
-path (INV-HANDOFF-004). Casa never matches the operator's wording against filenames:
-with several candidates the agent lists them and asks. Listing is also what arms the
-disclosure: the tool registers the files it listed on the turn's scope, and a successful
-`Read` of any one of them — recorded by the read-evidence hooks, never inferred from the
-model's text — discharges it.
-
-**What this does not claim.** Nothing stops the agent describing a file it did not open —
-nothing is held — but it no longer passes unremarked for a listed file: a turn that listed
-files and read none has a Casa line at the head of every model-text emission committed after
-the listing, and a payload it stores for a later turn carries the same line as a note
-(INV-OUT-002, INV-OUT-003 in [`output-boundary.md`](output-boundary.md)). The gap that
-remains is the unlisted file: a reply about a file the turn never listed and never tried to
-read, or a message sent before the turn's first listing, gets no line, and the SDK
-transcript and retained memory hold the model's text without one. Page
-count and read cost are not bounded — only bytes are; a PDF over the model's page limit fails
-to read, and the agent says it could not open it. And, as stated under INV-INBOX-001, this is
-not a sandbox against a root process in the same container.
 
 ## Failure behavior
 
@@ -180,7 +183,7 @@ own refusal.
 `ready/` is unchanged.
 
 **The directory flush fails after publication, or the upload fails unexpectedly.** The
-uncertainty reply is sent (INV-INBOX-005, INV-INBOX-006). Sending the file again is always safe: a re-send is a new file under a new
+uncertainty reply is sent (INV-INBOX-005, INV-FILE-001). Sending the file again is always safe: a re-send is a new file under a new
 name.
 
 **The folder is full.** The refusal says the oldest files go after seven days and offers to
@@ -220,14 +223,25 @@ app documentation spells the period out and changes with them.
 - `casa/rootfs/opt/casa/channels/telegram.py::_inbound_reply`
 - `casa/rootfs/opt/casa/tools.py::list_inbound_files`
 - `casa/rootfs/opt/casa/hooks.py::resolve_hooks`
+- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._file_address`
+- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._route_addressed_file`
+- `casa/rootfs/opt/casa/agent_inbox.py::grants_for`
+- `casa/rootfs/opt/casa/agent_inbox.py::provision_delegate_inboxes`
+- `casa/rootfs/opt/casa/specialist_desk.py::file_outcome`
 
 **Tests**
 - `tests/test_agent_inbox.py`
 - `tests/test_inbound_files.py`
+- `tests/test_file_handoff_route.py`
+- `tests/test_file_handoff_grants.py`
+- `tests/test_file_handoff_inboxes.py`
+- `tests/test_file_handoff_lines.py`
 
 **Related**
 - [`architecture/telegram.md`](../architecture/telegram.md)
 - [`architecture/hook-resolution.md`](../architecture/hook-resolution.md)
 - [`architecture/tools-interface.md`](../architecture/tools-interface.md)
 - [`architecture/persistent-state.md`](../architecture/persistent-state.md)
+- [`architecture/specialist-desk.md`](../architecture/specialist-desk.md)
+- [`architecture/stored-call-buttons.md`](../architecture/stored-call-buttons.md)
 <!-- END SOURCEMAP -->

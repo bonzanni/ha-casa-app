@@ -1,6 +1,14 @@
 # Manifest shard (#367, split #978) — architecture documents T-Z. Loaded with the root
 # docs/manifest.yaml by scripts/verify_docs.py; same entry format.
 
+- doc: architecture/telegram-failures.md
+  summary: The Telegram channel's failure behavior — wrong or missing webhook secrets, duplicate updates, unavailable transports and the other wrong-input paths; split out of telegram.md at the corpus ceiling (#1206).
+  when_changing: what the Telegram channel does on a wrong secret, a duplicate or late update, a missing public URL, or any other failed or refused input
+  tests:
+    - tests/test_telegram_update_handler.py
+    - tests/test_telegram_reconnect.py
+  related: [architecture/telegram.md, architecture/http-surface.md]
+
 - doc: architecture/telegram.md
   summary: How Telegram messages become turns — transports, authentication, the per-topic causal log, and keyboards.
   when_changing: Telegram transport, callback namespaces, topic output ordering, or the outbound request boundary
