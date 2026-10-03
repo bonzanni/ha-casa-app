@@ -1248,6 +1248,71 @@ async def test_report_courier_delegation_to_another_agent_marks_retryable(
 
 
 @pytest.mark.asyncio
+async def test_listed_uncalled_resident_retries_to_exhaustion(wired):
+    # #1012: a listed-but-uncalled resident setup tool evidences nothing. The
+    # report runs from the turn's `finally`, before the reply is admitted or
+    # delivered, so a silent, empty, undelivered and delivered reply all hand
+    # it these same inputs: the row returns to pending under the bounded
+    # budget, a later worker pass re-dispatches, exhaustion stops it.
+    import asyncio
+    ep = await _dispatched(wired)
+    expected = [
+        # retries, pending, failed, dispatches, notes, dispatches after pass
+        (1, 1, 0, 1, 0, 2),
+        (2, 1, 0, 2, 0, 3),
+        (3, 0, 1, 3, 1, 3),
+    ]
+    for retries, pending, failed, sent, notes, sent_after in expected:
+        pse.report_dispatch_outcome(
+            ep["id"], tools_used_ok=set(), tools_attempted=set(),
+            available_tools={_NS, "Read"})
+        await asyncio.sleep(0)  # let a scheduled exhaustion note run
+        rows = pse.episodes()
+        assert int(rows[0].get("execution_retries") or 0) == retries
+        assert len(pse.episodes("pending")) == pending
+        assert sum(r.get("gate") == "released" for r in rows) == 1
+        assert len(pse.episodes("failed")) == failed
+        assert len(wired["dispatches"]) == sent
+        assert len(wired["notes"]) == notes
+        await pse._worker_pass()
+        assert len(wired["dispatches"]) == sent_after
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("arm", ["resident", "courier"])
+async def test_consumed_dispatch_sentence(wired, arm):
+    # #1183: a consumed obligation must stop reading as in flight. Only the
+    # resident arm evidenced a setup-tool result; the courier arm evidenced a
+    # delegation to its own target, never the specialist's run.
+    from tools import _episode_sentence
+    if arm == "resident":
+        ep = await _dispatched(wired)
+        inputs = dict(tools_used_ok={_NS}, tools_attempted={_NS},
+                      available_tools={_NS}, delegated_ok_targets=set())
+    else:
+        ep = await _courier_dispatched(wired)
+        inputs = dict(tools_used_ok={_COURIER}, tools_attempted={_COURIER},
+                      available_tools={_COURIER},
+                      delegated_ok_targets={"finance"})
+    assert _episode_sentence(pse.episodes()[0]).count(
+        "setup is running") == 1
+    pse.report_dispatch_outcome(ep["id"], **inputs)
+    line = _episode_sentence(pse.episodes()[0])
+    assert line.count("setup is running") == 0
+    assert line.count("setup ran") == (1 if arm == "resident" else 0)
+    assert line.count("setup was handed to 'finance'") == (
+        0 if arm == "resident" else 1)
+    await pse._worker_pass()
+    assert len(wired["dispatches"]) == 1
+    assert int(pse.episodes()[0].get("execution_retries") or 0) == 0
+    assert len(wired["notes"]) == 0
+    pse._update_episode(ep["id"], settled_by="turn_evidence",
+                        settled_role="finance")
+    line = _episode_sentence(pse.episodes()[0])
+    assert line.count("setup ran ('finance' ran the setup tool itself)") == 1
+
+
+@pytest.mark.asyncio
 async def test_report_courier_tool_available_unattempted_marks_retryable(wired):
     # Diff rounds 1 and 2 (Astra S1 twice, same shape): the resident rule
     # "listed but uncalled ⇒ consumed" leaked a silent spend through a
