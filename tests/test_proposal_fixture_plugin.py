@@ -3,7 +3,8 @@ manifest validates and declares the three tools (`offer` and `more` deliver
 `operator_proposal`; `apply` is safe), its server speaks stdio JSON-RPC,
 deposits its proposals through the REAL broker deposit route and records what
 `apply` received into the plugin data directory, and `more` pages twice before
-the contract's no-post shape.
+the contract's no-post shape. `offer_hang` deposits a one-button proposal naming
+`hang`, the stored call that never returns (never called here).
 """
 from __future__ import annotations
 
@@ -40,13 +41,14 @@ def test_the_manifest_validates_and_declares_offer_apply_and_more():
     manifest = validate_manifest(ROOT, NAME)
     contract = manifest_result_contract(manifest)
     tools = contract["tools"]
-    assert set(tools) == {"offer", "apply", "more"}
-    for name in ("offer", "more"):
+    assert set(tools) == {"offer", "apply", "more", "offer_hang", "hang"}
+    for name in ("offer", "more", "offer_hang"):
         assert tools[name]["result"] == "capability"
         assert tools[name]["provides"] == ["proposal"]
         assert tools[name]["delivers"] == {"proposal": "operator_proposal"}
         assert tools[name]["consumes"] == {}
-    assert tools["apply"]["result"] == "safe" and tools["apply"]["consumes"] == {}
+    for name in ("apply", "hang"):
+        assert tools[name]["result"] == "safe" and tools[name]["consumes"] == {}
     servers = mcp_servers_map(ROOT / ".mcp.json")
     assert list(servers) == ["fixture"] and servers["fixture"]["command"] == "python3"
     assert reserved_env_violations(ROOT / ".mcp.json") == []
@@ -124,7 +126,7 @@ async def test_the_server_offers_applies_and_pages_through_the_real_deposit_rout
         init = await srv.call("initialize", {"protocolVersion": "2024-11-05", "capabilities": {}})
         assert "tools" in init["capabilities"]
         listed = await srv.call("tools/list")
-        assert {t["name"] for t in listed["tools"]} == {"offer", "apply", "more"}
+        assert {t["name"] for t in listed["tools"]} == {"offer", "apply", "more", "offer_hang", "hang"}
         # offer: a proposal deposited through the broker, validated by the deposit rule
         _open(store, cmap, "offer", "call-offer")
         out = await srv.tool("offer", {})
@@ -153,6 +155,14 @@ async def test_the_server_offers_applies_and_pages_through_the_real_deposit_rout
         assert p2["buttons"][-1]["call"]["arguments"]["page"] == more_args["page"] + 1
         last = await srv.tool("more", p2["buttons"][-1]["call"]["arguments"])
         assert last == {"proposal": None, "note": "no more entries"}
+        # offer_hang: one button naming hang, admitted by the same deposit rule
+        store.close_call("c1", "call-more")
+        _open(store, cmap, "offer_hang", "call-hang")
+        hang = await srv.tool("offer_hang", {})
+        hp = store._refs[hang["proposal"]].proposal
+        assert [b["label"] for b in hp["buttons"]] == ["Hang"]
+        assert hp["buttons"][0]["call"]["wire_name"] == "hang"
+        assert hp["buttons"][0]["call"]["arguments"] == {"render_id": "r-1"}
     finally:
         proc.stdin.close()
         try:
