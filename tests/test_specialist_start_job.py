@@ -58,6 +58,14 @@ async def start_as(origin, job="ledger:classify"):
         agent.origin_var.reset(token)
 
 
+def _the_live_record(runtime):
+    """The one record the start created — found in the registry, since a
+    specialist's own start never returns its engagement id (#1229)."""
+    live = runtime.registry.active_and_idle()
+    assert len(live) == 1, live
+    return live[0]
+
+
 @pytest.fixture
 def finance_is_specialist(runtime):
     runtime.cfg.kind = "specialist"
@@ -81,7 +89,7 @@ async def test_a_specialist_turn_starts_its_own_job_hosted_on_itself(
     assert result["status"] == "pending", result
     assert result["agent"] == "finance" and result["job"] == "ledger:classify"
     await tools.drain_launch_turns()
-    rec = runtime.registry.get(result["engagement_id"])
+    rec = _the_live_record(runtime)
     assert (rec.kind, rec.role_or_type) == ("specialist", "finance")
     assert rec.origin["plugin_job"] == {"plugin": "ledger"}
     # the work's origin: the turn's resident, chat and clearance, at depth 1,
@@ -102,7 +110,7 @@ async def test_a_member_turn_starts_the_job_at_the_members_clearance(
     result = await start_as(_delegated_turn_origin(clearance="household"))
     assert result["status"] == "pending", result
     await tools.drain_launch_turns()
-    rec = runtime.registry.get(result["engagement_id"])
+    rec = _the_live_record(runtime)
     assert rec.origin["_origin_clearance"] == "household"
     assert _counts(runtime) == (1, 1, 1, 0)
 
@@ -293,6 +301,8 @@ async def test_a_specialists_own_start_during_its_jobs_pending_terminal_write_is
         with pytest.raises(OSError):
             await transition
         monkeypatch.setattr(reg, "_write_tombstone", real_write)
-    assert (result.get("kind"), result.get("engagement_id")) == ("job_busy", rec.id), result
+    # #1229: a specialist's own start names no internal id, refusals included
+    assert result.get("kind") == "job_busy", result
+    assert "engagement_id" not in result and "topic_id" not in result, result
     assert rec.status == "active"
     assert _counts(runtime) == (1, 0, 0, 0)

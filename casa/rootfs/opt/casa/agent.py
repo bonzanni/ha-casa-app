@@ -350,19 +350,31 @@ def _render_jobs_block(caller_role, delegates, registry, *, live_names=None,
             return live_names.get(role, role)
         return registry.role_to_name(role) if registry is not None else role
 
-    from background_jobs import startable_jobs
+    from background_jobs import own_job_hosts, startable_jobs
     visible_roles = [delegate.agent for delegate in delegates
                      if _known(delegate.agent)]
     jobs = startable_jobs(caller_role, visible_roles)
     if not jobs:
         return ""
+    # #1228: a delegate's job is shown as ITS OWN to start only when the
+    # delegate's own start would accept it — the plugins it loads now, after
+    # the env withholding every session build applies (``own_job_hosts``);
+    # one resolution per delegate per render
+    own: dict[str, set[str]] = {}
     lines = ["<jobs>"]
     for host in jobs:
         job = host.decl
+        name = _display_name(host.role)
+        if host.kind == "specialist" and host.role not in own:
+            own[host.role] = {h.decl.qualified_name for h in own_job_hosts(host.role)}
         if host.kind == "resident":
-            location = f"runs as a plugin job in {_display_name(host.role)}'s topic"
+            location = f"runs as a plugin job in {name}'s topic"
+        elif job.qualified_name in own[host.role]:
+            location = (f"{name}'s own job: in text, ask {name} with a sync "
+                        f"delegation; {name} starts it itself and it runs in "
+                        f"{name}'s topic")
         else:
-            location = f"runs in {_display_name(host.role)}'s topic"
+            location = f"runs in {name}'s topic"
         lines.append(
             f"- {job.qualified_name} — {job.title}: "
             f"{job.summary or job.title} "

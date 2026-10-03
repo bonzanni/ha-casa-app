@@ -6851,8 +6851,9 @@ async def start_scheduled_job(role: str, trig: Any) -> None:
 @tool(
     "start_job",
     "Start a background job: one listed in <jobs>, or, for a specialist, one its own "
-    "plugins declare. It runs in batches in its own topic, and the chat's resident is "
-    "notified when it ends.",
+    "plugins declare. A job <jobs> lists as a delegate's own is started by delegating the "
+    "request to that delegate. It runs in batches in its own topic, and the chat's "
+    "resident is notified when it ends.",
     {"job": str, "task": str, "context": str},
 )
 async def start_job(args: dict) -> dict:
@@ -6889,6 +6890,11 @@ async def start_job(args: dict) -> dict:
     result = await _start_job_on_host(host, args.get("task", ""), args.get("context", "") or "", origin,
                                       **({"self_host": True} if self_host else {}))
     payload = json.loads(result["content"][0]["text"])
+    if self_host:
+        # #1229: a specialist relays its own start to the operator; the ids are
+        # Casa's, not theirs — every result names the job and its topic instead
+        payload.pop("engagement_id", None)
+        payload.pop("topic_id", None)
     if payload.get("kind") == "busy":
         payload["message"] = "Casa is at its concurrent-work limit. Try again shortly."
         return _result(payload)
@@ -6898,7 +6904,7 @@ async def start_job(args: dict) -> dict:
             message=f"Started {job.title}. Progress appears in "
                     f"{_display_name_for_role(role)}'s topic.")
         return _result(payload)
-    return result
+    return _result(payload) if self_host else result
 
 
 @tool(

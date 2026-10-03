@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.344.7] - 2026-10-04
+
+### Fixed
+
+- When you ask the assistant in your direct chat to have a specialist run a job
+  that one of the specialist's own plugins declares, she now passes the request
+  to that specialist, which starts the job on itself. Before, she started the
+  job herself, and if you asked her to delegate it she said, wrongly, that a
+  delegation could not run the job. She can still start such a job herself if
+  the specialist reports that it could not.
+- On a voice call the assistant no longer offers to start a background job. Jobs
+  start only from text, and she asks you to make the request there.
+- A specialist that starts one of its own jobs no longer shows you an internal
+  engagement id in its reply.
+
 ## [0.344.6] - 2026-10-04
 
 ### Fixed

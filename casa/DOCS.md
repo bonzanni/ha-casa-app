@@ -414,7 +414,10 @@ sitting there.
 A specialist can also start its own plugins' jobs itself (v0.344.0). When you reply
 to one of its posts, or the assistant passes it your request, and the work is a job
 one of its own plugins declares, it starts that job on itself — never another
-agent's job — and the assistant still tells you how it ended. A button never starts
+agent's job — and the assistant still tells you how it ended. Asked in text for such
+a job, the assistant passes the request to that specialist rather than starting it
+herself; she starts it only if the specialist reports it could not. Jobs do not
+start from a voice call: ask in text. A button never starts
 a job: ask for the work in words. When the specialist has already posted its answer
 to your chat, the assistant does not repeat it.
 
