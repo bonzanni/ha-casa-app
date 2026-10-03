@@ -6614,7 +6614,7 @@ async def start_scheduled_job(role: str, trig: Any) -> None:
     async def tell(reason: str) -> None:
         line = sd.bounded_line('{label}: "{title}" did not start — ' + reason,
                                label=label, fields={"title": title})
-        channel = _telegram_channel()
+        channel = _channel_manager.get("telegram") if _channel_manager is not None else None
         try:
             if channel is not None:
                 await channel.deliver_desk_notice(chat_id, line)
@@ -6681,6 +6681,7 @@ async def start_job(args: dict) -> dict:
             "status": "error", "kind": "job_not_declared",
             "message": "Startable jobs: " + (", ".join(names) or "none"),
         })
+    role, job = host.role, host.decl
     result = await _start_job_on_host(host, args.get("task", ""), args.get("context", "") or "", origin)
     payload = json.loads(result["content"][0]["text"])
     if payload.get("kind") == "busy":

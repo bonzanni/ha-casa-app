@@ -111,8 +111,10 @@ clock correction cannot delete a legitimate file.
 
 The executing agent is the origin's `execution_role`, falling back to `role`. A delegated
 agent carries its caller's `role` and its own `execution_role`, so keying on `role` alone
-would hand a delegate its caller's files; keyed on the executing agent, a delegate is told
-it has no inbound files, whatever path it passes.
+would hand a delegate its caller's files; keyed on the executing agent, a delegate sees only
+its own inbox. A specialist the Telegram default agent declares as a delegate has one, holding
+the files the operator addressed to it ([`inbound-files.md`](inbound-files.md)); any other
+delegate is told it has no inbound files, whatever path it passes.
 
 ## Failure behavior
 

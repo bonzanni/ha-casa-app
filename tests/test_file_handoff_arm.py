@@ -96,3 +96,33 @@ async def test_a_failed_keyboard_edit_on_an_arm_tap_sends_exactly_the_past_fact_
 async def test_an_index_beyond_the_options_is_invalid_even_with_a_none_call_slot(tap_env):
     tap_env.register(meta=_mixed_meta())
     assert await _tap(tap_env, _cq(data=f"v1|proposal|{RID}|2")) == "invalid"
+
+
+async def test_a_later_arming_replaces_the_earlier_one_and_sends_nothing(tap_env):
+    from test_proposal_tap import _meta
+    tap_env.register(meta=_mixed_meta())
+    assert await _tap(tap_env, _cq(data=f"v1|proposal|{RID}|1")) == "✔"
+    await _settle()
+    rid2 = "e" * 32
+    meta = _meta(**_mixed_meta(), role="travel", label="✈️ Travel", message_id=502)
+    meta["deadline"] = asyncio.get_running_loop().time() + 3600
+    req, _ = tap_env.broker.register(namespace="proposal", scope=f"proposal:{OPERATOR}",
+                                     request_id=rid2, timeout_s=3600, detached=True, meta=meta)
+    tap_env.broker.set_finish_hook(req, tap_env.ch.proposal_finish_hook(rid=rid2, req=req))
+    assert await _tap(tap_env, _cq(data=f"v1|proposal|{rid2}|1", message_id=502)) == "✔"
+    await _settle()
+    assert tap_env.ch._armings[OPERATOR]["role"] == "travel"         # the later one won
+    assert tap_env.bot.sent == []                                     # still no message (R4-1)
+
+
+def test_only_the_tap_commit_writes_an_arming_and_only_a_file_consumes_it():
+    """A text message leaves the arming: the slot is written at exactly one site (the
+    `arm_file` commit) and removed at exactly one (the non-text message's address step)."""
+    import inspect
+    import re
+    import channels.telegram as tg
+    src = inspect.getsource(tg)
+    sites = [m.group(0) for m in re.finditer(r"self\._armings(?:\[chat\] =|\.\w+\()", src)]
+    assert sites == ["self._armings[chat] =", "self._armings.pop("], sites
+    pop_owner = src[:src.index("self._armings.pop(")].rsplit("    def ", 1)[1].split("(", 1)[0]
+    assert pop_owner == "_file_address"

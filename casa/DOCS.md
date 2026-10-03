@@ -411,6 +411,27 @@ runs per installed plugin. Casa checks open jobs once a minute and restarts one 
 has stalled; a job it cannot get moving again is ended and reported rather than left
 sitting there.
 
+**A scheduled job (v0.343.0).** A schedule can start a plugin job directly instead of
+asking the assistant to. In the assistant's `triggers.yaml`, a `cron`, `interval` or
+`date` entry carries `job: <plugin>:<job>` in place of a prompt, with an optional `task`
+and `context`:
+
+```yaml
+- name: monthly-books
+  type: cron
+  schedule: "0 7 1 * *"
+  channel: telegram
+  job: finance-plugin:month-close
+  task: Close last month's books.
+```
+
+When it fires the job simply starts, as if you had asked for it: no assistant turn runs
+first. The job runs with your own access and posts in its topic as usual. A job entry
+must use `channel: telegram` and may not carry `clearance`. The Configurator refuses a job
+the assistant cannot start. If the job cannot start when its time comes — its plugin was
+unassigned, the same job is still running, Casa was at its work limit — you get one
+labelled line saying it did not start and why, and it tries again at the next occurrence.
+
 ### Sending files to the assistant (v0.325.0)
 
 Send the assistant a PDF, a photo, or a text or CSV file in your direct chat and she
@@ -422,7 +443,9 @@ Files can be up to 8 MB, and she holds up to 50 files and 200 MB in all. When th
 full a new file is refused rather than an old one dropped — the oldest go after seven days.
 Anything else you send, such as a sticker, a voice message, a `.zip` or a `.docx`, gets
 a short reply saying what she can take. Files work only in the direct chat, not in
-engagement topics, and only the assistant can read them.
+engagement topics, and only the assistant can read them — except a file you send to a
+specialist on purpose, which goes to that specialist instead (see *A file for a specialist*
+below).
 
 Plugins pass files to one another through a folder Casa manages, where each file is kept
 seven days and then removed; when the folder is full, a new file is refused rather than an
@@ -1215,6 +1238,25 @@ above it. A proposal expires after an hour; at most 32 live ones per chat. The
 assistant learns only that you tapped and whether it applied. Typing your
 answer as a reply to the proposal still works as before. Needs Casa 0.342.0 or
 later.
+
+#### A file for a specialist (v0.343.0)
+
+A file follows the same rule as a reply. Send a PDF or photo as a swipe-reply on a
+specialist's post, and it goes into that specialist's own file inbox — not the
+assistant's — and starts one specialist turn about it, with your caption as your words.
+A plugin can also put a `📎 Add a document` button on its proposal (a button with
+`"arm_file": true` instead of a call); tap it, and the next file you send in that chat
+within ten minutes goes to that specialist the same way. The tap only ticks the button;
+no message follows it. A later 📎 tap replaces the earlier one, a text message leaves it
+waiting, and a restart forgets it.
+
+The specialist can read and share only its own inbox; the assistant keeps hers. Files the
+specialist could not take — not a kind it reads, its inbox full, the specialist no longer
+assigned to the assistant — are never passed to the assistant instead: you get one
+labelled line saying what happened, and a file already saved stays in the specialist's
+inbox. The turn's lines start with what happened to the file: `📊 Finance received your
+file statement.pdf; answered (1 page).` Files sent any other way go to the assistant as
+before.
 
 #### Links a plugin needs from you: the vault drop-off (v0.330.0)
 

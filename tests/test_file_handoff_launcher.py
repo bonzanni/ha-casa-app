@@ -11,7 +11,6 @@ import pytest
 import background_jobs as jobs
 import tools as tools_mod
 
-pytestmark = pytest.mark.asyncio
 
 
 def test_start_job_has_no_launch_path_of_its_own():
@@ -50,6 +49,7 @@ async def _drive(monkeypatch, host, *, raise_launch=False):
     return seen, released, out
 
 
+@pytest.mark.asyncio
 async def test_a_specialist_host_is_pinned_before_the_launch_and_passes_no_plugin_host(monkeypatch):
     seen, released, out = await _drive(monkeypatch, _host("specialist"))
     assert seen["plugin_job_at_launch"] == {"plugin": "probe"}      # set BEFORE the launch awaited
@@ -57,6 +57,7 @@ async def test_a_specialist_host_is_pinned_before_the_launch_and_passes_no_plugi
     assert released == ["probe"] and out is not None
 
 
+@pytest.mark.asyncio
 async def test_a_resident_host_passes_itself_as_plugin_host_and_pins_nothing(monkeypatch):
     host = _host("resident", role="assistant")
     seen, released, out = await _drive(monkeypatch, host)
@@ -64,11 +65,13 @@ async def test_a_resident_host_passes_itself_as_plugin_host_and_pins_nothing(mon
     assert released == ["probe"]
 
 
+@pytest.mark.asyncio
 async def test_the_claim_is_released_even_when_the_launch_raises(monkeypatch):
     seen, released, out = await _drive(monkeypatch, _host("specialist"), raise_launch=True)
     assert released == ["probe"] and out is None
 
 
+@pytest.mark.asyncio
 async def test_a_refused_claim_returns_the_refusal_and_launches_nothing(monkeypatch):
     launched = []
 

@@ -99,6 +99,20 @@ final text is silent posts no reply. A turn with no proven operator-visible outc
 an empty answer with no proven post and no delivered media, a refused permit, a full queue,
 an abort, an exception, a failed reply send — ends in ONE labelled, body-free Casa notice.
 
+**A file can start a desk turn too.** A file the operator sends as a swipe-reply on a
+specialist's post, or after a `📎` tap on its proposal, is stored in that specialist's own
+inbox and starts one desk turn whose task Casa composes from the file's name and the caption
+([`inbound-files.md`](inbound-files.md)). It is the same use of the same desk; only its lines
+differ: every line it records carries the receipt first, such as `📊 Finance received your
+file statement.pdf; answered (1 page).`, and a failed run says `… could not handle your file
+statement.pdf (<kind>).`
+
+**Every line a desk turn records goes through one emitter.** The notice to the operator and
+the resident's echo are the same string, composed once by `bounded_line`, which keeps the
+label and the outcome whole and clips only the display fields (a file name, a job title) to
+fit the 120-character echo line. Nothing else in the desk turn sends a notice or writes the
+echo. Every such line states a past or standing fact: what happened, never what will.
+
 **The resident learns, without a turn.** Each desk turn leaves one Casa line on the chat's
 echo ledger (`📊 Finance answered your reply (2 pages).`, `… could not handle your reply
 (specialist_turn_limit).`), with the delivered-slot echo lines of any post the turn made; the
@@ -153,7 +167,8 @@ webhook turn, another chat), a job batch, and a voice turn touch no desk.
 
 **The queue is full, the permit is refused, the run raises, is aborted by the CLI, or
 exceeds the ceiling.** No reply post; one labelled, body-free notice (`📊 Finance could not
-handle your reply (<kind>).`, `📊 Finance is busy; try again in a moment.`); the echo line says
+handle your reply (<kind>).`, `📊 Finance's desk was full when the place was requested.`,
+`📊 Finance was at its concurrent-work limit when the turn was attempted.`); the echo line says
 the same; a failed run is still logged as an exchange with the `[no reply]` marker.
 
 **The turn ends with no proven operator-visible outcome.** The same notice shape (`📊 Finance
@@ -169,7 +184,8 @@ link to your chat.`, `… sent you a file.`, `… asked you a question.`, `… s
 message.`), never from a body; a message or file post is echoed once, by its S3 line.
 
 **The reply post is not proven.** The exchange is logged (the specialist did answer; a retry
-would re-run it), the notice says `📊 Finance answered; the reply did not go out.`, no retry;
+would re-run it), the notice says `📊 Finance answered; complete delivery could not be
+confirmed.` (some pages may have landed), no retry;
 if the notice itself fails, nothing more is attempted.
 
 **A reply whose quoted message is not retained, by a non-operator, on the resident's own post,
@@ -177,7 +193,9 @@ or in a chat whose id does not normalise.** Today's path, untouched.
 
 **An approval continuation whose desk is no longer delegable, or whose approver is not the
 operator.** One labelled notice (`… could not continue (not delegable).`), the same line in
-the echo, no specialist run; the pending grant expires.
+the echo, no specialist run; the pending grant expires. The same check — the specialist is
+still one the resident may delegate to, not merely loaded — runs under the lock before every
+desk turn, a file's included.
 
 **Casa restarts.** The map, the desks and the echo ledger are gone; the next reply on an
 older post is a plain message to the resident; the next desk turn starts a fresh log.
@@ -188,9 +206,6 @@ older post is a plain message to the resident; the next desk turn starts a fresh
 lock and queue, the stored call its task, and a desk whose pinned run could not be confirmed
 terminated is *faulted* — every later use refused until restart
 ([`stored-call-buttons.md`](stored-call-buttons.md)).
-
-**A file sent as a reply** (a later slice) routes through the same post map and the same
-conditions, into the specialist's inbox.
 
 **The idle bound** is a module constant until tuning has an evidence base; an app option
 follows.
@@ -219,9 +234,12 @@ follows.
 - `tests/test_desk_delegation.py`
 - `tests/test_desk_continuation.py`
 - `tests/test_desk_echo_prompt.py`
+- `tests/test_file_handoff_turn.py`
+- `tests/test_file_handoff_lines.py`
 
 **Related**
 - [`architecture/plugin-delivered-slots.md`](../architecture/plugin-delivered-slots.md)
+- [`architecture/inbound-files.md`](../architecture/inbound-files.md)
 - [`architecture/delegation.md`](../architecture/delegation.md)
 - [`architecture/plugin-authorization.md`](../architecture/plugin-authorization.md)
 - [`architecture/telegram.md`](../architecture/telegram.md)

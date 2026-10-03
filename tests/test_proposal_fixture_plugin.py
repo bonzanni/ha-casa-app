@@ -5,6 +5,10 @@ deposits its proposals through the REAL broker deposit route and records what
 `apply` received into the plugin data directory, and `more` pages twice before
 the contract's no-post shape. `offer_hang` deposits a one-button proposal naming
 `hang`, the stored call that never returns (never called here).
+
+S6 additions: every `offer`/`more` page carries a `📎 Add a document` arm button,
+`ingest_document` records a handed-off file, and the manifest declares the
+`fixture-check` job a scheduled job trigger can start.
 """
 from __future__ import annotations
 
@@ -41,13 +45,13 @@ def test_the_manifest_validates_and_declares_offer_apply_and_more():
     manifest = validate_manifest(ROOT, NAME)
     contract = manifest_result_contract(manifest)
     tools = contract["tools"]
-    assert set(tools) == {"offer", "apply", "more", "offer_hang", "hang"}
+    assert set(tools) == {"offer", "apply", "more", "offer_hang", "hang", "ingest_document"}
     for name in ("offer", "more", "offer_hang"):
         assert tools[name]["result"] == "capability"
         assert tools[name]["provides"] == ["proposal"]
         assert tools[name]["delivers"] == {"proposal": "operator_proposal"}
         assert tools[name]["consumes"] == {}
-    for name in ("apply", "hang"):
+    for name in ("apply", "hang", "ingest_document"):
         assert tools[name]["result"] == "safe" and tools[name]["consumes"] == {}
     servers = mcp_servers_map(ROOT / ".mcp.json")
     assert list(servers) == ["fixture"] and servers["fixture"]["command"] == "python3"
@@ -126,15 +130,17 @@ async def test_the_server_offers_applies_and_pages_through_the_real_deposit_rout
         init = await srv.call("initialize", {"protocolVersion": "2024-11-05", "capabilities": {}})
         assert "tools" in init["capabilities"]
         listed = await srv.call("tools/list")
-        assert {t["name"] for t in listed["tools"]} == {"offer", "apply", "more", "offer_hang", "hang"}
+        assert {t["name"] for t in listed["tools"]} == {"offer", "apply", "more", "offer_hang", "hang",
+                                                       "ingest_document"}
         # offer: a proposal deposited through the broker, validated by the deposit rule
         _open(store, cmap, "offer", "call-offer")
         out = await srv.tool("offer", {})
         ref = out["proposal"]
         assert rb.is_reference(ref)
         proposal = store._refs[ref].proposal
-        assert [b["label"] for b in proposal["buttons"]] == ["Yes", "No", "More"]
-        assert [b["call"]["wire_name"] for b in proposal["buttons"]] == ["apply", "apply", "more"]
+        assert [b["label"] for b in proposal["buttons"]] == ["Yes", "No", "More", "📎 Add a document"]
+        assert [b["call"]["wire_name"] for b in proposal["buttons"][:3]] == ["apply", "apply", "more"]
+        assert proposal["buttons"][3] == {"label": "📎 Add a document", "arm_file": True}
         assert proposal["buttons"][2]["call"]["proposal"] is True
         yes = proposal["buttons"][0]["call"]["arguments"]
         # apply: records what it received and answers with a receipt the operator can read
@@ -152,8 +158,9 @@ async def test_the_server_offers_applies_and_pages_through_the_real_deposit_rout
         page2 = await srv.tool("more", more_args)
         assert rb.is_reference(page2["proposal"])
         p2 = store._refs[page2["proposal"]].proposal
-        assert p2["buttons"][-1]["call"]["arguments"]["page"] == more_args["page"] + 1
-        last = await srv.tool("more", p2["buttons"][-1]["call"]["arguments"])
+        assert p2["buttons"][2]["call"]["arguments"]["page"] == more_args["page"] + 1
+        assert p2["buttons"][3] == {"label": "📎 Add a document", "arm_file": True}
+        last = await srv.tool("more", p2["buttons"][2]["call"]["arguments"])
         assert last == {"proposal": None, "note": "no more entries"}
         # offer_hang: one button naming hang, admitted by the same deposit rule
         store.close_call("c1", "call-more")
@@ -163,9 +170,25 @@ async def test_the_server_offers_applies_and_pages_through_the_real_deposit_rout
         assert [b["label"] for b in hp["buttons"]] == ["Hang"]
         assert hp["buttons"][0]["call"]["wire_name"] == "hang"
         assert hp["buttons"][0]["call"]["arguments"] == {"render_id": "r-1"}
+        # ingest_document: copies the handed-off file into the plugin data dir and says so
+        handed = tmp_path / "statement.pdf"
+        handed.write_bytes(b"%PDF-1.4 fixture")
+        got = await srv.tool("ingest_document", {"path": str(handed)})
+        assert got == {"ingested": True, "receipt": "ingested statement.pdf (16 bytes)"}
+        assert (data / "ingested" / "statement.pdf").read_bytes() == b"%PDF-1.4 fixture"
+        missing = await srv.tool("ingest_document", {"path": str(tmp_path / "absent.pdf")})
+        assert missing["ingested"] is False
     finally:
         proc.stdin.close()
         try:
             await asyncio.wait_for(proc.wait(), 5)
         except asyncio.TimeoutError:
             proc.kill()
+
+
+def test_the_manifest_declares_the_fixture_check_job_a_job_trigger_can_name():
+    manifest = validate_manifest(ROOT, NAME)
+    [job] = manifest["casa"]["jobs"]
+    assert job["name"] == "fixture-check" and job["skill"] == "fixture-check"
+    assert job["batches"] == 1 and job["title"] == "Fixture check"
+    assert (ROOT / "skills" / "fixture-check" / "SKILL.md").is_file()

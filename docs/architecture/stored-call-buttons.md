@@ -47,6 +47,15 @@ grammar is narrow because the CLI decodes a call's arguments in JavaScript and i
 wrapper rewrites some values; a value a transformation could touch is refused at deposit
 rather than repaired after posting, and the pin never normalises.
 
+**A `📎` button stores no call.** A button may instead be `{"label", "arm_file": true}`, never
+both keys, at most one per proposal, counting toward the six. Its tap runs the same admission
+chain and commit, then writes an *arming* for that chat, synchronously and before any await: the
+next non-text message the same operator sends there within ten minutes goes to the proposing
+specialist's inbox as if it were a reply to its post ([`inbound-files.md`](inbound-files.md)).
+A later arming replaces it, a text message leaves it, the first file consumes it, a restart
+forgets it. The finish hook only edits the keyboard to `☑ <label>`: no turn runs, nothing is
+dispatched, and by the operator's ruling no message about the arming is ever sent.
+
 **Register, then post; bound; supersede.** The composed post — label line and text — must
 render to one page with room left for the longest line Casa appends when the keyboard
 settles (`☑ <label>` with a label of 32 characters that may each take two UTF-16 units;
@@ -182,6 +191,8 @@ exit sweep, which ends every task at once (Casa-wide behaviour, not S5's).
 
 **INV-PROP-003**: A keyboard with stored calls exists only for a deposit from a tool declaring the `operator_proposal` slot, whose calls name the same plugin's declared tools with fixed reference-free arguments within the bounds, and whose message was proven delivered; a proposal that did not land holds no stored call, a chat holds at most 32 live proposals, and a proposal expires after one hour.
 
+**INV-FILE-003**: A `📎` tap arms the next file in that chat for the specialist whose proposal carried the button, for the operator who tapped, for at most ten minutes; the arming exists from the moment the tap is committed, before the keyboard is edited or anything is sent; exactly one file consumes it; a later arming replaces it; a restart forgets it; and Casa sends no message about an arming — the edited keyboard is the whole acknowledgement, and the only text a tap can produce is the past-fact line that the buttons could not be cleared.
+
 ## Failure behavior
 
 **A callback by someone else, in the wrong chat, on another message, with a bad index, after
@@ -219,7 +230,8 @@ run, the exchange and the applied echo line are still recorded.
 **The keyboard edit itself fails after a commit.** The operator must still see which button won
 before any effect: one labelled notice names it and says the buttons could not be cleared, then
 the tap is applied as usual — the commit already excludes a second execution, so the stale
-buttons only answer a toast.
+buttons only answer a toast. For a `📎` tap the notice is only `📊 Finance ☑ 📎 Add a document — the buttons could not
+be cleared.`: it names no destination and nothing is applied.
 
 **A proposal superseded while its own send is in flight.** The finish hook finds no message
 id yet and leaves the terminal line for the poster, which applies `↻ replaced` the moment the
@@ -229,9 +241,6 @@ message lands; no live record remains for it.
 an older keyboard answers "expired".
 
 ## Extension points
-
-**A file sent as a reply** (a later slice) routes through the same post map into the
-specialist's inbox.
 
 **Reusing the controller** for the desk-reply early-release overlap (#1197) is possible but
 not done here; the bounded termination path stays simple.
@@ -263,9 +272,11 @@ not done here; the bounded termination path stays simple.
 - `tests/test_desk_tap.py`
 - `tests/test_pinned_run.py`
 - `tests/test_pinned_wiring.py`
+- `tests/test_file_handoff_arm.py`
 
 **Related**
 - [`architecture/specialist-desk.md`](../architecture/specialist-desk.md)
+- [`architecture/inbound-files.md`](../architecture/inbound-files.md)
 - [`architecture/plugin-delivered-slots.md`](../architecture/plugin-delivered-slots.md)
 - [`architecture/plugin-result-contract.md`](../architecture/plugin-result-contract.md)
 - [`architecture/telegram.md`](../architecture/telegram.md)
