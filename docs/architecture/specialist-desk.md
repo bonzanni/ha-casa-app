@@ -91,7 +91,9 @@ cancellation of the use — whose unwind outlives the runner's teardown bound st
 but the desk then refuses every later use, as a faulted desk does, until that run has ended:
 it is not a fault (no health row, no restart needed), and the next use after the run ends runs.
 
-**The reply is the specialist's own words, labelled, under the output boundary.** The runner's
+**The reply is the specialist's own words, labelled, under the output boundary.** The runner
+joins the text of each of the specialist's messages with one blank line, as the resident's own
+turn does, so what it wrote before and after a tool call stays two paragraphs. The runner's
 output is classified exactly as a sync delegation classifies it — a CLI-aborted run yields
 no text — then bounded by the same 20,000-character cap a sync answer gets, admitted under
 the desk's own scope, prefixed with the label line, and sent through the resident reply path
