@@ -224,6 +224,17 @@ def test_the_fixture_check_job_can_offer_once_and_then_complete_inside_its_one_b
             assert not re.search(r"\b(do not|don't|never|avoid|without)\b", sentence, re.I), sentence
 
 
+def test_the_fixture_check_job_completes_with_status_ok():
+    """emit_completion's status decides how the job ends: anything but "ok" is not
+    a clean ending (``failed`` maps to the terminal ``error``), so the fixture's
+    completion instruction names ``status: "ok"`` and no other status."""
+    text = (ROOT / "skills" / "fixture-check" / "SKILL.md").read_text()
+    body = text.split("---", 2)[2] if text.startswith("---") else text
+    completing = [s for s in _sentences(body) if "`emit_completion`" in s]
+    assert completing, body
+    statuses = [st for s in completing for st in re.findall(r'status:\s*"([^"]*)"', s)]
+    assert statuses == ["ok"], statuses
+
 def test_the_fixture_manifest_version_matches_the_server_info_version():
     """A pinned-SHA install requires the manifest version to match the ref, and the
     server reports its own: the two move together whenever the fixture is re-versioned."""
