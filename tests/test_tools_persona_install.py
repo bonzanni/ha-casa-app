@@ -584,7 +584,7 @@ async def test_persona_reconcile_cb_resumes_the_captured_engagement(
     rec = SimpleNamespace(id="eng-p", driver="in_casa", status="active")
     registry = SimpleNamespace(get=lambda eid: rec if eid == "eng-p" else None)
 
-    async def _deliver(r, text):
+    async def _deliver(r, text, *, inbound_reservation=None):
         delivered.append((r, text))
         # C1/#663: the production seam reports its HAND-OFF decision; a double
         # returning None would read as a refusal and pass silently.
@@ -628,7 +628,7 @@ async def test_persona_reconcile_cb_swallows_a_delivery_failure(
     rec = SimpleNamespace(id="eng-p", driver="in_casa", status="active")
     registry = SimpleNamespace(get=lambda eid: rec)
 
-    async def _deliver(r, text):
+    async def _deliver(r, text, *, inbound_reservation=None):
         raise RuntimeError("delivery blew up")
 
     channel = SimpleNamespace(
@@ -673,7 +673,7 @@ async def test_662_persona_reconcile_cb_reports_false_for_a_dead_engagement(
     def _get(eid):
         return rec if (state["present"] and eid == "eng-p") else None
 
-    async def _deliver(r, text):
+    async def _deliver(r, text, *, inbound_reservation=None):
         delivered.append((r, text))
 
     channel = SimpleNamespace(

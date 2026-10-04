@@ -1219,7 +1219,7 @@ async def test_reconcile_cb_resumes_the_captured_engagement(monkeypatch, tmp_pat
     rec = SimpleNamespace(id="eng-abc", driver="in_casa", status="active")
     registry = SimpleNamespace(get=lambda eid: rec if eid == "eng-abc" else None)
 
-    async def _deliver(r, text):
+    async def _deliver(r, text, *, inbound_reservation=None):
         delivered.append((r, text))
         # C1/#663: the production seam reports its HAND-OFF decision. A double
         # returning None would read as a refusal and pass silently.
@@ -1263,7 +1263,7 @@ async def test_reconcile_cb_continuation_matches_inspect_mode(
     rec = SimpleNamespace(id="eng-abc", driver="in_casa", status="active")
     registry = SimpleNamespace(get=lambda eid: rec if eid == rec.id else None)
 
-    async def _deliver(r, text):
+    async def _deliver(r, text, *, inbound_reservation=None):
         delivered.append((r, text))
         return delivery_result
 
@@ -1311,7 +1311,7 @@ async def test_reconcile_cb_swallows_a_delivery_failure(monkeypatch, tmp_path) -
     rec = SimpleNamespace(id="eng-abc", driver="in_casa", status="active")
     registry = SimpleNamespace(get=lambda eid: rec)
 
-    async def _deliver(r, text):
+    async def _deliver(r, text, *, inbound_reservation=None):
         raise RuntimeError("delivery blew up")
 
     _wire_inspect(monkeypatch, tmp_path,
@@ -1336,7 +1336,7 @@ async def test_reconcile_cb_is_a_noop_when_the_engagement_is_gone(monkeypatch, t
     delivered: list = []
     registry = SimpleNamespace(get=lambda eid: None)  # engagement TTL-expired / gone
 
-    async def _deliver(r, text):
+    async def _deliver(r, text, *, inbound_reservation=None):
         delivered.append((r, text))
 
     _wire_inspect(monkeypatch, tmp_path,
@@ -1363,7 +1363,7 @@ async def test_reconcile_cb_is_a_noop_when_no_engagement_was_captured(
     rec = SimpleNamespace(id="eng-abc", driver="in_casa", status="active")
     registry = SimpleNamespace(get=lambda eid: rec)
 
-    async def _deliver(r, text):
+    async def _deliver(r, text, *, inbound_reservation=None):
         delivered.append((r, text))
 
     _wire_inspect(monkeypatch, tmp_path,
@@ -1962,7 +1962,7 @@ async def test_662_a_handed_off_turn_is_not_reported_as_a_failure(
     delivered: list = []
     rec = SimpleNamespace(id="eng-abc", driver="in_casa", status="active")
 
-    async def _deliver(r, text):
+    async def _deliver(r, text, *, inbound_reservation=None):
         # The seam hands the turn off, and the engagement terminalises inside
         # it — exactly the window `update_user_turn` opens.
         delivered.append((r, text))

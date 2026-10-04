@@ -97,10 +97,11 @@ could destroy a message a turn had just consumed.
 **The in-casa driver reserves too, and the reason is a message that does not exist yet.** Its
 other counts are all backed by a text: a ticket carries the exact prompt from the moment it is
 admitted. A broker-driven *system continuation* — the resume turn dispatched after an operator
-answers an install consent or an engagement-origin tool authorization — has no text anywhere
-until the delivery seam admits it, and the interval before that is not short. After an
-approval on the two install-consent arms it is the finish hook's task-scheduling gap, one
-event-loop iteration and unremovable; after a denial there, and on the authorization arm, it is
+answers an install consent, the uninstall erase-data question or an engagement-origin tool
+authorization — has no text anywhere until the delivery seam admits it, and the interval before
+that is not short. After an approval on the two install-consent arms, and after any answer to
+the erase-data question, it is the finish hook's task-scheduling gap, one event-loop iteration
+and unremovable; after a denial there, and on the authorization arm, it is
 a whole message-edit round trip to Telegram, because the DM edit is awaited before the
 continuation is dispatched. An install-consent denial dispatches one only when its requester
 supplied it, and only then reserves. A successful
