@@ -558,7 +558,12 @@ async def test_a_ceiling_during_the_client_entry_still_pins_and_ends_the_cli(tre
     assert owner.pinned_pids() == set()                 # nothing pinned yet: the entry is pending
     assert await owner.terminate(task) is True          # the process is found at termination…
     assert owner.pinned_pids() == {tree.pid, tree.grandchild} and owner.alive() is False
-    assert client.exits == 1                            # …and the client's close is started
+    assert owner.close_task is not None                 # …and the client's close is started:
+    for _ in range(200):                                # its task counts the exit on its first run,
+        if client.exits:                                # which a loaded loop may not have given it yet
+            break
+        await asyncio.sleep(0.01)
+    assert client.exits == 1
     owner.close_task.cancel()
 
 
