@@ -38,7 +38,9 @@ def prompt_persona_install_consent(
     acks: "PersonaInstallAckStore",
     reconcile_cb: "Callable[[], Awaitable[bool]] | None" = None,
     inbound_reservation: Any | None = None,
+    deny_cb: "Callable[[], Awaitable[bool]] | None" = None,
 ) -> Any:
+    # #1251: ``deny_cb`` — see the specialist sibling.
     # #663: sibling of specialist_install_consent — the requesting
     # engagement's SYNCHRONOUS ingress lease, duck-typed (``take`` /
     # ``release``) so this module stays ignorant of engagements.
@@ -65,9 +67,12 @@ def prompt_persona_install_consent(
             # #663: AFTER ``acks.record`` and after its RETURN VALUE has been
             # consumed — #543's revocation generations decide whether anything
             # was written at all, and this step must not reorder around that.
-            # Approve only; Deny dispatches no continuation.
             if inbound_reservation is not None:
                 inbound_reservation.take()
+        elif idx == 1 and deny_cb is not None and inbound_reservation is not None:
+            # #1251: a Deny that dispatches a continuation reserves too, and
+            # records nothing — see the specialist sibling.
+            inbound_reservation.take()
 
     def _finish_factory(message_id: int, req: Any) -> Callable[[dict], Any]:
         async def _finish(outcome: dict) -> None:
@@ -153,6 +158,16 @@ def prompt_persona_install_consent(
             else:
                 await channel.edit_dm_message(
                     chat_id, message_id, f"❌ Denied — {inspection.persona_id!r} was not installed")
+                # #1251: then tell the requesting engagement — see the
+                # specialist sibling.
+                if deny_cb is not None:
+                    try:
+                        await deny_cb()
+                    except Exception:  # noqa: BLE001 — never-raise contract;
+                        # CancelledError stays control flow.
+                        logger.exception(
+                            "post-deny persona install continuation raised "
+                            "(persona_id=%s)", inspection.persona_id)
 
         return _finish
 
