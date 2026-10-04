@@ -161,7 +161,7 @@ silence sentinel is no longer part of that residue — it is never streamed at a
 (INV-TURN-009), so the reclassified reply is one fresh send rather than a posted literal
 and a superseding edit.
 
-**INV-TURN-009**: The token stream never carries a cumulative that is nothing but `<silent/>` sentinels and whitespace, nor — on the partial-delta path — one that could still become such silence. With a token callback present, a canonical-fold cumulative that is not silence, and a partial-delta cumulative that cannot still become silence, is handed to the callback in full, including any literal sentinel, unless it equals the last cumulative already handed to that callback.
+**INV-TURN-009**: The token stream never carries a cumulative that is nothing but `<silent/>` sentinels and whitespace, nor — on the partial-delta path — one that could still become such silence. With a token callback present, a canonical-fold cumulative that is not silence, and a partial-delta cumulative that cannot still become silence, is handed to the callback in full, including any literal sentinel, unless it equals the last cumulative already handed to that callback, or the attempt has folded the result of a call left waiting on the operator's approval with no later result of a call that consumed the same grant — then nothing is handed over (#1252).
 
 The sentinel is the model's way of saying "send nothing", and the gate above already
 honours it — but only at the end of the turn, after the stream has run. So a turn that
@@ -185,6 +185,8 @@ The fold also keeps each text-bearing message apart (`state["messages"]`, beside
 Its return value stays the joined text. Only a buffered turn's final-reply admission reads
 them, for the #1075 closing-silence rule (INV-OUT-006 in
 [`output-scope-properties.md`](output-scope-properties.md)); the stream and this hold are unchanged.
+The winning attempt's `turn_report["approval_cut"]` — how many messages came before a call
+still waiting on an approval — is read on any turn, for the #1252 rule there.
 
 **INV-TURN-012**: A conversation is resumed only while the structural surface of its system prompt — the delegates, background jobs and executors the agent can reach, and, for a role whose Home Assistant tools the facade publishes, the names of the tools last published — still digests to what the session was registered with. A surface that differs, or a session that never recorded one, starts a fresh session with the old one retained. The surface is rendered once per turn and the same render is what the resume decision gates on, what the prompt carries, the published tool servers the session connects with, and what the registration stores.
 

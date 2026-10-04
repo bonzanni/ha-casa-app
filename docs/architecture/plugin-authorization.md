@@ -152,6 +152,27 @@ a terminal record and the DM is corrected to "ask for it again"; an engagement t
 in an earlier process, whose challenges a restart already dropped with every grant
 (INV-PLUG-005); and challenges not bound to an engagement.
 
+**What the operator sees of a turn whose protected call waits on an approval** (#1252). On a
+resident's DM, button or setup turn and on a specialist desk turn, when the hook leaves a
+call waiting — a POSTED or PENDING deny — and no later call in the same attempt consumes that
+grant, the operator sees the keyboard and none of the words the model wrote after the call;
+the words before it are delivered (INV-OUT-006 and INV-TURN-009, INV-DESK-002 on the desk).
+The hook records its decision on the turn's scope before it returns, keyed by the call's
+`tool_use_id` — `pending` at the two returns that leave a keyboard up, `consumed` at a spent grant — and the turn reads the record when that call's
+result arrives, so a hook that ran before the turn's consumer had folded the text written
+before the call cannot cut that text, and an approval the model acted on in the same turn
+releases what it wrote ([`output-scope-properties.md`](output-scope-properties.md)). The
+write never changes the hook's answer: a failure to record is logged and skipped.
+DELIVERY_FAILED, INACTIVE, NOT_OPERATOR and the other denies leave no keyboard, so the model's words are the operator's only explanation and are
+delivered as before.
+
+What it does not cover: a synchronous `delegate_to_agent` (the specialist's record lands on
+its own child scope, and the resident relays its answer whole), an interactive specialist
+engagement's topic and a plugin background job (their scope is minted fresh on every
+resolution, so the record lands nowhere) — #1207 stays open for those. The deny strings are
+unchanged. The fallback prompts no longer offer a sentence to write after the call; the
+compiled bundle a resident is served never carried one.
+
 ## Failure behavior
 
 **A protected tool is called without an approval.** The hook denies the call and posts or
@@ -190,6 +211,7 @@ retires a waiting scheduled question only once its own keyboard is on screen
 - `casa/rootfs/opt/casa/authz_grants.py::GrantStore`
 - `casa/rootfs/opt/casa/authz_grants.py::ChallengeCoordinator.cancel_matching`
 - `casa/rootfs/opt/casa/authz_grants.py::note_delegation_awaiting_approval`
+- `casa/rootfs/opt/casa/authz_grants.py::_note_approval`
 - `casa/rootfs/opt/casa/specialist_limits.py::SpecialistLimiter.wait_until_free`
 - `casa/rootfs/opt/casa/tools.py::wait_for_delegation_slot`
 
@@ -197,6 +219,7 @@ retires a waiting scheduled question only once its own keyboard is on screen
 - `tests/test_authz_grants.py`
 - `tests/test_authz_hook.py`
 - `tests/test_approval_outlives_raiser.py`
+- `tests/test_pending_approval_pins.py`
 
 **Related**
 - [`architecture/plugins.md`](../architecture/plugins.md)

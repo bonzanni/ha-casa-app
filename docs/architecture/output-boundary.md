@@ -68,7 +68,10 @@ authored — a reminder's `output_note`, a delegation or engagement brief's laun
 re-registered on the turn that sends it so that turn's model cannot paraphrase it away; it
 is never discharged. The model's words are never suppressed or withheld by any of this; the
 `<silent/>` convention is judged inside final-reply admission, on the unannotated text and
-before any line is added, so a silent turn is never turned into a visible line.
+before any line is added, so a silent turn is never turned into a visible line. Admission
+withholds words in exactly two ruled cases, both scope properties in
+[`output-scope-properties.md`](output-scope-properties.md): the #1075 closing silence, and
+(#1252) the words written after a protected call that is waiting on the operator's approval.
 
 **Evidence is the runtime's own call, not an inference from the model's text.**
 `hooks.read_evidence_matchers(role)` adds `PostToolUse` and `PostToolUseFailure` matchers on
