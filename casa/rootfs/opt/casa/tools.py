@@ -16472,11 +16472,12 @@ async def specialist_install_inspect(args: dict) -> dict:
     # install stalled at commit's consent_missing until the operator sent a
     # manual topic nudge.
     eng = engagement_var.get(None)
+    mode = args.get("mode", "install")
     # #1150/#1163: an upgrade re-consents through this same keyboard, but its
     # recipe continues with specialist_upgrade (upgrade.md step 3) —
     # specialist_install_commit refuses an installed slug (active_present) and
     # an upgrade wires no delegation.
-    if args.get("mode", "install") == "upgrade":
+    if mode == "upgrade":
         continuation = (
             "The operator approved the consent for upgrading "
             f"specialist:{result.slug}. Continue the upgrade recipe now without "
@@ -16491,6 +16492,28 @@ async def specialist_install_inspect(args: dict) -> dict:
             "waiting for further input: call specialist_install_commit with "
             "the staged values, then finish the recipe (wire delegation, "
             "config_git_commit, casa_reload, emit_completion).")
+    # #1251: what a Deny tells the engagement. Nothing was applied, so the
+    # recipe concludes as cancelled with no commit and no reload; an update's
+    # text never names the install tool, which refuses an installed slug.
+    _conclude = (
+        "Conclude now without waiting for further input: call emit_completion "
+        "with status \"cancelled\" and a text saying the operator refused it "
+        "— no config_git_commit or casa_reload, nothing changed.")
+    if mode == "upgrade":
+        deny_continuation = (
+            "The operator denied the consent for updating "
+            f"specialist:{result.slug}. Nothing was changed: the specialist "
+            "keeps its current version and settings. Do not call "
+            "specialist_upgrade for this staged fetch. " + _conclude
+            + " A later request from the operator to update it is a new "
+            "request.")
+    else:
+        deny_continuation = (
+            "The operator denied the install consent for "
+            f"specialist:{result.slug}. Nothing was installed. Do not call "
+            "specialist_install_commit for it. " + _conclude
+            + " A later request from the operator to install it is a new "
+            "request.")
 
     async def _reconcile_cb() -> bool:
         # Post-Approve+ack: deliver a synthetic RESUME turn so the LLM finishes
@@ -16544,6 +16567,33 @@ async def specialist_install_inspect(args: dict) -> dict:
                 "manually", result.slug, exc_info=True)
             return False
 
+    # #663/#1251: ONE lease per keyboard — taken at the tap commit, and the
+    # same object is handed to the seam by the Deny continuation, which
+    # releases it in the step that admits the continuation's ticket.
+    inbound_reservation = _continuation_inbound_reservation(channel, eng)
+
+    async def _deny_cb() -> bool:
+        # #1251: after a Deny, tell the requesting engagement. Same guards and
+        # never-raise contract as _reconcile_cb; the result is the seam's
+        # hand-off decision, nothing more.
+        if eng is None:
+            return False
+        try:
+            registry = getattr(channel, "_engagement_registry", None)
+            deliver = getattr(channel, "deliver_system_turn", None)
+            if registry is None or deliver is None:
+                return False
+            rec = registry.get(eng.id)
+            if rec is None:
+                return False
+            return bool(await deliver(
+                rec, deny_continuation, inbound_reservation=inbound_reservation))
+        except Exception:  # noqa: BLE001 — tap-callback path: never raise
+            logger.warning(
+                "post-deny continuation failed (slug=%s)", result.slug,
+                exc_info=True)
+            return False
+
     try:
         # Round-3 fix (finding #3): register_challenge (authz_grants.py)
         # calls `asyncio.get_running_loop().create_task(...)` SYNCHRONOUSLY
@@ -16557,7 +16607,9 @@ async def specialist_install_inspect(args: dict) -> dict:
             acks=acks, reconcile_cb=_reconcile_cb,
             # #663: taken synchronously at the tap-commit, released the instant
             # the seam admits the continuation's ticket.
-            inbound_reservation=_continuation_inbound_reservation(channel, eng),
+            inbound_reservation=inbound_reservation,
+            # #1225: the keyboard and its edits name an upgrade as an update.
+            mode=mode, deny_cb=_deny_cb,
         )
     except Exception as exc:  # noqa: BLE001 — round-5b: structured, never a silent ok:true
         logger.exception("specialist install consent prompt failed to post")
@@ -17475,6 +17527,38 @@ async def persona_install_inspect(args: dict) -> dict:
                 "operator can nudge manually", result.persona_id, exc_info=True)
             return False
 
+    # #663/#1251: one lease, handed to the seam by the Deny continuation —
+    # see the specialist sibling.
+    inbound_reservation = _continuation_inbound_reservation(channel, eng)
+
+    async def _deny_cb() -> bool:
+        # #1251: see the specialist sibling.
+        if eng is None:
+            return False
+        try:
+            registry = getattr(channel, "_engagement_registry", None)
+            deliver = getattr(channel, "deliver_system_turn", None)
+            if registry is None or deliver is None:
+                return False
+            rec = registry.get(eng.id)
+            if rec is None:
+                return False
+            return bool(await deliver(
+                rec,
+                "The operator denied the install consent for persona "
+                f"{result.persona_id}. Nothing was installed. Do not call "
+                "persona_install_commit for it. Conclude now without waiting "
+                "for further input: call emit_completion with status "
+                "\"cancelled\" and a text saying the operator refused it — no "
+                "config_git_commit or casa_reload, nothing changed. A later "
+                "request from the operator to install it is a new request.",
+                inbound_reservation=inbound_reservation))
+        except Exception:  # noqa: BLE001 — tap-callback path: never raise
+            logger.warning(
+                "post-deny persona continuation failed (persona_id=%s)",
+                result.persona_id, exc_info=True)
+            return False
+
     try:
         # Round-3 fix (finding #3): same event-loop requirement as
         # `specialist_install_inspect` above — `register_challenge`
@@ -17486,7 +17570,7 @@ async def persona_install_inspect(args: dict) -> dict:
             channel=channel, chat_id=chat_id, operator_id=operator_id, inspection=result,
             acks=acks, reconcile_cb=_reconcile_cb,
             # #663: see the specialist sibling.
-            inbound_reservation=_continuation_inbound_reservation(channel, eng),
+            inbound_reservation=inbound_reservation, deny_cb=_deny_cb,
         )
     except Exception as exc:  # noqa: BLE001 — round-5b: structured, never a silent ok:true
         logger.exception("persona install consent prompt failed to post")

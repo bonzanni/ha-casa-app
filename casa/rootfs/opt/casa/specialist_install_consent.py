@@ -226,7 +226,7 @@ class SpecialistInstallAckStore:
             self._persist_locked(candidate)
 
 
-def render_install_consent_message(inspection: Any) -> str:
+def render_install_consent_message(inspection: Any, *, mode: str = "install") -> str:
     # Round-3 fix (finding #7): the identity this consent binds
     # (`install_consent_identity(..., component_checksum=inspection.
     # root_digest, ...)` below) is keyed on `root_digest` — the FULL-CLOSURE
@@ -288,10 +288,24 @@ def render_install_consent_message(inspection: Any) -> str:
     role_grants = getattr(inspection, "role_tool_grants", ()) or ()
     casa_tools_line = (
         f"Casa tools: {', '.join(role_grants)}\n" if role_grants else "")
+    # #1225: an upgrade, and a settings change at the installed version, use
+    # this same keyboard (recipes/specialist/upgrade.md) and are worded as an
+    # update. Only these Casa-authored lines vary, and none is longer than its
+    # install counterpart, so a closure that fits the challenge limit as an
+    # install fits as an update. The identity above never sees the mode.
+    if mode == "upgrade":
+        header = "\U0001F510 Specialist update consent\n\n"
+        question = (f"Update specialist:{inspection.slug} to "
+                    f"'{inspection.component_id}@{inspection.version}'?\n")
+        action = "Approve to update; Deny to discard the staged fetch."
+    else:
+        header = "\U0001F510 Specialist install consent\n\n"
+        question = (f"Install '{inspection.component_id}@{inspection.version}' as "
+                    f"specialist:{inspection.slug}?\n")
+        action = "Approve to install; Deny to discard the staged fetch."
     return (
-        "\U0001F510 Specialist install consent\n\n"
-        f"Install '{inspection.component_id}@{inspection.version}' as "
-        f"specialist:{inspection.slug}?\n"
+        f"{header}"
+        f"{question}"
         f"Mission: {inspection.mission}\n"
         f"{casa_tools_line}"
         f"Default persona: {inspection.default_persona_ref}\n"
@@ -300,7 +314,7 @@ def render_install_consent_message(inspection: Any) -> str:
         f"{plugin_section}"
         f"Root digest (approved — component + dependencies): {inspection.root_digest}\n"
         f"Component checksum: {inspection.component_checksum}\n\n"
-        "Approve to install; Deny to discard the staged fetch."
+        f"{action}"
     )
 
 
@@ -309,7 +323,13 @@ def prompt_specialist_install_consent(
     acks: "SpecialistInstallAckStore",
     reconcile_cb: "Callable[[], Awaitable[bool]] | None" = None,
     inbound_reservation: Any | None = None,
+    mode: str = "install",
+    deny_cb: "Callable[[], Awaitable[bool]] | None" = None,
 ) -> Any:
+    # #1225: ``mode`` is the inspect's own ("install" | "upgrade") and changes
+    # wording only — it never enters the identity or the key below.
+    # #1251: ``deny_cb`` hands the requesting engagement a continuation after
+    # a Deny, as ``reconcile_cb`` does after an Approve.
     # #663: ``inbound_reservation`` is the requesting engagement's SYNCHRONOUS
     # ingress lease, built by the caller (which is the only party that knows
     # the engagement) and taken at the tap-commit below. This module stays
@@ -326,7 +346,10 @@ def prompt_specialist_install_consent(
     )
     key = SpecialistInstallConsentKey(
         component_id=inspection.component_id, slug=inspection.slug, identity=identity)
-    text = render_install_consent_message(inspection)
+    text = render_install_consent_message(inspection, mode=mode)
+    # #1225: the operation each finish edit names.
+    noun, done = (("update", "updated") if mode == "upgrade"
+                  else ("install", "installed"))
 
     def _on_commit_sync(idx: int, meta: dict) -> None:
         if idx == 0:
@@ -336,14 +359,18 @@ def prompt_specialist_install_consent(
                         receipt_digest=receipt_digest)
             meta["acked"] = True
             # #663: AFTER the ack, never before it — this step must not
-            # reorder around the authoritative record write. Approve only:
-            # Deny dispatches no continuation, so there is nothing to reserve
-            # against. This is the one synchronous instant inside the window
-            # (the Telegram callback runs it with no await after
-            # ``BROKER.commit``), so the reservation exists before the finish
-            # hook's task has even been scheduled.
+            # reorder around the authoritative record write. This is the one
+            # synchronous instant inside the window (the Telegram callback
+            # runs it with no await after ``BROKER.commit``), so the
+            # reservation exists before the finish hook's task has even been
+            # scheduled.
             if inbound_reservation is not None:
                 inbound_reservation.take()
+        elif idx == 1 and deny_cb is not None and inbound_reservation is not None:
+            # #1251: a Deny that dispatches a continuation reserves at the same
+            # instant and for the same reason; it records no ack. Without a
+            # Deny continuation there is nothing to hand the reservation to.
+            inbound_reservation.take()
 
     def _finish_factory(message_id: int, req: Any) -> Callable[[dict], Any]:
         async def _finish(outcome: dict) -> None:
@@ -371,17 +398,17 @@ def prompt_specialist_install_consent(
                 await channel.edit_dm_message(
                     chat_id, message_id,
                     ask_retirement.retirement_headline(
-                        f"install consent for {inspection.slug!r}",
+                        f"{noun} consent for {inspection.slug!r}",
                         o, outcome.get("reason") if isinstance(outcome, dict)
                         else None,
-                        consequence="nothing was installed"),
+                        consequence=f"nothing was {done}"),
                 )
                 return
             if outcome.get("option_index") == 0:
                 if not req.meta.get("acked"):
                     await channel.edit_dm_message(
                         chat_id, message_id,
-                        "internal error recording install consent — re-run the install to "
+                        f"internal error recording {noun} consent — re-run the {noun} to "
                         "be prompted again",
                     )
                     return
@@ -422,26 +449,38 @@ def prompt_specialist_install_consent(
                     # up. Say uncertain, not "not started".
                     await channel.edit_dm_message(
                         chat_id, message_id,
-                        f"⚠️ Approved and saved — but the install of "
+                        f"⚠️ Approved and saved — but the {noun} of "
                         f"{inspection.slug!r} hit an internal error and its "
                         "automatic start could not be confirmed. Check the "
-                        "configurator topic; re-running the install is safe "
+                        f"configurator topic; re-running the {noun} is safe "
                         "either way, and the approval recorded for this exact "
                         "version is reused if it still applies.",
                     )
                 else:
                     await channel.edit_dm_message(
                         chat_id, message_id,
-                        f"⚠️ Approved and saved — but the install of "
+                        f"⚠️ Approved and saved — but the {noun} of "
                         f"{inspection.slug!r} was not started automatically. "
                         "Start a new configurator engagement and re-run the "
-                        "install; the approval recorded for this exact version "
+                        f"{noun}; the approval recorded for this exact version "
                         "is reused if it still applies.",
                     )
             else:
                 await channel.edit_dm_message(
-                    chat_id, message_id, f"❌ Denied — {inspection.slug!r} was not installed",
+                    chat_id, message_id, f"❌ Denied — {inspection.slug!r} was not {done}",
                 )
+                # #1251: then tell the requesting engagement, as authz does
+                # after its Deny edit. The edit is not chosen from the
+                # hand-off: it states what is true either way, and a hand-off
+                # that fails leaves the engagement as it was before this fix.
+                if deny_cb is not None:
+                    try:
+                        await deny_cb()
+                    except Exception:  # noqa: BLE001 — never-raise contract,
+                        # as for reconcile_cb; CancelledError stays control flow.
+                        logger.exception(
+                            "post-deny specialist install continuation raised "
+                            "(slug=%s)", inspection.slug)
 
         return _finish
 
