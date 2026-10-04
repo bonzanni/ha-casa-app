@@ -13,6 +13,8 @@ the response stream, under the desk's own origin.
 """
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from claude_agent_sdk import (
     AssistantMessage, ResultMessage, SystemMessage, TextBlock, ToolResultBlock,
@@ -100,14 +102,21 @@ def desk(env, monkeypatch):
         "finance", PROTECTED,
         lambda: AuthzDeps(channel=keyboard, grants=grants, challenges=coord))
     env.answers = []
+    env.hook_returned = asyncio.Event()
+    env.release_result = asyncio.Event()
     with patch("tools.ClaudeSDKClient", _Scripted):
         yield env
 
 
 def _ask(env, call_id):
+    """The hold: the hook answers, then the stream waits for the test to
+    release it past the call — so the hook's effect exists before the runner
+    folds the call's result."""
     async def _run():
         env.answers.append(await env.hook(
             {"tool_name": TOOL, "tool_input": dict(ARGS)}, call_id, {}))
+        env.hook_returned.set()
+        await env.release_result.wait()
     return _Step(_run)
 
 
@@ -128,7 +137,12 @@ async def test_desk_pending_approval_keeps_prefix(desk, answer, prefix):
     _Scripted.load(*([_text(prefix)] if prefix else []),
                    _call("deny-1"), _ask(desk, "deny-1"), _result("deny-1"), _text(TAIL))
 
-    await _reply(desk, text="what is the March total?")
+    task = asyncio.create_task(_reply(desk, text="what is the March total?"))
+    await asyncio.wait_for(desk.hook_returned.wait(), 10)
+    assert len(desk.keyboard.posts) == 1
+    assert desk.channel.replies == [] and desk.channel.notices == []
+    desk.release_result.set()
+    await asyncio.wait_for(task, 10)
 
     want = _DENY_POSTED if answer == "posted" else _DENY_PENDING
     assert [_deny_reason(a) for a in desk.answers] == [want]
