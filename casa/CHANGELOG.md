@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.344.17] - 2026-10-04
+
+### Fixed
+- When the configurator updated an installed specialist to a new version, or changed its settings, the approval message in your DM asked you to install it, and if you denied it or it was not answered it said the specialist "was not installed". That message now asks you to approve an update, and the lines that later replace its buttons say "update" or "updated" where they said "install" or "installed". The approval message for a new install is unchanged. (#1225)
+- Tapping **Deny** on the approval message for installing a specialist or a persona, or for updating a specialist, changed the message but told the configurator nothing. Casa now also asks the configurator engagement that requested the approval to take one more turn. That turn says that you refused and that nothing was installed or changed, and tells the configurator to close the engagement as cancelled. If the turn cannot be handed over (for example because the engagement has already ended), Casa does not retry it and the configurator is not told. An approval message that is not answered, or is withdrawn or cancelled, still tells the configurator nothing. The same goes for an Approve that Casa could not record, or whose automatic continuation could not be handed over. (#1251)
+
 ## [0.344.16] - 2026-10-04
 
 ### Fixed
