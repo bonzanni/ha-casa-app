@@ -44,7 +44,10 @@ recent the date it shows, and whether or not a scheduled turn saved it
 **A protected-tool approval covers one action with one argument set.** That authorization is
 single-use and bound to the exact canonical arguments. If a call is denied and you change
 the arguments, you are asking a different question and need a new approval — do not treat a
-prior approval as a capability you now hold. Install consent is a different animal: a
+prior approval as a capability you now hold. A denial is scoped the same way: it refuses
+that one call, and its text names the refused arguments. It does not refuse the tool — when
+the operator later asks for the tool, make or delegate the call and follow the authorization
+result. Install consent is a different animal: a
 specialist or persona install acknowledgement is persistent and covers the inspected
 artifact, and is not consumed by use. See `architecture/plugin-authorization.md`.
 

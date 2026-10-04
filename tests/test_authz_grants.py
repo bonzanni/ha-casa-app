@@ -1216,6 +1216,26 @@ class TestAuthzFinishHook:
             "denied" in channel.edits[0][2].lower()
         assert "[authorization denied]" in channel.dispatches[0]["text"]
 
+    async def test_deny_text_names_the_one_call_it_refused(self, monkeypatch):
+        """#1071: a Deny refuses one call. The text handed back names the
+        refused call's arguments (as the approval names the approved call's)
+        and says a later operator request for the tool is a new request — a
+        tool-wide "do not retry {tool}" read as a ban on the tool."""
+        broker, coord, channel = _fresh_env(monkeypatch)
+        canonical = '{"backup_id":"A"}'
+        key, handle = _create(coord, channel, tool_name="restore_backup",
+                              canonical_json=canonical)
+        await handle.settled_post()
+        _tap(broker, coord._entries[key], 1)
+        await _settle()
+
+        assert len(channel.dispatches) == 1
+        text = channel.dispatches[0]["text"]
+        assert text.startswith("[authorization denied]")
+        assert f"restore_backup with these arguments:\n{canonical}\n" in text
+        assert "is a new request" in text
+        assert "do not retry restore_backup" not in text.lower()
+
     async def test_minted_absent_internal_error_no_dispatch(self, monkeypatch):
         """Approve committed but the sync step never recorded the mint (raised
         and was swallowed) → edit the internal-error text, NEVER dispatch."""
@@ -1747,3 +1767,30 @@ class TestC1EngagementContinuationReservation:
                  "could not be resumed" in texts[-1].lower() if len(texts) > 1 else False,
                  sum(l.releases for l in channel.leases))
         assert facts == (2, True, True, 1), f"authz raise facts: {facts!r}"
+
+
+_DENIAL_SCOPE_RULE = (
+    "A protected-tool denial refuses the one call it names, with those "
+    "arguments; it does not refuse the tool. When the operator later asks for "
+    "that tool, make or delegate the call and follow Casa's authorization "
+    "result.")
+
+
+@pytest.mark.parametrize("resident", ["assistant", "butler"])
+def test_resident_doctrine_scopes_a_denial_to_one_call(resident):
+    """#1071: the residents that receive delegated decisions are told a Deny
+    refuses one call, not the tool — asserted on the sections the prompt
+    compiler serves for every surface, not only on the file."""
+    import re
+    from pathlib import Path
+    from markdown_sections import select_markdown_sections
+
+    path = (Path(__file__).resolve().parents[1] / "casa/rootfs/opt/casa/defaults"
+            / f"roles/resident/{resident}/doctrine.md")
+    doctrine = path.read_text(encoding="utf-8")
+    surfaces = ("Text projection", "Voice projection",
+                "Restricted webhook projection")
+    for surface in surfaces:
+        selected = select_markdown_sections(
+            doctrine, ("Core doctrine", surface), exclude=surfaces)
+        assert _DENIAL_SCOPE_RULE in re.sub(r"\s+", " ", selected), surface

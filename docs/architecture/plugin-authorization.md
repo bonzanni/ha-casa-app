@@ -38,7 +38,9 @@ additionally binds the engagement id, so an approval minted inside one engagemen
 consume a matching call in another. Identity for the engagement path comes from the live
 engagement record (its own operator DM), and on approval the challenge resumes that
 engagement rather than a resident continuation. Both taps resume it — a denial dispatches its
-own continuation so the engagement stops retrying — and both take the engagement's ingress
+own continuation so the engagement stops retrying, naming the refused call's tool and canonical
+arguments as the approval names the approved call's (#1071: a denial refuses that call, not
+the tool) — and both take the engagement's ingress
 reservation at the tap's synchronous commit step, before either the approval edit or the
 dispatch. That ordering matters here specifically: this arm awaits a message edit *before* it
 dispatches, so without the reservation a successful completion committing during that round
