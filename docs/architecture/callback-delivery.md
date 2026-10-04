@@ -126,7 +126,9 @@ DIRECTLY, so a raise is observed rather than swallowed. Only a confirmed send fl
 until it does the note stays owed and every later pass retries it. That matters because the
 operator seam raises by design whenever the Telegram channel is absent or not ready, and the
 worker's first pass runs before the channels start: the one window in which the note was most
-likely to fail was, until then, the window in which it was silently discarded. A send whose
+likely to fail was, until then, the window in which it was silently discarded. In that window
+the seam's not-ready raise is a designed retry, logged at INFO rather than as an error
+(INV-CB-011). A send whose
 durable mark then fails is remembered in memory for the process's life, so later passes retry
 the mark alone and never resend.
 
@@ -175,6 +177,19 @@ that invariant already admits.
 
 What it does not cover: casa cannot inspect an opaque value, so "no bearer material in `meta`"
 is a consumer obligation, not enforced.
+
+**INV-CB-011**: An operator note the worker attempts while the Telegram channel is not ready, before the channels have finished starting, is logged at INFO without a traceback, and an owed exhaustion or removal note stays owed; every other failed note keeps an ERROR with its traceback.
+
+Enforced by type: `operator_notify` raises `OperatorNotifyBeforeStart`, a `RuntimeError`
+subclass, for a not-ready channel only until `ChannelManager.start_all` has returned. The
+exhaustion, removal and advisory note sites catch it before their broad handler and keep the
+same control flow: the exhaustion and removal notes stay un-noted with no mark call, and the advisory note is not retried, as before. A later pass
+sends the owed note; the five-minute `callback_spool_recovery` job kicks the worker if nothing
+else does.
+
+What it does not cover: "started" is not "ready". A first bring-up that failed transiently
+returns from `start_all` not ready, and its notes keep ERROR — the report a channel that never
+becomes ready gets, beside the channel's own bring-up ERROR.
 
 ## Failure behavior
 

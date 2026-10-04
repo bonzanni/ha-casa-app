@@ -1008,3 +1008,132 @@ def test_worker_owns_no_episode_store():
                  "_any_tombstone", "_has_key", "_empty"):
         assert not hasattr(ce, gone), gone
 
+
+
+# ---------------------------------------------------------------------------
+# #930 — an owed note attempted before the channels started is a designed
+# retry (INFO); every other failure keeps ERROR with a traceback
+# ---------------------------------------------------------------------------
+
+_PRESTART = "channels not started yet"
+
+#: variant → (site message prefix, the site's existing ERROR message, n).
+_SITES_930 = {
+    "exhaustion": ("callback exhaustion note",
+                   f"callback exhaustion note failed (plugin={PLUGIN})", 1),
+    "removal": ("callback removal note", "callback removal note failed", 1),
+    "advisory": ("callback-episode operator note",
+                 "callback-episode operator note failed", 1),
+}
+
+
+async def _measure_930(wired, caplog, monkeypatch, notify, variant):
+    """Arrange *variant* with *notify* wired, then run ONE measured
+    operation and return ``(site_records, n, mark_calls)``."""
+    prefix, _error, n = _SITES_930[variant]
+    wired.wire(notify_operator=notify)
+    if variant == "exhaustion":
+        wired.seed_terminal(outcome="expired",
+                            nudges=callback_attempts.MAX_NUDGES)
+        assert wired.attempt(HASH)["noted"] is False
+        assert ce._select_unnoted_exhaustions(wired.spool) == [(PLUGIN, HASH)]
+    elif variant == "removal":
+        wired.seed_result()
+        assert wired.spool.remove_plugin(PLUGIN) is True
+        records = _removal_records(wired.spool)
+        assert len(records) == 1 and records[0][1]["noted"] is False
+
+    mark_calls: list[tuple] = []
+    real_nudge = wired.spool.update_attempt_nudge
+    real_removal = wired.spool.mark_removal_noted
+
+    def nudge_spy(plugin, h, **fields):
+        if fields.get("noted") is True:
+            mark_calls.append(("update_attempt_nudge", plugin, h))
+        return real_nudge(plugin, h, **fields)
+
+    def removal_spy(*a, **k):
+        mark_calls.append(("mark_removal_noted",) + a)
+        return real_removal(*a, **k)
+
+    monkeypatch.setattr(wired.spool, "update_attempt_nudge", nudge_spy)
+    monkeypatch.setattr(wired.spool, "mark_removal_noted", removal_spy)
+    dispatched = len(wired.dispatches)
+    caplog.clear()
+    caplog.set_level(logging.INFO, logger="callback_episodes")
+    if variant == "advisory":
+        await ce._note("test advisory")
+    else:
+        await ce._worker_pass()
+    assert len(wired.dispatches) == dispatched
+    if variant == "exhaustion":
+        assert wired.attempt(HASH)["noted"] is False
+    elif variant == "removal":
+        assert _removal_records(wired.spool)[0][1]["noted"] is False
+    assert not ce._exhaustion_sent_unmarked
+    assert not ce._removal_sent_unmarked
+    site = [r for r in caplog.records
+            if r.name == "callback_episodes"
+            and r.getMessage().startswith(prefix)]
+    return site, n, mark_calls
+
+
+@pytest.mark.parametrize("mode", ("start_not_begun", "start_in_progress"))
+@pytest.mark.parametrize("variant", sorted(_SITES_930))
+async def test_930_prestart_note_logs_info_not_error(
+        wired, caplog, monkeypatch, operator_seam, variant, mode):
+    """#930 red case: the REAL seam over a never-ready channel, before
+    ``start_all`` COMPLETED — not yet entered, or entered and suspended in
+    the first bring-up — the note attempt is a designed retry, logged at
+    INFO without a traceback, and the owed note stays owed."""
+    if mode == "start_in_progress":
+        await operator_seam.begin_start()
+    try:
+        site, n, mark_calls = await _measure_930(
+            wired, caplog, monkeypatch, operator_seam.notify, variant)
+        errors = [r for r in site if r.levelno >= logging.ERROR]
+        infos = [r for r in site
+                 if r.levelno == logging.INFO and _PRESTART in r.getMessage()]
+        assert [r.getMessage() for r in errors] == []
+        assert len(infos) == n
+        assert len(site) == n
+        assert sum(r.exc_info is not None for r in site) == 0
+        assert mark_calls == []
+        assert operator_seam.send.await_count == 0
+    finally:
+        if mode == "start_in_progress":
+            await operator_seam.finish_start()
+
+
+_FAILURE_MODES_930 = ("after_failed_bringup", "ready_send_raises_before_start",
+                      "ready_send_raises_after_start", "no_manager")
+
+
+@pytest.mark.parametrize("mode", _FAILURE_MODES_930)
+@pytest.mark.parametrize("variant", sorted(_SITES_930))
+async def test_930_other_note_failures_keep_error_with_traceback(
+        wired, caplog, monkeypatch, operator_seam, variant, mode):
+    """#930 companion (green at base): a not-ready channel AFTER start_all
+    returned (a failed first bring-up), a ready channel whose send raises
+    (either side of start), and no channel manager at all each keep
+    ``logger.exception`` — the only report a real failure gets."""
+    import functools
+
+    import casa_core
+
+    notify = operator_seam.notify
+    if mode in ("after_failed_bringup", "ready_send_raises_after_start"):
+        await operator_seam.start_with_failed_bringup()
+    if mode.startswith("ready_send_raises"):
+        operator_seam.make_ready(RuntimeError("send failed"))
+    if mode == "no_manager":
+        notify = functools.partial(casa_core.operator_notify, None)
+    site, n, mark_calls = await _measure_930(
+        wired, caplog, monkeypatch, notify, variant)
+    _prefix, error_msg, _n = _SITES_930[variant]
+    errors = [r for r in site
+              if r.levelno == logging.ERROR and r.getMessage() == error_msg]
+    assert len(errors) == n
+    assert len(site) == n
+    assert sum(r.exc_info is not None for r in site) == n
+    assert mark_calls == []

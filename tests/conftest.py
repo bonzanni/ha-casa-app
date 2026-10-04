@@ -787,3 +787,110 @@ def event_routing_ok(monkeypatch):
     import event_reconcile
     monkeypatch.setattr(event_reconcile, "_routed", {})
     yield
+
+
+class _OperatorSeam:
+    """The REAL operator-notice seam (#930): ``casa_core.operator_notify``
+    over a real :class:`channels.ChannelManager` with a real, never-started
+    :class:`channels.telegram.TelegramChannel` registered. Only the
+    channel's ``send_response`` is a spy, so a raise the workers see is the
+    seam's own, never a hand-rolled one."""
+
+    def __init__(self, monkeypatch) -> None:
+        import functools
+        from unittest.mock import AsyncMock
+
+        import casa_core
+        from channels import ChannelManager
+        from channels.telegram import TelegramChannel
+
+        self._monkeypatch = monkeypatch
+        self.manager = ChannelManager()
+        self.channel = TelegramChannel(chat_id="123")
+        self.manager.register(self.channel)
+        self.send = AsyncMock()
+        monkeypatch.setattr(self.channel, "send_response", self.send)
+        self.notify = functools.partial(casa_core.operator_notify,
+                                        self.manager)
+        assert self.manager.get("telegram") is self.channel
+        assert self.channel.is_ready is False
+
+    async def start_with_failed_bringup(self) -> None:
+        """Run the REAL ``ChannelManager.start_all`` → ``TelegramChannel.start``
+        with a first bring-up that fails transiently (telegram.py's
+        ``NetworkError`` arm): ``start`` returns normally, the channel stays
+        not ready. The supervisor and health probe are inert doubles."""
+        import channels.telegram as tg
+        from telegram.error import NetworkError
+
+        async def _rebuild() -> None:
+            raise NetworkError("initial bring-up refused")
+
+        self._install_bringup_doubles(tg, _rebuild)
+        await self.manager.start_all()
+        if self.channel._probe_task is not None:
+            await self.channel._probe_task
+        assert self.channel.is_ready is False
+
+    async def begin_start(self) -> None:
+        """Enter the REAL ``ChannelManager.start_all`` and suspend it inside
+        the first ``TelegramChannel._rebuild``: start has BEGUN and not
+        completed. :meth:`finish_start` lets that bring-up fail transiently
+        and waits for ``start_all`` to return."""
+        import asyncio
+
+        import channels.telegram as tg
+        from telegram.error import NetworkError
+
+        entered = asyncio.Event()
+        self._release = asyncio.Event()
+
+        async def _rebuild() -> None:
+            entered.set()
+            await self._release.wait()
+            raise NetworkError("initial bring-up refused")
+
+        self._install_bringup_doubles(tg, _rebuild)
+        self._start_task = asyncio.ensure_future(self.manager.start_all())
+        await entered.wait()
+        assert not self._start_task.done()
+        assert self.channel.is_ready is False
+
+    async def finish_start(self) -> None:
+        self._release.set()
+        await self._start_task
+        if self.channel._probe_task is not None:
+            await self.channel._probe_task
+
+    def _install_bringup_doubles(self, tg, rebuild) -> None:
+        class _Supervisor:
+            def __init__(self, *a, **k) -> None:
+                self.triggers: list[str] = []
+
+            def start(self) -> None:
+                pass
+
+            def trigger(self, reason: str) -> None:
+                self.triggers.append(reason)
+
+            async def stop(self) -> None:
+                pass
+
+        async def _probe() -> None:
+            return None
+
+        self._monkeypatch.setattr(tg, "ReconnectSupervisor", _Supervisor)
+        self._monkeypatch.setattr(self.channel, "_rebuild", rebuild)
+        self._monkeypatch.setattr(self.channel, "_health_probe_loop", _probe)
+
+    def make_ready(self, send_error: Exception) -> None:
+        """A ready channel (an app is published) whose send raises."""
+        self._monkeypatch.setattr(self.channel, "_app", object())
+        self.send.side_effect = send_error
+        assert self.channel.is_ready is True
+
+
+@pytest.fixture
+def operator_seam(monkeypatch):
+    """#930: the real ``operator_notify`` before the channels have started."""
+    return _OperatorSeam(monkeypatch)

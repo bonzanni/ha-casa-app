@@ -72,6 +72,7 @@ from typing import Any, Awaitable, Callable
 
 import callback_attempts
 import plugin_dispatch
+from channels import OperatorNotifyBeforeStart
 
 logger = logging.getLogger(__name__)
 
@@ -581,10 +582,20 @@ async def _process_unnoted_exhaustions(spool: Any) -> None:
                 await _notify_operator(_exhaustion_text(plugin, h))
             except asyncio.CancelledError:
                 raise
+            except OperatorNotifyBeforeStart:
+                # #930: the channels have not finished starting — a designed
+                # retry, not a failure. Un-noted, retried next pass: the boot's
+                # post-start kick_all is the event worker's alone, so this
+                # worker's next pass comes from a kick or its timed wake, and
+                # the five-minute callback_spool_recovery job kicks one.
+                logger.info("callback exhaustion note deferred (plugin=%s): "
+                            "channels not started yet; retried next pass",
+                            plugin)
+                continue
             except Exception:  # noqa: BLE001 — un-noted, retried next pass
-                # #930/#955: not demoted, for the reason the event worker's
-                # removal-note handler states — this line is the only report a
-                # real send failure gets.
+                # #930: every other raise keeps ERROR, for the reason the
+                # event worker's removal-note handler states — this line is
+                # the only report a real send failure gets.
                 logger.exception("callback exhaustion note failed (plugin=%s)",
                                  plugin)
                 continue
@@ -651,6 +662,11 @@ async def _process_removal_records(spool: Any) -> None:
                 await _notify_operator(_removal_text(rec))
             except asyncio.CancelledError:
                 raise
+            except OperatorNotifyBeforeStart:
+                # #930: see the exhaustion note above. Un-noted.
+                logger.info("callback removal note deferred: channels not "
+                            "started yet; retried next pass")
+                continue
             except Exception:  # noqa: BLE001 — un-noted, retried next pass
                 logger.exception("callback removal note failed")
                 continue
@@ -704,5 +720,9 @@ async def _note(text: str) -> None:
         return
     try:
         await _notify_operator(text)
+    except OperatorNotifyBeforeStart:
+        # #930: the channels have not finished starting; not a failure.
+        logger.info("callback-episode operator note not sent: channels not "
+                    "started yet")
     except Exception:  # noqa: BLE001
         logger.exception("callback-episode operator note failed")
