@@ -584,7 +584,7 @@ async def test_persona_reconcile_cb_resumes_the_captured_engagement(
     rec = SimpleNamespace(id="eng-p", driver="in_casa", status="active")
     registry = SimpleNamespace(get=lambda eid: rec if eid == "eng-p" else None)
 
-    async def _deliver(r, text):
+    async def _deliver(r, text, *, inbound_reservation=None):
         delivered.append((r, text))
         # C1/#663: the production seam reports its HAND-OFF decision; a double
         # returning None would read as a refusal and pass silently.
@@ -628,7 +628,7 @@ async def test_persona_reconcile_cb_swallows_a_delivery_failure(
     rec = SimpleNamespace(id="eng-p", driver="in_casa", status="active")
     registry = SimpleNamespace(get=lambda eid: rec)
 
-    async def _deliver(r, text):
+    async def _deliver(r, text, *, inbound_reservation=None):
         raise RuntimeError("delivery blew up")
 
     channel = SimpleNamespace(
@@ -673,7 +673,7 @@ async def test_662_persona_reconcile_cb_reports_false_for_a_dead_engagement(
     def _get(eid):
         return rec if (state["present"] and eid == "eng-p") else None
 
-    async def _deliver(r, text):
+    async def _deliver(r, text, *, inbound_reservation=None):
         delivered.append((r, text))
 
     channel = SimpleNamespace(
@@ -833,3 +833,82 @@ async def test_inspect_deny_hands_off_same_reservation(monkeypatch, tmp_path) ->
     facts = (call.args[0] is rec, call.kwargs.get("inbound_reservation") is lease,
              "denied" in text, "warm-helper" in text)
     assert facts == (True, True, True, True), f"hand-off facts: {facts!r} {text!r}"
+
+
+@pytest.mark.asyncio
+async def test_inspect_approve_hands_off_same_reservation(monkeypatch, tmp_path) -> None:
+    """#1261, the persona sibling: an Approve on the REAL keyboard takes the
+    requesting engagement's reservation once at the tap commit, and its one
+    continuation through ``deliver_system_turn`` carries that SAME reservation.
+
+    Pre-fix: the Approve call passes no ``inbound_reservation`` keyword."""
+    from unittest.mock import AsyncMock
+
+    import persona_install_consent
+    from tools import persona_install_inspect, engagement_var
+
+    real = persona_install_consent.prompt_persona_install_consent
+    cap: dict = {}
+
+    class _Coordinator:
+        def register_challenge(self, key, **kwargs):
+            cap["on_commit_sync"] = kwargs["on_commit_sync"]
+            cap["finish_factory"] = kwargs["finish_factory"]
+            return _Handle(settled="posted")
+
+    def _prompt(**kwargs):
+        kwargs["coordinator"] = _Coordinator()
+        return real(**kwargs)
+
+    class _Lease:
+        takes = 0
+
+        def take(self):
+            self.takes += 1
+            return True
+
+        def release(self):
+            pass
+
+    lease = _Lease()
+    factory_calls: list = []
+    edits: list = []
+    rec = SimpleNamespace(id="eng-p", driver="in_casa", status="active")
+
+    async def _edit(chat_id, message_id, text):
+        edits.append(text)
+
+    def _factory(eid):
+        factory_calls.append(eid)
+        return lease
+
+    channel = SimpleNamespace(
+        chat_id="123",
+        _engagement_registry=SimpleNamespace(
+            get=lambda eid: rec if eid == "eng-p" else None),
+        deliver_system_turn=AsyncMock(return_value=True),
+        edit_dm_message=_edit, engagement_inbound_reservation=_factory)
+    _wire_persona_inspect(monkeypatch, tmp_path, channel=channel)
+    monkeypatch.setattr(
+        persona_install_consent, "prompt_persona_install_consent", _prompt)
+
+    token = engagement_var.set(SimpleNamespace(id="eng-p"))
+    try:
+        payload = _payload(await persona_install_inspect.handler(
+            {"repo": "owner/repo", "ref": "main"}))
+    finally:
+        engagement_var.reset(token)
+    assert payload["consent"] == "keyboard_posted"
+
+    deliver = channel.deliver_system_turn
+    req = SimpleNamespace(meta={})
+    cap["on_commit_sync"](0, req.meta)
+    at_commit = (len(factory_calls), lease.takes, deliver.await_count)
+    assert at_commit == (1, 1, 0), f"tap-commit facts: {at_commit!r}"
+
+    await cap["finish_factory"](88, req)({"outcome": "answered", "option_index": 0})
+    call = deliver.await_args
+    facts = (deliver.await_count, call.args[0] is rec,
+             call.kwargs.get("inbound_reservation") is lease, len(edits),
+             edits[-1].startswith("✅ Approved"))
+    assert facts == (1, True, True, 1, True), f"approve hand-off facts: {facts!r}"

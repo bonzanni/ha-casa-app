@@ -165,7 +165,7 @@ async def test_a_confirmed_uninstalls_continuations_carry_its_acknowledgement(
     tm = sflow.tm
     delivered: list = []
 
-    def deliverer(channel, eng):
+    def deliverer(channel, eng, *, inbound_reservation=None):
         async def deliver(text):
             delivered.append(text)
             return True

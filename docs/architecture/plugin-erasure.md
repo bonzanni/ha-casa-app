@@ -80,7 +80,9 @@ choice bound to the operator, the uninstall subject (`plugin:<name>` or
 300 s, and records its kind; Keep and Cancel record nothing, because keeping the data is the ordinary removal.
 Every tap continues the configurator engagement with the exact call to make next, and the
 DM message is edited to say what happens — including, when the engagement could not be
-resumed, that the operator has to ask the configurator to continue. The model can never
+resumed, that the operator has to ask the configurator to continue. The tap reserves the
+engagement's inbound and its continuation hands that reservation to the delivery seam, which
+releases it as it admits the turn; the background outcome delivery holds none. The model can never
 assert "erase" on the operator's behalf, nor pick the kind — `erase_data=true` runs the
 kind the tap recorded, so a "keep sign-ins" tap can never become a clean slate or the
 reverse: an `erase_data=true` call that neither finishes a

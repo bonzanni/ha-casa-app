@@ -539,3 +539,110 @@ async def test_a_keep_tap_closes_the_question_at_once(flow):
     assert pe.QUESTIONS.current("plugin:probe") is not None
     await flow.prompts[-1]["continue_cb"](pec.KEEP)
     assert pe.QUESTIONS.current("plugin:probe") is None
+
+
+# --- #1261: the tap's reservation is handed to the seam by the continuation -----
+
+class _LeaseChannel:
+    """A Telegram channel with the engagement seam: a registry, an AsyncMock
+    ``deliver_system_turn`` and an inbound-reservation factory."""
+
+    def __init__(self, rec):
+        from unittest.mock import AsyncMock
+        self.chat_id = "42"
+        self.leases: list = []
+        self._engagement_registry = SimpleNamespace(
+            get=lambda eid: rec if eid == rec.id else None)
+        self.deliver_system_turn = AsyncMock(return_value=True)
+
+    def engagement_inbound_reservation(self, eid):
+        lease = SimpleNamespace(take=lambda: True, release=lambda: None)
+        self.leases.append(lease)
+        return lease
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("choice", [pec.KEEP, pec.ERASE, pec.ERASE_DATA_ONLY,
+                                    pec.CANCEL])
+@pytest.mark.parametrize("caller", ["plugin_remove", "specialist_uninstall"])
+async def test_an_erase_choice_continuation_hands_off_the_question_lease(
+        request, monkeypatch, caller, choice):
+    """#1261: every erase choice's continuation — Keep, Erase, Erase data
+    only, Cancel — is delivered once through ``deliver_system_turn`` carrying
+    the SAME reservation the question was posted with, so the seam releases
+    it when the continuation's ticket is admitted rather than after the
+    result edit. Both callers of the shared gate.
+
+    Pre-fix: the continuation's delivery passes no ``inbound_reservation``."""
+    from tools import engagement_var
+    state = request.getfixturevalue("sflow" if caller == "specialist_uninstall"
+                                    else "flow")
+    tm = state.tm
+    rec = SimpleNamespace(id="eng-cfg", driver="in_casa", status="active")
+    ch = _LeaseChannel(rec)
+    monkeypatch.setattr(tm, "_channel_manager",
+                        SimpleNamespace(get=lambda n: ch if n == "telegram" else None),
+                        raising=False)
+    token = engagement_var.set(SimpleNamespace(id=rec.id))
+    try:
+        out = await (_uninstall(tm) if caller == "specialist_uninstall"
+                     else _remove(tm))
+    finally:
+        engagement_var.reset(token)
+    assert out["kind"] == "erase_choice_pending", out
+    [prompt] = state.prompts
+    lease = prompt["inbound_reservation"]
+    assert await prompt["continue_cb"](choice) is True
+    deliver = ch.deliver_system_turn
+    call = deliver.await_args
+    facts = (len(ch.leases), lease is ch.leases[0], deliver.await_count,
+             call.args[0] is rec, call.kwargs.get("inbound_reservation") is lease)
+    assert facts == (1, True, 1, True, True), f"erase hand-off facts: {facts!r}"
+
+
+@pytest.mark.asyncio
+async def test_the_erasure_outcome_delivery_carries_no_reservation(flow, monkeypatch):
+    """#1261 companion (green before and after): after an Erase tap's
+    continuation, the background erasure's outcome reaches the engagement
+    through a delivery that carries NO reservation keyword — the tap's lease
+    belongs to the tap's own continuation and never to the outcome."""
+    from tools import engagement_var
+    tm = flow.tm
+    rec = SimpleNamespace(id="eng-cfg", driver="in_casa", status="active")
+    ch = _LeaseChannel(rec)
+    monkeypatch.setattr(tm, "_channel_manager",
+                        SimpleNamespace(get=lambda n: ch if n == "telegram" else None),
+                        raising=False)
+    token = engagement_var.set(SimpleNamespace(id=rec.id))
+    try:
+        assert (await _remove(tm))["kind"] == "erase_choice_pending"
+        [prompt] = flow.prompts
+        await prompt["continue_cb"](pec.ERASE)
+        pec.CHOICES.mint(prompt["key"], pec.ERASE)
+        assert (await _remove(tm, erase_data=True))["kind"] == "erasure_running"
+    finally:
+        engagement_var.reset(token)
+    await asyncio.wait_for(asyncio.gather(*list(tm._ERASE_TASKS)), 5)
+    calls = ch.deliver_system_turn.await_args_list
+    facts = (len(calls), len(ch.leases), "inbound_reservation" in calls[-1].kwargs,
+             "did not complete" in calls[-1].args[1])
+    assert facts == (2, 1, False, True), f"outcome delivery facts: {facts!r}"
+
+
+@pytest.mark.asyncio
+async def test_a_deliverer_without_a_lease_calls_the_seam_with_two_arguments():
+    """#1261 companion (green before and after): ``_engagement_deliverer``
+    built without a lease calls ``deliver_system_turn(rec, text)`` exactly as
+    before — no ``inbound_reservation`` keyword, not even ``None`` — so a
+    two-positional seam still takes the turn."""
+    import tools as tm
+    rec = SimpleNamespace(id="eng-cfg")
+    seen: list = []
+
+    async def deliver(r, text):
+        seen.append((r, text))
+        return True
+    ch = SimpleNamespace(_engagement_registry=SimpleNamespace(get=lambda eid: rec),
+                         deliver_system_turn=deliver)
+    ok = await tm._engagement_deliverer(ch, SimpleNamespace(id=rec.id))("go on")
+    assert (ok, seen) == (True, [(rec, "go on")])

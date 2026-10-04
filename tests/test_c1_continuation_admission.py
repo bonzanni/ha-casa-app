@@ -648,6 +648,104 @@ class TestReservationIsBornAtTheTapCommit:
         finally:
             agent_mod.active_engagement_driver = None
 
+    async def test_an_approve_continuation_hands_its_reservation_to_the_ticket(
+            self, tmp_path, fake_telegram_bot, monkeypatch):
+        """#1261, the Approve sibling of the Deny transfer above, end to end:
+        the REAL ``specialist_install_inspect`` builds the lease and the
+        callback, the REAL consent module takes it at the tap commit, and the
+        REAL seam admits the continuation's ticket. With the approval edit
+        HELD after the continuation turn has run and consumed its ticket, the
+        reservation is already gone, so a successful ``emit_completion`` inside
+        that edit is not refused (INV-ENG-003 refuses only over unread,
+        in-flight or reserved inbound, and none is left).
+
+        Pre-fix: the Approve callback never hands the lease to the seam, so it
+        is held until the finish hook's ``finally`` — after the edit — and the
+        completion is refused ``unread_inbound`` with nothing unread.
+        """
+        import agent as agent_mod
+        import test_tools_specialist_install as tsi
+        from tools import engagement_var, specialist_install_inspect
+        ch, reg, rec, drv, client, tch = await _mk_ctx(
+            tmp_path, fake_telegram_bot)
+        events: list[str] = []
+        real_factory = ch.engagement_inbound_reservation
+
+        class _EffectiveLease:
+            """Records a release only when it actually drops the driver's
+            count, so the finish hook's idempotent second call is not an
+            event."""
+
+            def __init__(self, inner):
+                self._inner = inner
+
+            def take(self) -> bool:
+                events.append("reserve")
+                return self._inner.take()
+
+            def release(self) -> None:
+                before = _reservations(drv, rec.id)
+                self._inner.release()
+                if _reservations(drv, rec.id) < before:
+                    events.append("release")
+
+        ch.engagement_inbound_reservation = (
+            lambda eid: _EffectiveLease(real_factory(eid)))
+        inner_admit = ch._driver_admit_inbound
+
+        def _admit(r, text):
+            events.append("admit")
+            return inner_admit(r, text)
+        ch._driver_admit_inbound = _admit
+        ch._resume_and_ready = AsyncMock(return_value=True)
+        entered, gate = asyncio.Event(), asyncio.Event()
+
+        async def _edit(chat_id, message_id, text):
+            events.append("edit")
+            entered.set()
+            await gate.wait()
+        ch.edit_dm_message = _edit
+        tsi._wire_inspect(monkeypatch, tmp_path, channel=ch)
+        cap = tsi._capture_real_consent(monkeypatch)
+        task = None
+        try:
+            # A production configurator engagement is kind "executor".
+            token = engagement_var.set(SimpleNamespace(id=rec.id,
+                                                       kind="executor"))
+            try:
+                payload = tsi._payload(
+                    await specialist_install_inspect.handler(
+                        {"repo": "owner/repo", "ref": "main"}))
+            finally:
+                engagement_var.reset(token)
+            assert payload.get("consent") == "keyboard_posted", payload
+            req = SimpleNamespace(meta={})
+            cap["on_commit_sync"](0, req.meta)
+            task = asyncio.get_running_loop().create_task(
+                cap["finish_factory"](88, req)(
+                    {"outcome": "answered", "option_index": 0}))
+            await asyncio.wait_for(entered.wait(), 5)
+            # The continuation turn runs to its end while the edit is held.
+            await _drain_tasks(ch)
+            during = (len(client.query_prompts),
+                      drv.inbound_unread_depth(rec.id),
+                      _reservations(drv, rec.id))
+            completion = await _emit_ok(rec)
+            gate.set()
+            await asyncio.wait_for(task, 5)
+            facts = (during, completion.get("status"),
+                     completion.get("kind"), events)
+            assert facts == ((1, 0, 0), "acknowledged", None,
+                             ["reserve", "admit", "release", "edit"]), (
+                f"approve transfer facts: {facts!r}")
+        finally:
+            gate.set()
+            if task is not None:
+                await asyncio.wait_for(asyncio.gather(
+                    task, return_exceptions=True), 5)
+            await _drain_tasks(ch)
+            agent_mod.active_engagement_driver = None
+
 
 class TestACompletionRacingTheContinuationIsRefused:
     """INV-ENG-003, extended to in_casa: an admitted-but-undelivered system

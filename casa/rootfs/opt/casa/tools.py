@@ -16560,7 +16560,8 @@ async def specialist_install_inspect(args: dict) -> dict:
             # later, inside the engagement's per-turn lock, and what that
             # leaves open is stated once, in INV-SPEC-010
             # (docs/architecture/specialist-lifecycle.md).
-            return bool(await deliver(rec, continuation))
+            return bool(await deliver(
+                rec, continuation, inbound_reservation=inbound_reservation))
         except Exception:  # noqa: BLE001 — tap-callback path: never raise
             logger.warning(
                 "post-consent auto-resume failed (slug=%s) — operator can nudge "
@@ -17520,7 +17521,7 @@ async def persona_install_inspect(args: dict) -> dict:
                 "for further input: call persona_install_commit with the staged "
                 "values, then finish the recipe (config_git_commit, casa_reload, "
                 "emit_completion).",
-            ))
+                inbound_reservation=inbound_reservation))
         except Exception:  # noqa: BLE001 — tap-callback path: never raise
             logger.warning(
                 "post-consent persona auto-resume failed (persona_id=%s) — "
@@ -18411,10 +18412,13 @@ def _owned_entries_now(slug: str) -> "list[dict]":
     return plugin_registry.owned_entries_for(slug, data) if data.valid else []
 
 
-def _engagement_deliverer(channel: Any, eng: Any):
+def _engagement_deliverer(channel: Any, eng: Any, *,
+                          inbound_reservation: Any = None):
     """A continuation into the configurator engagement *eng* (the persona
     install-consent precedent): returns True only when the turn was handed
-    off."""
+    off. #1261: an *inbound_reservation* (a tap's lease) is handed to the seam,
+    which releases it in the step that admits the ticket; without one the
+    seam is called exactly as before, with no keyword at all."""
     async def _deliver(text: str) -> bool:
         if eng is None or channel is None:
             return False
@@ -18425,7 +18429,10 @@ def _engagement_deliverer(channel: Any, eng: Any):
         rec = registry.get(eng.id)
         if rec is None:
             return False
-        return bool(await deliver(rec, text))
+        if inbound_reservation is None:
+            return bool(await deliver(rec, text))
+        return bool(await deliver(rec, text,
+                                  inbound_reservation=inbound_reservation))
     return _deliver
 
 
@@ -18614,19 +18621,24 @@ async def _erase_gate(*, tool: str, arg: str, name: str, subject: str,
             if pec.ERASE in choices:
                 erasers.append((s.name, s.tool, s.summary))
         text = pec.render_erase_choice(what, erasers, choices)
+        # #1261: the tap's lease, taken at the tap commit, is handed to the
+        # seam by the choice's own continuation — never by the background
+        # outcome delivery, which keeps the lease-free deliverer above.
+        lease = _continuation_inbound_reservation(channel, eng)
 
         async def _continue(choice: int) -> bool:
             if choice in (pec.CANCEL, pec.KEEP):
                 # Keep and Cancel answer the question now: an erase already
                 # approved and queued must not run behind them.
                 questions.close(subject, question)
-            return await deliver(_choice_continuation(tool, arg, name, choice,
-                                                      call_extra))
+            return await _engagement_deliverer(
+                channel, eng, inbound_reservation=lease)(
+                    _choice_continuation(tool, arg, name, choice, call_extra))
         try:
             handle = pec.prompt_erase_choice(
                 coordinator=CHALLENGES, channel=channel, key=key, text=text,
                 continue_cb=_continue,
-                inbound_reservation=_continuation_inbound_reservation(channel, eng),
+                inbound_reservation=lease,
                 choices=choices)
         except Exception as exc:  # noqa: BLE001 — structured, never a raise
             logger.exception("erase-choice prompt failed to post")
