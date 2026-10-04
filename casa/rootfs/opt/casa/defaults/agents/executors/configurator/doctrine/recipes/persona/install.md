@@ -22,8 +22,8 @@ does not apply it to anything by itself; see `recipes/persona/apply.md` for that
    their DM response and then stop (do not loop-retry). After Approve the install normally
    continues automatically — a synthetic resume turn carries this recipe forward — so you do NOT
    ask for a second message by default; only if that automatic resume fails to deliver would the
-   operator need to send any message in the topic to continue. After Deny a resume turn tells you
-   the operator refused: nothing was installed, so do not call `persona_install_commit`, commit or
+   operator need to send any message in the topic to continue. After Deny a resume turn normally
+   tells you the operator refused: nothing was installed, so do not call `persona_install_commit`, commit or
    reload — conclude with `emit_completion(status="cancelled", text=...)` saying the operator
    refused the install.
 4. Once approved: `persona_install_commit(persona_id=..., version=..., checksum=..., staged_dir=...)`

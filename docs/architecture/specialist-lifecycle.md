@@ -187,15 +187,16 @@ takes a synchronous ingress reservation at its commit step, so a successful comp
 longer commit in the interval between the operator's tap and the continuation's admission. See
 [`architecture/engagement-completion-gate.md`](engagement-completion-gate.md).
 
-**An upgrade is worded as an update, and a Deny tells the engagement.** An upgrade, and a
+**An upgrade is worded as an update, and a Deny asks to tell the engagement.** An upgrade, and a
 settings change at the installed version, go through the same keyboard and bind the same
 approval identity as a fresh install. The keyboard and every edit but the success one name the
 operation an update rather than an install; the identity, the recorded ack and the
 `pre_authorized` short-circuit do not see the difference. A Deny records nothing and edits the
 DM as before, then hands the requesting engagement a continuation through the same seam,
-having taken the same tap-commit reservation, so the configurator learns of the refusal and
-concludes instead of waiting for a turn that never comes. That hand-off is a request in exactly
-the sense above, and the Deny edit is not chosen from it. An expiry, a withdrawal or a
+having taken the same tap-commit reservation, so that the configurator can learn of the refusal
+and conclude instead of waiting for a turn that never comes. That hand-off is a request in
+exactly the sense above, and the Deny edit is not chosen from it: when the seam refuses the
+hand-off, nothing retries it and the engagement is not told. An expiry, a withdrawal or a
 cancellation still tells the engagement nothing.
 
 **INV-SPEC-007**: A failed system-requirement replacement preserves the previously working installation — the replacement is built as a new generation in the plugin's own namespace and published by a single atomic retarget of the launcher link; the serving generation is never moved, and the superseded one is retained until the next install.

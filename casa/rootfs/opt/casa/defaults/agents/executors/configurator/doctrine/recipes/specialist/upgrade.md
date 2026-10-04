@@ -38,7 +38,7 @@ apply unchanged, step 3's open-conversation warning included.
    version already installed the approval may already be on record, or may be asked again). The
    automatic resume turn after Approve tells you to continue with step 3's `specialist_upgrade` —
    never `specialist_install_commit`, which refuses an installed slug with
-   `kind: "active_present"`. After Deny a resume turn tells you the operator refused: nothing
+   `kind: "active_present"`. After Deny a resume turn normally tells you the operator refused: nothing
    changed and the specialist keeps its current version and settings, so do not call
    `specialist_upgrade`, commit or reload — conclude with `emit_completion(status="cancelled",
    text=...)` saying the operator refused the update.

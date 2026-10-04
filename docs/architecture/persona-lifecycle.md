@@ -214,7 +214,9 @@ positive report is not a guarantee that the operator learned anything.
 
 A Deny records nothing and, after its DM edit, hands the requesting engagement a continuation
 through the same seam, having taken the same tap-commit reservation — the specialist sibling's
-Deny behaviour, described there — so the configurator learns of the refusal and concludes.
+Deny behaviour, described there — so that the configurator can learn of the refusal and
+conclude. As there, the hand-off is a request: when the seam refuses it, nothing retries it and
+the engagement is not told.
 
 **INV-PERS-013**: A persona ref that arrives through a persona tool — a swap, a reset, an apply, an install commit, a removal or the sweep — has its id and version segments validated against the shared canonical patterns before any path join under the approved roots, and where the tool loads a pack to bind it — a swap, a reset, an apply — the pack must declare the identity the ref names; so a traversal-bearing ref never reaches a caller-facing persona path join and a mis-parked pack is never bound under a ref it does not declare.
 
