@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.344.14] - 2026-10-04
+
+### Fixed
+
+- The s6 programs Casa runs to start and stop a specialist's engagement are now always the
+  ones the app image installed. Before, a plugin that published a tool with the same name
+  (for example `s6-rc` or `s6-svstat`) was run in their place, because the plugin tools
+  directory comes first on the app's PATH; engagements then failed to start or stop, with an
+  error naming a program that looked like part of the app.
+
 ## [0.344.13] - 2026-10-04
 
 ### Fixed

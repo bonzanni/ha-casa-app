@@ -362,6 +362,8 @@ mkdir -p "$TOOLS_BIN"
 # the ENTIRE image PATH including /opt/casa/venv/bin — intentional for
 # engagement tool overrides; core services must therefore exec the venv
 # interpreter by absolute path (/opt/casa/venv/bin/python3), never bare python3.
+# The s6 driver (drivers/s6_rc.py) runs its s6 programs under a PATH with this
+# directory removed (#987, its PLUGIN_TOOLS_BIN names it).
 CURRENT_PATH="${PATH}"
 if ! printf "%s" "$CURRENT_PATH" | grep -q "^\(.*:\)\?${TOOLS_BIN}\(:\|$\)"; then
     NEW_PATH="$TOOLS_BIN:$CURRENT_PATH"

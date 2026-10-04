@@ -792,7 +792,7 @@ async def test_probe_status_and_pid_strict_shapes(
     # s6-svstat pid contract so force_turn_boundary never signals blind.
     monkeypatch.setattr(s6_rc.os.path, "isdir", lambda p: True)
 
-    def _run(argv, capture_output=True, text=True):
+    def _run(argv, capture_output=True, text=True, env=None):
         return _FakeCompleted(rc, stdout)
 
     monkeypatch.setattr(s6_rc.subprocess, "run", _run)
