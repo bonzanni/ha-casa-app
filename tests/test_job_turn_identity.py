@@ -21,6 +21,12 @@ import background_jobs as jobs
 import log_cid
 import tools
 from log_cid import cid_var
+# #898: install_logging is process-global; the guard fails a test here that
+# leaves logging state altered. Autouse applies only where the name is imported.
+from logging_state import (  # noqa: F401 — autouse where imported
+    casa_logging_guard,
+    casa_logging_restored,
+)
 from sdk_client_pool import _CidBox
 from test_background_jobs_loop import (  # noqa: F401 — harness is a fixture
     Client, ClosableClient, harness, payload, result, text_frame)
@@ -311,12 +317,15 @@ class _Ties(logging.Handler):
 
 @pytest.fixture
 def ties():
-    log_cid.install_logging()
-    handler = _Ties()
-    root = logging.getLogger()
-    root.addHandler(handler)
-    yield handler
-    root.removeHandler(handler)
+    with casa_logging_restored():
+        log_cid.install_logging()
+        handler = _Ties()
+        root = logging.getLogger()
+        root.addHandler(handler)
+        try:
+            yield handler
+        finally:
+            root.removeHandler(handler)
 
 
 def observe(h, seen, tag):
