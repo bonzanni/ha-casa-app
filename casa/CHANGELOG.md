@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.344.19] - 2026-10-04
+
+### Fixed
+- Casa's agents could call the Claude CLI's own scheduling tool `ScheduleWakeup` unless their own tool settings denied it, and could call `CronCreate`, `CronDelete` and `CronList` on the same terms. The default settings of the assistant, butler and concierge denied the `Cron` tools but not `ScheduleWakeup`. These tools ask for no approval and schedule work inside the CLI, outside Casa's reminders. A wake-up set this way does have an effect: in a test of the CLI version Casa uses, the CLI started a turn of its own at the due time when its process was still running. `CronCreate` can also save its jobs to disk. Every Claude CLI session Casa starts now denies these four tools, plus `Monitor` and `RemoteTrigger`, whatever the agent's own tool settings say. (#1258)
+
 ## [0.344.18] - 2026-10-04
 
 ### Fixed
