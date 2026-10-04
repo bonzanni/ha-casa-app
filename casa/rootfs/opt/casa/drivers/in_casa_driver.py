@@ -28,6 +28,7 @@ from error_kinds import (
 )
 from engagement_registry import JOB_SIDS_KEY, EngagementRecord
 import sdk_logging
+from log_cid import cid_var, new_cid
 
 if TYPE_CHECKING:
     from channels.telegram import TopicStreamHandle
@@ -54,6 +55,29 @@ SessionIdPersister = Callable[[str, str], Awaitable[None]]
 """(engagement_id, session_id) → None — registry persist hook.
 
 Matches engagement_registry.persist_session_id's bound-method signature."""
+
+
+class _EngagementTurn:
+    """#1165/#1033: the engagement's running turn, as the SDK read task sees
+    it. One per client: created at ``open``/``resume``/``open_fresh``, bound
+    into ``log_cid.cid_var`` before the client's ``__aenter__`` (the read task
+    snapshots context there, so a per-turn contextvar never reaches it), and
+    MUTATED IN PLACE by ``_deliver_turn`` under the engagement's turn lock —
+    replacing it would leave the read task rendering the first turn's cid.
+
+    ``value`` is the running (or last) turn's cid and renders as the record's
+    cid; it is not cleared between turns. ``batch`` is the job batch number the
+    running turn delivers, None for any other turn, and is cleared when the
+    turn ends."""
+
+    __slots__ = ("value", "batch")
+
+    def __init__(self) -> None:
+        self.value = "-"
+        self.batch: int | None = None
+
+    def __str__(self) -> str:
+        return self.value
 
 
 def _session_id_from_message(sdk_msg: Any) -> str | None:
@@ -269,6 +293,9 @@ class InCasaDriver(DriverProtocol):
         # Per-engagement asyncio.Lock guards query/receive_response sequencing:
         # ClaudeSDKClient is single-threaded per connection.
         self._locks: dict[str, asyncio.Lock] = {}
+        # #1165/#1033: the running turn of each live client (see
+        # _EngagementTurn); same lifetime as the client and its lock.
+        self._turns: dict[str, _EngagementTurn] = {}
         # v0.69.11: the CLI's session id, captured from the MESSAGE STREAM
         # (SystemMessage init `data["session_id"]` / ResultMessage.session_id) —
         # ClaudeSDKClient has NO `session_id` attribute on the pinned Agent
@@ -376,7 +403,9 @@ class InCasaDriver(DriverProtocol):
                 options, engagement_id=engagement.id[:8],
             ),
         )
+        turn = _EngagementTurn()
         token = engagement_var.set(engagement)
+        cid_token = cid_var.set(turn)
         try:
             ctx = client.__aenter__()
             entered = await ctx if asyncio.iscoroutine(ctx) else ctx
@@ -421,6 +450,7 @@ class InCasaDriver(DriverProtocol):
             self._clients[engagement.id] = entered or client
             self._ctx_stack[engagement.id] = client  # for __aexit__
             self._locks[engagement.id] = asyncio.Lock()
+            self._turns[engagement.id] = turn
             logger.info(
                 "Engagement %s driver=in_casa client opened",
                 engagement.id[:8],
@@ -428,7 +458,9 @@ class InCasaDriver(DriverProtocol):
         finally:
             # Clear from the parent task. The SDK inner task already
             # captured its own snapshot at __aenter__ time and is
-            # unaffected by this reset.
+            # unaffected by this reset — nor is the opener (a resident's
+            # tool callback keeps its own per-turn cid box).
+            cid_var.reset(cid_token)
             engagement_var.reset(token)
 
     async def run_launch_turn(
@@ -440,7 +472,7 @@ class InCasaDriver(DriverProtocol):
         rollback stays here: a turn that raises closes and deregisters the
         client, so no half-alive engagement is left behind a dead pipe."""
         try:
-            await self._deliver_turn(engagement, prompt)
+            await self._run_turn(engagement, prompt)
         except BaseException:
             # M14: Bug-13-style rollback (claude_code got this in v0.14.6).
             # engage_executor marks the record error, but error records are
@@ -484,10 +516,14 @@ class InCasaDriver(DriverProtocol):
         self, engagement: EngagementRecord, text: str,
         *, tg_message_id: int | None = None,
         inbound_token: object | None = None,
+        batch: int | None = None,
     ) -> None:
         # tg_message_id is part of the uniform driver interface (v0.79
         # reply-threading); in_casa turns have no topic-stream threading,
         # so it is accepted and ignored.
+        #
+        # #1033: ``batch`` is the job batch number this turn delivers, passed
+        # only by ``start_next_batch``'s hand-off; every other turn is None.
         #
         # #649: ``inbound_token`` is a seam-created admission ticket (the
         # Telegram entry points admit synchronously before their first await
@@ -509,7 +545,8 @@ class InCasaDriver(DriverProtocol):
                 raise DriverNotAliveError(
                     f"engagement {engagement.id[:8]} has no live client"
                 )
-            await self._deliver_turn(engagement, text, inbound_token=token)
+            await self._run_turn(
+                engagement, text, inbound_token=token, batch=batch)
         except BaseException:
             if self_owned:
                 self.discharge_inbound(engagement.id, token)
@@ -719,6 +756,7 @@ class InCasaDriver(DriverProtocol):
         client = self._clients.pop(engagement.id, None)
         ctx = self._ctx_stack.pop(engagement.id, None)
         self._locks.pop(engagement.id, None)
+        self._turns.pop(engagement.id, None)
         self._session_ids.pop(engagement.id, None)
         self._launch_incomplete.pop(engagement.id, None)  # #678 map hygiene
         self._followup_incomplete.pop(engagement.id, None)  # #692 same
@@ -789,17 +827,21 @@ class InCasaDriver(DriverProtocol):
                 options, engagement_id=engagement.id[:8],
             ),
         )
+        turn = _EngagementTurn()
         token = engagement_var.set(engagement)
+        cid_token = cid_var.set(turn)
         try:
             entered = await client.__aenter__()
             self._clients[engagement.id] = entered or client
             self._ctx_stack[engagement.id] = client
             self._locks[engagement.id] = asyncio.Lock()
+            self._turns[engagement.id] = turn
             logger.info(
                 "Engagement %s resumed (session=%s)",
                 engagement.id[:8], session_id,
             )
         finally:
+            cid_var.reset(cid_token)
             engagement_var.reset(token)
 
     def turn_in_progress(self, engagement_id: str) -> bool:
@@ -807,6 +849,17 @@ class InCasaDriver(DriverProtocol):
         right now? A teardown issued now would wait for it."""
         lock = self._locks.get(engagement_id)
         return lock is not None and lock.locked()
+
+    def running_batch(self, engagement_id: str) -> int | None:
+        """#1033: SYNCHRONOUS — the job batch number of the turn running in the
+        engagement's current session, or None when no turn is running or the
+        running turn is not a batch (a launch, a reply to a message in the
+        topic, a continuation). Set from ``start_next_batch``'s explicit
+        argument, never inferred from the turn's kind."""
+        turn = self._turns.get(engagement_id)
+        if turn is None or not self.turn_in_progress(engagement_id):
+            return None
+        return turn.batch
 
     async def wait_turn_idle(self, engagement: EngagementRecord) -> None:
         """#1166: wait until the turn running in the engagement's current
@@ -863,6 +916,7 @@ class InCasaDriver(DriverProtocol):
         self._clients.pop(engagement.id, None)
         self._ctx_stack.pop(engagement.id, None)
         self._locks.pop(engagement.id, None)
+        self._turns.pop(engagement.id, None)
         self._session_ids.pop(engagement.id, None)
 
     async def open_fresh(self, engagement: EngagementRecord) -> None:
@@ -889,17 +943,21 @@ class InCasaDriver(DriverProtocol):
                 options, engagement_id=engagement.id[:8],
             ),
         )
+        turn = _EngagementTurn()
         token = engagement_var.set(engagement)
+        cid_token = cid_var.set(turn)
         try:
             entered = await client.__aenter__()
             self._clients[engagement.id] = entered or client
             self._ctx_stack[engagement.id] = client
             self._locks[engagement.id] = asyncio.Lock()
+            self._turns[engagement.id] = turn
             logger.info(
                 "Engagement %s reopened FRESH after clearance downgrade",
                 engagement.id[:8],
             )
         finally:
+            cid_var.reset(cid_token)
             engagement_var.reset(token)
 
     def get_session_id(self, engagement: EngagementRecord) -> str | None:
@@ -1019,9 +1077,30 @@ class InCasaDriver(DriverProtocol):
                 f"engagement {engagement.id[:8]}'s session was invalidated by "
                 "a clearance downgrade — not delivering into it")
 
+    async def _run_turn(
+        self, engagement: EngagementRecord, prompt: str,
+        *, inbound_token: object | None = None,
+        batch: int | None = None,
+    ) -> None:
+        """#1165: run one turn under a cid of its own. The turn task logs under
+        the minted cid as a plain string for the whole turn — the stream's
+        final delivery and the diagnostics after it included, which run after
+        the turn lock is released, when the engagement's shared turn holder may
+        already carry the NEXT turn's cid — and the caller's binding (a
+        resident's box, the sweep's ``-``) is restored on return."""
+        cid = new_cid()
+        cid_token = cid_var.set(cid)
+        try:
+            await self._deliver_turn(engagement, prompt,
+                                     inbound_token=inbound_token,
+                                     batch=batch, cid=cid)
+        finally:
+            cid_var.reset(cid_token)
+
     async def _deliver_turn(
         self, engagement: EngagementRecord, prompt: str,
         *, inbound_token: object | None = None,
+        batch: int | None = None, cid: str | None = None,
     ) -> None:
         # Lazy import: tools imports engagement_registry; doing this at
         # module top-level would create a circular import.
@@ -1029,6 +1108,11 @@ class InCasaDriver(DriverProtocol):
 
         client = self._clients[engagement.id]
         lock = self._locks[engagement.id]
+        # #1165/#1033: captured with the client and lock it shares a lifetime
+        # with; a rebuild that replaces them while this turn waits is refused
+        # below, exactly as for the client.
+        turn = self._turns.get(engagement.id)
+        cid = cid or new_cid()
         assert engagement.topic_id is not None
         # Phase 3b: stream per-AssistantMessage rather than buffer the
         # entire turn.
@@ -1055,6 +1139,21 @@ class InCasaDriver(DriverProtocol):
         token = engagement_var.set(engagement)
         try:
             async with lock:
+                # #1165/#1033: this turn is now the engagement's running turn.
+                # Mutated in place, never replaced: the SDK read task holds the
+                # holder bound at client creation, and tool callbacks render its
+                # cid and read its batch (``running_batch``). The tie line is
+                # how a reader gets from any of this turn's lines to its
+                # engagement, its batch and the turn that engaged it.
+                if turn is not None:
+                    turn.value = cid
+                    turn.batch = batch
+                logger.info(
+                    "Engagement %s turn cid=%s batch=%s engaged_by=%s",
+                    engagement.id, cid,
+                    "-" if batch is None else batch,
+                    (getattr(engagement, "origin", None) or {}).get("cid") or "-",
+                )
                 # #690 — the in_casa half of INV-ENG-009, and the ONLY point
                 # at which it can be made. Everything from here to
                 # ``client.query`` below is synchronous, so no other coroutine
@@ -1274,6 +1373,11 @@ class InCasaDriver(DriverProtocol):
                                 accumulated = candidate
                             await stream.emit(accumulated)
         finally:
+            # #1033: the batch never outlives its turn. Reached synchronously
+            # from the lock's release (no await between), so no other turn has
+            # run in between; ``running_batch`` also reads the lock.
+            if turn is not None:
+                turn.batch = None
             engagement_var.reset(token)
         final = accumulated.strip()
         # #665: UNKNOWN before any finalize — a quiet turn (no text) makes no

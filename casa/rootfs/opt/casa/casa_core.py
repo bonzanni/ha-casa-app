@@ -4990,7 +4990,7 @@ async def main() -> None:
         telegram_channel._semantic_memory = semantic_memory
 
         async def _driver_send_user_turn(rec, text, *, tg_message_id=None,
-                                         inbound_token=None):
+                                         inbound_token=None, batch=None):
             # §A3 (Sol r10-2): PROPAGATE the enqueue disposition so
             # _deliver_turn_bg can promote (accepted) vs roll back (rejected)
             # the answered reservation.
@@ -4999,9 +4999,11 @@ async def main() -> None:
                     rec, text, tg_message_id=tg_message_id)
             # in_casa driver has no durable spool / reply-threading (§7
             # follow-up) — drop the id; no reservation disposition. #649:
-            # thread the seam-admitted ticket so the driver adopts it.
+            # thread the seam-admitted ticket so the driver adopts it. #1033:
+            # and the job batch number a batch turn carries (jobs are always
+            # in_casa, so the claude_code branch above never sees one).
             await engagement_driver.send_user_turn(
-                rec, text, inbound_token=inbound_token)
+                rec, text, inbound_token=inbound_token, batch=batch)
             return None
         telegram_channel._driver_send_user_turn = _driver_send_user_turn
 
