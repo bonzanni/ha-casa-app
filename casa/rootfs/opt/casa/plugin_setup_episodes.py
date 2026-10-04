@@ -119,6 +119,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, NamedTuple
 
 import plugin_dispatch
+from channels import OperatorNotifyBeforeStart
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +188,14 @@ _worker_task: asyncio.Task | None = None
 _retry_task: asyncio.Task | None = None
 _kick: asyncio.Event | None = None
 
+#: #1014: operator notes the channel could not take yet (see :func:`_note`).
+#: In memory only — a restart before delivery loses them. Entries are added
+#: ONLY by :func:`_owe`, which keeps a pump alive while any is owed.
+_owed_notes: "list[_OwedNote]" = []
+_note_pump_task: asyncio.Task | None = None
+_NOTE_RETRY_INTERVAL_S = 5.0
+_note_sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
+
 
 def _now() -> float:
     return time.time()
@@ -234,7 +243,7 @@ def configure(*, dispatch, notify_operator, resolve_registry_entry,
     global _dispatch, _notify_operator, _resolve_registry_entry
     global _ack_lookup, _routes_live, _applied_routing, _secrets_ready
     global _execution_ready, _courier_ready, _registry_entry_fresh
-    global _sleep, _lock, _kick
+    global _sleep, _lock, _kick, _note_pump_task
     _dispatch = dispatch
     _notify_operator = notify_operator
     _resolve_registry_entry = resolve_registry_entry
@@ -246,6 +255,10 @@ def configure(*, dispatch, notify_operator, resolve_registry_entry,
     _execution_ready = execution_ready
     _courier_ready = courier_ready
     _sleep = sleep
+    # #1014: a configure is a boot — nothing owed survives it, and a pump
+    # bound to an earlier loop is never awaited again.
+    _owed_notes.clear()
+    _note_pump_task = None
     if _lock is None:
         _lock = asyncio.Lock()
     if _kick is None:
@@ -1261,7 +1274,7 @@ async def on_consent_decision(*, plugin: str, artifact_id: str,
     acquisition; notes/kick happen after release. Never raises."""
     if _lock is None:
         return
-    notes: list[str] = []
+    notes: list[tuple[str, str]] = []
     created = False
     try:
         async with _lock:
@@ -1338,8 +1351,8 @@ async def on_consent_decision(*, plugin: str, artifact_id: str,
         logger.exception("setup-episode decision handling failed (plugin=%s)",
                          plugin)
         return
-    for n in notes:
-        await _note(n)
+    for episode_id, n in notes:
+        await _note(n, episode_id=episode_id, status="refused")
     if created and _kick is not None:
         _kick.set()
 
@@ -1362,7 +1375,8 @@ def _resolve_entry(plugin: str) -> tuple[bool, dict | None]:
     return True, entry
 
 
-def _settle_locked(data: dict, plugin: str) -> tuple[bool, list[str]]:
+def _settle_locked(data: dict,
+                   plugin: str) -> tuple[bool, list[tuple[str, str]]]:
     """Settlement body (caller holds the lock / is yield-free): once every
     member is decided the round is CONSUMED and its outcome applied to the
     obligation for the round's artifact —
@@ -1381,7 +1395,8 @@ def _settle_locked(data: dict, plugin: str) -> tuple[bool, list[str]]:
     note). v0.161.0: settlement no longer resolves the registry, so it can no
     longer be deferred; the setup tool is resolved at dispatch instead.
 
-    Returns ``(released, notes)``. Mutates ``data`` (caller saves)."""
+    Returns ``(released, notes)``, each note ``(episode_id, text)`` for the
+    row it reports on. Mutates ``data`` (caller saves)."""
     rnd = data["rounds"].get(plugin)
     if not isinstance(rnd, dict):
         return False, []
@@ -1423,10 +1438,10 @@ def _settle_locked(data: dict, plugin: str) -> tuple[bool, list[str]]:
             return False, []
         row.update({"status": "refused", "updated_ts": _now(),
                     "last_error": f"{len(denied)} unapproved consent(s)"})
-        return False, [
+        return False, [(row.get("id") or "",
             f"Plugin {plugin}: consent settled with {len(denied)} unapproved "
             "consent(s), so its setup tool was NOT run — it is argument-free "
-            "and cannot target a subset. Approving the consent will run it."]
+            "and cannot target a subset. Approving the consent will run it.")]
     if row.get("gate") == "released":
         return False, []
     row.update({
@@ -1460,7 +1475,7 @@ async def _recover_and_settle() -> None:
     decision to feed). Never raises."""
     if _lock is None:
         return
-    notes: list[str] = []
+    notes: list[tuple[str, str]] = []
     created_any = False
     try:
         async with _lock:
@@ -1486,8 +1501,8 @@ async def _recover_and_settle() -> None:
     except Exception:  # noqa: BLE001
         logger.exception("setup-round recover/settle sweep failed")
         return
-    for n in notes:
-        await _note(n)
+    for episode_id, n in notes:
+        await _note(n, episode_id=episode_id, status="refused")
     if created_any and _kick is not None:
         _kick.set()
 
@@ -1551,7 +1566,8 @@ async def _retire_untracked_dispatches() -> None:
                 "outcome key, cannot be settled", row.get("id"),
                 row.get("plugin"))
             await _note(f"Plugin {row.get('plugin')}: automatic setup was "
-                        f"{_UNTRACKED_DISPATCH_ERROR}.")
+                        f"{_UNTRACKED_DISPATCH_ERROR}.",
+                        episode_id=row.get("id") or "", status="failed")
     except Exception:  # noqa: BLE001 — a worker pass must not die on this
         logger.exception("untracked-dispatch retirement failed")
 
@@ -1562,7 +1578,11 @@ async def _worker_pass() -> bool:
     (impl r9, Terra) — the caller schedules a delayed self-kick so recovery
     does not depend on a future reconcile kick that may have coalesced with
     the one that already fired (resolver failure is internal, not tied to a
-    reconcile that would kick again)."""
+    reconcile that would kick again).
+
+    #1014: notes owed from an earlier attempt go first — they never make a
+    pass ask for a retry (the note pump owns their retry)."""
+    await _drain_owed_notes()
     await _recover_and_settle()
     await _retire_untracked_dispatches()
     retry_wanted = False
@@ -1671,7 +1691,8 @@ async def _run_episode(ep: dict) -> bool:
                             "(plugin gone?)")
             await _note(f"Plugin {plugin}: a queued setup run was dropped — "
                         "the plugin could not be resolved. Run its setup tool "
-                        "manually if it is still installed.")
+                        "manually if it is still installed.",
+                        episode_id=ep["id"], status="stale")
             return
         _update_episode(ep["id"], resolve_deferrals=deferrals,
                         last_error="waiting for registry resolution")
@@ -1683,7 +1704,8 @@ async def _run_episode(ep: dict) -> bool:
                         last_error="artifact superseded")
         await _note(f"Plugin {plugin}: a queued setup run was dropped — the "
                     "plugin was updated since the consent. A new consent "
-                    "round owns the current version.")
+                    "round owns the current version.",
+                    episode_id=ep["id"], status="stale")
         return
     # #451: the setup tool is resolved HERE, live from the current manifest —
     # never captured at settlement. That is what makes an update which changes
@@ -1826,7 +1848,8 @@ async def _run_episode(ep: dict) -> bool:
             return
         _update_episode(ep["id"], status="failed", last_error=instruction)
         await _note(f"Plugin {plugin}: automatic setup could not run "
-                    f"({instruction}). Run its setup tool manually.")
+                    f"({instruction}). Run its setup tool manually.",
+                    episode_id=ep["id"], status="failed")
         return
     # #1051: a specialist-target episode is sent as a COURIER turn asking
     # `role` (the assistant) to delegate to the specialist, and the delegation
@@ -2081,7 +2104,8 @@ def report_dispatch_outcome(episode_id: str, *, tools_used_ok: set,
                         "run the setup tool. Run it manually once the "
                         "plugin's tools load.")
             try:
-                asyncio.get_running_loop().create_task(_note(note))
+                asyncio.get_running_loop().create_task(
+                    _note(note, episode_id=episode_id, status="failed"))
             except RuntimeError:
                 pass
             return
@@ -2282,13 +2306,156 @@ def dispatch_still_owed(episode_id: str) -> bool:
         return True
 
 
-async def _note(text: str) -> None:
-    if _notify_operator is None:
+class _OwedNote:
+    """One operator note about one row's transition: the row's id, the
+    status the note reports, the text, and the failure classes already
+    logged for it (each is logged in full once, then at DEBUG)."""
+    __slots__ = ("episode_id", "status", "text", "logged")
+
+    def __init__(self, episode_id: str, status: str, text: str) -> None:
+        self.episode_id = episode_id
+        self.status = status
+        self.text = text
+        self.logged: set[str] = set()
+
+
+def _log_note_failure(entry: _OwedNote, kind: str, level: int,
+                      msg: str, *, exc_info: bool) -> None:
+    if kind in entry.logged:
+        logger.debug("setup-episode operator note still owed (episode=%s, %s)",
+                     entry.episode_id, kind)
         return
+    entry.logged.add(kind)
+    logger.log(level, msg, entry.episode_id, exc_info=exc_info)
+
+
+async def _send_note(entry: _OwedNote) -> bool:
+    """Try *entry* once. True when it is SETTLED — delivered, spent, or there
+    is no notifier to deliver to; False only when it is OWED. Never raises
+    (a cancellation propagates).
+
+    #1014: owed means ``operator_notify``'s not-ready raise, which happens
+    before anything is handed to the transport — the only failure that
+    cannot have delivered. Any other failure is a transport error, and a
+    transport error can follow a message Telegram accepted (a lost
+    acknowledgement), so re-sending it could show the operator the note
+    twice: it is logged and spent, as before."""
+    if _notify_operator is None:
+        return True
     try:
-        await _notify_operator(text)
+        await _notify_operator(entry.text)
+        return True
+    except OperatorNotifyBeforeStart:
+        # #930: the boot pass runs before the channels start — a designed
+        # retry, not a failure.
+        _log_note_failure(
+            entry, "before_start", logging.INFO,
+            "setup-episode operator note owed (episode=%s): the channel has "
+            "not started yet; it is sent once it can be", exc_info=False)
+        return False
+    except RuntimeError:
+        _log_note_failure(
+            entry, "not_ready", logging.ERROR,
+            "setup-episode operator note failed (episode=%s): the channel is "
+            "not ready; it is sent once it can be", exc_info=True)
+        return False
     except Exception:  # noqa: BLE001
-        logger.exception("setup-episode operator note failed")
+        logger.exception("setup-episode operator note failed (episode=%s); "
+                         "not re-sent, it may have been delivered",
+                         entry.episode_id)
+        return True
+
+
+def _note_still_true(entry: _OwedNote) -> bool | None:
+    """Does the row still stand as *entry* describes it? None when the store
+    cannot say (an unreadable or malformed read): the note is kept, neither
+    sent nor dropped. A re-arm mints a new row, so the old id is gone."""
+    read = _read_store()
+    if read.damage in ("unreadable", "malformed"):
+        return None
+    row = _row_by_id(read.data, entry.episode_id)
+    return row is not None and row.get("status") == entry.status
+
+
+def _owe(entries: "list[_OwedNote]", *, front: bool = False) -> None:
+    """The ONLY way an entry enters :data:`_owed_notes`. It also keeps the
+    pump alive, synchronously: whenever a note is owed and no drain holds it,
+    a pump will retry it."""
+    if not entries:
+        return
+    if front:
+        _owed_notes[:0] = entries
+    else:
+        _owed_notes.extend(entries)
+    _ensure_note_pump()
+
+
+def _ensure_note_pump() -> None:
+    global _note_pump_task
+    if _note_pump_task is not None and not _note_pump_task.done():
+        return
+    _note_pump_task = asyncio.get_running_loop().create_task(
+        _note_pump(), name="plugin-setup-note-pump")
+
+
+async def _note_pump() -> None:
+    """Retry owed notes, and nothing else: no worker pass, no kick, no
+    dispatch. Exists only while a note is owed; it returns, with no await
+    between the check and the return, once none is."""
+    while _owed_notes:
+        try:
+            await _note_sleep(_NOTE_RETRY_INTERVAL_S)
+            await _drain_owed_notes()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — the pump must outlive anything
+            logger.exception("setup-episode note pump pass failed")
+
+
+async def _drain_owed_notes() -> None:
+    """Re-send every owed note once. The list is swapped out synchronously,
+    so a note owed meanwhile lands in the emptied list and is not lost; a
+    delivered note is never put back, and every other one is, in order, even
+    on a cancellation. Never raises (a cancellation propagates)."""
+    if not _owed_notes:
+        return
+    batch = _owed_notes[:]
+    _owed_notes.clear()
+    kept: list[_OwedNote] = []
+    i = 0
+    try:
+        while i < len(batch):
+            entry = batch[i]
+            still = _note_still_true(entry)
+            if still is False:
+                logger.info("setup-episode operator note dropped "
+                            "(episode=%s): the row no longer stands as it "
+                            "reports", entry.episode_id)
+            elif still is None or not await _send_note(entry):
+                kept.append(entry)
+            i += 1
+    except Exception:  # noqa: BLE001
+        logger.exception("setup-episode owed-note drain failed")
+    finally:
+        _owe(kept + batch[i:], front=True)
+
+
+async def _note(text: str, *, episode_id: str, status: str) -> None:
+    """Tell the operator about one row's transition to *status*. Sent now
+    when the channel can take it; owed and retried when it cannot. Never
+    raises (a cancellation propagates)."""
+    entry = _OwedNote(episode_id, status, text)
+    try:
+        still = _note_still_true(entry)
+        if still is False:
+            logger.info("setup-episode operator note dropped (episode=%s): "
+                        "the row no longer stands as it reports", episode_id)
+            return
+        if still is None or not await _send_note(entry):
+            _owe([entry])
+    except Exception:  # noqa: BLE001
+        logger.exception("setup-episode operator note failed (episode=%s)",
+                         episode_id)
 
 
 def _compose(ep: dict, entry: dict, tool: str) -> tuple[str | None, str]:

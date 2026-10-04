@@ -5659,6 +5659,9 @@ async def main() -> None:
     # common path; the 5-minute event_spool_recovery job is the backstop
     # for every later unready window (e.g. a supervisor rebuild).
     _evep.kick_all()
+    # #1014: the setup worker's boot pass ran before the channels started
+    # too; a note it owed is retained, and this pass delivers it now.
+    _pse.kick()
 
     # 12a. E-F (v0.30.0): engagement-feature setup is now wired into
     # TelegramChannel._rebuild() as a final step after `self._app = app`.
