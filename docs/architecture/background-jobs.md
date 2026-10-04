@@ -186,11 +186,12 @@ once (INV-BGJOB-007).
 
 A batch makes progress when its LAST `report_job_progress` of that batch said so: a batch
 that reports twice has changed its mind, and the later word is the one it stands by, which
-is why the posted lines carry only the worker's summary and counts. Only the batch's own
-turn reports for it: `start_next_batch` hands the batch number to the driver with the
-batch's turn (#1166's re-send of that turn keeps it), and a report from any other turn of
-the job — the launch acknowledgement, a reply to a message in the topic, a continuation —
-is refused, posts nothing and changes nothing (#1033). A batch that reported
+is why the posted lines carry only the worker's summary and counts. A report counts for
+the batch whose turn runs as its handler runs: `start_next_batch` hands the batch
+number to the driver with its turn (#1166's re-send keeps it), so a report from any
+other turn of the job — the launch acknowledgement, a reply in the topic, a continuation —
+is refused, posts nothing and changes nothing (#1033), unless the CLI cancelled the call
+and its handler first runs in the next batch's turn. A batch that reported
 `progressed=False`, or that ended without reporting at all, did not: the counts are the
 worker's own unit — work can be uncountable, or its total unknown — so they are shown to
 the operator and decide nothing (#1031). A job launched before that rule carries the older
