@@ -183,7 +183,7 @@ Enforced by type: `operator_notify` raises `OperatorNotifyBeforeStart`, a `Runti
 subclass, for a not-ready channel only until `ChannelManager.start_all` has returned. The
 exhaustion, removal and advisory note sites catch it before their broad handler and keep the
 same control flow: the exhaustion and removal notes stay un-noted with no mark call, and the advisory note is not retried, as before. A later pass
-sends the owed note; the ten-minute `callback_spool_sweep` job kicks the worker if nothing
+sends the owed note; the five-minute `callback_spool_recovery` job kicks the worker if nothing
 else does.
 
 What it does not cover: "started" is not "ready". A first bring-up that failed transiently
