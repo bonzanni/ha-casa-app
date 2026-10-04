@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.344.12] - 2026-10-04
+
+### Fixed
+
+- A background job's progress report now counts for a batch only when that batch's turn is
+  the one running as the report is handled. Before, when a message in the job's topic was
+  answered while a batch was waiting to be judged, a progress report made in that reply was
+  credited to the batch, so replies could keep a job alive that its batches were not moving.
+  A report handled during a reply to a message in the topic, or during the acknowledgement
+  when the job starts, is now refused and posts nothing. One case remains: a report call
+  that is cancelled and only handled while the job's next batch is running counts for that
+  batch.
+- Each turn of a background job, and of a specialist's engagement, now gets a log
+  correlation id (cid) of its own, carried by the lines it writes while it runs, its cost and
+  token line included; when the turn starts its work, one log line ties that cid to the
+  engagement and, for a job, to its batch. Before, a job's batch turns inherited the cid of
+  whatever started them — often an unrelated turn of the assistant's, or none at all — and
+  the cost line names no engagement, so a job's cost could not be traced to the job by its
+  cid.
+
 ## [0.344.11] - 2026-10-04
 
 ### Fixed

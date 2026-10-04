@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from types import SimpleNamespace
 
@@ -139,6 +140,21 @@ class Harness:
     def batches(self):
         return [p for p in self.client.prompts if p.startswith("Batch ")]
 
+    @contextlib.asynccontextmanager
+    async def in_batch(self, n):
+        """The driver's view of batch ``n``'s turn running — its turn lock held
+        and its batch set — for a report made outside a scripted turn."""
+        if not self.driver.is_alive(self.rec):
+            await self.driver.open(self.rec, ClaudeAgentOptions())
+        self.rec.origin["job"]["started"] = n
+        turn = self.driver._turns[self.rec.id]
+        async with self.driver._locks[self.rec.id]:
+            turn.batch = n
+            try:
+                yield
+            finally:
+                turn.batch = None
+
     async def report(self, summary="Handled rows", progressed=True, **counts):
         reply = payload(await tools.report_job_progress.handler(
             {"summary": summary, "progressed": progressed, **counts}))
@@ -184,8 +200,8 @@ async def harness(tmp_path, monkeypatch, request):
     h.channel._driver_inbound_held = lambda r, t: h.driver.inbound_token_held(r.id, t)
     h.channel._driver_turn_incomplete = lambda r, t: h.driver.followup_turn_incomplete(r.id, t)
 
-    async def send(r, text, *, tg_message_id=None, inbound_token=None):
-        await h.driver.send_user_turn(r, text, inbound_token=inbound_token)
+    async def send(r, text, *, tg_message_id=None, inbound_token=None, batch=None):
+        await h.driver.send_user_turn(r, text, inbound_token=inbound_token, batch=batch)
     h.channel._driver_send_user_turn = send
 
     async def cancel(r, *, reason):
@@ -443,20 +459,43 @@ async def test_progress_rejects_invalid_arguments(harness, args):
 
 async def test_progress_format_persistence_and_grant(harness, tmp_path):
     h = harness
-    h.rec.origin["job"]["started"] = 2
-    token = tools.engagement_var.set(h.rec)
-    try:
+    persisted = {}
+
+    async def long_report():
         await h.report("x" * 310 + "\nnot included", done=0, remaining=9)
-    finally:
-        tools.engagement_var.reset(token)
-    assert h.topic() == "📊 Batch 2: " + "x" * 300 + " · 0 done · 9 left"
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "jobs.json"), bus=None)
-    await reg.load()
-    persisted = reg.get(h.rec.id).origin["job"]
+
+    async def reload():
+        reg = EngagementRegistry(tombstone_path=str(tmp_path / "jobs.json"), bus=None)
+        await reg.load()
+        persisted.update(reg.get(h.rec.id).origin["job"])
+    # #1033: a report counts for the batch whose turn runs as it is handled, so
+    # it is made inside batch 1's turn.
+    h.client.scripts = [[long_report, reload, result()], [h.complete, result()]]
+    await h.start()
+    await h.drain()
+    assert "📊 Batch 1: " + "x" * 300 + " · 0 done · 9 left" in h.topic().splitlines()
     assert persisted["advanced"]
     assert persisted["last_summary"] == "x" * 300
     assert "report_job_progress" not in {t.name for t in tools.select_casa_tools(frozenset(tools.SPECIALIST_CASA_GRANTS))}
     assert "report_job_progress" in {t.name for t in tools.select_casa_tools(frozenset(jobs.JOB_CASA_GRANTS))}
+
+
+async def test_progress_outside_a_batch_turn_is_refused(harness):
+    """#1033: a live job's report handled while no batch's turn is running has
+    no batch to count for: refused, nothing posted, the job's state
+    unchanged."""
+    h = harness
+    h.rec.origin["job"]["started"] = 2
+    before = dict(h.rec.origin["job"])
+    token = tools.engagement_var.set(h.rec)
+    try:
+        reply = payload(await tools.report_job_progress.handler(
+            {"summary": "work", "progressed": True}))
+    finally:
+        tools.engagement_var.reset(token)
+    assert reply == {"ok": False, "kind": "not_a_batch"}
+    assert h.bot.posts == []
+    assert h.rec.origin["job"] == before
 
 
 @pytest.mark.parametrize("context", ["none", "interactive", "terminal"])

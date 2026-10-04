@@ -444,11 +444,11 @@ async def test_a_refused_hand_off_keeps_the_spare_and_the_counters(fresh, monkey
     real = h.channel.deliver_system_turn
     refused = []
 
-    async def deliver(rec, text):
+    async def deliver(rec, text, **kw):
         if not refused:
             refused.append(text)
             return False
-        return await real(rec, text)
+        return await real(rec, text, **kw)
     monkeypatch.setattr(h.channel, "deliver_system_turn", deliver)
     h.client.scripts = [[text_frame("Starting the job"), result()]]
     await h.driver.start(h.rec, prompt="Acknowledge the job", options=ClaudeAgentOptions())

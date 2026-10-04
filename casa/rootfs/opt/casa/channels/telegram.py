@@ -2960,6 +2960,7 @@ class TelegramChannel(Channel):
         inbound_token: object | None = None,
         system_turn: bool = False,
         await_rebuild: bool = False,
+        batch: int | None = None,
     ) -> None:
         """M9 (v0.52.0): run one engagement user-turn to completion.
 
@@ -2992,6 +2993,12 @@ class TelegramChannel(Channel):
         and queued on the old session's lock — and the same text is sent again.
         Neither ever reaches the job finalizer below: the readiness step owns
         its own failures.
+
+        #1033: ``batch`` is the job batch number this turn delivers — passed
+        only through ``deliver_system_turn`` by ``start_next_batch`` — and goes
+        to the driver with the text, so a turn re-sent into the fresh session
+        is still that batch. ``system_turn`` is not batch identity: an authz or
+        configurator continuation is a system turn too.
 
         v0.83.0 (§A3, Sol r9-1/r10-2): this task OWNS the answered reservation
         after hand-off. The enqueue DISPOSITION drives its fate — an ACCEPTED
@@ -3037,12 +3044,13 @@ class TelegramChannel(Channel):
             # turn — popped only once the session it goes to is ready.
             preamble = self._rebuild_preambles.pop(rec.id, None)
             sent = f"{preamble}\n\n{text}" if preamble else text
+            extra = {}
             if inbound_token is not None:
-                return await self._driver_send_user_turn(
-                    rec, sent, tg_message_id=tg_message_id,
-                    inbound_token=inbound_token)
+                extra["inbound_token"] = inbound_token
+            if batch is not None:
+                extra["batch"] = batch
             return await self._driver_send_user_turn(
-                rec, sent, tg_message_id=tg_message_id)
+                rec, sent, tg_message_id=tg_message_id, **extra)
 
         from drivers.in_casa_driver import SessionInvalidatedError
         try:
@@ -3439,6 +3447,7 @@ class TelegramChannel(Channel):
     async def deliver_system_turn(
         self, rec, text: str,
         *, inbound_reservation: "_InboundReservation | None" = None,
+        batch: int | None = None,
     ) -> bool:
         """Resume-if-suspended (under the per-topic lock), then deliver a
         synthetic system-authored turn to engagement ``rec`` — the seam a
@@ -3521,7 +3530,7 @@ class TelegramChannel(Channel):
                 # turn from an operator's message in the same topic.
                 task = asyncio.create_task(self._deliver_turn_bg(
                     rec, text, inbound_token=inbound_token, system_turn=True,
-                    await_rebuild=await_rebuild))
+                    await_rebuild=await_rebuild, batch=batch))
                 self._turn_tasks.add(task)
                 task.add_done_callback(self._turn_tasks.discard)
                 # Task-end backstop for a cancelled-before-first-step task.

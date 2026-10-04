@@ -286,7 +286,7 @@ def casa_logging_containment() -> Iterator[LoggingState]:
 def casa_logging_guard(casa_logging_containment) -> Iterator[LoggingState]:
     """Fail any test in the importing module that leaves logging residue.
 
-    Autouse applies only where this name is imported, which is the four
+    Autouse applies only where this name is imported, which is the five
     modules that call ``install_logging``. It establishes a distinctive state
     first (see :data:`GUARD_ROOT_LEVEL`) so that an unrestored effect cannot
     hide behind an ambient value that happens to match, and it restores that

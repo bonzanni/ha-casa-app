@@ -538,8 +538,8 @@ async def test_a_fresh_specialist_hosted_job_runs_end_to_end_and_is_reaped(
     channel._driver_inbound_held = lambda r, t: driver.inbound_token_held(r.id, t)
     channel._driver_turn_incomplete = lambda r, t: driver.followup_turn_incomplete(r.id, t)
 
-    async def send(r, text, *, tg_message_id=None, inbound_token=None):
-        await driver.send_user_turn(r, text, inbound_token=inbound_token)
+    async def send(r, text, *, tg_message_id=None, inbound_token=None, batch=None):
+        await driver.send_user_turn(r, text, inbound_token=inbound_token, batch=batch)
     channel._driver_send_user_turn = send
     monkeypatch.setattr(agent, "active_engagement_driver", driver)
     monkeypatch.setattr("drivers.in_casa_driver.ClaudeSDKClient", SdkClient)

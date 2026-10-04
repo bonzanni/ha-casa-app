@@ -72,7 +72,7 @@ def test_every_module_calling_install_logging_imports_the_guard():
     # The count is asserted after the emptiness, and not instead of it: a scan
     # that silently stopped finding callers would otherwise pass by finding
     # nothing, and a scan that found a new one would report the wrong thing.
-    assert len(callers) == 4, callers
+    assert len(callers) == 5, callers
 
 
 class TestGuardArms:
