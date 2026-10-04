@@ -61,8 +61,9 @@ or by handing one to a plugin (`share_inbound_file` published the copy:
 `TurnScope.note_handed_off`) — per-file disclosure is not built — and its remedy is one Casa
 line at the head of every emission: `Casa: <persona> answered without opening “<file>” in
 this turn.`, or with several unread, a count that says how they were armed: `…any of the N
-files you sent in this turn.` for the turn's own files, `…any of the N files it listed.`,
-`…it tried to open.` or `…it listed or tried to open.` otherwise (#1218). `InheritedNote` is the resolved note of a payload an earlier turn
+files you sent in this turn.` for the turn's own files, `…any of the N files <persona> listed.`,
+`…<persona> tried to open.` or `…<persona> listed or tried to open.` otherwise (#1218), naming
+the persona again rather than a pronoun Casa does not know (#1247). `InheritedNote` is the resolved note of a payload an earlier turn
 authored — a reminder's `output_note`, a delegation or engagement brief's launch note —
 re-registered on the turn that sends it so that turn's model cannot paraphrase it away; it
 is never discharged. The model's words are never suppressed or withheld by any of this; the

@@ -664,16 +664,18 @@ class TurnScope:
 
     def _answered_line(self, unread: tuple[tuple[str, str], ...],
                        sources: dict[str, str]) -> str:
-        which, own = _which(unread, sources)
+        persona = self._persona()
+        which, own = _which(unread, sources, persona)
         # "in this turn" only where it is true of the files: one named file
         # (it qualifies the answering) or files the turn received (#1218)
         when = " in this turn" if len(unread) == 1 or own else ""
-        return f"Casa: {self._persona()} answered without opening {which}{when}."
+        return f"Casa: {persona} answered without opening {which}{when}."
 
     def _wrote_line(self, unread: tuple[tuple[str, str], ...],
                     sources: dict[str, str]) -> str:
-        which, _own = _which(unread, sources)
-        return f"Casa: {self._persona()} wrote this without opening {which}."
+        persona = self._persona()
+        which, _own = _which(unread, sources, persona)
+        return f"Casa: {persona} wrote this without opening {which}."
 
 
 # The persona name a disclosure line may carry — `authz_grants._DISPLAY_NAME_MAX`,
@@ -682,24 +684,26 @@ class TurnScope:
 _NAME_MAX = 64
 
 
-# #1218: how a count of several files is worded, by how they were armed
-_HOW = {frozenset({"listed"}): "it listed",
-        frozenset({"tried"}): "it tried to open",
-        frozenset({"listed", "tried"}): "it listed or tried to open"}
+# #1218: how a count of several files is worded, by how they were armed —
+# after the persona's name, never a pronoun: Casa does not know one (#1247)
+_HOW = {frozenset({"listed"}): "listed",
+        frozenset({"tried"}): "tried to open",
+        frozenset({"listed", "tried"}): "listed or tried to open"}
 
 
 def _which(unread: tuple[tuple[str, str], ...],
-           sources: dict[str, str]) -> tuple[str, bool]:
+           sources: dict[str, str], persona: str) -> tuple[str, bool]:
     """The files the line names, and whether they are the turn's own. Only a
     turn's own files are ones "you sent"; one file is named whatever its
-    source."""
+    source; several that are not the turn's own are the files *persona*
+    listed or tried to open."""
     kinds = frozenset(sources.get(p, "listed") for p, _ in unread)
     own = kinds == {"own"}
     if len(unread) == 1:
         return f"“{unread[0][1]}”", own
     if own:
         return f"any of the {len(unread)} files you sent", True
-    return f"any of the {len(unread)} files {_HOW[kinds - {'own'}]}", False
+    return f"any of the {len(unread)} files {persona} {_HOW[kinds - {'own'}]}", False
 
 
 def _display_name(config: Any) -> str:
