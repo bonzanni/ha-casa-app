@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from types import SimpleNamespace
 
@@ -138,6 +139,21 @@ class Harness:
 
     def batches(self):
         return [p for p in self.client.prompts if p.startswith("Batch ")]
+
+    @contextlib.asynccontextmanager
+    async def in_batch(self, n):
+        """The driver's view of batch ``n``'s turn running — its turn lock held
+        and its batch set — for a report made outside a scripted turn."""
+        if not self.driver.is_alive(self.rec):
+            await self.driver.open(self.rec, ClaudeAgentOptions())
+        self.rec.origin["job"]["started"] = n
+        turn = self.driver._turns[self.rec.id]
+        async with self.driver._locks[self.rec.id]:
+            turn.batch = n
+            try:
+                yield
+            finally:
+                turn.batch = None
 
     async def report(self, summary="Handled rows", progressed=True, **counts):
         reply = payload(await tools.report_job_progress.handler(

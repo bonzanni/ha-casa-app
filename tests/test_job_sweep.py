@@ -229,7 +229,8 @@ async def test_progress_timestamp_and_fresh_job_not_swept(harness, tmp_path, mon
     before = time.time()
     token = tools.engagement_var.set(h.rec)
     try:
-        await h.report()
+        async with h.in_batch(1):  # #1033: only a batch's own turn reports
+            await h.report()
     finally:
         tools.engagement_var.reset(token)
     assert h.rec.origin["job"]["last_advance"] >= before
