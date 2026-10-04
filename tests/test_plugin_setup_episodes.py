@@ -2807,3 +2807,85 @@ async def test_transport_failure_note_is_not_retried(wired, monkeypatch):
     assert len(ch.entries) == 1
     assert len(accepted) == 1
     assert len(wired["dispatches"]) == before
+
+
+@pytest.mark.asyncio
+async def test_note_restored_after_the_pump_exited_is_still_retried(
+        wired, monkeypatch):
+    # Regression (seam round 2): a worker pass holds an owed note in its
+    # re-send while the pump wakes on the emptied list and exits; the re-send
+    # fails not-ready and the note is put back — with no pump left unless
+    # putting it back starts one. Nothing else (no kick, no pass) follows.
+    import asyncio
+    import casa_core
+
+    ep = await _courier_dispatched(wired)
+    _strip_courier_keys(ep["id"])
+    mgr, ch, _ = _real_seam(monkeypatch)
+    gate = asyncio.Event()
+
+    async def gated_sleep(_s):
+        await gate.wait()
+        await asyncio.sleep(0.01)
+
+    monkeypatch.setattr(pse, "_note_sleep", gated_sleep)
+    held, release = asyncio.Event(), asyncio.Event()
+    hold = {"on": False}
+
+    async def notify(text):
+        if hold["on"]:
+            hold["on"] = False
+            held.set()
+            await release.wait()
+        await casa_core.operator_notify(mgr, text)
+
+    monkeypatch.setattr(pse, "_notify_operator", notify)
+    await pse._worker_pass()                     # owed, pump sleeping
+    pump = pse._note_pump_task
+    assert pump is not None and not pump.done()
+
+    await mgr.start_all()
+    hold["on"] = True
+    first = asyncio.ensure_future(pse._worker_pass())
+    await asyncio.wait_for(held.wait(), 5.0)     # the pass holds the note
+    gate.set()
+    await asyncio.wait_for(pump, 5.0)            # pump saw nothing owed
+    ch.is_ready = False
+    release.set()
+    await first                                  # re-send failed: put back
+    ch.is_ready = True
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 5.0
+    while not ch.delivered and loop.time() < deadline:
+        await asyncio.sleep(0.02)
+    assert ch.count(_RETIRED) == 1
+
+
+@pytest.mark.asyncio
+async def test_owed_note_kept_across_an_unreadable_store_read(
+        wired, monkeypatch):
+    # Regression (seam round 3): an unreadable read cannot say whether the
+    # row stands, so the owed note is kept — not sent, not dropped — and the
+    # next readable pass delivers it.
+    ep = await _courier_dispatched(wired)
+    _strip_courier_keys(ep["id"])
+    mgr, ch, _ = _real_seam(monkeypatch)
+    await pse._worker_pass()                     # owed before start
+    await mgr.start_all()
+    real = pse._read_store_bytes
+    shots = {"left": 1}
+
+    def flaky():
+        if shots["left"]:
+            shots["left"] -= 1
+            rec = pse._reset_record("unreadable")
+            return pse.StoreRead(pse._empty(rec), "unreadable", rec)
+        return real()
+
+    monkeypatch.setattr(pse, "_read_store_bytes", flaky)
+    await pse._drain_owed_notes()
+    assert shots["left"] == 0
+    assert ch.count(_RETIRED) == 0
+    assert len(pse.episodes("failed")) == 1
+    await pse._worker_pass()
+    assert ch.count(_RETIRED) == 1
