@@ -3985,10 +3985,18 @@ async def _run_delegated_agent(
                                     sdk_msg, "parent_tool_use_id", None) is None):
                                 _api_error = _kind
                             continue
+                        # #1221: one message's TextBlocks join as written;
+                        # successive text-bearing messages join with one
+                        # blank line, as the resident's turn does — so text
+                        # written before and after a tool call keeps its
+                        # boundary. A message with no text adds nothing.
+                        msg_text = "".join(
+                            b.text for b in getattr(sdk_msg, "content", [])
+                            if isinstance(b, TextBlock))
+                        if msg_text:
+                            text += ("\n\n" if text else "") + msg_text
                         for block in getattr(sdk_msg, "content", []):
-                            if isinstance(block, TextBlock):
-                                text += block.text
-                            elif isinstance(block, ToolUseBlock):
+                            if isinstance(block, ToolUseBlock):
                                 tool_calls[getattr(block, "id", "")] = (
                                     str(getattr(block, "name", "")),
                                     time.time())
