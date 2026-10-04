@@ -208,7 +208,7 @@ def handle(req: dict):
     if method == "initialize":
         return _result(id_, {"protocolVersion": PROTOCOL_VERSION,
                              "capabilities": {"tools": {}},
-                             "serverInfo": {"name": "proposal-fixture", "version": "0.4.0"}})
+                             "serverInfo": {"name": "proposal-fixture", "version": "0.4.1"}})
     if method == "notifications/initialized":
         return None
     if method == "tools/list":

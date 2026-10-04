@@ -9,8 +9,9 @@ real use.
 - `offer_hang` and `hang` exercise a call that never returns.
 - `ingest_document(path)` copies a file handed over by `share_inbound_file` into the
   plugin's data folder and records its name and size in `ingested.jsonl`.
-- The `fixture-check` job runs one batch that calls `offer` once, so a scheduled
-  trigger with `job: proposal-fixture:fixture-check` can be seen to fire.
+- The `fixture-check` job runs one batch that calls `offer` once and then
+  `emit_completion`, so a scheduled trigger with `job: proposal-fixture:fixture-check`
+  can be seen to fire and the job ends ok.
 
 Install it pinned to a commit SHA of this repository, not a tag. Casa requires a pinned
 ref to match the manifest version, and release tags do not.
