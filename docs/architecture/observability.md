@@ -18,11 +18,11 @@ metrics, of which there are none to speak of.
 lines from the same work can be tied together.
 
 **An engagement turn has a cid of its own.** Every in_casa engagement turn — the launch,
-each job batch, a reply to a message in the topic, a continuation — mints one when it takes
-the engagement's turn lock. Its own lines carry it as a plain value for the whole turn. Its
-tool-callback lines run in the SDK's read task, whose context was captured once, when the
-client opened; that context holds a per-client holder each turn rewrites in place, so they
-carry the cid of the turn that is running. One line under the new cid —
+each job batch, a reply to a message in the topic, a continuation — mints one as it starts.
+Its own lines carry it as a plain value for the whole turn. Its tool-callback lines run in
+the SDK's read task, whose context was captured once, when the client opened; that context
+holds a per-client holder each turn rewrites in place when it takes the engagement's turn
+lock, so they carry the cid of the turn that holds it. One line under the new cid —
 `Engagement <id> turn cid=<cid> batch=<n|-> engaged_by=<cid|->` — ties it to the
 engagement, the job batch and the turn that engaged it. Whatever started the engagement —
 a resident's turn, a scheduled trigger, the job sweep — no longer lends its turns a cid
