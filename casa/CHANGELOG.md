@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.344.13] - 2026-10-04
+
+### Fixed
+
+- Tapping **Deny** on a protected call now refuses that one call, not the tool. The message
+  the assistant receives names the refused call's arguments, as an approval already names
+  the approved call's, and says that a later request from you for the same tool is a new
+  request. Before, it said only "do not retry" and the tool's name, and the assistant read
+  it as a ban: after one denied restore, it refused your later requests to restore a
+  different backup, so no approval was ever asked for. The assistant's and the butler's
+  doctrine now say the same.
+
 ## [0.344.12] - 2026-10-04
 
 ### Fixed

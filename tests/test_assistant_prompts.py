@@ -1148,19 +1148,26 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # five non-equal opcodes on `assistant:text`, all inside those two paragraphs,
 # one `insert` on `assistant:voice`, that paragraph and nothing else; the other
 # seven carriers byte-identical. No retention claim anywhere.
+# MOVED 2026-10-04 (#1071), the six `assistant:*` and `butler:*` carriers ONLY.
+# The Core doctrine of both gains one paragraph: a protected-tool denial refuses
+# the one call it names, not the tool; a later operator request is made or
+# delegated and follows Casa's authorization result. Measured with `difflib`
+# over base-vs-new compiled text, word by word: exactly ONE `insert` per
+# assistant and butler carrier, that paragraph and nothing else; the three
+# concierge carriers byte-identical. No retention claim anywhere.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
-        "2d93c4b6db0a43610aa5ef94165b82581474825d10ee2b9cd8697b75009e36eb",
+        "f38c3f4917d068c681fc589ec023831a1f42428331aa118bd66d225c2a01703a",
     "assistant:text":
-        "7904b09d80f0d5c0dfda7cf2652b7af0fe43d14645b8cd9d5324ddb917deb43f",
+        "60f6a5f7badb0856d7e7fb3546018754d1f2c563bb1fb9434dd3c4a7e7eae247",
     "assistant:voice":
-        "e5b75c0f6451af5a624b87cc6b520850bd6b8de0c2e7c3ae04eb674e6e10cb05",
+        "df1a1579d052429afd7b77d9d1a5d129e145344690408bb4f6643db6ff44a8bb",
     "butler:restricted_webhook":
-        "72684ce23f3aa2c41999930de39f583f2f2b52cf95cb0a38ba6be6b8a8bb30e3",
+        "e3aa4424b24b053a11a9c04d7b6428a8bc1fc90f4b58504ab34d70279037cacc",
     "butler:text":
-        "c6b2d6f5f546ace808b2e0f4492de5a6063f528e3fe8814fd544573727ee71df",
+        "7a8d5db2bc3d3b86cc33e96c37b4987d7a32b9f4df11d8af907862ccdd6acc4c",
     "butler:voice":
-        "24378d8895fb34c119beec3c74bc57e2e7553e691f72f509c471f016b187aa3f",
+        "dfd5d7c6e32132fc57b95a5babc0d259240cdc50738767f81c7f6c39e6fd0530",
     "concierge:restricted_webhook":
         "20eaa4bac29d6149a4623b3c6b162d7645ab2e15f4e633f703aab615a4df3f12",
     "concierge:text":

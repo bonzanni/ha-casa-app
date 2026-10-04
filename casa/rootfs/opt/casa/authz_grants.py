@@ -1018,8 +1018,17 @@ class ChallengeCoordinator:
                 await channel.edit_dm_message(
                     chat_id, message_id, f"❌ Denied — {short} will not run",
                 )
+                # #1071: bound to the one call refused, as the approval is —
+                # a tool-wide "do not retry {tool}" read as a ban on the tool
+                # and the operator's later requests for it were refused.
                 await _hand_over(
-                    f"[authorization denied]: do not retry {tool_name}",
+                    "[authorization denied]: the operator refused "
+                    f"{enforcement_role} calling {tool_name} with these "
+                    f"arguments:\n{canonical_json}\nThis refuses that one "
+                    "call. Do not make it again on your own. A later request "
+                    f"from the operator for {tool_name} is a new request: make "
+                    "or delegate the call and follow Casa's authorization "
+                    "result.",
                     f"⚠️ Denied, but delivery to {_target_desc} "
                     "failed — say 'retry' in chat",
                 )
