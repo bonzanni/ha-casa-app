@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.344.9] - 2026-10-04
+
+### Fixed
+
+- When a plugin's automatic setup runs on the assistant (or another resident
+  agent) rather than on a specialist, a dispatched setup turn that does not
+  call the setup tool no longer counts as the setup being done. Before, a turn
+  whose session offered the tool but never called it used up the setup, even
+  if its reply was silent or never reached you. Now the setup goes back to
+  waiting and Casa dispatches it again later; an agent reload or a plugin
+  reconcile triggers that. After three dispatches that do not run the tool,
+  Casa stops and sends you a note asking you to run it manually. A setup that
+  runs on a specialist already worked this way.
+- When the dispatched setup turn ran the setup tool, `plugin_status` now says
+  the setup ran instead of "setup is running". When the setup runs on a
+  specialist and the turn handed it to that specialist, `plugin_status` says
+  it was handed to that specialist. A setup recorded as done before this
+  release still reads "setup is running".
+
 ## [0.344.8] - 2026-10-04
 
 ### Fixed

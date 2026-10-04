@@ -267,7 +267,12 @@ def configure(*, dispatch, notify_operator, resolve_registry_entry,
 #      `failed`/`stale` row it retains — the plugin was removed while the
 #      row stood; the sweep consumes it, see `ensure_obligation`),
 #    "previous_failure" (#928: one flat snapshot of the failed attempt a
-#      same-artifact re-arm replaced, carried for the status tool)}
+#      same-artifact re-arm replaced, carried for the status tool),
+#    "dispatch_outcome" (#1183: "tool_ran" | "delegated", written by
+#      `report_dispatch_outcome` on the arm that consumed a `dispatched` row
+#      and removed from a row the same report returns to `pending`/`failed`;
+#      read only by the status tool — never by settlement, the evidence watch
+#      or `dispatch_still_owed`, which key on `settled_by`)}
 # There is at most ONE row per plugin — its CURRENT artifact's obligation.
 # ---------------------------------------------------------------------------
 
@@ -1950,7 +1955,6 @@ async def _run_episode(ep: dict) -> bool:
 def report_dispatch_outcome(episode_id: str, *, tools_used_ok: set,
                             tools_attempted: set,
                             available_tools: "set | None",
-                            turn_completed: bool = True,
                             delegated_ok_targets: "set | None" = None) -> None:
     """#521: correlate a dispatched setup turn's outcome with its episode.
 
@@ -1960,21 +1964,22 @@ def report_dispatch_outcome(episode_id: str, *, tools_used_ok: set,
     precedence order over the row's recorded ``expected_tool``:
 
     * ran (``tools_used_ok`` — at least one observed non-error result) ⇒ the
-      episode stays consumed; the agent's own reply reports the result.
-    * attempted with only error results (``tools_attempted`` without a
-      ``used_ok`` entry) ⇒ NOT run, even when the session init listed the
-      tool — a listed tool can still be categorically uncallable in the turn
-      (Sol design r1: a denied protected tool; an erroring server).
-    * not attempted, the session init POSITIVELY listed the tool
-      (``available_tools``) AND the turn completed (``turn_completed``) ⇒
-      consumed — "consumed ⇒ the tool was available to the turn" is the
-      invariant, and an available tool the agent chose not to call is its
-      reply's business, not a dispatch failure. A turn that raised or was
-      cancelled produced no reply (diff round 1, Astra S1): availability
-      alone then evidences nothing, and only a positive result consumes.
-    * anything else — tool absent from the init list, or availability
-      UNKNOWN (``available_tools is None``: a warm-reuse session replays no
-      init; a turn that died before one) ⇒ NOT evidenced.
+      episode stays consumed, marked ``dispatch_outcome="tool_ran"`` (#1183)
+      so the status tool stops describing it as running; whatever the turn
+      then replies is the agent's own business.
+    * anything else ⇒ NOT evidenced: attempted with only error results (a
+      listed tool can still be categorically uncallable in the turn — Sol
+      design r1: a denied protected tool; an erroring server), tool absent
+      from the init list, availability UNKNOWN (``available_tools is None``:
+      a warm-reuse session replays no init; a turn that died before one),
+      and — #1012 — a tool the init LISTED that the turn never called. That
+      last case used to consume the row on a completed turn, on the premise
+      that the agent's reply told the operator; but this report runs from
+      ``_process``'s ``finally``, before the reply is admitted, suppressed as
+      silence or delivered, so it cannot know any reply reached anyone. The
+      rule is cut to its one positive fact, as the courier rule was (#1010).
+      ``tools_attempted`` and ``available_tools`` are still passed by the
+      caller and decide nothing here.
 
     A non-evidenced turn returns the row to ``pending`` (its released gate is
     kept — the verdict was earned) so the next kick re-dispatches: the
@@ -1991,7 +1996,9 @@ def report_dispatch_outcome(episode_id: str, *, tools_used_ok: set,
     session never has the specialist's tool) but does carry ``courier_tool``
     and ``courier_target``. Such a row is consumed by exactly one thing: a
     non-error delegation whose canonical target is ``courier_target``
-    (``delegated_ok_targets``, role ids). A delegation that errored, one to
+    (``delegated_ok_targets``, role ids), and is then marked
+    ``dispatch_outcome="delegated"`` — a delegation, never a claim that the
+    specialist's tool ran. A delegation that errored, one to
     some other agent (diff round 3, Astra S1: the intended specialist refused,
     another delegated fine, the courier silent — the row must not be spent),
     or no delegation at all, whether or not the turn completed, returns the
@@ -2028,16 +2035,20 @@ def report_dispatch_outcome(episode_id: str, *, tools_used_ok: set,
             # delivery; tool-name success alone accepted a delegation to
             # ANY agent. A courier row is consumed only by a non-error
             # delegation to its own target; everything else returns it to
-            # pending under the bounded budget. The resident rule below
-            # stays as committed (INV-PLUG-012); its residual is #1012.
+            # pending under the bounded budget. #1012 cut the resident rule
+            # the same way: only a non-error setup-tool result consumes.
             if courier_target in (delegated_ok_targets or set()):
+                row.update({"dispatch_outcome": "delegated",
+                            "updated_ts": _now()})
+                _save(data)
                 return
         elif expected in tools_used_ok:
+            row.update({"dispatch_outcome": "tool_ran", "updated_ts": _now()})
+            _save(data)
             return
-        elif (turn_completed and expected not in tools_attempted
-                and available_tools is not None
-                and expected in available_tools):
-            return
+        # #1183: a row this report reopens or fails carries no consuming
+        # mark from an earlier report on the same id.
+        row.pop("dispatch_outcome", None)
         retries = int(row.get("execution_retries") or 0) + 1
         plugin = row.get("plugin")
         # What the turn could not do, in the words of the turn that was sent:
