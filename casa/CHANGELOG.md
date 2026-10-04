@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.344.18] - 2026-10-04
+
+### Fixed
+- During a normal start, Casa logged an ERROR with a traceback when plugin event delivery or authorization callback delivery tried to send you a note while Telegram was not yet ready, before Casa's channels had finished starting. That attempt is now logged at INFO, without a traceback. A note about a delivery that ran out of attempts, or about a removed plugin, stays owed and is retried on a later pass. A note that fails with an error after the channels have finished starting still logs an ERROR with a traceback. If Telegram's first connection fails at startup, Casa logs its "Telegram initial bring-up failed" error, and each later attempt to send one of these notes logs an ERROR with a traceback while Telegram is not ready. Notes from the plugin setup worker are not covered by this change. (#930)
+
 ## [0.344.17] - 2026-10-04
 
 ### Fixed
