@@ -92,8 +92,12 @@ def running_job_for_plugin(registry: Any, plugin: str) -> Any | None:
     New plugin jobs persist their registry identity in ``plugin_job``.  The
     phase-one records have no such marker, so recover it from the pinned
     artifact whose manifest name declares the qualified job.
+
+    "Live" here is ``registry.job_occupants()``: a record whose strict
+    terminal write is still pending counts, since a failed write puts it
+    back live (#1173).
     """
-    for rec in registry.active_and_idle():
+    for rec in registry.job_occupants():
         origin = getattr(rec, "origin", None) or {}
         job = origin.get("job")
         if not isinstance(job, dict):
@@ -131,10 +135,11 @@ def running_job_for_plugin(registry: Any, plugin: str) -> Any | None:
 
 def running_job_for_manifest(registry: Any, manifest_name: str) -> Any | None:
     """Return a live job record whose qualified job name carries
-    *manifest_name*, whichever plugin installation and host kind runs it."""
+    *manifest_name*, whichever plugin installation and host kind runs it —
+    a record whose strict terminal write is pending included (#1173)."""
     if not manifest_name:
         return None
-    for rec in registry.active_and_idle():
+    for rec in registry.job_occupants():
         job = (getattr(rec, "origin", None) or {}).get("job")
         if isinstance(job, dict) and job_manifest_name(job.get("name")) == manifest_name:
             return rec

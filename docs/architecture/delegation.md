@@ -197,11 +197,11 @@ record check also covers resumed engagements.
 
 `start_job` admits one job per installed plugin, and one per plugin manifest name, on top
 of that, for either host kind: a start refused because that plugin, or any installation
-sharing its manifest name, already has a job — live, or still inside the window before its
-record exists — answers `job_busy` (INV-BGJOB-006). A resident-hosted job then takes a
+sharing its manifest name, already has a job — live, still writing its end, or still inside the window before
+its record exists — answers `job_busy` (INV-BGJOB-006). A resident-hosted job then takes a
 `plugin-job:<plugin>` scope under the same global cap rather than its host's
 `<role>:engagement` slot, so running one never makes the resident unavailable
-([`background-jobs.md`](background-jobs.md)).
+([`background-job-occupancy.md`](background-job-occupancy.md)).
 
 **INV-ENG-023**: An ephemeral delegation runs under a session id Casa chooses for that launch and, once its client has exited — on return, error or cancellation — deletes that one session's transcript (`<session>.jsonl` and `<session>/`) from its own project folder, best-effort, and nothing else; the utility one-shots (the observer, the tier classifier, `query_engager`'s synthesis) persist no transcript at all.
 

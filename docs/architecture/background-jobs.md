@@ -10,7 +10,8 @@ last_reviewed: 2026-10-02
 
 Plugin-declared background jobs: the `casa.jobs` declaration, the `<jobs>` block a resident
 sees, `start_job`, specialist and resident-plugin worker launches, the batch loop, the
-`report_job_progress` tool, and resuming a job after a restart. The engagement a job runs
+`report_job_progress` tool, and resuming a job after a restart. How many jobs of one plugin may
+run at once is [`background-job-occupancy.md`](background-job-occupancy.md). The engagement a job runs
 in — its topic, turn admission, completion gate and finalization — is described by
 [`engagements.md`](engagements.md) and the documents it routes to; the per-role engagement
 slot is in [`delegation.md`](delegation.md).
@@ -170,29 +171,9 @@ result contract applies unchanged: a tool whose result declares an operator link
 that link delivered by Casa into the operator's chat. Casa delivers it, as it posts the
 approval challenge — the worker itself holds no tool that reaches outside its topic.
 
-**INV-BGJOB-006**: At most one job per plugin manifest name is live or starting, whichever host kind runs it and whatever the record's shape: `start_job` refuses with `job_busy` while a live job record's qualified job name carries the requested job's manifest name, or while another start of that manifest name is inside its pre-record window.
-
-`background_jobs.claim_job_start` keeps the older per-installed-plugin check and adds this
-one, which reads only `origin["job"]["name"]` — the text before its first `:` — because every
-job record carries it, old and new. Artifact rows cannot always name a record's plugin: a
-record written before `manifest_name` was recorded has no such key, and a plugin unassigned
-from its host while the launch awaited topic creation leaves no declaring row at all, and
-an older record holding only an incidental row looks like another plugin's. Each inference
-from those rows left some record invisible, and a second job beside it.
-The in-process claim that covers the window before a record exists is keyed by the
-installed plugin AND by the manifest name, so concurrent starts of any two jobs of one
-plugin are serialised. A specialist-hosted job also records the selected plugin's registry
-name as `origin["plugin_job"] = {"plugin": <name>}`, taken from the host `find_job_host`
-chose before the launch awaits anything, with no `model` key: the record stays a
-`kind="specialist"` engagement, and the resident worker's builder and resume keep keying on
-`kind="plugin"`.
-
-The accepted trade-off: distinct installations of one plugin — the same manifest name under
-different registry names — never run jobs at the same time; they run one after the other.
-A plugin's jobs also run one at a time across all its job names. What it does not cover: a
-record leaves `active_and_idle()` the moment its terminal transition begins, before that
-transition has persisted, so a start admitted in that window runs beside it if the
-transition then rolls back.
+How many jobs of one plugin may be live or starting at once — one per installed plugin
+and one per plugin manifest name — is
+[`architecture/background-job-occupancy.md`](background-job-occupancy.md) (INV-BGJOB-006).
 
 **INV-BGJOB-002**: A job fails through the engagement finalize funnel, with the reason and its last reported progress, when three consecutive batches report no progress or end without reporting, when a batch would exceed its declared batch cap, when a batch's delivery raises, or when a batch is cut off before finishing — and a clearance downgrade never cuts a running batch.
 
@@ -344,4 +325,5 @@ belong in the launch and resume builders; both kinds share the batch loop and la
 - [`architecture/delegation.md`](../architecture/delegation.md)
 - [`architecture/plugins.md`](../architecture/plugins.md)
 - [`architecture/engagement-turn-admission.md`](../architecture/engagement-turn-admission.md)
+- [`architecture/background-job-occupancy.md`](../architecture/background-job-occupancy.md)
 <!-- END SOURCEMAP -->

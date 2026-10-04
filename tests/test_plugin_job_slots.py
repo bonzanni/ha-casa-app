@@ -11,6 +11,9 @@ class Registry:
     def active_and_idle(self):
         return self.records
 
+    def job_occupants(self):
+        return self.records
+
 
 def test_live_job_identity_uses_new_metadata_and_phase_one_artifact():
     new = SimpleNamespace(origin={"job": {"name": "ledger:scan"},

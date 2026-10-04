@@ -254,3 +254,45 @@ async def test_own_plugins_are_those_assigned_and_loadable_at_the_call(
     wired = await start_as(_desk_turn_origin())
     assert wired["status"] == "pending", wired
     assert _counts(runtime) == (1, 1, 1, 0)
+
+
+async def test_a_specialists_own_start_during_its_jobs_pending_terminal_write_is_refused(
+        finance_is_specialist, tmp_path, monkeypatch):
+    """#1173 through S7a's entry point: a specialist's own `start_job` that
+    lands while its plugin's last job is still writing its end is refused
+    `job_busy` — the self-hosted start reaches the same claim as every other —
+    and when that write fails and the job rolls back to live, exactly one job
+    of the plugin is live."""
+    import asyncio
+    import threading
+
+    runtime = finance_is_specialist
+    _real_discovery(monkeypatch, tmp_path)
+    _own_ledger(tmp_path)
+    reg = runtime.registry
+    rec = await reg.create("specialist", "finance", "in_casa", "classify",
+                           {"job": {"name": "ledger:classify", "title": "Classify"},
+                            "plugin_job": {"plugin": "ledger"}}, 7)
+    entered, release = threading.Event(), threading.Event()
+    real_write = reg._write_tombstone
+
+    def held_then_failed(snapshot):
+        entered.set()
+        release.wait(10)
+        raise OSError("disk full")
+
+    monkeypatch.setattr(reg, "_write_tombstone", held_then_failed)
+    transition = asyncio.ensure_future(
+        reg.try_transition_terminal(rec.id, "completed", strict=True))
+    try:
+        assert await asyncio.to_thread(entered.wait, 10)
+        assert reg.active_and_idle() == []
+        result = await start_as(_desk_turn_origin())
+    finally:
+        release.set()
+        with pytest.raises(OSError):
+            await transition
+        monkeypatch.setattr(reg, "_write_tombstone", real_write)
+    assert (result.get("kind"), result.get("engagement_id")) == ("job_busy", rec.id), result
+    assert rec.status == "active"
+    assert _counts(runtime) == (1, 0, 0, 0)

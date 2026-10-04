@@ -2,7 +2,11 @@
 
 - doc: manifest.d/architecture-a-d.yaml
   kind: meta
-  summary: Manifest shard — architecture documents A-D.
+  summary: Manifest shard — architecture documents A-D, except the background-jobs documents.
+
+- doc: manifest.d/architecture-background-jobs.yaml
+  kind: meta
+  summary: Manifest shard — the background-jobs documents (split from A-D at the 40 KB index ceiling).
 
 - doc: manifest.d/architecture-e.yaml
   kind: meta
