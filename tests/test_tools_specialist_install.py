@@ -2998,3 +2998,44 @@ async def test_inspect_deny_hands_off_same_reservation(
     assert facts == (True, True, True, True), f"hand-off facts: {facts!r} {text!r}"
     if mode == "upgrade":
         assert text.lower().count("install") == 0, f"update text says install: {text!r}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", [None, "upgrade"])
+async def test_inspect_approve_hands_off_same_reservation(
+    monkeypatch, tmp_path, mode,
+) -> None:
+    """#1261: an Approve on the REAL keyboard takes the requesting engagement's
+    reservation once at the tap commit, and the finish hook's one continuation
+    through ``deliver_system_turn`` carries that SAME reservation, so the seam
+    releases it in the step that admits the ticket rather than leaving it held
+    through the approval edit. One callback serves install and upgrade.
+
+    Pre-fix: the Approve call passes no ``inbound_reservation`` keyword."""
+    from tools import specialist_install_inspect, engagement_var
+
+    rec = SimpleNamespace(id="eng-abc", driver="in_casa", status="active")
+    lease = _CLease()
+    chan, edits, factory_calls = _c_channel(rec=rec, lease=lease)
+    _wire_inspect(monkeypatch, tmp_path, channel=chan)
+    cap = _capture_real_consent(monkeypatch)
+
+    token = engagement_var.set(SimpleNamespace(id="eng-abc"))
+    try:
+        payload = _payload(await specialist_install_inspect.handler(_c_args(mode)))
+    finally:
+        engagement_var.reset(token)
+    assert payload["consent"] == "keyboard_posted"
+
+    deliver = chan.deliver_system_turn
+    req = SimpleNamespace(meta={})
+    cap["on_commit_sync"](0, req.meta)
+    at_commit = (len(factory_calls), lease.takes, deliver.await_count)
+    assert at_commit == (1, 1, 0), f"tap-commit facts: {at_commit!r}"
+
+    await cap["finish_factory"](88, req)({"outcome": "answered", "option_index": 0})
+    call = deliver.await_args
+    facts = (deliver.await_count, call.args[0] is rec,
+             call.kwargs.get("inbound_reservation") is lease, len(edits),
+             edits[-1][2].startswith("✅ Approved — requested"))
+    assert facts == (1, True, True, 1, True), f"approve hand-off facts: {facts!r}"
