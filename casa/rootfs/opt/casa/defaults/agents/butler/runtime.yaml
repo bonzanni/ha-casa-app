@@ -20,12 +20,14 @@ tools:
   # Agent/Task: Q-1 (v0.69.8) — butler must not spawn sub-agents (they bypass
   # allowed_tools + the fail-closed callback; disallowed is CLI-enforced).
   disallowed:
-    # #396: session-scoped schedulers. These outlive nothing — CronCreate
-    # reports "Session-only (not written to disk, dies when Claude exits)" —
-    # so a reminder set through one is silently discarded at the next
-    # restart, after the user has been told it is set. Note that tools.allowed
-    # is an AUTO-APPROVE list, not a deny list, which is how these were
-    # reachable without ever being listed. Use set_reminder instead.
+    # #396: the CLI's own schedulers, outside Casa's: a reminder set through
+    # one is not a Casa reminder, whatever the user was told. Use set_reminder
+    # instead. CronCreate can persist jobs (bundle default `durable: true`),
+    # and a CLI wake-up runs an unprompted turn while the CLI process lives
+    # (measured, #1258). Every Casa session also denies these in code
+    # (claude_runtime.SELF_SCHEDULING_TOOLS). Note that tools.allowed is an
+    # AUTO-APPROVE list, not a deny list, which is how these were reachable
+    # without ever being listed.
     - CronCreate
     - CronDelete
     - CronList

@@ -39,11 +39,19 @@ APP_ROOT = REPO / "casa" / "rootfs" / "opt" / "casa"
 # Literal on purpose: the test must not read the names from the constant it
 # is pinning, or emptying the constant would pass.
 NAMES = {"SendMessage", "ListAgents", "PushNotification"}
+# #1258: the pinned CLI's self-scheduling built-ins, typed from the survey's
+# measurement of the 2.1.273 bundle, never copied from the constant: the CLI
+# accepts a misspelt name silently, so a copied typo would pass here and leave
+# the real tool on every surface.
+SELF_SCHEDULING = {"ScheduleWakeup", "CronCreate", "CronDelete", "CronList",
+                   "Monitor", "RemoteTrigger"}
 
 
 def _assert_locked(opts) -> None:
     missing = NAMES - set(opts.disallowed_tools or ())
     assert not missing, f"cross-session tools not denied: {sorted(missing)}"
+    missing = SELF_SCHEDULING - set(opts.disallowed_tools or ())
+    assert not missing, f"self-scheduling tools not denied: {sorted(missing)}"
     assert opts.settings is not None, "no --settings: inbound not refused"
     assert json.loads(opts.settings).get("crossSessionInbound") == "refuse"
 
@@ -103,7 +111,9 @@ def test_shared_constants_name_the_three_tools_and_refuse():
         {"crossSessionInbound": "accept", "x": 1})) == {
             "crossSessionInbound": "refuse", "x": 1}
     assert with_cross_session_tools_denied(["Bash", "SendMessage"]) == [
-        "Bash", "SendMessage", "ListAgents", "PushNotification"]
+        "Bash", "SendMessage", "ListAgents", "PushNotification",
+        "ScheduleWakeup", "CronCreate", "CronDelete", "CronList", "Monitor",
+        "RemoteTrigger"]
 
 
 async def test_resident_options(tmp_path, monkeypatch):
@@ -356,7 +366,7 @@ def test_claude_code_driver_settings(tmp_path):
         model="sonnet", driver="claude_code", tools_allowed=["Read", "Bash"],
         permission_mode="acceptEdits",
     )
-    assert NAMES <= set(_build_cc_permissions(defn)["deny"])
+    assert NAMES | SELF_SCHEDULING <= set(_build_cc_permissions(defn)["deny"])
 
     tmpl = tmp_path / "tmpl"
     (tmpl / ".claude").mkdir(parents=True)
@@ -366,7 +376,7 @@ def test_claude_code_driver_settings(tmp_path):
         template_root=tmpl, dest=dest, defn=defn, executor_type="test-fixture",
         task="t", context="c", world_state_summary="", hooks_yaml_data={})
     settings = json.loads((dest / ".claude" / "settings.json").read_text())
-    assert NAMES <= set(settings["permissions"]["deny"])
+    assert NAMES | SELF_SCHEDULING <= set(settings["permissions"]["deny"])
     assert settings["crossSessionInbound"] == "refuse"
 
 
@@ -383,7 +393,7 @@ def test_pinned_sdk_forwards_the_denial_and_the_refusal_to_the_cli():
         agent_home="/tmp", resume_sid=None)
     cmd = SubprocessCLITransport(prompt="x", options=opts)._build_command()
     denied = cmd[cmd.index("--disallowedTools") + 1].split(",")
-    assert NAMES <= set(denied)
+    assert NAMES | SELF_SCHEDULING <= set(denied)
     settings = json.loads(cmd[cmd.index("--settings") + 1])
     assert settings["crossSessionInbound"] == "refuse"
 

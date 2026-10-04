@@ -33,6 +33,22 @@ SDK_MAX_BUFFER_SIZE = 64 * 1024 * 1024
 # a disallowed tool from the surface), whatever the agent's own config says.
 CROSS_SESSION_TOOLS = ("SendMessage", "ListAgents", "PushNotification")
 
+# #1258: the pinned CLI's self-scheduling built-ins, a different reason for the
+# same lever. ``ScheduleWakeup`` and ``CronCreate`` queue a prompt in the CLI's
+# own scheduler, outside Casa's (``set_reminder`` is the agent's way to
+# schedule). Neither asks for permission, and a wake-up is not inert: measured
+# on 2.1.273, the CLI runs an unprompted turn at the due time while its process
+# lives, which a warm client or an engagement can mistake for the next turn's
+# reply. ``CronCreate`` can also persist its jobs (bundle default
+# ``durable: true``). ``CronDelete`` and ``CronList`` manage those jobs.
+# ``Monitor`` (gated by a CLI flag) and ``RemoteTrigger`` (claude.ai remote
+# sessions only) may be absent from a given session's surface; denying them
+# regardless is harmless, since the CLI accepts a disallowed name it does not
+# offer. ``CLAUDE_CODE_DISABLE_CRON``
+# is no substitute: it removes the ``Cron*`` tools but leaves ``ScheduleWakeup``.
+SELF_SCHEDULING_TOOLS = ("ScheduleWakeup", "CronCreate", "CronDelete",
+                         "CronList", "Monitor", "RemoteTrigger")
+
 # The inbound half: ``crossSessionInbound: "refuse"`` makes the CLI drop every
 # message another session delivers to this one. Passed through ``--settings``
 # (the SDK's ``settings=`` option), the source the CLI reads right after
@@ -42,10 +58,10 @@ CROSS_SESSION_INBOUND = "refuse"
 
 
 def with_cross_session_tools_denied(disallowed) -> list[str]:
-    """Return ``disallowed`` (any iterable) plus :data:`CROSS_SESSION_TOOLS`,
-    de-duplicated, order-stable."""
+    """Return ``disallowed`` (any iterable) plus :data:`CROSS_SESSION_TOOLS`
+    and :data:`SELF_SCHEDULING_TOOLS`, de-duplicated, order-stable."""
     out = list(disallowed)
-    for t in CROSS_SESSION_TOOLS:
+    for t in (*CROSS_SESSION_TOOLS, *SELF_SCHEDULING_TOOLS):
         if t not in out:
             out.append(t)
     return out

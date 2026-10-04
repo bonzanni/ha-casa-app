@@ -244,6 +244,19 @@ from one constructor, `build_cc_settings`, which provisioning and boot replay's 
 share. A source sweep pins the exact set of options constructions and refuses one whose
 deny list or settings bypasses the shared helpers.
 
+**INV-MCP-014**: Every Claude CLI session Casa starts also hard-denies the pinned CLI's self-scheduling built-ins `ScheduleWakeup`, `CronCreate`, `CronDelete`, `CronList`, `Monitor` and `RemoteTrigger`, whatever the agent's own tool configuration says.
+
+`ScheduleWakeup` and `CronCreate` queue prompts in the CLI's own scheduler, outside
+Casa's, without asking for permission. A wake-up is not inert: the pinned CLI runs an
+unprompted turn at the due time while its process lives, and a warm client or an
+engagement can mistake that turn for the next turn's reply. `SELF_SCHEDULING_TOOLS` in `claude_runtime.py` is merged by the same helper
+as `CROSS_SESSION_TOOLS`, so the sweep above covers it too. `Monitor` (gated by a CLI flag)
+and `RemoteTrigger` (claude.ai remote sessions only) may be absent from a given session's
+surface, and are denied regardless. The names are
+those of the pinned CLI, and a CLI upgrade must re-check them: the CLI accepts a disallowed
+name it does not offer, so a misspelt name fails silently. An agent schedules through
+Casa's `set_reminder`.
+
 ## Failure behavior
 
 **An unknown tool name.** Resolution fails and the call is refused; nothing is invoked.
