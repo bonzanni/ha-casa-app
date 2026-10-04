@@ -743,3 +743,93 @@ async def test_persona_apply_refuses_a_pack_that_does_not_declare_the_requested_
     assert instance_dir.active() is None
     assert instance_dir.desired() is None
     assert len(list((bindings_root / "resident-assistant").glob("*.yaml"))) == 0
+
+
+@pytest.mark.asyncio
+async def test_inspect_deny_hands_off_same_reservation(monkeypatch, tmp_path) -> None:
+    """#1251, the persona sibling: a Deny on the REAL keyboard the inspect tool
+    posts takes the requesting engagement's reservation at the tap commit,
+    records no ack, and hands the engagement exactly one continuation through
+    ``deliver_system_turn`` carrying that same reservation."""
+    from unittest.mock import AsyncMock
+
+    import persona_install_consent
+    from persona_install import PersonaInstallAckStore
+    from tools import persona_install_inspect, engagement_var
+
+    real = persona_install_consent.prompt_persona_install_consent
+    cap: dict = {}
+
+    class _Coordinator:
+        def register_challenge(self, key, **kwargs):
+            cap["on_commit_sync"] = kwargs["on_commit_sync"]
+            cap["finish_factory"] = kwargs["finish_factory"]
+            return _Handle(settled="posted")
+
+    def _prompt(**kwargs):
+        kwargs["coordinator"] = _Coordinator()
+        return real(**kwargs)
+
+    class _Lease:
+        takes = 0
+
+        def take(self):
+            self.takes += 1
+            return True
+
+        def release(self):
+            pass
+
+    lease = _Lease()
+    factory_calls: list = []
+    edits: list = []
+    rec = SimpleNamespace(id="eng-p", driver="in_casa", status="active")
+
+    async def _edit(chat_id, message_id, text):
+        edits.append(text)
+
+    def _factory(eid):
+        factory_calls.append(eid)
+        return lease
+
+    channel = SimpleNamespace(
+        chat_id="123",
+        _engagement_registry=SimpleNamespace(
+            get=lambda eid: rec if eid == "eng-p" else None),
+        deliver_system_turn=AsyncMock(return_value=True),
+        edit_dm_message=_edit, engagement_inbound_reservation=_factory)
+    _wire_persona_inspect(monkeypatch, tmp_path, channel=channel)
+    monkeypatch.setattr(
+        persona_install_consent, "prompt_persona_install_consent", _prompt)
+
+    token = engagement_var.set(SimpleNamespace(id="eng-p"))
+    try:
+        payload = _payload(await persona_install_inspect.handler(
+            {"repo": "owner/repo", "ref": "main"}))
+    finally:
+        engagement_var.reset(token)
+    assert payload["consent"] == "keyboard_posted"
+
+    ack_path = tmp_path / "persona_acks.json"
+
+    def _acks() -> int:
+        return (len(PersonaInstallAckStore(path=ack_path)._load())
+                if ack_path.exists() else 0)
+
+    deliver = channel.deliver_system_turn
+    req = SimpleNamespace(meta={})
+    cap["on_commit_sync"](1, req.meta)
+    at_commit = (len(factory_calls), lease.takes, deliver.await_count, _acks(),
+                 req.meta.get("acked", False))
+    assert at_commit == (1, 1, 0, 0, False), f"tap-commit facts: {at_commit!r}"
+
+    await cap["finish_factory"](88, req)({"outcome": "answered", "option_index": 1})
+    after = (deliver.call_count, deliver.await_count, _acks(), edits)
+    assert after == (1, 1, 0, ["❌ Denied — 'warm-helper' was not installed"]), (
+        f"finish facts: {after!r}")
+
+    call = deliver.await_args
+    text = call.args[1]
+    facts = (call.args[0] is rec, call.kwargs.get("inbound_reservation") is lease,
+             "denied" in text, "warm-helper" in text)
+    assert facts == (True, True, True, True), f"hand-off facts: {facts!r} {text!r}"

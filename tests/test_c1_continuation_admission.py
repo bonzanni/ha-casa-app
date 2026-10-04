@@ -478,11 +478,129 @@ class TestReservationIsBornAtTheTapCommit:
         finally:
             agent_mod.active_engagement_driver = None
 
-    async def test_a_deny_tap_on_an_install_arm_reserves_nothing(
+    @pytest.mark.parametrize("with_continuation", [True, False])
+    @pytest.mark.parametrize("arm", ["specialist", "specialist-upgrade", "persona"])
+    async def test_a_deny_tap_reserves_only_with_a_deny_continuation(
+            self, tmp_path, fake_telegram_bot, arm, with_continuation):
+        """#1251: a Deny that dispatches a continuation takes the reservation
+        at the tap commit, exactly as Approve does, and records no ack.
+
+        Boundary kept from the test this replaces: a reservation taken with no
+        Deny continuation to hand it to is a visible failure — without one, a
+        Deny reserves nothing.
+
+        Pre-fix: no Deny continuation can be supplied, so the first half reads
+        ``([], 0)``.
+        """
+        import agent as agent_mod
+        from persona_install_consent import prompt_persona_install_consent
+        from specialist_install_consent import (
+            prompt_specialist_install_consent)
+        ch, reg, rec, drv, client, tch = await _mk_ctx(
+            tmp_path, fake_telegram_bot)
+        try:
+            events: list[str] = []
+
+            async def _deny_cb():
+                return False
+            kwargs = dict(
+                coordinator=(coord := _FakeCoordinator()), channel=ch,
+                chat_id=701, operator_id=701, acks=_Acks(events),
+                reconcile_cb=None,
+                inbound_reservation=_lease(ch, rec.id, events))
+            if with_continuation:
+                kwargs["deny_cb"] = _deny_cb
+            if arm == "persona":
+                _supported(prompt_persona_install_consent,
+                           inspection=_persona_inspection(), **kwargs)
+            else:
+                if arm == "specialist-upgrade":
+                    kwargs["mode"] = "upgrade"
+                _supported(prompt_specialist_install_consent,
+                           inspection=_inspection(), **kwargs)
+            coord.on_commit_sync(1, {})
+
+            facts = (events, _reservations(drv, rec.id))
+            expected = (["reserve"], 1) if with_continuation else ([], 0)
+            assert facts == expected, f"deny facts: {facts!r}"
+        finally:
+            agent_mod.active_engagement_driver = None
+
+    @pytest.mark.parametrize("arm", ["specialist", "specialist-upgrade", "persona"])
+    async def test_a_completion_during_the_deny_edit_is_refused(
+            self, tmp_path, fake_telegram_bot, arm):
+        """#1251: the Deny edit is awaited before the continuation is handed
+        over, so the window is a whole Telegram round trip. A successful
+        completion landing inside it must be refused, not commit over a
+        refusal the engagement has not yet been told.
+
+        Pre-fix: nothing is reserved on Deny and the completion commits.
+        """
+        import agent as agent_mod
+        from persona_install_consent import prompt_persona_install_consent
+        from specialist_install_consent import (
+            prompt_specialist_install_consent)
+        ch, reg, rec, drv, client, tch = await _mk_ctx(
+            tmp_path, fake_telegram_bot)
+        entered, gate = asyncio.Event(), asyncio.Event()
+        task = None
+        try:
+            events: list[str] = []
+            lease = _lease(ch, rec.id, events)
+            handed: list[bool] = []
+
+            async def _deny_cb():
+                handed.append(True)
+                return await _supported(ch.deliver_system_turn, rec, "denied",
+                                        inbound_reservation=lease)
+
+            async def _edit(chat_id, message_id, text):
+                entered.set()
+                await gate.wait()
+            ch.edit_dm_message = _edit
+            ch._resume_and_ready = AsyncMock(return_value=True)
+            kwargs = dict(
+                coordinator=(coord := _FakeCoordinator()), channel=ch,
+                chat_id=701, operator_id=701, acks=_Acks(events),
+                reconcile_cb=None, deny_cb=_deny_cb, inbound_reservation=lease)
+            if arm == "persona":
+                _supported(prompt_persona_install_consent,
+                           inspection=_persona_inspection(), **kwargs)
+            else:
+                if arm == "specialist-upgrade":
+                    kwargs["mode"] = "upgrade"
+                _supported(prompt_specialist_install_consent,
+                           inspection=_inspection(), **kwargs)
+            req = SimpleNamespace(meta={})
+            coord.on_commit_sync(1, req.meta)
+            at_commit = _reservations(drv, rec.id)
+            task = asyncio.create_task(coord.finish_factory(88, req)(
+                {"outcome": "answered", "option_index": 1}))
+            await asyncio.wait_for(entered.wait(), 5)
+            during = _reservations(drv, rec.id)
+
+            payload = await _emit_ok(rec)
+            facts = (at_commit, during, payload.get("kind"),
+                     reg.get(rec.id).status, tch.close_topic.await_count,
+                     len(handed))
+            assert facts == (1, 1, "unread_inbound", "active", 0, 0), (
+                f"deny-edit race facts: {facts!r}")
+        finally:
+            gate.set()
+            if task is not None:
+                await asyncio.wait_for(asyncio.gather(
+                    task, return_exceptions=True), 5)
+                await _drain_tasks(ch)
+            agent_mod.active_engagement_driver = None
+
+    async def test_a_deny_continuation_hands_its_reservation_to_the_ticket(
             self, tmp_path, fake_telegram_bot):
-        """Boundary: neither install arm dispatches a continuation on Deny, so
-        neither may hold a reservation there. Passes on both trees; it exists
-        so a reservation taken unconditionally is a visible failure."""
+        """#1251: through the real seam, the Deny continuation's ticket is
+        admitted and the tap-commit reservation released with no await
+        between, and nothing is left held once the hook has finished.
+
+        Pre-fix: no reservation is taken on Deny and nothing is handed over.
+        """
         import agent as agent_mod
         from specialist_install_consent import (
             prompt_specialist_install_consent)
@@ -490,16 +608,43 @@ class TestReservationIsBornAtTheTapCommit:
             tmp_path, fake_telegram_bot)
         try:
             events: list[str] = []
+            observed: list[tuple[int, int]] = []
+            lease = _lease(ch, rec.id, events)
+
+            inner_admit = ch._driver_admit_inbound
+
+            def _admit(r, text):
+                events.append("admit")
+                return inner_admit(r, text)
+            ch._driver_admit_inbound = _admit
+
+            async def _ready(r):
+                events.append("ready_enter")
+                observed.append((drv.inbound_unread_depth(r.id),
+                                 _reservations(drv, r.id)))
+                return True
+            ch._resume_and_ready = _ready
+
+            async def _deny_cb():
+                return await _supported(ch.deliver_system_turn, rec, "denied",
+                                        inbound_reservation=lease)
             _supported(
                 prompt_specialist_install_consent,
                 coordinator=(coord := _FakeCoordinator()), channel=ch,
                 chat_id=701, operator_id=701, inspection=_inspection(),
-                acks=_Acks(events), reconcile_cb=None,
-                inbound_reservation=_lease(ch, rec.id, events))
-            coord.on_commit_sync(1, {})
+                acks=_Acks(events), reconcile_cb=None, deny_cb=_deny_cb,
+                inbound_reservation=lease)
+            req = SimpleNamespace(meta={})
+            coord.on_commit_sync(1, req.meta)
+            await coord.finish_factory(88, req)(
+                {"outcome": "answered", "option_index": 1})
+            await _drain_tasks(ch)
 
-            facts = (events, _reservations(drv, rec.id))
-            assert facts == ([], 0), f"deny facts: {facts!r}"
+            facts = (events, observed, _reservations(drv, rec.id),
+                     drv.inbound_unread_depth(rec.id))
+            assert facts == (
+                ["reserve", "admit", "release", "ready_enter", "release"],
+                [(1, 0)], 0, 0), f"deny transfer facts: {facts!r}"
         finally:
             agent_mod.active_engagement_driver = None
 

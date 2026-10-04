@@ -1801,12 +1801,20 @@ def _capture_real_consent(monkeypatch):
 
     class _Coordinator:
         def register_challenge(self, key, **kwargs):
+            cap["registrations"] = cap.get("registrations", 0) + 1
+            cap["key"] = key
+            cap["challenge_text"] = kwargs["challenge_text"]
             cap["on_commit_sync"] = kwargs["on_commit_sync"]
             cap["finish_factory"] = kwargs["finish_factory"]
             return _Handle(settled="posted")
 
     def _prompt(**kwargs):
         cap["reconcile_cb"] = kwargs["reconcile_cb"]
+        # #1251: read with .get so the base tree, which passes no Deny
+        # continuation, fails on the outcome rather than on a KeyError.
+        cap["deny_cb"] = kwargs.get("deny_cb")
+        if "reconcile_override" in cap:
+            kwargs["reconcile_cb"] = cap["reconcile_override"]
         kwargs["coordinator"] = _Coordinator()
         return real(**kwargs)
 
@@ -2685,3 +2693,308 @@ async def test_inspect_ok_payload_reports_the_resolved_ref(monkeypatch, tmp_path
 
     assert payload["ok"] is True
     assert payload["resolved_ref"] == "v1.2.0"
+
+
+# ---------------------------------------------------------------------------
+# #1225: the consent keyboard and its finish edits name an upgrade or a
+# same-version settings change as an UPDATE, never an install. #1251: a Deny
+# tells the requesting engagement. Both through the REAL inspect tool and the
+# REAL consent prompt; only the coordinator is a capture.
+# ---------------------------------------------------------------------------
+
+_C_INSTALL_KEYBOARD = (
+    "\U0001F510 Specialist install consent\n\n"
+    "Install 'casa.spec.mtg@1.0.0' as specialist:mtg?\n"
+    "Mission: Answer MTG rules questions.\n"
+    "Default persona: mtg-judge@1.0.0\n"
+    "Dependencies: (none)\n"
+    "Root digest (approved — component + dependencies): sha256:" + "b" * 64 + "\n"
+    "Component checksum: sha256:" + "a" * 64 + "\n\n"
+    "Approve to install; Deny to discard the staged fetch."
+)
+_C_UPDATE_KEYBOARD = (
+    "\U0001F510 Specialist update consent\n\n"
+    "Update specialist:mtg to 'casa.spec.mtg@1.0.0'?\n"
+    "Mission: Answer MTG rules questions.\n"
+    "Default persona: mtg-judge@1.0.0\n"
+    "Dependencies: (none)\n"
+    "Root digest (approved — component + dependencies): sha256:" + "b" * 64 + "\n"
+    "Component checksum: sha256:" + "a" * 64 + "\n\n"
+    "Approve to update; Deny to discard the staged fetch."
+)
+
+# The five non-success finish edits (plus the two other retirement causes),
+# per mode. The install column is the base tree's bytes, frozen here.
+_C_FINISH = {
+    "install": {
+        "no_answer": "⌛ Expired — install consent for 'mtg' was not answered; "
+                     "nothing was installed",
+        "withdrawn": "🚫 Withdrawn — install consent for 'mtg' was withdrawn "
+                     "before it was answered; nothing was installed",
+        "new_session": "🚫 Cancelled — install consent for 'mtg' was cancelled "
+                       "by /new; nothing was installed",
+        "unrecorded": "internal error recording install consent — re-run the "
+                      "install to be prompted again",
+        "raised": "⚠️ Approved and saved — but the install of 'mtg' hit an "
+                  "internal error and its automatic start could not be "
+                  "confirmed. Check the configurator topic; re-running the "
+                  "install is safe either way, and the approval recorded for "
+                  "this exact version is reused if it still applies.",
+        "false": "⚠️ Approved and saved — but the install of 'mtg' was not "
+                 "started automatically. Start a new configurator engagement "
+                 "and re-run the install; the approval recorded for this exact "
+                 "version is reused if it still applies.",
+        "deny": "❌ Denied — 'mtg' was not installed",
+    },
+    "upgrade": {
+        "no_answer": "⌛ Expired — update consent for 'mtg' was not answered; "
+                     "nothing was updated",
+        "withdrawn": "🚫 Withdrawn — update consent for 'mtg' was withdrawn "
+                     "before it was answered; nothing was updated",
+        "new_session": "🚫 Cancelled — update consent for 'mtg' was cancelled "
+                       "by /new; nothing was updated",
+        "unrecorded": "internal error recording update consent — re-run the "
+                      "update to be prompted again",
+        "raised": "⚠️ Approved and saved — but the update of 'mtg' hit an "
+                  "internal error and its automatic start could not be "
+                  "confirmed. Check the configurator topic; re-running the "
+                  "update is safe either way, and the approval recorded for "
+                  "this exact version is reused if it still applies.",
+        "false": "⚠️ Approved and saved — but the update of 'mtg' was not "
+                 "started automatically. Start a new configurator engagement "
+                 "and re-run the update; the approval recorded for this exact "
+                 "version is reused if it still applies.",
+        "deny": "❌ Denied — 'mtg' was not updated",
+    },
+}
+
+
+class _CLease:
+    """A spy for the requesting engagement's inbound reservation."""
+
+    def __init__(self):
+        self.takes = 0
+        self.releases = 0
+
+    def take(self) -> bool:
+        self.takes += 1
+        return True
+
+    def release(self) -> None:
+        self.releases += 1
+
+
+def _c_channel(*, rec=None, deliver_result=True, lease=None):
+    from unittest.mock import AsyncMock
+
+    edits: list = []
+    factory_calls: list = []
+    chan = SimpleNamespace(
+        chat_id="701",
+        _engagement_registry=SimpleNamespace(
+            get=lambda eid: rec if rec is not None and eid == rec.id else None),
+        deliver_system_turn=AsyncMock(return_value=deliver_result),
+    )
+
+    async def _edit(chat_id, message_id, text):
+        edits.append((chat_id, message_id, text))
+
+    chan.edit_dm_message = _edit
+    if lease is not None:
+        def _factory(eid):
+            factory_calls.append(eid)
+            return lease
+        chan.engagement_inbound_reservation = _factory
+    return chan, edits, factory_calls
+
+
+def _c_args(mode):
+    args = {"repo": "owner/repo", "ref": "main"}
+    if mode is not None:
+        args["mode"] = mode
+        args["target_slug"] = "mtg"
+    return args
+
+
+def _c_acks(tmp_path) -> int:
+    from specialist_install_consent import SpecialistInstallAckStore
+    path = tmp_path / "acks.json"
+    return len(SpecialistInstallAckStore(path=path)._load()) if path.exists() else 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", [None, "install", "upgrade"])
+async def test_inspect_consent_copy_matches_mode(monkeypatch, tmp_path, mode) -> None:
+    """#1225: the keyboard the real inspect posts names an update on
+    ``mode="upgrade"``; with the mode omitted or ``install`` it is the base
+    tree's bytes exactly."""
+    from tools import specialist_install_inspect
+
+    chan, _edits, _ = _c_channel()
+    _wire_inspect(monkeypatch, tmp_path, channel=chan)
+    cap = _capture_real_consent(monkeypatch)
+
+    payload = _payload(await specialist_install_inspect.handler(_c_args(mode)))
+
+    expected = _C_UPDATE_KEYBOARD if mode == "upgrade" else _C_INSTALL_KEYBOARD
+    facts = (payload["consent"], cap.get("registrations"), cap.get("challenge_text"))
+    assert facts == ("keyboard_posted", 1, expected), f"keyboard facts: {facts!r}"
+
+
+@pytest.mark.asyncio
+async def test_update_keyboard_keeps_inspection_data_and_is_no_longer(
+    monkeypatch, tmp_path,
+) -> None:
+    """#1225: only the three Casa-authored lines change. Inspection data that
+    itself says "install" renders untouched, and the update keyboard is never
+    longer than the install keyboard for the same inspection, so a closure that
+    registers under the challenge limit as an install also registers as an
+    update."""
+    from tools import specialist_install_inspect
+
+    chan, _edits, _ = _c_channel()
+    fake, _ = _wire_inspect(monkeypatch, tmp_path, channel=chan)
+    fake.mission = "Install guides; reinstall the installed bits."
+    fake.default_persona_ref = "install-judge@1.0.0"
+    cap = _capture_real_consent(monkeypatch)
+
+    await specialist_install_inspect.handler(_c_args("install"))
+    install_text = cap["challenge_text"]
+    await specialist_install_inspect.handler(_c_args("upgrade"))
+    update_text = cap["challenge_text"]
+
+    authored = {0, 2, len(install_text.split("\n")) - 1}
+    install_lines = install_text.split("\n")
+    update_lines = update_text.split("\n")
+    kept = [(i, a, b) for i, (a, b) in enumerate(zip(install_lines, update_lines))
+            if i not in authored and a != b]
+    facts = (len(install_lines) == len(update_lines), kept,
+             "Mission: Install guides; reinstall the installed bits." in update_lines,
+             len(update_text) <= len(install_text),
+             len(update_text.encode()) <= len(install_text.encode()))
+    assert facts == (True, [], True, True, True), f"update render facts: {facts!r}"
+
+
+async def _c_finish_edit(monkeypatch, tmp_path, mode, branch):
+    from tools import specialist_install_inspect, engagement_var
+
+    rec = SimpleNamespace(id="eng-abc", driver="in_casa", status="active")
+    chan, edits, _ = _c_channel(rec=rec, deliver_result=False, lease=_CLease())
+    _wire_inspect(monkeypatch, tmp_path, channel=chan)
+    cap = _capture_real_consent(monkeypatch)
+    if branch == "raised":
+        async def _raising():
+            raise RuntimeError("contract violation")
+        cap["reconcile_override"] = _raising
+
+    token = engagement_var.set(SimpleNamespace(id="eng-abc"))
+    try:
+        await specialist_install_inspect.handler(_c_args(mode))
+    finally:
+        engagement_var.reset(token)
+
+    req = SimpleNamespace(meta={})
+    outcome = {
+        "no_answer": {"outcome": "no_answer"},
+        "withdrawn": {"outcome": "cancelled", "reason": "challenge_cancelled"},
+        "new_session": {"outcome": "cancelled", "reason": "new_session"},
+        "unrecorded": {"outcome": "answered", "option_index": 0},
+        "raised": {"outcome": "answered", "option_index": 0},
+        "false": {"outcome": "answered", "option_index": 0},
+        "deny": {"outcome": "answered", "option_index": 1},
+    }[branch]
+    if branch in ("raised", "false"):
+        cap["on_commit_sync"](0, req.meta)
+    elif branch == "deny":
+        cap["on_commit_sync"](1, req.meta)
+    await cap["finish_factory"](88, req)(outcome)
+    return edits
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("branch", [
+    "no_answer", "withdrawn", "new_session", "unrecorded", "raised", "false", "deny"])
+@pytest.mark.parametrize("mode", [None, "install", "upgrade"])
+async def test_inspect_consent_finish_copy_matches_mode(
+    monkeypatch, tmp_path, mode, branch,
+) -> None:
+    """#1225: every non-success finish edit of a keyboard posted with
+    ``mode="upgrade"`` names the update; install mode keeps the base bytes."""
+    edits = await _c_finish_edit(monkeypatch, tmp_path, mode, branch)
+    expected = _C_FINISH["upgrade" if mode == "upgrade" else "install"][branch]
+    assert edits == [(701, 88, expected)], f"{branch} edit: {edits!r}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("receipt_digest, identity", [
+    ("", "sha256:030b4de3ac30aa9802c914919a845ae6fa0d519ec04476d78779c85424222edb"),
+    ("sha256:" + "e" * 64,
+     "sha256:4387855d9cca0e9c97cd7946178da57b7780ed837fb61bc2f23e2abcd352f1c3"),
+])
+async def test_upgrade_inspect_reuses_install_consent_identity(
+    monkeypatch, tmp_path, receipt_digest, identity,
+) -> None:
+    """#1225 control (green at base): the mode is wording only. Both modes bind
+    the base tree's identity, and an approval recorded through the install
+    keyboard short-circuits an upgrade inspect as ``pre_authorized``."""
+    from tools import specialist_install_inspect
+
+    chan, _edits, _ = _c_channel()
+    _wire_inspect(monkeypatch, tmp_path, channel=chan, receipt_digest=receipt_digest)
+    cap = _capture_real_consent(monkeypatch)
+
+    await specialist_install_inspect.handler(_c_args("install"))
+    install_key = cap["key"]
+    await specialist_install_inspect.handler(_c_args("upgrade"))
+    update_key = cap["key"]
+    cap["on_commit_sync"](0, {})
+    payload = _payload(await specialist_install_inspect.handler(_c_args("upgrade")))
+
+    facts = (install_key.identity, update_key == install_key, payload["consent"],
+             cap["registrations"], _c_acks(tmp_path))
+    assert facts == (identity, True, "pre_authorized", 2, 1), (
+        f"identity facts: {facts!r}")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", [None, "install", "upgrade"])
+async def test_inspect_deny_hands_off_same_reservation(
+    monkeypatch, tmp_path, mode,
+) -> None:
+    """#1251: a Deny takes the requesting engagement's reservation at the tap
+    commit, records no ack, and hands the engagement exactly one continuation
+    through ``deliver_system_turn`` carrying that same reservation. An update's
+    continuation never says "install"."""
+    from tools import specialist_install_inspect, engagement_var
+
+    rec = SimpleNamespace(id="eng-abc", driver="in_casa", status="active")
+    lease = _CLease()
+    chan, edits, factory_calls = _c_channel(rec=rec, lease=lease)
+    _wire_inspect(monkeypatch, tmp_path, channel=chan)
+    cap = _capture_real_consent(monkeypatch)
+
+    token = engagement_var.set(SimpleNamespace(id="eng-abc"))
+    try:
+        payload = _payload(await specialist_install_inspect.handler(_c_args(mode)))
+    finally:
+        engagement_var.reset(token)
+    assert payload["consent"] == "keyboard_posted"
+
+    deliver = chan.deliver_system_turn
+    req = SimpleNamespace(meta={})
+    cap["on_commit_sync"](1, req.meta)
+    at_commit = (len(factory_calls), lease.takes, deliver.await_count,
+                 _c_acks(tmp_path), req.meta.get("acked", False))
+    assert at_commit == (1, 1, 0, 0, False), f"tap-commit facts: {at_commit!r}"
+
+    await cap["finish_factory"](88, req)({"outcome": "answered", "option_index": 1})
+    after = (deliver.call_count, deliver.await_count, _c_acks(tmp_path), len(edits))
+    assert after == (1, 1, 0, 1), f"finish facts: {after!r}"
+
+    call = deliver.await_args
+    text = call.args[1]
+    facts = (call.args[0] is rec, call.kwargs.get("inbound_reservation") is lease,
+             "denied" in text, "specialist:mtg" in text)
+    assert facts == (True, True, True, True), f"hand-off facts: {facts!r} {text!r}"
+    if mode == "upgrade":
+        assert text.lower().count("install") == 0, f"update text says install: {text!r}"
