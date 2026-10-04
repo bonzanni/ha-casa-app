@@ -970,3 +970,58 @@ def test_turn_limit_stop_and_turn_conduct_are_separate():
         total = sum(text.count(lead) for text in texts.values())
         owned = texts[owner].count(lead)
         assert (total, owned) == (1, 1), (lead, total, owned)
+
+
+def test_output_scope_properties_and_admission_are_separate():
+    """#1235: separate the turn scope's own properties — whether a turn
+    streams, whether its final reply is closing silence, where an untrusted
+    webhook turn's output goes — from the admission-and-disclosure envelope.
+
+    The seam is the one the corpus names itself at 9636f81d:
+    ``docs/architecture/output-boundary.md:11-15`` lists "the scope every
+    dispatched turn is minted with" beside the admission of model text, the
+    read-before-describe obligation and a stored payload's note;
+    INV-OUT-006 (``:188``) declares the three decisions "properties of its
+    scope"; the row's ``summary``/``when_changing``
+    (``docs/manifest.d/architecture-n-personality.yaml:5-6``) route "the turn
+    scope" as its own clause while ``defines_invariants`` (``:29``) lists
+    INV-OUT-001..006 on one document. The document is past the 25 KB ceiling
+    at that base and INV-DOC-007 (``docs/contributing/doc-contract.md:75``)
+    owes the split.
+
+    At 9636f81d all six resolve to one document: the ownership counts are
+    (1, 1), not (1, 2). The six payload-location checks independently yield
+    (1, 1) at base and are regression arms.
+
+    Pins ownership and lead location; byte-identical movement and
+    completeness of the passages remain review obligations.
+
+    Specified by **astra** in the drive red-case round.
+    """
+    retained = {
+        _declaring_document(f"INV-OUT-{i:03d}") for i in range(1, 6)
+    }
+    moved = _declaring_document("INV-OUT-006")
+    counts = (len(retained), len(retained | {moved}))
+    assert counts == (1, 2), (counts, retained, moved)
+
+    texts = {
+        doc: _normalized((DOCS / doc).read_text())
+        for doc in _text_corpus()
+    }
+    for lead in (
+        "**INV-OUT-006**: Whether a turn streams, whether its final reply is "
+        "closing silence,",
+        "The three used to be inline checks",
+        "The delivered webhook reply (#1142) is "
+        "`TurnScope.delivers_to_operator`,",
+        "What it does not cover: `send_media` still requires a Telegram origin "
+        "of its own,",
+        "The exception is the operator's ruling on #1075, for the turns that do "
+        "not stream.",
+        "Two facts ride out of admission for the durable-announcement discharge "
+        "(#1079,",
+    ):
+        total = sum(text.count(lead) for text in texts.values())
+        owned = texts[moved].count(lead)
+        assert (total, owned) == (1, 1), (lead, total, owned)

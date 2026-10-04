@@ -45,7 +45,8 @@ Telegram through one fresh delivery context on every output path (INV-TRIG-018 i
 cumulative `_emit` releases is admitted too, after the INV-TURN-009 hold has judged the
 unannotated cumulative with the same predicates. Options assembly is where the
 read-evidence matchers join every resident's hook bundle. What the scope does with the text
-is [`output-boundary.md`](output-boundary.md) (INV-OUT-006 for the three decisions that
+is [`output-boundary.md`](output-boundary.md) (INV-OUT-006 in
+[`output-scope-properties.md`](output-scope-properties.md) for the three decisions that
 used to be inline checks here and in `send_message`).
 
 **The origin snapshot records the turn's question, which is usually its text.** The prompt,
@@ -183,7 +184,7 @@ The fold also keeps each text-bearing message apart (`state["messages"]`, beside
 `turn_report["attempts"]`; a stale-resume re-run consumes no retry but is still an attempt.
 Its return value stays the joined text. Only a buffered turn's final-reply admission reads
 them, for the #1075 closing-silence rule (INV-OUT-006 in
-[`output-boundary.md`](output-boundary.md)); the stream and this hold are unchanged.
+[`output-scope-properties.md`](output-scope-properties.md)); the stream and this hold are unchanged.
 
 **INV-TURN-012**: A conversation is resumed only while the structural surface of its system prompt — the delegates, background jobs and executors the agent can reach, and, for a role whose Home Assistant tools the facade publishes, the names of the tools last published — still digests to what the session was registered with. A surface that differs, or a session that never recorded one, starts a fresh session with the old one retained. The surface is rendered once per turn and the same render is what the resume decision gates on, what the prompt carries, the published tool servers the session connects with, and what the registration stores.
 

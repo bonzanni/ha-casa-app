@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.344.16] - 2026-10-04
+
+### Fixed
+- Casa's line saying that a reply was written without opening several files no longer calls the agent "it": "Casa: Ellen answered without opening any of the 2 files it listed." now reads "…any of the 2 files Ellen listed.", and the same goes for "…Ellen tried to open." and "…Ellen listed or tried to open." The "wrote this without opening" note saved when such a turn sets a reminder, delegates a task or starts an engagement uses the same wording; a note saved before this update keeps the old one. (#1247)
+
 ## [0.344.15] - 2026-10-04
 
 ### Fixed

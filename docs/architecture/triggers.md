@@ -81,7 +81,7 @@ delivers twice to the same chat: the tool send happens immediately, and the turn
 closing text then rides the ordinary reply path. What closes that gap is the prompt, per
 prompt, and it is a convention rather than a runtime rail; the one closing Casa decides
 itself — a last message that is the sentinel after earlier text — is the operator's ruling
-on #1075 (INV-OUT-006 in [`output-boundary.md`](output-boundary.md)). Which prompts carry
+on #1075 (INV-OUT-006 in [`output-scope-properties.md`](output-scope-properties.md)). Which prompts carry
 the clause, what it says, and how the tools a turn calls decide the question are
 [`architecture/scheduled-prompt-endings.md`](scheduled-prompt-endings.md)'s. A webhook
 trigger carries no prompt at all (INV-TRIG-013), so the convention does not reach it. The one

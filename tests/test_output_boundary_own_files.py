@@ -99,9 +99,9 @@ def test_a_listed_turn_that_acted_on_nothing_counts_the_files_it_listed():
     s = _scope()
     _listed(s, OLD[:3])
     a = s.admit(K.FINAL_REPLY, "x")
-    assert a.annotations == ("Casa: Alex answered without opening any of the 3 files it listed.",)
+    assert a.annotations == ("Casa: Alex answered without opening any of the 3 files Alex listed.",)
     assert s.admit(K.STORED, "x").note == (
-        "Casa: Alex wrote this without opening any of the 3 files it listed.")
+        "Casa: Alex wrote this without opening any of the 3 files Alex listed.")
 
 
 @pytest.mark.parametrize("arming", ["listed", "tried", "mixed"])
@@ -113,9 +113,9 @@ def test_a_turn_with_no_file_of_its_own_never_says_you_sent_in_this_turn(arming)
         for path, name in OLD[2:4]:
             s.note_read_attempt(path, display_name=name)
             s.note_read_failed(path)
-    want = {"listed": "any of the 2 files it listed",
-            "tried": "any of the 2 files it tried to open",
-            "mixed": "any of the 4 files it listed or tried to open"}[arming]
+    want = {"listed": "any of the 2 files Alex listed",
+            "tried": "any of the 2 files Alex tried to open",
+            "mixed": "any of the 4 files Alex listed or tried to open"}[arming]
     # every admission kind (Terra, diff round 1): the line is THERE, with the
     # truthful wording, and never the own-files phrase
     for kind in (K.FINAL_REPLY, K.STREAM_UPDATE, K.DISCRETE, K.CAPTION, K.KEYBOARD,
@@ -130,15 +130,50 @@ def test_a_turn_with_no_file_of_its_own_never_says_you_sent_in_this_turn(arming)
             assert want in str(a), kind
 
 
+def _fail_reads(s, files):
+    for path, name in files:
+        s.note_read_attempt(path, display_name=name)
+        s.note_read_failed(path)
+
+
+@pytest.mark.parametrize("kind", [K.FINAL_REPLY, K.STREAM_UPDATE, K.DISCRETE, K.CAPTION,
+                                  K.KEYBOARD, K.STORED], ids=lambda k: k.name)
+@pytest.mark.parametrize("arming,qualifier", [("listed", "listed"),
+                                              ("tried", "tried to open"),
+                                              ("mixed", "listed or tried to open")])
+def test_non_own_count_line_names_the_persona(arming, qualifier, kind):
+    """#1247: Casa knows no persona's pronouns, so a count of several files that
+    were not the turn's own names the agent by the line's own persona label —
+    never "it" — live and STORED alike. Specified by astra in the red-case
+    round; at 9636f81d every arm said "files it …"."""
+    s = _scope("Ellen")
+    if arming == "listed":
+        _listed(s, OLD[:2])
+    elif arming == "tried":
+        _fail_reads(s, OLD[:2])
+    else:
+        _listed(s, OLD[:1])
+        _fail_reads(s, OLD[1:2])
+    verb = "wrote this" if kind is K.STORED else "answered"
+    line = f"Casa: Ellen {verb} without opening any of the 2 files Ellen {qualifier}."
+    a = s.admit(kind, "x")
+    assert a.annotations == (line,)
+    if kind is K.STORED:
+        assert a.note == line
+        assert str(a) == "x"
+    else:
+        assert str(a) == line + "\n\nx"
+
+
 def test_a_failed_read_of_an_unlisted_path_is_counted_as_tried_not_listed():
     s = _scope()
     _listed(s, OLD[:1])
     s.note_read_attempt(OLD[5][0], display_name="old-5.pdf")
     s.note_read_failed(OLD[5][0])
     assert s.admit(K.FINAL_REPLY, "x").annotations == (
-        "Casa: Alex answered without opening any of the 2 files it listed or tried to open.",)
+        "Casa: Alex answered without opening any of the 2 files Alex listed or tried to open.",)
     assert s.admit(K.STORED, "x").note == (
-        "Casa: Alex wrote this without opening any of the 2 files it listed or tried to open.")
+        "Casa: Alex wrote this without opening any of the 2 files Alex listed or tried to open.")
 
 
 def test_two_failed_reads_with_no_listing_are_files_it_tried_to_open():
@@ -147,7 +182,7 @@ def test_two_failed_reads_with_no_listing_are_files_it_tried_to_open():
         s.note_read_attempt(path, display_name=name)
         s.note_read_failed(path)
     assert s.admit(K.FINAL_REPLY, "x").annotations == (
-        "Casa: Alex answered without opening any of the 2 files it tried to open.",)
+        "Casa: Alex answered without opening any of the 2 files Alex tried to open.",)
 
 
 def test_a_read_attempt_on_a_listed_path_keeps_it_listed():
@@ -156,7 +191,7 @@ def test_a_read_attempt_on_a_listed_path_keeps_it_listed():
     s.note_read_attempt(OLD[0][0], display_name="old-0.pdf")
     s.note_read_failed(OLD[0][0])
     assert s.admit(K.FINAL_REPLY, "x").annotations == (
-        "Casa: Alex answered without opening any of the 2 files it listed.",)
+        "Casa: Alex answered without opening any of the 2 files Alex listed.",)
 
 
 # --- the hand-off tool records evidence only on success (T4) -------------------------------------
@@ -197,7 +232,7 @@ async def test_listing_then_sharing_a_file_discharges_the_line(inbox, handoff):
     s = _scope()
     await _call(tools.list_inbound_files, {}, s)
     assert s.admit(K.FINAL_REPLY, "x").annotations == (
-        "Casa: Alex answered without opening any of the 2 files it listed.",)
+        "Casa: Alex answered without opening any of the 2 files Alex listed.",)
     f = inbox.list_files()[0]
     text = await _call(tools.share_inbound_file, {"path": f.path}, s)
     assert text.startswith("Shared ")
