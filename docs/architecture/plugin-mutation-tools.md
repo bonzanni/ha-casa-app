@@ -204,12 +204,13 @@ skipped and reported `denied` rather than re-asked — the in-process `consent_d
 registry records the latest decision in the same synchronous commit step that persists the
 ack (Approve clears, Deny records, expiry writes nothing), so agent-driven re-issue can
 never nag past a Deny while mutations and reloads re-ask as they always did. Any other
-keyboard still open in the operator DM — a specialist or persona install consent, an
-erase-data question, an authorization request, or a plugin consent no row already shows —
-is read from `ChallengeCoordinator.live_kinds` (an unsettled request, never mere entry
-membership) and named by kind with how that kind is re-asked, never re-issued; an
-authorization request is named by its existence alone, and "no consent is pending" is
-said only when nothing of any kind is open.
+challenge the `ChallengeCoordinator` holds open for the operator DM — a specialist or
+persona install consent, an erase-data question, an authorization request, or a plugin
+consent no row already shows — is read from `ChallengeCoordinator.live_kinds` (an unsettled
+request, never mere entry membership) and named by kind, never re-issued: an install
+consent or an erase-data question also names the tool that asks it again, an authorization
+request is named by its existence alone, and "no consent is pending" is said only when the
+coordinator holds no such challenge open.
 
 **A refusal of an OPERATION, as against a malformed input,** belongs in the synchronous
 core and ahead of every side effect, not in the tool's input schema. The schema has no way
