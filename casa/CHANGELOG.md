@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.344.21] - 2026-10-04
+
+### Fixed
+- When you tapped **Approve** on the approval message for installing or updating a specialist, or for installing a persona, or answered the uninstall question about a plugin's data (**Keep data**, **Erase data, keep sign-ins**, **Erase everything** or **Cancel**), Casa handed the configurator its next turn but went on counting a message from you as possibly on its way until it had finished editing that DM message. If the configurator ran its whole next turn and tried to close the engagement as finished before that edit was done, Casa refused it as if a message from you were unread, when none was. This could only happen when the Telegram edit took longer than the configurator's whole turn, and the configurator's next turn was still delivered. Casa now stops counting that message as soon as it hands the configurator its turn, so closing the engagement during the edit is no longer refused for that reason; a completion attempted while a message you actually sent is unread is still refused. (#1261)
+
 ## [0.344.20] - 2026-10-04
 
 ### Fixed
