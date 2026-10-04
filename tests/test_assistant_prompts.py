@@ -173,10 +173,11 @@ def test_system_prompt_teaches_protected_tool_challenge_and_relay(system_md_text
     """v0.77.0 [W2] doctrine anchor: Ellen's system prompt must carry the
     Sol-accepted protected-tool doctrine VERBATIM (a refused call posts a
     confirmation button; Ellen must NOT narrate/announce the approval
-    prompt — PREFER ZERO narration, and if one sentence is unavoidable it
-    must be timing-invariant, e.g. "I won't run this action without your
-    approval."; then she ends her turn and retries with EXACTLY the same
-    arguments on approval), plus her resident-specific relay/re-delegate
+    prompt — PREFER ZERO narration, never phrasing that assumes the tap has
+    not happened yet; then she ends her turn and retries with EXACTLY the
+    same arguments on approval; #1252 took out the one sentence it used to
+    offer, since Casa now withholds every word written after the call),
+    plus her resident-specific relay/re-delegate
     paragraph for a delegated specialist's pending confirmation (same
     no-narration rule applies there too). A future prose rewrite that
     silently drops or paraphrases this text would leave Ellen either
@@ -189,7 +190,6 @@ def test_system_prompt_teaches_protected_tool_challenge_and_relay(system_md_text
         "user",
         "Do not announce, describe, or explain the approval prompt",
         "Prefer zero narration",
-        "I won't run this action without your approval.",
         "never phrasing like \"waiting for you\" or \"you'll receive a "
         "prompt\"",
         "END YOUR TURN",
@@ -202,12 +202,13 @@ def test_system_prompt_teaches_protected_tool_challenge_and_relay(system_md_text
             f"system.md missing v0.77.0 protected-tool doctrine anchor: "
             f"{anchor!r}"
         )
+    assert "I won't run this action without your approval." not in text
 
 
 def test_butler_prompt_teaches_protected_tool_challenge_only():
     """v0.77.0 [W2] doctrine anchor: the butler prompt gets the
     protected-tool challenge/retry paragraph, including the no-narration
-    rule and the timing-invariant fallback sentence (butler is a delegate
+    rule, and no longer the fallback sentence #1252 removed (butler is a delegate
     target, same as Ellen). It does NOT get the relay/re-delegate
     paragraph — per design §3.8/W2 that paragraph is scoped to Ellen (the
     assistant), who is the one that delegates to specialists; butler's
@@ -221,7 +222,6 @@ def test_butler_prompt_teaches_protected_tool_challenge_only():
         "user",
         "Do not announce, describe, or explain the approval prompt",
         "Prefer zero narration",
-        "I won't run this action without your approval.",
         "END YOUR TURN",
         "retry the SAME call with EXACTLY the same arguments",
     ]
@@ -230,6 +230,7 @@ def test_butler_prompt_teaches_protected_tool_challenge_only():
             f"butler system.md missing v0.77.0 protected-tool doctrine "
             f"anchor: {anchor!r}"
         )
+    assert "I won't run this action without your approval." not in text
     assert "re-delegate the exact same action" not in text, (
         "butler system.md should NOT carry the resident-only relay/"
         "re-delegate paragraph — butler never delegates (per design "
