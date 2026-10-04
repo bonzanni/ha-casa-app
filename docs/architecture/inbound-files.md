@@ -92,8 +92,9 @@ default agent declares as a delegate, and on a reload that adds one — a failur
 without an inbox and redirects nothing), an accepted kind, the download into that specialist's
 own `/data/agent-inbox/<role>/ready/`, the post-download re-check, the specialist's desk place
 ([`specialist-desk.md`](specialist-desk.md)). Then one desk turn of that specialist runs with a
-Casa-composed task — the file's name, kind, size and path, and the operator's caption as the
-operator's words — and the specialist lists its inbox, shares the file into the handoff folder
+Casa-composed task — the file's name, kind, size and path, a line saying the inbox path is for
+the specialist's tools and not for its reply, and the operator's caption last, as the operator's
+words — and the specialist lists its inbox, shares the file into the handoff folder
 and calls its plugin's ingest tool, as the default agent does today. That file is the turn's
 own: the "answered without opening" line can name it alone, and sharing it counts as acting on
 it ([`output-boundary.md`](output-boundary.md)). Every refusal is one
