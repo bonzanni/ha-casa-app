@@ -99,6 +99,21 @@ async def test_a_reply_on_a_specialist_post_stores_in_that_inbox_and_starts_one_
     assert kw["file_path"] == stored.path        # #1218: the desk turn's own file
 
 
+async def test_file_task_places_path_instruction_before_operator_caption(routed):
+    # #1259 (ruling #1254 option 2): the task says the inbox path is for the specialist's
+    # tools, not for its reply — after the filing sentence, before the operator's words
+    await routed.ch._on_non_text_message(_update(_reply_msg(caption="the Q3 invoice")))
+    await _settle(routed.ch)
+    assert routed.spawned.await_count == 1
+    text = routed.spawned.await_args.kwargs["text"]
+    sentence = "The inbox path is for your tools, not for your reply."
+    filing = "File it with your plugin and report what you did."
+    assert sentence in text
+    assert text.index(filing) + len(filing) <= text.index(sentence)
+    assert text.index(sentence) + len(sentence) <= text.index("The operator wrote:")
+    assert text.endswith("\nThe operator wrote: the Q3 invoice")
+
+
 async def test_an_unaddressed_file_takes_todays_path_byte_for_byte(routed, wired):
     await routed.ch._on_non_text_message(_update(_plain_msg()))
     [reply] = _replies(routed.bot)

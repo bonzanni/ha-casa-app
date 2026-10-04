@@ -3739,7 +3739,8 @@ class TelegramChannel(Channel):
                 return
         # the place is taken; the turn runs outside the intake lock
         task = (f"[casa file] The operator sent you a file: {name} ({ext}, {receipt.size} bytes). "
-                f"It is in your inbox at {stored_path}. File it with your plugin and report what you did.")
+                f"It is in your inbox at {stored_path}. File it with your plugin and report what you did. "
+                "The inbox path is for your tools, not for your reply.")
         caption = getattr(msg, "caption", None)
         if caption:
             task += f"\nThe operator wrote: {caption}"

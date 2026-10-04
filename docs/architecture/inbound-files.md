@@ -92,8 +92,9 @@ default agent declares as a delegate, and on a reload that adds one — a failur
 without an inbox and redirects nothing), an accepted kind, the download into that specialist's
 own `/data/agent-inbox/<role>/ready/`, the post-download re-check, the specialist's desk place
 ([`specialist-desk.md`](specialist-desk.md)). Then one desk turn of that specialist runs with a
-Casa-composed task — the file's name, kind, size and path, and the operator's caption as the
-operator's words — and the specialist lists its inbox, shares the file into the handoff folder
+Casa-composed task — the file's name, kind, size and path, a line saying the inbox path is for
+the specialist's tools and not for its reply, and the operator's caption last, as the operator's
+words — and the specialist lists its inbox, shares the file into the handoff folder
 and calls its plugin's ingest tool, as the default agent does today. That file is the turn's
 own: the "answered without opening" line can name it alone, and sharing it counts as acting on
 it ([`output-boundary.md`](output-boundary.md)). Every refusal is one
@@ -161,8 +162,9 @@ inbox reads, the upload was refused (Casa's own past-event line per outcome — 
 claims neither kept nor lost, INV-INBOX-005 — never the default agent's first-person reply),
 delegability was lost at the post-download check (stored), the desk was full when the place
 was requested (stored), or the desk is faulted (stored). The desk turn's task is Casa-composed
-— the file's name, kind, size and path in the specialist's inbox, and the operator's caption as
-the operator's words — and the specialist files it with its own tools, as the default agent
+— the file's name, kind, size and path in the specialist's inbox, a line saying that path is
+for the specialist's tools and not for its reply, and the operator's caption last, as the
+operator's words — and the specialist files it with its own tools, as the default agent
 does today. The resident learns of each outcome by the same body-free line.
 
 What it does not cover: a file sent in an engagement topic (refused today, unchanged); files

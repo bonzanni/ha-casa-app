@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.344.20] - 2026-10-04
+
+### Fixed
+- When you send a file to a specialist, as a swipe-reply on its post or after tapping a plugin's `📎 Add a document` button, the task Casa gives the specialist names where the file is stored in the specialist's inbox, and a specialist was seen repeating that internal path in its reply to you. As ruled on #1254, the task now also says the inbox path is for the specialist's tools, not for its reply. This is meant to make the path rarer in replies, not impossible: a specialist can still repeat it, because Casa does not remove the path from the reply. (#1259)
+
 ## [0.344.19] - 2026-10-04
 
 ### Fixed
