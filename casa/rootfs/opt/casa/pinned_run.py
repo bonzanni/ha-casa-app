@@ -188,34 +188,20 @@ class _Pinned:
             pass
 
 
-class PinnedRun:
-    """One tap's run (design §5.2.4). ``handle_tap`` creates it under the desk
-    lock, sets it on ``tools._pinned_run`` around the runner's task, and the
-    builder, the hooks and the runner read it from there.
+class ProcessTree:
+    """The processes one delegated run's CLI started, owned by Casa (#1212):
+    the CLI pinned by pidfd the moment its session exists, its descendants
+    pinned with the parent chain validated while pinned, re-walked when a
+    termination begins, signalled through the pinned fds and confirmed gone
+    by pidfd readability — never through the SDK's own teardown. ``PinnedRun``
+    (a stored-call tap) is one; the bounded runner (a desk reply, a
+    delegation) owns a bare one for each run."""
 
-    The watch is one-shot: the first ``resolve`` wins, later ones are
-    ignored — the ceiling never resolves it (a receipt landing during the
-    hold is still the receipt, §5.2.5); ``settle`` reads it after the run
-    ended or its termination was confirmed."""
-
-    TASK_WAIT_S = 5.0        # (a) the execution task's cancellation wait
-    LATE_WAIT_S = 3600.0     # a detached waiter's period between its "still alive" reports
     GRACE_S = 5.0            # (b) SIGTERM → SIGKILL
     EXIT_WAIT_S = 10.0       # (d)+(g) one deadline: pidfd exits and the callback drain
 
-    def __init__(self, *, run_id: str, runtime_name: str, canonical: str, label: str,
-                 build_input: BuildInput) -> None:
+    def __init__(self, *, run_id: str) -> None:
         self.run_id = run_id
-        self.runtime_name = runtime_name
-        self.canonical = canonical
-        self.label = label
-        self.build_input = build_input
-        self.fired = False          # the pin allowed the one call
-        self.rewritten = False      # §14.7: set by the capture at the hook's entry
-        self.sealed = False         # §5.2.4 (g): the irreversible entry cutoff
-        self.entered = 0            # S5 callbacks inside (incremented only unsealed)
-        self._drain: asyncio.Future | None = None
-        self._capture: Capture | None = None
         self._cli: _Pinned | None = None
         self._children: list[_Pinned] = []
         self._unconfirmed_identity = False
@@ -224,111 +210,25 @@ class PinnedRun:
         # be running) → "entered" | "failed"; while "entering", nothing is
         # pinned yet and a termination must find the process itself
         self._entry = "none"
-        self.close_task: asyncio.Task | None = None
-        self.transcript: tuple[str, str] | None = None   # (session id, cwd) the runner records
+        self._closing = False       # a bare tree: Casa began ending the run (§3.3)
+        self.reaping = False        # a bare tree: its reap owns closing the fds
 
-    # -- the watch -----------------------------------------------------------
-    def resolve(self, capture: Capture) -> None:
-        if self._capture is None:
-            self._capture = capture
+    def _close_started(self) -> bool:
+        """Whether Casa has begun ending the run — a pinned server found dead
+        after that is explained, not an anomaly (``_repin``)."""
+        return self._closing
 
-    @property
-    def captured(self) -> Capture | None:
-        return self._capture
-
-    def settle(self, default_kind: str, text: str = "") -> Capture:
-        """The capture, or the default outcome when nothing was captured."""
-        return self._capture if self._capture is not None else Capture(default_kind, text)
-
-    # -- the pin (§5.3) --------------------------------------------------------
-    def pin(self, tool_name: Any, tool_input: Any) -> str | None:
-        """The deny reason, or None when this is THE call: the stored tool,
-        the stored arguments in canonical JSON, not yet allowed. The
-        comparison never normalises (§2.6 refused at deposit what the CLI
-        would change)."""
-        from stored_calls import canonical_json
-        if self.sealed:
-            return "the run is sealed"
-        if tool_name != self.runtime_name:
-            return "not the stored call"
-        try:
-            reported = canonical_json(tool_input)
-        except (TypeError, ValueError):
-            return "not the stored arguments"
-        if reported != self.canonical:
-            return "not the stored arguments"
-        if self.fired:
-            return "the stored call already ran"
-        self.fired = True
-        return None
-
-    async def pin_hook(self, input_data: Any, tool_use_id: Any, context: Any) -> dict:
-        """The ``HookMatcher(matcher=None)`` callback: for every NON-plugin tool
-        a deny in the CLI's shape (built-ins, ToolSearch, Skill, the messaging
-        and desk tools — none of which has a Casa hook with an operator-visible
-        side effect). A plugin tool is NOT judged here: ``matcher=None`` matches
-        it too and the CLI runs both matchers concurrently, so judging it in
-        both would consume the one-shot pin in whichever ran first and the
-        plugin admission hook — where the one call is really judged, as its
-        first check — would then deny the stored call as already run (Terra,
-        diff round 1). Guarded: sealed ⇒ no effect."""
-        async def _body(input_data, tool_use_id, context):
-            name = (input_data or {}).get("tool_name")
-            from result_broker import PLUGIN_TOOL_PREFIX
-            if isinstance(name, str) and name.startswith(PLUGIN_TOOL_PREFIX):
-                return {}                       # the admission hook's pin owns plugin tools
-            why = self.pin(name, (input_data or {}).get("tool_input") or {})
-            if why is None:
-                return {}
-            from hooks import _deny
-            return _deny(why)
-        return await self.guard(_body)(input_data, tool_use_id, context)
-
-    # -- the guard (§5.2.4 (g)) ------------------------------------------------
-    def guard(self, body: Callable[..., Any]) -> Callable[..., Any]:
-        """Wrap an S5 callback: the seal is read FIRST and a sealed callback
-        returns ``{}`` with no effect; otherwise the counter is incremented
-        with no await between the read and the increment, the body runs, and
-        the counter is decremented synchronously in ``finally``."""
-        async def _guarded(input_data, tool_use_id, context):
-            if self.sealed:
-                return {}
-            self.entered += 1
-            try:
-                return await body(input_data, tool_use_id, context)
-            finally:
-                self.entered -= 1
-                if self.entered == 0 and self._drain is not None and not self._drain.done():
-                    self._drain.set_result(True)
-        return _guarded
-
-    # -- ownership (§5.2.4) ------------------------------------------------------
-    async def enter(self, client_options: Any, *, client_factory: Callable[..., Any] | None = None) -> Any:
-        """Create and ENTER the SDK client, pin the CLI's pidfd from the
-        transport's process the moment the session is started, snapshot its
-        descendants with a pidfd each (parent chain validated while pinned),
-        and hand the entered client over. The execution task never enters,
-        exits or disconnects it; this controller owns it to the end."""
-        if client_factory is None:
-            from claude_agent_sdk import ClaudeSDKClient
-            client_factory = ClaudeSDKClient
-        client = client_factory(client_options)
-        # ownership BEFORE the entry is awaited: a ceiling that fires while
-        # the CLI's initialisation hangs must still find the client to close
-        # and the process to pin (Astra, diff round 1)
+    # -- a bare tree's client (#1212) ------------------------------------------
+    def attach(self, client: Any) -> None:
+        """The client is about to be entered: a termination from here on can
+        late-pin the CLI from its transport's process."""
         self._client = client
         self._entry = "entering"
-        try:
-            await client.__aenter__()
-        except asyncio.CancelledError:
-            self._entry = "cancelled"               # unresolved: a CLI may be starting
-            raise
-        except BaseException:
-            self._entry = "failed"                  # the SDK raised before a session existed
-            raise
-        self._pin_tree(*self._process_of(client))
+
+    def pin_client(self) -> None:
+        """The client's session exists: pin its CLI and descendants."""
+        self._pin_tree(*self._process_of(self._client))
         self._entry = "entered"
-        return client
 
     @staticmethod
     def _process_of(client: Any) -> tuple:
@@ -434,7 +334,7 @@ class PinnedRun:
         # comparison) — and only for a death Casa did not cause: once Casa has
         # started the SDK's close (the normal end's teardown, which stops the
         # servers) or signalled, a dead server is explained, not an anomaly
-        if self.close_task is None and any(p.exited() for p in proven):
+        if not self._close_started() and any(p.exited() for p in proven):
             logger.warning("pinned run %s: a pinned process exited before Casa signalled or "
                            "closed anything; the scan cannot be complete", self.run_id)
             self._unconfirmed_identity = True
@@ -496,6 +396,218 @@ class PinnedRun:
             loop.remove_reader(pinned.fd)
         return pinned.exited()                      # the final zero-time sweep
 
+    async def _signal(self) -> None:
+        """(b) the CLI: SIGTERM, a grace, SIGKILL — through the pinned fd;
+        (c) every retained PROVEN descendant: SIGKILL (an unprovable one is
+        only awaited — it may not be ours)."""
+        loop = asyncio.get_running_loop()
+        cli = self._cli
+        if cli is not None and not cli.exited():
+            cli.signal(signal.SIGTERM)
+            await self._wait_exit(cli, loop.time() + self.GRACE_S)
+            if not cli.exited():
+                cli.signal(signal.SIGKILL)
+        for child in self._children:
+            if child.ours and not child.exited():
+                child.signal(signal.SIGKILL)
+
+    async def _confirm_exits(self, deadline: float) -> bool:
+        """(d): every pinned fd readable by *deadline*."""
+        confirmed = True
+        for pinned in self._all():
+            if not await self._wait_exit(pinned, deadline):
+                confirmed = False
+        return confirmed
+
+    def _discard_reaper(self) -> None:
+        """(f): a confirmed-dead CLI leaves the SDK's atexit reaper set, which
+        would otherwise signal its numeric pid — perhaps reused — at exit."""
+        cli = self._cli
+        if cli is not None and cli.exited() and cli.proc is not None:
+            _active_children().discard(cli.proc)          # idempotent
+
+    def begin_termination(self) -> None:
+        """#1212 §3.3 step 1, a bare tree's: re-walk while the CLI still lives
+        (before the run is cancelled, so the SDK's close cannot reparent a
+        child first), then mark the run as being ended by Casa. A run
+        cancelled while its client is still being entered has pinned nothing
+        yet: its CLI is late-pinned here, before the SDK's cleanup can clear
+        the transport (Astra, diff round 2)."""
+        self._late_pin()
+        self._repin()
+        self._closing = True
+
+    async def reap(self, role: str) -> bool:
+        """#1212 §3.3 steps 3–6, after the run's own teardown: the late pin,
+        the re-walk, the signals and the confirmation under one deadline; the
+        fds are closed whatever happens. False is logged at ERROR, naming the
+        role and the pids still pinned."""
+        loop = asyncio.get_running_loop()
+        try:
+            self._closing = True
+            self._late_pin()
+            self._repin()
+            await self._signal()
+            confirmed = await self._confirm_exits(loop.time() + self.EXIT_WAIT_S)
+            self._discard_reaper()
+            ok = confirmed and not self._unconfirmed_identity
+            if not ok:
+                logger.error("delegated run %s (role %s): its processes could not be "
+                             "confirmed gone (processes_exited=%s identity_ok=%s pids=%s)",
+                             self.run_id, role, confirmed, not self._unconfirmed_identity,
+                             sorted(p.pid for p in self._all() if not p.exited()))
+            return ok
+        except Exception as exc:  # noqa: BLE001 — a detached task: say so, never vanish
+            logger.error("delegated run %s (role %s): ending its processes failed: %s",
+                         self.run_id, role, type(exc).__name__)
+            return False
+        finally:
+            self.close_fds()
+
+    def close_fds(self) -> None:
+        for pinned in self._all():
+            pinned.close()
+
+
+class PinnedRun(ProcessTree):
+    """One tap's run (design §5.2.4). ``handle_tap`` creates it under the desk
+    lock, sets it on ``tools._pinned_run`` around the runner's task, and the
+    builder, the hooks and the runner read it from there.
+
+    The watch is one-shot: the first ``resolve`` wins, later ones are
+    ignored — the ceiling never resolves it (a receipt landing during the
+    hold is still the receipt, §5.2.5); ``settle`` reads it after the run
+    ended or its termination was confirmed."""
+
+    TASK_WAIT_S = 5.0        # (a) the execution task's cancellation wait
+    LATE_WAIT_S = 3600.0     # a detached waiter's period between its "still alive" reports
+    GRACE_S = 5.0            # (b) SIGTERM → SIGKILL
+    EXIT_WAIT_S = 10.0       # (d)+(g) one deadline: pidfd exits and the callback drain
+
+    def __init__(self, *, run_id: str, runtime_name: str, canonical: str, label: str,
+                 build_input: BuildInput) -> None:
+        super().__init__(run_id=run_id)
+        self.runtime_name = runtime_name
+        self.canonical = canonical
+        self.label = label
+        self.build_input = build_input
+        self.fired = False          # the pin allowed the one call
+        self.rewritten = False      # §14.7: set by the capture at the hook's entry
+        self.sealed = False         # §5.2.4 (g): the irreversible entry cutoff
+        self.entered = 0            # S5 callbacks inside (incremented only unsealed)
+        self._drain: asyncio.Future | None = None
+        self._capture: Capture | None = None
+        self.close_task: asyncio.Task | None = None
+        self.transcript: tuple[str, str] | None = None   # (session id, cwd) the runner records
+
+    def _close_started(self) -> bool:
+        # the SDK's close (the normal end's teardown, which stops the servers)
+        # started by Casa
+        return self.close_task is not None
+
+    # -- the watch -----------------------------------------------------------
+    def resolve(self, capture: Capture) -> None:
+        if self._capture is None:
+            self._capture = capture
+
+    @property
+    def captured(self) -> Capture | None:
+        return self._capture
+
+    def settle(self, default_kind: str, text: str = "") -> Capture:
+        """The capture, or the default outcome when nothing was captured."""
+        return self._capture if self._capture is not None else Capture(default_kind, text)
+
+    # -- the pin (§5.3) --------------------------------------------------------
+    def pin(self, tool_name: Any, tool_input: Any) -> str | None:
+        """The deny reason, or None when this is THE call: the stored tool,
+        the stored arguments in canonical JSON, not yet allowed. The
+        comparison never normalises (§2.6 refused at deposit what the CLI
+        would change)."""
+        from stored_calls import canonical_json
+        if self.sealed:
+            return "the run is sealed"
+        if tool_name != self.runtime_name:
+            return "not the stored call"
+        try:
+            reported = canonical_json(tool_input)
+        except (TypeError, ValueError):
+            return "not the stored arguments"
+        if reported != self.canonical:
+            return "not the stored arguments"
+        if self.fired:
+            return "the stored call already ran"
+        self.fired = True
+        return None
+
+    async def pin_hook(self, input_data: Any, tool_use_id: Any, context: Any) -> dict:
+        """The ``HookMatcher(matcher=None)`` callback: for every NON-plugin tool
+        a deny in the CLI's shape (built-ins, ToolSearch, Skill, the messaging
+        and desk tools — none of which has a Casa hook with an operator-visible
+        side effect). A plugin tool is NOT judged here: ``matcher=None`` matches
+        it too and the CLI runs both matchers concurrently, so judging it in
+        both would consume the one-shot pin in whichever ran first and the
+        plugin admission hook — where the one call is really judged, as its
+        first check — would then deny the stored call as already run (Terra,
+        diff round 1). Guarded: sealed ⇒ no effect."""
+        async def _body(input_data, tool_use_id, context):
+            name = (input_data or {}).get("tool_name")
+            from result_broker import PLUGIN_TOOL_PREFIX
+            if isinstance(name, str) and name.startswith(PLUGIN_TOOL_PREFIX):
+                return {}                       # the admission hook's pin owns plugin tools
+            why = self.pin(name, (input_data or {}).get("tool_input") or {})
+            if why is None:
+                return {}
+            from hooks import _deny
+            return _deny(why)
+        return await self.guard(_body)(input_data, tool_use_id, context)
+
+    # -- the guard (§5.2.4 (g)) ------------------------------------------------
+    def guard(self, body: Callable[..., Any]) -> Callable[..., Any]:
+        """Wrap an S5 callback: the seal is read FIRST and a sealed callback
+        returns ``{}`` with no effect; otherwise the counter is incremented
+        with no await between the read and the increment, the body runs, and
+        the counter is decremented synchronously in ``finally``."""
+        async def _guarded(input_data, tool_use_id, context):
+            if self.sealed:
+                return {}
+            self.entered += 1
+            try:
+                return await body(input_data, tool_use_id, context)
+            finally:
+                self.entered -= 1
+                if self.entered == 0 and self._drain is not None and not self._drain.done():
+                    self._drain.set_result(True)
+        return _guarded
+
+    # -- ownership (§5.2.4) ------------------------------------------------------
+    async def enter(self, client_options: Any, *, client_factory: Callable[..., Any] | None = None) -> Any:
+        """Create and ENTER the SDK client, pin the CLI's pidfd from the
+        transport's process the moment the session is started, snapshot its
+        descendants with a pidfd each (parent chain validated while pinned),
+        and hand the entered client over. The execution task never enters,
+        exits or disconnects it; this controller owns it to the end."""
+        if client_factory is None:
+            from claude_agent_sdk import ClaudeSDKClient
+            client_factory = ClaudeSDKClient
+        client = client_factory(client_options)
+        # ownership BEFORE the entry is awaited: a ceiling that fires while
+        # the CLI's initialisation hangs must still find the client to close
+        # and the process to pin (Astra, diff round 1)
+        self._client = client
+        self._entry = "entering"
+        try:
+            await client.__aenter__()
+        except asyncio.CancelledError:
+            self._entry = "cancelled"               # unresolved: a CLI may be starting
+            raise
+        except BaseException:
+            self._entry = "failed"                  # the SDK raised before a session existed
+            raise
+        self._pin_tree(*self._process_of(client))
+        self._entry = "entered"
+        return client
+
     async def _drain_callbacks(self, deadline: float) -> bool:
         if self.entered == 0:
             return True
@@ -520,18 +632,8 @@ class PinnedRun:
                 task.add_done_callback(_consume)
         self._late_pin()
         self._repin()                                # #1205: children started since enter, or during (a)
-        # (b) the CLI: SIGTERM, a grace, SIGKILL — through the pinned fd
-        cli = self._cli
-        if cli is not None and not cli.exited():
-            cli.signal(signal.SIGTERM)
-            await self._wait_exit(cli, loop.time() + self.GRACE_S)
-            if not cli.exited():
-                cli.signal(signal.SIGKILL)
-        # (c) every retained PROVEN descendant: SIGKILL (an unprovable one is
-        # only awaited — it may not be ours)
-        for child in self._children:
-            if child.ours and not child.exited():
-                child.signal(signal.SIGKILL)
+        # (b) the CLI: SIGTERM, a grace, SIGKILL; (c) every proven descendant
+        await self._signal()
         # (g)(1) the entry cutoff, right after the kill and before any wait
         self.sealed = True
         # (e) the SDK client is abandoned to a detached, never-awaited close
@@ -573,25 +675,16 @@ class PinnedRun:
     async def _confirm(self, deadline: float) -> bool:
         """(d)+(g): every pinned fd readable and the callbacks drained under
         ONE deadline; (f) the confirmed-dead CLI leaves the reaper set."""
-        confirmed = True
-        for pinned in self._all():
-            if not await self._wait_exit(pinned, deadline):
-                confirmed = False
+        confirmed = await self._confirm_exits(deadline)
         self.sealed = True
         drained = await self._drain_callbacks(deadline)
-        cli = self._cli
-        if cli is not None and cli.exited() and cli.proc is not None:
-            _active_children().discard(cli.proc)          # idempotent
+        self._discard_reaper()
         ok = confirmed and drained and not self._unconfirmed_identity
         if not ok:
             logger.warning("pinned run %s: not confirmed (processes_exited=%s "
                            "callbacks_drained=%s identity_ok=%s)", self.run_id, confirmed,
                            drained, not self._unconfirmed_identity)
         return ok
-
-    def close_fds(self) -> None:
-        for pinned in self._all():
-            pinned.close()
 
     async def _wait_process_object(self, deadline: float) -> bool:
         """The unpinned writer's exit, read from the transport's process
