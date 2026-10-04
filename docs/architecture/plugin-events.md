@@ -220,7 +220,7 @@ prose ("do not ask... record it durably and end the turn") is what asks a subscr
 tool logic to behave headlessly everywhere else, and that is a courtesy the instruction
 states, not a mechanically enforced one beyond the one tool this invariant pins.
 
-**INV-EV-007**: An operator note the worker attempts before the channels have finished starting is logged at INFO without a traceback, and an owed exhaustion or removal note stays owed; every other failed note keeps an ERROR with its traceback.
+**INV-EV-007**: An operator note the worker attempts while the Telegram channel is not ready, before the channels have finished starting, is logged at INFO without a traceback, and an owed exhaustion or removal note stays owed; every other failed note keeps an ERROR with its traceback.
 
 Enforced by type: `operator_notify` raises `OperatorNotifyBeforeStart`, a `RuntimeError`
 subclass, for a not-ready channel only until `ChannelManager.start_all` has returned; the

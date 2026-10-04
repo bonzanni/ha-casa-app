@@ -126,8 +126,9 @@ DIRECTLY, so a raise is observed rather than swallowed. Only a confirmed send fl
 until it does the note stays owed and every later pass retries it. That matters because the
 operator seam raises by design whenever the Telegram channel is absent or not ready, and the
 worker's first pass runs before the channels start: the one window in which the note was most
-likely to fail was, until then, the window in which it was silently discarded. That window's
-failures are a designed retry, logged at INFO rather than as errors (INV-CB-011). A send whose
+likely to fail was, until then, the window in which it was silently discarded. In that window
+the seam's not-ready raise is a designed retry, logged at INFO rather than as an error
+(INV-CB-011). A send whose
 durable mark then fails is remembered in memory for the process's life, so later passes retry
 the mark alone and never resend.
 
@@ -177,7 +178,7 @@ that invariant already admits.
 What it does not cover: casa cannot inspect an opaque value, so "no bearer material in `meta`"
 is a consumer obligation, not enforced.
 
-**INV-CB-011**: An operator note the worker attempts before the channels have finished starting is logged at INFO without a traceback, and an owed exhaustion or removal note stays owed; every other failed note keeps an ERROR with its traceback.
+**INV-CB-011**: An operator note the worker attempts while the Telegram channel is not ready, before the channels have finished starting, is logged at INFO without a traceback, and an owed exhaustion or removal note stays owed; every other failed note keeps an ERROR with its traceback.
 
 Enforced by type: `operator_notify` raises `OperatorNotifyBeforeStart`, a `RuntimeError`
 subclass, for a not-ready channel only until `ChannelManager.start_all` has returned. The
