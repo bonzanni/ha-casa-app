@@ -1,6 +1,8 @@
-#!/command/with-contenv bash
+#!/command/with-contenv /bin/bash
 # Casa claude_code engagement run script (v0.75.0 — interactive-engagements
-# design §W1). bash REQUIRED: process substitution below.
+# design §W1). bash REQUIRED: process substitution below. The interpreter is
+# absolute (#1248): with-contenv looks a bare name up on the PATH that has
+# the plugin tools dir first.
 set -e
 
 unset TELEGRAM_BOT_TOKEN WEBHOOK_SECRET SUPERVISOR_TOKEN HASSIO_TOKEN \
@@ -14,6 +16,10 @@ export MCP_TOOL_TIMEOUT=660000     # [D:§W5] must exceed the 585s ask client bo
 # guard); this pin preserves the pre-2.1.219 contract against config drift.
 export CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1
 {EXTRA_EXPORT}
+# #1248: from here to the uid drop every program runs as root, so PATH loses
+# the plugin tools dir (drivers/workspace.py:_root_path_fragment); the CLI
+# gets the inherited PATH back through `env` after setpriv has dropped.
+{ROOT_PATH}
 cd "/data/engagements/{ID}"
 
 # Task 4 (containment stage 2): every file below is root-only run-state and
@@ -64,7 +70,7 @@ exec <"$CTL/stdin.fifo"
 
 exec setpriv --reuid {UID} --regid {GID} --clear-groups \
              --bounding-set -all --inh-caps -all --no-new-privs \
-             -- claude --channels server:casa-engagement-channel \
+             -- env PATH="$_casa_cli_path" claude --channels server:casa-engagement-channel \
              --print --verbose --output-format stream-json \
              "${RESUME_ARGS[@]}" --permission-mode {PERMISSION_MODE} \
              {ADD_DIR_FLAGS} {PLUGIN_DIR_FLAGS}

@@ -3222,12 +3222,14 @@ async def test_exposed_credential_refuses_a_complete_pair_fast_path(
     svc_root = tmp_path / "svc"; svc_root.mkdir()
     monkeypatch.setattr(s6_rc, "ENGAGEMENT_SOURCES_ROOT", str(svc_root))
     monkeypatch.setattr(s6_rc, "SERVICE_SCANDIR_ROOT", str(tmp_path / "noscan"))
-    # A CURRENT pair (streaming markers + the uid-drop exec) → not stale, so
-    # replay takes the fast path and re-plants nothing.
+    # A CURRENT pair (streaming markers + the uid-drop exec + the root phase's
+    # filtered PATH, #1248) → not stale, so replay takes the fast path and
+    # re-plants nothing.
     s6_rc.write_service_dir(
         svc_root=str(svc_root), engagement_id="keep1",
         run_script=(
             "#!/command/with-contenv bash\nset -e\n"
+            "PATH=$_casa_root_path\n"
             'printf \'{"casa_control": "spawn"}\\n\'\n'
             "exec setpriv --reuid 200001 --regid 200001 --clear-groups"
             " --bounding-set -all -- claude --print --output-format stream-json\n"

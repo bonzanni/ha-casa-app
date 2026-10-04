@@ -1126,8 +1126,13 @@ def _preflight_uid_drop(rec: EngagementRecord, ws: str) -> None:
     Raises ``UidDropRefused`` on the first failing check; callers must not
     swallow it and plant the service anyway.
     """
-    if shutil.which("setpriv") is None:
-        raise UidDropRefused("setpriv not found on PATH — cannot drop uid")
+    # #1248: looked up the way the run script will exec it — on the PATH
+    # without the plugin tools dir — so a plugin's ``setpriv`` cannot stand
+    # in for a missing one.
+    if shutil.which("setpriv", path=s6_rc.trusted_path()) is None:
+        raise UidDropRefused(
+            "setpriv not found on PATH outside the plugin tools dir — "
+            "cannot drop uid")
 
     # GHSA-569r-7crq-xr43: dropping to a uid that can then read a Supervisor
     # bearer token is worse than not dropping at all — it hands the engagement

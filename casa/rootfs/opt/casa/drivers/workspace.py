@@ -286,6 +286,39 @@ def _validate_extra_dir_containment(d: str) -> None:
         )
 
 
+def _root_path_fragment() -> str:
+    """#1248: the shell lines both engagement service scripts run before any
+    other program, as root. ``setup-configs.sh`` puts the plugin tools
+    directory first on every s6 service's PATH, and a plugin publishes its
+    ``verify_bin`` executables there under any name, so a bare ``cat``,
+    ``mkdir``, ``s6-log`` or ``setpriv`` would run what a plugin published.
+    The fragment saves the inherited PATH in ``_casa_cli_path`` (the run
+    script hands it back to the dropped CLI) and rebuilds PATH from the
+    ABSOLUTE entries that are not the tools directory (string-equal, or the
+    same directory by ``-ef``) — the rule ``drivers.s6_rc._trusted_env``
+    applies, written in POSIX-shell builtins so bash and dash run it alike.
+    If no entry is left it exits before running anything: an empty PATH
+    would search the working directory. The variables are lowercase, so no
+    ``extra_env`` key (upper-snake only) can name them. Its last line is the
+    marker ``drivers.s6_rc.run_script_is_stale`` requires."""
+    from drivers import s6_rc
+    tools = shlex.quote(s6_rc.PLUGIN_TOOLS_BIN)
+    return (
+        "_casa_cli_path=$PATH\n"
+        "_casa_root_path=\n"
+        "_casa_rest=$PATH:\n"
+        'while [ -n "$_casa_rest" ]; do\n'
+        "  _casa_e=${_casa_rest%%:*}; _casa_rest=${_casa_rest#*:}\n"
+        "  case $_casa_e in /*) ;; *) continue ;; esac\n"
+        f'  if [ "$_casa_e" = {tools} ] || [ "$_casa_e" -ef {tools} ]; then continue; fi\n'
+        "  _casa_root_path=${_casa_root_path:+$_casa_root_path:}$_casa_e\n"
+        "done\n"
+        '[ -n "$_casa_root_path" ] || { echo "casa: no PATH entry outside the'
+        ' plugin tools dir; refusing to start" >&2; exit 111; }\n'
+        "PATH=$_casa_root_path\n"
+    )
+
+
 def render_run_script(
     *, engagement_id: str, permission_mode: str,
     extra_dirs: list[str], extra_unset: list[str] | None = None,
@@ -418,6 +451,7 @@ def render_run_script(
         .replace("{PLUGIN_DIR_FLAGS}", plugin_dir_flags)
         .replace("{EXTRA_UNSET}", extra_unset_str)
         .replace("{EXTRA_EXPORT}", export_lines)
+        .replace("{ROOT_PATH}\n", _root_path_fragment())
     )
 
 
@@ -431,8 +465,11 @@ def render_log_run_script(*, engagement_id: str) -> str:
     """
     log_dir = engagement_log_dir(engagement_id)
     return (
-        "#!/command/with-contenv sh\n"
+        # #1248: an absolute interpreter — with-contenv would otherwise look
+        # ``sh`` up on the PATH that has the plugin tools dir first.
+        "#!/command/with-contenv /bin/sh\n"
         "set -e\n"
+        + _root_path_fragment() +
         # GHSA-569r-7crq-xr43: the container umask is 0022, so `mkdir -p` landed
         # this dir at 0755 and s6-log's `current` at 0644 — one engagement uid
         # could read up to ~21 MB of a SIBLING engagement's stdout, which is the
