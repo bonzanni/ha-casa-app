@@ -65,7 +65,7 @@ apply unchanged, step 3's open-conversation warning included.
    "restart Casa, then re-run the upgrade", ask the operator to restart Casa first
    (`casa_restart_supervised`) and re-run the call after it.
    Key this on the `kind`, never on `kept_new_version: true` alone: a sequencer-failure result
-   carries that flag too, and there the new version IS loaded.
+   carries that flag too, and its own `outcome` says whether the new version was loaded: relay it.
    If the result carries
    `plugin_data_note` — on ANY outcome, including an `ok:false` result that
    carries no `state` at all — relay it verbatim with the names in
