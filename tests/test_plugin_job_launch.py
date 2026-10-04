@@ -65,7 +65,9 @@ async def test_worker_options_record_and_topic(worker, monkeypatch, limit):
     assert isinstance(opts, ClaudeAgentOptions)
     assert opts.allowed_tools == ['Skill', 'ToolSearch', 'mcp__plugin_ledger_ledger', *jobs.PLUGIN_JOB_CASA_GRANTS]
     assert opts.disallowed_tools == ['Agent', 'Task', 'AskUserQuestion',
-                                    'SendMessage', 'ListAgents', 'PushNotification']
+                                    'SendMessage', 'ListAgents', 'PushNotification',
+                                    'ScheduleWakeup', 'CronCreate', 'CronDelete',
+                                    'CronList', 'Monitor', 'RemoteTrigger']
     assert opts.permission_mode == 'default' and opts.setting_sources == []
     assert opts.skills == 'all' and opts.model == 'sonnet'
     assert opts.plugins == [{'type': 'local', 'path': str(worker.root)}]
