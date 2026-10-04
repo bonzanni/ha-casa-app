@@ -93,6 +93,7 @@
     - casa/rootfs/opt/casa/engagement_quiesce.py::live_pids_for_uid
     - casa/rootfs/opt/casa/drivers/s6_rc.py::latch_down
     - casa/rootfs/opt/casa/drivers/s6_rc.py::wanted_down
+    - casa/rootfs/opt/casa/drivers/s6_rc.py::_run
     - casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.quiesce
     - casa/rootfs/opt/casa/safe_fs.py::open_beneath
     - casa/rootfs/opt/casa/safe_fs.py::read_text_beneath
@@ -115,6 +116,7 @@
     - tests/test_quiesce_funnel_order.py
     - tests/test_s6_quiesce_seams.py
     - tests/test_s6_rc_overlay_sources.py
+    - tests/test_s6_rc_trusted_path.py
     - test-local/e2e/test_engagement_quiesce.sh
   related: [architecture/engagements.md, architecture/engagement-finalization.md, architecture/engagement-completion-gate.md, architecture/hook-resolution.md, architecture/persistent-state.md]
   defines_invariants: [INV-CONT-001, INV-CONT-002, INV-CONT-003, INV-CONT-004, INV-CONT-005, INV-CONT-006]

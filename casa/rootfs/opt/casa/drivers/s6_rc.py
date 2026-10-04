@@ -41,6 +41,39 @@ LIVE_DB_SYMLINK = "/run/s6-rc/compiled"
 # tmp scandir root (monkeypatch), same pattern as ENGAGEMENT_SOURCES_ROOT.
 SERVICE_SCANDIR_ROOT = "/run/service"
 
+# #987: the directory plugin ``verify_bin`` executables are published into.
+# ``setup-configs.sh`` prepends it to the PATH of every s6 service, casa-core
+# included, ahead of the whole image PATH — so a bare ``s6-rc`` resolved there
+# runs whatever a plugin published under that name. Every program this module
+# runs is resolved, and runs, under ``_trusted_env()`` instead.
+PLUGIN_TOOLS_BIN = "/config/tools/bin"
+
+
+def _trusted_env() -> dict[str, str]:
+    """``os.environ`` with every PATH entry that names the plugin tools
+    directory removed, the rest kept in order. Entries are compared by
+    ``realpath``, so another spelling of the same directory (``//config/...``,
+    a trailing slash, a symlink to it) is removed too. Passed as ``env=``:
+    CPython's POSIX ``subprocess`` resolves a bare program name against the
+    PATH of the env it is given, and the program inherits that env, so what
+    s6-rc in turn runs by name is resolved the same way. No absolute program
+    path is hard-coded: the image PATH stays the source of truth across base
+    bumps (#925)."""
+    env = dict(os.environ)
+    path = env.get("PATH")
+    if path is None:
+        return env
+    tools = os.path.realpath(PLUGIN_TOOLS_BIN)
+    env["PATH"] = os.pathsep.join(
+        entry for entry in path.split(os.pathsep)
+        if os.path.realpath(entry or ".") != tools)
+    return env
+
+
+def _run(argv: list[str], **kwargs) -> subprocess.CompletedProcess:
+    """``subprocess.run`` for an s6 program, under ``_trusted_env()``."""
+    return subprocess.run(argv, env=_trusted_env(), **kwargs)
+
 # Short wait between checked-teardown attempts (overridable in tests so the
 # ladder retries without a real sleep). NOT a patch of asyncio.sleep — the
 # memory-cage rule forbids patching <module>.asyncio.sleep globally.
@@ -349,7 +382,7 @@ def _compile_swap_reap_sync(new_db: str, abandoned: threading.Event) -> None:
         # orphan the one the predecessor made live.
         old_db = os.path.realpath(LIVE_DB_SYMLINK)
         try:
-            subprocess.run(
+            _run(
                 [
                     "s6-rc-compile",
                     new_db,
@@ -366,7 +399,7 @@ def _compile_swap_reap_sync(new_db: str, abandoned: threading.Event) -> None:
                     new_db,
                 )
                 return
-            subprocess.run(["s6-rc-update", new_db], check=True)
+            _run(["s6-rc-update", new_db], check=True)
         except BaseException:
             # Failed swap: the fresh compile is the orphan.
             shutil.rmtree(new_db, ignore_errors=True)
@@ -427,7 +460,7 @@ async def service_pid(*, engagement_id: str) -> int | None:
     is_alive_async on every restart-survival code path.
     """
     result = await asyncio.to_thread(
-        subprocess.run,
+        _run,
         ["s6-svstat", "-p", f"/run/service/engagement-{engagement_id}"],
         capture_output=True, text=True,
     )
@@ -456,7 +489,7 @@ async def start_service(*, engagement_id: str) -> None:
     afterwards, so callers keep their cancellation semantics.
     """
     worker = asyncio.ensure_future(asyncio.to_thread(
-        subprocess.run,
+        _run,
         ["s6-rc", "-u", "change", f"engagement-{engagement_id}"],
         check=True,
     ))
@@ -494,7 +527,7 @@ async def latch_down(*, engagement_id: str) -> None:
     a terminal transition must not be able to block on it.
     """
     await asyncio.to_thread(
-        subprocess.run,
+        _run,
         ["s6-svc", "-D", _service_scandir(engagement_id)],
         capture_output=True, text=True,
     )
@@ -517,7 +550,7 @@ async def wanted_down(*, engagement_id: str) -> bool:
     if not os.path.isdir(scandir):
         return True
     result = await asyncio.to_thread(
-        subprocess.run,
+        _run,
         ["s6-svstat", "-o", "wantedup", scandir],
         capture_output=True, text=True,
     )
@@ -529,7 +562,7 @@ async def wanted_down(*, engagement_id: str) -> bool:
 async def stop_service(*, engagement_id: str) -> None:
     """s6-rc -d change engagement-<id> — brings the service down. Idempotent."""
     await asyncio.to_thread(
-        subprocess.run,
+        _run,
         ["s6-rc", "-d", "change", f"engagement-{engagement_id}"],
         check=True,
     )
@@ -574,7 +607,7 @@ async def _probe_service_down(scandir: str) -> str:
     if not os.path.isdir(scandir):
         return "down"
     result = await asyncio.to_thread(
-        subprocess.run,
+        _run,
         ["s6-svstat", "-o", "up,wantedup", scandir],
         capture_output=True, text=True,
     )
@@ -632,7 +665,7 @@ async def _probe_status_and_pid(scandir: str) -> tuple[str, int | None]:
     if not os.path.isdir(scandir):
         return "down", None
     result = await asyncio.to_thread(
-        subprocess.run,
+        _run,
         ["s6-svstat", "-o", "up,wantedup,pid", scandir],
         capture_output=True, text=True,
     )
@@ -687,7 +720,7 @@ async def _direct_killpg(scandir: str) -> bool:
     (False on a kernel-refused / vanished PID — that keeps a genuine
     ``refuse_teardown_failed`` reachable)."""
     result = await asyncio.to_thread(
-        subprocess.run,
+        _run,
         ["s6-svstat", "-p", scandir],
         capture_output=True, text=True,
     )
@@ -752,7 +785,7 @@ async def ensure_service_down(*, engagement_id: str, attempts: int = 3) -> bool:
         # (1) s6-rc -d change — CAUGHT (a failed s6-rc is an input, not an exit).
         try:
             await asyncio.to_thread(
-                subprocess.run,
+                _run,
                 ["s6-rc", "-d", "change", main],
                 check=True, capture_output=True, text=True,
             )
@@ -770,7 +803,7 @@ async def ensure_service_down(*, engagement_id: str, attempts: int = 3) -> bool:
             # (3) supervisor fallback: capital -D latches ./down too.
             try:
                 await asyncio.to_thread(
-                    subprocess.run,
+                    _run,
                     ["s6-svc", "-D", scandir],
                     capture_output=True, text=True,
                 )
@@ -789,7 +822,7 @@ async def ensure_service_down(*, engagement_id: str, attempts: int = 3) -> bool:
         #     bounded wait, all in one supervisor command.
         try:
             await asyncio.to_thread(
-                subprocess.run,
+                _run,
                 ["s6-svc", "-wD", "-KD", "-T", "5000", scandir],
                 capture_output=True, text=True,
             )

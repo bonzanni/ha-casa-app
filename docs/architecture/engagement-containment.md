@@ -249,6 +249,9 @@ and the image build refuses to complete when that link's sources directory is ab
 that drops the link fails the build, not the first launch on an operator's install; the
 compile itself still fails closed (exit 111) and the launch rolls back.
 
+**A plugin publishes a file named like an s6 program.** The driver runs every s6 program
+under a PATH without the plugin tools directory, so that file never runs in its place.
+
 **A service will not confirm down.** By then the ladder has re-issued the stop, latched the
 service down and attempted its kill rungs, and it is still not confirmed down — either the
 strict probe will not call it down, or the last kill could not be delivered at all — its pid
@@ -327,6 +330,7 @@ never runs, and anything that replaces it drops the privilege drop with it.
 - `casa/rootfs/opt/casa/engagement_quiesce.py::live_pids_for_uid`
 - `casa/rootfs/opt/casa/drivers/s6_rc.py::latch_down`
 - `casa/rootfs/opt/casa/drivers/s6_rc.py::wanted_down`
+- `casa/rootfs/opt/casa/drivers/s6_rc.py::_run`
 - `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.quiesce`
 - `casa/rootfs/opt/casa/safe_fs.py::open_beneath`
 - `casa/rootfs/opt/casa/safe_fs.py::read_text_beneath`
@@ -350,6 +354,7 @@ never runs, and anything that replaces it drops the privilege drop with it.
 - `tests/test_quiesce_funnel_order.py`
 - `tests/test_s6_quiesce_seams.py`
 - `tests/test_s6_rc_overlay_sources.py`
+- `tests/test_s6_rc_trusted_path.py`
 - `test-local/e2e/test_engagement_quiesce.sh`
 
 **Related**

@@ -2,8 +2,8 @@
 an engagement launch executes (#957).
 
 `casa/rootfs/opt/casa/drivers/s6_rc.py` runs every s6 program by BARE NAME
-through `subprocess.run`, directly or via `asyncio.to_thread(subprocess.run,
-[...])`. `casa/Dockerfile` carries one build-time probe that launches each named
+through its `_run` helper (`subprocess.run` under `_trusted_env()`), directly or
+via `asyncio.to_thread(_run, [...])`. `casa/Dockerfile` carries one build-time probe that launches each named
 program with that same primitive in the image's own `python3`, and fails the
 build when a launch raises. The build runs natively in every arm of
 `deploy.yml`'s matrix, so an image in which one of these programs cannot be
@@ -24,9 +24,11 @@ the base image's own boot programs.
 Nor does the probe it pins establish that a runtime launch resolves these bare
 names to the programs the image installed: `setup-configs.sh` prepends
 `/config/tools/bin`, which an installed plugin publishes binaries into, ahead of
-the entire image PATH for every s6-supervised service (#987). That is a property
-of the running system rather than of the image, so the probe neither covers it
-nor is weakened by it.
+the entire image PATH for every s6-supervised service. That is a property of the
+running system rather than of the image; `_run` resolves under a PATH without
+that directory (#987), pinned by `tests/test_s6_rc_trusted_path.py`. The
+extractor below reports a `subprocess.run` anywhere outside `_run` as
+unsupported, so a call site that skips the helper turns this red as well.
 """
 from __future__ import annotations
 
@@ -52,6 +54,10 @@ def _is_subprocess_run(node: ast.AST) -> bool:
             and isinstance(node.value, ast.Name) and node.value.id == "subprocess")
 
 
+def _is_driver_run(node: ast.AST) -> bool:
+    return isinstance(node, ast.Name) and node.id == "_run"
+
+
 def _is_to_thread(node: ast.AST) -> bool:
     return (isinstance(node, ast.Attribute) and node.attr == "to_thread"
             and isinstance(node.value, ast.Name) and node.value.id == "asyncio")
@@ -67,24 +73,36 @@ def _argv_of(call: ast.Call, positional: int) -> ast.AST | None:
 
 
 def driver_programs(source: str) -> tuple[list[str], int, int, list[str]]:
-    """argv[0] of every `subprocess.run` call, in both call forms.
+    """argv[0] of every `_run` call, in both call forms.
 
     Returns (programs, direct_count, threaded_count, unsupported). A call whose
     argv is not a literal list/tuple starting with a bare-name string literal is
     reported as unsupported rather than skipped: an extractor that silently
-    reaches nothing is a test that pins nothing.
+    reaches nothing is a test that pins nothing. So is any `subprocess.run`
+    outside the body of `_run` itself (#987): it would resolve its program
+    against the PATH the plugin tools directory is prepended to.
     """
     programs: list[str] = []
     unsupported: list[str] = []
     direct = threaded = 0
-    for node in ast.walk(ast.parse(source)):
+    tree = ast.parse(source)
+    helper = {id(n) for d in ast.walk(tree)
+              if isinstance(d, ast.FunctionDef) and d.name == "_run"
+              for n in ast.walk(d)}
+    for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
-        if _is_subprocess_run(node.func):
+        if ((_is_subprocess_run(node.func) or (
+                _is_to_thread(node.func) and node.args
+                and _is_subprocess_run(node.args[0])))
+                and id(node) not in helper):
+            unsupported.append(f"line {node.lineno}: subprocess.run outside _run")
+            continue
+        if _is_driver_run(node.func):
             argv = _argv_of(node, 0)
             direct += 1
         elif (_is_to_thread(node.func) and node.args
-              and _is_subprocess_run(node.args[0])):
+              and _is_driver_run(node.args[0])):
             argv = _argv_of(node, 1)
             threaded += 1
         else:
@@ -151,10 +169,10 @@ def probe_instructions(dockerfile_text: str) -> list[list[str]]:
 def test_launch_probe_matches_driver_programs() -> None:
     programs, direct, threaded, unsupported = driver_programs(
         DRIVER.read_text(encoding="utf-8"))
-    assert direct > 0, "extractor reached no direct subprocess.run call"
-    assert threaded > 0, "extractor reached no asyncio.to_thread(subprocess.run) call"
+    assert direct > 0, "extractor reached no direct _run call"
+    assert threaded > 0, "extractor reached no asyncio.to_thread(_run) call"
     assert unsupported == [], (
-        f"subprocess.run argv this pin cannot read: {unsupported}")
+        f"s6 program calls this pin cannot read: {unsupported}")
 
     probes = probe_instructions(DOCKERFILE.read_text(encoding="utf-8"))
     assert len(probes) == 1, (
