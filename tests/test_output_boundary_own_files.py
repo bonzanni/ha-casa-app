@@ -130,6 +130,41 @@ def test_a_turn_with_no_file_of_its_own_never_says_you_sent_in_this_turn(arming)
             assert want in str(a), kind
 
 
+def _fail_reads(s, files):
+    for path, name in files:
+        s.note_read_attempt(path, display_name=name)
+        s.note_read_failed(path)
+
+
+@pytest.mark.parametrize("kind", [K.FINAL_REPLY, K.STREAM_UPDATE, K.DISCRETE, K.CAPTION,
+                                  K.KEYBOARD, K.STORED], ids=lambda k: k.name)
+@pytest.mark.parametrize("arming,qualifier", [("listed", "listed"),
+                                              ("tried", "tried to open"),
+                                              ("mixed", "listed or tried to open")])
+def test_non_own_count_line_names_the_persona(arming, qualifier, kind):
+    """#1247: Casa knows no persona's pronouns, so a count of several files that
+    were not the turn's own names the agent by the line's own persona label —
+    never "it" — live and STORED alike. Specified by astra in the red-case
+    round; at 9636f81d every arm said "files it …"."""
+    s = _scope("Ellen")
+    if arming == "listed":
+        _listed(s, OLD[:2])
+    elif arming == "tried":
+        _fail_reads(s, OLD[:2])
+    else:
+        _listed(s, OLD[:1])
+        _fail_reads(s, OLD[1:2])
+    verb = "wrote this" if kind is K.STORED else "answered"
+    line = f"Casa: Ellen {verb} without opening any of the 2 files Ellen {qualifier}."
+    a = s.admit(kind, "x")
+    assert a.annotations == (line,)
+    if kind is K.STORED:
+        assert a.note == line
+        assert str(a) == "x"
+    else:
+        assert str(a) == line + "\n\nx"
+
+
 def test_a_failed_read_of_an_unlisted_path_is_counted_as_tried_not_listed():
     s = _scope()
     _listed(s, OLD[:1])
