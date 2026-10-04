@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.344.8] - 2026-10-04
+
+### Fixed
+
+- After you approve a specialist upgrade — including a change to an installed specialist's
+  settings — the configurator's automatic follow-up turn now tells it to finish the upgrade.
+  Before, that turn told it to commit a fresh install, which Casa refuses for a specialist that
+  is already installed. The follow-up after approving a fresh install is unchanged.
+
 ## [0.344.7] - 2026-10-04
 
 ### Fixed

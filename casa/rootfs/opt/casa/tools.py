@@ -16415,12 +16415,31 @@ async def specialist_install_inspect(args: dict) -> dict:
     # install stalled at commit's consent_missing until the operator sent a
     # manual topic nudge.
     eng = engagement_var.get(None)
+    # #1150/#1163: an upgrade re-consents through this same keyboard, but its
+    # recipe continues with specialist_upgrade (upgrade.md step 3) —
+    # specialist_install_commit refuses an installed slug (active_present) and
+    # an upgrade wires no delegation.
+    if args.get("mode", "install") == "upgrade":
+        continuation = (
+            "The operator approved the consent for upgrading "
+            f"specialist:{result.slug}. Continue the upgrade recipe now without "
+            "waiting for further input: call specialist_upgrade with the staged "
+            "values and this inspect's receipt_id, then finish the upgrade recipe "
+            "from its step 3 onward (config_git_commit, casa_reload, "
+            "emit_completion).")
+    else:
+        continuation = (
+            "The operator approved the install consent for "
+            f"specialist:{result.slug}. Continue the recipe now without "
+            "waiting for further input: call specialist_install_commit with "
+            "the staged values, then finish the recipe (wire delegation, "
+            "config_git_commit, casa_reload, emit_completion).")
 
     async def _reconcile_cb() -> bool:
         # Post-Approve+ack: deliver a synthetic RESUME turn so the LLM finishes
-        # the WHOLE recipe itself (commit + delegation wiring + config_git +
-        # reload + emit_completion) — never commit server-side, the recipe does
-        # far more than commit. FAIL-SAFE: this runs from the tap-callback
+        # the WHOLE recipe itself (commit or upgrade + delegation wiring for an
+        # install + config_git + reload + emit_completion) — never commit
+        # server-side, the recipe does far more than commit. FAIL-SAFE: this runs from the tap-callback
         # finish hook and must NEVER raise into it; any failure (engagement
         # gone, TTL-expired driver dead, channel seam missing) is logged and
         # swallowed, leaving the operator's manual nudge as the fallback.
@@ -16461,14 +16480,7 @@ async def specialist_install_inspect(args: dict) -> dict:
             # later, inside the engagement's per-turn lock, and what that
             # leaves open is stated once, in INV-SPEC-010
             # (docs/architecture/specialist-lifecycle.md).
-            return bool(await deliver(
-                rec,
-                "The operator approved the install consent for "
-                f"specialist:{result.slug}. Continue the recipe now without "
-                "waiting for further input: call specialist_install_commit with "
-                "the staged values, then finish the recipe (wire delegation, "
-                "config_git_commit, casa_reload, emit_completion).",
-            ))
+            return bool(await deliver(rec, continuation))
         except Exception:  # noqa: BLE001 — tap-callback path: never raise
             logger.warning(
                 "post-consent auto-resume failed (slug=%s) — operator can nudge "

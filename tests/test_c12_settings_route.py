@@ -193,14 +193,17 @@ def test_specialist_upgrade_description_admits_the_installed_version():
     assert desc.endswith(tools._ORDINARY_CHANGE_TOOL_NOTE)
 
 
-def test_upgrade_recipe_redirects_the_install_worded_resume_turn():
-    # The post-Approve resume turn (tools.py `_reconcile_cb`) is worded for a
-    # fresh install whatever the inspect's mode; an upgrade -- a settings
-    # change included -- continues with step 3's specialist_upgrade.
+def test_upgrade_recipe_states_the_upgrade_worded_resume_turn():
+    # #1150/#1163: the post-Approve resume turn (tools.py `_reconcile_cb`)
+    # follows the inspect's mode, so an upgrade -- a settings change included --
+    # is told to continue with step 3's specialist_upgrade. Step 2 says so,
+    # and no longer tells the configurator to ignore an install-worded turn.
     import tools
-    assert "call specialist_install_commit" in Path(tools.__file__).read_text(encoding="utf-8")
+    source = Path(tools.__file__).read_text(encoding="utf-8")
+    assert "call specialist_upgrade with the staged" in source
     text = _flat("upgrade.md")
     step2 = text[text.index(" 2. Same consent flow"):text.index(" 3. `specialist_upgrade(")]
-    assert ("for an upgrade, continue with step 3's `specialist_upgrade` instead — "
-            "`specialist_install_commit` refuses an installed slug with "
-            '`kind: "active_present"`') in step2
+    assert ("The automatic resume turn after Approve tells you to continue with "
+            "step 3's `specialist_upgrade` — never `specialist_install_commit`, "
+            'which refuses an installed slug with `kind: "active_present"`') in step2
+    assert "worded for a fresh install" not in step2
