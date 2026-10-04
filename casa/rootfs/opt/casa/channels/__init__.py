@@ -33,8 +33,9 @@ class OperatorNotifyBeforeStart(RuntimeError):
     :meth:`ChannelManager.start_all` completed (#930).
 
     An owed note attempted then is a designed retry, not a failure: the
-    workers' first pass runs before the channels start and they are kicked
-    again once ``start_all`` returns. The owed-note sites log it at INFO; a
+    workers' first pass runs before the channels start, the event worker is
+    kicked again once ``start_all`` returns, and the callback worker retries
+    on a later pass. The owed-note sites log it at INFO; a
     not-ready channel AFTER start completed (a first bring-up that failed and
     returned included) keeps the bare ``RuntimeError`` and its ERROR line.
     A ``RuntimeError`` subclass, so every other caller's handling is

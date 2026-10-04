@@ -866,7 +866,7 @@ async def _process_removal_records(spool: Any) -> None:
                 raise
             except OperatorNotifyBeforeStart:
                 # #930: the channels have not finished starting — a designed
-                # retry (the workers are kicked once start_all returns), not a
+                # retry (this worker is kicked once start_all returns), not a
                 # failure. Un-noted, retried next pass.
                 logger.info("event removal note deferred: channels not "
                             "started yet; retried next pass")

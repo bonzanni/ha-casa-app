@@ -584,8 +584,10 @@ async def _process_unnoted_exhaustions(spool: Any) -> None:
                 raise
             except OperatorNotifyBeforeStart:
                 # #930: the channels have not finished starting — a designed
-                # retry (the workers are kicked once start_all returns), not a
-                # failure. Un-noted, retried next pass.
+                # retry, not a failure. Un-noted, retried next pass: the boot's
+                # post-start kick_all is the event worker's alone, so this
+                # worker's next pass comes from a kick or its timed wake, and
+                # the five-minute callback_spool_recovery job kicks one.
                 logger.info("callback exhaustion note deferred (plugin=%s): "
                             "channels not started yet; retried next pass",
                             plugin)
