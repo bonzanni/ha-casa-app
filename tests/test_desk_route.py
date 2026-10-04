@@ -66,6 +66,7 @@ def routed(monkeypatch):
     pm = rb.PostMap()
     monkeypatch.setattr(rb, "POST_MAP", pm)
     monkeypatch.setattr(sd, "DESKS", sd.DeskRegistry())
+    monkeypatch.setattr(sd, "DESK_ECHO", rb.PostLedger(max_events=64))   # its notices must not reach a later test's prompt
     pm.record(OPERATOR, 11, _record())
     monkeypatch.setattr(sd, "desk_target_ok", lambda resident, role: role == "finance")
     spawned = AsyncMock(return_value=None)
