@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.344.15] - 2026-10-04
+
+### Fixed
+- When a specialist wrote something, used a tool, then wrote more, its answer to your swipe-reply or to a file you sent it showed the two parts run together. Successive messages in which the specialist wrote text are now separated by a blank line; a message that only uses a tool adds no blank line. An answer the specialist wrote as one message is unchanged. The assistant gets the same blank lines in a specialist's answer when it delegates to one. (#1221)
+
 ## [0.344.14] - 2026-10-04
 
 ### Fixed
