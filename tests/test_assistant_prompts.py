@@ -1139,13 +1139,22 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # `difflib` over base-vs-new compiled text, word by word: exactly ONE `insert`
 # on `assistant:text`, that paragraph and nothing else; the other eight
 # carriers byte-identical. No retention claim anywhere.
+# MOVED 2026-10-04 (#1228), `assistant:text` and `assistant:voice` ONLY. The
+# Text projection's jobs paragraph sends a job listed as a delegate's own to
+# that delegate by a sync delegation, and its last rule is narrowed to jobs that
+# are not a delegate's own; the topic paragraph admits a delegate's reported job
+# start; the Voice projection gains one paragraph: no background job starts on a
+# call. Measured with `difflib` over base-vs-new compiled text, word by word:
+# five non-equal opcodes on `assistant:text`, all inside those two paragraphs,
+# one `insert` on `assistant:voice`, that paragraph and nothing else; the other
+# seven carriers byte-identical. No retention claim anywhere.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
         "2d93c4b6db0a43610aa5ef94165b82581474825d10ee2b9cd8697b75009e36eb",
     "assistant:text":
-        "5393b38727052625812eabef19787ec297161aee067a22b5d326a166ed7759a1",
+        "7904b09d80f0d5c0dfda7cf2652b7af0fe43d14645b8cd9d5324ddb917deb43f",
     "assistant:voice":
-        "3c783a79ee847344c8b0835e807904dbed51d46804b666e49f2755d154fd2dbb",
+        "e5b75c0f6451af5a624b87cc6b520850bd6b8de0c2e7c3ae04eb674e6e10cb05",
     "butler:restricted_webhook":
         "72684ce23f3aa2c41999930de39f583f2f2b52cf95cb0a38ba6be6b8a8bb30e3",
     "butler:text":
@@ -1459,7 +1468,8 @@ _KERNEL_DROP_OFF_CLAUSE = (
 _UNOPENED_TOPIC_DOCTRINE = (
     "Point someone to a topic in the Engagements supergroup only when a call "
     "you made returned an engagement for it and no completion has closed it "
-    "since; a sync delegation opens no topic. When a step needs the person to "
+    "since, or when a delegate's result says it started one of its own jobs, "
+    "whose topic then exists; a sync delegation otherwise opens no topic. When a step needs the person to "
     "talk to a specialist directly and no such engagement exists, open one "
     "with an interactive delegation to that specialist and point them there "
     "once it returns; never refer to a topic you have not opened."

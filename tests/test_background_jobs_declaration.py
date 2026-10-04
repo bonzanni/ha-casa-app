@@ -117,7 +117,8 @@ def test_delegatable_job_renders_and_non_delegate_job_does_not(tmp_path, monkeyp
     assert block == (
         "<jobs>\n"
         "- finance:classify — Classify transactions: Classify unreviewed "
-        "transactions in batches (runs in Alex's topic)\n"
+        "transactions in batches (Alex's own job: in text, ask Alex with a sync "
+        "delegation; Alex starts it itself and it runs in Alex's topic)\n"
         "</jobs>"
     )
     assert "Hannah" not in block

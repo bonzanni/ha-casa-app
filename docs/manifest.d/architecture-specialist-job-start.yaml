@@ -7,9 +7,12 @@
     - casa/rootfs/opt/casa/background_jobs.py::own_job_hosts
     - casa/rootfs/opt/casa/background_jobs.py::offers_start_job
     - casa/rootfs/opt/casa/tools.py::start_job
+    - casa/rootfs/opt/casa/agent.py::_render_jobs_block
   tests:
     - tests/test_specialist_start_job.py
+    - tests/test_delegate_owned_jobs.py
   related: [architecture/background-jobs.md, architecture/specialist-desk.md, architecture/delegation.md, architecture/stored-call-buttons.md]
-  defines_invariants: [INV-BGJOB-008]
+  defines_invariants: [INV-BGJOB-008, INV-BGJOB-009]
   invariant_tests:
     INV-BGJOB-008: [tests/test_specialist_start_job.py::test_a_specialist_turn_starts_its_own_job_hosted_on_itself, tests/test_specialist_start_job.py::test_a_member_turn_starts_the_job_at_the_members_clearance, tests/test_specialist_start_job.py::test_a_job_the_specialists_own_plugins_do_not_declare_is_not_startable, tests/test_specialist_start_job.py::test_an_unknown_job_names_only_the_specialists_own_jobs, tests/test_specialist_start_job.py::test_a_start_inside_a_desk_turn_takes_the_engagement_permit_without_waiting, tests/test_specialist_start_job.py::test_a_voice_delegation_cannot_start_a_job, tests/test_specialist_start_job.py::test_a_specialist_engagement_turn_is_refused_at_dispatch, tests/test_specialist_start_job.py::test_a_delegated_build_loading_a_job_plugin_offers_start_job, tests/test_specialist_start_job.py::test_a_job_or_engagement_build_never_offers_start_job, tests/test_specialist_start_job.py::test_a_build_with_no_job_plugin_is_unchanged, tests/test_specialist_start_job.py::test_a_resident_delegated_build_never_offers_start_job, tests/test_specialist_start_job.py::test_own_plugins_are_those_assigned_and_loadable_at_the_call]
+    INV-BGJOB-009: [tests/test_delegate_owned_jobs.py::test_a_delegates_own_loadable_job_is_listed_as_that_delegates_to_start, tests/test_delegate_owned_jobs.py::test_a_delegates_job_withheld_for_an_unresolved_secret_is_not_listed_as_its_own, tests/test_delegate_owned_jobs.py::test_the_start_job_description_names_the_delegation_route, tests/test_delegate_owned_jobs.py::test_the_text_projection_tells_her_to_delegate_a_delegates_own_job_and_drops_the_old_rule, tests/test_delegate_owned_jobs.py::test_the_voice_projection_says_no_job_starts_on_a_call, tests/test_delegate_owned_jobs.py::test_the_topic_rule_admits_a_delegates_reported_job_start, tests/test_delegate_owned_jobs.py::test_a_specialists_own_start_returns_no_engagement_id_pending_or_busy, tests/test_delegate_owned_jobs.py::test_the_assistants_own_results_still_carry_the_engagement_id]

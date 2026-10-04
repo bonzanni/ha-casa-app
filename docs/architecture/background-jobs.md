@@ -26,7 +26,9 @@ plugin is installed on unless the job declares `"host": "specialist"`; the quali
 name is `<plugin manifest name>:<job name>`.
 
 The assistant sees the jobs its delegates can host in a `<jobs>` block and starts one with
-`start_job(job, task, context)`. The job runs as an ordinary interactive engagement of the
+`start_job(job, task, context)` — except a job a delegate can start itself, which she asks
+that delegate for with a sync delegation
+([`specialist-job-start.md`](specialist-job-start.md)). The job runs as an ordinary interactive engagement of the
 host specialist, with three differences: the engagement record carries the job's counters
 under `origin["job"]`, the specialist's client is opened with the job's per-batch turn limit
 and the `report_job_progress` grant, and the launch prompt asks only for a one-line
@@ -204,7 +206,7 @@ The `<jobs>` block is rendered only for a resident whose allowed tools include `
 (the assistant), over the jobs its own plugins declare first and then its currently
 available delegates in declared order, one line per job: qualified name, title, summary (or
 title) and the host's display name, marked as a plugin job where the resident itself hosts
-it. A job two hosts can run is listed once, under the first; `start_job` resolves it the
+it, and as that delegate's own job where the delegate can start it itself. A job two hosts can run is listed once, under the first; `start_job` resolves it the
 same way. A job declaring `"host": "specialist"` is skipped in the resident's own scope
 without claiming its name, so it is listed under, and started on, the first delegate whose
 plugins declare it; when no delegate does, it is not startable and `start_job` returns
