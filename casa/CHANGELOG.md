@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.344.10] - 2026-10-04
+
+### Fixed
+
+- When Casa re-sends a consent prompt you missed, its re-send tool no longer reports "no consent
+  is pending" while a specialist or persona install consent, an uninstall's erase-data question
+  or an authorization request is still open, or still being posted, in your Telegram DM. The
+  tool now names which of those is open and does not re-send it. An authorization request is
+  named only as one, without the tool or the requester behind it. The re-send itself covers
+  plugin trigger, callback and event consents, as before.
+
 ## [0.344.9] - 2026-10-04
 
 ### Fixed
