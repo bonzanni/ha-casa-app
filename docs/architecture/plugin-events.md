@@ -220,6 +220,16 @@ prose ("do not ask... record it durably and end the turn") is what asks a subscr
 tool logic to behave headlessly everywhere else, and that is a courtesy the instruction
 states, not a mechanically enforced one beyond the one tool this invariant pins.
 
+**INV-EV-007**: An operator note the worker attempts before the channels have finished starting is logged at INFO without a traceback, and an owed exhaustion or removal note stays owed; every other failed note keeps an ERROR with its traceback.
+
+Enforced by type: `operator_notify` raises `OperatorNotifyBeforeStart`, a `RuntimeError`
+subclass, for a not-ready channel only until `ChannelManager.start_all` has returned; the
+exhaustion, removal and advisory note sites catch it before their broad handler, with the
+same control flow (un-noted, no mark).
+
+What it does not cover: "started" means `start_all` returned, not ready — a first bring-up
+that failed and returned keeps ERROR, reported until the channel recovers.
+
 ## Failure behavior
 
 **A reconcile compute fails, or the registry snapshot itself is invalid.** The published
