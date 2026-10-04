@@ -870,6 +870,160 @@ async def test_a_pre_record_cancellation_after_the_drains_mints_nothing(tmp_path
                for r in caplog.records)
 
 
+# --- #998: the pre-record FAILURE arms' topic aborts are drained, and fenced after the mark --
+
+_PRE_RECORD_ARMS = ("interactive_persist", "executor_duplicate",
+                    "executor_gate", "executor_persist")
+_PRE_RECORD_ORIGIN = {"role": "assistant", "channel": "telegram",
+                      "chat_id": "c1", "cid": "x", "user_text": "hi"}
+
+
+def _arm_pre_record_failure(arm, tmp_path, monkeypatch, engage_executor, registry):
+    """Drive one of the four exception arms between topic creation and record
+    creation. Returns (launch coroutine factory, the arm's base envelope,
+    a check of the seam counts that proves the named arm was the one taken)."""
+    import plugin_registry as plugin_registry_mod
+    import tools as tools_mod
+    import topic_ledger
+    monkeypatch.setattr(topic_ledger, "LEDGER_PATH", str(tmp_path / "topic-ledger.json"))
+    persist = tools_mod._result({"status": "error", "kind": "record_persist_failed",
+                                 "message": "persist sentinel"})
+    creates: list = []
+
+    async def _failing_create(*a, **kw):
+        creates.append(1)
+        raise OSError("persist sentinel")
+
+    async def _counting_create(*a, **kw):
+        creates.append(1)
+        raise AssertionError("create() must not be reached on this arm")
+
+    if arm == "interactive_persist":
+        from test_delegate_to_agent_interactive import _make_alex_cfg
+        valid = plugin_registry_mod.ResolutionResult(registry_valid=True)
+
+        async def _prelaunch(*a, **kw):
+            return "finance", _make_alex_cfg(), valid, None, None
+
+        monkeypatch.setattr(tools_mod, "_prelaunch", _prelaunch)
+        monkeypatch.setattr(registry, "create", _failing_create)
+
+        def launch():
+            return tools_mod._launch_interactive_engagement(
+                "finance", "Plan Q2", "", dict(_PRE_RECORD_ORIGIN))
+        return launch, persist, lambda: creates == [1]
+
+    if arm == "executor_duplicate":
+        dup = tools_mod._result({"status": "error", "kind": "duplicate_task",
+                                 "message": "duplicate sentinel"})
+        calls: list = []
+
+        def _dup(origin, task_text):
+            calls.append(1)
+            return None if len(calls) == 1 else dup
+
+        monkeypatch.setattr(tools_mod, "_duplicate_task_refusal", _dup)
+        monkeypatch.setattr(registry, "create", _counting_create)
+        return (lambda: _launch(engage_executor)), dup, \
+            lambda: calls == [1, 1] and creates == []
+
+    if arm == "executor_gate":
+        resolves: list = []
+
+        def _resolve_for(target):
+            resolves.append(target)
+            return plugin_registry_mod.ResolutionResult(
+                registry_valid=len(resolves) == 1)
+
+        monkeypatch.setattr(plugin_registry_mod, "resolve_for", _resolve_for)
+        monkeypatch.setattr(registry, "create", _counting_create)
+        gate = tools_mod._result({
+            "status": "error", "kind": "plugin_registry_invalid",
+            "message": ("plugin registry is invalid — executor launches are "
+                        "blocked until it is repaired "
+                        "(see /data/plugin-health.json)"),
+        })
+        return (lambda: _launch(engage_executor)), gate, \
+            lambda: len(resolves) == 2 and creates == []
+
+    assert arm == "executor_persist"
+    monkeypatch.setattr(registry, "create", _failing_create)
+    return (lambda: _launch(engage_executor)), persist, lambda: creates == [1]
+
+
+@pytest.mark.parametrize("arm", _PRE_RECORD_ARMS)
+async def test_the_stop_drains_a_pre_record_failure_abort(tmp_path, monkeypatch, arm):
+    probe = _Probe()
+    engage_executor, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
+    import tools as tools_mod
+    launch, expected, took_arm = _arm_pre_record_failure(arm, tmp_path, monkeypatch, engage_executor, registry)
+    closing = asyncio.Event(); release_close = asyncio.Event(); close_marks: list = []
+
+    async def _slow_close(*, thread_id):
+        closing.set()
+        await release_close.wait()
+        close_marks.append(registry.launch_drains_complete())
+
+    channel.close_topic = AsyncMock(side_effect=_slow_close)
+    launcher = asyncio.ensure_future(launch())
+    stop = None
+    try:
+        await asyncio.wait_for(closing.wait(), 5)     # the topic abort is in flight; no record
+        assert channel.close_topic.await_count == 1
+        assert len(registry._records) == 0
+        stop = asyncio.ensure_future(tools_mod.stop_engagement_launches(registry))
+        await asyncio.sleep(0.05)
+        assert not stop.done()                        # the stop waits for the close
+    finally:
+        release_close.set()
+        envelope = await asyncio.wait_for(launcher, 5)
+        if stop is not None:
+            await asyncio.wait_for(stop, 5)
+    assert channel.close_topic.await_count == 1
+    assert close_marks == [False]                     # it closed BEFORE the mark
+    assert registry.launch_drains_complete() is True
+    assert sum(not t.done() for t in tools_mod._ABORT_BG_TASKS) == 0
+    assert len(registry._records) == 0
+    assert envelope == expected
+    assert took_arm()
+
+
+@pytest.mark.parametrize("arm", _PRE_RECORD_ARMS)
+async def test_a_pre_record_failure_after_the_drains_mints_nothing(
+        tmp_path, monkeypatch, caplog, arm):
+    probe = _Probe()
+    engage_executor, registry, channel, driver = _build(tmp_path, monkeypatch, probe, ScriptedCutoffClient)
+    import tools as tools_mod
+    launch, expected, took_arm = _arm_pre_record_failure(arm, tmp_path, monkeypatch, engage_executor, registry)
+    opening = asyncio.Event(); release_open = asyncio.Event()
+
+    async def _gated_open(**kw):
+        opening.set()
+        await release_open.wait()
+        return 42
+
+    channel.open_engagement_topic = AsyncMock(side_effect=_gated_open)
+    launcher = asyncio.ensure_future(launch())
+    try:
+        await asyncio.wait_for(opening.wait(), 5)     # no topic yet, no record
+        await asyncio.wait_for(tools_mod.stop_engagement_launches(registry), 5)
+        assert registry.launch_drains_complete() is True
+    finally:
+        with caplog.at_level(logging.ERROR):
+            release_open.set()                        # the topic exists only now, after the mark
+            envelope = await asyncio.wait_for(launcher, 5)
+            await asyncio.sleep(0)
+    assert channel.close_topic.await_count == 0
+    assert len(tools_mod._ABORT_BG_TASKS) == 0
+    residual = [r for r in caplog.records if r.levelno >= logging.ERROR
+                and "failed before its record existed, after the stop's drains completed"
+                in r.getMessage()]
+    assert len(residual) == 1
+    assert len(registry._records) == 0
+    assert envelope == expected
+    assert took_arm()
+
+
 # --- diff round 5 (Astra J2): the anchors drain to JOINT quiescence --------------------
 
 async def test_the_stop_returns_only_when_no_anchor_has_pending_work(tmp_path, monkeypatch):

@@ -79,6 +79,7 @@ REQUIRED_SKELETON = {
     "llms.txt",
     "manifest.yaml",
     "doctrine/invariants.md",
+    "doctrine/invariants-e.md",
     "doctrine/invariants-f-m.md",
     "doctrine/invariants-n-pk.md",
     "doctrine/invariants-pl-r.md",
@@ -1288,7 +1289,8 @@ def _invariant_rows(repo_root: Path) -> list[tuple[str, str, str]]:
 # that shards by meaning would need re-deciding every time a family is added.
 # Three shards once the A-M shard outgrew the ceiling in turn (#843), four once
 # the N-Z shard did (#953), five once N-R did (#1218, at the two-letter bound
-# `PL`, because `PLUG` alone is most of that range): each row is (range label, corpus path, exclusive
+# `PL`, because `PLUG` alone is most of that range), six once A-E did (#998, at
+# `E`: the `E` families alone are about half of it): each row is (range label, corpus path, exclusive
 # upper bound on the family string), and a family lands in the FIRST shard whose
 # bound it sorts below — the last shard has no bound and takes the rest. Adding
 # a shard is adding a row.
@@ -1304,7 +1306,8 @@ def _invariant_rows(repo_root: Path) -> list[tuple[str, str, str]]:
 # document move; sweep the inbound citations by hand, because prose markdown
 # links are resolved by nothing here (#761).
 _INV_SHARDS: tuple[tuple[str, str, str | None], ...] = (
-    ("A-E", "doctrine/invariants.md", "F"),
+    ("A-D", "doctrine/invariants.md", "E"),
+    ("E", "doctrine/invariants-e.md", "F"),
     ("F-M", "doctrine/invariants-f-m.md", "N"),
     ("N-PK", "doctrine/invariants-n-pk.md", "PL"),
     ("PL-R", "doctrine/invariants-pl-r.md", "S"),
@@ -1362,7 +1365,7 @@ def render_invariant_shard(repo_root: Path, path: str) -> str:
 
 
 def render_invariants(repo_root: Path) -> str:
-    """The first shard (families A-E). Kept as the historical entry point."""
+    """The first shard (families A-D). Kept as the historical entry point."""
     return render_invariant_shard(repo_root, _INV_SHARDS[0][1])
 
 

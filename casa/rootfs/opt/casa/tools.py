@@ -6437,7 +6437,7 @@ async def _launch_interactive_engagement(
             _abort_topic_on_cancel(channel, "delegate-abort", topic_id)
             raise
         except Exception as exc:  # noqa: BLE001
-            await _abort_engagement_topic(channel, "delegate-abort", topic_id)
+            _abort_topic_on_failure(channel, "delegate-abort", topic_id)
             return _result({
                 "status": "error", "kind": "record_persist_failed",
                 "message": str(exc)})
@@ -9558,7 +9558,7 @@ async def _engage_executor_impl(args: dict, _spawn_holder: dict) -> dict:
             # failure.
             dup = _duplicate_task_refusal(origin, task_text)
             if dup is not None:
-                await _abort_engagement_topic(channel, "engage-abort", topic_id)
+                _abort_topic_on_failure(channel, "engage-abort", topic_id)
                 return dup
             _gate_err = None
             for _attempt in range(5):
@@ -9568,7 +9568,7 @@ async def _engage_executor_impl(args: dict, _spawn_holder: dict) -> dict:
                 if plugin_registry.snapshot_generation() == _gen_at_create:
                     break   # artifacts + generation agree
             if _gate_err is not None:
-                await _abort_engagement_topic(channel, "engage-abort", topic_id)
+                _abort_topic_on_failure(channel, "engage-abort", topic_id)
                 return _gate_err
 
             # Computed BEFORE create() so it can be persisted onto the
@@ -9625,7 +9625,7 @@ async def _engage_executor_impl(args: dict, _spawn_holder: dict) -> dict:
                     agent_spawn_permit=_spawn_holder.get("token"),
                 )
             except Exception as exc:  # noqa: BLE001
-                await _abort_engagement_topic(channel, "engage-abort", topic_id)
+                _abort_topic_on_failure(channel, "engage-abort", topic_id)
                 return _result({
                     "status": "error", "kind": "record_persist_failed",
                     "message": str(exc)})
@@ -10003,17 +10003,44 @@ def _abort_topic_on_cancel(channel: Any, engagement_id: str,
     stop now drains this set too, and after its mark nothing is minted: the
     residual — a topic with no record behind it — is logged loudly.
     """
-    if _engagement_registry is not None and _engagement_registry.launch_drains_complete() is True:
+    if not _spawn_pre_record_topic_abort(channel, engagement_id, topic_id):
         logger.error(
             "launch %s was cancelled before its record existed, after the stop's "
             "drains completed — no topic abort minted; topic %s is left open with "
             "no record", engagement_id, topic_id)
-        return
+
+
+def _abort_topic_on_failure(channel: Any, engagement_id: str,
+                            topic_id: int | None) -> None:
+    """#998: the pre-record FAILURE arms' topic abort — a failed ``create()``,
+    a duplicate refusal, a plugin-gate refusal. The launching tool call is in
+    no launch ledger until its record exists, so an abort it awaited inline
+    could still be closing the topic when the stop marked its drains
+    complete. It is handed to the same anchored, fenced owner as the
+    cancellation arm instead, and the call returns its envelope at once.
+    """
+    if not _spawn_pre_record_topic_abort(channel, engagement_id, topic_id):
+        logger.error(
+            "launch %s failed before its record existed, after the stop's "
+            "drains completed — no topic abort minted; topic %s is left open with "
+            "no record", engagement_id, topic_id)
+
+
+def _spawn_pre_record_topic_abort(channel: Any, engagement_id: str,
+                                  topic_id: int | None) -> bool:
+    """Mint one pre-record topic abort into ``_ABORT_BG_TASKS``, which the
+    stop drains, or — once the stop has marked its drains complete — mint
+    nothing and return False. The fence read and the anchoring are one
+    synchronous block, so the stop's last drain pass sees every abort minted
+    before its mark."""
+    if _engagement_registry is not None and _engagement_registry.launch_drains_complete() is True:
+        return False
     task = asyncio.ensure_future(
         _abort_engagement_topic(channel, engagement_id, topic_id),
     )
     _ABORT_BG_TASKS.add(task)
     task.add_done_callback(_ABORT_BG_TASKS.discard)
+    return True
 
 
 def _launch_cause_of(engagement_id: str) -> str:
