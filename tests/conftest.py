@@ -823,6 +823,46 @@ class _OperatorSeam:
         import channels.telegram as tg
         from telegram.error import NetworkError
 
+        async def _rebuild() -> None:
+            raise NetworkError("initial bring-up refused")
+
+        self._install_bringup_doubles(tg, _rebuild)
+        await self.manager.start_all()
+        if self.channel._probe_task is not None:
+            await self.channel._probe_task
+        assert self.channel.is_ready is False
+
+    async def begin_start(self) -> None:
+        """Enter the REAL ``ChannelManager.start_all`` and suspend it inside
+        the first ``TelegramChannel._rebuild``: start has BEGUN and not
+        completed. :meth:`finish_start` lets that bring-up fail transiently
+        and waits for ``start_all`` to return."""
+        import asyncio
+
+        import channels.telegram as tg
+        from telegram.error import NetworkError
+
+        entered = asyncio.Event()
+        self._release = asyncio.Event()
+
+        async def _rebuild() -> None:
+            entered.set()
+            await self._release.wait()
+            raise NetworkError("initial bring-up refused")
+
+        self._install_bringup_doubles(tg, _rebuild)
+        self._start_task = asyncio.ensure_future(self.manager.start_all())
+        await entered.wait()
+        assert not self._start_task.done()
+        assert self.channel.is_ready is False
+
+    async def finish_start(self) -> None:
+        self._release.set()
+        await self._start_task
+        if self.channel._probe_task is not None:
+            await self.channel._probe_task
+
+    def _install_bringup_doubles(self, tg, rebuild) -> None:
         class _Supervisor:
             def __init__(self, *a, **k) -> None:
                 self.triggers: list[str] = []
@@ -836,19 +876,12 @@ class _OperatorSeam:
             async def stop(self) -> None:
                 pass
 
-        async def _rebuild() -> None:
-            raise NetworkError("initial bring-up refused")
-
         async def _probe() -> None:
             return None
 
         self._monkeypatch.setattr(tg, "ReconnectSupervisor", _Supervisor)
-        self._monkeypatch.setattr(self.channel, "_rebuild", _rebuild)
+        self._monkeypatch.setattr(self.channel, "_rebuild", rebuild)
         self._monkeypatch.setattr(self.channel, "_health_probe_loop", _probe)
-        await self.manager.start_all()
-        if self.channel._probe_task is not None:
-            await self.channel._probe_task
-        assert self.channel.is_ready is False
 
     def make_ready(self, send_error: Exception) -> None:
         """A ready channel (an app is published) whose send raises."""

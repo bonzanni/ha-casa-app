@@ -1078,23 +1078,31 @@ async def _measure_930(wired, caplog, monkeypatch, notify, variant):
     return site, n, mark_calls
 
 
+@pytest.mark.parametrize("mode", ("start_not_begun", "start_in_progress"))
 @pytest.mark.parametrize("variant", sorted(_SITES_930))
 async def test_930_prestart_note_logs_info_not_error(
-        wired, caplog, monkeypatch, operator_seam, variant):
-    """#930 red case: the REAL seam over a never-started channel, before
-    ``start_all`` completed — the note attempt is a designed retry, logged at
+        wired, caplog, monkeypatch, operator_seam, variant, mode):
+    """#930 red case: the REAL seam over a never-ready channel, before
+    ``start_all`` COMPLETED — not yet entered, or entered and suspended in
+    the first bring-up — the note attempt is a designed retry, logged at
     INFO without a traceback, and the owed note stays owed."""
-    site, n, mark_calls = await _measure_930(
-        wired, caplog, monkeypatch, operator_seam.notify, variant)
-    errors = [r for r in site if r.levelno >= logging.ERROR]
-    infos = [r for r in site
-             if r.levelno == logging.INFO and _PRESTART in r.getMessage()]
-    assert [r.getMessage() for r in errors] == []
-    assert len(infos) == n
-    assert len(site) == n
-    assert sum(r.exc_info is not None for r in site) == 0
-    assert mark_calls == []
-    assert operator_seam.send.await_count == 0
+    if mode == "start_in_progress":
+        await operator_seam.begin_start()
+    try:
+        site, n, mark_calls = await _measure_930(
+            wired, caplog, monkeypatch, operator_seam.notify, variant)
+        errors = [r for r in site if r.levelno >= logging.ERROR]
+        infos = [r for r in site
+                 if r.levelno == logging.INFO and _PRESTART in r.getMessage()]
+        assert [r.getMessage() for r in errors] == []
+        assert len(infos) == n
+        assert len(site) == n
+        assert sum(r.exc_info is not None for r in site) == 0
+        assert mark_calls == []
+        assert operator_seam.send.await_count == 0
+    finally:
+        if mode == "start_in_progress":
+            await operator_seam.finish_start()
 
 
 _FAILURE_MODES_930 = ("after_failed_bringup", "ready_send_raises_before_start",
