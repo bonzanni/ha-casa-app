@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.344.11] - 2026-10-04
+
+### Fixed
+
+- When Casa shuts down normally while a launch has just failed after opening its Telegram
+  topic, Casa now finishes trying to mark that topic failed and close it before the shutdown
+  moves on. This covers an interactive specialist delegation or a job start whose record could
+  not be created, and an executor engagement that was refused as a duplicate, refused by the
+  plugin check, or whose record could not be created. Before, that close ran inside the failed
+  call and the shutdown did not wait for it, so the topic could be left open. A launch that
+  fails only after the shutdown has finished waiting for launches no longer tries to close its
+  topic; Casa logs that the topic is left open.
+
 ## [0.344.10] - 2026-10-04
 
 ### Fixed
