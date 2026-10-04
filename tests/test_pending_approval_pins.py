@@ -237,3 +237,25 @@ async def test_a_record_that_raises_changes_no_answer(monkeypatch):
         allowed = await hook({"tool_name": TOOL, "tool_input": dict(ARGS)}, "c-3", {})
     assert reasons == [_DENY_POSTED, _DENY_PENDING]
     assert allowed == {}
+
+
+# --- a repeated deny of the same grant keeps the EARLIEST cut ----------------------
+
+async def test_a_repeated_deny_of_the_same_grant_keeps_the_first_cut(turn, monkeypatch):
+    """The model retries the same call before the operator answered: the
+    second answer is PENDING, and the words between the two calls were written
+    after the first protected call — withheld like the rest."""
+    agent, channel, hook, _grants = turn
+    gate = _Gate()
+
+    async def _hooks():
+        return [await _ask(hook, "deny-1"), await _ask(hook, "deny-2")]
+
+    script = [_text("BEFORE"), _call("deny-1"), gate.step(_hooks), _result("deny-1"),
+              _text("MID"), _call("deny-2"), _result("deny-2"), _text(TAIL)]
+    await _drive(agent, monkeypatch, _Factory([script]), _msg("dm"), gate)
+
+    ((first, second),) = gate.answers
+    assert [_deny_reason(first), _deny_reason(second)] == [_DENY_POSTED, _DENY_PENDING]
+    assert channel.tokens == ["BEFORE"]
+    assert channel.final_texts() == ["BEFORE"]
