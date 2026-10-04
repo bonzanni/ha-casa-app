@@ -128,12 +128,14 @@ is admitted as unread input synchronously at entry, a later quiet check sees it,
 one batch is queued or running. A restart resume and the periodic job sweep call
 `start_next_batch` directly. The judgment and next batch number are staged synchronously;
 they are committed and persisted only after the channel accepts the hand-off. A refused
-hand-off changes no batch or progress counters.
+hand-off changes no batch or progress counters. Each turn of a job logs under a cid of its
+own, tied to the engagement and the batch ([`observability.md`](observability.md)).
 
 A member's post that lowers the job's clearance mid-batch leaves the running batch to
 finish. The batch is judged by the usual rule, and it cannot report progress after the
 downgrade because its tool calls are refused while the rebuild is pending. The member's
-message is then delivered into the fresh session. Being queued, it holds the next batch back,
+message is then delivered into the fresh session; it is not a batch's turn, so it cannot
+report for that batch either. Being queued, it holds the next batch back,
 so that batch runs after the message, in the fresh session (INV-MEM-011,
 [`memory-scoping.md`](memory-scoping.md)).
 
@@ -184,7 +186,11 @@ once (INV-BGJOB-007).
 
 A batch makes progress when its LAST `report_job_progress` of that batch said so: a batch
 that reports twice has changed its mind, and the later word is the one it stands by, which
-is why the posted lines carry only the worker's summary and counts. A batch that reported
+is why the posted lines carry only the worker's summary and counts. Only the batch's own
+turn reports for it: `start_next_batch` hands the batch number to the driver with the
+batch's turn (#1166's re-send of that turn keeps it), and a report from any other turn of
+the job — the launch acknowledgement, a reply to a message in the topic, a continuation —
+is refused, posts nothing and changes nothing (#1033). A batch that reported
 `progressed=False`, or that ended without reporting at all, did not: the counts are the
 worker's own unit — work can be uncountable, or its total unknown — so they are shown to
 the operator and decide nothing (#1031). A job launched before that rule carries the older
@@ -229,12 +235,15 @@ so later state paints retain the name; they use the default topic bubble.
 
 `report_job_progress(summary, progressed, done=None, remaining=None)` is granted only to a
 job engagement's session. Outside a live job it returns `not_a_job`; a `progressed` that is
-absent or not a boolean, and a negative or boolean count, return `invalid_arguments`. It
-posts `📊 Batch <n>: <summary> · <done> done · <remaining> left` (the summary's first line,
-at most 300 characters; counts only when given — the line carries the worker's summary and
+absent or not a boolean, and a negative or boolean count, return `invalid_arguments`; outside
+the turn of the batch awaiting judgment, `not_a_batch`. It records the claim as the batch's —
+a later report of the same batch replaces it — and updates its epoch `last_advance` in the
+same step as that check, before any await, so a report still posting when its batch has
+ended cannot land in the next batch's verdict. It then posts
+`📊 Batch <n>: <summary> · <done> done · <remaining> left` (the summary's first line, at
+most 300 characters; counts only when given — the line carries the worker's summary and
 makes no claim about the judgment, which a later report of the same batch could contradict
-in a line already posted), records that claim as the batch's — a later report of the same
-batch replaces it — updates its epoch `last_advance`, and persists `origin["job"]`.
+in a line already posted) and persists `origin["job"]`.
 
 Resume options rebuild the job's per-batch turn limit and its progress grant from
 `origin["job"]`, so a resumed job session keeps both. Plugin workers additionally rebuild
@@ -321,6 +330,7 @@ belong in the launch and resume builders; both kinds share the batch loop and la
 - `tests/test_job_fresh_conversation.py`
 - `tests/test_job_pending_completion.py`
 - `tests/test_specialist_job_host.py`
+- `tests/test_job_turn_identity.py`
 
 **Related**
 - [`architecture/engagements.md`](../architecture/engagements.md)

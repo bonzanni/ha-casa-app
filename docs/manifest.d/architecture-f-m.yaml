@@ -174,12 +174,15 @@
     - casa/rootfs/opt/casa/log_redact.py::redact
     - casa/rootfs/opt/casa/log_redact.py::redact_extras
     - casa/rootfs/opt/casa/casa_core.py::healthz
+    - casa/rootfs/opt/casa/drivers/in_casa_driver.py::_EngagementTurn
   tests:
     - tests/test_log_redact.py
     - tests/test_log_cid.py
+    - tests/test_job_turn_identity.py
   related: [architecture/http-surface.md, architecture/overview.md]
-  defines_invariants: [INV-OBS-001, INV-OBS-003, INV-OBS-004]
+  defines_invariants: [INV-OBS-001, INV-OBS-003, INV-OBS-004, INV-OBS-005]
   invariant_tests:
+    INV-OBS-005: [tests/test_job_turn_identity.py::TestEngagementTurnCid::test_turn_cids_ignore_engaging_box, tests/test_job_turn_identity.py::TestEngagementTurnCid::test_batch_cid_from_empty_context, tests/test_job_turn_identity.py::TestEngagementTurnCid::test_reader_records_follow_current_turn]
     INV-OBS-001: [tests/test_pin_g5_invariants.py::test_pin_inv_obs_001_header_cid_validated_payload_cid_not]
     INV-OBS-004: [tests/test_pin_g5_invariants.py::test_pin_inv_obs_004_rendered_output_redacts_exceptions_and_extras]
     INV-OBS-003: [tests/test_pin_g5_invariants.py::test_pin_inv_obs_003_healthz_is_fixed_and_reads_nothing]

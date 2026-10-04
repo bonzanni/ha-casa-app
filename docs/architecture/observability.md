@@ -17,6 +17,17 @@ metrics, of which there are none to speak of.
 **A correlation id threads a request across components**, bound into context so that log
 lines from the same work can be tied together.
 
+**An engagement turn has a cid of its own.** Every in_casa engagement turn — the launch,
+each job batch, a reply to a message in the topic, a continuation — mints one when it takes
+the engagement's turn lock. Its own lines carry it as a plain value for the whole turn. Its
+tool-callback lines run in the SDK's read task, whose context was captured once, when the
+client opened; that context holds a per-client holder each turn rewrites in place, so they
+carry the cid of the turn that is running. One line under the new cid —
+`Engagement <id> turn cid=<cid> batch=<n|-> engaged_by=<cid|->` — ties it to the
+engagement, the job batch and the turn that engaged it. Whatever started the engagement —
+a resident's turn, a scheduled trigger, the job sweep — no longer lends its turns a cid
+that drifts with the resident's later turns, or `-`. Resident turns keep their own cid.
+
 **The emitted records are structured, and JSON is the default.** Output is one-line JSON
 unless `LOG_FORMAT=human` selects UTC human-readable text; structured extras are flattened
 into the record, and the access line carries method, path with query, status, duration and
@@ -82,6 +93,14 @@ redaction guarantee, and subprocess output never passes through it at all. Withi
 pipeline, redaction recognises patterns, registered exact values and credential-named
 keys — an unregistered, pattern-less secret under a benign key still passes.
 
+**INV-OBS-005**: Every in_casa engagement turn logs under a cid minted for that turn — its turn-task lines throughout the turn, and its SDK read-task (tool-callback) lines while it holds the engagement's turn lock — and one INFO line under that cid ties it to the engagement id, the job batch (if any) and the engaging cid.
+
+What it does not cover: a line from work that outlives its turn — a tool call the CLI
+abandoned, still finishing after the next turn started — carries whichever turn is running
+then; lines a delivery owner logs after the driver returns (a failed batch's finalize, the
+next batch's start) carry the owner's own context; claude_code engagement turns and
+specialist desk turns bind no cid of their own.
+
 **INV-OBS-003**: The health endpoint returns a fixed success response without consulting any subsystem.
 
 What it does not cover: everything. It is a liveness signal for the process, not a readiness
@@ -129,10 +148,12 @@ it without changing what it means, and other things depend on the current behavi
 - `casa/rootfs/opt/casa/log_redact.py::redact`
 - `casa/rootfs/opt/casa/log_redact.py::redact_extras`
 - `casa/rootfs/opt/casa/casa_core.py::healthz`
+- `casa/rootfs/opt/casa/drivers/in_casa_driver.py::_EngagementTurn`
 
 **Tests**
 - `tests/test_log_redact.py`
 - `tests/test_log_cid.py`
+- `tests/test_job_turn_identity.py`
 
 **Related**
 - [`architecture/http-surface.md`](../architecture/http-surface.md)
