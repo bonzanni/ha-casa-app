@@ -25,7 +25,7 @@ closing text then rides the ordinary reply path. Casa narrows neither half on it
 scheduled turn whose closing text is real text still delivers it exactly once, and prose
 *after* the silence sentinel is still delivered (the recant contract). The one ending of the
 model's text Casa decides is the operator's ruling on #1075 (INV-OUT-006 in
-[`output-boundary.md`](output-boundary.md)), which the trigger recipes and `casa/DOCS.md`
+[`output-scope-properties.md`](output-scope-properties.md)), which the trigger recipes and `casa/DOCS.md`
 state in the same words: If the turn's last message is the sentinel `<silent/>` after
 earlier text, Casa drops that text when the turn made at least one send, every send was
 confirmed delivered, and the turn finished on its first attempt with no error and no retry;

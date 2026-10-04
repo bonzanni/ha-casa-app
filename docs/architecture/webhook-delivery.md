@@ -11,8 +11,8 @@ last_reviewed: 2026-10-01
 What happens to the reply of a turn started by a plugin webhook trigger: whether it reaches
 the operator, which tools such a turn is offered, and whether it may end in silence. What a
 plugin's trigger must satisfy before it routes at all — declaration, consent, secrets — is
-[`plugin-triggers.md`](plugin-triggers.md). The admission rules that judge any final reply,
-silence included, are [`output-boundary.md`](output-boundary.md). The line Casa adds when a
+[`plugin-triggers.md`](plugin-triggers.md). The admission rules that judge any final reply
+are [`output-boundary.md`](output-boundary.md), and its silence is [`output-scope-properties.md`](output-scope-properties.md). The line Casa adds when a
 turn stops at its turn limit is [`turn-limits.md`](turn-limits.md).
 
 ## Mental model
@@ -39,7 +39,7 @@ nothing said so. The opt-in is per trigger and travels in the one route snapshot
 reads (#620's seam), never re-read from the registry later. A resident webhook route reads
 `none`. One predicate, `TurnScope.delivers_to_operator`, decides everything downstream. It
 picks the reply's channel and context (INV-OUT-006 in
-[`output-boundary.md`](output-boundary.md)). It builds the restricted runtime's tool set,
+[`output-scope-properties.md`](output-scope-properties.md)). It builds the restricted runtime's tool set,
 whose allowlist and tool listing both lose `send_message`. And it makes the `send_message`
 handler refuse, as defence in depth. A prompt line could not stop a tool send and an
 ordinary final reply from both arriving; removing the tool does. The turn's content also
