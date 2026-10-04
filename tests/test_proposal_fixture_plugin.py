@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -192,3 +193,41 @@ def test_the_manifest_declares_the_fixture_check_job_a_job_trigger_can_name():
     assert job["name"] == "fixture-check" and job["skill"] == "fixture-check"
     assert job["batches"] == 1 and job["title"] == "Fixture check"
     assert (ROOT / "skills" / "fixture-check" / "SKILL.md").is_file()
+
+
+def _sentences(text):
+    return [s for s in re.split(r"(?<=[.!?])\s+|\n\s*\n", text) if s.strip()]
+
+
+def test_the_fixture_check_job_can_offer_once_and_then_complete_inside_its_one_batch():
+    """#1219: a ``batches: 1`` job ends ``ok`` only by calling emit_completion
+    inside that batch; otherwise the next ``start_next_batch`` finalizes it as an
+    error, "reached its limit of 1 batches". A resident-hosted worker reaches
+    ``offer`` through Skill and ToolSearch, so the batch needs Skill + ToolSearch
+    + offer + emit_completion: four turns, five with one of slack. Static only:
+    the live run (one proposal posted, the job ending ok) is PLAY's check."""
+    manifest = validate_manifest(ROOT, NAME)
+    [job] = manifest["casa"]["jobs"]
+    assert job["batches"] == 1
+    assert job["turnsPerBatch"] >= 5, job["turnsPerBatch"]
+    text = (ROOT / "skills" / "fixture-check" / "SKILL.md").read_text()
+    body = text.split("---", 2)[2] if text.startswith("---") else text
+    # offer is instructed once, and before emit_completion: the ORDER, not the words
+    assert "`offer`" in body and "`emit_completion`" in body
+    assert body.index("`offer`") < body.index("`emit_completion`")
+    offer_sentences = [s for s in _sentences(body) if "`offer`" in s]
+    assert any(re.search(r"\bonce\b", s) for s in offer_sentences), offer_sentences
+    # nothing tells the worker to stop short of completing, or not to complete
+    assert "Nothing else" not in body
+    for sentence in _sentences(body):
+        if "emit_completion" in sentence:
+            assert not re.search(r"\b(do not|don't|never|avoid|without)\b", sentence, re.I), sentence
+
+
+def test_the_fixture_manifest_version_matches_the_server_info_version():
+    """A pinned-SHA install requires the manifest version to match the ref, and the
+    server reports its own: the two move together whenever the fixture is re-versioned."""
+    manifest = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text())
+    server = (ROOT / "server.py").read_text()
+    [version] = re.findall(r'"serverInfo":\s*\{"name":\s*"proposal-fixture",\s*"version":\s*"([^"]+)"', server)
+    assert manifest["version"] == version
