@@ -669,8 +669,9 @@ async def start_next_batch(rec: Any, channel: Any) -> bool:
         await task
         return False
     job["started"] += 1
-    # #1033: the batch number travels with the turn, so only this batch's own
-    # turn can report its progress (``report_job_progress``).
+    # #1033: the batch number travels with the turn. ``report_job_progress``
+    # credits a report to the batch whose turn is running when its handler
+    # runs (a cancelled call handled late is the exception it states).
     handed_off = await channel.deliver_system_turn(
         rec, batch_prompt(job["started"], job["title"]), batch=job["started"])
     if not handed_off:

@@ -128,8 +128,8 @@ is admitted as unread input synchronously at entry, a later quiet check sees it,
 one batch is queued or running. A restart resume and the periodic job sweep call
 `start_next_batch` directly. The judgment and next batch number are staged synchronously;
 they are committed and persisted only after the channel accepts the hand-off. A refused
-hand-off changes no batch or progress counters. Each turn of a job logs under a cid of its
-own, tied to the engagement and the batch ([`observability.md`](observability.md)).
+hand-off changes no batch or progress counters. Each job turn mints a cid for its own lines,
+tied to the engagement and any batch ([`observability.md`](observability.md) scopes it).
 
 A member's post that lowers the job's clearance mid-batch leaves the running batch to
 finish. The batch is judged by the usual rule, and it cannot report progress after the
@@ -236,10 +236,10 @@ so later state paints retain the name; they use the default topic bubble.
 
 `report_job_progress(summary, progressed, done=None, remaining=None)` is granted only to a
 job engagement's session. Outside a live job it returns `not_a_job`; a `progressed` that is
-absent or not a boolean, and a negative or boolean count, return `invalid_arguments`; outside
-the turn of the batch awaiting judgment, `not_a_batch`. It records the claim as the batch's —
-a later report of the same batch replaces it — and updates its epoch `last_advance` in the
-same step as that check, before any await, so a report still posting when its batch has
+absent or not a boolean, and a negative or boolean count, return `invalid_arguments`; handled
+outside the turn of the batch awaiting judgment, `not_a_batch`. It records the claim as the
+batch's — a later one replaces it — and updates its epoch `last_advance` in the same step as
+that check, before any await, so a report still posting when its batch has
 ended cannot land in the next batch's verdict. It then posts
 `📊 Batch <n>: <summary> · <done> done · <remaining> left` (the summary's first line, at
 most 300 characters; counts only when given — the line carries the worker's summary and

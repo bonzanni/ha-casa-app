@@ -22,11 +22,12 @@ each job batch, a reply to a message in the topic, a continuation — mints one 
 Its own lines carry it as a plain value for the whole turn. Its tool-callback lines run in
 the SDK's read task, whose context was captured once, when the client opened; that context
 holds a per-client holder each turn rewrites in place when it takes the engagement's turn
-lock, so they carry the cid of the turn that holds it. One line under the new cid —
-`Engagement <id> turn cid=<cid> batch=<n|-> engaged_by=<cid|->` — ties it to the
-engagement, the job batch and the turn that engaged it. Whatever started the engagement —
-a resident's turn, a scheduled trigger, the job sweep — no longer lends its turns a cid
-that drifts with the resident's later turns, or `-`. Resident turns keep their own cid.
+lock, so they carry the cid of the turn that holds it. When the turn takes that lock, one
+line under the new cid — `Engagement <id> turn cid=<cid> batch=<n|-> engaged_by=<cid|->` —
+ties it to the engagement, any job batch and the turn that engaged it. Whatever started the
+engagement — a resident's turn, a scheduled trigger, the job sweep — no longer lends a turn's
+own lines a cid that drifts with the resident's later turns, or `-`; the lines it logs itself
+keep its context. Resident turns keep their own cid.
 
 **The emitted records are structured, and JSON is the default.** Output is one-line JSON
 unless `LOG_FORMAT=human` selects UTC human-readable text; structured extras are flattened
@@ -93,7 +94,7 @@ redaction guarantee, and subprocess output never passes through it at all. Withi
 pipeline, redaction recognises patterns, registered exact values and credential-named
 keys — an unregistered, pattern-less secret under a benign key still passes.
 
-**INV-OBS-005**: Every in_casa engagement turn logs under a cid minted for that turn — its turn-task lines throughout the turn, and its SDK read-task (tool-callback) lines while it holds the engagement's turn lock — and one INFO line under that cid ties it to the engagement id, the job batch (if any) and the engaging cid.
+**INV-OBS-005**: Every in_casa engagement turn logs under a cid minted for that turn — its turn-task lines throughout the turn, and its SDK read-task (tool-callback) lines while it holds the engagement's turn lock — and, when it takes that lock, one INFO line under that cid ties it to the engagement id, the job batch (if any) and the engaging cid.
 
 What it does not cover: a line from work that outlives its turn — a tool call the CLI
 abandoned, still finishing after the next turn started — carries whichever turn is running

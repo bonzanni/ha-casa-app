@@ -468,7 +468,8 @@ async def test_progress_format_persistence_and_grant(harness, tmp_path):
         reg = EngagementRegistry(tombstone_path=str(tmp_path / "jobs.json"), bus=None)
         await reg.load()
         persisted.update(reg.get(h.rec.id).origin["job"])
-    # #1033: a report counts only inside its batch's own turn, so it is made there.
+    # #1033: a report counts for the batch whose turn runs as it is handled, so
+    # it is made inside batch 1's turn.
     h.client.scripts = [[long_report, reload, result()], [h.complete, result()]]
     await h.start()
     await h.drain()
@@ -480,9 +481,9 @@ async def test_progress_format_persistence_and_grant(harness, tmp_path):
 
 
 async def test_progress_outside_a_batch_turn_is_refused(harness):
-    """#1033: a live job's report made outside any turn — or in a turn that is
-    not a batch — has no batch to count for: refused, nothing posted, the job's
-    state unchanged."""
+    """#1033: a live job's report handled while no batch's turn is running has
+    no batch to count for: refused, nothing posted, the job's state
+    unchanged."""
     h = harness
     h.rec.origin["job"]["started"] = 2
     before = dict(h.rec.origin["job"])

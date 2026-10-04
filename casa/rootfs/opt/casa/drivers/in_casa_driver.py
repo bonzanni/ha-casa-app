@@ -1373,9 +1373,10 @@ class InCasaDriver(DriverProtocol):
                                 accumulated = candidate
                             await stream.emit(accumulated)
         finally:
-            # #1033: the batch never outlives its turn. Reached synchronously
-            # from the lock's release (no await between), so no other turn has
-            # run in between; ``running_batch`` also reads the lock.
+            # #1033: the holder's batch never outlives its turn. Reached
+            # synchronously from the lock's release (no await between), so no
+            # other turn has run in between; ``running_batch`` also reads the
+            # lock.
             if turn is not None:
                 turn.batch = None
             engagement_var.reset(token)

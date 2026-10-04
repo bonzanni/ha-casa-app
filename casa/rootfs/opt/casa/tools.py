@@ -12637,9 +12637,10 @@ _COMPLETION_GUARDED_EXECUTOR_TYPES = frozenset({"plugin-developer"})
     "whether this batch moved the job toward completion — say false when it did "
     "not, and three such batches in a row end the job. `done`/`remaining` are "
     "optional, shown to the operator, and decide nothing: pass them only when "
-    "this work has a real unit and a known total. Only a batch reports: in any "
-    "other turn of the job (the launch acknowledgement, a reply to a message "
-    "in the topic) it is refused with not_a_batch.",
+    "this work has a real unit and a known total. Call it from a batch's own "
+    "turn: a call is judged by the turn running when it is handled, and one "
+    "handled outside a batch's turn (the launch acknowledgement, a reply to a "
+    "message in the topic) is refused with not_a_batch.",
     {"type": "object", "properties": {
         "summary": {"type": "string"},
         "progressed": {"type": "boolean"},
@@ -12665,21 +12666,25 @@ async def report_job_progress(args: dict) -> dict:
         return _result({"ok": False, "kind": "invalid_arguments"})
     summary = (summary.splitlines() or [""])[0][:300]
     job = rec.origin["job"]
-    # #1033: only the batch's own turn reports for it. The batch number comes
-    # from the driver's running turn (set from start_next_batch's argument),
-    # read by engagement id — the handler runs in the SDK reader's context,
-    # which no per-turn contextvar reaches.
+    # #1033: a report counts for the batch whose turn is running when this
+    # handler runs. The batch number comes from the driver's running turn (set
+    # from start_next_batch's argument), read by engagement id — the handler
+    # runs in the SDK reader's context, which no per-turn contextvar reaches.
+    # The handler receives only ``args``, so nothing ties it to the turn that
+    # made the call: a call the CLI cancelled whose handler first runs in the
+    # next batch's turn counts for that batch (the stated residual, pinned by
+    # tests/test_job_report_late_handler.py).
     import agent as agent_mod
     driver = getattr(agent_mod, "active_engagement_driver", None)
     running = getattr(driver, "running_batch", None)
     batch = running(rec.id) if running is not None else None
     if batch is None or batch != job["started"]:
         return _result({"ok": False, "kind": "not_a_batch"})
-    # The batch's last report decides it. Recorded in the SAME synchronous step
-    # as the check above, before any await: a call the CLI abandons and whose
-    # turn then ends can still be suspended on the post below while the next
-    # batch is admitted, and a write after it would land in that batch's
-    # verdict (seam review r1, reproduced).
+    # The last report credited to a batch decides it. Recorded in the SAME
+    # synchronous step as the check above, before any await: a call the CLI
+    # abandons and whose turn then ends can still be suspended on the post
+    # below while the next batch is admitted, and a write after it would land
+    # in that batch's verdict (seam review r1, reproduced).
     job["advanced"] = progressed
     job["last_summary"] = summary
     job["last_advance"] = time.time()
