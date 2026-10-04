@@ -32,12 +32,16 @@ apply unchanged, step 3's open-conversation warning included.
    dependency closure (including any bundled/declared plugin) can differ from what is currently
    active — a plugin may be added, dropped, or repointed to a new digest by the new version; the
    consent DM in the next step covers the FULL new closure, not a diff against the old one.
-2. Same consent flow as `recipes/specialist/install.md` steps 2-3 — an upgrade re-consents exactly
-   like a fresh install (the identity binds `root_digest`, which changes with every version; at the
+2. Same consent flow as `recipes/specialist/install.md` steps 2-3 — an upgrade re-consents through
+   the same keyboard and the same approval as a fresh install, which the DM words as an update (the
+   identity binds `root_digest`, which changes with every version; at the
    version already installed the approval may already be on record, or may be asked again). The
    automatic resume turn after Approve tells you to continue with step 3's `specialist_upgrade` —
    never `specialist_install_commit`, which refuses an installed slug with
-   `kind: "active_present"`.
+   `kind: "active_present"`. After Deny a resume turn tells you the operator refused: nothing
+   changed and the specialist keeps its current version and settings, so do not call
+   `specialist_upgrade`, commit or reload — conclude with `emit_completion(status="cancelled",
+   text=...)` saying the operator refused the update.
 3. `specialist_upgrade(slug=..., component_id=..., version=..., root_digest=..., staged_dir=...,
    receipt_id=..., config={...}, secret_names_provided=[...])` using the EXACT `root_digest` and
    `receipt_id` `specialist_install_inspect` returned. Omitting `receipt_id` (or passing a stale
