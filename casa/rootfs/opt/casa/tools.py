@@ -69,8 +69,8 @@ from claude_agent_sdk import (
 from bus import BusMessage, MessageBus, MessageType
 from channels import ChannelManager, DeliveryOutcome
 from output_boundary import (
-    Admitted, IntentKind, ReadBeforeDescribe, TurnScope, UnadmittedText,
-    casa_text,
+    Admitted, ApprovalCut, IntentKind, ReadBeforeDescribe, TurnScope,
+    UnadmittedText, casa_text, resolve_scope,
 )
 from claude_runtime import (
     CLAUDE_CLI_PATH,
@@ -3905,6 +3905,13 @@ async def _run_delegated_agent(
     # observed below is attributed to the artifact this session really ran.
     binding: dict[str, str] = {}
     tool_calls: dict[str, tuple[str, float]] = {}
+    # #1252: the text-bearing messages `text` is joined from, and where they
+    # stop being the operator's because a protected call is waiting on the
+    # operator's approval — read at each call's result, as the resident's
+    # turn reads it. Only the specialist desk reads the outcome.
+    messages: list[str] = []
+    approval_cut = ApprovalCut()
+    approval_scope: TurnScope | None = None
     # #1168 (INV-ENG-023): the session this call launches, and the folder its
     # transcript lands in — set together, before the client exists, so the
     # delete in `finally` names exactly what was launched or nothing at all.
@@ -3935,6 +3942,7 @@ async def _run_delegated_agent(
         own_sid, own_dir = options.session_id, options.cwd
         _ph["options"] = time.monotonic()
         token = agent_mod.origin_var.set(child_origin)
+        approval_scope = resolve_scope(child_origin)
         client_options = (
             options if output_format is not None
             else sdk_logging.with_stderr_callback(options, engagement_id=None)
@@ -3995,6 +4003,7 @@ async def _run_delegated_agent(
                             if isinstance(b, TextBlock))
                         if msg_text:
                             text += ("\n\n" if text else "") + msg_text
+                            messages.append(msg_text)
                         for block in getattr(sdk_msg, "content", []):
                             if isinstance(block, ToolUseBlock):
                                 tool_calls[getattr(block, "id", "")] = (
@@ -4007,6 +4016,12 @@ async def _run_delegated_agent(
                                     _first_tool = True
                                     _ph["first_tool"] = time.monotonic()
                     elif isinstance(sdk_msg, UserMessage):
+                        if approval_scope is not None:
+                            for block in getattr(sdk_msg, "content", None) or []:
+                                if isinstance(block, ToolResultBlock):
+                                    approval_cut.observe(
+                                        getattr(block, "tool_use_id", ""),
+                                        approval_scope.approvals, len(messages))
                         if _settle_setup_from_delegated_results(
                                 cfg, sdk_msg, tool_calls, binding):
                             await _refresh_health_after_setup_cleared()
@@ -4170,6 +4185,11 @@ async def _run_delegated_agent(
             _known_role(getattr(cfg, "role", None)), _caller_fault.value,
         )
         raise ApiErrorTurn(_caller_fault)
+
+    # #1252: a run that ended with an approval pending publishes the words it
+    # wrote before that call onto the scope it ran under; `text` stays whole.
+    if approval_scope is not None and approval_cut.cut is not None:
+        approval_scope.approval_kept = "\n\n".join(messages[:approval_cut.cut])
 
     # Specialist write: one explicit tier-classified retain of the exchange
     # OFFERED to the shared bank, gated by the PARENT channel's write-trust
