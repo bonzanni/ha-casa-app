@@ -28,6 +28,19 @@ class DeliveryOutcome(Enum):
     UNKNOWN = "unknown"
 
 
+class OperatorNotifyBeforeStart(RuntimeError):
+    """The operator-notice seam found no ready Telegram channel BEFORE
+    :meth:`ChannelManager.start_all` completed (#930).
+
+    An owed note attempted then is a designed retry, not a failure: the
+    workers' first pass runs before the channels start and they are kicked
+    again once ``start_all`` returns. The owed-note sites log it at INFO; a
+    not-ready channel AFTER start completed (a first bring-up that failed and
+    returned included) keeps the bare ``RuntimeError`` and its ERROR line.
+    A ``RuntimeError`` subclass, so every other caller's handling is
+    unchanged."""
+
+
 class Channel(ABC):
     """Base class for all communication channels."""
 
@@ -61,6 +74,10 @@ class ChannelManager:
 
     def __init__(self) -> None:
         self._channels: dict[str, Channel] = {}
+        # #930: True once start_all has RETURNED normally — "completed", not
+        # "ready": a channel whose first bring-up failed transiently returns
+        # from start() not ready. Never reset.
+        self.start_completed = False
 
     def register(self, channel: Channel) -> None:
         """Register a channel by its name."""
@@ -74,6 +91,7 @@ class ChannelManager:
         """Start all registered channels."""
         for ch in self._channels.values():
             await ch.start()
+        self.start_completed = True
 
     async def stop_all(self) -> None:
         """Stop all registered channels, swallowing errors."""

@@ -31,7 +31,8 @@ from authz_grants import CHALLENGES, GRANTS
 import callback_http
 from bus import BusMessage, BusShutdownError, MessageBus, MessageType
 from channel_authz import agent_allowed_on
-from channels import ChannelManager, DeliveryOutcome
+from channels import (ChannelManager, DeliveryOutcome,
+                      OperatorNotifyBeforeStart)
 from claude_runtime import (
     CLAUDE_CLI_PATH,
     CLAUDE_CLI_VERSION,
@@ -3281,10 +3282,18 @@ async def operator_notify(channel_manager: Any, text: str) -> None:
     "event-spool initialised", before the channel started). Raising makes
     delivery OBSERVED: the workers' removal/exhaustion scans leave the
     record un-noted and retry, and their advisory ``_note`` paths degrade
-    to honest logging."""
+    to honest logging.
+
+    #930: before ``start_all`` has completed, the not-ready raise is
+    :class:`OperatorNotifyBeforeStart` (a ``RuntimeError``), so those sites
+    can log a designed retry at INFO. A manager that does not say whether
+    its start completed gets the ordinary error."""
     import trigger_consent as _tc
     ch = channel_manager.get("telegram") if channel_manager else None
     if ch is None or not getattr(ch, "is_ready", True):
+        if getattr(channel_manager, "start_completed", True) is False:
+            raise OperatorNotifyBeforeStart(
+                "operator notify: telegram channel not ready")
         raise RuntimeError("operator notify: telegram channel not ready")
     # Address the operator DM explicitly (falls back to the channel's
     # default chat — also the operator — when identity is unresolvable).

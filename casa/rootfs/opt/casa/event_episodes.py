@@ -65,6 +65,7 @@ import event_attempts
 import event_reconcile
 import event_spool
 import plugin_dispatch
+from channels import OperatorNotifyBeforeStart
 
 logger = logging.getLogger(__name__)
 
@@ -863,15 +864,17 @@ async def _process_removal_records(spool: Any) -> None:
                 await _notify_operator(_removal_text(rec))
             except asyncio.CancelledError:
                 raise
+            except OperatorNotifyBeforeStart:
+                # #930: the channels have not finished starting — a designed
+                # retry (the workers are kicked once start_all returns), not a
+                # failure. Un-noted, retried next pass.
+                logger.info("event removal note deferred: channels not "
+                            "started yet; retried next pass")
+                continue
             except Exception:  # noqa: BLE001 — un-noted, retried next pass
-                # #930 (review round 1, Terra S2): NOT demoted with the
-                # driver's observation, deliberately. This line is the ONLY
-                # report a send failure gets — nothing else adjudicates it —
-                # so demoting it would silence a note that keeps failing after
-                # the channel is up. The boot-window noise it costs is owed to
-                # #955: the seam raises one bare error for a not-ready channel
-                # and for a real send failure alike, so the two cannot be told
-                # apart here, and a uniform demotion buys quiet with signal.
+                # Every other raise — a not-ready channel after start
+                # completed, a send that fails — keeps ERROR: this line is
+                # the ONLY report a send failure gets (#930, Terra S2).
                 logger.exception("event removal note failed")
                 continue
         try:
@@ -940,9 +943,13 @@ async def _process_unnoted_exhaustions(spool: Any) -> None:
                                                         subscriber))
             except asyncio.CancelledError:
                 raise
+            except OperatorNotifyBeforeStart:
+                # #930: see the removal note above. Stays owed.
+                logger.info("event exhaustion note deferred: channels not "
+                            "started yet; retried next pass")
+                continue
             except Exception:  # noqa: BLE001 — un-noted, retried next pass
-                # #930/#955: not demoted — see the removal note above; the
-                # same reasoning holds for this line.
+                # #930: every other raise keeps ERROR — see the removal note.
                 logger.exception("event exhaustion note failed")
                 continue
         try:
@@ -968,5 +975,9 @@ async def _note(text: str) -> None:
         return
     try:
         await _notify_operator(text)
+    except OperatorNotifyBeforeStart:
+        # #930: the channels have not finished starting; not a failure.
+        logger.info("event-episode operator note not sent: channels not "
+                    "started yet")
     except Exception:  # noqa: BLE001
         logger.exception("event-episode operator note failed")
