@@ -29,6 +29,7 @@ from error_kinds import (
 from engagement_registry import JOB_SIDS_KEY, EngagementRecord
 import sdk_logging
 from log_cid import cid_var, new_cid
+from output_boundary import ApprovalCut
 
 if TYPE_CHECKING:
     from channels.telegram import TopicStreamHandle
@@ -68,13 +69,27 @@ class _EngagementTurn:
     ``value`` is the running (or last) turn's cid and renders as the record's
     cid; it is not cleared between turns. ``batch`` is the job batch number the
     running turn delivers, None for any other turn, and is cleared when the
-    turn ends."""
+    turn ends. ``approvals`` is the authorization hook's per-call record for
+    the running turn (#1252/#1207: tool_use_id → ("pending" | "consumed",
+    GrantKey)), a fresh dict from the turn's start to its end and None
+    between turns."""
 
-    __slots__ = ("value", "batch")
+    __slots__ = ("value", "batch", "approvals")
 
     def __init__(self) -> None:
         self.value = "-"
         self.batch: int | None = None
+        self.approvals: dict[str, tuple[str, Any]] | None = None
+
+    def note_approval(self, tool_use_id: Any, kind: str, key: Any) -> None:
+        """#1207: SYNCHRONOUS — record what the authorization hook decided for
+        one call ("pending": its deny left a keyboard up; "consumed": it spent
+        the operator's grant). The hook reaches THIS holder through its own
+        context — the SDK reader of the client the holder was bound to before
+        ``__aenter__`` — so the record lands on that client's running turn and
+        no other; between turns it is dropped."""
+        if tool_use_id and self.approvals is not None:
+            self.approvals[str(tool_use_id)] = (kind, key)
 
     def __str__(self) -> str:
         return self.value
@@ -1136,6 +1151,12 @@ class InCasaDriver(DriverProtocol):
         evidence_seen = False
         # Per-call tool name lookup so log_tool_result can render name=.
         tool_names_by_id: dict[str, str] = {}
+        # #1207 (ruling #1252): the text-bearing messages ``accumulated`` is
+        # joined from, and where they stop being the operator's because a
+        # protected call is waiting on the operator's approval — read at each
+        # call's result from the hook's record on the turn holder.
+        messages: list[str] = []
+        approval_cut = ApprovalCut()
         token = engagement_var.set(engagement)
         try:
             async with lock:
@@ -1148,6 +1169,7 @@ class InCasaDriver(DriverProtocol):
                 if turn is not None:
                     turn.value = cid
                     turn.batch = batch
+                    turn.approvals = {}
                 logger.info(
                     "Engagement %s turn cid=%s batch=%s engaged_by=%s",
                     engagement.id, cid,
@@ -1293,6 +1315,16 @@ class InCasaDriver(DriverProtocol):
                             "phase4b dispatch failed: %s", dispatch_exc,
                             exc_info=True,
                         )
+                    # #1207: the hook's record for a call is read HERE, at its
+                    # result — the CLI writes the result only after the hook
+                    # returned, and the text written before the call is
+                    # already folded. Never at hook time.
+                    if isinstance(sdk_msg, UserMessage) and turn is not None:
+                        for block in getattr(sdk_msg, "content", []) or []:
+                            if isinstance(block, ToolResultBlock):
+                                approval_cut.observe(
+                                    getattr(block, "tool_use_id", ""),
+                                    turn.approvals, len(messages))
                     # #568: an API-level fault (a safety refusal included)
                     # arrives as an assistant message whose text block is the
                     # CLI's own error prose — a request id and terminal-UI
@@ -1352,6 +1384,7 @@ class InCasaDriver(DriverProtocol):
                             if isinstance(b, TextBlock)
                         )
                         if msg_text:
+                            messages.append(msg_text)
                             candidate = (
                                 f"{accumulated}\n\n{msg_text}"
                                 if accumulated else msg_text
@@ -1371,7 +1404,10 @@ class InCasaDriver(DriverProtocol):
                                 )
                             else:
                                 accumulated = candidate
-                            await stream.emit(accumulated)
+                            # #1207: nothing written after a call that is
+                            # waiting on the operator's approval is shown.
+                            if approval_cut.cut is None:
+                                await stream.emit(accumulated)
         finally:
             # #1033: the holder's batch never outlives its turn. Reached
             # synchronously from the lock's release (no await between), so no
@@ -1379,8 +1415,21 @@ class InCasaDriver(DriverProtocol):
             # lock.
             if turn is not None:
                 turn.batch = None
+                turn.approvals = None
             engagement_var.reset(token)
-        final = accumulated.strip()
+        # #1207 (ruling #1252): a turn that ended with a call still waiting on
+        # the operator's approval shows the keyboard and the words written
+        # before that call — under the same cap and marker as the stream.
+        cut = approval_cut.cut
+        if cut is None:
+            final = accumulated.strip()
+        else:
+            import specialist_limits
+            kept = "\n\n".join(messages[:cut])
+            if cap_output and len(kept) > specialist_limits._MAX_OUTPUT_CHARS:
+                kept = (kept[:specialist_limits._MAX_OUTPUT_CHARS]
+                        + " … [truncated]")
+            final = kept.strip()
         # #665: UNKNOWN before any finalize — a quiet turn (no text) makes no
         # delivery claim, and a handle off the contract (returns None, or a
         # test fake returning a truthy MagicMock) coerces to UNKNOWN by the
@@ -1547,7 +1596,11 @@ class InCasaDriver(DriverProtocol):
             reason = ""
             if result_msg is None:
                 reason = LAUNCH_MISSING_RESULT
-            elif not final:
+            elif not final and cut is None:
+                # #1207: a launch whose words were all withheld by a call
+                # still waiting on the operator's approval is not mute — the
+                # keyboard in the operator's DM is what it shows (a record
+                # exists only once that keyboard was posted).
                 reason = LAUNCH_NO_VISIBLE_OUTPUT
             elif delivery_outcome is DeliveryOutcome.NOT_DELIVERED:
                 # #665: strongest-known-first — a cut-off turn keeps its

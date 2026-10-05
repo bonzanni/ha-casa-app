@@ -1441,10 +1441,21 @@ def _note_approval(tool_use_id: "str | None", kind: str, key: GrantKey) -> None:
     call — ``"pending"`` when its deny leaves an approval keyboard up,
     ``"consumed"`` when it spent the operator's grant. Written before the hook
     returns, so the record exists before the CLI writes the call's result.
-    The scope is resolved as the challenge resolves it; under an engagement
-    that is a fresh scope nothing reads. Never raises: the hook's answer must
-    not depend on it."""
+    Under an engagement (#1207) the record goes to the running turn of the
+    client whose hook this is: the hook runs in that client's SDK reader
+    context, where no per-turn variable arrives but ``cid_var`` is the
+    client's turn holder (``in_casa_driver._EngagementTurn``); otherwise to
+    the scope the challenge resolves. Never raises: the hook's answer must not
+    depend on it."""
     try:
+        import tools as tools_mod
+        if tools_mod.engagement_var.get(None) is not None:
+            from drivers.in_casa_driver import _EngagementTurn
+            from log_cid import cid_var
+            holder = cid_var.get(None)
+            if isinstance(holder, _EngagementTurn):
+                holder.note_approval(tool_use_id, kind, key)
+            return
         from output_boundary import resolve_scope
         scope = resolve_scope()
         if scope is not None:
