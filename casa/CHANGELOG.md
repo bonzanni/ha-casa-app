@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.344.24] - 2026-10-05
+
+### Fixed
+- Adding a plugin to a specialist, assigning or unassigning one, updating one or removing one (`plugin_add`, `plugin_assign`, `plugin_unassign`, `plugin_update`, `plugin_remove`) went ahead without telling you about that specialist's open conversations, which do not get the change. As ruled on #1255, when a specialist the change reaches has open conversations, Casa now holds back a call that does not confirm them (an erase chosen on a plugin's erase question is the exception, below) and gives the configurator a warning, which its instructions say to show you before asking you to confirm. The warning lists each specialist's open conversations, followed by the sentence for that kind of change:
+  - adding or assigning: "Its open conversations keep the plugins they started with and will not get *the plugin*."
+  - unassigning or removing: "Its open conversations keep *the plugin* loaded but lose its approvals, so a protected call asks again and earlier references to it stop working."
+  - updating: "Its open conversations keep the previous version and lose its approvals."
+
+  An update or a removal reaches every specialist the plugin is assigned to. Assigning a plugin to a specialist that already has it, or unassigning it from one that does not, changes nothing and does not warn. As ruled on #1263, a confirmation that names an open conversation of any specialist the change reaches confirms the change; the open conversations it does not name — another reached specialist's, or one opened while you were deciding — are named after the change, never a reason to refuse or ask again. Removing a plugin that can erase its data asks this before the erase question; an erase you then choose on that question is not held back by a further warning, and open conversations you did not confirm are named after the removal. A confirmed add or update can still be refused afterwards, for instance when the version cannot be fetched or does not match its tag; the plugin is then not added or updated and nothing is activated, though a version Casa had already fetched may stay in its plugin store. (#1145)
+
 ## [0.344.23] - 2026-10-05
 
 ### Fixed
