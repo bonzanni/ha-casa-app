@@ -15614,12 +15614,14 @@ _KEPT_NEW_VERSION_ENVELOPE = {
 # #1146: the same kept failure when the specialist's own reload failed and its
 # live agent was not the new version when that reload returned. Past and
 # standing facts only: the reload result is the observation, and active.yaml
-# naming the new version is what the next load reads.
+# naming the new version is what the next load reads. The live root is
+# compared with the new version's only, so the text names no older version:
+# after an earlier failed upgrade the live one need not be the one replaced.
 _KEPT_NOT_LOADED_OUTCOME = (
     "the new version is kept: its files are committed and active.yaml names "
     "it, because the version it replaced cannot be restored whole (a setting it "
     "kept as a plain value is now secret). Reloading the specialist failed, and "
-    "when that reload returned the specialist was running its previous version. "
+    "when that reload returned the specialist was not running the new version. "
     "Nothing was rolled back; the failure above is reported, and Casa tries to "
     "load the new version at the next reload or restart")
 
@@ -15680,7 +15682,7 @@ async def _bundle_seq_failure(txn, seq: dict, *, slug: str) -> dict:
         env.update(_KEPT_NEW_VERSION_ENVELOPE)
         # #1146: after a failed reload "active" holds only when the root the
         # reload left is the new version's (the swap landed, e.g. a
-        # reregister_failed). A different root says the previous version was
+        # reregister_failed). A different root says the new version was not
         # running; no root (an override binding, no agent, no key) is no
         # evidence either way, and the text says it could not be established.
         loaded_root = seq.get("loaded_root_after_reload")

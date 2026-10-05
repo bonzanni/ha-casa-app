@@ -28,7 +28,7 @@ UNKNOWN = ("which version it was running when that reload returned could not be 
 
 
 def _told(env):
-    """(active, previous version, could not be established) phrase counts."""
+    """(active, not the new version, could not be established) phrase counts."""
     return (*_phrases(env), env["outcome"].count(UNKNOWN))
 
 

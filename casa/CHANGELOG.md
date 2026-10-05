@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.344.25] - 2026-10-05
+
+### Fixed
+- When a specialist upgrade had kept its new version and reloading the specialist then failed, the upgrade's result could say that, when that reload returned, the specialist "was running its previous version". For this result, Casa compares the version it reads as running only with the new version, so it cannot tell which other version that was. The result now says that when that reload returned the specialist was not running the new version, and it names no other version. This corrects the "previous version" wording from 0.344.23. (#1146)
+
 ## [0.344.24] - 2026-10-05
 
 ### Fixed

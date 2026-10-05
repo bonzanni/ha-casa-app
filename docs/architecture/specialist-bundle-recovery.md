@@ -105,7 +105,8 @@ unrelated reload before the re-run can load parts of the kept version for new co
 `kept_new_version: true` on a failed reload-and-verify comes after the sequencer ran. It says the
 new version is active unless the specialist's own reload failed. Then the live agent's binding,
 read when that reload returned, decides: a component root other than the new version's makes it
-say the specialist was running its previous version when the reload returned; no root to read (a
+say the specialist was not running the new version when the reload returned, naming no older
+version, since the root is compared with the new version's alone; no root to read (a
 persona-override binding carries none, or there was no live agent) makes it say which version was
 running could not be established; the new version's root keeps the active sentence. Both other
 texts say the reload failed and that Casa tries to load the new version at the next reload or
