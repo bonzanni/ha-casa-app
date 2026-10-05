@@ -82,3 +82,12 @@ async def test_a_resumed_specialist_hosted_job_is_not_offered_bash(runtime):
     opts = tools.build_engagement_resume_options(rec, "resumed-session")
     assert opts.resume == "resumed-session"
     assert opts.disallowed_tools.count("Bash") == 1
+
+
+@pytest.mark.parametrize("malformed", ["Bash(", "Bash(git status\\)"])
+def test_a_malformed_scoped_bash_entry_does_not_keep_the_tool(monkeypatch, malformed):
+    """The pinned CLI parses neither entry as a Bash rule — ``Bash(`` has no
+    closing parenthesis, and in ``Bash(git status\\)`` the closing one is
+    escaped — so neither grants Bash, and the clamp must still deny it."""
+    opts = _specialist_options(monkeypatch, ["Read", malformed], [])
+    assert opts.disallowed_tools.count("Bash") == 1

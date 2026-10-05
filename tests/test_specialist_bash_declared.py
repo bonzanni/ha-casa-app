@@ -26,7 +26,7 @@ def _options(monkeypatch, allowed, disallowed):
         cfg, resolution=ResolutionResult(registry_valid=True))
 
 
-@pytest.mark.parametrize("grant", ["Bash", "Bash(git status:*)"])
+@pytest.mark.parametrize("grant", ["Bash", "Bash(git status:*)", "Bash(*)"])
 def test_a_role_that_lists_bash_keeps_it(monkeypatch, grant):
     opts = _options(monkeypatch, ["Read", grant], [])
     assert opts.allowed_tools == ["Read", grant]

@@ -2047,6 +2047,45 @@ def _engagement_unavailable_result(origin: dict) -> dict:
 _SUBAGENT_SPAWN_TOOLS = ("Agent", "Task")
 
 
+def _cli_grants_bash(allowed_tools) -> bool:
+    """Whether the pinned CLI (2.1.273) reads a Bash grant in ``allowed_tools``.
+
+    #1294: mirrors the CLI's own two steps. The SDK joins the list with ``,``
+    into ``--allowedTools``; the CLI splits that on commas and spaces outside
+    parentheses (its tokenizer honours no escapes), then parses each rule: it
+    grants Bash only for a bare ``Bash`` or ``Bash(...)`` whose first
+    unescaped ``(`` follows the name and whose last unescaped ``)`` ends the
+    rule. ``Bash()`` and ``Bash(*)`` grant the whole tool. Any other shape —
+    ``Bash(``, ``Bash(x\\)`` — is malformed and grants nothing.
+    """
+    tokens, cur, in_parens = [], "", False
+    for ch in ",".join(allowed_tools):
+        if ch == "(":
+            in_parens = True
+        elif ch == ")":
+            in_parens = False
+        elif ch in ", " and not in_parens:
+            if cur.strip():
+                tokens.append(cur.strip())
+            cur = ""
+            continue
+        cur += ch
+    if cur.strip():
+        tokens.append(cur.strip())
+
+    def _unescaped(tok: str, i: int) -> bool:
+        k = i - 1
+        while k >= 0 and tok[k] == "\\":
+            k -= 1
+        return (i - 1 - k) % 2 == 0
+
+    return any(
+        tok == "Bash" or (
+            tok.startswith("Bash(") and len(tok) > 5 and tok.endswith(")")
+            and _unescaped(tok, len(tok) - 1))
+        for tok in tokens)
+
+
 def _with_subagent_spawn_disallowed(disallowed) -> list[str]:
     """Return ``disallowed`` (any iterable) plus the sub-agent-spawn tools and
     the CLI's cross-session tools (``claude_runtime.CROSS_SESSION_TOOLS``),
@@ -2447,12 +2486,13 @@ def _build_specialist_options(
     # both granted and disallowed is denied at the CLI, so the log must not
     # count it as effectively usable. The profile's visibility denies ride
     # the same list, BEFORE the sub-agent and cross-session clamps.
-    # #1294: Bash is hard-denied unless the role lists it in any form — a
-    # read-only command skips can_use_tool, and a backgrounded one makes a
-    # live CLI run a turn Casa never sent. Scoped-aware, as in
-    # drivers/workspace.py: a ``Bash(<pattern>)`` grant keeps its tool.
-    _bash_clamp = () if ("Bash" in cfg.tools.disallowed or any(
-        t == "Bash" or t.startswith("Bash(") for t in allowed_tools)) else ("Bash",)
+    # #1294: Bash is hard-denied unless the role grants it as the CLI reads a
+    # grant — a read-only command skips can_use_tool, and a backgrounded one
+    # makes a live CLI run a turn Casa never sent. A bare ``Bash`` or a
+    # well-formed ``Bash(<pattern>)`` keeps the tool; a malformed ``Bash(``
+    # grants nothing at the CLI, so it does not keep it either.
+    _bash_clamp = () if ("Bash" in cfg.tools.disallowed
+                         or _cli_grants_bash(allowed_tools)) else ("Bash",)
     disallowed_tools = _with_subagent_spawn_disallowed(
         [*cfg.tools.disallowed, *_profile_denies, *_bash_clamp])
     if _owner is not None and "ToolSearch" not in disallowed_tools:
