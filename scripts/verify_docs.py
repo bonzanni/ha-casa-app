@@ -83,7 +83,8 @@ REQUIRED_SKELETON = {
     "doctrine/invariants-f-m.md",
     "doctrine/invariants-n-pk.md",
     "doctrine/invariants-pl-r.md",
-    "doctrine/invariants-s-z.md",
+    "doctrine/invariants-s.md",
+    "doctrine/invariants-t-z.md",
     "doctrine/publishing.md",
     "contributing/doc-contract.md",
 }
@@ -1290,7 +1291,8 @@ def _invariant_rows(repo_root: Path) -> list[tuple[str, str, str]]:
 # Three shards once the A-M shard outgrew the ceiling in turn (#843), four once
 # the N-Z shard did (#953), five once N-R did (#1218, at the two-letter bound
 # `PL`, because `PLUG` alone is most of that range), six once A-E did (#998, at
-# `E`: the `E` families alone are about half of it): each row is (range label, corpus path, exclusive
+# `E`: the `E` families alone are about half of it), seven once S-Z did (#1275,
+# at `T`, a whole-letter bound): each row is (range label, corpus path, exclusive
 # upper bound on the family string), and a family lands in the FIRST shard whose
 # bound it sorts below — the last shard has no bound and takes the rest. Adding
 # a shard is adding a row.
@@ -1311,7 +1313,8 @@ _INV_SHARDS: tuple[tuple[str, str, str | None], ...] = (
     ("F-M", "doctrine/invariants-f-m.md", "N"),
     ("N-PK", "doctrine/invariants-n-pk.md", "PL"),
     ("PL-R", "doctrine/invariants-pl-r.md", "S"),
-    ("S-Z", "doctrine/invariants-s-z.md", None),
+    ("S", "doctrine/invariants-s.md", "T"),
+    ("T-Z", "doctrine/invariants-t-z.md", None),
 )
 
 
