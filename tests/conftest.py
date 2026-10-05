@@ -558,6 +558,34 @@ def _isolate_engagement_outbox_root(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_compiled_db_sweep(tmp_path_factory, monkeypatch):
+    """Point ``drivers.s6_rc.sweep_orphan_compiled_dbs``'s default root at a
+    per-test directory instead of the real ``/tmp``.
+
+    Boot replay (``casa_core.replay_undergoing_engagements``) calls the sweep
+    with no arguments, and in production that is right: after a restart every
+    ``/tmp/s6-casa-db-*`` is the previous run's. Under ``-n auto`` it is not:
+    a boot-replay test on one worker deleted the compiled db another worker's
+    ``test_s6_rc.py::TestCompileCancellation`` had just made (gate.sh on
+    v0.344.34: "the swapped (now live) db must survive the cancellation").
+    Measured: running ``tests/test_anchor_reanchor.py`` alone deletes a planted
+    ``/tmp/s6-casa-db-*`` directory. An explicit ``tmp_root=`` still wins,
+    so the sweep's own tests are unaffected. Pinned by
+    ``tests/test_compiled_db_sweep_isolation.py``."""
+    try:
+        import functools as _functools
+
+        from drivers import s6_rc as _s6
+    except Exception:  # pragma: no cover — import is universal in tests
+        yield
+        return
+    root = tmp_path_factory.mktemp("s6-sweep-tmp")
+    monkeypatch.setattr(_s6, "sweep_orphan_compiled_dbs",
+                        _functools.partial(_s6.sweep_orphan_compiled_dbs, tmp_root=str(root)))
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _isolate_resident_bindings(tmp_path, monkeypatch):
     """Personality Phase A, Task 8: point the resident instance-tuple root
     (``CASA_BINDINGS_DIR``, consumed by agent_loader's boot-time binding
