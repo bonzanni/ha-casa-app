@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.344.27] - 2026-10-05
+
+### Fixed
+- A note about automatic plugin setup (a setup run that was dropped, could not run, ran out of attempts, was refused, or was retired because nothing would ever report on it) that Casa tried to send while Telegram was not ready, for example during startup, was lost. It is now kept and sent when Telegram can take it, unless Casa restarts first. A kept note about a setup run that has changed since, or been re-armed, is dropped instead. A note whose send fails for any other reason is still not sent again, because Telegram may already have received it. A note attempted before Casa's channels have finished starting is now logged at INFO without a traceback. (#1014)
+
 ## [0.344.26] - 2026-10-05
 
 ### Fixed
