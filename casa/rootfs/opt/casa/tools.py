@@ -2447,8 +2447,14 @@ def _build_specialist_options(
     # both granted and disallowed is denied at the CLI, so the log must not
     # count it as effectively usable. The profile's visibility denies ride
     # the same list, BEFORE the sub-agent and cross-session clamps.
+    # #1294: Bash is hard-denied unless the role lists it in any form — a
+    # read-only command skips can_use_tool, and a backgrounded one makes a
+    # live CLI run a turn Casa never sent. Scoped-aware, as in
+    # drivers/workspace.py: a ``Bash(<pattern>)`` grant keeps its tool.
+    _bash_clamp = () if ("Bash" in cfg.tools.disallowed or any(
+        t == "Bash" or t.startswith("Bash(") for t in allowed_tools)) else ("Bash",)
     disallowed_tools = _with_subagent_spawn_disallowed(
-        [*cfg.tools.disallowed, *_profile_denies])
+        [*cfg.tools.disallowed, *_profile_denies, *_bash_clamp])
     if _owner is not None and "ToolSearch" not in disallowed_tools:
         # #1220: with ToolSearch on the surface the pinned CLI defers every
         # MCP tool that is not alwaysLoad, and the pin denies the one
@@ -2605,8 +2611,11 @@ def _build_plugin_job_options(rec, resolution,
         max_buffer_size=SDK_MAX_BUFFER_SIZE,
         system_prompt=_PLUGIN_JOB_PROMPT,
         allowed_tools=allowed,
+        # #1294: never Bash — a read-only command skips can_use_tool, and a
+        # backgrounded one's completion makes the live CLI run an unprompted
+        # turn the next batch would read as its own.
         disallowed_tools=with_cross_session_tools_denied(
-            ["Agent", "Task", "AskUserQuestion", *_profile_denies]),
+            ["Agent", "Task", "AskUserQuestion", *_profile_denies, "Bash"]),
         settings=cli_session_settings(),
         permission_mode="default",
         max_turns=rec.origin["job"]["turns_per_batch"],
