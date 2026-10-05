@@ -78,7 +78,8 @@ class TestRenderRunScript:
         collapsed = _re.sub(r"\s+", " ", script.replace("\\\n", " "))
         assert (
             "exec setpriv --reuid 200005 --regid 200005 --clear-groups "
-            "--bounding-set -all --inh-caps -all --no-new-privs -- claude"
+            "--bounding-set -all --inh-caps -all --no-new-privs "
+            '-- env PATH="$_casa_cli_path" claude'
         ) in collapsed
 
     def test_render_refuses_unallocated_uid(self):
@@ -98,7 +99,7 @@ class TestRenderRunScript:
         from drivers.workspace import render_log_run_script
 
         script = render_log_run_script(engagement_id="xxxxxxxxxxxxxxxx")
-        assert script.startswith("#!/command/with-contenv sh\n")
+        assert script.startswith("#!/command/with-contenv /bin/sh\n")
         assert "mkdir -p /var/log/casa-engagement-xxxxxxxxxxxxxxxx" in script
         assert "exec s6-log n20 s1000000 /var/log/casa-engagement-xxxxxxxxxxxxxxxx" in script
         # GHSA-569r-7crq-xr43: the umask must precede the mkdir, or the dir is

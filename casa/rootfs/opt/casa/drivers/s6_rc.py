@@ -53,7 +53,11 @@ def _trusted_env() -> dict[str, str]:
     """``os.environ`` with every PATH entry that names the plugin tools
     directory removed, the rest kept in order. Entries are compared by
     ``realpath``, so another spelling of the same directory (``//config/...``,
-    a trailing slash, a symlink to it) is removed too. Passed as ``env=``:
+    a trailing slash, a symlink to it) is removed too. An empty or relative
+    entry is removed as well (#1248): it means the current directory, which
+    can be the tools directory, and the image PATH never has one. The
+    engagement scripts' root phase filters its PATH by the same rule
+    (``drivers.workspace._root_path_fragment``). Passed as ``env=``:
     CPython's POSIX ``subprocess`` resolves a bare program name against the
     PATH of the env it is given, and the program inherits that env, so what
     s6-rc in turn runs by name is resolved the same way. No absolute program
@@ -66,8 +70,15 @@ def _trusted_env() -> dict[str, str]:
     tools = os.path.realpath(PLUGIN_TOOLS_BIN)
     env["PATH"] = os.pathsep.join(
         entry for entry in path.split(os.pathsep)
-        if os.path.realpath(entry or ".") != tools)
+        if os.path.isabs(entry) and os.path.realpath(entry) != tools)
     return env
+
+
+def trusted_path() -> str | None:
+    """The PATH ``_trusted_env`` hands a program (``None`` when there is no
+    PATH at all). Both ``setpriv`` preflights resolve ``setpriv`` on it, as
+    the engagement run script's root phase does (#1248)."""
+    return _trusted_env().get("PATH")
 
 
 def _run(argv: list[str], **kwargs) -> subprocess.CompletedProcess:
@@ -257,12 +268,20 @@ _STREAMING_MARKERS = ("casa_control", "--output-format stream-json")
 _UID_DROP_LINE_RE = re.compile(
     r"(?m)^exec setpriv --reuid \d+ --regid \d+ --clear-groups\b")
 
+# #1248: the run script's root phase runs on a PATH without the plugin tools
+# directory. The line that installs that PATH is the marker, matched at
+# column 0 for the same reason as the uid-drop line; a script rendered
+# before it lacks the line and is re-rendered by boot replay.
+_ROOT_PATH_LINE_RE = re.compile(r"(?m)^PATH=\$_casa_root_path$")
+
 
 def run_script_is_stale(*, svc_root: str, engagement_id: str) -> bool:
     """True iff the persisted MAIN run script is NOT the current contract —
     i.e. it does not carry BOTH ``casa_control`` AND ``--output-format
     stream-json`` (streaming) AND a start-of-line ``exec setpriv --reuid ...
-    --clear-groups`` final command (the Stage-2 uid drop).
+    --clear-groups`` final command (the Stage-2 uid drop) AND the
+    start-of-line ``PATH=$_casa_root_path`` of the root phase's PATH
+    filter (#1248).
 
     Fails CLOSED (stale=True) when the run file is missing or unreadable: a
     resumed pair we cannot prove is current must be re-planted rather than
@@ -279,7 +298,9 @@ def run_script_is_stale(*, svc_root: str, engagement_id: str) -> bool:
     # The uid drop is validated by a START-OF-LINE regex, never a substring —
     # an ``exec setpriv --reuid`` buried in a quoted --add-dir arg on a root
     # ``exec claude`` script must NOT count as current (S1 r2).
-    return _UID_DROP_LINE_RE.search(text) is None
+    if _UID_DROP_LINE_RE.search(text) is None:
+        return True
+    return _ROOT_PATH_LINE_RE.search(text) is None
 
 
 def service_dirs_absent(*, svc_root: str, engagement_id: str) -> bool:

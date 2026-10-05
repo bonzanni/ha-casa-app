@@ -861,7 +861,10 @@ async def replay_undergoing_engagements(
         # crash-looping) and lands an operator-visible terminal mark. Placed
         # after the down-first sweep so the refusal builds on already-down
         # services.
-        if undergoing and shutil.which("setpriv") is None:
+        # #1248: resolved as the run script resolves it, without the plugin
+        # tools dir.
+        if undergoing and shutil.which(
+                "setpriv", path=s6_rc.trusted_path()) is None:
             logger.critical(
                 "boot replay: setpriv not found on PATH — refusing ALL %d "
                 "claude_code engagement resume(s) this boot (kept down by the "

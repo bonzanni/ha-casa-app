@@ -539,7 +539,7 @@ class TestPreflightUidDrop:
     def test_refuses_when_setpriv_missing(self, monkeypatch, tmp_path):
         from drivers import claude_code_driver as ccd
 
-        monkeypatch.setattr(ccd.shutil, "which", lambda name: None)
+        monkeypatch.setattr(ccd.shutil, "which", lambda name, **kw: None)
         rec = _make_record(allocated_uid=200005)
 
         with pytest.raises(ccd.UidDropRefused, match="setpriv"):
@@ -548,7 +548,7 @@ class TestPreflightUidDrop:
     def test_refuses_uid_sentinel(self, monkeypatch, tmp_path):
         from drivers import claude_code_driver as ccd
 
-        monkeypatch.setattr(ccd.shutil, "which", lambda name: "/usr/bin/setpriv")
+        monkeypatch.setattr(ccd.shutil, "which", lambda name, **kw: "/usr/bin/setpriv")
         rec = _make_record()  # defaults to UNALLOCATED_UID
 
         with pytest.raises(ccd.UidDropRefused, match="UID_BASE"):
@@ -557,7 +557,7 @@ class TestPreflightUidDrop:
     def test_refuses_workspace_owner_mismatch(self, monkeypatch, tmp_path):
         from drivers import claude_code_driver as ccd
 
-        monkeypatch.setattr(ccd.shutil, "which", lambda name: "/usr/bin/setpriv")
+        monkeypatch.setattr(ccd.shutil, "which", lambda name, **kw: "/usr/bin/setpriv")
         rec = _make_record(allocated_uid=200005)
 
         class FakeStat:
@@ -571,7 +571,7 @@ class TestPreflightUidDrop:
     def test_refuses_missing_passwd_entry(self, monkeypatch, tmp_path):
         from drivers import claude_code_driver as ccd
 
-        monkeypatch.setattr(ccd.shutil, "which", lambda name: "/usr/bin/setpriv")
+        monkeypatch.setattr(ccd.shutil, "which", lambda name, **kw: "/usr/bin/setpriv")
         rec = _make_record(allocated_uid=200005)
 
         class FakeStat:
@@ -590,7 +590,7 @@ class TestPreflightUidDrop:
     def test_refuses_unreadable_plugin_dir(self, monkeypatch, tmp_path):
         from drivers import claude_code_driver as ccd
 
-        monkeypatch.setattr(ccd.shutil, "which", lambda name: "/usr/bin/setpriv")
+        monkeypatch.setattr(ccd.shutil, "which", lambda name, **kw: "/usr/bin/setpriv")
         rec = _make_record(allocated_uid=200005)
         plugin_dir = tmp_path / "plugin"
         plugin_dir.mkdir()
@@ -615,7 +615,7 @@ class TestPreflightUidDrop:
     def test_happy_path_all_checks_pass(self, monkeypatch, tmp_path):
         from drivers import claude_code_driver as ccd
 
-        monkeypatch.setattr(ccd.shutil, "which", lambda name: "/usr/bin/setpriv")
+        monkeypatch.setattr(ccd.shutil, "which", lambda name, **kw: "/usr/bin/setpriv")
         rec = _make_record(allocated_uid=200005)
         plugin_dir = tmp_path / "plugin"
         plugin_dir.mkdir()

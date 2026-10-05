@@ -1,8 +1,10 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Bounded stderr ring [D:§W1, Sol B5/r5-B3/r6-B2/B3/r7-B4]. Unique per-epoch file
 # (run script: .stderr.<EPOCH>.log; MY_EPOCH is $3). LC_ALL=C → bash string ops
 # count BYTES not codepoints; `read -N CHUNK` reads at most CHUNK bytes/iteration
 # (bounded memory even for a multi-MB no-newline line — all probe-verified).
+# Absolute interpreter (#1248); the bare commands below resolve on the PATH the
+# run template hands it, which no longer holds the plugin tools dir.
 export LC_ALL=C
 FILE="$1"; MAX="${2:-65536}"; MY_EPOCH="${3:-0}"; CHUNK=2048
 # Task 4 (containment stage 2): FILE is now the CONTROL-DIR ".stderr.<epoch>.log"

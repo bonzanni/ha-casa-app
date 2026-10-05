@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.344.26] - 2026-10-05
+
+### Fixed
+- A plugin can publish programs into `/config/tools/bin`, and Casa puts that directory first on the PATH it gives the services it supervises. The scripts of a `claude_code` engagement's service — its run script until it switches to the engagement's own user, its log script, and the script that keeps the engagement's recent error output — run as root, and they looked up the programs they ran on that PATH, their shell included, so a plugin's program named like one of them (`cat`, `mkdir` or `setpriv`, for example) could run as root in its place. These scripts now name their shell by its full path and, before running any other program, remove that directory, and any entry that is not a full path, from their PATH; if nothing is left, they refuse to start. The engagement's `claude` CLI still gets the PATH the run script started with, `/config/tools/bin` first, once it runs as the engagement's user, so plugin tools stay available to it. The checks that `setpriv` is present, made when an engagement is launched and when Casa resumes engagements as it starts, now also ignore a `setpriv` that is only in that directory. A `claude_code` engagement started before this update gets the new scripts when Casa resumes it. Casa's own services are not changed by this fix: their scripts still start `bashio` from a PATH with that directory first. (#1248)
+
 ## [0.344.25] - 2026-10-05
 
 ### Fixed

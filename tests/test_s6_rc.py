@@ -877,7 +877,7 @@ class TestRunScriptIsStale:
     # A run script carrying all three current markers (streaming pair + setpriv
     # uid drop). Used by the "fresh" and "unreadable-but-fresh" cases.
     _CURRENT = (
-        "#!/bin/sh\ncasa_control spawn\n"
+        "#!/bin/sh\nPATH=$_casa_root_path\ncasa_control spawn\n"
         "exec setpriv --reuid 200001 --regid 200001 --clear-groups "
         "-- claude --print --output-format stream-json\n"
     )
@@ -942,7 +942,7 @@ class TestRunScriptIsStale:
         from drivers.s6_rc import run_script_is_stale
         self._write_run(
             tmp_path, "e7",
-            "#!/bin/sh\ncasa_control spawn\n"
+            "#!/bin/sh\nPATH=$_casa_root_path\ncasa_control spawn\n"
             "exec setpriv --reuid 200005 --regid 200005 --clear-groups "
             "-- claude --output-format stream-json "
             "--plugin-dir /data/plugins/my-setpriv-tool\n")

@@ -282,7 +282,7 @@ def test_rendered_run_script_is_valid_bash(tmp_path, rendered_run_script):
 @_bash_required
 def test_rendered_run_script_contract(rendered_run_script):
     s = rendered_run_script
-    assert s.startswith("#!/command/with-contenv bash")
+    assert s.startswith("#!/command/with-contenv /bin/bash\n")
     assert "--print --verbose --output-format stream-json" in s
     assert '"casa_control": "spawn"' in s
     assert "MCP_TOOL_TIMEOUT=660000" in s
@@ -302,7 +302,8 @@ def test_rendered_run_script_contract(rendered_run_script):
     collapsed = re.sub(r"\s+", " ", s.replace("\\\n", " "))
     assert (
         "exec setpriv --reuid 200005 --regid 200005 --clear-groups "
-        "--bounding-set -all --inh-caps -all --no-new-privs -- claude"
+        "--bounding-set -all --inh-caps -all --no-new-privs "
+        '-- env PATH="$_casa_cli_path" claude'
     ) in collapsed
     assert s.index('exec setpriv') > s.index('ringlog.sh')
 

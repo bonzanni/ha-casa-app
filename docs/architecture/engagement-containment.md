@@ -252,6 +252,15 @@ compile itself still fails closed (exit 111) and the launch rolls back.
 **A plugin publishes a file named like an s6 program.** The driver runs every s6 program
 under a PATH without the plugin tools directory, so that file never runs in its place.
 
+**A plugin publishes a file named like a program an engagement runs as root.** Until the
+final `setpriv` exec, the run script, its log script and the stderr ring run as root; their
+interpreters are named by absolute path. Before any other program, both scripts rebuild PATH
+from the inherited one, keeping only absolute entries that are not the plugin tools
+directory, and refuse to start if none is left. The CLI gets the inherited PATH back, tools
+directory first, only after `setpriv` has dropped. Both `setpriv` preflights look it up on
+the same filtered PATH. A run script without that filter reads stale, so boot replay
+re-plants its pair once the service is confirmed down (INV-CONT-005).
+
 **A service will not confirm down.** By then the ladder has re-issued the stop, latched the
 service down and attempted its kill rungs, and it is still not confirmed down — either the
 strict probe will not call it down, or the last kill could not be delivered at all — its pid

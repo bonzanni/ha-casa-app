@@ -3222,12 +3222,14 @@ async def test_exposed_credential_refuses_a_complete_pair_fast_path(
     svc_root = tmp_path / "svc"; svc_root.mkdir()
     monkeypatch.setattr(s6_rc, "ENGAGEMENT_SOURCES_ROOT", str(svc_root))
     monkeypatch.setattr(s6_rc, "SERVICE_SCANDIR_ROOT", str(tmp_path / "noscan"))
-    # A CURRENT pair (streaming markers + the uid-drop exec) → not stale, so
-    # replay takes the fast path and re-plants nothing.
+    # A CURRENT pair (streaming markers + the uid-drop exec + the root phase's
+    # filtered PATH, #1248) → not stale, so replay takes the fast path and
+    # re-plants nothing.
     s6_rc.write_service_dir(
         svc_root=str(svc_root), engagement_id="keep1",
         run_script=(
             "#!/command/with-contenv bash\nset -e\n"
+            "PATH=$_casa_root_path\n"
             'printf \'{"casa_control": "spawn"}\\n\'\n'
             "exec setpriv --reuid 200001 --regid 200001 --clear-groups"
             " --bounding-set -all -- claude --print --output-format stream-json\n"
@@ -3291,6 +3293,77 @@ async def test_exposed_credential_refuses_a_complete_pair_fast_path(
         "still world-readable")
     assert reg2.get("keep1").origin["error_kind"] == (
         "refuse_private_state_exposed")
+
+
+@pytest.mark.parametrize("trusted_setpriv", [True, False])
+async def test_boot_setpriv_gate_ignores_a_setpriv_only_in_the_tools_dir(
+    monkeypatch, tmp_path, trusted_setpriv,
+):
+    """#1248: the boot gate resolves setpriv the way the run script will — on
+    the PATH without the plugin tools directory. A ``setpriv`` published only
+    there must refuse every resume; with one on the image PATH as well (the
+    positive control) the same complete, current pair reaches start_service.
+    Real executables, real ``shutil.which``: no lookup is mocked."""
+    import stat as _stat
+    from casa_core import replay_undergoing_engagements
+    from drivers import s6_rc
+    from drivers.workspace import render_log_run_script, render_run_script
+
+    tools, trusted = tmp_path / "tools", tmp_path / "trusted"
+    for d in (tools, trusted):
+        d.mkdir()
+    for d in ([tools, trusted] if trusted_setpriv else [tools]):
+        sp = d / "setpriv"
+        sp.write_text("#!/bin/sh\nexit 0\n")
+        sp.chmod(sp.stat().st_mode | _stat.S_IXUSR | _stat.S_IXGRP | _stat.S_IXOTH)
+    monkeypatch.setattr(s6_rc, "PLUGIN_TOOLS_BIN", str(tools))
+    monkeypatch.setenv("PATH", f"{tools}:{trusted}")
+
+    svc_root = tmp_path / "svc"; svc_root.mkdir()
+    monkeypatch.setattr(s6_rc, "ENGAGEMENT_SOURCES_ROOT", str(svc_root))
+    monkeypatch.setattr(s6_rc, "SERVICE_SCANDIR_ROOT", str(tmp_path / "noscan"))
+    s6_rc.write_service_dir(
+        svc_root=str(svc_root), engagement_id="keep1",
+        run_script=render_run_script(
+            engagement_id="keep1", permission_mode="acceptEdits",
+            extra_dirs=[], plugin_dirs=[], uid=200001, gid=200001),
+        depends_on=["init-setup-configs"],
+        log_run_script=render_log_run_script(engagement_id="keep1"))
+    assert not s6_rc.run_script_is_stale(
+        svc_root=str(svc_root), engagement_id="keep1")
+
+    monkeypatch.setattr(s6_rc, "_compile_and_update_locked", AsyncMock())
+    started: list[str] = []
+    async def fake_start(*, engagement_id): started.append(engagement_id)
+    monkeypatch.setattr(s6_rc, "start_service", fake_start)
+    write_ids: list[str] = []
+    real_write = s6_rc.write_service_dir
+    monkeypatch.setattr(
+        s6_rc, "write_service_dir",
+        lambda **kw: (write_ids.append(kw["engagement_id"]), real_write(**kw)))
+    async def fake_down(*, engagement_id, **kw): return True
+    monkeypatch.setattr(s6_rc, "ensure_service_down", fake_down)
+    monkeypatch.setattr("casa_core.owner_uid_or_none", lambda uid: None)
+    _point_private_state_at(tmp_path, monkeypatch)
+
+    reg = await _make_registry([_allocated_rec("keep1")])
+    driver = _boot_driver()
+    spawned: list[str] = []
+    driver._spawn_background_tasks = lambda r, **kw: spawned.append(r.id)
+    ws_root = tmp_path / "eng"; (ws_root / "keep1").mkdir(parents=True)
+
+    await replay_undergoing_engagements(
+        registry=reg, driver=driver, executor_registry=_exec_reg(),
+        engagements_root=str(ws_root))
+
+    if trusted_setpriv:
+        assert started == ["keep1"], (
+            "positive control: the fixture never reaches start_service, so the "
+            "refusal case would prove nothing")
+        return
+    assert (started, write_ids, spawned) == ([], [], [])
+    assert reg.get("keep1").status == "error"
+    assert reg.get("keep1").origin["error_kind"] == "refuse_uid_drop_failed"
 
 
 async def test_healthy_modes_do_not_refuse_resumes(monkeypatch, tmp_path):
