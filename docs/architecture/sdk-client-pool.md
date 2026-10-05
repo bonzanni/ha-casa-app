@@ -118,7 +118,7 @@ call's live entries with its own window rather than cutting them early. What the
 cut itself waits for is unchanged: a client's disconnect is awaited, and a closer already
 inside its disconnect is joined rather than skipped. What that force-close can reach when
 the turn holding the lock is hosting an engagement launch is in
-[`architecture/engagements.md`](engagements.md).
+[`architecture/engagement-turn-outcomes.md`](engagement-turn-outcomes.md).
 
 A client the pool has opened is recorded before it exists. The replacement a turn
 builds goes into the entry map — replacing the entry that turn was serialized

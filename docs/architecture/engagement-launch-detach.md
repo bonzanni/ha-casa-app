@@ -12,7 +12,7 @@ How an `in_casa` engagement's launch turn is separated from the tool call that l
 the two-call launch (open the client, then hand the turn to an anchored owner), what that
 owner does with every outcome of the turn, how the graceful stop drains it, and the one
 envelope every engagement outcome travels in. What a launch turn must leave behind and how
-its death is reported are in [`engagements.md`](engagements.md) (INV-ENG-011); which
+its death is reported are in [`engagement-turn-outcomes.md`](engagement-turn-outcomes.md) (INV-ENG-011); which
 launch-failure arms answer the caller rather than the topic is in
 [`engagement-failure-and-restart.md`](engagement-failure-and-restart.md); the durable
 obligation to tell the engager is in

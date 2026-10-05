@@ -50,9 +50,10 @@ cancellation arriving after the durable commit cannot leave a terminal record be
 permanently open topic. The caller is told its own named fault on all three outcomes, because
 that fault is true of this launch whoever won the record.
 
-The behaviour here is also measured against three invariants stated in
-[`architecture/engagements.md`](engagements.md): INV-ENG-011, which keeps a launch that ended
-without a terminal artifact on the launch-death path; INV-ENG-014, which says a rollback that
+The behaviour here is also measured against three invariants: INV-ENG-011, stated in
+[`architecture/engagement-turn-outcomes.md`](engagement-turn-outcomes.md), which keeps a launch that ended
+without a terminal artifact on the launch-death path; and two stated in
+[`architecture/engagements.md`](engagements.md): INV-ENG-014, which says a rollback that
 has been entered attempts every removal it was entered to run; and INV-ENG-015, which says
 which removals a stop-caused abort is entered to run, and what it records instead of a
 cancelled tool call. The containment consequence of a removal that does not happen — and of
