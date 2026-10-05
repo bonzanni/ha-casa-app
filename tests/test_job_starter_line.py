@@ -36,7 +36,6 @@ except ImportError:
     from test_start_job import DECL, runtime  # noqa: F401
     from test_start_job import Client as LaunchClient
 
-pytestmark = pytest.mark.asyncio
 
 ANSWER_KEY = "_answered_by_operator"
 FORBIDDEN_ON_CONTINUATION = {"user_id", "_operator_turn", "trusted_user_origin",
