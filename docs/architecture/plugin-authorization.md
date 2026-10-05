@@ -182,8 +182,8 @@ keyboard is what it showed (INV-ENG-011,
 
 What it does not cover: a synchronous wait that degraded to pending and an async delegation
 (the child's later decision reaches the resident by #1049's note path), and a delegate result
-too large for the CLI, which replaces it with a pointer to a saved file — no delegation id is
-read there and the resident's words are delivered. The deny strings are
+too large for the CLI, which rewrites it before the turn reads it — no delegation id is
+read there and the resident's words are delivered (#1274). The deny strings are
 unchanged. The fallback prompts no longer offer a sentence to write after the call; the
 compiled bundle a resident is served never carried one.
 

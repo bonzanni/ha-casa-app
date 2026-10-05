@@ -72,7 +72,9 @@ before any line is added, so a silent turn is never turned into a visible line. 
 withholds words in exactly two ruled cases, both scope properties in
 [`output-scope-properties.md`](output-scope-properties.md): the #1075 closing silence, and
 (#1252) the words written after a protected call that is waiting on the operator's approval,
-on a resident's DM, button or setup turn and on a specialist desk turn.
+on a resident's DM, button or setup turn and on a specialist desk turn — on a resident's turn
+also after a synchronous delegate whose specialist left such a call waiting (#1207). An
+engagement or plugin-job topic withholds the same words in its driver, not in admission.
 
 **Evidence is the runtime's own call, not an inference from the model's text.**
 `hooks.read_evidence_matchers(role)` adds `PostToolUse` and `PostToolUseFailure` matchers on
