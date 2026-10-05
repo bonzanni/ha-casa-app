@@ -256,7 +256,8 @@ class _Turn:
                 _Hook(_run_handler),
                 UserMessage(content=[block])]
 
-    async def run(self, resident: list, *, extra=(), before=None) -> None:
+    async def run(self, resident: list, *, extra=(), before=None,
+                  retries=()) -> None:
         import verdict_broker
         tools = tools_mod()
         registry = MagicMock()
@@ -266,7 +267,9 @@ class _Turn:
                          bus=MagicMock(), specialist_registry=registry,
                          mcp_registry=MagicMock())
         cfg = _specialist_cfg(SPECIALIST)
-        self.factory = _ConnectedFactory([resident])
+        # A retried attempt cold-connects a fresh client: attempt N runs
+        # script N (``retries`` are the scripts of attempts 2, 3, ...).
+        self.factory = _ConnectedFactory([resident, *retries])
         _Child.queue = []
         try:
             with ExitStack() as stack:
@@ -664,3 +667,239 @@ async def test_a_warm_clients_second_turn_is_cut_on_its_own_scope(tmp_path):
     assert len(turn.factory.clients[0].queries) == 2
     assert len(turn.channel.posts) == 1
     assert turn.channel.final_texts() == ["Hello.", "BEFORE"]
+
+
+# ---------------------------------------------------------------------------
+# #1274: a delegate result the fold cannot read. The bundled CLI rewrites an
+# oversized MCP result before the turn reads it (stage-1 persist or
+# truncation, stage-2 ``<persisted-output>``), and an aborted call's result is
+# its interruption text; none of them names the delegation id at its top
+# level. The child's outcome is still on the turn's scope, copied there before
+# the handler returned. Red case specified by **astra** (drive redcase round,
+# MODE: SPECIFY, against ``759be5f06746d6c3803971ae5a3e86817808f466``).
+# ---------------------------------------------------------------------------
+
+from claude_agent_sdk import CLIConnectionError  # noqa: E402
+
+from agent import _delegation_id_of  # noqa: E402
+from output_boundary import current_turn_scope  # noqa: E402
+
+
+def _x0t(content):
+    n = len(content[0]["text"])
+    return [{"type": "text", "text": (
+        f"Error: result ({n} characters) exceeds maximum allowed tokens. "
+        "Output has been saved to /data/tool-results/mcp-x.json.\nFormat: JSON")}]
+
+
+def _truncate(content):
+    return [{"type": "text", "text": content[0]["text"][:100]},
+            {"type": "text",
+             "text": "[OUTPUT TRUNCATED - exceeded 25000 token limit]"}]
+
+
+def _persisted(content):
+    pretty = json.dumps(content, indent=2)
+    return [{"type": "text", "text": (
+        "<persisted-output>\nOutput too large (120 KB). Full output saved to: "
+        "/data/tool-results/x.txt\n\nPreview (first 2KB):\n"
+        + pretty[:2000] + "\n...\n</persisted-output>")}]
+
+
+def _interrupted(content):
+    return [{"type": "text",
+             "text": "The tool call was interrupted before a result was received"}]
+
+
+REWRITES = {"x0t": _x0t, "truncate": _truncate, "persisted": _persisted,
+            "interrupted": _interrupted}
+
+
+def _unreadable(steps: list, rewrite) -> list:
+    """``_Turn.delegate``'s steps with the resident's result block rewritten
+    after the real handler returned — what the CLI does before the SDK yields
+    it. ``turn.results`` keeps the handler's real payload."""
+    call, handler, result = steps
+    (block,) = result.content
+
+    async def _then_rewrite():
+        await handler.fn()
+        block.content = rewrite(block.content)
+        assert _delegation_id_of(block) is None
+
+    return [call, _Hook(_then_rewrite), result]
+
+
+class _Seen:
+    """What the turn's scope held at chosen points of the resident's stream."""
+
+    def __init__(self) -> None:
+        self.records: list[dict] = []
+        self.scopes: list = []
+
+    def step(self) -> _Hook:
+        async def _look():
+            scope = current_turn_scope()
+            self.scopes.append(scope)
+            self.records.append(dict(scope.delegated_approvals))
+        return _Hook(_look)
+
+
+@pytest.mark.parametrize("prefix", ["BEFORE", ""])
+@pytest.mark.parametrize("shape", list(REWRITES))
+async def test_unreadable_sync_delegate_waiting_child_keeps_only_prefix(
+        tmp_path, shape, prefix):
+    turn = _Turn(tmp_path)
+    seen = _Seen()
+    call, handler, result = _unreadable(
+        turn.delegate("d-1", _child_denied(turn=turn)), REWRITES[shape])
+    resident = (([_text(prefix)] if prefix else [])
+                + [call, handler, seen.step(), result, _text(TAIL)])
+    await turn.run(resident)
+    assert len(turn.factory.clients) == 1
+    assert [len(c.queries) for c in turn.factory.clients] == [1]
+    assert len(turn.results) == 1
+    assert turn.results[0]["text"] == "CHILD-BEFORE\n\nCHILD-AFTER"
+    assert seen.records == [{turn.results[0]["delegation_id"]: (("pending", _key()),)}]
+    assert [_deny_reason(a) for a in turn.answers] == [_DENY_POSTED]
+    assert len(turn.channel.posts) == 1
+    expected = [prefix] if prefix else []
+    assert turn.channel.tokens == expected
+    assert turn.channel.final_texts() == expected
+    assert turn.channel.turn_finished.await_count == (0 if prefix else 1)
+    if not prefix:
+        assert turn.channel.send.await_count == 0
+        assert turn.channel.send_response.await_count == 0
+
+
+@pytest.mark.parametrize("order", ["d1-first", "d2-first"])
+async def test_unreadable_waiting_sibling_cuts_in_both_result_orders(
+        tmp_path, order):
+    """Two delegates of one response: d-1's child left the ONLY waiting grant
+    and its result is unreadable; d-2's child left nothing and its result is
+    readable. Their results fold at one index, in either order."""
+    turn = _Turn(tmp_path)
+    seen = _Seen()
+    c1, h1, r1 = _unreadable(turn.delegate("d-1", _child_denied(turn=turn)), _x0t)
+    c2, h2, r2 = turn.delegate("d-2", [_text("CHILD-ONLY")])
+    both = AssistantMessage(content=[*c1.content, *c2.content], model="sonnet")
+    blocks = [*r1.content, *r2.content]
+    if order == "d2-first":
+        blocks.reverse()
+    await turn.run([_text("BEFORE"), both, h1, h2, seen.step(),
+                    UserMessage(content=blocks), _text(TAIL)])
+    assert len(turn.factory.clients) == 1
+    assert len(turn.results) == 2
+    assert [_deny_reason(a) for a in turn.answers] == [_DENY_POSTED]
+    assert len(turn.channel.posts) == 1
+    assert seen.records == [{turn.results[0]["delegation_id"]: (("pending", _key()),)}]
+    assert turn.channel.tokens == ["BEFORE"]
+    assert turn.channel.final_texts() == ["BEFORE"]
+    assert turn.channel.turn_finished.await_count == 0
+
+
+# --- #1274 regression pins: what the fallback must not feed -----------------
+
+@pytest.mark.parametrize("shape", list(REWRITES))
+async def test_unreadable_delegate_without_waiting_child_keeps_tail(tmp_path, shape):
+    """Nothing waiting, nothing cut: an unreadable result alone is no evidence."""
+    turn = _Turn(tmp_path)
+    seen = _Seen()
+    call, handler, result = _unreadable(
+        turn.delegate("d-1", [_text("CHILD-ONLY")]), REWRITES[shape])
+    await turn.run([_text("BEFORE"), call, handler, seen.step(), result,
+                    _text(TAIL)])
+    assert turn.answers == []
+    assert len(turn.channel.posts) == 0
+    assert seen.records == [{}]
+    assert turn.channel.tokens == ["BEFORE", "BEFORE\n\n" + TAIL]
+    assert turn.channel.final_texts() == ["BEFORE\n\n" + TAIL]
+
+
+async def test_failed_attempt_record_is_not_fed_at_later_unreadable_delegate_result(
+        tmp_path):
+    """The scope's records are per TURN and survive a retry; the fold's state is
+    per attempt. A record attempt 1 left (its result never folded) is not
+    evidence about attempt 2's d-2, whose child left nothing waiting."""
+    turn = _Turn(tmp_path)
+    seen = _Seen()
+    c1, h1, _r1 = turn.delegate("d-1", _child_denied(turn=turn))
+    attempt_1 = [_text("A1"), c1, h1, seen.step(), CLIConnectionError("reset")]
+    c2, h2, r2 = _unreadable(turn.delegate("d-2", [_text("CHILD-ONLY")]), _x0t)
+    attempt_2 = [_text("BEFORE"), c2, h2, seen.step(), r2, _text(TAIL)]
+    await turn.run(attempt_1, retries=[attempt_2])
+    assert len(turn.factory.clients) == 2
+    assert [len(c.queries) for c in turn.factory.clients] == [1, 1]
+    assert len(turn.results) == 2
+    assert [_deny_reason(a) for a in turn.answers] == [_DENY_POSTED]
+    assert len(turn.channel.posts) == 1
+    assert seen.scopes[0] is seen.scopes[1]
+    d1 = turn.results[0]["delegation_id"]
+    assert seen.records == [{d1: (("pending", _key()),)}] * 2
+    assert turn.channel.tokens == ["A1", "BEFORE", "BEFORE\n\n" + TAIL]
+    assert turn.channel.final_texts() == ["BEFORE\n\n" + TAIL]
+    # Never fed, never popped: the dead attempt's record is still there.
+    assert seen.scopes[0].delegated_approvals == {d1: (("pending", _key()),)}
+
+
+async def test_later_readable_delegate_consume_releases_unreadable_cut(tmp_path):
+    """The fallback feeds consumes as well as pendings: a later readable
+    delegate whose child spent the same grant releases the cut."""
+    turn = _Turn(tmp_path)
+
+    async def _approve():
+        turn.grants.mint(_key())
+
+    resident = ([_text("BEFORE")]
+                + _unreadable(turn.delegate("d-1", _child_denied(turn=turn)), _x0t)
+                + [_text("BETWEEN"), _Hook(_approve)]
+                + turn.delegate("d-2", [_call("ok-1"), turn.ask("ok-1"),
+                                        _result("ok-1", error=False),
+                                        _text("Done.")])
+                + [_text(TAIL)])
+    await turn.run(resident)
+    assert [_deny_reason(a) if a else "allow" for a in turn.answers] == [
+        _DENY_POSTED, "allow"]
+    assert len(turn.channel.posts) == 1
+    assert turn.channel.tokens == ["BEFORE", "BEFORE\n\nBETWEEN\n\n" + TAIL]
+    assert turn.channel.final_texts() == ["BEFORE\n\nBETWEEN\n\n" + TAIL]
+
+
+def _bare_call(call_id: str, name: str) -> AssistantMessage:
+    return AssistantMessage(content=[ToolUseBlock(id=call_id, name=name, input={})],
+                            model="sonnet")
+
+
+async def test_unreadable_non_delegate_result_preserves_delegate_records(tmp_path):
+    """Only Casa's delegate result can stand for a delegation; another tool's
+    unreadable result feeds and pops nothing."""
+    turn = _Turn(tmp_path)
+    seen = _Seen()
+    c1, h1, _r1 = turn.delegate("d-1", _child_denied(turn=turn))
+    other = ToolResultBlock(tool_use_id="read-1", content=_x0t(
+        [{"type": "text", "text": "x" * 10}]), is_error=False)
+    await turn.run([_text("BEFORE"), c1, h1, _bare_call("read-1", "Read"),
+                    UserMessage(content=[other]), seen.step(), _text(TAIL)])
+    d1 = turn.results[0]["delegation_id"]
+    assert seen.records == [{d1: (("pending", _key()),)}]
+    assert len(turn.channel.posts) == 1
+    assert turn.channel.tokens == ["BEFORE", "BEFORE\n\n" + TAIL]
+    assert turn.channel.final_texts() == ["BEFORE\n\n" + TAIL]
+
+
+async def test_readable_unknown_delegate_id_preserves_sibling_record(tmp_path):
+    """A delegate result that names an id is tied by that id only, even when no
+    record carries it: it never falls back to another delegation's record."""
+    turn = _Turn(tmp_path)
+    seen = _Seen()
+    c1, h1, _r1 = turn.delegate("d-1", _child_denied(turn=turn))
+    unknown = ToolResultBlock(tool_use_id="d-2", content=[{"type": "text", "text":
+        json.dumps({"status": "ok", "delegation_id": "unknown"})}], is_error=False)
+    assert _delegation_id_of(unknown) == "unknown"
+    await turn.run([_text("BEFORE"), c1, h1, _bare_call("d-2", DELEGATE),
+                    UserMessage(content=[unknown]), seen.step(), _text(TAIL)])
+    d1 = turn.results[0]["delegation_id"]
+    assert seen.records == [{d1: (("pending", _key()),)}]
+    assert len(turn.channel.posts) == 1
+    assert turn.channel.tokens == ["BEFORE", "BEFORE\n\n" + TAIL]
+    assert turn.channel.final_texts() == ["BEFORE\n\n" + TAIL]

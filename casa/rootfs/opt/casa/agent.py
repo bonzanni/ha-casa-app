@@ -3465,6 +3465,12 @@ class Agent:
             # #1252: where this attempt's operator-visible words stop because
             # a protected call is waiting on the operator's approval.
             "approval_cut": ApprovalCut(),
+            # #1274: the delegations whose records were already on the
+            # per-turn scope when this attempt began (an EARLIER attempt of
+            # this turn left them); the fallback below never feeds them, since
+            # no result of this attempt can stand for them.
+            "prior_delegations": frozenset(
+                scope.delegated_approvals if scope is not None else ()),
         }
 
         def _cum() -> str:
@@ -3613,12 +3619,27 @@ class Agent:
                                 # the protected one; its child's outcome was
                                 # copied onto this scope by delegation id
                                 # before the handler returned. Consumes first,
-                                # each record fed to the same cut.
+                                # each record fed to the same cut. #1274: at
+                                # any delegate result the fold cannot read (a
+                                # result the CLI rewrote, an interrupted
+                                # call's text), every record not already on
+                                # the scope when this attempt began is fed
+                                # instead — by the routes measured, those still
+                                # unpopped belong to this call or to a sibling
+                                # of the same response, whose result folds at
+                                # this same index.
                                 _did = (_delegation_id_of(block)
                                         if name == _DELEGATE_TOOL else None)
-                                for _i, _rec in enumerate(
-                                        scope.delegated_approvals.pop(_did, ())
-                                        if _did else ()):
+                                if _did:
+                                    _recs = scope.delegated_approvals.pop(_did, ())
+                                elif name == _DELEGATE_TOOL:
+                                    _recs = tuple(
+                                        _r for _k in list(scope.delegated_approvals)
+                                        if _k not in state["prior_delegations"]
+                                        for _r in scope.delegated_approvals.pop(_k))
+                                else:
+                                    _recs = ()
+                                for _i, _rec in enumerate(_recs):
                                     _sub = f"{getattr(block, 'tool_use_id', '')}#{_i}"
                                     state["approval_cut"].observe(
                                         _sub, {_sub: _rec}, len(state["messages"]))
