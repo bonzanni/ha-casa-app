@@ -711,34 +711,72 @@ class TestIngress:
 
 
 try:
-    from tests.test_voice_context_sanitize import voice_app  # noqa: F401
+    from tests.test_voice_context_sanitize import _CapturingAgent, _DummyMemory, _FakeAgentConfig
+    from tests.voice_auth_helpers import VOICE_TEST_SECRET, voice_signature
 except ImportError:
-    from test_voice_context_sanitize import voice_app  # noqa: F401
+    from test_voice_context_sanitize import _CapturingAgent, _DummyMemory, _FakeAgentConfig
+    from voice_auth_helpers import VOICE_TEST_SECRET, voice_signature
+
+
+@pytest.fixture
+async def voice():
+    """The voice channel and a capturing agent on a real bus, with no app
+    server: the handlers are called in process, so no socket is opened."""
+    import asyncio
+    from bus import MessageBus
+    from channels.voice.channel import VoiceChannel
+    bus = MessageBus()
+    captor = _CapturingAgent(bus, "butler")
+    bus.register("butler", captor.handle_message)
+    loop_task = asyncio.create_task(bus.run_agent_loop("butler"))
+    channel = VoiceChannel(
+        bus=bus, default_agent="butler", webhook_secret=VOICE_TEST_SECRET,
+        sse_path="/api/converse", ws_path="/api/converse/ws",
+        agent_configs={"butler": _FakeAgentConfig()}, memory=_DummyMemory(), idle_timeout=300)
+    yield captor, channel
+    loop_task.cancel()
 
 
 class TestVoiceIngress:
-    async def test_sse_strips_both_markers(self, voice_app):
-        client, captor, _channel = voice_app
-        resp = await client.post("/api/converse", json={
-            "prompt": "hi", "agent_role": "butler", "context": dict(TestIngress.FORGED)})
-        await resp.read()
+    async def test_sse_strips_both_markers(self, voice):
+        import asyncio
+        from unittest import mock
+        from aiohttp import streams
+        from aiohttp.test_utils import make_mocked_request
+        captor, channel = voice
+        body = json.dumps({"prompt": "hi", "agent_role": "butler",
+                           "context": dict(TestIngress.FORGED)}).encode()
+        payload = streams.StreamReader(mock.Mock(_reading_paused=False), 2 ** 16,
+                                       loop=asyncio.get_running_loop())
+        payload.feed_data(body)
+        payload.feed_eof()
+        request = make_mocked_request(
+            "POST", "/api/converse", payload=payload,
+            headers={"Content-Type": "application/json",
+                     "X-Webhook-Signature": voice_signature(body)})
+        request["cid"] = "c-sse"          # as the cid middleware stamps it
+        await channel._sse_handler(request)
         assert len(captor.captured) == 1
         ctx = captor.captured[0]
         assert ctx["note"] == "kept"
         assert "_operator_turn" not in ctx and ANSWER_KEY not in ctx
 
-    async def test_ws_strips_both_markers(self, voice_app):
-        from aiohttp import WSMsgType
-        client, captor, _channel = voice_app
-        async with client.ws_connect("/api/converse/ws") as ws:
-            await ws.send_json({"type": "utterance", "utterance_id": "u1", "text": "hi",
-                                "agent_role": "butler", "scope_id": "s",
-                                "context": dict(TestIngress.FORGED)})
-            async for frame in ws:
-                if frame.type != WSMsgType.TEXT:
-                    break
-                if json.loads(frame.data)["type"] in ("done", "error"):
-                    break
+    async def test_ws_strips_both_markers(self, voice):
+        import asyncio
+        captor, channel = voice
+
+        class Connection:
+            voice_route_id = None
+            voice_route_capabilities = frozenset()
+            voice_job_control_id = None
+
+            async def send_json(self, frame):
+                return None
+
+        await channel._run_ws_utterance(
+            Connection(), {"text": "hi", "agent_role": "butler", "scope_id": "s",
+                           "context": dict(TestIngress.FORGED)},
+            "u1", asyncio.get_running_loop().time() + 20.0)
         assert len(captor.captured) == 1
         ctx = captor.captured[0]
         assert ctx["note"] == "kept"
