@@ -313,3 +313,35 @@ async def test_p7_the_library_carries_the_root_this_upgrade_replaced(world):
     assert b != c
     assert len(world.raised) == 1
     assert getattr(world.raised[0], "replaced_root", "<absent>") == b
+
+
+@pytest.mark.parametrize("carrier", ["none", "absent"])
+@pytest.mark.parametrize("live", ["a", "no_agent"])
+@pytest.mark.parametrize("restart", [False, True], ids=["rerun", "restart"])
+async def test_p8_no_carried_replaced_root_says_it_could_not_be_established(
+        world, carrier, live, restart, monkeypatch):
+    """P-8 (Astra, red-case specify): the real library-kept failure with its
+    carried replaced root cleared (None) or stripped (attribute absent) before
+    the handler sees it — no evidence of what was replaced, so neither the ruled
+    text nor "not running the new version", whatever the live root."""
+    upgrade = si.upgrade_specialist
+
+    def strip(**kw):
+        try:
+            return upgrade(**kw)
+        except si.SpecialistInstallError as exc:
+            if carrier == "none":
+                exc.replaced_root = None
+            elif hasattr(exc, "replaced_root"):
+                del exc.replaced_root
+            raise
+    monkeypatch.setattr(si, "upgrade_specialist", strip)
+    if live == "no_agent":
+        dict.pop(world.h.runtime.agents, "mtg")
+    world.swap_fails(True)
+    world.cleanup_fails(restart)
+    out = await world.call(world.fx.insp2, {"j": "plain-j"}, ["k"])
+    assert out["kind"] == "upgrade_kept_new_version", out
+    assert world.root() != world.a
+    assert world.h.runtime.agents.writes == []
+    _assert_told(out, UNKNOWN, restart=restart)

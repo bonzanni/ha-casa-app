@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -148,7 +149,11 @@ def test_rc20_no_surface_promises_immediate_activation_and_the_recipe_has_the_ke
     # written, and quotes the ruled sentence only inside that condition.
     own = step.split('kind: "upgrade_kept_new_version"', 1)[1].split("key this on the `kind`", 1)[0]
     assert "`outcome`" in own and "as written" in own, own
-    at = [i for i in range(len(step)) if step.startswith(PREVIOUS, i)]
-    for i in at:
-        sentence = step[step.rfind(". ", 0, i) + 1:i]
-        assert "when casa found the replaced version running" in sentence, sentence
+    # Over the WHOLE recipe, whitespace-normalised, so a quotation in another
+    # paragraph or wrapped across lines is counted too (Astra, red-case specify).
+    text = " ".join(upgrade_md.lower().split())
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    total = text.count(PREVIOUS)
+    conditioned = sum(s.count(PREVIOUS) for s in sentences
+                      if "when casa found the replaced version running" in s)
+    assert total >= 1 and conditioned == total, (total, conditioned)
