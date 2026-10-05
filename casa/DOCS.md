@@ -477,8 +477,8 @@ opening “invoice.pdf”.* Opening any one of the listed files — or handing o
 for example to file it — clears it for the rest of the turn. With several files listed and
 none opened, the line counts them: *Casa: Ellen answered without opening any of the 3
 files Ellen listed.* A file you send to a specialist by replying to its post is that turn's
-own file, and the line names only it. Her own words are never held back or changed — the
-line is added, nothing is taken away. A reply about a file she neither listed nor tried to open carries no line;
+own file, and the line names only it. The line never holds back or changes her own words — it
+is added, nothing is taken away. A reply about a file she neither listed nor tried to open carries no line;
 that case is still down to her instructions.
 
 ## Voice pipeline

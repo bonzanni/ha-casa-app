@@ -182,11 +182,12 @@ The fold also keeps each text-bearing message apart (`state["messages"]`, beside
 `state["text"]`). `_process` publishes the winning attempt's tuple as
 `turn_report["reply_messages"]` and the number of attempts that ran as
 `turn_report["attempts"]`; a stale-resume re-run consumes no retry but is still an attempt.
-Its return value stays the joined text. Only a buffered turn's final-reply admission reads
-them, for the #1075 closing-silence rule (INV-OUT-006 in
-[`output-scope-properties.md`](output-scope-properties.md)); the stream and this hold are unchanged.
-The winning attempt's `turn_report["approval_cut"]` — how many messages came before a call
-still waiting on an approval — is read on any turn, for the #1252 rule there.
+Its return value stays the joined text. A buffered turn's final-reply admission reads them
+for the #1075 closing-silence rule (INV-OUT-006 in
+[`output-scope-properties.md`](output-scope-properties.md)), which leaves the stream and this
+hold unchanged. The winning attempt's `turn_report["approval_cut"]` — how many messages came
+before a call still waiting on an approval — is read with them on any turn, for the #1252 rule
+there, which also stops the stream at the cut (INV-TURN-009).
 
 **INV-TURN-012**: A conversation is resumed only while the structural surface of its system prompt — the delegates, background jobs and executors the agent can reach, and, for a role whose Home Assistant tools the facade publishes, the names of the tools last published — still digests to what the session was registered with. A surface that differs, or a session that never recorded one, starts a fresh session with the old one retained. The surface is rendered once per turn and the same render is what the resume decision gates on, what the prompt carries, the published tool servers the session connects with, and what the registration stores.
 

@@ -50,10 +50,12 @@ on the record too.
 
 Nothing is held or withheld: the model's words are never suppressed here
 (operator ruling, #1036) — beyond closing silence, whose one case that drops
-earlier words is the #1075 ruling above, and one more ruled case (#1252): on a
-turn whose protected call is waiting on the operator's approval, the words the
-model wrote after that call are withheld from the operator, while those written
-before it are kept (:class:`ApprovalCut`). Casa-composed text enters through
+earlier words is the #1075 ruling above, and one more ruled case (#1252): on an
+``Agent.handle_message`` turn or a specialist desk turn whose protected call is
+waiting on the operator's approval, the words the model wrote after that call
+are withheld from the operator, while those written before it are kept
+(:class:`ApprovalCut`). A synchronous delegation's answer, an engagement topic
+and a plugin background job still carry them. Casa-composed text enters through
 :func:`casa_text`.
 """
 from __future__ import annotations
