@@ -68,7 +68,11 @@ authored — a reminder's `output_note`, a delegation or engagement brief's laun
 re-registered on the turn that sends it so that turn's model cannot paraphrase it away; it
 is never discharged. The model's words are never suppressed or withheld by any of this; the
 `<silent/>` convention is judged inside final-reply admission, on the unannotated text and
-before any line is added, so a silent turn is never turned into a visible line.
+before any line is added, so a silent turn is never turned into a visible line. Admission
+withholds words in exactly two ruled cases, both scope properties in
+[`output-scope-properties.md`](output-scope-properties.md): the #1075 closing silence, and
+(#1252) the words written after a protected call that is waiting on the operator's approval,
+on a resident's DM, button or setup turn and on a specialist desk turn.
 
 **Evidence is the runtime's own call, not an inference from the model's text.**
 `hooks.read_evidence_matchers(role)` adds `PostToolUse` and `PostToolUseFailure` matchers on
@@ -208,7 +212,7 @@ their own message, before the overflow pages; the pages themselves go exactly as
 when the head landed — rich, with the plain fallback — so no page is re-split around a
 prefix and no destination is cut; with nothing to follow (a failed single-page edit) no
 line message goes out. If the line message itself fails it is logged and the pages still
-go (the model's words are never withheld; the pages keep their own send policies): the
+go (a failed line message withholds none of the model's words; the pages keep their own send policies): the
 operator then sees a reply starting at page 2 with no line, and the log names it. An
 `UNKNOWN` head — the edit may have applied with its acknowledgement lost — gets the line
 message too; a line shown twice costs less than claims shown with none.

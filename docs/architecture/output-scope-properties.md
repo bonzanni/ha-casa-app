@@ -2,7 +2,7 @@
 last_reviewed: 2026-10-04
 ---
 
-# Output scope properties: streaming, closing silence and the webhook destination
+# Output scope properties: streaming, closing silence, a pending approval and the webhook destination
 
 > Code is the source of truth. This file is a map; when it and the code disagree, the code wins.
 
@@ -11,7 +11,8 @@ last_reviewed: 2026-10-04
 What a turn's scope decides about the turn itself: whether it streams, whether its final
 reply is closing silence — including the operator's #1075 rule for a closing `<silent/>`
 after earlier text, and the facts admission records for the durable-announcement discharge
-— and where an untrusted webhook turn's output goes. How the scope is minted, how model text
+— which of its words the operator sees when a protected call is waiting on the operator's
+approval (the #1252 rule), and where an untrusted webhook turn's output goes. How the scope is minted, how model text
 is admitted and the read-before-describe disclosure are
 [`output-boundary.md`](output-boundary.md); the INV-TURN-009 stream hold is
 [`turn-loop.md`](turn-loop.md); a webhook trigger's `deliver` route is
@@ -28,7 +29,7 @@ one turn gets one answer wherever it is asked.
 ## Contracts & invariants
 
 
-**INV-OUT-006**: Whether a turn streams, whether its final reply is closing silence, and where an untrusted webhook turn's discrete send goes are properties of its scope — the first and third registered at mint from the message's own facts, the second intrinsic to final-reply admission: a scheduled turn or an event wake never receives a token callback, a final reply that strips to nothing but `<silent/>` sentinels is suppressed by admission while prose after a sentinel is delivered whole — except that when a scheduled turn's or an event wake's last text-bearing message strips to a `<silent/>` after earlier text, the reply is suppressed if the turn made at least one Casa send, every one confirmed delivered, every send call resolved without failure, and exactly one attempt ran with no retry, and is otherwise the earlier messages without the closing ones — and an untrusted webhook turn's `send_message` is bound to Telegram whatever channel it named, while its final reply is delivered only when its route declares `deliver: operator` or `operator_always`, and then on every output path only to the operator's Telegram with a fresh delivery context.
+**INV-OUT-006**: Whether a turn streams, whether its final reply is closing silence, and where an untrusted webhook turn's discrete send goes are properties of its scope — the first and third registered at mint from the message's own facts, the second intrinsic to final-reply admission: a scheduled turn or an event wake never receives a token callback, a final reply that strips to nothing but `<silent/>` sentinels is suppressed by admission while prose after a sentinel is delivered whole — except that when a scheduled turn's or an event wake's last text-bearing message strips to a `<silent/>` after earlier text, the reply is suppressed if the turn made at least one Casa send, every one confirmed delivered, every send call resolved without failure, and exactly one attempt ran with no retry, and is otherwise the earlier messages without the closing ones — and an untrusted webhook turn's `send_message` is bound to Telegram whatever channel it named, while its final reply is delivered only when its route declares `deliver: operator` or `operator_always`, and then on every output path only to the operator's Telegram with a fresh delivery context; and when the winning attempt folded the result of a call the authorization hook left waiting on the operator's approval, with no later result of a call that consumed the same grant, the final reply is only the text-bearing messages folded before that result, and is suppressed, not chosen, when they strip to silence.
 
 The three used to be inline checks — the two-clause callback condition and the sentinel
 gate in `handle_message`, the egress clamp in `send_message` — and are now `NoStream`
@@ -71,6 +72,34 @@ confirmed send is dropped. The verdict is taken at
 admission: a synchronous delegate that timed out and sends later belongs to its own
 completion notice.
 
+The second exception is the operator's ruling on #1252: on a turn whose protected call is
+waiting on the operator's approval, the operator sees the approval keyboard and nothing the
+model wrote after that call, while the words it wrote before the call stay. The
+authorization hook (`authz_grants.make_resident_authz_hook`) tells the turn's scope what it
+decided for each call, keyed by the call's `tool_use_id`, before it returns:
+`TurnScope.note_approval` records `pending` for a POSTED deny, and for a PENDING deny only
+once the reused challenge's keyboard post has settled as posted — the two that leave a
+keyboard up — and `consumed` when the call spent the operator's grant; every other
+deny records nothing, because without a keyboard the model's words are the operator's only
+explanation. The record is a scope field `for_child` does not pass on, and under an
+engagement the hook resolves a freshly minted scope that nothing reads. The record is read
+only when the call's result reaches the turn's consumer, in stream order (`ApprovalCut`):
+the SDK runs a hook in a task of its own, possibly before the consumer has folded the text
+written before the call, and the CLI writes a call's result only after its hooks returned,
+so a record is always there by the time its result arrives. From a `pending` result on, the
+stream hands nothing more to the token callback (INV-TURN-009); a later `consumed` result
+for the same grant — the operator approved and the model ran the call again — releases the
+words, and with another grant still pending the cut moves to that grant's deny. The cut is
+a count of text-bearing messages, kept per attempt; `_process` puts the winning attempt's
+on the report as `approval_cut`, beside `reply_messages`, which keeps every message. Admission
+reads the report, never the scope: it keeps the messages before the cut — suppressed, not
+chosen, when they strip to silence, so the turn ends with the channel's `turn_finished` and
+discharges no announcement — and a streamed message is re-edited to exactly that prefix. A
+specialist desk turn applies the same reading to its run ([`specialist-desk.md`](specialist-desk.md)).
+What it does not cover: a synchronous delegation's answer, an engagement topic and a plugin
+background job still carry the words written after the call, and the transcript and memory
+keep them on every turn.
+
 Two facts ride out of admission for the durable-announcement discharge (#1079,
 INV-JOB-010). A suppressed final reply says whether the silence was *chosen* —
 `Admitted.chosen_silence` is set in the same silence arm, on the same unannotated text, when
@@ -92,7 +121,13 @@ only by the #1075 rule, so the discharge's meaning is unchanged on every turn.
 ## Failure behavior
 
 **The turn report is absent.** A final reply admitted without the report `_process` fills is
-judged by the whole-text sentinel rule alone; the #1075 rule never acts on it.
+judged by the whole-text sentinel rule alone; neither the #1075 rule nor the #1252 rule acts
+on it.
+
+**The report's cut does not belong to this text.** When `reply_messages` does not join to
+exactly the text being admitted, or the cut lies outside them, the #1252 rule withholds the
+whole reply and logs a warning; the stream already stopped at the cut, so the operator keeps
+what it showed.
 
 ## Extension points
 
@@ -115,11 +150,15 @@ predicate rather than re-derived inline where it is acted on; the grep test in
 - `casa/rootfs/opt/casa/output_boundary.py::OperatorSend`
 - `casa/rootfs/opt/casa/output_boundary.py::SendAttempt`
 - `casa/rootfs/opt/casa/output_boundary.py::TurnScope.closing_silence_earned`
+- `casa/rootfs/opt/casa/output_boundary.py::ApprovalCut`
+- `casa/rootfs/opt/casa/output_boundary.py::TurnScope.note_approval`
 
 **Tests**
 - `tests/test_output_boundary_relocation.py`
 - `tests/test_buffered_closing_silence.py`
 - `tests/test_buffered_closing_silence_pins.py`
+- `tests/test_pending_approval_output.py`
+- `tests/test_pending_approval_pins.py`
 
 **Related**
 - [`architecture/output-boundary.md`](../architecture/output-boundary.md)

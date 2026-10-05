@@ -1436,6 +1436,23 @@ def _live_operator_identity() -> "tuple[int, int] | None":
     return trigger_consent.operator_identity(channel)
 
 
+def _note_approval(tool_use_id: "str | None", kind: str, key: GrantKey) -> None:
+    """#1252: tell the running turn's scope what the hook decided for this
+    call — ``"pending"`` when its deny leaves an approval keyboard up,
+    ``"consumed"`` when it spent the operator's grant. Written before the hook
+    returns, so the record exists before the CLI writes the call's result.
+    The scope is resolved as the challenge resolves it; under an engagement
+    that is a fresh scope nothing reads. Never raises: the hook's answer must
+    not depend on it."""
+    try:
+        from output_boundary import resolve_scope
+        scope = resolve_scope()
+        if scope is not None:
+            scope.note_approval(tool_use_id, kind, key)
+    except Exception:  # noqa: BLE001 — a record is never worth a changed answer
+        logger.debug("approval record skipped (kind=%s)", kind, exc_info=True)
+
+
 def make_resident_authz_hook(
     role: str,
     protected: dict[str, dict],
@@ -1526,6 +1543,7 @@ def make_resident_authz_hook(
 
                 # Single-use consume (provenance already gated above).
                 if deps.grants.consume(key):
+                    _note_approval(tool_use_id, "consumed", key)
                     return {}  # allow — operator freshly approved THIS call.
 
                 # No grant — post (or reuse) a confirmation challenge and deny.
@@ -1551,7 +1569,16 @@ def make_resident_authz_hook(
                         "_delegation_id") or "")
                 note_delegation_awaiting_approval(delegation_id)
                 if handle.created is False:
-                    return _deny(_DENY_PENDING)  # identical challenge already up.
+                    # Identical challenge already registered. Registration is
+                    # not delivery: its post may still be in flight and may
+                    # fail. #1252's cut is recorded only once that post has
+                    # settled as posted — the same wait the POSTED path below
+                    # already makes, never longer (shielded: this hook's
+                    # cancellation never cancels the owner's post). The answer
+                    # to the model is unchanged.
+                    if await handle.settled_post() == "posted":
+                        _note_approval(tool_use_id, "pending", key)
+                    return _deny(_DENY_PENDING)
 
                 # settled_post awaits the coordinator-owned setup driver
                 # (shielded); deny latency ≈ one Telegram post RTT.
@@ -1565,6 +1592,7 @@ def make_resident_authz_hook(
                     if not handle.answered():
                         forget_delegation_awaiting_approval(delegation_id)
                     return _deny(_DENY_INACTIVE)
+                _note_approval(tool_use_id, "pending", key)
                 return _deny(_DENY_POSTED)
 
             # 1./2./3. Identity — the ONE derivation shared with the result

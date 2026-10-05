@@ -10,12 +10,14 @@
     - casa/rootfs/opt/casa/authz_grants.py::GrantStore
     - casa/rootfs/opt/casa/authz_grants.py::ChallengeCoordinator.cancel_matching
     - casa/rootfs/opt/casa/authz_grants.py::note_delegation_awaiting_approval
+    - casa/rootfs/opt/casa/authz_grants.py::_note_approval
     - casa/rootfs/opt/casa/specialist_limits.py::SpecialistLimiter.wait_until_free
     - casa/rootfs/opt/casa/tools.py::wait_for_delegation_slot
   tests:
     - tests/test_authz_grants.py
     - tests/test_authz_hook.py
     - tests/test_approval_outlives_raiser.py
+    - tests/test_pending_approval_pins.py
   related: [architecture/plugins.md, architecture/engagement-finalization.md, architecture/scheduled-asks.md, architecture/delegation-announcements.md]
   defines_invariants: [INV-PLUG-004, INV-PLUG-005, INV-PLUG-007, INV-PLUG-033]
   invariant_tests:

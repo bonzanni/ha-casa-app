@@ -159,7 +159,7 @@ engagement turn's so the per-chat serial lock is released at once and a stop can
 The map's retention is the invariant's edge: a restart or eviction makes the reply a plain
 message, by design.
 
-**INV-DESK-002**: A desk turn's reply reaches the operator only as an admitted, labelled, paginated post of the specialist's own completed and bounded text, whose messages join the post map; a turn that produces no proven operator-visible outcome, or whose reply is not proven, ends in one labelled Casa notice; the chat's resident learns of the turn only through a body-free line at its next turn, and no resident model turn is spent on it.
+**INV-DESK-002**: A desk turn's reply reaches the operator only as an admitted, labelled, paginated post of the specialist's own completed and bounded text — of a run that ended with a protected call waiting on the operator's approval, only the text written before that call — whose messages join the post map; a turn that produces no proven operator-visible outcome, or whose reply is not proven, ends in one labelled Casa notice; the chat's resident learns of the turn only through a body-free line at its next turn, and no resident model turn is spent on it.
 
 The desk turn's origin is the DM's own context with the three fields the provenance
 classifier needs, the resident's role, the specialist as the executing role, depth one, a
@@ -199,6 +199,16 @@ outcome with no S3 echo line of its own (a link post, a send the specialist made
 one Casa-composed line per kind, named from the records (`OUTCOME_ECHO`: `📊 Finance posted a
 link to your chat.`, `… sent you a file.`, `… asked you a question.`, `… sent you a
 message.`), never from a body; a message or file post is echoed once, by its S3 line.
+
+**The run ends with a protected call waiting on the operator's approval** (#1252). The runner
+reads the authorization hook's records at each call's result, as the resident's turn does
+([`output-scope-properties.md`](output-scope-properties.md)), and when a call's `pending`
+record — a POSTED deny, or a PENDING deny whose reused keyboard was posted — is still unanswered by a consume of the same grant at the end of the run it publishes
+the messages written before that call (`TurnScope.approval_kept`). Only those are posted
+under the label; when they are nothing, there is no labelled post, and the pending approval
+counts as an outcome (`turn_outcomes(…, approval=True)`), so the echo is `… asked you a
+question.` — also for a PENDING deny, whose keyboard may have been posted under an earlier turn. The
+exchange logs the specialist's whole text.
 
 **The reply post is not proven.** The exchange is logged (the specialist did answer; a retry
 would re-run it), the notice says `📊 Finance answered; complete delivery could not be
@@ -253,6 +263,7 @@ follows.
 - `tests/test_desk_echo_prompt.py`
 - `tests/test_file_handoff_turn.py`
 - `tests/test_file_handoff_lines.py`
+- `tests/test_pending_approval_desk.py`
 
 **Related**
 - [`architecture/plugin-delivered-slots.md`](../architecture/plugin-delivered-slots.md)

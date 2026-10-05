@@ -50,7 +50,12 @@ on the record too.
 
 Nothing is held or withheld: the model's words are never suppressed here
 (operator ruling, #1036) — beyond closing silence, whose one case that drops
-earlier words is the #1075 ruling above. Casa-composed text enters through
+earlier words is the #1075 ruling above, and one more ruled case (#1252): on an
+``Agent.handle_message`` turn or a specialist desk turn whose protected call is
+waiting on the operator's approval, the words the model wrote after that call
+are withheld from the operator, while those written before it are kept
+(:class:`ApprovalCut`). A synchronous delegation's answer, an engagement topic
+and a plugin background job still carry them. Casa-composed text enters through
 :func:`casa_text`.
 """
 from __future__ import annotations
@@ -191,6 +196,39 @@ def may_still_be_silence(text: str | None) -> bool:
     while rest.startswith(SILENCE_SENTINEL):
         rest = rest[len(SILENCE_SENTINEL):].lstrip()
     return SILENCE_SENTINEL.startswith(rest)
+
+
+class ApprovalCut:
+    """#1252: where one attempt's operator-visible words stop because a
+    protected call is waiting on the operator's approval.
+
+    The authorization hook records, per call, whether it left an approval
+    pending (a POSTED or PENDING deny) or consumed a grant
+    (:meth:`TurnScope.note_approval`). A record is read only when its call's
+    ``ToolResultBlock`` reaches the consumer, in stream order — never when the
+    hook ran, which the SDK does in a task of its own, possibly before the
+    consumer has folded the text written before the call. *folded* is the
+    number of text-bearing messages folded when that result arrived: the words
+    kept are the messages before it. A consume of the same grant, read at its
+    own call's result, clears that grant's cut; with another grant still
+    pending, the cut moves to that grant's deny."""
+
+    def __init__(self) -> None:
+        self.pending: dict[Any, int] = {}
+
+    def observe(self, tool_use_id: Any, approvals: dict, folded: int) -> None:
+        record = approvals.get(tool_use_id) if tool_use_id else None
+        if record is None:
+            return
+        kind, key = record
+        if kind == "pending":
+            self.pending.setdefault(key, folded)
+        elif kind == "consumed":
+            self.pending.pop(key, None)
+
+    @property
+    def cut(self) -> int | None:
+        return min(self.pending.values()) if self.pending else None
 
 
 class UnadmittedText(RuntimeError):
@@ -364,6 +402,13 @@ class TurnScope:
     annotations_applied: list[str] = field(default_factory=list)
     operator_sends: list[OperatorSend] = field(default_factory=list)
     send_attempts: list[SendAttempt] = field(default_factory=list)
+    # #1252: the authorization hook's per-call record (tool_use_id →
+    # ("pending" | "consumed", GrantKey)), read at the call's result by an
+    # ApprovalCut. Never shared with a child scope.
+    approvals: dict[str, tuple[str, Any]] = field(default_factory=dict)
+    # #1252: the words a desk run kept, published by the delegated runner
+    # when its run ended with an approval pending; None otherwise.
+    approval_kept: str | None = None
 
     # -- minting ------------------------------------------------------------
 
@@ -526,6 +571,13 @@ class TurnScope:
         delivered — vacuously True when there was none."""
         return all(r.delivered for r in self.operator_sends)
 
+    def note_approval(self, tool_use_id: Any, kind: str, key: Any) -> None:
+        """#1252: what the authorization hook decided for one call —
+        ``"pending"`` (it left an approval keyboard pending) or
+        ``"consumed"`` (it spent the operator's grant)."""
+        if tool_use_id:
+            self.approvals[str(tool_use_id)] = (kind, key)
+
     def open_attempt(self, tool: str) -> SendAttempt:
         """#1075: record one send-tool call as it begins (see
         ``tools._account_send_attempts``)."""
@@ -598,10 +650,32 @@ class TurnScope:
         *report* is the turn report ``_process`` filled (final replies only):
         on a buffered turn it carries the facts the #1075 closing-silence rule
         reads — the winning attempt's text-bearing messages, the attempt count
-        and the consumed retries. Without it, today's whole-text rule."""
+        and the consumed retries. Without it, today's whole-text rule.
+        On any turn, the report's ``approval_cut`` (#1252) — the winning
+        attempt's count of text-bearing messages folded before a call whose
+        approval is still pending — keeps only those messages."""
         if kind is IntentKind.FINAL_REPLY and strips_to_silence(text):
             return Admitted(text="", scope_id=self.id, kind=kind, suppressed=True,
                             chosen_silence=SILENCE_SENTINEL in (text or ""))
+        cut = report.get("approval_cut") if report is not None else None
+        if kind is IntentKind.FINAL_REPLY and isinstance(cut, int):
+            # #1252 (operator ruling): the operator sees the approval keyboard
+            # and nothing the model wrote after the protected call. The stream
+            # already stopped at the same point (agent._make_on_message).
+            messages = report.get("reply_messages")
+            if (isinstance(messages, (list, tuple))
+                    and all(isinstance(m, str) for m in messages)
+                    and "\n\n".join(messages) == text
+                    and 0 <= cut <= len(messages)):
+                text = "\n\n".join(messages[:cut])
+            else:
+                logger.warning(
+                    "approval cut without this reply's messages: role=%s "
+                    "cid=%s — reply withheld", self.role, self.cid)
+                text = ""
+            if strips_to_silence(text):
+                return Admitted(text="", scope_id=self.id, kind=kind,
+                                suppressed=True)
         if (kind is IntentKind.FINAL_REPLY and report is not None
                 and not self.streaming_allowed):
             kept = closing_silence_prefix(text, report.get("reply_messages"))

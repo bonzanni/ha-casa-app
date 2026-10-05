@@ -507,12 +507,17 @@ def outcome_phrases(kinds) -> list[str]:
     return phrases
 
 
-def turn_outcomes(turn_id: str, posts, scope) -> tuple[bool, list[str]]:
+def turn_outcomes(turn_id: str, posts, scope, *,
+                  approval: bool = False) -> tuple[bool, list[str]]:
     """§5.6: what the turn proved to the operator, from the two records that
     exist by design — the post map (every message Casa posted for the turn,
     whatever the slot's kind) and the scope's own delivered sends. Returns
     (proven, the kinds that carry no S3 echo event of their own): a post the
-    S3 ledger already describes is echoed by its line, not twice."""
+    S3 ledger already describes is echoed by its line, not twice.
+
+    *approval* (#1252): the turn ended with an approval keyboard pending — a
+    question the operator can see even when it was posted under an earlier
+    turn's scope (a PENDING deny reuses it), so it is an outcome of its own."""
     import result_broker as rb
     landed = rb.POST_MAP.owned(turn_id)
     # a send the sender confirmed is what the operator saw; a later one that
@@ -522,7 +527,9 @@ def turn_outcomes(turn_id: str, posts, scope) -> tuple[bool, list[str]]:
     evented = {event.tool_use_id for event in posts}
     kinds = [r.kind for r in landed if r.tool_use_id not in evented]
     kinds.extend(send.intent for send in delivered)
-    return bool(posts or landed or delivered), kinds
+    if approval:
+        kinds.append("keyboard")
+    return bool(posts or landed or delivered or approval), kinds
 
 
 def record_echo(chat_id: int, line: str) -> None:
@@ -837,14 +844,22 @@ async def handle_reply(
                 reply_text, failure = _outcome_text(output)
             posts = rb.POSTS.drain(turn_id)
             scope = origin["turn_scope"]
-            proven, unevented = turn_outcomes(turn_id, posts, scope)
+            # #1252: a run that ended with an approval pending shows only the
+            # words written before that call; the desk log keeps them all
+            kept = scope.approval_kept if failure is None else None
+            shown = reply_text if failure is None else None
+            if kept is not None:
+                import specialist_limits
+                shown, _truncated = specialist_limits.truncate_output(kept)
+            proven, unevented = turn_outcomes(turn_id, posts, scope,
+                                              approval=kept is not None)
             specialist_side = NO_REPLY
             if failure is not None:
                 what = "your file {name}" if file_name is not None else "your reply"
                 await _tell(f"could not handle {what} ({failure}).", notice=True, receipt=False)
-            elif strips_to_silence(reply_text):
+            elif strips_to_silence(shown):
                 if proven:
-                    specialist_side = POSTED_VIEW
+                    specialist_side = reply_text if kept is not None else POSTED_VIEW
                     # every outcome without an S3 line of its own gets one
                     # Casa line per kind, named from the records, never
                     # from the bodies
@@ -853,7 +868,7 @@ async def handle_reply(
                 else:
                     await _tell("had nothing to add.", notice=True)
             else:
-                admitted = scope.admit(IntentKind.FINAL_REPLY, reply_text)
+                admitted = scope.admit(IntentKind.FINAL_REPLY, shown)
                 labelled = admitted.with_text(f"{label}\n{admitted}")
                 post = rb.PostRecord(role=desk_role, operator_id=user_id, plugin="",
                                      slot="desk", tool_use_id=turn_id, owner=turn_id,

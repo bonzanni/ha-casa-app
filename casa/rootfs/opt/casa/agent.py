@@ -50,8 +50,8 @@ from config import AgentConfig
 from specialist_registry import DelegationComplete
 from hooks import read_evidence_matchers, resolve_hooks
 from output_boundary import (
-    Admitted, IntentKind, TurnScope, casa_text, may_still_be_silence,
-    strips_to_silence,
+    Admitted, ApprovalCut, IntentKind, TurnScope, casa_text,
+    may_still_be_silence, strips_to_silence,
 )
 from log_cid import cid_var
 import sdk_logging
@@ -1496,7 +1496,9 @@ class Agent:
 
         # #1038: admission. The model's final text passes through the turn's
         # scope — obligations applied against the evidence the turn gathered,
-        # nothing withheld — and the channel receives the ``Admitted`` value,
+        # nothing withheld beyond the two ruled cases: #1075's closing silence
+        # and #1252's words after a call waiting on the operator's approval —
+        # and the channel receives the ``Admitted`` value,
         # never a bare string. A classified-error reply is Casa's own text.
         # An admission that is ``suppressed`` (closing silence) empties the
         # text, and delivery below is skipped exactly as before.
@@ -2580,6 +2582,11 @@ class Agent:
                 # #1158: the WINNING attempt's returned error result, if any.
                 report["error_result"] = (
                     turn_state.get("state") or {}).get("error_result")
+                # #1252: the WINNING attempt's approval cut — an int (the
+                # messages kept) or None. The final-reply admission reads it.
+                _approval = (turn_state.get("state") or {}).get("approval_cut")
+                report["approval_cut"] = (
+                    _approval.cut if isinstance(_approval, ApprovalCut) else None)
 
                 # 9. SessionRegistry — record the SDK session id for resume +
                 # save. Inside the gate; see the note above.
@@ -3427,6 +3434,9 @@ class Agent:
             # lower bound on that tool's execution start, the per-invocation
             # fence evidence settlement compares with the release stamp.
             "tool_use_at": {},
+            # #1252: where this attempt's operator-visible words stop because
+            # a protected call is waiting on the operator's approval.
+            "approval_cut": ApprovalCut(),
         }
 
         def _cum() -> str:
@@ -3456,6 +3466,11 @@ class Agent:
             ``_may_still_be_silence``.
             """
             if on_token is None:
+                return
+            # #1252: nothing written after a call that is waiting on the
+            # operator's approval is handed over (``last_emitted`` untouched,
+            # so a later cumulative is compared with what was really shown).
+            if state["approval_cut"].cut is not None:
                 return
             if _may_still_be_silence(cum) if partial else _strips_to_silence(cum):
                 return
@@ -3561,6 +3576,14 @@ class Agent:
                             state["tool_results"][
                                 getattr(block, "tool_use_id", "")
                             ] = getattr(block, "is_error", None)
+                            # #1252: the authorization hook's record for this
+                            # call is read HERE, at its result — the CLI writes
+                            # the result only after the hook returned, and the
+                            # text before it is already folded.
+                            if scope is not None:
+                                state["approval_cut"].observe(
+                                    getattr(block, "tool_use_id", ""),
+                                    scope.approvals, len(state["messages"]))
                             # #1003: a NON-error result from a plugin tool in
                             # an ordinary turn is evidence a released setup
                             # obligation may rest on. Handed over HERE — under

@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.344.22] - 2026-10-05
+
+### Fixed
+- When a resident in your Telegram DM, or a specialist answering your swipe-reply or a file you sent it, called a plugin tool that needs your approval, the Approve/Deny message was posted (or was already up) and the words the agent wrote after that call reached you too. As ruled on #1252, these turns now show you the approval message and only what the agent wrote before the call. A resident's DM turn here includes one started by a button tap and a plugin setup turn. When the resident wrote nothing before the call, Casa sends no reply for that turn. When the specialist wrote nothing before the call, Casa posts nothing under its name; before this change, when the approval message was already up from an earlier request, Casa told you the specialist "had nothing to add." If the agent goes on in the same turn to run the call again with an approval you have given, its whole reply is shown, as before. If the approval message could not be posted, the agent's words are shown as before. Casa does not withhold the words written after the call when the assistant hands a task to a specialist and waits for its answer, or in an engagement topic or a plugin background job; #1207 stays open for those. (#1207)
+
 ## [0.344.21] - 2026-10-04
 
 ### Fixed
