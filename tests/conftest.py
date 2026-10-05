@@ -628,6 +628,67 @@ def _fresh_reload_locks(monkeypatch):
     yield
 
 
+def _init_tools_globals() -> "tuple[str, ...]":
+    """Every module global ``tools.init_tools`` assigns, read from its own
+    ``STORE_GLOBAL`` instructions so a global added there is covered the day it
+    is added — the sweep argument of ``_agent_active_singletons_restored``."""
+    import dis
+
+    import tools as _tools
+    return tuple(sorted({i.argval for i in dis.get_instructions(_tools.init_tools)
+                         if i.opname == "STORE_GLOBAL"}))
+
+
+@pytest.fixture(autouse=True)
+def _agent_tools_init_globals_restored():
+    """Snapshot the globals ``tools.init_tools`` binds at each test's setup and
+    restore THE SNAPSHOT at its teardown — the ``agent.active_*`` defect class
+    on the ``tools`` module.
+
+    Many tests call ``init_tools`` directly and restore nothing, so the
+    ``_engagement_registry``, ``_channel_manager`` and the rest they bound
+    stayed on the worker for whichever file ``--dist loadfile`` scheduled next.
+    Measured: a specialist engagement left in ``_engagement_registry`` turns
+    ``test_1146_kept_upgrade_controls.py``'s upgrade into
+    ``open_conversations_unconfirmed`` (QA on v0.344.27's merge), and a leaked
+    ``_channel_manager`` whose operator is not the test's makes
+    ``test_plugin_open_conversations.py``'s rows say "started by someone else".
+    Both files are green alone and in the reverse order.
+
+    Restore-to-snapshot, never force-``None``, for the reason the ``agent``
+    fixture gives: a module-scoped baseline bound before this function-scoped
+    fixture must come back exactly. Test-only: production calls ``init_tools``
+    once at boot. Guarded like the fixtures above for the bare root lane, where
+    ``tools`` cannot be imported. Pinned by
+    ``tests/test_tools_init_globals_isolation.py``.
+
+    **The NAME matters, for the reason ``_agent_active_singletons_restored``
+    gives:** it must sort before every autouse fixture that requests
+    ``monkeypatch``, so it is set up before that instance exists and torn down
+    after its undo. Torn down first, a test that called ``init_tools`` and then
+    ``monkeypatch.setattr`` one of these globals had monkeypatch reinstate the
+    leaked value after this restore (diff review r1, measured).
+    ``tests/test_agent_singleton_restore_order.py``'s pairs pin the ordering
+    principle; ``test_tools_init_globals_isolation.py`` pins this fixture's
+    place in it."""
+    try:
+        import tools as _tools
+        names = _init_tools_globals()
+    except ImportError:
+        yield
+        return
+    missing = object()
+    snapshot = {n: getattr(_tools, n, missing) for n in names}
+    try:
+        yield
+    finally:
+        for name, value in snapshot.items():
+            if value is not missing:
+                setattr(_tools, name, value)
+            elif hasattr(_tools, name):
+                delattr(_tools, name)
+
+
 # #911: process-global LOGGING state, the same defect class as the two fixtures
 # below and the one above. `log_cid.install_logging` adds a `_casa_owned` root
 # handler, wraps the LogRecord factory, sets the root level and pins two loggers,
