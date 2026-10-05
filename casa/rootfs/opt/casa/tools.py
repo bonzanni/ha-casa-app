@@ -7356,7 +7356,8 @@ async def delegate_to_agent(args: dict) -> dict:
         # #1207: what the child's run left of the operator's approvals, onto
         # the launching turn's scope by delegation id, BEFORE this returns —
         # the CLI writes the result only after, so the resident's fold finds
-        # it at this call's result, whichever payload below it carries.
+        # it at this call's result, whichever payload below it carries
+        # (unless the CLI rewrote that result for size, #1274).
         _child_scope = _child_origin.get("turn_scope")
         if _launch_scope is not None and isinstance(_child_scope, TurnScope):
             _outcome = tuple(

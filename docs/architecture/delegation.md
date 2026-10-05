@@ -90,7 +90,8 @@ its view the grants its run left waiting on the operator (only calls whose resul
 and whatever way the run ended), and once the sync wait returns the finished task, before
 any result is returned, the handler copies every grant the child's hook consumed and then
 those waiting grants onto the launcher's scope under the delegation id. The launcher's turn
-reads them at the delegate call's result
+reads them at the delegate call's result, by the delegation id it names (a result the CLI
+rewrote for size names none, #1274)
 ([`output-scope-properties.md`](output-scope-properties.md)); the result itself is unchanged.
 A wait that degraded to pending and an async delegation copy nothing.
 

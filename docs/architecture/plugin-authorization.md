@@ -170,8 +170,8 @@ delivered as before.
 The same holds on the paths #1207 named. When a resident's synchronous `delegate_to_agent`
 returns and its specialist's call was left waiting, the operator sees none of the words the
 resident wrote after the delegate's result: the child's outcome reaches the resident's turn
-by delegation id ([`delegation.md`](delegation.md)), while the specialist's answer still
-reaches the resident whole. On an interactive specialist engagement's topic and a plugin
+by delegation id ([`delegation.md`](delegation.md)), while the delegate's result is
+unchanged (except a result too large for the CLI, below). On an interactive specialist engagement's topic and a plugin
 background job's topic, the hook runs in the engagement client's SDK reader, so under an
 engagement it records on that client's running turn — the holder bound before the client was
 entered (`in_casa_driver._EngagementTurn`), live only while its turn runs — and the driver
