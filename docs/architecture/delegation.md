@@ -238,7 +238,7 @@ itself (the CLI can then still be writing after the delete), and a delete that f
 
 Desk replies and every delegation go through `_run_delegated_agent_bounded`, which owns a
 `pinned_run.ProcessTree` for the run, the same process owner a stored-call tap's `PinnedRun`
-is ([`stored-call-buttons.md`](stored-call-buttons.md)). The run pins its CLI by pidfd, and
+is ([`stored-call-termination.md`](stored-call-termination.md)). The run pins its CLI by pidfd, and
 the descendants it finds with their parent chain validated, the moment its session exists;
 a run ended while its client is still starting is pinned from the transport's process when
 its termination begins.
@@ -253,7 +253,7 @@ and a caller that stops waiting leaves it running to its end.
 
 What it does not cover: a run that ends normally, whose servers' background helpers are not
 walked; the timing windows around the walks and a helper that leaves the process tree
-(`setsid`, a double fork), which [`stored-call-buttons.md`](stored-call-buttons.md) states
+(`setsid`, a double fork), which [`stored-call-termination.md`](stored-call-termination.md) states
 for taps; and an unconfirmed run, which is logged but neither faults the desk nor changes
 the reply's or the delegation's outcome.
 

@@ -232,7 +232,7 @@ older post is a plain message to the resident; the next desk turn starts a fresh
 **Buttons on a specialist's post** land in the same desk: a tap is a use of the desk under its
 lock and queue, the stored call its task, and a desk whose pinned run could not be confirmed
 terminated is *faulted* — every later use refused until restart
-([`stored-call-buttons.md`](stored-call-buttons.md)).
+([`stored-call-termination.md`](stored-call-termination.md)).
 
 **The idle bound** is a module constant until tuning has an evidence base; an app option
 follows.
