@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-22
+last_reviewed: 2026-10-06
 ---
 
 # The Telegram channel
@@ -58,7 +58,8 @@ admission is taken later, under the engagement's per-turn lock.
 
 **Update dispatch is concurrent; ordering is re-imposed per scope, not globally.** Handlers
 run non-blocking, so nothing about arrival order survives dispatch on its own. Engagement
-topics re-serialize under a per-topic handler lock, and direct messages re-serialize per
+topics re-serialize under a per-topic handler lock (a quiet scheduled job run, which has no
+topic, under one keyed by its record), and direct messages re-serialize per
 chat: `/new` holds its chat's lock across the whole reset (retain, then pointer removal),
 so once the reset holds the lock, no same-chat follow-up can be enqueued — let alone resume
 the dying session — until it finished. Distinct chats never contend. Two boundaries to keep

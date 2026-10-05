@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-10-02
+last_reviewed: 2026-10-06
 ---
 
 # Background jobs
@@ -65,7 +65,9 @@ batches. The job ends when the specialist calls `emit_completion`, when the oper
 the batch cap).
 
 A job also declares `session` (`resume`, the default, or `fresh`); what a fresh job's turns
-see is [`background-job-fresh-sessions.md`](background-job-fresh-sessions.md).
+see is [`background-job-fresh-sessions.md`](background-job-fresh-sessions.md). A job declaring
+`quietWhenScheduled` runs without a topic, acknowledgement or progress lines when its schedule
+started it ([`background-job-quiet-runs.md`](background-job-quiet-runs.md)).
 
 ## Contracts & invariants
 **INV-BGJOB-001**: A job engagement's next batch is started only while the record is live, the ended turn was not cut off, no turn is queued and no turn delivery is in progress; the previous batch is judged, the batch number chosen and the batch cap checked in the same synchronous step that admits it, and that batch is counted only once the hand-off has been accepted — a refused hand-off leaves every counter untouched.
@@ -156,8 +158,8 @@ text the topic and the resident receive, so `/cancel` also reports what the job 
 The declaration is strict: `plugin_store.manifest_jobs` refuses a non-list, an unknown
 entry field, a bad or duplicate name, an empty skill, an over-long or multi-line title or
 summary, a `batches` or `turnsPerBatch` that is not a positive integer (a boolean is not
-one), a `session` other than `resume` or `fresh`, and a `host` other than the string
-`"specialist"`, with `jobs_invalid`; install validation also refuses a job whose
+one), a `session` other than `resume` or `fresh`, a `host` other than the string
+`"specialist"`, and a `quietWhenScheduled` that is not a boolean, with `jobs_invalid`; install validation also refuses a job whose
 `skills/<skill>/SKILL.md` is missing. An already stored artifact failing the same checks is
 excluded from resolution with that reason.
 

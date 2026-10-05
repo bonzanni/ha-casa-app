@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.344.36] - 2026-10-06
+
+### Added
+- A plugin can now declare a background job `"quietWhenScheduled": true`. When a run of that job was started by its schedule (`Started by: scheduled`), Casa opens no topic for it, posts no start acknowledgement and no progress lines, and tells no one when it completes. The plugin's own posts (its messages, proposals with buttons, files and links in your DM) still reach you, so a scheduled run that finds something new can still tell you. An approval the run needs still reaches your DM, and a run that is cancelled or fails is still reported to you. A quiet run has no topic, so you cannot write in it, `/cancel` it or `/complete` it. A second start of the same job while one is running is refused with a note that a scheduled run is in progress. Runs you or the assistant start, and jobs that do not declare the option, behave exactly as before. Nothing changes for you until a plugin declares the option; the quarterly-accounting plugin's next version will. (#1301)
+
 ## [0.344.35] - 2026-10-06
 
 ### Added

@@ -6436,14 +6436,18 @@ async def _launch_interactive_engagement(
         topic_name = compose_topic_title(
             state="active", short_task=short_task,
         )
-        try:
-            topic_id = await channel.open_engagement_topic(
-                name=topic_name,
-                role=agent_name,
-            )
-        except Exception as exc:  # noqa: BLE001
-            return _result({"status": "error", "kind": "topic_create_failed",
-                            "message": str(exc)})
+        topic_id = None
+        # #1301: a quiet scheduled run opens no topic; every topic post of a
+        # record without one is skipped, and its turns' words are withheld.
+        if not (job is not None and origin["job"].get("quiet") is True):
+            try:
+                topic_id = await channel.open_engagement_topic(
+                    name=topic_name,
+                    role=agent_name,
+                )
+            except Exception as exc:  # noqa: BLE001
+                return _result({"status": "error", "kind": "topic_create_failed",
+                                "message": str(exc)})
         # §3.8 (Sol #4): record the specialist's plugin binding so verify can
         # disclose this engagement if a later plugin_update supersedes its
         # artifact (informational — mirrors the executor-engagement case). The
@@ -11820,7 +11824,8 @@ async def _finalize_engagement(
                 # the one that arms the durable obligation to do so — in the
                 # same write that commits the terminal, never after it. Every
                 # other terminal writer leaves the default and owes nothing.
-                owes_terminal_notification=True,
+                # #1301: a quiet run's completed end is told nowhere.
+                owes_terminal_notification=not _told_nowhere(engagement.origin, outcome),
             )
         except TerminalPreconditionFailed as exc:
             logger.info(
@@ -12326,6 +12331,13 @@ async def _finalize_engagement(
     )
 
 
+def _told_nowhere(origin: Any, outcome: str) -> bool:
+    """#1301: a quiet scheduled run that completed is told to no one — no
+    resident notification, so no resident turn. A cancelled or failed one is
+    told as any engagement's end is."""
+    return outcome == "completed" and background_jobs.is_quiet_origin(origin)
+
+
 async def _finalize_engagement_tail(
     engagement: EngagementRecord,
     *,
@@ -12373,8 +12385,10 @@ async def _finalize_engagement_tail(
                 engagement.id[:8], exc,
             )
 
-    # 4. NOTIFY Ellen (via existing DelegationComplete-shaped pathway)
-    if _bus is not None:
+    # 4. NOTIFY Ellen (via existing DelegationComplete-shaped pathway).
+    # #1301: not for a quiet run's completed end — its plugin already posted
+    # whatever the operator needs to see.
+    if _bus is not None and not _told_nowhere(frozen["origin"], outcome):
         target_role = frozen["origin"].get("role") or "assistant"
         # S3 §6: a specialist's or job's proven posts, as body-free Casa
         # lines after the terminal text — the one announcement the creator

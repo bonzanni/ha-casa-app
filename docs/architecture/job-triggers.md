@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-10-03
+last_reviewed: 2026-10-06
 ---
 
 # Job triggers: a schedule that starts a plugin job
@@ -42,12 +42,16 @@ nobody to tell, and the fire only logs.
 
 ## Contracts & invariants
 
-**INV-TRIG-022**: A scheduled trigger carrying `job` registers whenever its resident declares the channel, which for a job entry is `telegram` (schema and upsert refuse any other; never fatal to boot for an unstartable job); the typed upsert refuses a job the resident cannot start; at fire the job is launched through the one launcher `start_job` uses, with an origin carrying the live operator's identity and clearance, and no resident turn runs; a fire that cannot start the job tells the operator once — the admission decision as a past event at the occurrence — and runs nothing; the job then runs, posts and ends exactly as one the resident started, except that its launch prompt and briefs say a schedule started it.
+**INV-TRIG-022**: A scheduled trigger carrying `job` registers whenever its resident declares the channel, which for a job entry is `telegram` (schema and upsert refuse any other; never fatal to boot for an unstartable job); the typed upsert refuses a job the resident cannot start; at fire the job is launched through the one launcher `start_job` uses, with an origin carrying the live operator's identity and clearance, and no resident turn runs; a fire that cannot start the job tells the operator once — the admission decision as a past event at the occurrence — and runs nothing; the job then runs, posts and ends exactly as one the resident started, except that its launch prompt and briefs say a schedule started it, and that a job declaring `quietWhenScheduled` runs quietly (INV-BGJOB-010).
 
 That one difference is the starter line, `Started by: scheduled`, which the fire's
 `_scheduled_job` stamp decides at launch ([`background-job-fresh-sessions.md`](background-job-fresh-sessions.md)); a job a
 resident's own scheduled turn starts reads `agent` instead, because an agent turn decided it
 (unless the operator answered a question in that turn).
+
+A job declaring `quietWhenScheduled` is the other difference: a run its schedule started opens
+no topic, posts no acknowledgement or progress line, and is told to no one when it completes
+([`background-job-quiet-runs.md`](background-job-quiet-runs.md)).
 
 What it does not cover: catching up an occurrence missed while Casa was down (no scheduled
 trigger is caught up; see [`triggers.md`](triggers.md)); what the job does once started

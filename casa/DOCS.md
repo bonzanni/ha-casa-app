@@ -411,6 +411,14 @@ runs per installed plugin. Casa checks open jobs once a minute and restarts one 
 has stalled; a job it cannot get moving again is ended and reported rather than left
 sitting there.
 
+A plugin can mark a job quiet when scheduled (v0.344.36). A run of it that a
+schedule started opens no topic, posts no start or progress line, and tells you
+nothing when it completes; the plugin's own messages still reach your DM, so a run
+that finds something new can still say so. An approval it needs still reaches your
+DM, and a run that is cancelled or fails is still reported. You cannot write in or
+`/cancel` a quiet run, since it has no topic. Runs you or the assistant start are
+unchanged.
+
 A specialist can also start its own plugins' jobs itself (v0.344.0). When you reply
 to one of its posts, or the assistant passes it your request, and the work is a job
 one of its own plugins declares, it starts that job on itself — never another

@@ -123,6 +123,18 @@ def _is_fresh_job(engagement: Any) -> bool:
     return background_jobs.is_fresh_job(engagement)
 
 
+class _WithheldStream:
+    """#1301: the stream of a turn whose record has no topic (a quiet
+    scheduled run). Its words are withheld by design, not lost: ``finalize``
+    reports DELIVERED, so no launch-death or not-delivered reading fires."""
+
+    async def emit(self, accumulated_text: str) -> None:
+        return None
+
+    async def finalize(self, full_text: str) -> DeliveryOutcome:
+        return DeliveryOutcome.DELIVERED
+
+
 class DriverNotAliveError(RuntimeError):
     """Raised when a turn is fed to a driver that has no open client."""
 
@@ -410,9 +422,6 @@ class InCasaDriver(DriverProtocol):
         # circular import (tools imports engagement_registry).
         from tools import engagement_var
 
-        assert engagement.topic_id is not None, (
-            "in_casa driver requires a topic_id (got None)"
-        )
         client = ClaudeSDKClient(
             sdk_logging.with_stderr_callback(
                 options, engagement_id=engagement.id[:8],
@@ -1128,10 +1137,11 @@ class InCasaDriver(DriverProtocol):
         # below, exactly as for the client.
         turn = self._turns.get(engagement.id)
         cid = cid or new_cid()
-        assert engagement.topic_id is not None
         # Phase 3b: stream per-AssistantMessage rather than buffer the
-        # entire turn.
-        stream = self._topic_stream_factory(engagement.topic_id)
+        # entire turn. #1301: a record with no topic (a quiet scheduled run)
+        # withholds its words.
+        stream = (_WithheldStream() if engagement.topic_id is None
+                  else self._topic_stream_factory(engagement.topic_id))
         accumulated = ""
         # Task 6 (spec §4.6): per-turn output bound for INTERACTIVE SPECIALIST
         # engagements — the streamed assistant text was otherwise unbounded
