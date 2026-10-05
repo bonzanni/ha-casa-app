@@ -529,3 +529,22 @@ async def test_a_hook_that_returns_before_the_call_is_folded_keeps_the_prefix(
 
 
 # --- R6-9 lives in test_pending_approval_pins.py (the ambient scope pin) -------
+
+
+@pytest.mark.parametrize("when", ["earlier_turn", "between_turns"])
+async def test_a_record_from_before_this_turn_never_cuts_it(monkeypatch, when):
+    """The holder's record is the RUNNING turn's: one written by an earlier
+    turn's hook, or between turns, is gone when the next turn starts — even if
+    that turn's stream then carries a result for the same call id."""
+    t = _Topic(monkeypatch)
+    if when == "earlier_turn":
+        await t.launch(_text("Hi."), _call("orphan-1"), _Ask("orphan-1"))
+    else:
+        await t.launch(_text("Hi."))
+        task = asyncio.get_running_loop().create_task(
+            t.hook({"tool_name": TOOL, "tool_input": dict(ARGS)}, "orphan-1", {}),
+            context=t.session.clients[-1].ctx.copy())
+        t.session.answers.append(await task)
+    await t.follow_up(_text("BEFORE"), _result("orphan-1"), _text(TAIL))
+    assert [_reason(a) for a in t.session.answers] == [_DENY_POSTED]
+    assert t.finals == ["Hi.", "BEFORE\n\n" + TAIL]
