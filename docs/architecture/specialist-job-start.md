@@ -67,7 +67,12 @@ its end notice, with its post echoes, goes to the resident.
 **INV-BGJOB-008**: A specialist's `start_job` starts only a job declared by a plugin assigned to that specialist and loadable when it is called, hosted by that specialist; it is offered only to a desk or delegated turn whose session loads a job-declaring plugin (a tap's pin refuses it, a job or engagement session never holds it), and the job launches with the calling turn's origin — its clearance, chat and resident — at depth 1, under every launch gate a resident's start of that job applies except the delegation ACL and the depth cap.
 
 The two exceptions travel to the one prelaunch call through a context variable set and reset
-around that call only, so nothing the launch later spawns inherits them. The specialist
+around that call only, so nothing the launch later spawns inherits them.
+Because the job keeps the calling turn's origin, its starter line
+([`background-jobs.md`](background-jobs.md)) is read from that origin too: a desk turn's
+start reads `operator`, and a delegated turn's start reads the token of the resident's turn that
+delegated (`operator` when that turn was the operator's own or answered by them, `agent` for a
+scheduled or webhook turn), whether the resident waited for the delegation or not. The specialist
 branch is chosen only when no engagement is bound and the calling role's loaded `kind` is
 `specialist`; every other caller resolves hosts exactly as before.
 

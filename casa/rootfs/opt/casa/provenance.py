@@ -39,6 +39,13 @@ CASA_PLUGIN_TURN_TARGETS: dict[str, str] = {
     "plugin_erase": "plugin_erase_target",
 }
 
+# #1277: a scheduled ask's continuation answered by the operator's own tap
+# (the broker's ``answered`` outcome, its actor accepted by
+# ``_user_id_is_operator``). Read only to record who started a job that turn
+# launches; it is not the turn's speaker and grants nothing. One name, read by
+# every site that stamps, copies or reads it.
+ANSWERED_BY_OPERATOR = "_answered_by_operator"
+
 RESERVED_CONTEXT_KEYS = frozenset({
     "synthetic",
     "button_answer",
@@ -126,6 +133,10 @@ RESERVED_CONTEXT_KEYS = frozenset({
     "_turn_scope",
     "_inherited_note",
     "_scheduled_job",          # S6: a job trigger's fire, never a chat message
+    # #1277: stamped only by the scheduled-ask continuation for the operator's
+    # answer; a caller who could set it would have a job it starts say the
+    # operator asked.
+    ANSWERED_BY_OPERATOR,
 })
 
 

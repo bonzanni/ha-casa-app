@@ -6306,7 +6306,10 @@ async def _launch_interactive_engagement(
     casa_grants = SPECIALIST_CASA_GRANTS
     turns_per_batch = cfg.tools.max_turns
     if job is not None:
-        origin["job"] = background_jobs.initial_job_state(job)
+        # #1277: who started the job, evaluated once, here, from the launching
+        # origin; both renderers read it from the record, never from markers.
+        origin["job"] = background_jobs.initial_job_state(
+            job, started_by=background_jobs.job_started_by(origin))
         if job.session == "fresh":
             # INV-BGJOB-005: every later turn of a fresh job re-states the
             # launch context verbatim (already bounded by _MAX_CONTEXT_CHARS).
@@ -6587,7 +6590,7 @@ async def _launch_interactive_engagement(
             if job is not None:
                 prompt = background_jobs.launch_prompt(
                     job, task_text, context_text, turns_per_batch,
-                    job_id=rec.id)
+                    job_id=rec.id, started_by=rec.origin["job"].get("started_by"))
 
             driver = getattr(agent_mod, "active_engagement_driver", None)
             if driver is None:

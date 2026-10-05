@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.344.31] - 2026-10-05
+
+### Added
+- A plugin background job started after this update is told who started it. Its launch prompt, and every brief of a job that starts each turn fresh, carries one line right after the first `Job id:` line: `Started by: operator`, `Started by: scheduled` or `Started by: agent`. `scheduled` means one of Casa's job triggers started the job on its schedule, with no assistant turn. `operator` means the job was started in a turn Casa attributes to you: your own Telegram message; your tap on a button the assistant offered, on a question asked in your DM or from a scheduled turn; your Approve tap on a protected call; your reply to a specialist's post; or a specialist's own start of its job after such a reply, or in a delegation the assistant made in such a turn. It says whose turn it was, not which option you tapped or what led to the start inside that turn, so a job started in that turn reads `operator` even when you tapped "No". `agent` means a turn you did not write or answer started the job: the assistant's own scheduled turns, webhooks, a question nobody answered or that was cancelled, and setup or consent turns. Casa records the value when the job starts and does not re-derive it later, so it stays the same after a restart. A job started before this update has no line. Nothing changes for you until the quarterly-accounting plugin reads the line (Refs bonzanni/casa-plugin-quarterly-accounting#45). (#1277)
+
 ## [0.344.30] - 2026-10-05
 
 ### Fixed

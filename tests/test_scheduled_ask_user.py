@@ -75,6 +75,7 @@ class _FakeChannel:
         self.posts: list[tuple] = []
         self.edits: list[tuple] = []
         self.scheduled_dispatches: list[dict] = []
+        self.answered_by_operator: list[bool] = []   # #1277, one per dispatch
         self.button_dispatches: list[dict] = []
         self.calls: list[str] = []
         self._post_result = post_result
@@ -83,6 +84,11 @@ class _FakeChannel:
 
     def operator_user_id(self):
         return self._operator
+
+    def _user_id_is_operator(self, user_id):
+        # the real rule's shape (channels/telegram.py): a string comparison
+        # against the configured operator; None is nobody
+        return user_id is not None and str(user_id) == str(self._operator)
 
     async def post_dm_keyboard(self, *, chat_id, request_id, text, options,
                                short_labels=False):
@@ -97,11 +103,12 @@ class _FakeChannel:
 
     async def _dispatch_scheduled_continuation(self, *, session_scope,
                                                target_role, request_id, text,
-                                               epoch=None):
+                                               epoch=None, answered_by_operator=False):
         self.scheduled_dispatches.append({
             "session_scope": session_scope, "target_role": target_role,
             "request_id": request_id, "text": text, "epoch": epoch,
         })
+        self.answered_by_operator.append(answered_by_operator)
         self.calls.append("dispatch")
         return self.dispatch_result
 

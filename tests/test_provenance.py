@@ -78,6 +78,9 @@ def test_reserved_context_keys_are_exactly_the_spec_set():
         # caller who could set either would hand a turn a scope it did not
         # earn, or a note it does not owe.
         "_turn_scope", "_inherited_note",
+        # #1277: the operator answered this scheduled ask — a caller who could
+        # set it would have a job its turn starts say the operator asked.
+        "_answered_by_operator",
     })
 
 
