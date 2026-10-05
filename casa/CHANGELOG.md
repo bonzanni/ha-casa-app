@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.344.32] - 2026-10-05
+
+### Fixed
+- When the assistant in your Telegram DM handed a request to a specialist and waited for its answer, and the specialist left a plugin tool call waiting on your approval, v0.344.28 withheld the words the assistant wrote after that answer, except when the Claude CLI had rewritten the answer before the assistant read it, for example because it was too long; those words then reached you. That exception is gone: the words are withheld in that case too. As before, the whole reply is shown if the approval is used later in the same turn, and the words are shown if the approval message could not be posted. (#1274)
+
 ## [0.344.31] - 2026-10-05
 
 ### Added
