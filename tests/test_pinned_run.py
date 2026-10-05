@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import os
+import select
 import subprocess
 import sys
 import time
@@ -614,6 +615,11 @@ async def test_a_descendant_whose_chain_cannot_be_proven_stays_pinned_and_is_unc
     for pid in (tree.grandchild, tree.pid):
         os.kill(pid, 9)
     tree.proc.wait(timeout=5)
+    # SIGKILL is delivered asynchronously and only the child is reaped here: the
+    # reparented grandchild can still be dying when alive() polls, so wait for
+    # each pinned pidfd to report the exit before asserting on it
+    for fd in owner.pinned_fds():
+        assert select.select([fd], [], [], 5)[0], "a pinned process outlived SIGKILL"
     owner2 = _owner()
     monkeypatch.setattr(pr, "_ppid", lambda pid: None if pid == tree.pid else 1)
     owner2._pin_tree(tree.pid, None)                    # the CLI is gone: extinct, nothing pinned
