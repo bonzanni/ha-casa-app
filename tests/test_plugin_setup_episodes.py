@@ -2479,3 +2479,413 @@ async def test_status_sentence_names_the_removal_and_the_earlier_failure(wired):
     line = tools._episode_sentence(pse.episodes()[0])
     assert line.count("before the plugin was removed and reinstalled") == 0
     assert line.count(f0["last_error"]) == 0
+
+
+# ---------------------------------------------------------------------------
+# #1014 — a setup-worker operator note the channel could not take yet is
+# retained and delivered exactly once when it can, through the REAL seam
+# (`channels.ChannelManager` + `casa_core.operator_notify`).
+# ---------------------------------------------------------------------------
+
+class _SeamChannel:
+    """A telegram channel the test drives: not ready until ``start()``;
+    every ``send_response`` entry is counted, and one may be held open."""
+    name = "telegram"
+    chat_id = None
+
+    def __init__(self) -> None:
+        self.is_ready = False
+        self.entries: list[str] = []
+        self.delivered: list[str] = []
+        self.hold_for: str | None = None
+        self.entered = None
+        self.release = None
+
+    async def start(self) -> None:
+        self.is_ready = True
+
+    async def stop(self) -> None:
+        pass
+
+    async def send_response(self, message, context):
+        text = getattr(message, "text", message)
+        self.entries.append(text)
+        if self.hold_for is not None and self.hold_for in text:
+            self.hold_for = None
+            self.entered.set()
+            await self.release.wait()
+        self.delivered.append(text)
+
+    def count(self, needle: str) -> int:
+        return sum(needle in t for t in self.delivered)
+
+
+def _real_seam(monkeypatch):
+    """Wire the module's notifier to the real operator_notify over a real
+    ChannelManager; every raise the seam produces is recorded, re-raised."""
+    import casa_core
+    from channels import ChannelManager
+
+    mgr = ChannelManager()
+    ch = _SeamChannel()
+    mgr.register(ch)
+    raised: list[BaseException] = []
+
+    async def notify(text):
+        try:
+            await casa_core.operator_notify(mgr, text)
+        except BaseException as exc:
+            raised.append(exc)
+            raise
+
+    monkeypatch.setattr(pse, "_notify_operator", notify)
+    return mgr, ch, raised
+
+
+def _strip_courier_keys(episode_id: str) -> dict:
+    """The untracked row exactly as a v0.316.0 store holds it (see
+    test_untracked_dispatched_row_is_retired_visibly_not_redispatched)."""
+    data = pse._load()
+    legacy = pse._row_by_id(data, episode_id)
+    del legacy["courier_tool"], legacy["courier_target"]
+    pse._save(data)
+    return dict(legacy)
+
+
+_RETIRED = "outcome could be tracked"
+
+
+@pytest.mark.asyncio
+async def test_untracked_note_delivered_once_after_channel_start(
+        wired, monkeypatch):
+    ep = await _courier_dispatched(wired)
+    _strip_courier_keys(ep["id"])
+    mgr, ch, _ = _real_seam(monkeypatch)
+    before = len(wired["dispatches"])
+
+    await pse._worker_pass()                     # the boot pass: not started
+    assert len(pse.episodes("failed")) == 1
+    assert ch.count(_RETIRED) == 0
+    assert len(wired["dispatches"]) == before
+
+    await mgr.start_all()
+    await pse._worker_pass()                     # what the post-start kick runs
+    assert ch.count(_RETIRED) == 1
+    assert len(wired["dispatches"]) == before
+
+    await pse._worker_pass()
+    assert ch.count(_RETIRED) == 1
+    assert len(wired["dispatches"]) == before
+
+
+def test_main_kicks_setup_worker_after_channel_start():
+    """By source order, as an executable call (comments do not count): the
+    setup worker's first pass runs before the channels start, so main must
+    wake it once they have."""
+    import ast
+    import inspect
+    import textwrap
+
+    import casa_core
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(casa_core.main)))
+    starts, kicks = [], []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Await) and isinstance(node.value, ast.Call):
+            f = node.value.func
+            if (isinstance(f, ast.Attribute) and f.attr == "start_all"
+                    and isinstance(f.value, ast.Name)
+                    and f.value.id == "channel_manager"):
+                starts.append(node.lineno)
+        if isinstance(node, ast.Call):
+            f = node.func
+            if (isinstance(f, ast.Attribute) and f.attr == "kick"
+                    and isinstance(f.value, ast.Name) and f.value.id == "_pse"):
+                kicks.append(node.lineno)
+    assert len(starts) == 1
+    assert len(kicks) == 1
+    assert sum(k > starts[0] for k in kicks) == 1
+
+
+@pytest.mark.asyncio
+async def test_retirement_note_appended_during_delivery_is_preserved(
+        wired, monkeypatch):
+    import asyncio
+
+    ep = await _courier_dispatched(wired)
+    legacy = _strip_courier_keys(ep["id"])
+    mgr, ch, raised = _real_seam(monkeypatch)
+    before = len(wired["dispatches"])
+    a_note = "Plugin elevenlabs: automatic setup"
+    b_note = "Plugin bplugin: automatic setup"
+
+    await pse._worker_pass()                     # A retired, not delivered
+    assert len(pse.episodes("failed")) == 1
+    assert ch.count(a_note) == 0
+
+    await mgr.start_all()
+    ch.hold_for = a_note
+    ch.entered, ch.release = asyncio.Event(), asyncio.Event()
+    first = asyncio.ensure_future(pse._worker_pass())
+    entered = asyncio.ensure_future(ch.entered.wait())
+    await asyncio.wait({first, entered}, timeout=5.0,
+                       return_when=asyncio.FIRST_COMPLETED)
+    entered.cancel()
+    try:
+        assert sum(a_note in t for t in ch.entries) == 1
+        # While A's re-send is held inside the channel, the channel goes
+        # unready and a second untracked row is retired: its note fails.
+        ch.is_ready = False
+        data = pse._load()
+        b_row = dict(legacy, id="b-row-1", plugin="bplugin",
+                     status="dispatched")
+        data["episodes"].append(b_row)
+        pse._save(data)
+        raised.clear()
+        await pse._worker_pass()
+        assert len(pse.episodes("failed")) == 2
+        assert ch.count(b_note) == 0
+        assert len(raised) == 1 and isinstance(raised[0], RuntimeError)
+    finally:
+        ch.is_ready = True
+        ch.release.set()
+        await first
+    await pse._worker_pass()
+    assert ch.count(a_note) == 1
+    assert ch.count(b_note) == 1
+    assert len(wired["dispatches"]) == before
+    await pse._worker_pass()
+    assert ch.count(a_note) == 1
+    assert ch.count(b_note) == 1
+
+
+def _note_records(caplog):
+    return [r for r in caplog.records
+            if r.name == pse.__name__ and "operator note" in r.getMessage()]
+
+
+@pytest.mark.asyncio
+async def test_setup_note_before_start_logs_info_without_traceback(
+        wired, monkeypatch, caplog):
+    import logging
+
+    ep = await _courier_dispatched(wired)
+    _strip_courier_keys(ep["id"])
+    _real_seam(monkeypatch)
+    caplog.set_level(logging.INFO, logger=pse.__name__)
+    await pse._worker_pass()
+    recs = _note_records(caplog)
+    assert sum(r.levelno == logging.INFO for r in recs) == 1
+    assert sum(r.levelno >= logging.ERROR for r in recs) == 0
+    assert sum(bool(r.exc_info) for r in recs) == 0
+
+
+@pytest.mark.asyncio
+async def test_setup_note_after_start_not_ready_logs_error_with_traceback(
+        wired, monkeypatch, caplog):
+    import logging
+
+    ep = await _courier_dispatched(wired)
+    _strip_courier_keys(ep["id"])
+    mgr, ch, _ = _real_seam(monkeypatch)
+    await mgr.start_all()
+    ch.is_ready = False
+    caplog.set_level(logging.INFO, logger=pse.__name__)
+    await pse._worker_pass()
+    recs = _note_records(caplog)
+    assert sum(r.levelno >= logging.ERROR for r in recs) == 1
+    assert sum(r.levelno == logging.INFO for r in recs) == 0
+    assert sum(bool(r.exc_info) for r in recs) == 1
+    ch.is_ready = True                           # release the retained note
+    await pse._worker_pass()
+
+
+@pytest.mark.asyncio
+async def test_execution_exhaustion_note_recovers_without_worker_pass(
+        wired, monkeypatch):
+    import asyncio
+
+    ep = await _dispatched(wired)
+    for _ in range(2):
+        pse.report_dispatch_outcome(
+            ep["id"], tools_used_ok=set(), tools_attempted=set(),
+            available_tools={_NS, "Read"})
+        await _drain_pending(wired)
+    assert len(wired["dispatches"]) == 3
+    assert pse.episodes()[0]["execution_retries"] == 2
+
+    mgr, ch, raised = _real_seam(monkeypatch)
+    await mgr.start_all()
+    ch.is_ready = False
+    calls = {"pass": 0, "kick": 0}
+    real_pass, real_kick = pse._worker_pass, pse.kick
+
+    async def counted_pass():
+        calls["pass"] += 1
+        return await real_pass()
+
+    def counted_kick():
+        calls["kick"] += 1
+        real_kick()
+
+    monkeypatch.setattr(pse, "_worker_pass", counted_pass)
+    monkeypatch.setattr(pse, "kick", counted_kick)
+
+    pse.report_dispatch_outcome(
+        ep["id"], tools_used_ok=set(), tools_attempted=set(),
+        available_tools={_NS, "Read"})
+    for _ in range(50):
+        if raised:
+            break
+        await asyncio.sleep(0)
+    assert len(pse.episodes("failed")) == 1
+    assert pse.episodes()[0]["execution_retries"] == 3
+    assert len(raised) == 1 and type(raised[0]) is RuntimeError
+    assert ch.entries == []
+
+    ch.is_ready = True
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 6.0
+    while not ch.delivered and loop.time() < deadline:
+        await asyncio.sleep(0.05)
+    assert len(ch.delivered) == 1
+    assert calls == {"pass": 0, "kick": 0}
+    assert len(wired["dispatches"]) == 3
+    await asyncio.sleep(5.2)
+    assert len(ch.delivered) == 1
+
+
+@pytest.mark.asyncio
+async def test_rearmed_row_drops_old_retirement_note(wired, monkeypatch):
+    # Regression (green at base, which never re-sends): a same-artifact
+    # re-arm mints a new row; the retained note about the old one is
+    # obsolete and is never sent.
+    ep = await _courier_dispatched(wired)
+    _strip_courier_keys(ep["id"])
+    mgr, ch, _ = _real_seam(monkeypatch)
+    await pse._worker_pass()
+    assert len(pse.episodes("failed")) == 1
+    _owe(consent_pending=True)
+    rows = pse.episodes()
+    assert sum(r["id"] == ep["id"] for r in rows) == 0
+    assert len(rows) == 1
+    before = len(wired["dispatches"])
+    await mgr.start_all()
+    await pse._worker_pass()
+    await pse._worker_pass()
+    assert ch.count(_RETIRED) == 0
+    assert len(wired["dispatches"]) == before
+
+
+@pytest.mark.asyncio
+async def test_transport_failure_note_is_not_retried(wired, monkeypatch):
+    # Regression (green at base): a transport error may follow a message
+    # Telegram accepted (channels/telegram.py, `_send_one`), so the note is
+    # spent, never re-sent.
+    import asyncio
+
+    class _Timeout(Exception):
+        pass
+
+    ep = await _courier_dispatched(wired)
+    _strip_courier_keys(ep["id"])
+    mgr, ch, _ = _real_seam(monkeypatch)
+    await mgr.start_all()
+    accepted: list[str] = []
+
+    async def accept_then_raise(message, context):
+        ch.entries.append(message.text)
+        accepted.append(message.text)
+        raise _Timeout("ack lost")
+
+    monkeypatch.setattr(ch, "send_response", accept_then_raise)
+    before = len(wired["dispatches"])
+    await pse._worker_pass()
+    await pse._worker_pass()
+    await asyncio.sleep(5.2)
+    await pse._worker_pass()
+    assert len(ch.entries) == 1
+    assert len(accepted) == 1
+    assert len(wired["dispatches"]) == before
+
+
+@pytest.mark.asyncio
+async def test_note_restored_after_the_pump_exited_is_still_retried(
+        wired, monkeypatch):
+    # Regression (seam round 2): a worker pass holds an owed note in its
+    # re-send while the pump wakes on the emptied list and exits; the re-send
+    # fails not-ready and the note is put back — with no pump left unless
+    # putting it back starts one. Nothing else (no kick, no pass) follows.
+    import asyncio
+    import casa_core
+
+    ep = await _courier_dispatched(wired)
+    _strip_courier_keys(ep["id"])
+    mgr, ch, _ = _real_seam(monkeypatch)
+    gate = asyncio.Event()
+
+    async def gated_sleep(_s):
+        await gate.wait()
+        await asyncio.sleep(0.01)
+
+    monkeypatch.setattr(pse, "_note_sleep", gated_sleep)
+    held, release = asyncio.Event(), asyncio.Event()
+    hold = {"on": False}
+
+    async def notify(text):
+        if hold["on"]:
+            hold["on"] = False
+            held.set()
+            await release.wait()
+        await casa_core.operator_notify(mgr, text)
+
+    monkeypatch.setattr(pse, "_notify_operator", notify)
+    await pse._worker_pass()                     # owed, pump sleeping
+    pump = pse._note_pump_task
+    assert pump is not None and not pump.done()
+
+    await mgr.start_all()
+    hold["on"] = True
+    first = asyncio.ensure_future(pse._worker_pass())
+    await asyncio.wait_for(held.wait(), 5.0)     # the pass holds the note
+    gate.set()
+    await asyncio.wait_for(pump, 5.0)            # pump saw nothing owed
+    ch.is_ready = False
+    release.set()
+    await first                                  # re-send failed: put back
+    ch.is_ready = True
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 5.0
+    while not ch.delivered and loop.time() < deadline:
+        await asyncio.sleep(0.02)
+    assert ch.count(_RETIRED) == 1
+
+
+@pytest.mark.asyncio
+async def test_owed_note_kept_across_an_unreadable_store_read(
+        wired, monkeypatch):
+    # Regression (seam round 3): an unreadable read cannot say whether the
+    # row stands, so the owed note is kept — not sent, not dropped — and the
+    # next readable pass delivers it.
+    ep = await _courier_dispatched(wired)
+    _strip_courier_keys(ep["id"])
+    mgr, ch, _ = _real_seam(monkeypatch)
+    await pse._worker_pass()                     # owed before start
+    await mgr.start_all()
+    real = pse._read_store_bytes
+    shots = {"left": 1}
+
+    def flaky():
+        if shots["left"]:
+            shots["left"] -= 1
+            rec = pse._reset_record("unreadable")
+            return pse.StoreRead(pse._empty(rec), "unreadable", rec)
+        return real()
+
+    monkeypatch.setattr(pse, "_read_store_bytes", flaky)
+    await pse._drain_owed_notes()
+    assert shots["left"] == 0
+    assert ch.count(_RETIRED) == 0
+    assert len(pse.episodes("failed")) == 1
+    await pse._worker_pass()
+    assert ch.count(_RETIRED) == 1

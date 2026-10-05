@@ -163,6 +163,18 @@ re-arms it while that consent is pending again.
 
 **INV-PLUG-020**: A setup obligation that reached `failed` and whose plugin was then removed is re-armed by the first reconcile sweep that resolves the same artifact again — to `pending`/`awaiting_verdict`, as a fresh attempt with its own bounded budget, carrying the earlier failure readably — and by nothing earlier: removal itself mints no pending row, and a sweep that cannot resolve the plugin both live and from a fresh read of the registry file leaves the row as it is.
 
+**Operator notes the channel cannot take yet.** The worker's first pass runs before the
+channels start, so a note it owes then — a retired untracked row, a dropped or failed run,
+a refusal — met a channel that could not send it, and was lost. Such a note is now kept in
+memory and re-sent while its row still stands as the note reports: `casa_core.main` kicks the worker once the channels have started, the
+pass sends what is owed first, and while a note is still owed a note-only retry re-sends
+it every few seconds without running a pass. Only the not-ready raise of
+`operator_notify` keeps a note, because it happens before anything reaches Telegram; any
+other failure may follow a message Telegram accepted, so it is logged and not re-sent.
+A restart before delivery loses the note.
+
+**INV-PLUG-049**: An operator note about a setup obligation's transition — retirement of an untracked row, a dropped or failed run, a refusal, execution exhaustion — whose send meets a Telegram channel that is not ready is retained in memory and delivered exactly once when the channel can take it, unless Casa restarts first, with no worker pass, kick or dispatch run for it; `casa_core.main` kicks the setup worker once the channels have started; a note whose send failed any other way is not re-sent; a retained note whose row was replaced (a re-arm mints a new row) or whose status changed is dropped, and one is kept unsent while the store cannot be read; the not-ready raise before the channels have started is logged at INFO without a traceback, a not-ready channel after that at ERROR with one.
+
 ## Failure behavior
 
 **No consent verdict has settled for an artifact.** The obligation holds, indefinitely and
