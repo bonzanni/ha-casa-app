@@ -15409,6 +15409,9 @@ async def _bundle_reload_and_verify(
     runtime = getattr(agent_mod, "active_runtime", None)
     reloaded: list = []
     reload_errors: list = []
+    # #1146: the component root of the specialist's live agent, read when its
+    # own reload returned — None when no reload ran or there is nothing to read.
+    loaded_root_after_reload = None
     uninstalling = bool(targets_removed)
     if runtime is not None:
         if uninstalling:
@@ -15427,6 +15430,7 @@ async def _bundle_reload_and_verify(
                 reload_errors.append({"target": f"specialist:{slug}", **res})
         elif not _specialist_target_pending(runtime, slug):
             res = await reload_mod.dispatch("agent", runtime=runtime, role=slug)
+            loaded_root_after_reload = _live_component_root(runtime, slug)
             if res.get("status") == "ok":
                 reloaded.append(f"specialist:{slug}")
             else:
@@ -15494,7 +15498,21 @@ async def _bundle_reload_and_verify(
         "reloaded": reloaded, "reload_errors": reload_errors,
         "not_ready": not_ready, "absent_violations": absent_violations,
         "verify": verify, "removed_artifact_ids": list(removed_artifact_ids),
+        "loaded_root_after_reload": loaded_root_after_reload,
     }
+
+
+def _live_component_root(runtime, slug: str) -> "str | None":
+    """#1146: the `component_root` of *slug*'s live agent's binding, or None.
+
+    Synchronous, so the caller reads it in the same step as the reload's
+    return. None — no evidence, never "a different version" — when there is no
+    agent, no binding, or a binding that carries no root (a persona override
+    sets none)."""
+    agent = (getattr(runtime, "agents", None) or {}).get(slug)
+    binding = getattr(getattr(agent, "config", None), "binding", None)
+    root = getattr(binding, "component_root", None)
+    return root if isinstance(root, str) else None
 
 
 async def _bundle_compensate(txn) -> bool:
@@ -15593,6 +15611,30 @@ _KEPT_NEW_VERSION_ENVELOPE = {
         "re-running the same upgrade finishes whatever it left undone"),
 }
 
+# #1146: the same kept failure when the specialist's own reload failed and its
+# live agent was not the new version when that reload returned. Past and
+# standing facts only: the reload result is the observation, and active.yaml
+# naming the new version is what the next load reads.
+_KEPT_NOT_LOADED_OUTCOME = (
+    "the new version is kept: its files are committed and active.yaml names "
+    "it, because the version it replaced cannot be restored whole (a setting it "
+    "kept as a plain value is now secret). Reloading the specialist failed, and "
+    "when that reload returned the specialist was running its previous version. "
+    "Nothing was rolled back; the failure above is reported, and Casa tries to "
+    "load the new version at the next reload or restart")
+
+# #1146: the same kept failure when the specialist's own reload failed and left
+# no root to compare — a persona-override binding carries none, the specialist
+# had no live agent, or the sequencer recorded nothing. That is no evidence
+# either way, so it says neither "active" nor "previous version".
+_KEPT_RUNNING_UNKNOWN_OUTCOME = (
+    "the new version is kept: its files are committed and active.yaml names "
+    "it, because the version it replaced cannot be restored whole (a setting it "
+    "kept as a plain value is now secret). Reloading the specialist failed, and "
+    "which version it was running when that reload returned could not be "
+    "established. Nothing was rolled back; the failure above is reported, and "
+    "Casa tries to load the new version at the next reload or restart")
+
 
 # #1095 (ruling-1095-5, ruling-1095-6): the LIBRARY-kept arm of
 # specialist_upgrade returns before the sequencer, so Casa has loaded none of
@@ -15636,6 +15678,17 @@ async def _bundle_seq_failure(txn, seq: dict, *, slug: str) -> dict:
         # #975: nothing was rolled back, so none of the rollback wording below
         # is true — say what holds instead.
         env.update(_KEPT_NEW_VERSION_ENVELOPE)
+        # #1146: after a failed reload "active" holds only when the root the
+        # reload left is the new version's (the swap landed, e.g. a
+        # reregister_failed). A different root says the previous version was
+        # running; no root (an override binding, no agent, no key) is no
+        # evidence either way, and the text says it could not be established.
+        loaded_root = seq.get("loaded_root_after_reload")
+        if seq.get("reload_errors"):
+            if not isinstance(loaded_root, str):
+                env["outcome"] = _KEPT_RUNNING_UNKNOWN_OUTCOME
+            elif loaded_root != getattr(txn, "target_root", None):
+                env["outcome"] = _KEPT_NOT_LOADED_OUTCOME
         # The kept version's owned-plugin swap is a committed removal of
         # whatever it dropped (INV-TOOL-007), exactly as on success.
         env.update(_swap_removal_disclosure(txn))
@@ -17212,7 +17265,9 @@ async def specialist_upgrade(args: dict) -> dict:
                 # #1095 (ruling-1095-5/-6): this arm returns BEFORE the
                 # sequencer, so Casa has loaded none of it — the result says
                 # so, never the shared envelope's "active" sentence (which the
-                # sequencer-ran arm in _bundle_seq_failure keeps).
+                # sequencer-ran arm in _bundle_seq_failure keeps unless the
+                # specialist's own reload failed without leaving the new
+                # version's root on the live agent, #1146).
                 dropped = list(getattr(exc, "dropped_owned_names", ()) or ())
                 return {"ok": False, "kind": exc.kind, "detail": exc.detail,
                         "kept_new_version": True,

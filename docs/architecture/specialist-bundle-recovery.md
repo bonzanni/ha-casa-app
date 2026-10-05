@@ -102,8 +102,14 @@ conversations still use the previous version, and what finishes it — re-runnin
 upgrade, or, when finishing the retained prior failed too and further changes are refused
 until a restart, restarting Casa and then re-running it. That is true when it is said; an
 unrelated reload before the re-run can load parts of the kept version for new conversations.
-`kept_new_version: true` on a failed reload-and-verify comes after the sequencer loaded the new
-version, and keeps saying it is active. A failure between the commit and the owned-plugin
+`kept_new_version: true` on a failed reload-and-verify comes after the sequencer ran. It says the
+new version is active unless the specialist's own reload failed. Then the live agent's binding,
+read when that reload returned, decides: a component root other than the new version's makes it
+say the specialist was running its previous version when the reload returned; no root to read (a
+persona-override binding carries none, or there was no live agent) makes it say which version was
+running could not be established; the new version's root keeps the active sentence. Both other
+texts say the reload failed and that Casa tries to load the new version at the next reload or
+restart. A failure between the commit and the owned-plugin
 swap leaves the new version committed with the previous version's owned plugins, and says
 so; re-running the same upgrade finishes it. A successful upgrade finishes the prior the same
 way before it returns.

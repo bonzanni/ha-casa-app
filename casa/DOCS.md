@@ -1614,10 +1614,17 @@ tells you which conversation is still open and tries again at the next reload
 of the agents.
 
 If an upgrade fails after the new version was already kept but before Casa
-loaded it, Casa says the upgrade is not active yet — new and open conversations
-still use the previous version — and that re-running the upgrade finishes it
-(or, in the rarer case where cleaning up the previous version also failed, that
-you should restart Casa and then re-run the upgrade).
+tried to load it, Casa says the upgrade is not active yet — new and open
+conversations still use the previous version — and that re-running the upgrade
+finishes it (or, in the rarer case where cleaning up the previous version also
+failed, that you should restart Casa and then re-run the upgrade). If Casa did
+try to load the kept version and reloading the specialist failed, Casa reports
+that failure; when it read that the specialist was running its previous
+version when that reload returned, it says so instead of saying the new version
+is active. It cannot read which version is running for a specialist that has
+had a persona applied to it, as described above; for such a specialist it says
+that which version was running when that reload returned could not be
+established, rather than that the new version is active.
 
 **Changing a resident's persona costs you its conversations.** Giving Ellen,
 the butler or the concierge a different persona — or resetting one back to its

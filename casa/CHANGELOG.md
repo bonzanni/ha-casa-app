@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.344.23] - 2026-10-05
+
+### Fixed
+- A specialist upgrade can fail after its new version has been kept, because the version it replaced cannot be restored whole. When that happened and reloading the specialist then failed, the upgrade's result still said the new version "is active and stays active". The result now says that the new version is kept and that reloading the specialist failed, and then what Casa read when that reload returned: that the specialist was running its previous version, or, when Casa could not read which version was running (as for a specialist that has had a persona applied to it), that this could not be established. When Casa read that the new version was running when that reload returned, the result still says the new version is active. (#1146)
+
 ## [0.344.22] - 2026-10-05
 
 ### Fixed
