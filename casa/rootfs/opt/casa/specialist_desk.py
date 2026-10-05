@@ -729,7 +729,7 @@ async def handle_reply(
     import tools as tools_mod
     from channels import DeliveryOutcome
     from channels.tg_richtext import render_paged
-    from output_boundary import IntentKind, TurnScope, strips_to_silence
+    from output_boundary import IntentKind, TurnScope, closing_silence_prefix, strips_to_silence
 
     label = label_for(desk_role)
     context = {"chat_id": str(chat_id), "cid": cid}
@@ -868,6 +868,14 @@ async def handle_reply(
                 else:
                     await _tell("had nothing to add.", notice=True)
             else:
+                # #1283 (#1075 rule 2 only): a closing run of sentinel-only
+                # messages after earlier text is dropped and the earlier
+                # messages are the reply — judged on the runner's own message
+                # list against the words shown (after the #1252 cut), so a
+                # list that is not this text's leaves the reply whole
+                trimmed = closing_silence_prefix(shown, getattr(output, "reply_messages", ()))
+                if trimmed is not None:
+                    shown = trimmed
                 admitted = scope.admit(IntentKind.FINAL_REPLY, shown)
                 labelled = admitted.with_text(f"{label}\n{admitted}")
                 post = rb.PostRecord(role=desk_role, operator_id=user_id, plugin="",
@@ -902,11 +910,15 @@ async def handle_reply(
 # -- S5 §5: the tap's desk use — the pinned one-call turn -------------------
 
 def _tap_prompt(label: str, runtime_name: str, canonical: str) -> str:
-    """§5.2.3: the only text the model is given besides its role prompt and
-    the desk block. The model is the hands; the pin enforces the one call."""
+    """§5.2.3: the only text the model is given besides its role prompt — no
+    desk block, no recalled memory, no operator frame (#1282). The model is
+    the hands; the pin enforces the one call, and whether the tap still
+    applies is the plugin's to decide, not the model's."""
     return (f'[casa stored call] The operator tapped "{label}" on your proposal. '
             f"Call the tool `{runtime_name}` exactly once, with exactly these arguments "
-            f"and nothing else: {canonical}. Then stop. Do not call any other tool and do "
+            f"and nothing else: {canonical}. Make the call even if it looks out of date or "
+            f"already done: the plugin decides whether the tap still applies, and its answer "
+            f"is what the operator sees. Then stop. Do not call any other tool and do "
             f"not write anything to the operator — Casa posts the tool's result.")
 
 
@@ -1026,8 +1038,6 @@ async def handle_tap(
                 return
             now = DESKS.now()
             desk.begin_use(now)
-            resident_name = tools_mod._display_name_for_role(resident_role)
-            block = render_block(desk.log, resident_name=resident_name)
             run_id = uuid.uuid4().hex
             tapped = f"[tapped: {button}]"
             origin = _desk_origin(
@@ -1039,7 +1049,11 @@ async def handle_tap(
             origin["turn_scope"] = TurnScope.for_desk(
                 origin, display_name=tools_mod._display_name_for_role(desk_role))
             task_text = _tap_prompt(button, runtime, canonical)
-            context_text = _compose_context(block, None, None, now, resident_name=resident_name)
+            # #1282: the pinned turn is given Casa's instruction only — not the
+            # desk's exchanges, nor a frame calling the task the operator's
+            # message — so nothing invites the model to judge the tap itself;
+            # the desk log is still written after the tap
+            context_text = ""
             # the permit AFTER the lock; it never waits
             permit = None
             limiter = tools_mod._specialist_limiter

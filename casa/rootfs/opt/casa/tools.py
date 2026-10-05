@@ -3111,6 +3111,11 @@ class DelegatedOutput:
     run_terminal_reason: str | None = None
     run_stop_reason: str | None = None
     tool_calls: dict[str, int] = field(default_factory=dict)
+    # #1283: the text-bearing messages ``text`` is joined from — under a #1252
+    # approval cut, the prefix ``approval_kept`` joins — for the desk reply's
+    # closing-silence rule. Empty from a producer that does not report them,
+    # which leaves the reply judged on its whole text.
+    reply_messages: tuple[str, ...] = ()
 
     @property
     def run_aborted(self) -> bool:
@@ -3800,8 +3805,10 @@ async def _run_delegated_agent(
 
     # Specialist memory read on the shared `casa` bank, at the PARENT context's
     # read-clearance (design §3, plan 3). Opt-in via cfg.memory.token_budget > 0.
+    # #1282: a stored-call turn recalls NOTHING, keyed exactly as its retain
+    # skip below — the pinned turn's prompt is Casa's instruction only.
     memory_block = ""
-    if cfg.memory.token_budget > 0:
+    if cfg.memory.token_budget > 0 and not parent.get("stored_call"):
         unavailable_note = (
             f'<memory_context agent="{cfg.role}" status="unavailable">\n'
             "Long-term memory could not be checked for this task "
@@ -4173,6 +4180,7 @@ async def _run_delegated_agent(
             if result_msg is not None else None
         ),
         tool_calls=dict(tool_counts or {}),
+        reply_messages=tuple(messages),
     )
 
     # Cluster S (#709): a terminal result that carries `is_error=True` or a
@@ -4196,6 +4204,8 @@ async def _run_delegated_agent(
     # wrote before that call onto the scope it ran under; `text` stays whole.
     if approval_scope is not None and approval_cut.cut is not None:
         approval_scope.approval_kept = "\n\n".join(messages[:approval_cut.cut])
+        # #1283: the messages the kept words are joined from, cut at the same index
+        output = replace(output, reply_messages=tuple(messages[:approval_cut.cut]))
 
     # Specialist write: one explicit tier-classified retain of the exchange
     # OFFERED to the shared bank, gated by the PARENT channel's write-trust
