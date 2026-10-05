@@ -1622,8 +1622,9 @@ try to load the kept version and reloading the specialist failed, Casa reports
 that failure; when it read that the specialist was running its previous
 version when that reload returned, it says so instead of saying the new version
 is active. It cannot read which version is running for a specialist that has
-had a persona applied to it, as described above; for such a specialist Casa
-says the new version is active.
+had a persona applied to it, as described above; for such a specialist it says
+that which version was running when that reload returned could not be
+established, rather than that the new version is active.
 
 **Changing a resident's persona costs you its conversations.** Giving Ellen,
 the butler or the concierge a different persona — or resetting one back to its
