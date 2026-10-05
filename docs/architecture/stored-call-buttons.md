@@ -27,9 +27,9 @@ and deposits a JSON object: a text (one page, with Casa's label line) and one to
 buttons, each a label and a *stored call* — a bare tool name of the same plugin, resolved
 through the depositing call's own server, with fixed JSON arguments. Casa posts the text
 labelled with the buttons as an inline keyboard, filed in the post map like any post. When
-the operator taps, no ordinary model turn runs and no model decides anything: Casa runs one
-short *pinned* specialist turn whose prompt names the one call and whose hooks allow exactly
-that call — the stored tool with the stored arguments, byte for byte in canonical JSON —
+the operator taps, no ordinary model turn runs and no model is asked to decide anything: Casa
+runs one short *pinned* specialist turn whose prompt names the one call, to be made whatever
+the tap looks like, and whose hooks allow exactly that call — the stored tool with the stored arguments, byte for byte in canonical JSON —
 and deny every other call and any second call. The plugin's own response is the receipt,
 posted labelled — its `receipt` sentence when the response's text is a JSON object carrying
 a non-blank string `receipt`, otherwise the text verbatim; a plugin refusal (its revision
@@ -103,6 +103,18 @@ that same captured input, unchanged — no second resolve, no rebuild — so a r
 artifact carrying the same tool name cannot be reached after the check. The permit is taken
 after the lock, as a desk reply takes it.
 
+**What the pinned turn is given.** Besides the specialist's own role prompt, its one prompt is
+the `<delegation_context>` lines every delegated turn opens with — the resident's role and
+name, the channel, the register — and the task: Casa's note that the operator tapped the
+button, the stored tool's runtime name and its canonical arguments, the instruction to make
+that call even if it looks out of date or already done because the plugin decides whether the
+tap still applies and its answer is what the operator sees, and to write nothing to the
+operator. It carries no desk exchange, no recalled memory and no frame calling the task the
+operator's message (#1282): those are what a model would judge the tap by, and the judgement
+is the plugin's (its revision guard). That lowers the chance the model ends without the call;
+it cannot remove it — nothing in the session forces a tool call — and such a turn is the
+refusal notice, with no retry. The desk's exchange is still written after the tap.
+
 **The pin and the capture.** The pin is one predicate applied in two places, because the CLI
 runs matching PreToolUse hooks concurrently and one hook's deny does not stop its siblings:
 inside the plugin admission hook as its first check, and as a `matcher=None` matcher first
@@ -161,6 +173,8 @@ exit sweep, which ends every task at once (Casa-wide behaviour, not S5's).
 **INV-PROP-003**: A keyboard with stored calls exists only for a deposit from a tool declaring the `operator_proposal` slot, whose calls name the same plugin's declared tools with fixed reference-free arguments within the bounds, and whose message was proven delivered; a proposal that did not land holds no stored call, a chat holds at most 32 live proposals, and a proposal expires after one hour.
 
 **INV-PROP-004**: A pinned stored-call turn is built with `ToolSearch` disallowed, and its one prompt is sent only after the CLI's MCP status lists no server of the session as pending; an ordinary specialist turn's build adds no `ToolSearch` denial and its prompt is sent without asking for MCP status.
+
+**INV-PROP-005**: A pinned stored-call turn's prompt carries no exchange from the specialist's desk, no memory recalled for the turn, and no frame presenting its task as a message from the operator.
 
 **INV-FILE-003**: A `📎` tap arms the next file in that chat for the specialist whose proposal carried the button, for the operator who tapped, for at most ten minutes; the arming exists from the moment the tap is committed, before the keyboard is edited or anything is sent; exactly one file consumes it; a later arming replaces it; a restart forgets it; and Casa sends no message about an arming — the edited keyboard is the whole acknowledgement, and the only text a tap can produce is the past-fact line that the buttons could not be cleared.
 
@@ -241,6 +255,8 @@ starts it ([`specialist-job-start.md`](specialist-job-start.md)).
 - `tests/test_pinned_run.py`
 - `tests/test_pinned_wiring.py`
 - `tests/test_file_handoff_arm.py`
+- `tests/test_redcase_1282.py`
+- `tests/test_pinned_prompt_controls.py`
 
 **Related**
 - [`architecture/stored-call-termination.md`](../architecture/stored-call-termination.md)
