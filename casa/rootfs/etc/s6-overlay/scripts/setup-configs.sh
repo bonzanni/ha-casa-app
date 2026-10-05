@@ -1,4 +1,4 @@
-#!/command/with-contenv bashio
+#!/command/with-contenv /opt/casa/scripts/core-bashio.sh
 # 5.5 item 3: strip ANSI from bashio output for clean docker logs.
 export BASHIO_LOG_NO_COLORS=true
 export NO_COLOR=1
@@ -363,8 +363,12 @@ mkdir -p "$TOOLS_BIN"
 # engagement tool overrides; core services must therefore exec the venv
 # interpreter by absolute path (/opt/casa/venv/bin/python3), never bare python3.
 # The s6 driver (drivers/s6_rc.py) runs its s6 programs under a PATH with this
-# directory removed (#987, its PLUGIN_TOOLS_BIN names it).
-CURRENT_PATH="${PATH}"
+# directory removed (#987, its PLUGIN_TOOLS_BIN names it), and so do the core
+# s6 scripts, this one included: their interpreter, core-bashio.sh, removes it
+# before bashio runs (#1268) and keeps the PATH it was given in _casa_cli_path,
+# which svc-casa, svc-casa-mcp and the terminal hand back. The merge below
+# reads that saved PATH, so what it publishes does not depend on the filter.
+CURRENT_PATH="${_casa_cli_path}"
 if ! printf "%s" "$CURRENT_PATH" | grep -q "^\(.*:\)\?${TOOLS_BIN}\(:\|$\)"; then
     NEW_PATH="$TOOLS_BIN:$CURRENT_PATH"
     printf "%s" "$NEW_PATH" > /run/s6/container_environment/PATH

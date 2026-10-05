@@ -18,15 +18,17 @@ uniqueness. It does not establish that a launched program then works: a program
 that starts and exits non-zero passes the probe. It does not establish anything
 about an image as built on any architecture; that is what a lane runs, not what
 a test asserts. It does not reach programs outside `drivers/s6_rc.py` either:
-the run template's `setpriv`/`claude`, the `with-contenv`/`bashio` shebangs, and
-the base image's own boot programs.
+the run template's `setpriv`/`claude`, the core s6 scripts' interpreter
+(`/opt/casa/scripts/core-bashio.sh`, pinned by
+`tests/test_core_s6_interpreter.py`), and the base image's own boot programs.
 
 Nor does the probe it pins establish that a runtime launch resolves these bare
 names to the programs the image installed: `setup-configs.sh` prepends
 `/config/tools/bin`, which an installed plugin publishes binaries into, ahead of
 the entire image PATH for every s6-supervised service. That is a property of the
 running system rather than of the image; `_run` resolves under a PATH without
-that directory (#987), pinned by `tests/test_s6_rc_trusted_path.py`. The
+that directory (#987), pinned by `tests/test_s6_rc_trusted_path.py`, and so do
+the core s6 scripts until their final exec (#1268). The
 extractor below reports a `subprocess.run` anywhere outside `_run` as
 unsupported, so a call site that skips the helper turns this red as well.
 """

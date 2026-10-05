@@ -49,7 +49,7 @@ def test_terminal_dir_created_0700_owned_www_data_before_exec():
     text = _RUN.read_text()
     assert "install -d -m 0700 -o www-data -g www-data" in text
     # The dir must be prepared before ttyd is exec'd (exec replaces the shell).
-    assert text.index("install -d") < text.index("exec ttyd")
+    assert text.index("install -d") < text.index("exec /usr/bin/ttyd")
 
 
 def test_disabled_branch_still_sleeps():

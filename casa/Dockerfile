@@ -19,6 +19,15 @@ FROM ${BUILD_FROM}
 RUN test -d /package/admin/s6-overlay/etc/s6-rc/sources \
     || { echo "s6-overlay sources not found at /package/admin/s6-overlay/etc/s6-rc/sources (base image layout changed; see drivers/s6_rc.py S6_OVERLAY_SOURCES)" >&2; exit 1; }
 
+# #1268: every core s6 script runs through /opt/casa/scripts/core-bashio.sh,
+# which execs `/bin/bash /usr/bin/bashio` by absolute path, and the bashio
+# launcher finds its library through the link's target. A base that moves
+# either path would stop every core service at boot, and CI's e2e image swaps
+# these scripts for its own, so the build checks the layout here.
+RUN test "$(readlink -f /usr/bin/bashio)" = /usr/lib/bashio/bashio \
+    && test -f /usr/lib/bashio/bashio.sh \
+    || { echo "bashio not found at /usr/bin/bashio -> /usr/lib/bashio/bashio (base image layout changed; see /opt/casa/scripts/core-bashio.sh)" >&2; exit 1; }
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
          python3 python3-pip python3-venv \

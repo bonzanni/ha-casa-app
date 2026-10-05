@@ -1,4 +1,4 @@
-#!/command/with-contenv bashio
+#!/command/with-contenv /opt/casa/scripts/core-bashio.sh
 # 5.5 item 3: strip ANSI from bashio output for clean docker logs.
 export BASHIO_LOG_NO_COLORS=true
 export NO_COLOR=1
@@ -27,11 +27,16 @@ TERM_SOCK="${TERM_DIR}/ttyd.sock"
 install -d -m 0700 -o www-data -g www-data "${TERM_DIR}"
 
 bashio::log.info "Starting ttyd web terminal on ${TERM_SOCK}..."
-exec ttyd \
+# #1268: everything above ran on the PATH core-bashio.sh filtered. The terminal
+# shell gets the inherited PATH back, as before; ttyd and the shell binary are
+# named absolutely, so neither is looked up on it.
+PATH=$_casa_cli_path
+unset _casa_cli_path
+exec /usr/bin/ttyd \
     -d 0 \
     --writable \
     --interface "${TERM_SOCK}" \
     --socket-owner www-data:www-data \
     --base-path /terminal \
     --cwd /config \
-    bash
+    /bin/bash

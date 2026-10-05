@@ -38,6 +38,16 @@ itself belongs to `architecture/observability.md`), and the `CASA_*` path/versio
 application uniformly — treating them as global root overrides silently splits reads from
 writes.
 
+The four services' `run` and `finish` scripts and the four one-shots' scripts all run
+through one interpreter, `/opt/casa/scripts/core-bashio.sh`, rather than naming bashio
+directly. Config materialisation puts the plugin tools directory first on every service's
+PATH, and a plugin publishes executables there under any name, so the interpreter removes
+that directory from PATH before bashio, its library or the script looks anything up — the
+rule the engagement scripts' root phase uses — and refuses to start when no other entry is
+left. The PATH it was given is handed back only at three final execs: the main application
+and the MCP service start Python with it, so the agent CLI and plugin MCP servers still find
+plugin tools first, and the terminal's shell, named by absolute path, gets it too.
+
 Four `init-*` one-shots exist — config validation, config materialisation, nginx setup and
 the plugin store — but they do **not** all precede every service. Each service names only
 the one-shots it needs: the nginx setup gates `svc-nginx` alone, the plugin store gates both

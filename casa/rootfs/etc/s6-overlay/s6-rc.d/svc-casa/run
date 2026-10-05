@@ -1,4 +1,4 @@
-#!/command/with-contenv bashio
+#!/command/with-contenv /opt/casa/scripts/core-bashio.sh
 # 5.5 item 3: strip ANSI from bashio output for clean docker logs.
 export BASHIO_LOG_NO_COLORS=true
 export NO_COLOR=1
@@ -162,4 +162,8 @@ unset _spec_conc _spec_cost
 
 # SUPERVISOR_TOKEN is injected automatically by the HA Supervisor.
 
+# #1268: this script ran on the PATH core-bashio.sh filtered; casa_core's CLI
+# children and plugin MCP servers get the inherited one, tools dir first.
+PATH=$_casa_cli_path
+unset _casa_cli_path
 exec /opt/casa/venv/bin/python3 /opt/casa/casa_core.py
