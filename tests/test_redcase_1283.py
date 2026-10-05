@@ -17,21 +17,24 @@ pytestmark = pytest.mark.asyncio
 NARRATION = "The reading was posted to the operator with Apply/Cancel buttons."
 
 
+@pytest.mark.parametrize("closing", [1, 2])
 @pytest.mark.parametrize("posted", [True, False])
-async def test_a_closing_silence_after_narration_never_shows_the_sentinel(desk, posted):
+async def test_a_closing_silence_after_narration_never_shows_the_sentinel(desk, posted, closing):
     async def _plugin_post():
         turn = (agent_mod.origin_var.get(None) or {}).get("_delegation_id")
         rb.POSTS.record(turn, rb.PostEvent("c", "probe", "report", LABEL, 1, None))
     items = [_text(NARRATION)]
     if posted:
         items.append(_Step(_plugin_post))
-    items.append(_text("<silent/>"))
+    # the closing run: one sentinel-only message, or two (Astra, red-case
+    # specify: the whole trailing run of sentinel-only messages is dropped)
+    items.extend(_text("<silent/>") for _ in range(closing))
     _Scripted.load(*items)
     await _reply(desk, text="the Snelstart Software one is wrong")
     shown = [str(m) for m, _ctx in desk.channel.replies]
     print("REPLIES", shown, "NOTICES", desk.channel.notices, "ECHO", sd.prompt_prefix(OPERATOR))
     assert not any("<silent/>" in s for s in shown), shown
     # #1075 rule 2 only (N2-1): the earlier message is kept and only the
-    # closing sentinel message is dropped, whether or not the plugin posted —
+    # closing sentinel messages are dropped, whether or not the plugin posted —
     # one labelled reply, exactly the narration
     assert shown == [f"{LABEL}\n{NARRATION}"], shown
