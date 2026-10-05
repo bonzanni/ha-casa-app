@@ -1643,10 +1643,15 @@ plugin store. Removing a plugin that can erase its
 data asks the confirmation first, then the erase question.
 
 If an upgrade fails after the new version was already kept but before Casa
-tried to load it, Casa says the upgrade is not active yet — new and open
-conversations still use the previous version — and that re-running the upgrade
-finishes it (or, in the rarer case where cleaning up the previous version also
-failed, that you should restart Casa and then re-run the upgrade). If Casa did
+tried to load it, Casa says the upgrade is not active yet and that re-running the
+upgrade finishes it (or, in the rarer case where cleaning up the previous version
+also failed, that you should restart Casa and then re-run the upgrade). It
+compares the version the specialist is running with the one the upgrade
+replaced: when they are the same it says new and open conversations still use
+the previous version; when they differ (an earlier failed upgrade can leave an
+older version running), it says the specialist was not running the new version
+when the upgrade returned; and for a specialist whose running version it cannot read, it says
+that version could not be established. If Casa did
 try to load the kept version and reloading the specialist failed, Casa reports
 that failure; when it read that the specialist was not running the new version
 when that reload returned, it says so instead of saying the new version is
