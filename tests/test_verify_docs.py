@@ -4,12 +4,14 @@ Every case here was first a manual probe against the real corpus. A clean pass p
 nothing on its own — the point of these is that each check demonstrably bites.
 """
 import importlib.util
+import re
 import subprocess
 import sys
 from collections import Counter
 from pathlib import Path
 
 import pytest
+import yaml
 
 # Loaded by explicit path, not `from scripts import verify_docs`: tests/conftest.py inserts
 # the application code root at sys.path[0], and that root contains its OWN `scripts/`
@@ -1152,37 +1154,85 @@ def test_each_shard_names_every_other_shard_and_its_own_range(tmp_path):
     assert siblings == 42
 
 
-def test_the_real_index_keeps_s_apart_from_t_z_and_every_row_once(tmp_path):
-    """#1275: the S-Z shard outgrew the index ceiling and splits at `T`. Read from
-    the COMMITTED corpus, not a fixture: the manifest declares the S and T-Z shards
-    as generated and no longer declares `doctrine/invariants-s-z.md`; every
-    rendered row whose family sorts at or after `T` sits in
-    `doctrine/invariants-t-z.md`, every `S`..`SZ` row in `doctrine/invariants-s.md`,
-    and each row line occurs exactly ONCE across every markdown file under docs/
-    — so a row left behind in the retained shard, a T family kept on it, or an S
-    family moved off it is caught here."""
-    docs = REPO_ROOT / "docs"
-    manifest = (docs / "manifest.yaml").read_text()
-    assert manifest.count("- doc: doctrine/invariants-s.md\n  kind: generated\n") == 1
-    assert manifest.count("- doc: doctrine/invariants-t-z.md\n  kind: generated\n") == 1
-    assert "doctrine/invariants-s-z.md" not in manifest
+# One literal lead per family on each side of the `T` bound, quoted from the
+# committed payload: independent of the renderer and of the manifest.
+SPLIT_LEADS = {
+    "doctrine/invariants-s.md": [
+        "| `INV-SPEC-001` | No durable component-store write happens",
+        "| `INV-STATE-001` | Only an explicit whitelist of the mapped configuration root",
+        "| `INV-SYS-001` | Config materialisation depends on config validation",
+    ],
+    "doctrine/invariants-t-z.md": [
+        "| `INV-TG-001` | A webhook update is accepted only when a secret is configured",
+        "| `INV-TOOL-001` | The result wrapper marks an outer error only",
+        "| `INV-TRIG-001` | A resident's scheduled trigger registers only",
+        "| `INV-TURN-001` | The resume-versus-fresh decision is re-derived",
+        "| `INV-VOICE-001` | Every voice route refuses a request",
+    ],
+}
 
-    owner: dict[str, list[str]] = {}
-    lines = Counter()
+
+def test_the_real_index_keeps_s_apart_from_t_z_and_every_row_once():
+    """#1275: the S-Z shard outgrew the index ceiling and splits at `T`. Read from
+    the COMMITTED corpus, not a fixture. The expected rows come from the DECLARING
+    documents (each `**INV-…**:` line of a manifest document), never from the index
+    being checked, so a row dropped from the index is missing, not unexpected.
+
+    (a) Partition, resolved through the manifest's generated index entries: the
+    shards holding the T-Z families and the shards holding the S families are
+    disjoint, and they are exactly `doctrine/invariants-t-z.md` and
+    `doctrine/invariants-s.md`, which the manifest declares in place of
+    `doctrine/invariants-s-z.md`.
+    (b) Payload: every declared S and T-Z row — `| id | statement | home |`, with
+    the statement as its document declares it — occurs exactly ONCE across every
+    markdown file under docs/, in its shard, and each literal lead in
+    `SPLIT_LEADS` sits on exactly one line corpus-wide, in its named shard."""
+    docs = REPO_ROOT / "docs"
+    entries = []
+    for source in [docs / "manifest.yaml"] + sorted((docs / "manifest.d").glob("*.yaml")):
+        entries.extend(yaml.safe_load(source.read_text()) or [])
+    index = sorted(e["doc"] for e in entries
+                   if e.get("kind") == "generated" and e["doc"].startswith("doctrine/invariants"))
+
+    declared: dict[str, str] = {}
+    for entry in entries:
+        if entry.get("kind", "document") != "document":
+            continue
+        for line in (docs / entry["doc"]).read_text().splitlines():
+            match = re.search(r"\*\*(INV-[A-Z]+-\d+)\*\*\s*:", line)
+            if match:
+                inv, statement = match.group(1), line.split(":", 1)[1].strip()
+                declared[inv] = f"| `{inv}` | {statement} | [`{entry['doc']}`](../{entry['doc']}) |"
+    family = lambda inv: inv.split("-")[1]  # noqa: E731
+    kept = sorted(i for i in declared if "S" <= family(i) < "T")
+    moved = sorted(i for i in declared if family(i) >= "T")
+    assert kept and moved
+
+    holders: dict[str, list[str]] = {}
+    for shard in index:
+        for line in (docs / shard).read_text().splitlines():
+            if line.startswith("| `INV-"):
+                holders.setdefault(line.split("`")[1], []).append(shard)
+    kept_shards = {s for i in kept for s in holders.get(i, [])}
+    moved_shards = {s for i in moved for s in holders.get(i, [])}
+    assert kept_shards.isdisjoint(moved_shards), (kept_shards, moved_shards)
+    assert "doctrine/invariants-s-z.md" not in index
+    assert {"doctrine/invariants-s.md", "doctrine/invariants-t-z.md"} <= set(index)
+    assert {i: holders.get(i) for i in kept} == {i: ["doctrine/invariants-s.md"] for i in kept}
+    assert {i: holders.get(i) for i in moved} == {i: ["doctrine/invariants-t-z.md"] for i in moved}
+
+    where: dict[str, list[str]] = {}
     for md in sorted(docs.rglob("*.md")):
         rel = md.relative_to(docs).as_posix()
         for line in md.read_text().splitlines():
-            if line.startswith("| `INV-"):
-                lines[line] += 1
-                if rel.startswith("doctrine/invariants"):
-                    owner.setdefault(line.split("`")[1], []).append(rel)
-    late = {i: f for i, f in owner.items() if i.split("-")[1] >= "S"}
-    s_rows = sorted(i for i in late if i.split("-")[1] < "T")
-    t_rows = sorted(i for i in late if i.split("-")[1] >= "T")
-    assert len(s_rows) >= 20 and len(t_rows) >= 60
-    assert {i: owner[i] for i in s_rows} == {i: ["doctrine/invariants-s.md"] for i in s_rows}
-    assert {i: owner[i] for i in t_rows} == {i: ["doctrine/invariants-t-z.md"] for i in t_rows}
-    assert [line for line, n in lines.items() if n != 1] == []
+            where.setdefault(line, []).append(rel)
+    shard_of = {i: "doctrine/invariants-s.md" for i in kept}
+    shard_of.update({i: "doctrine/invariants-t-z.md" for i in moved})
+    assert {i: where.get(declared[i]) for i in shard_of} == {i: [shard_of[i]] for i in shard_of}
+    for shard, leads in SPLIT_LEADS.items():
+        for lead in leads:
+            assert [rel for line, rels in where.items() if line.startswith(lead)
+                    for rel in rels] == [shard], lead
 
 
 # --- a manifest that fails to load renders nothing (#812) ---------------------------
