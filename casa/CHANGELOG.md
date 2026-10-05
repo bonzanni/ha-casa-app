@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.344.33] - 2026-10-05
+
+### Fixed
+- A plugin's background job that runs as a worker of a resident (a plugin you installed on a resident directly) is no longer offered the shell tool, so a command it backgrounds can no longer make Casa read a reply that belongs to another turn. A specialist is now offered the shell tool only when its role grants it as Claude Code reads a grant: `Bash`, or a well-formed `Bash(<pattern>)` such as `Bash(git status:*)`; this includes a background job a specialist runs. A malformed entry such as `Bash(` grants nothing, so the tool is denied. A resident's own conversations are unchanged; when another agent delegates a task to a resident, that delegated run follows the specialist rule, and the shipped residents already deny the shell tool in their configuration. A specialist whose role already grants or denies the shell tool is unaffected. Where a role grants it, read-only shell commands, including backgrounded ones, still run without Casa's permission check. (#1294)
+
 ## [0.344.32] - 2026-10-05
 
 ### Fixed

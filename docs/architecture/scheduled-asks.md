@@ -117,7 +117,7 @@ When the operator answered (the broker's `answered` outcome, its actor accepted 
 operator), the continuation also carries one reserved marker, `_answered_by_operator`
 (`provenance.ANSWERED_BY_OPERATOR`), computed by the finish hook from that outcome alone. It is
 read only to record who started a job the turn launches
-([`background-jobs.md`](background-jobs.md)); it is not the turn's speaker, grants nothing, and
+([`background-job-fresh-sessions.md`](background-job-fresh-sessions.md)); it is not the turn's speaker, grants nothing, and
 is never set for an expired or cancelled question, an answer by anyone else, or a boot replay.
 
 What it does not cover: the shutdown cancel, which settles nothing, edits nothing and leaves

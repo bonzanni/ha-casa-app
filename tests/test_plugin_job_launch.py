@@ -64,7 +64,7 @@ async def test_worker_options_record_and_topic(worker, monkeypatch, limit):
     opts = Client.instances[0].options
     assert isinstance(opts, ClaudeAgentOptions)
     assert opts.allowed_tools == ['Skill', 'ToolSearch', 'mcp__plugin_ledger_ledger', *jobs.PLUGIN_JOB_CASA_GRANTS]
-    assert opts.disallowed_tools == ['Agent', 'Task', 'AskUserQuestion',
+    assert opts.disallowed_tools == ['Agent', 'Task', 'AskUserQuestion', 'Bash',
                                     'SendMessage', 'ListAgents', 'PushNotification',
                                     'ScheduleWakeup', 'CronCreate', 'CronDelete',
                                     'CronList', 'Monitor', 'RemoteTrigger']

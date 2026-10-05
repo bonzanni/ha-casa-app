@@ -166,7 +166,7 @@ tool call, no terminal transition — runs between the decision and the call. Pl
 beside the driver's liveness check, would put the awaiting lock acquisition between the two and
 reopen exactly the window it closes.
 A fresh job's turn is the one place something awaits after that admission: its conversation
-reset runs under the same lock (INV-BGJOB-005, [`background-jobs.md`](background-jobs.md)), so
+reset runs under the same lock (INV-BGJOB-005, [`background-job-fresh-sessions.md`](background-job-fresh-sessions.md)), so
 the admission is asked again, synchronously, once the reset is confirmed, and that second
 answer is the one immediately before the call.
 
@@ -195,7 +195,7 @@ a retry. Both halves of the invariant's last sentence are that one path.
 and the caller gets a retryable outcome naming the condition. This is a precondition failure,
 not an error state.
 A fresh job, whose next turn starts with no memory of the refusal, also records the refused
-completion so that turn's brief names it ([`background-jobs.md`](background-jobs.md),
+completion so that turn's brief names it ([`background-job-fresh-sessions.md`](background-job-fresh-sessions.md),
 INV-BGJOB-007); the reply is the same.
 
 **An inbound accessor raises.** The gate fails open for THAT accessor, with a warning rather

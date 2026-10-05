@@ -15,6 +15,8 @@ run at once is [`background-job-occupancy.md`](background-job-occupancy.md). The
 in — its topic, turn admission, completion gate and finalization — is described by
 [`engagements.md`](engagements.md) and the documents it routes to; the per-role engagement
 slot is in [`delegation.md`](delegation.md).
+A job's `session` mode and what a fresh job's turns see are
+[`background-job-fresh-sessions.md`](background-job-fresh-sessions.md).
 
 ## Mental model
 
@@ -40,8 +42,11 @@ name and launch model. The record keeps one declaring artifact and the numeric b
 turn limit (the declaration's override, otherwise the resident's configured limit).
 The worker loads that artifact's skills and MCP servers, plus only `report_job_progress`
 and `emit_completion` from Casa. Its native grants are `Skill` and `ToolSearch`;
-`Agent`, `Task` and `AskUserQuestion` are denied, as are the CLI's cross-session tools
-(INV-MCP-013 in [`mcp-and-tools.md`](mcp-and-tools.md)). Empty settings sources, default
+`Agent`, `Task`, `AskUserQuestion` and `Bash` are denied, as are the CLI's cross-session tools
+(INV-MCP-013 in [`mcp-and-tools.md`](mcp-and-tools.md)). `Bash` has to be denied outright: the
+pinned CLI runs a read-only command without asking the fail-closed callback, and when a
+backgrounded command finishes, the live CLI runs a turn Casa never sent, which the next batch
+would read as its own reply. Empty settings sources, default
 permission mode and the fail-closed callback keep the resident's settings and tools out.
 The Casa-owned prompt asks the worker to park items needing answers and report progress;
 it supplies no resident persona or memory. Plugin authorization and result-contract hooks
@@ -59,93 +64,10 @@ batches. The job ends when the specialist calls `emit_completion`, when the oper
 `/cancel`s it, or when Casa fails it (a batch that raised or was cut off, no progress, or
 the batch cap).
 
-A job also declares how its turns see the conversation, with `session`. `resume`, the
-default, runs every turn in one conversation. `fresh` starts every turn after the launch — a
-batch, an operator message, any later turn — in a fresh conversation that begins with the
-job brief, so no earlier turn's messages are visible to it. The engagement keeps its one
-client: under the turn lock, after the turn is admitted, the driver sends the CLI's `/clear`
-through that client, drains it to its result, and goes on only once the CLI confirmed the
-reset; it then asks the admission again and sends `job_brief(rec)` followed by the turn's
-own text. The brief is the title, the job id, the skill to load, the record's `task`, the
-launch context — recorded verbatim at launch in `origin["job"]["brief_context"]` — and the
-batch rules.
-Every session id a fresh job's client reports, the launch's and each reset's, is appended
-once to `origin["job"]["sids"]` (`engagement_registry.JOB_SIDS_KEY`) and persisted when first
-seen — the list the transcript reaper reads (INV-ENG-022).
-That includes the outgoing id a reset confirmation carries, which is the only frame naming a
-clearance-rebuilt client's own session, and a clearance downgrade leaves the list in place.
-A restart resumes the recorded session exactly as for any job, and the first turn's reset
-then drops that history. Counters, judgment, caps, the sweep, the tool set and the launch
-turn are the same in both modes.
+A job also declares `session` (`resume`, the default, or `fresh`); what a fresh job's turns
+see is [`background-job-fresh-sessions.md`](background-job-fresh-sessions.md).
 
 ## Contracts & invariants
-
-**INV-BGJOB-005**: Every turn of a fresh job after its launch is preceded, under the turn lock, by a conversation reset that is confirmed before the turn is accepted, and begins with the job brief built only from the record's task, its clearance-governed launch context, and Casa's record of who started it; a resume-mode job and every non-job engagement are unchanged.
-
-The reset sits after the turn's admission (a terminal engagement is never reset) and before
-the ticket is accepted and the prompt sent, inside the lock that already serialises every
-turn, so it can never land inside another turn: an operator message arriving mid-batch waits
-on that lock and is then reset and briefed on the same client. It runs on every such turn,
-not only after a served one, which is what makes freshness hold without a counter: after a
-restart the resumed history is dropped by the first turn's reset, and after a clearance
-rebuild the reset is a harmless no-op. The reset awaits, so the admission is asked again,
-synchronously, once it is confirmed: a `/cancel` that committed during the reset refuses the
-turn with nothing accepted and nothing sent. A clearance downgrade drops `brief_context` in
-the same step that withholds the task ([`memory-scoping.md`](memory-scoping.md)), and the
-brief then says the context is withheld, so nothing the clamp withheld returns through it.
-The launch prompt and every brief also carry one `Job id: <engagement id>` line — an
-identifier, not launch material, so it stays through a downgrade — by which a plugin claims
-work and matches the job-end notice, whose delegation id is that same engagement id.
-
-**Who started the job (#1277).** In the job's launch prompt and in every fresh-turn brief,
-the line IMMEDIATELY AFTER the FIRST line `Job id: <job id>`, before `Request:`, is exactly
-one of `Started by: operator`, `Started by: scheduled` or `Started by: agent`: the whole line,
-LF-terminated, with no leading or trailing spaces and no variable part. It appears exactly
-once. A resume-mode job has it in the launch prompt only. A clearance downgrade keeps it, as it
-keeps `Job id:`. The token is Casa's fact, recorded once at launch and unchanged across
-restarts: `_launch_interactive_engagement` evaluates it from the launching turn's origin
-(`background_jobs.job_started_by`) into `origin["job"]["started_by"]`, and both renderers read
-only that field, never the origin's markers.
-- `scheduled`: a Casa job trigger started the job on its schedule. No agent turn ran.
-- `operator`: the job was started in a turn Casa attributes to an authenticated act of the
-  operator: the operator's own message; the operator's tap on a button the assistant
-  offered, on a question asked in the DM or from a scheduled turn; the operator's Approve tap
-  on a protected call; an operator turn at a specialist desk; a specialist's own start at a
-  desk the operator used, or in a delegation made in such a turn, as Casa's release notes for
-  that version state. It attributes the TURN. It does not say which option was tapped, or what
-  drove the start inside that turn. A start made in such a turn reads `operator` even when the
-  operator tapped "No", or when a scheduled turn's own instructions drove it.
-- `agent`: an agent's turn that the operator did not author or answer started the job. This
-  includes the assistant's own scheduled turns, webhooks, an unanswered or cancelled question,
-  and setup or consent turns.
-
-The evidence is the turn's reserved markers: `_scheduled_job` first, then `_operator_turn` or
-the scheduled ask's `_answered_by_operator` ([`scheduled-asks.md`](scheduled-asks.md)), else
-`agent`. A delegated start, waited for or not, reads the token of the turn that delegated.
-No line (a record written before the release) means "Casa did not say"; nothing is inferred
-for it. The line is Casa-written at a position no model-written text occupies; a look-alike
-inside `Request:` or `Context:` is the model's text, and a reader takes the line immediately
-after the first `Job id:` line, never the first `Started by:` it finds.
-What it does not cover: the launch turn, which runs its own launch prompt with no reset and
-no brief; and the transcript files of earlier conversations, which stay on disk while the
-job runs — once it is terminal, the transcript reaper deletes every session the list names
-([`engagement-finalization.md`](engagement-finalization.md)).
-
-**INV-BGJOB-007**: A completion a fresh job's worker requested and the completion gate refused for unread input is recorded on the job and named in every later brief until the record is terminal — without its text once the clearance was lowered; while it is recorded, a held ingress reservation holds the next batch back, and a job that reaches its batch cap or the no-progress guard is spared one batch, once per job.
-
-Otherwise the fresh turn that reads the message would forget the `unread_inbound`
-refusal's "read it, then complete".
-`emit_completion` records `origin["job"]["completion_pending"]` (the status and the bounded
-text) at both of its refusal sites, and `job_brief` adds one line naming the status and the
-text's first line and asking for the completion again. Nothing clears it: an accepted
-completion is a terminal transition, and no terminal record is briefed. Its text was authored
-at the job's tier, so a clearance downgrade keeps only the status, and a refusal recorded
-after the downgrade (a turn begun before it) records only the status. The spare covers input
-that never becomes a turn before the limit check — an ingress reservation released without
-a ticket, or a restart, which drops unread tickets — and is marked `pending_spared` with the
-batch's counters. What it does not cover: Casa never completes a job itself, and a
-resume-mode job records nothing — its conversation remembers the refusal.
-
 **INV-BGJOB-001**: A job engagement's next batch is started only while the record is live, the ended turn was not cut off, no turn is queued and no turn delivery is in progress; the previous batch is judged, the batch number chosen and the batch cap checked in the same synchronous step that admits it, and that batch is counted only once the hand-off has been accepted — a refused hand-off leaves every counter untouched.
 
 `background_jobs.job_after_turn` runs after every turn of a job engagement — the launch
@@ -302,14 +224,6 @@ A failure resuming one job does not stop the others. Engagement permits are not 
 at boot. A launch interrupted during its opening acknowledgement retains the ordinary
 launch cancellation and telling; it does not enter continuation recovery.
 
-**A fresh job's conversation reset fails.** A `/clear` whose drain raises, ends without the
-CLI's reset confirmation, or ends without a clean result fails the turn with
-`ConversationResetError` before its ticket is accepted and before its prompt is sent. It
-takes the delivery task's ordinary failure path, exactly as a failed client query does: the
-topic's `Turn failed` line and the job's `a batch failed: ConversationResetError` finalize
-(INV-BGJOB-002). A CLI that cannot reset its conversation is a broken client, and nothing
-retries it.
-
 **A batch handoff is refused.** `deliver_system_turn` returns false when the engagement is
 terminal, cannot be resumed, or Casa is stopping. It consumes no batch number and adds no
 no-progress judgment. The loop logs the refusal.
@@ -351,19 +265,14 @@ belong in the launch and resume builders; both kinds share the batch loop and la
 - `casa/rootfs/opt/casa/tools.py::build_engagement_resume_options`
 - `casa/rootfs/opt/casa/tools.py::report_job_progress`
 - `casa/rootfs/opt/casa/casa_core.py::_resume_background_jobs`
-- `casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver._reset_conversation`
 
 **Tests**
 - `tests/test_background_jobs_declaration.py`
 - `tests/test_start_job.py`
 - `tests/test_plugin_job_launch.py`
 - `tests/test_background_jobs_loop.py`
-- `tests/test_job_fresh_conversation.py`
-- `tests/test_job_pending_completion.py`
 - `tests/test_specialist_job_host.py`
 - `tests/test_job_turn_identity.py`
-- `tests/test_job_starter_line.py`
-- `tests/test_job_starter_regressions.py`
 
 **Related**
 - [`architecture/engagements.md`](../architecture/engagements.md)
@@ -371,4 +280,5 @@ belong in the launch and resume builders; both kinds share the batch loop and la
 - [`architecture/plugins.md`](../architecture/plugins.md)
 - [`architecture/engagement-turn-admission.md`](../architecture/engagement-turn-admission.md)
 - [`architecture/background-job-occupancy.md`](../architecture/background-job-occupancy.md)
+- [`architecture/background-job-fresh-sessions.md`](../architecture/background-job-fresh-sessions.md)
 <!-- END SOURCEMAP -->

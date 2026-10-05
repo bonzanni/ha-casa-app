@@ -66,12 +66,17 @@ protected call consumes, and the challenge that mints it, are
 
 **Tiers are not gated alike, and this is the asymmetry to carry away.** Residents and
 specialists get plugin grants merged into their allowed tools, a fail-closed tool gate, and
-the protected-tool approval hook. **Executors get none of those** — they receive plugin
-paths, and their declared tool list is passed to the SDK as *auto-approved* tools, which is
+the protected-tool approval hook. A specialist's options also deny Bash unless its role lists
+Bash in some form, bare or scoped (`Bash(<pattern>)`), because the pinned CLI runs a read-only
+command without asking that gate. A role that lists a scoped form keeps the tool, and its
+read-only commands, background ones included, still skip the gate. **Executors get none of those** — they
+receive plugin paths, and their declared tool list is passed to the SDK as *auto-approved* tools, which is
 a convenience rather than an enforcement boundary: sub-agent spawning bypasses an
 allowed-tools list, and only the disallowed list is CLI-enforced. What actually constrains an
 executor is the code-mandatory clamps merged into every options build — sub-agent spawn tools
-are hard-denied, Bash is hard-denied unless the declaration allows it, and guard hooks
+are hard-denied, Bash is hard-denied unless the declaration allows it (an in_casa executor's
+options count only a bare `Bash`; a `claude_code` executor's settings count a scoped
+`Bash(<pattern>)` too), and guard hooks
 protect managed components and agent-home settings. A plugin declaring protected tools
 protects resident and specialist calls; it creates no equivalent gate on the executor path.
 

@@ -6,6 +6,7 @@ Code is the source of truth; these files are a map.
 ## Architecture
 
 - [architecture/agent-taxonomy.md](architecture/agent-taxonomy.md): How an agent is declared, validated and looked up — tiers, required artifacts, and the registry.
+- [architecture/background-job-fresh-sessions.md](architecture/background-job-fresh-sessions.md): A plugin-declared background job's session mode — a fresh job's confirmed conversation reset before every turn after the launch, the job brief, the session ids it keeps, the Started by line of its launch prompt and briefs, and a refused completion its later briefs name.
 - [architecture/background-job-occupancy.md](architecture/background-job-occupancy.md): How many plugin-declared background jobs may be live or starting at once — one per installed plugin and one per plugin manifest name, whichever host kind runs it — and the claim that covers a start before its record exists.
 - [architecture/background-jobs.md](architecture/background-jobs.md): Plugin-declared background jobs — the casa.jobs declaration, the resident jobs block, start_job, the batch loop and its progress tool, and resuming a job after a restart.
 - [architecture/callback-delivery.md](architecture/callback-delivery.md): The authorization-callback delivery half — the mtime-clocked publish-once spool, the per-flow attempt ledger and its ack protocol, the consumer verbs, and redelivery until receipt.
