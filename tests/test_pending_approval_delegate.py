@@ -209,8 +209,8 @@ def _key(args=None) -> GrantKey:
 class _Turn:
     """The resident turn's world: channel, grants, the child's hook."""
 
-    def __init__(self, tmp_path) -> None:
-        self.agent = _make_agent(tmp_path)
+    def __init__(self, tmp_path, *, warm: bool = False) -> None:
+        self.agent = _warm_agent(tmp_path) if warm else _make_agent(tmp_path)
         self.channel = _Channel()
         self.agent._channel_manager.register(self.channel)
         self.grants, self.coord = GrantStore(), ChallengeCoordinator()
@@ -301,6 +301,32 @@ class _Turn:
 def tools_mod():
     import tools
     return tools
+
+
+def _warm_agent(tmp_path):
+    """A resident the pool keeps warm between turns (the eligibility the
+    pooling suite's agent has: a role id, a binding digest, a provenance)."""
+    from agent import Agent
+    from channels import ChannelManager
+    from config import AgentConfig, CharacterConfig, MemoryConfig, ToolsConfig
+    from mcp_registry import McpServerRegistry
+    from role_artifact_stub import STUB_ROLE_ARTIFACT
+    from session_reg_helpers import (
+        RESIDENT_DIGEST, resident_prov, resident_role_id,
+    )
+    cfg = AgentConfig(role_artifact=STUB_ROLE_ARTIFACT, role="assistant",
+                      model="claude-sonnet-4-6", system_prompt="You are helpful.",
+                      character=CharacterConfig(name="Test"),
+                      tools=ToolsConfig(allowed=["Read"],
+                                        permission_mode="acceptEdits"),
+                      memory=MemoryConfig(token_budget=1000,
+                                          read_strategy="per_turn"),
+                      role_id=resident_role_id("assistant"), kind="resident",
+                      binding_digest=RESIDENT_DIGEST,
+                      speaker_provenance=resident_prov("assistant"))
+    return Agent(config=cfg,
+                 session_registry=SessionRegistry(str(tmp_path / "sessions.json")),
+                 mcp_registry=McpServerRegistry(), channel_manager=ChannelManager())
 
 
 def _child_denied(call_id="deny-1", args=None, turn=None) -> list:
@@ -546,3 +572,95 @@ async def test_approval_cut_behaviour_is_unchanged_and_pending_keys_only_reads()
     cut.observe("", {"": ("pending", "C")}, 1)           # no id: never read
     assert cut.pending_keys == ("B",)
     assert cut.pending == {"B": 5}
+
+
+async def test_a_child_that_spent_a_grant_and_then_asked_again_stays_cut(tmp_path):
+    """The child consumed the operator's grant, then made the identical call
+    again: a new keyboard is up. Consumes are applied before the waiting keys,
+    so the spent grant cannot release the new deny."""
+    turn = _Turn(tmp_path)
+    turn.grants.mint(_key())
+    child = [_call("ok-1"), turn.ask("ok-1"), _result("ok-1", error=False),
+             _text("C1"), _call("deny-1"), turn.ask("deny-1"), _result("deny-1"),
+             _text("C2")]
+    await turn.run([_text("BEFORE")] + turn.delegate("d-1", child) + [_text(TAIL)])
+    assert [_deny_reason(a) if a else "allow" for a in turn.answers] == [
+        "allow", _DENY_POSTED]
+    assert len(turn.channel.posts) == 1
+    assert turn.channel.final_texts() == ["BEFORE"]
+
+
+class _WarmClient(_ConnectedClient):
+    """One pooled client serving several turns: each query runs the next
+    script, and every handler still runs from the context of the ONE connect —
+    so whatever a later turn's fold sets in its own task never reaches it."""
+
+    def __init__(self, options, scripts: list, sid: str) -> None:
+        super().__init__(options, [], sid)
+        self._scripts = list(scripts)
+
+    async def query(self, prompt, session_id="default"):
+        self.queries.append(prompt)
+        self._script = self._scripts.pop(0)
+
+
+class _WarmFactory(_ConnectedFactory):
+    def __call__(self, options) -> _WarmClient:
+        c = _WarmClient(options, self._scripts, sid=f"sid-{len(self.clients) + 1}")
+        self._scripts = []
+        self.clients.append(c)
+        return c
+
+
+async def test_a_warm_clients_second_turn_is_cut_on_its_own_scope(tmp_path):
+    """The handler reaches the launching turn's scope through the pooled
+    holder its entry snapshot copies — rewritten in place at each turn — not
+    through anything bound when the client connected during an earlier turn."""
+    turn = _Turn(tmp_path, warm=True)
+    first = [_text("Hello.")]
+    second = [_text("BEFORE")] + turn.delegate("d-1", _child_denied(turn=turn)) \
+        + [_text(TAIL)]
+    tools = tools_mod()
+    turn.factory = _WarmFactory([first, second])
+
+    async def _two_turns(_resident, **kw):
+        import verdict_broker
+        registry = MagicMock()
+        registry.register_delegation = AsyncMock()
+        registry.complete_delegation = AsyncMock()
+        tools.init_tools(channel_manager=turn.agent._channel_manager,
+                         bus=MagicMock(), specialist_registry=registry,
+                         mcp_registry=MagicMock())
+        cfg = _specialist_cfg(SPECIALIST)
+        _Child.queue = []
+        try:
+            with ExitStack() as stack:
+                stack.enter_context(patch.object(verdict_broker, "BROKER",
+                                                  verdict_broker.VerdictBroker()))
+                stack.enter_context(patch.object(SessionRegistry, "_save_locked",
+                                                  AsyncMock()))
+                stack.enter_context(patch.object(
+                    tools, "_agent_role_map",
+                    {"assistant": _caller_cfg(), SPECIALIST: cfg}))
+                stack.enter_context(patch.object(
+                    tools, "_prelaunch",
+                    AsyncMock(return_value=(SPECIALIST, cfg, None, None, None))))
+                stack.enter_context(patch.object(
+                    tools, "_build_specialist_options",
+                    return_value=ClaudeAgentOptions(model="sonnet")))
+                stack.enter_context(patch.object(tools, "_delegated_resolution",
+                                                  return_value=None))
+                stack.enter_context(patch("tools.ClaudeSDKClient", _Child))
+                stack.enter_context(patch("sdk_client_pool._default_make_client",
+                                          turn.factory))
+                stack.enter_context(_patch_retry_sleep())
+                await asyncio.wait_for(turn.agent.handle_message(_msg("dm")), 10)
+                await asyncio.wait_for(turn.agent.handle_message(_msg("dm")), 10)
+        finally:
+            await turn.agent.aclose()
+
+    await _two_turns(None)
+    assert len(turn.factory.clients) == 1          # one connect, two turns
+    assert len(turn.factory.clients[0].queries) == 2
+    assert len(turn.channel.posts) == 1
+    assert turn.channel.final_texts() == ["Hello.", "BEFORE"]
