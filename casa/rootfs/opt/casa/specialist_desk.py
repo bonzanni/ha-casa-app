@@ -1176,6 +1176,14 @@ async def handle_tap(
                     if not delivered:
                         await _notice(f"{label} applied your tap; the receipt did not go out.")
                     record_echo(chat_id, applied)
+                    # #1302: the card follows a receipt that landed, never stands in for one
+                    if capture.kind == "receipt" and capture.next and delivered and not desk.faulted:
+                        why = await _post_next_card(capture.next, meta=meta, build=build,
+                                                    runtime=runtime, seg=seg, run_id=run_id)
+                        if why is not None:
+                            logger.info("stored call %s: the next card was not shown (%s)",
+                                        run_id, why)
+                            await _notice(f"{label} could not show the next card ({why}).")
                 elif capture.kind == "delivered":
                     specialist_side = POSTED_PROPOSAL        # the landed proposal is the receipt
                     record_echo(chat_id, applied)
@@ -1201,6 +1209,50 @@ async def handle_tap(
         if reservation is not None:
             reservation.release()             # idempotent: a cancel while waiting
         channel._release_typing(context, str(chat_id))
+
+
+async def _post_next_card(value: str, *, meta: dict, build: Any, runtime: str, seg: str,
+                          run_id: str) -> str | None:
+    """#1302: the next card a ``safe`` tap tool returned beside its receipt,
+    posted right after the receipt in the same desk use. It is a proposal
+    deposit like any other: judged by ``proposal_ok`` against the stored
+    tool's own entry (its plugin and server) and the SAME captured maps the
+    tap was re-checked against, then posted through ``_post_proposal`` (the
+    live bound, the revision supersede, registered before the send). The
+    identity is the tapped proposal's own record. Returns ``None`` when the
+    card landed, else the reason word for the operator's notice."""
+    import types
+    import result_broker as rb
+    from authz_grants import GrantIdentity
+    entry = build.contract_map.tools.get(runtime)
+    identity = GrantIdentity(
+        operator_id=int(meta["operator_id"]), chat_id=int(meta["chat_id"]),
+        enforcement_role=str(meta.get("role") or ""),
+        artifact_id=str(meta.get("artifact_id") or ""), engagement_id="")
+    call = types.SimpleNamespace(identity=identity, entry=entry, tool_use_id=run_id,
+                                 contract_map=build.contract_map, protected=build.protected)
+    try:
+        parsed, _why = rb.proposal_ok(value, call)
+    except Exception as exc:  # noqa: BLE001 — e.g. a lone surrogate the encoder refuses
+        logger.info("next card refused: %s", type(exc).__name__)
+        parsed = None
+    if parsed is None:
+        return "invalid"
+    post = rb.PostRecord(role=identity.enforcement_role, operator_id=identity.operator_id,
+                         plugin=seg, slot=rb.OPERATOR_PROPOSAL, tool_use_id=run_id,
+                         owner=run_id, posted_at=DESKS.now(), kind=rb.OPERATOR_PROPOSAL)
+    try:
+        delivered, _detail, _event, withheld = await rb._post_proposal(
+            identity, seg, rb.OPERATOR_PROPOSAL, call, parsed,
+            rb.post_label(identity.enforcement_role), post)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — not proven
+        logger.warning("next card post failed: %s", type(exc).__name__)
+        return "not delivered"
+    if delivered:
+        return None
+    return "too many open" if withheld == rb._REASON_PROPOSAL_TOO_MANY else "not delivered"
 
 
 async def _settle_pinned_run(owner: Any, run: "asyncio.Task | None", mode: str, *, permit: Any,

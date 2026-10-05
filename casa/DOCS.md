@@ -1262,6 +1262,16 @@ assistant learns only that you tapped and whether it applied. Typing your
 answer as a reply to the proposal still works as before. Needs Casa 0.342.0 or
 later.
 
+A tap can also bring the next decision (v0.344.35). When the tapped tool's JSON
+answer carries, beside its `receipt`, a `next` object of the same shape as a
+proposal (text, buttons, optional `revision`), Casa posts the receipt and then
+that card, so a list of decisions is walked one tap per card with no **Next**
+button. The card is checked like any proposal — its buttons may only name the
+same plugin's own tools — and its buttons run only when you tap them. If the
+card cannot be shown, the receipt stands and one line says why; if the receipt
+itself could not be posted, no card follows. A card with the
+same `revision` as a live one replaces it.
+
 #### A file for a specialist (v0.343.0)
 
 A file follows the same rule as a reply. Send a PDF or photo as a swipe-reply on a

@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.344.35] - 2026-10-06
+
+### Added
+- A specialist's plugin can now bring up its next decision card as soon as you answer one. When you tap a button on its proposal and the plugin's answer carries, beside the receipt, the next card (`next`, the same shape as a proposal), Casa posts the receipt and then that card. A list of decisions is then one tap per card, with no Next button. The card is checked exactly like any proposal, its buttons name only the same plugin's own tools, and they run only when you tap them. If the card cannot be shown (it is invalid, 32 proposals are already open in the chat, or it could not be posted), the receipt stands and one line tells you why. If the receipt itself could not be posted, no card follows it. A tap whose answer carries no next card works exactly as before. (#1302)
+
 ## [0.344.34] - 2026-10-05
 
 ### Fixed
