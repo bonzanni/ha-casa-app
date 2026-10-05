@@ -2725,6 +2725,9 @@ def upgrade_specialist(
         _reg = plugin_registry.load_registry(registry_path)
         before_owned = plugin_registry.owned_entries_for(slug, _reg)
         before_tuple_files = _tuple_files_snapshot(slug_dir)
+        # #1296: the version this upgrade replaces, read before the commit (after
+        # it, active.yaml names the incoming one); a kept failure carries it.
+        replaced_root = _active_root_of(before_tuple_files)
         ack_records = acks.snapshot_slug(slug)
         target_root = component_root_string(
             component_id=inspection.component_id, version=inspection.version,
@@ -2837,7 +2840,8 @@ def upgrade_specialist(
                 # swap may not have happened; re-running the same upgrade
                 # finishes it (the tuple commit is then a no-op).
                 raise _kept_new_version(
-                    rollback_txn, journal, slug, exc, dropped_names) from exc
+                    rollback_txn, journal, slug, exc, dropped_names,
+                    replaced_root=replaced_root) from exc
             # P1-1: complete the journal ONLY after a SUCCESSFUL rollback. A
             # rollback that raises leaves the in-progress journal on disk so boot
             # reconciliation re-runs it (or quarantines the slug) — completing here
@@ -2854,7 +2858,8 @@ def upgrade_specialist(
 
 
 def _kept_new_version(txn, journal, slug: str, exc: BaseException,
-                      dropped_names: "tuple[str, ...]" = ()) -> "SpecialistInstallError":
+                      dropped_names: "tuple[str, ...]" = (), *,
+                      replaced_root: "str | None" = None) -> "SpecialistInstallError":
     """#975: finish a kept reclassifying upgrade and build its report. The
     retained prior's rotation and sanitization are finished and the journal
     completed; if that cleanup itself fails the journal is LEFT, so boot
@@ -2862,43 +2867,80 @@ def _kept_new_version(txn, journal, slug: str, exc: BaseException,
     `dropped_names` are the owned plugins its registry swap already removed —
     a committed removal the tool layer discloses (INV-TOOL-007); the error
     carries them as `dropped_owned_names`."""
-    err = _kept_new_version_error(txn, journal, slug, exc)
+    err = _kept_new_version_error(txn, journal, slug, exc, replaced_root=replaced_root)
     err.dropped_owned_names = tuple(dropped_names)
     return err
 
 
-def _kept_new_version_error(txn, journal, slug: str,
-                            exc: BaseException) -> "SpecialistInstallError":
+# #1296: the one slot of the library-kept telling that depends on what Casa
+# finds running, keyed by how the live agent's component root compares with the
+# root the upgrade replaced. "matched" is ruling-1095-5's clause; the other two
+# are #1146's phrases (`tools._KEPT_NOT_LOADED_OUTCOME`,
+# `tools._KEPT_RUNNING_UNKNOWN_OUTCOME`), dated by this upgrade instead of "that
+# reload". The library runs off the event loop and cannot read the live agent,
+# so it builds every form and the tool picks one.
+_KEPT_IN_USE_CLAUSES = {
+    "matched": ", so new and open conversations still use the previous version",
+    "other": (", and when this upgrade returned the specialist was not running the "
+              "new version"),
+    "unknown": (", and which version it was running when this upgrade returned could "
+                "not be established"),
+}
+
+
+def _active_root_of(tuple_files: "dict[str, str | None]") -> "str | None":
+    """#1296: the `root` a captured `active.yaml` names, or None when there is
+    none to read — the same parse `BundleTxn.activation_kept` makes."""
+    try:
+        doc = yaml.safe_load(tuple_files.get("active.yaml") or "")
+    except yaml.YAMLError:
+        return None
+    root = doc.get("root") if isinstance(doc, dict) else None
+    return root if isinstance(root, str) else None
+
+
+def _kept_new_version_error(txn, journal, slug: str, exc: BaseException, *,
+                            replaced_root: "str | None" = None,
+                            ) -> "SpecialistInstallError":
     """#975: the library kept the new version after activation failed. #1095
     (ruling-1095-5/-6): the tool returns this before any reload, so Casa has
     loaded none of it — the detail says "not active yet", never "active".
     ``restart_first`` marks the variant whose prior-version cleanup also
-    failed: there a re-run is refused until Casa restarts (INV-SPEC-014)."""
+    failed: there a re-run is refused until Casa restarts (INV-SPEC-014).
+
+    #1296: ``detail`` is the ruled text; ``details_by_live`` holds the same text
+    with each in-use clause of `_KEPT_IN_USE_CLAUSES`, and ``replaced_root`` the
+    root the upgrade replaced, for the tool to choose by the live agent."""
     import specialist_bundle_journal
 
     step = f"{type(exc).__name__}: {exc}"
-    kept = (f"{slug!r}: the upgrade is not active yet. The new version is kept — the "
-            f"version it replaced cannot be restored whole, because a setting it kept "
-            f"as a plain value is now secret — but the upgrade then failed ({step}) "
-            f"before Casa loaded it, so new and open conversations still use the "
-            f"previous version")
+
+    def kept(clause: str) -> str:
+        return (f"{slug!r}: the upgrade is not active yet. The new version is kept — the "
+                f"version it replaced cannot be restored whole, because a setting it kept "
+                f"as a plain value is now secret — but the upgrade then failed ({step}) "
+                f"before Casa loaded it{clause}")
+    cleanup_failure: "Exception | None" = None
     try:
         txn.finish_forward()
         specialist_bundle_journal.complete(journal)
     except Exception as cleanup_exc:  # noqa: BLE001 — reported, boot retries
-        err = SpecialistInstallError(
-            "upgrade_kept_new_version",
-            f"{kept}. Finishing the retained prior failed too ({cleanup_exc}); its "
-            f"undo record is kept, so further changes to this specialist are refused "
-            f"until Casa restarts and finishes it: restart Casa, then re-run the "
-            f"upgrade. Nothing was deleted")
-        err.restart_first = True
-        return err
+        cleanup_failure = cleanup_exc
+
+    def told(clause: str) -> str:
+        if cleanup_failure is not None:
+            return (f"{kept(clause)}. Finishing the retained prior failed too "
+                    f"({cleanup_failure}); its undo record is kept, so further changes "
+                    f"to this specialist are refused until Casa restarts and finishes "
+                    f"it: restart Casa, then re-run the upgrade. Nothing was deleted")
+        return (f"{kept(clause)}, and its owned plugins may still be the previous "
+                f"version's. Re-running the same upgrade finishes it. Nothing was "
+                f"deleted")
     err = SpecialistInstallError(
-        "upgrade_kept_new_version",
-        f"{kept}, and its owned plugins may still be the previous version's. "
-        f"Re-running the same upgrade finishes it. Nothing was deleted")
-    err.restart_first = False
+        "upgrade_kept_new_version", told(_KEPT_IN_USE_CLAUSES["matched"]))
+    err.restart_first = cleanup_failure is not None
+    err.replaced_root = replaced_root
+    err.details_by_live = {k: told(c) for k, c in _KEPT_IN_USE_CLAUSES.items()}
     return err
 
 

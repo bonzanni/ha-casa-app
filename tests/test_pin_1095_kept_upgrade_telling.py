@@ -32,10 +32,13 @@ PREVIOUS = "new and open conversations still use the previous version"
 RERUN = "re-running the same upgrade finishes it"
 RESTART = "restart casa, then re-run the upgrade"
 OLD = "active and stays active"
+# #1296: the ruled text is said when the live agent runs the version replaced.
+REPLACED = "component:fin@1#sha256:" + "a" * 64
 
 
 @pytest.fixture
 def kept(monkeypatch):
+    import agent as agent_mod
     import specialist_bundle_journal
     import specialist_install
     import specialist_receipt
@@ -78,10 +81,15 @@ def kept(monkeypatch):
     def lib(**kw):
         txn = SimpleNamespace(finish_forward=finish_forward)
         err = specialist_install._kept_new_version_error(
-            txn, Path("/nonexistent/journal"), "fin", RuntimeError("activation failed"))
+            txn, Path("/nonexistent/journal"), "fin", RuntimeError("activation failed"),
+            replaced_root=REPLACED)
         err.dropped_owned_names = ()
         raise err
     monkeypatch.setattr(specialist_install, "upgrade_specialist", lib)
+    live = SimpleNamespace(config=SimpleNamespace(
+        binding=SimpleNamespace(component_root=REPLACED)))
+    monkeypatch.setattr(agent_mod, "active_runtime",
+                        SimpleNamespace(agents={"fin": live}), raising=False)
 
     async def seq(*a, **k):
         state.seq += 1

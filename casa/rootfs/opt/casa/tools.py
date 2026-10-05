@@ -15724,16 +15724,47 @@ _KEPT_RUNNING_UNKNOWN_OUTCOME = (
 # the kept version. Said in the present tense, at the moment of telling: an
 # unrelated reload before the re-run can change what new conversations get,
 # so neither text promises how long the previous version stays in use.
-_KEPT_NOT_ACTIVE_OUTCOME = (
+#
+# #1296: the in-use clause is true only when the specialist Casa finds running
+# is the version this upgrade replaced. After an earlier failed upgrade it can
+# be an older one, so the clause is chosen by comparing the live agent's
+# component root with the replaced root the library carries: equal keeps the
+# ruled text; a different root uses _KEPT_NOT_LOADED_OUTCOME's phrase, and no
+# root to compare uses _KEPT_RUNNING_UNKNOWN_OUTCOME's, both dated by this
+# upgrade. Every other byte is the ruled text's.
+_KEPT_NOT_ACTIVE_HEAD = (
     "the upgrade is not active yet: the new version is kept on disk, but Casa "
-    "has not loaded it, so new and open conversations still use the previous "
-    "version. Re-running the same upgrade finishes it.")
-_KEPT_NOT_ACTIVE_RESTART_OUTCOME = (
-    "the upgrade is not active yet: the new version is kept on disk, but Casa "
-    "has not loaded it, so new and open conversations still use the previous "
-    "version. Finishing the version it replaced failed too, so further changes "
-    "to this specialist are refused until Casa restarts: restart Casa, then "
-    "re-run the upgrade.")
+    "has not loaded it")
+_KEPT_IN_USE_CLAUSES = {
+    "matched": ", so new and open conversations still use the previous version",
+    "other": (", and when this upgrade returned the specialist was not running "
+              "the new version"),
+    "unknown": (", and which version it was running when this upgrade returned "
+                "could not be established"),
+}
+_KEPT_NOT_ACTIVE_TAILS = {
+    False: ". Re-running the same upgrade finishes it.",
+    True: (". Finishing the version it replaced failed too, so further changes "
+           "to this specialist are refused until Casa restarts: restart Casa, "
+           "then re-run the upgrade."),
+}
+_KEPT_NOT_ACTIVE_OUTCOMES = {
+    (restart, live): _KEPT_NOT_ACTIVE_HEAD + clause + tail
+    for live, clause in _KEPT_IN_USE_CLAUSES.items()
+    for restart, tail in _KEPT_NOT_ACTIVE_TAILS.items()}
+_KEPT_NOT_ACTIVE_OUTCOME = _KEPT_NOT_ACTIVE_OUTCOMES[(False, "matched")]
+_KEPT_NOT_ACTIVE_RESTART_OUTCOME = _KEPT_NOT_ACTIVE_OUTCOMES[(True, "matched")]
+
+
+def _kept_live_match(runtime, slug: str, replaced_root) -> str:
+    """#1296: how *slug*'s live agent compares with the root a library-kept
+    upgrade replaced — "matched", "other", or "unknown" when either side has no
+    root (a persona override, no live agent, nothing carried). Synchronous: the
+    caller reads it in the step that composes the result."""
+    live = _live_component_root(runtime, slug)
+    if not isinstance(live, str) or not isinstance(replaced_root, str):
+        return "unknown"
+    return "matched" if live == replaced_root else "other"
 
 
 async def _bundle_seq_failure(txn, seq: dict, *, slug: str) -> dict:
@@ -17497,6 +17528,7 @@ async def specialist_install_commit(args: dict) -> dict:
      "required": ["slug", "component_id", "version", "root_digest", "staged_dir", "receipt_id"]},
 )
 async def specialist_upgrade(args: dict) -> dict:
+    import agent as agent_mod
     from specialist_install import (
         InspectionResult, SpecialistInstallError, upgrade_specialist,
         validate_resume_inputs,
@@ -17568,12 +17600,18 @@ async def specialist_upgrade(args: dict) -> dict:
                 # sequencer-ran arm in _bundle_seq_failure keeps unless the
                 # specialist's own reload failed without leaving the new
                 # version's root on the live agent, #1146).
+                # #1296: the in-use clause by the live agent, read here with no
+                # await before the result is returned.
                 dropped = list(getattr(exc, "dropped_owned_names", ()) or ())
-                return {"ok": False, "kind": exc.kind, "detail": exc.detail,
+                live = _kept_live_match(
+                    getattr(agent_mod, "active_runtime", None), args["slug"],
+                    getattr(exc, "replaced_root", None))
+                details = getattr(exc, "details_by_live", None) or {}
+                return {"ok": False, "kind": exc.kind,
+                        "detail": details.get(live, exc.detail),
                         "kept_new_version": True,
-                        "outcome": (_KEPT_NOT_ACTIVE_RESTART_OUTCOME
-                                    if getattr(exc, "restart_first", False)
-                                    else _KEPT_NOT_ACTIVE_OUTCOME),
+                        "outcome": _KEPT_NOT_ACTIVE_OUTCOMES[
+                            (bool(getattr(exc, "restart_first", False)), live)],
                         **(_plugin_data_disclosure(_PLUGIN_DATA_NOTE_COMMITTED, dropped)
                            if dropped else {})}
             return {"ok": False, "kind": exc.kind, "detail": exc.detail}

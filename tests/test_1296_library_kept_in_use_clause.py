@@ -345,3 +345,36 @@ async def test_p8_no_carried_replaced_root_says_it_could_not_be_established(
     assert world.root() != world.a
     assert world.h.runtime.agents.writes == []
     _assert_told(out, UNKNOWN, restart=restart)
+
+
+# ── Regression controls added with the fix (green; not red cases) ───────────
+
+
+def test_p6_the_four_argument_call_still_builds_the_ruled_detail(monkeypatch):
+    """P-6: `_kept_new_version_error(txn, journal, slug, exc)` positionally, as
+    the #1095 pin's double calls it: the ruled detail, nothing carried."""
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    completed = []
+    monkeypatch.setattr(journal, "complete", completed.append)
+    err = si._kept_new_version_error(
+        SimpleNamespace(finish_forward=lambda: None), Path("/nonexistent/journal"),
+        "mtg", OSError("injected owned swap failure"))
+    assert completed == [Path("/nonexistent/journal")]
+    assert err.kind == "upgrade_kept_new_version" and err.restart_first is False
+    assert err.detail == _detail(RULED, restart=False)
+    assert err.replaced_root is None
+    assert err.details_by_live == {
+        "matched": _detail(RULED, restart=False), "other": _detail(NOT_NEW, restart=False),
+        "unknown": _detail(UNKNOWN, restart=False)}
+
+
+def test_the_tool_and_the_library_carry_the_same_three_clauses():
+    """The outcome and the detail choose from the same clauses, and the ruled
+    outcome constants keep their exact value."""
+    import tools
+    assert tools._KEPT_IN_USE_CLAUSES == si._KEPT_IN_USE_CLAUSES == {
+        "matched": RULED, "other": NOT_NEW, "unknown": UNKNOWN}
+    assert tools._KEPT_NOT_ACTIVE_OUTCOME == RULED_OUTCOME
+    assert tools._KEPT_NOT_ACTIVE_RESTART_OUTCOME == RULED_RESTART_OUTCOME
