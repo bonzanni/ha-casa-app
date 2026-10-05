@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.344.34] - 2026-10-05
+
+### Fixed
+- When a specialist upgrade keeps the new version but fails before Casa loads it, Casa now says that new and open conversations still use the previous version only when the specialist it finds running is the version that upgrade replaced. Otherwise it says that the specialist was not running the new version when the upgrade returned, or that which version it was running could not be established. A first failed upgrade from a cleanly loaded version, for a specialist whose running version Casa can read, reads exactly as before. The configurator's upgrade instructions tell it to relay that outcome as written. For a specialist under a persona override, or with no live agent, Casa now says which version was running could not be established, where it used to say new and open conversations still use the previous version. A reload of the specialist that lands after the upgrade has kept the new version and before it returns can make the result say the specialist was not running the new version when it was (#1298). The note that the specialist's owned plugins may still be the previous version's is unchanged. (#1296)
+
 ## [0.344.33] - 2026-10-05
 
 ### Fixed

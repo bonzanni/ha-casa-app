@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -31,10 +32,13 @@ PREVIOUS = "new and open conversations still use the previous version"
 RERUN = "re-running the same upgrade finishes it"
 RESTART = "restart casa, then re-run the upgrade"
 OLD = "active and stays active"
+# #1296: the ruled text is said when the live agent runs the version replaced.
+REPLACED = "component:fin@1#sha256:" + "a" * 64
 
 
 @pytest.fixture
 def kept(monkeypatch):
+    import agent as agent_mod
     import specialist_bundle_journal
     import specialist_install
     import specialist_receipt
@@ -77,10 +81,15 @@ def kept(monkeypatch):
     def lib(**kw):
         txn = SimpleNamespace(finish_forward=finish_forward)
         err = specialist_install._kept_new_version_error(
-            txn, Path("/nonexistent/journal"), "fin", RuntimeError("activation failed"))
+            txn, Path("/nonexistent/journal"), "fin", RuntimeError("activation failed"),
+            replaced_root=REPLACED)
         err.dropped_owned_names = ()
         raise err
     monkeypatch.setattr(specialist_install, "upgrade_specialist", lib)
+    live = SimpleNamespace(config=SimpleNamespace(
+        binding=SimpleNamespace(component_root=REPLACED)))
+    monkeypatch.setattr(agent_mod, "active_runtime",
+                        SimpleNamespace(agents={"fin": live}), raising=False)
 
     async def seq(*a, **k):
         state.seq += 1
@@ -142,4 +151,17 @@ def test_rc20_no_surface_promises_immediate_activation_and_the_recipe_has_the_ke
              if 'kind: "upgrade_kept_new_version"' in p]
     assert len(steps) == 1, "no single upgrade.md step keyed on the library-kept kind"
     step = steps[0].lower()
-    assert NOT_ACTIVE in step and "previous version" in step and RESTART in step
+    assert NOT_ACTIVE in step and RESTART in step
+    # #1296: the in-use sentence holds only when Casa found the replaced version
+    # running, so the kind's own instruction relays the result's `outcome` as
+    # written, and quotes the ruled sentence only inside that condition.
+    own = step.split('kind: "upgrade_kept_new_version"', 1)[1].split("key this on the `kind`", 1)[0]
+    assert "`outcome`" in own and "as written" in own, own
+    # Over the WHOLE recipe, whitespace-normalised, so a quotation in another
+    # paragraph or wrapped across lines is counted too (Astra, red-case specify).
+    text = " ".join(upgrade_md.lower().split())
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    total = text.count(PREVIOUS)
+    conditioned = sum(s.count(PREVIOUS) for s in sentences
+                      if "when casa found the replaced version running" in s)
+    assert total >= 1 and conditioned == total, (total, conditioned)
