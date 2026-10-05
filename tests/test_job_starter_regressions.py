@@ -22,10 +22,9 @@ except ImportError:
     from test_job_starter_line import (  # noqa: F401
         ANSWER_KEY, CONTEXT, LABEL, TASK, LaunchClient, _origin, runtime, starter_lines)
 
-pytestmark = pytest.mark.asyncio
-
 
 class TestNonJobPrompt:
+    @pytest.mark.asyncio
     async def test_a_non_job_engagement_prompt_has_no_line(self, runtime):
         before = len(LaunchClient.instances)
         token = agent.origin_var.set(_origin(_operator_turn=True))

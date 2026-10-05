@@ -68,6 +68,7 @@ from recall_renderer import (
     render_recall,
 )
 from speaker_provenance import UserProvenance, provenance_from_mapping
+from provenance import ANSWERED_BY_OPERATOR
 from session_saver import freshness_window, retain_cold_session, save_session
 from semantic_memory import NoOpSemanticMemory, RecallUnavailable, SemanticMemory
 from session_gate import session_write_gate
@@ -179,6 +180,7 @@ origin_var: ContextVar[dict | None] = ContextVar("origin_var", default=None)
 #                                plugin-erase dispatch, the artifact the tap
 #                                named, and the erase run it belongs to
 #   _webhook_deliver           — #1142 the webhook route's `deliver` enum
+#   _answered_by_operator      — #1277 the operator answered this scheduled ask
 COPIED_CONTEXT_MARKERS = (
     "synthetic", "button_answer", "_origin_route", "_origin_clearance",
     "_operator_turn", "_scheduled_delivery", "_scheduled_epoch",
@@ -192,6 +194,8 @@ COPIED_CONTEXT_MARKERS = (
     # #1142: the route's `deliver` enum, stamped at /webhook/{name} ingress.
     # Gates read it through ``TurnScope.delivers_to_operator``.
     "_webhook_deliver",
+    # #1277: read only by ``background_jobs.job_started_by``.
+    ANSWERED_BY_OPERATOR,
 )
 
 # Personality Task 14 / GH #199: the per-turn explanation draft. ``_build_options``

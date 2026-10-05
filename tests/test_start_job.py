@@ -147,12 +147,13 @@ async def test_launch_limit_prompt_envelope_and_persistence(runtime):
     assert cli_limit(client.options) == '30'
     rec = runtime.registry.get(result['engagement_id'])
     # The launch prompt names the job by its engagement id (INV-BGJOB-005).
+    # #1277: the harness origin is the operator's own turn.
     assert client.prompts == [jobs.launch_prompt(DECL, 'Classify the ledger', 'all rows', 30,
-                                                 job_id=rec.id)]
+                                                 job_id=rec.id, started_by='operator')]
     assert DECL.title in runtime.bot.create_forum_topic.call_args.kwargs['name']
-    assert rec.origin['job'] == jobs.initial_job_state(DECL)
+    assert rec.origin['job'] == jobs.initial_job_state(DECL, started_by='operator')
     rows = json.loads(Path(runtime.registry._tombstone_path).read_text())
-    assert rows[0]['origin']['job'] == jobs.initial_job_state(DECL)
+    assert rows[0]['origin']['job'] == jobs.initial_job_state(DECL, started_by='operator')
     assert jobs.JOB_CASA_GRANTS[0] in client.options.allowed_tools
     assert 'report_job_progress' in tools.engagement_casa_grant_names(rec)
 

@@ -78,6 +78,7 @@ from text_util import replace_lone_surrogates, utf16_len, utf16_prefix_end
 from channels.telegram_supervisor import ReconnectSupervisor
 from log_cid import cid_var, new_cid
 from provenance import (
+    ANSWERED_BY_OPERATOR,
     sanitize_external_context,
     scheduled_delivery_markers,
     strict_positive_id,
@@ -4921,7 +4922,7 @@ class TelegramChannel(Channel):
 
     async def _dispatch_scheduled_continuation(
         self, *, session_scope: str, target_role: str, request_id: str,
-        text: str, epoch: str | None = None,
+        text: str, epoch: str | None = None, answered_by_operator: bool = False,
         _sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> bool:
         """Deliver a scheduled ask's TERMINAL outcome back into the session
@@ -4943,6 +4944,10 @@ class TelegramChannel(Channel):
         the turn, and giving it a speaker identity would relabel every
         machine-authored turn in that session as operator-authored (the
         registry keeps ONE ``user_provenance`` per entry).
+
+        ``answered_by_operator`` (#1277) adds the one reserved
+        ``ANSWERED_BY_OPERATOR`` marker, so a job this turn starts records
+        that the operator asked. It names no speaker and grants nothing.
         """
         delays = (0.5, 1.0)
         cid = new_cid()
@@ -4958,6 +4963,7 @@ class TelegramChannel(Channel):
                     "cid": cid,
                     "button_answer": request_id,
                     **scheduled_delivery_markers("telegram", epoch),
+                    **({ANSWERED_BY_OPERATOR: True} if answered_by_operator else {}),
                 },
             )
             try:

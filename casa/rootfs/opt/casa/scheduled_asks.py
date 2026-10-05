@@ -258,8 +258,13 @@ def _terminal_text(rid: str, kind: str, reason: str | None, chosen: str | None) 
 async def _settle(
     channel: Any, rec: dict, *, kind: str, reason: str | None,
     chosen: str | None, edit_text: str | None,
+    answered_by_operator: bool = False,
 ) -> None:
     """Persist ``settling``, edit the keyboard, dispatch, drop.
+
+    ``answered_by_operator`` (#1277) is True only on the finish hook's live
+    answer by the operator, and is forwarded only then; every boot path takes
+    the default, so a replay never marks a continuation.
 
     The state write comes FIRST — before the edit, not between the edit and
     the dispatch — because an edited keyboard with a record still reading
@@ -299,6 +304,7 @@ async def _settle(
         ok = await channel._dispatch_scheduled_continuation(
             session_scope=rec["session_scope"], target_role=rec["role"],
             request_id=rid, text=text, epoch=rec.get("epoch"),
+            **({"answered_by_operator": True} if answered_by_operator else {}),
         )
     except Exception:  # noqa: BLE001
         ok = False
@@ -351,8 +357,14 @@ def make_finish_hook(
             edit_text = f"{body}\n\nAnswered: {chosen}"
         else:
             edit_text = _retired_body(body, kind, reason)
+        # #1277: the operator's own answer, from the broker's outcome alone —
+        # the final kind (an invalid option was rewritten above) and the actor
+        # the broker bound; never the label, the text or ``button_answer``.
+        by_operator = (kind == "answered"
+                       and channel._user_id_is_operator(outcome.get("actor_id")))
         await _settle(channel, rec, kind=kind, reason=reason, chosen=chosen,
-                      edit_text=edit_text)
+                      edit_text=edit_text,
+                      **({"answered_by_operator": True} if by_operator else {}))
 
     return _finish
 

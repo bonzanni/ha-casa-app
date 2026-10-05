@@ -363,9 +363,36 @@ def find_job_host(job: str, caller_role: str,
 # Launch
 # ---------------------------------------------------------------------------
 
-def initial_job_state(decl: JobDecl) -> dict:
+# #1277: who started a job, as Casa knows it. Evaluated at launch from the
+# launching turn's origin, recorded in ``origin["job"]["started_by"]`` and
+# rendered from the record ever after — never re-derived, since a record's
+# origin can change after launch and a record written before the field
+# existed must say nothing.
+STARTED_BY_TOKENS = ("operator", "scheduled", "agent")
+
+
+def job_started_by(origin: dict) -> str:
+    """``scheduled`` for a job trigger's fire; ``operator`` for a turn Casa
+    attributes to the operator's authenticated act — their own message or
+    tap (``_operator_turn``) or their answer to a scheduled ask
+    (``ANSWERED_BY_OPERATOR``); ``agent`` for everything else."""
+    from provenance import ANSWERED_BY_OPERATOR
+    if origin.get("_scheduled_job") is True:
+        return "scheduled"
+    if origin.get("_operator_turn") is True or origin.get(ANSWERED_BY_OPERATOR) is True:
+        return "operator"
+    return "agent"
+
+
+def starter_line(started_by: Any) -> str:
+    """The line right after ``Job id:`` in the launch prompt and the brief;
+    nothing for a record that recorded no token."""
+    return f"Started by: {started_by}\n" if started_by in STARTED_BY_TOKENS else ""
+
+
+def initial_job_state(decl: JobDecl, *, started_by: str | None = None) -> dict:
     """The ``origin["job"]`` a job engagement is created with."""
-    return {
+    state = {
         "name": decl.qualified_name,
         "title": decl.title,
         "skill": decl.skill,
@@ -389,19 +416,24 @@ def initial_job_state(decl: JobDecl) -> dict:
         "last_advance": None,
         "stalls": 0,
     }
+    if started_by is not None:
+        state["started_by"] = started_by
+    return state
 
 
 def launch_prompt(decl: JobDecl, task: str, context: str, turns_per_batch: int,
-                  *, job_id: str) -> str:
+                  *, job_id: str, started_by: str | None) -> str:
     """The launch turn: state the job, acknowledge in one line, do no work.
 
     ``job_id`` is the engagement id. The launch turn and every fresh turn's
     brief (``job_brief``) name it, so a plugin can claim work by it and match
-    the job-end notice, whose delegation id is the same engagement id."""
+    the job-end notice, whose delegation id is the same engagement id.
+    ``started_by`` is the record's token (#1277), rendered on the next line."""
     return (
         f'You are starting the background job "{decl.title}" (skill {decl.skill}).\n'
         f"Job id: {job_id}\n"
-        f"Request: {task}\n"
+        + starter_line(started_by)
+        + f"Request: {task}\n"
         f"Context: {context}\n"
         "In THIS turn do no work: reply with one short line saying what you are "
         "about to do, then end your turn.\n"
@@ -456,10 +488,11 @@ def job_brief(rec: Any) -> str:
     (INV-BGJOB-005).
 
     Rendered from the record's id and ``task``, the launch context recorded in
-    ``origin["job"]["brief_context"]`` and the declaration fields in
-    ``origin["job"]`` — nothing else. A clearance downgrade replaces ``task``
-    with its withheld notice and drops ``brief_context`` in the same step, so
-    the brief then carries neither."""
+    ``origin["job"]["brief_context"]``, the declaration fields in
+    ``origin["job"]`` and who started the job as recorded at launch
+    (``origin["job"]["started_by"]``, #1277) — nothing else. A clearance
+    downgrade replaces ``task`` with its withheld notice and drops
+    ``brief_context`` in the same step, so the brief then carries neither."""
     job = rec.origin["job"]
     context = job.get("brief_context")
     if not isinstance(context, str):
@@ -474,7 +507,10 @@ def job_brief(rec: Any) -> str:
         # An identifier, not launch material: it stays through a clearance
         # downgrade, which withholds only the task and the context.
         f"Job id: {rec.id}\n"
-        f"Request: {rec.task}\n"
+        # Casa's record of who started the job; like the id it is no launch
+        # material, so it stays through a clearance downgrade.
+        + starter_line(job.get("started_by"))
+        + f"Request: {rec.task}\n"
         f"Context:\n{context}\n"
         + _pending_completion_line(job)
         + "What follows this brief is this turn: a batch to run, or a message from "
