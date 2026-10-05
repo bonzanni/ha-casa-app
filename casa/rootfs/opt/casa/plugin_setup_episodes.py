@@ -2415,8 +2415,11 @@ async def _note_pump() -> None:
 async def _drain_owed_notes() -> None:
     """Re-send every owed note once. The list is swapped out synchronously,
     so a note owed meanwhile lands in the emptied list and is not lost; a
-    delivered note is never put back, and every other one is, in order, even
-    on a cancellation. Never raises (a cancellation propagates)."""
+    settled note (one :func:`_send_note` settled, or one dropped because its
+    row no longer stands as it reports) is never put back, and every
+    other one (still owed, or not yet settled when the drain stopped) is, in
+    order, even on a cancellation. Never raises (a cancellation
+    propagates)."""
     if not _owed_notes:
         return
     batch = _owed_notes[:]
@@ -2442,7 +2445,8 @@ async def _drain_owed_notes() -> None:
 
 async def _note(text: str, *, episode_id: str, status: str) -> None:
     """Tell the operator about one row's transition to *status*. Sent now
-    when the channel can take it; owed and retried when it cannot. Never
+    when the channel can take it; owed and retried when the channel is not
+    ready (any other failure is spent, see :func:`_send_note`). Never
     raises (a cancellation propagates)."""
     entry = _OwedNote(episode_id, status, text)
     try:

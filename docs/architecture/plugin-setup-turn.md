@@ -198,8 +198,9 @@ carries neither key and no settlement mark — one dispatched before the courier
 which no turn will ever report on — is neither left as it is (a silent spend: nothing in
 health, no note) nor re-armed (an evidence-free re-dispatch could run a setup tool a second
 time against an external service). The next worker pass retires it as `failed` with a
-reason naming the manual run; plugin health carries it, the operator is told once (a note
-the channel could not take yet is sent when it can, INV-PLUG-049), and a
+reason naming the manual run; plugin health carries it, at most one operator note about it
+is delivered (a note the channel could not take yet is kept and sent when it can, unless Casa
+restarts first, INV-PLUG-049), and a
 removal followed by a reinstall of the same artifact re-arms it as a fresh attempt
 (INV-PLUG-020).
 

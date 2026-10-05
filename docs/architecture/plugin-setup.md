@@ -166,7 +166,7 @@ re-arms it while that consent is pending again.
 **Operator notes the channel cannot take yet.** The worker's first pass runs before the
 channels start, so a note it owes then — a retired untracked row, a dropped or failed run,
 a refusal — met a channel that could not send it, and was lost. Such a note is now kept in
-memory and re-sent: `casa_core.main` kicks the worker once the channels have started, the
+memory and re-sent while its row still stands as the note reports: `casa_core.main` kicks the worker once the channels have started, the
 pass sends what is owed first, and while a note is still owed a note-only retry re-sends
 it every few seconds without running a pass. Only the not-ready raise of
 `operator_notify` keeps a note, because it happens before anything reaches Telegram; any

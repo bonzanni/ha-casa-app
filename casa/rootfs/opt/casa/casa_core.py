@@ -5660,7 +5660,8 @@ async def main() -> None:
     # for every later unready window (e.g. a supervisor rebuild).
     _evep.kick_all()
     # #1014: the setup worker's boot pass ran before the channels started
-    # too; a note it owed is retained, and this pass delivers it now.
+    # too; a note it could not send then is retained, and this pass sends it
+    # again now.
     _pse.kick()
 
     # 12a. E-F (v0.30.0): engagement-feature setup is now wired into
