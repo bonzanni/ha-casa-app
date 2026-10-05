@@ -69,7 +69,7 @@ its end notice, with its post echoes, goes to the resident.
 The two exceptions travel to the one prelaunch call through a context variable set and reset
 around that call only, so nothing the launch later spawns inherits them.
 Because the job keeps the calling turn's origin, its starter line
-([`background-jobs.md`](background-jobs.md)) is read from that origin too: a desk turn's
+([`background-job-fresh-sessions.md`](background-job-fresh-sessions.md)) is read from that origin too: a desk turn's
 start reads `operator`, and a delegated turn's start reads the token of the resident's turn that
 delegated (`operator` when that turn was the operator's own or answered by them, `agent` for a
 scheduled or webhook turn), whether the resident waited for the delegation or not. The specialist
