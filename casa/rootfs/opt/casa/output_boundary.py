@@ -230,6 +230,12 @@ class ApprovalCut:
     def cut(self) -> int | None:
         return min(self.pending.values()) if self.pending else None
 
+    @property
+    def pending_keys(self) -> tuple:
+        """The grants whose cut still stands, in the order first observed —
+        what a delegated run publishes for its launcher (#1207)."""
+        return tuple(self.pending)
+
 
 class UnadmittedText(RuntimeError):
     """A channel method whose failure contract is to raise (``send_media``)
@@ -409,6 +415,15 @@ class TurnScope:
     # #1252: the words a desk run kept, published by the delegated runner
     # when its run ended with an approval pending; None otherwise.
     approval_kept: str | None = None
+    # #1207: the grants a delegated run left waiting on the operator (its
+    # ApprovalCut's standing keys), published by the runner whatever the run's
+    # outcome.
+    approval_waiting: tuple = ()
+    # #1207: a synchronous delegate's approval outcome, by delegation id —
+    # ("consumed" | "pending", GrantKey) records, consumes first — copied here
+    # by the handler before it returns, and read only by this turn's fold at
+    # that delegate call's result.
+    delegated_approvals: dict[str, tuple] = field(default_factory=dict)
 
     # -- minting ------------------------------------------------------------
 

@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import dataclasses
 import hashlib
+import json
 import logging
 import math
 import time
@@ -967,6 +968,29 @@ def _limit_stop_line(msg: BusMessage, *, is_narration: bool,
 
 
 _RESTRICTED_SEND_TOOL = "mcp__casa-framework__send_message"
+_DELEGATE_TOOL = "mcp__casa-framework__delegate_to_agent"
+
+
+def _delegation_id_of(block: Any) -> str | None:
+    """#1207: the ``delegation_id`` at the TOP level of the JSON object Casa's
+    ``delegate_to_agent`` returned as its one text item, or ``None`` for any
+    other shape. The specialist's own words are a string value inside that
+    object, so they can never supply it."""
+    content = getattr(block, "content", None)
+    if isinstance(content, list):
+        texts = [item.get("text") for item in content
+                 if isinstance(item, dict) and item.get("type") == "text"]
+        if len(texts) != 1 or len(content) != 1:
+            return None
+        content = texts[0]
+    if not isinstance(content, str):
+        return None
+    try:
+        payload = json.loads(content)
+    except ValueError:
+        return None
+    did = payload.get("delegation_id") if isinstance(payload, dict) else None
+    return did if isinstance(did, str) and did else None
 
 
 def _delivers_to_operator(origin: dict) -> bool:
@@ -3581,6 +3605,19 @@ class Agent:
                             # the result only after the hook returned, and the
                             # text before it is already folded.
                             if scope is not None:
+                                # #1207: a synchronous delegate's call is not
+                                # the protected one; its child's outcome was
+                                # copied onto this scope by delegation id
+                                # before the handler returned. Consumes first,
+                                # each record fed to the same cut.
+                                _did = (_delegation_id_of(block)
+                                        if name == _DELEGATE_TOOL else None)
+                                for _i, _rec in enumerate(
+                                        scope.delegated_approvals.pop(_did, ())
+                                        if _did else ()):
+                                    _sub = f"{getattr(block, 'tool_use_id', '')}#{_i}"
+                                    state["approval_cut"].observe(
+                                        _sub, {_sub: _rec}, len(state["messages"]))
                                 state["approval_cut"].observe(
                                     getattr(block, "tool_use_id", ""),
                                     scope.approvals, len(state["messages"]))
