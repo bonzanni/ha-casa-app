@@ -56,8 +56,8 @@ waiting on the operator's approval, the words the model wrote after that call
 are withheld from the operator, while those written before it are kept
 (:class:`ApprovalCut`). The same cut applies to a resident's words after a
 synchronous delegate whose specialist's call is waiting (its child's outcome
-reaches the resident's scope by delegation id; not when the CLI rewrote that
-delegate's result for size, #1274), and to an engagement topic and
+reaches the resident's scope by delegation id, and is read at that delegate's
+result even when the CLI rewrote it, #1274), and to an engagement topic and
 a plugin background job, whose driver applies it (#1207). Casa-composed text
 enters through :func:`casa_text`.
 """
