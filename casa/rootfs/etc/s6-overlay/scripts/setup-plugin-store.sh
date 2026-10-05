@@ -1,4 +1,4 @@
-#!/command/with-contenv bashio
+#!/command/with-contenv /opt/casa/scripts/core-bashio.sh
 # ==============================================================================
 # init-plugin-store: bundled-artifact import + registry seed +
 # plugin-health report. Runs AFTER init-setup-configs (config_sync)

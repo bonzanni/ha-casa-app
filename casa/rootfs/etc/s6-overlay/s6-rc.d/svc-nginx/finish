@@ -1,4 +1,4 @@
-#!/command/with-contenv bashio
+#!/command/with-contenv /opt/casa/scripts/core-bashio.sh
 # 5.5 item 3: strip ANSI from bashio output for clean docker logs.
 export BASHIO_LOG_NO_COLORS=true
 export NO_COLOR=1

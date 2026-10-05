@@ -1,4 +1,4 @@
-#!/command/with-contenv bashio
+#!/command/with-contenv /opt/casa/scripts/core-bashio.sh
 # 5.5 item 3: strip ANSI from bashio output for clean docker logs.
 export BASHIO_LOG_NO_COLORS=true
 export NO_COLOR=1
@@ -6,4 +6,8 @@ export NO_COLOR=1
 # Plan 4b/3.6: standalone MCP HTTP service.
 # Listens on 127.0.0.1:8100 and forwards to casa-main over Unix socket
 # at /run/casa/internal.sock (created by casa-main's startup).
+# #1268: hand the inherited PATH (plugin tools dir first) back, as before the
+# core-bashio.sh filter (status quo for this service).
+PATH=$_casa_cli_path
+unset _casa_cli_path
 exec /opt/casa/venv/bin/python3 /opt/casa/svc_casa_mcp.py

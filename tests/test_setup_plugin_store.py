@@ -30,7 +30,7 @@ def test_svc_deps_and_bundle_membership():
 
 def test_setup_plugin_store_script():
     text = (_SCRIPTS / "setup-plugin-store.sh").read_text()
-    assert text.startswith("#!/command/with-contenv bashio")
+    assert text.split("\n", 1)[0] == "#!/command/with-contenv /opt/casa/scripts/core-bashio.sh"
     assert "/opt/casa/plugin_boot.py" in text
     assert text.rstrip().endswith("exit 0")
     assert "\r" not in text                          # LF only
