@@ -10,7 +10,8 @@ last_reviewed: 2026-09-16
 
 What the plugin and specialist mutation tools guarantee: how a mutation orders its
 registry commit against the runtime convergence that follows, and what a mutation envelope
-may and may not claim about a plugin's integration. What a committed removal discloses
+may and may not claim about a plugin's integration, and how a plugin change that reaches a
+specialist with open conversations warns first. What a committed removal discloses
 about what it leaves behind is in [`plugin-removal.md`](plugin-removal.md). It covers the
 tools' contracts, not the machinery they drive
 — the registry and content-addressed store are in [`plugins.md`](plugins.md),
@@ -138,6 +139,45 @@ assert each shipped surface carries the prohibition and has not reverted to a
 previously-shipped phrasing, which is not the same as proving no new phrasing can express the
 claim.
 
+**INV-TOOL-013**: While a specialist a plugin change reaches has open conversations, `plugin_add`, `plugin_update`, `plugin_assign`, `plugin_unassign` and `plugin_remove` change nothing on a call whose acknowledgement names no engagement of any reached specialist and return a warning listing them, each specialist's conversations followed by the sentence for that kind of change; a confirmed call commits and names each open conversation of a reached specialist that the acknowledgement does not name.
+
+A change reaches: for `plugin_add`, its `specialist:` targets; for `plugin_assign`, its
+target, only when the call creates the assignment; for `plugin_unassign`, its target, only
+when it was assigned; for `plugin_update` and `plugin_remove`, every `specialist:` target of
+the registered entry. An open conversation keeps the plugins it started with, so the warning
+says what the change means for it, in the sentence ruled for each kind of change: adding or
+assigning — "Its open conversations keep the plugins they started with and will not get
+`<plugin>`."; unassigning or removing — "Its open conversations keep `<plugin>` loaded but lose
+its approvals, so a protected call asks again and earlier references to it stop working.";
+updating — "Its open conversations keep the previous version and lose its approvals." The
+sentence follows each specialist's list, so "Its" always names one specialist.
+
+The refusal is the pending result `open_conversations_unconfirmed`, carrying INV-TOOL-003's
+envelope (`activation_committed: false`), a `slugs` list, and conversation rows that each name
+their specialist. The rule for confirming is #1095's for one specialist (INV-SPEC-022), applied
+across every specialist the change reaches: an acknowledgement naming an engagement — open or
+since closed — of any of them confirms the call, and the open conversations it does not name
+are listed in the result afterwards (`opened_after_confirmation`, with the same sentences in
+`open_conversation_notice`), never a reason to refuse or ask again. A committed-but-not-ready
+result (INV-TOOL-004) lists them too.
+
+Enforced by running each tool's local guards — one source, which the synchronous core still
+calls first — before the check, under the mutation lock. So a call those guards refuse, and an
+assignment that already exists or an unassignment of a target that is not assigned, return
+what they always did and never warn. `plugin_remove` runs the check where the erase step
+(INV-PLUG-037) would go on to remove or ask, through the hook the specialist uninstall uses:
+an unconfirmed call with an erasing plugin withdraws any open erase question and posts none, the
+calls Casa's continuations tell the configurator to make carry the acknowledgement, and an
+`erase_data=true` call is never refused by it.
+
+What it does not cover: that a confirmed `plugin_add` or `plugin_update` succeeds. Resolving
+the ref, the revision check, publishing, the tag check, `plugin_update`'s held-profile check
+and the system requirements all come after the warning, so a confirmed call can still be
+refused there — with the registry and activation unchanged, though a refusal that comes after
+publishing (the tag check, the held-profile check or the system requirements) leaves the
+fetched artifact in the store. Residents' conversations are not specialist
+conversations and are not listed. The specialist tools keep their own rule (INV-SPEC-022).
+
 **A mutation result also carries what the default vault holds for the plugin's unresolved
 secrets** — `secret_candidates`: ids, roles and types, never an operator-typed string, wired by nothing here. Its contract, the vault
 tools it shares a projection with, and the classified `op` failure are
@@ -244,11 +284,14 @@ verifies and pins the envelope.
 
 **Source**
 - `casa/rootfs/opt/casa/tools.py::plugin_add`
+- `casa/rootfs/opt/casa/tools.py::_plugin_change_gate`
 - `casa/rootfs/opt/casa/consent_denials.py`
 
 **Tests**
 - `tests/test_plugin_tools.py`
 - `tests/test_assistant_prompts.py`
+- `tests/test_plugin_open_conversations.py`
+- `tests/test_plugin_confirmed_refusal_leaves_artifact.py`
 
 **Related**
 - [`architecture/tools-interface.md`](../architecture/tools-interface.md)

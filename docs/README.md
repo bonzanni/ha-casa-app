@@ -61,7 +61,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | personas, bindings, prompt composition, the per-surface admission ceilings, or the binding digest | [`architecture/personality.md`](architecture/personality.md) |
 | plugin environment resolution or withholding, the plugin env conf file, or the plugin media outbox | [`architecture/plugin-runtime.md`](architecture/plugin-runtime.md) |
 | plugin installation, artifact identity, or protected-tool declarations | [`architecture/plugins.md`](architecture/plugins.md) |
-| plugin mutation sequencing, a plugin or specialist mutation envelope, what a result may say about an integration being live, or re-issuing a plugin-consent DM on demand | [`architecture/plugin-mutation-tools.md`](architecture/plugin-mutation-tools.md) |
+| plugin mutation sequencing, a plugin or specialist mutation envelope, what a result may say about an integration being live, re-issuing a plugin-consent DM on demand, or how a plugin change warns about a reached specialist's open conversations | [`architecture/plugin-mutation-tools.md`](architecture/plugin-mutation-tools.md) |
 | plugin trigger declaration, the routing overlay, trigger consent, or per-trigger secret backing | [`architecture/plugin-triggers.md`](architecture/plugin-triggers.md) |
 | read clearance, the per-sender origin stamp, the engagement clearance clamp, or the executor-archive epoch scoping | [`architecture/memory-scoping.md`](architecture/memory-scoping.md) |
 | recall behaviour or the absence contract | [`architecture/memory.md`](architecture/memory.md) |

@@ -61,6 +61,23 @@ entry, then reloads the affected in-casa agents and verifies desired==active.
 `plugin_add` (and `plugin_update` / `plugin_assign` / `plugin_unassign` /
 `plugin_remove`).
 
+## If a specialist has open conversations
+
+If `plugin_add` — or a `plugin_assign` you make below — returns `ok: false,
+kind: "open_conversations_unconfirmed"`: NOTHING changed — a specialist the
+plugin would reach has open conversations. Relay the result's `warning` to the
+operator VERBATIM (it lists each specialist's conversations and says what the
+change means for them) and ask whether to go ahead. Only on a yes, repeat the
+same call with `acknowledged_conversations` set to the ids the result lists; on
+a no, stop and tell the operator nothing changed — a declined warning voids
+those ids, so never re-pass them without asking again. If a later result
+carries `opened_after_confirmation` (or `opened_while_this_change_ran`), tell
+the operator about those conversations too, with the result's
+`open_conversation_notice` verbatim. A confirmed `plugin_add` can still be
+refused afterwards (for example `revision_mismatch` or `ref_not_found`); that
+refusal stands on its own: the plugin was not registered or activated (a
+version already fetched may stay in Casa's plugin store).
+
 ## Result
 
 The result carries `artifact_id`, `version`, `revision`, `granted_tools`,

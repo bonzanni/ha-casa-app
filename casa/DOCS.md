@@ -1613,6 +1613,30 @@ the next start if Casa was down — and each topic is told. If a close fails, Ca
 tells you which conversation is still open and tries again at the next reload
 of the agents.
 
+**Changing a plugin a specialist uses, while you are talking to it.** Adding a
+plugin to a specialist, assigning or unassigning one, updating one or removing
+one asks the same way when a specialist the change reaches has open
+conversations — an update or a removal reaches every specialist the plugin is
+assigned to. The list shows each specialist's open conversations, followed by
+what the change means for them:
+
+- adding or assigning: "Its open conversations keep the plugins they started
+  with and will not get *the plugin*."
+- unassigning or removing: "Its open conversations keep *the plugin* loaded but
+  lose its approvals, so a protected call asks again and earlier references to
+  it stop working."
+- updating: "Its open conversations keep the previous version and lose its
+  approvals."
+
+Saying no changes nothing. Saying yes goes ahead for every specialist the change
+reaches; a conversation that was not on the list — one opened while you were
+deciding, say — is named after the change instead of asking again. A confirmed
+add or update can still stop afterwards, for instance when the version cannot be
+fetched or does not match its tag; the plugin is then not added or updated and
+nothing is activated, though a version Casa had already fetched may stay in its
+plugin store. Removing a plugin that can erase its
+data asks the confirmation first, then the erase question.
+
 If an upgrade fails after the new version was already kept but before Casa
 tried to load it, Casa says the upgrade is not active yet — new and open
 conversations still use the previous version — and that re-running the upgrade
