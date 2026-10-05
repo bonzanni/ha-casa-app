@@ -15903,23 +15903,20 @@ def _tag_version_guard(ref: str, manifest: dict) -> dict | None:
     return None
 
 
-def _plugin_add_sync(*, name: str, repo: str, ref: str, subdir: str = "",
-                     targets: list,
-                     expected_revision: str | None = None) -> dict:
-    """Blocking core of plugin_add. C.2 (v0.74.0) enforcement ORDER — all
-    identity guards run before any sysreq install or registry mutation:
-    resolve -> revision-check -> manifest-fetch (publish) -> tag/version-check
-    -> sysreqs -> activate. Registry stays byte-identical on any
-    pre-activation failure (FR2)."""
+def _plugin_add_local(*, name: str, subdir: str = "",
+                      targets: list) -> "tuple[dict | None, dict]":
+    """plugin_add's LOCAL guards, read-only: ``(refusal, state)``. One source,
+    called by the core and — #1145 — by the handler first, to learn which
+    specialists the change reaches before warning about them."""
     if not plugin_registry.NAME_RE.match(name or ""):
-        return {"ok": False, "kind": "invalid_name", "name": name}
+        return {"ok": False, "kind": "invalid_name", "name": name}, {}
     targets = list(targets or [])
     # Sol round-3 M: a non-string target must not raise TypeError out of the
     # envelope (TARGET_RE.match(1) throws) — reject it as an invalid target.
     bad = [t for t in targets
            if not isinstance(t, str) or not plugin_registry.TARGET_RE.match(t)]
     if bad or not targets:
-        return {"ok": False, "kind": "invalid_target", "invalid": bad}
+        return {"ok": False, "kind": "invalid_target", "invalid": bad}, {}
     # #923 (operator's decision, 2026-09-10): operators cannot target executors
     # ("workers") with plugins for now — workers come with the bundled set Casa
     # ships. Every entry plugin_add can create is github-sourced, so no source
@@ -15934,19 +15931,34 @@ def _plugin_add_sync(*, name: str, repo: str, ref: str, subdir: str = "",
         return {"ok": False, "kind": "executor_target_not_allowed",
                 "invalid": worker,
                 "detail": ("for now a plugin cannot be assigned to a worker — "
-                           "workers use only the plugins Casa ships")}
+                           "workers use only the plugins Casa ships")}, {}
     # Sol round-3 M: validate subdir here so `../x` returns an envelope instead
     # of an uncaught ValueError from normalize_subdir inside publish.
     try:
         plugin_registry.normalize_subdir(subdir or "")
     except ValueError:
-        return {"ok": False, "kind": "invalid_subdir", "subdir": subdir}
+        return {"ok": False, "kind": "invalid_subdir", "subdir": subdir}, {}
     data = plugin_registry.load_registry()                     # from DISK
     if not data.valid:
-        return {"ok": False, "kind": "registry_invalid"}
+        return {"ok": False, "kind": "registry_invalid"}, {}
     if any(isinstance(e, dict) and e.get("name") == name
            for e in data.raw.get("plugins", [])):
-        return {"ok": False, "kind": "plugin_exists", "name": name}
+        return {"ok": False, "kind": "plugin_exists", "name": name}, {}
+    return None, {"data": data, "targets": targets}
+
+
+def _plugin_add_sync(*, name: str, repo: str, ref: str, subdir: str = "",
+                     targets: list,
+                     expected_revision: str | None = None) -> dict:
+    """Blocking core of plugin_add. C.2 (v0.74.0) enforcement ORDER — all
+    identity guards run before any sysreq install or registry mutation:
+    resolve -> revision-check -> manifest-fetch (publish) -> tag/version-check
+    -> sysreqs -> activate. Registry stays byte-identical on any
+    pre-activation failure (FR2)."""
+    refusal, state = _plugin_add_local(name=name, subdir=subdir, targets=targets)
+    if refusal is not None:
+        return refusal
+    data, targets = state["data"], state["targets"]
     guarded = _resolve_ref_and_guard(repo=repo, ref=ref,
                                      expected_revision=expected_revision)
     if isinstance(guarded, dict):
@@ -15986,25 +15998,22 @@ def _plugin_add_sync(*, name: str, repo: str, ref: str, subdir: str = "",
             "_published_manifest": result.manifest}
 
 
-def _plugin_update_sync(*, name: str, new_ref: str,
-                        expected_revision: str | None = None) -> dict:
-    """Blocking core of plugin_update. C.2 (v0.74.0) enforcement ORDER — all
-    identity guards run before any sysreq install or registry mutation:
-    resolve -> revision-check -> manifest-fetch (publish) -> tag/version-check
-    -> sysreqs -> registry repoint. Version DERIVED from the fetched manifest
-    (FR5). Old artifact retained."""
+def _plugin_update_local(*, name: str) -> "tuple[dict | None, dict]":
+    """plugin_update's LOCAL guards, read-only: ``(refusal, state)``. One
+    source, called by the core and — #1145 — by the handler first. The
+    revision guard is not here: it needs the network (``_resolve_ref_and_guard``)."""
     data = plugin_registry.load_registry()
     if not data.valid:
-        return {"ok": False, "kind": "registry_invalid"}
+        return {"ok": False, "kind": "registry_invalid"}, {}
     entry = next((e for e in data.raw.get("plugins", [])
                   if isinstance(e, dict) and e.get("name") == name), None)
     if entry is None:
-        return {"ok": False, "kind": "not_registered", "name": name}
+        return {"ok": False, "kind": "not_registered", "name": name}, {}
     owner = plugin_registry.entry_owner(entry)
     if owner is not None:
         return {"ok": False, "kind": "owned_by_specialist", "owner": owner,
                 "detail": (f"{name!r} is managed by {owner}'s bundle — use "
-                          "specialist_upgrade / specialist_uninstall")}
+                          "specialist_upgrade / specialist_uninstall")}, {}
     # #923, both halves, and each covers the other's residue.
     #
     # (1) Refuse when a BUNDLED entry serves a worker. Without this, updating a
@@ -16028,7 +16037,21 @@ def _plugin_update_sync(*, name: str, new_ref: str,
                 "name": name,
                 "detail": ("this plugin is shipped with Casa and serves a "
                            "worker — for now it is updated by updating Casa, "
-                           "not from here")}
+                           "not from here")}, {}
+    return None, {"data": data, "entry": entry}
+
+
+def _plugin_update_sync(*, name: str, new_ref: str,
+                        expected_revision: str | None = None) -> dict:
+    """Blocking core of plugin_update. C.2 (v0.74.0) enforcement ORDER — all
+    identity guards run before any sysreq install or registry mutation:
+    resolve -> revision-check -> manifest-fetch (publish) -> tag/version-check
+    -> sysreqs -> registry repoint. Version DERIVED from the fetched manifest
+    (FR5). Old artifact retained."""
+    refusal, state = _plugin_update_local(name=name)
+    if refusal is not None:
+        return refusal
+    data, entry = state["data"], state["entry"]
     # A:§3.3 (r1-B8): capture the OLD artifact_id BEFORE the mutation — the
     # caller invalidates its grants/challenges only after this commits.
     old_artifact_id = entry.get("artifact_id")
@@ -16293,6 +16316,50 @@ def _explore_vault(vault: str, queries: list[str], unresolved: list[str]) -> dic
             "unresolved": unresolved}
 
 
+# #1095's acknowledgement input, shared by the specialist tools below and the
+# plugin mutation tools (#1145). Defined here, before the first tool that
+# declares it, because a tool's schema is evaluated when it is decorated.
+_ACKNOWLEDGED_SCHEMA = {
+    "type": "array", "items": {"type": "string"},
+    "description": ("the engagement ids of the open conversations the operator "
+                    "confirmed, exactly as a previous call's "
+                    "open_conversations_unconfirmed result listed them")}
+
+# #1145 (ruling #1255, option 2): what a plugin change means for a specialist's
+# open conversations, one sentence per kind of change. The ONE source for each
+# tool description and result that carries it. ``<plugin>`` is the plugin's
+# name in a result and "the plugin" in a description; the ruled leading "…" is
+# the add/assign sentence's subject, "Its open conversations".
+PLUGIN_ADDED_CONVERSATION_NOTICE = (
+    "Its open conversations keep the plugins they started with and will not "
+    "get <plugin>.")
+PLUGIN_REMOVED_CONVERSATION_NOTICE = (
+    "Its open conversations keep <plugin> loaded but lose its approvals, so a "
+    "protected call asks again and earlier references to it stop working.")
+PLUGIN_UPDATED_CONVERSATION_NOTICE = (
+    "Its open conversations keep the previous version and lose its approvals.")
+_PLUGIN_CONVERSATION_NOTICES = {
+    "added": PLUGIN_ADDED_CONVERSATION_NOTICE,
+    "removed": PLUGIN_REMOVED_CONVERSATION_NOTICE,
+    "updated": PLUGIN_UPDATED_CONVERSATION_NOTICE,
+}
+
+
+def _plugin_notice(kind: str, plugin: str) -> str:
+    return _PLUGIN_CONVERSATION_NOTICES[kind].replace("<plugin>", plugin)
+
+
+def _plugin_change_tool_note(kind: str, *, removal: bool = False) -> str:
+    return (" If a specialist this call changes has open conversations, a call "
+            "without acknowledged_conversations changes nothing and returns kind "
+            "'open_conversations_unconfirmed' with a warning to relay to the "
+            "operator verbatim, which says of each such specialist: "
+            + _plugin_notice(kind, "the plugin")
+            + " Only on the operator's yes, call again with the same arguments"
+            + (" (the same erase_data choice)" if removal else "")
+            + " plus acknowledged_conversations.")
+
+
 @tool(
     "plugin_add",
     "Add a plugin to the registry: publish its pinned artifact, install any "
@@ -16303,7 +16370,8 @@ def _explore_vault(vault: str, queries: list[str], unresolved: list[str]) -> dic
     "stores it. "
     "is derived from the plugin manifest (never supplied). Targets are "
     "resident: or specialist: roles; for now a plugin cannot be given to a "
-    "worker (executor:) — workers use only the plugins Casa ships with them.",
+    "worker (executor:) — workers use only the plugins Casa ships with them."
+    + _plugin_change_tool_note("added"),
     # Sol #15: an explicit JSON Schema — the shorthand {key: type} form marks
     # EVERY key required, so a root-plugin call omitting `subdir` (defaulted by
     # the handler) is rejected by the MCP input validator before the handler
@@ -16319,23 +16387,38 @@ def _explore_vault(vault: str, queries: list[str], unresolved: list[str]) -> dic
          "expected_revision": {"type": "string"},
          # Sol round-3 M: constrain items so a non-string target (`[1]`) is
          # rejected by the MCP validator, not by an uncaught TARGET_RE.match.
-         "targets": {"type": "array", "items": {"type": "string"}}},
+         "targets": {"type": "array", "items": {"type": "string"}},
+         "acknowledged_conversations": _ACKNOWLEDGED_SCHEMA},
      "required": ["name", "repo", "ref", "targets"]},
 )
 async def plugin_add(args: dict) -> dict:
+    def reached() -> list:
+        refusal, state = _plugin_add_local(
+            name=args["name"], subdir=args.get("subdir", ""),
+            targets=args.get("targets") or [])
+        return [] if refusal is not None else _specialist_slugs(state["targets"])
+
     async with _PLUGIN_TOOLS_LOCK:
-        core = await asyncio.to_thread(
-            _plugin_add_sync, name=args["name"], repo=args["repo"],
-            ref=args["ref"], subdir=args.get("subdir", ""),
-            targets=args.get("targets") or [],
-            expected_revision=args.get("expected_revision"))
+        # #1145: warn first when the new plugin reaches a specialist with open
+        # conversations; the core (looked up here, so a test's double is used)
+        # then runs exactly as before.
+        core, ack, seen = await _plugin_gate_phase("plugin_add", "added", args, reached)
+        if core is None:
+            core = await asyncio.to_thread(
+                _plugin_add_sync, name=args["name"], repo=args["repo"],
+                ref=args["ref"], subdir=args.get("subdir", ""),
+                targets=args.get("targets") or [],
+                expected_revision=args.get("expected_revision"))
+        elif core.get("kind") == OPEN_CONVERSATIONS_PENDING:
+            return _result(core)
         if core.get("ok") is not True:
             # Spec §E: the pinned payload shape holds on EVERY path.
             core.setdefault("kind", "unknown")
             core.setdefault("activation_committed", False)
             core.setdefault("runtime_ready", False)
             core.setdefault("verify", {})
-            return _result(core)
+            return _result(_after_plugin_change(
+                core, "added", args["name"], [], ack, seen))
         seq = await _reload_and_verify_targets(
             core["name"], core["targets"], expect="present")
         core.update(seq)
@@ -16353,7 +16436,9 @@ async def plugin_add(args: dict) -> dict:
         core["requirement_candidates"] = await asyncio.to_thread(
             _requirement_candidates_for, core["name"], list(core["targets"]),
             manifest=published_manifest)
-        return _result(core)
+        return _result(_after_plugin_change(
+            core, "added", core["name"], _specialist_slugs(core["targets"]),
+            ack, seen))
 
 
 @tool(
@@ -16366,26 +16451,43 @@ async def plugin_add(args: dict) -> dict:
     "handed-off sha) so a tag that moved after the build aborts before "
     "activation. A plugin Casa ships to a worker is not updated here — it is "
     "updated by updating Casa; updating any other plugin makes it the "
-    "operator's, so it is no longer part of what Casa ships.",
+    "operator's, so it is no longer part of what Casa ships."
+    + _plugin_change_tool_note("updated"),
     {"type": "object",
      "properties": {
          "name": {"type": "string"},
          "new_ref": {"type": "string"},
-         "expected_revision": {"type": "string"}},
+         "expected_revision": {"type": "string"},
+         "acknowledged_conversations": _ACKNOWLEDGED_SCHEMA},
      "required": ["name", "new_ref"]},
 )
 async def plugin_update(args: dict) -> dict:
+    def reached() -> list:
+        refusal, state = _plugin_update_local(name=args["name"])
+        return ([] if refusal is not None
+                else _specialist_slugs(state["entry"].get("targets")))
+
     async with _PLUGIN_TOOLS_LOCK:
-        core = await asyncio.to_thread(
-            _plugin_update_sync, name=args["name"], new_ref=args["new_ref"],
-            expected_revision=args.get("expected_revision"))
+        # #1145: warn first when the plugin is assigned to a specialist with
+        # open conversations. The revision guard and the rest of the network
+        # phase stay in the core, after this: a confirmed call can still be
+        # refused there, with nothing committed.
+        core, ack, seen = await _plugin_gate_phase(
+            "plugin_update", "updated", args, reached)
+        if core is None:
+            core = await asyncio.to_thread(
+                _plugin_update_sync, name=args["name"], new_ref=args["new_ref"],
+                expected_revision=args.get("expected_revision"))
+        elif core.get("kind") == OPEN_CONVERSATIONS_PENDING:
+            return _result(core)
         if core.get("ok") is not True:
             # Spec §E: the pinned payload shape holds on EVERY path.
             core.setdefault("kind", "unknown")
             core.setdefault("activation_committed", False)
             core.setdefault("runtime_ready", False)
             core.setdefault("verify", {})
-            return _result(core)
+            return _result(_after_plugin_change(
+                core, "updated", args["name"], [], ack, seen))
         # A:§3.3 (r1-B8): the artifact just changed under this plugin —
         # invalidate the OLD artifact's grants/challenges right after the
         # mutation commits, before the first post-commit await (reload).
@@ -16402,7 +16504,9 @@ async def plugin_update(args: dict) -> dict:
             _secret_candidates, core["name"],
             list(core.get("required_env_vars") or []),
             manifest=published_manifest))
-        return _result(core)
+        return _result(_after_plugin_change(
+            core, "updated", core["name"], _specialist_slugs(core["targets"]),
+            ack, seen))
 
 
 @tool(
@@ -16786,11 +16890,6 @@ SPECIALIST_UNINSTALL_CONVERSATION_NOTICE = (
     "removed; a turn still running in one of them is stopped."
 )
 OPEN_CONVERSATIONS_PENDING = "open_conversations_unconfirmed"
-_ACKNOWLEDGED_SCHEMA = {
-    "type": "array", "items": {"type": "string"},
-    "description": ("the engagement ids of the open conversations the operator "
-                    "confirmed, exactly as a previous call's "
-                    "open_conversations_unconfirmed result listed them")}
 _ORDINARY_CHANGE_TOOL_NOTE = (
     " If the specialist has open conversations, a call without "
     "acknowledged_conversations changes nothing and returns kind "
@@ -16943,6 +17042,124 @@ def _after_ordinary_change(out: Any, slug: str, ack: "list | None",
             out[key] = [_conversation_row(r, op) for r in new]
             out["open_conversation_notice"] = SPECIALIST_OPEN_CONVERSATION_NOTICE
     return out
+
+
+# #1145: the plugin mutation tools warn the same way, for every specialist the
+# change reaches — one call can reach several (an update or a removal reaches
+# every specialist the plugin is assigned to). Built from the per-specialist
+# pieces above, which stay as they are; the sentence is the one ruled for the
+# kind of change (#1255), and an acknowledgement naming an engagement of ANY
+# reached specialist confirms the change (#1263) — the rule above, applied to
+# each reached specialist in turn.
+
+def _specialist_slugs(targets: Any) -> list:
+    """The specialists among plugin *targets*, in order, each once."""
+    out: list = []
+    for t in targets or []:
+        if isinstance(t, str) and t.startswith("specialist:"):
+            slug = t.partition(":")[2]
+            if slug and slug not in out:
+                out.append(slug)
+    return out
+
+
+def _plugin_conversation_blocks(by_slug: dict, kind: str,
+                                plugin: str) -> "tuple[list, str]":
+    """One block per specialist — its open conversations, then the sentence for
+    this kind of change — so the sentence's "Its" always names one specialist."""
+    op = _operator_user_id()
+    notice = _plugin_notice(kind, plugin)
+    rows: list = []
+    blocks: list = []
+    for slug, recs in by_slug.items():
+        mine = [{**_conversation_row(r, op), "slug": slug} for r in recs]
+        rows.extend(mine)
+        n = len(mine)
+        blocks.append(f"The specialist {slug} has {n} open conversation"
+                      f"{'' if n == 1 else 's'}:\n"
+                      + "\n".join(f"- {row['line']}" for row in mine)
+                      + "\n" + notice)
+    return rows, "\n".join(blocks)
+
+
+def _plugin_change_gate(tool: str, kind: str, plugin: str, slugs: list,
+                        ack: "list | None", *, removal: bool = False,
+                        withdrew: bool = False) -> "tuple[dict | None, set]":
+    """The warn-first check of a plugin change reaching *slugs*:
+    ``(refusal, seen)``. While any of them has open conversations, a call whose
+    acknowledgement names no engagement of any of them is refused with the
+    warning; otherwise it goes ahead, and ``seen`` is what the result does NOT
+    name afterwards (``_ordinary_change_gate``'s rule)."""
+    by_slug = {}
+    for slug in slugs:
+        recs = _open_specialist_engagements(slug)
+        if recs:
+            by_slug[slug] = recs
+    if by_slug and not any(_names_this_specialist(ack, s) for s in slugs):
+        rows, warning = _plugin_conversation_blocks(by_slug, kind, plugin)
+        ids = [row["engagement_id"] for row in rows]
+        detail = ("Nothing was changed. " if not withdrew else
+                  "Nothing was removed; the pending erase-data question was withdrawn. ")
+        detail += ("Relay `warning` to the operator verbatim and ask whether to go "
+                   f"ahead. On yes, call {tool} again with the same arguments"
+                   + (" (the same erase_data choice)" if removal else "")
+                   + f" plus acknowledged_conversations={ids!r}; on no, stop — a "
+                   "declined warning voids these ids.")
+        # INV-TOOL-003's pinned envelope is set here, for every plugin tool:
+        # plugin_remove's refusal leaves through the erase gate, which never
+        # reaches the handlers' own envelope defaults.
+        return {"ok": False, "kind": OPEN_CONVERSATIONS_PENDING,
+                "slug": next(iter(by_slug)), "slugs": list(by_slug),
+                "conversations": rows, "warning": warning, "detail": detail,
+                "activation_committed": False, "runtime_ready": False,
+                "verify": {}}, set()
+    seen = set(ack) if ack else {r.id for recs in by_slug.values() for r in recs}
+    return None, seen
+
+
+def _after_plugin_change(out: Any, kind: str, plugin: str, slugs: list,
+                         ack: "list | None", seen: set) -> Any:
+    """``_after_ordinary_change`` for a plugin change: echo the acknowledgement,
+    and on a committed change — ready or not (INV-TOOL-004) — name each open
+    conversation of the specialists it reached that the operator was not told
+    about, with the sentence for this kind of change."""
+    if not isinstance(out, dict):
+        return out
+    if ack:
+        out.setdefault("acknowledged_conversations", list(ack))
+    if out.get("ok") is True or out.get("activation_committed") is True:
+        by_slug = {}
+        for slug in slugs:
+            new = [r for r in _open_specialist_engagements(slug) if r.id not in seen]
+            if new:
+                by_slug[slug] = new
+        if by_slug:
+            rows, text = _plugin_conversation_blocks(by_slug, kind, plugin)
+            key = "opened_after_confirmation" if ack else "opened_while_this_change_ran"
+            out[key] = rows
+            out["open_conversation_notice"] = text
+    return out
+
+
+async def _plugin_gate_phase(tool: str, kind: str, args: dict,
+                             reached: Callable[[], list],
+                             ) -> "tuple[dict | None, list | None, set]":
+    """The handler's warn-first step, under ``_PLUGIN_TOOLS_LOCK``:
+    ``(refusal, acknowledgement, seen)``. *reached* runs the tool's LOCAL guards
+    (one source with its core) in a thread and returns the specialists the
+    change reaches — none when a guard would refuse or the call changes nothing,
+    so the core then returns its own result as it always did. The check itself
+    runs here, on the event loop, which owns the engagement registry. With no
+    specialist conversation open anywhere there is nothing to warn about, and
+    the guards are not run twice."""
+    ack, bad = _acknowledged(args)
+    if bad is not None:
+        return bad, None, set()
+    if not specialist_roles_with_open_engagements():
+        return None, ack, set(ack or ())
+    slugs = await asyncio.to_thread(reached)
+    refusal, seen = _plugin_change_gate(tool, kind, args["name"], slugs, ack)
+    return refusal, ack, seen
 
 
 def _engagement_driver_for(rec) -> Any:
@@ -18033,10 +18250,13 @@ def _dependents_for(name: str, targets: list) -> list:
         return []
 
 
-def _plugin_assign_sync(*, name: str, target: str,
-                        profile: "str | None" = None) -> dict:
+def _plugin_assign_local(*, name: str, target: str,
+                         profile: "str | None" = None) -> "tuple[dict | None, dict]":
+    """plugin_assign's guards, all LOCAL and read-only: ``(refusal, state)``.
+    One source, called by the core and — #1145 — by the handler first, which
+    warns only about a NEW assignment (``was_assigned`` False)."""
     if not plugin_registry.TARGET_RE.match(target or ""):
-        return {"ok": False, "kind": "invalid_target", "target": target}
+        return {"ok": False, "kind": "invalid_target", "target": target}, {}
     # S8: ``profile`` names a manifest-declared tool subset for a NEW
     # assignment; omitted or ``full`` means no profile (today's behaviour).
     # It is judged only on the new-assignment branch below: an existing
@@ -18045,15 +18265,15 @@ def _plugin_assign_sync(*, name: str, target: str,
         profile = None
     data = plugin_registry.load_registry()
     if not data.valid:
-        return {"ok": False, "kind": "registry_invalid"}
+        return {"ok": False, "kind": "registry_invalid"}, {}
     entry = _find_entry(data, name)
     if entry is None:
-        return {"ok": False, "kind": "not_registered", "name": name}
+        return {"ok": False, "kind": "not_registered", "name": name}, {}
     owner = plugin_registry.entry_owner(entry)
     if owner is not None:
         return {"ok": False, "kind": "owned_by_specialist", "owner": owner,
                 "detail": (f"{name!r} is managed by {owner}'s bundle — use "
-                          "specialist_upgrade / specialist_uninstall")}
+                          "specialist_upgrade / specialist_uninstall")}, {}
     # #923: EVERY executor assignment is refused, bundled entries included —
     # `plugin_assign(name="superpowers", target="executor:configurator")` is the
     # operator composing a worker's plugin set through a tool, which is what the
@@ -18065,7 +18285,7 @@ def _plugin_assign_sync(*, name: str, target: str,
         return {"ok": False, "kind": "executor_target_not_allowed",
                 "target": target,
                 "detail": ("for now a plugin cannot be assigned to a worker — "
-                           "workers use only the plugins Casa ships")}
+                           "workers use only the plugins Casa ships")}, {}
     targets = entry.setdefault("targets", [])
     was_assigned = target in targets
     import plugin_requirements
@@ -18080,7 +18300,7 @@ def _plugin_assign_sync(*, name: str, target: str,
         if held is not None and (
                 not isinstance(held, str)
                 or not plugin_registry.PROFILE_NAME_RE.fullmatch(held)):
-            return {"ok": False, "kind": "invalid_profile", "profile": held}
+            return {"ok": False, "kind": "invalid_profile", "profile": held}, {}
         if held is not None:
             # The profile must exist on the plugin's LIVE artifact before
             # anything is written — a name the manifest does not declare
@@ -18090,7 +18310,22 @@ def _plugin_assign_sync(*, name: str, target: str,
                     store_root, name, entry.get("artifact_id")), held)
             if declared is None:
                 return {"ok": False, "kind": "profile_missing_in_plugin",
-                        "name": name, "profile": held}
+                        "name": name, "profile": held}, {}
+    return None, {"data": data, "entry": entry, "targets": targets,
+                  "was_assigned": was_assigned, "held": held,
+                  "store_root": store_root}
+
+
+def _plugin_assign_sync(*, name: str, target: str,
+                        profile: "str | None" = None) -> dict:
+    refusal, state = _plugin_assign_local(name=name, target=target, profile=profile)
+    if refusal is not None:
+        return refusal
+    data, entry, targets = state["data"], state["entry"], state["targets"]
+    was_assigned, held = state["was_assigned"], state["held"]
+    store_root = state["store_root"]
+    import plugin_requirements
+    if not was_assigned:
         targets.append(target)
         if held is not None:
             profiles = entry.get("profiles")
@@ -18107,20 +18342,32 @@ def _plugin_assign_sync(*, name: str, target: str,
             "profile_tools": profile_tools}
 
 
-def _plugin_unassign_sync(*, name: str, target: str) -> dict:
+def _plugin_unassign_local(*, name: str, target: str) -> "tuple[dict | None, dict]":
+    """plugin_unassign's guards, all LOCAL and read-only: ``(refusal, state)``.
+    One source, called by the core and — #1145 — by the handler first, which
+    warns only when the target is assigned (``was_assigned`` True)."""
     data = plugin_registry.load_registry()
     if not data.valid:
-        return {"ok": False, "kind": "registry_invalid"}
+        return {"ok": False, "kind": "registry_invalid"}, {}
     entry = _find_entry(data, name)
     if entry is None:
-        return {"ok": False, "kind": "not_registered", "name": name}
+        return {"ok": False, "kind": "not_registered", "name": name}, {}
     owner = plugin_registry.entry_owner(entry)
     if owner is not None:
         return {"ok": False, "kind": "owned_by_specialist", "owner": owner,
                 "detail": (f"{name!r} is managed by {owner}'s bundle — use "
-                          "specialist_upgrade / specialist_uninstall")}
+                          "specialist_upgrade / specialist_uninstall")}, {}
     targets = entry.get("targets") or []
-    was_assigned = target in targets
+    return None, {"data": data, "entry": entry, "targets": targets,
+                  "was_assigned": target in targets}
+
+
+def _plugin_unassign_sync(*, name: str, target: str) -> dict:
+    refusal, state = _plugin_unassign_local(name=name, target=target)
+    if refusal is not None:
+        return refusal
+    data, entry, targets = state["data"], state["entry"], state["targets"]
+    was_assigned = state["was_assigned"]
     if was_assigned:
         entry["targets"] = [t for t in targets if t != target]
         # S8: the sibling ``profiles`` map keeps ``keys ⊆ targets`` in the
@@ -18229,26 +18476,43 @@ def _tool_plugin_list() -> dict:
     "of the plugin's declared access profiles for a NEW assignment (omit it "
     "for full access); an existing assignment is never changed and the "
     "result reports the access the target already holds. A profile applies "
-    "to the target's sessions built from now on.",
+    "to the target's sessions built from now on."
+    + _plugin_change_tool_note("added"),
     {"type": "object",
      "properties": {
          "name": {"type": "string"},
          "target": {"type": "string"},
-         "profile": {"type": "string"}},
+         "profile": {"type": "string"},
+         "acknowledged_conversations": _ACKNOWLEDGED_SCHEMA},
      "required": ["name", "target"]},
 )
 async def plugin_assign(args: dict) -> dict:
+    def reached() -> list:
+        refusal, state = _plugin_assign_local(
+            name=args["name"], target=args["target"], profile=args.get("profile"))
+        if refusal is not None or state["was_assigned"]:
+            return []                     # the core refuses, or changes nothing
+        return _specialist_slugs([args["target"]])
+
     async with _PLUGIN_TOOLS_LOCK:
-        core = await asyncio.to_thread(
-            _plugin_assign_sync, name=args["name"], target=args["target"],
-            profile=args.get("profile"))
+        # #1145: warn first when a NEW assignment reaches a specialist with
+        # open conversations; a refused or no-op call is the core's as before.
+        core, ack, seen = await _plugin_gate_phase(
+            "plugin_assign", "added", args, reached)
+        if core is None:
+            core = await asyncio.to_thread(
+                _plugin_assign_sync, name=args["name"], target=args["target"],
+                profile=args.get("profile"))
+        elif core.get("kind") == OPEN_CONVERSATIONS_PENDING:
+            return _result(core)
         if core.get("ok") is not True:
             # Spec §E: the pinned payload shape holds on EVERY path.
             core.setdefault("kind", "unknown")
             core.setdefault("activation_committed", False)
             core.setdefault("runtime_ready", False)
             core.setdefault("verify", {})
-            return _result(core)
+            return _result(_after_plugin_change(
+                core, "added", args["name"], [], ack, seen))
         seq = await _reload_and_verify_targets(
             core["name"], [core["target"]], expect="present")
         core.update(seq)
@@ -18258,25 +18522,51 @@ async def plugin_assign(args: dict) -> dict:
             _profile_tools_denied_by_config, core["name"], core["target"],
             None if core.get("profile") == plugin_registry.FULL_PROFILE
             else core.get("profile"))
-        return _result(core)
+        return _result(_after_plugin_change(
+            core, "added", core["name"],
+            [] if core.get("was_assigned") else _specialist_slugs([core["target"]]),
+            ack, seen))
 
 
 @tool(
     "plugin_unassign",
-    "Remove a plugin's assignment to one target (the plugin stays registered).",
-    {"name": str, "target": str},
+    "Remove a plugin's assignment to one target (the plugin stays registered)."
+    + _plugin_change_tool_note("removed"),
+    # #1145: an explicit JSON Schema, so acknowledged_conversations is optional
+    # (the shorthand {key: type} form marks every key required).
+    {"type": "object",
+     "properties": {
+         "name": {"type": "string"},
+         "target": {"type": "string"},
+         "acknowledged_conversations": _ACKNOWLEDGED_SCHEMA},
+     "required": ["name", "target"]},
 )
 async def plugin_unassign(args: dict) -> dict:
+    def reached() -> list:
+        refusal, state = _plugin_unassign_local(
+            name=args["name"], target=args["target"])
+        if refusal is not None or not state["was_assigned"]:
+            return []                     # the core refuses, or changes nothing
+        return _specialist_slugs([args["target"]])
+
     async with _PLUGIN_TOOLS_LOCK:
-        core = await asyncio.to_thread(
-            _plugin_unassign_sync, name=args["name"], target=args["target"])
+        # #1145: warn first when the unassigned target is a specialist with
+        # open conversations; a refused or no-op call is the core's as before.
+        core, ack, seen = await _plugin_gate_phase(
+            "plugin_unassign", "removed", args, reached)
+        if core is None:
+            core = await asyncio.to_thread(
+                _plugin_unassign_sync, name=args["name"], target=args["target"])
+        elif core.get("kind") == OPEN_CONVERSATIONS_PENDING:
+            return _result(core)
         if core.get("ok") is not True:
             # Spec §E: the pinned payload shape holds on EVERY path.
             core.setdefault("kind", "unknown")
             core.setdefault("activation_committed", False)
             core.setdefault("runtime_ready", False)
             core.setdefault("verify", {})
-            return _result(core)
+            return _result(_after_plugin_change(
+                core, "removed", args["name"], [], ack, seen))
         # A:§3.3 (r2-B5): invalidate by the (normalized) unassigned role only
         # — the plugin/artifact stays valid for its OTHER targets. A NO-OP
         # unassign (plugin was never assigned to this target) invalidates
@@ -18290,7 +18580,10 @@ async def plugin_unassign(args: dict) -> dict:
         # the consequence is stated once; nothing blocks.
         core["dependents"] = await asyncio.to_thread(
             _dependents_for, core["name"], [core["target"]])
-        return _result(core)
+        return _result(_after_plugin_change(
+            core, "removed", core["name"],
+            _specialist_slugs([core["target"]]) if core.get("was_assigned") else [],
+            ack, seen))
 
 
 # --- #1046: erasing a plugin's data at uninstall -----------------------------------
@@ -18838,10 +19131,12 @@ def _erased_everything(reports: list) -> bool:
     "authorizations such as OAuth tokens: that data survives and a reinstall re-attaches to it. "
     "Performs no provider-side revocation. A plugin that declares an eraser asks the operator "
     "first, in the DM, with the options Casa offers for this uninstall: call without "
-    "erase_data and wait for Casa to continue with their choice.",
+    "erase_data and wait for Casa to continue with their choice."
+    + _plugin_change_tool_note("removed", removal=True),
     {"type": "object", "properties": {
         "name": {"type": "string"},
-        "erase_data": {"type": "boolean"}},
+        "erase_data": {"type": "boolean"},
+        "acknowledged_conversations": _ACKNOWLEDGED_SCHEMA},
      "required": ["name"]},
 )
 async def plugin_remove(args: dict) -> dict:
@@ -18859,20 +19154,51 @@ async def plugin_remove(args: dict) -> dict:
 
 
 async def _plugin_remove_erasing(args: dict, held: list) -> dict:
+    ack, bad = _acknowledged(args)
+    if bad is not None:
+        return _result({**bad, "activation_committed": False,
+                        "runtime_ready": False, "verify": {}})
+    # #1145: what the removal's result names afterwards; `confirm` below
+    # replaces it, and an erase_data=true call (which never confirms) keeps it.
+    after = {"seen": set(ack or ())}
+    name = args["name"]
+
+    def _named(result: dict) -> dict:
+        payload = json.loads(result["content"][0]["text"])
+        committed = (payload.get("ok") is True
+                     or payload.get("activation_committed") is True)
+        keys = set(payload)
+        _after_plugin_change(
+            payload, "removed", name,
+            _specialist_slugs(payload.get("targets")) if committed else [],
+            ack, after["seen"])
+        return result if set(payload) == keys else _result(payload)
+
     async with _PLUGIN_TOOLS_LOCK:
         # #1046: the erase step runs under the same lock as the removal, on the
         # registry as it stands under it — the decision and the removal see
         # one state, so no update can slip between them.
-        name = args["name"]
         data = plugin_registry.load_registry()
         entry = _find_entry(data, name) if data.valid else None
         reports: list = []
         if entry is not None and plugin_registry.entry_owner(entry) is None:
+            slugs = _specialist_slugs(entry.get("targets"))
+
+            def _confirm(withdrew: bool) -> "dict | None":
+                # #1145: run by the erase gate where the call would go on to
+                # remove or ask — never on an erase_data=true call — under
+                # this lock, on the event loop.
+                refusal, after["seen"] = _plugin_change_gate(
+                    "plugin_remove", "removed", name, slugs, ack,
+                    removal=True, withdrew=withdrew)
+                return refusal
+
             gate, reports = await _erase_gate(
                 tool="plugin_remove", arg="name", name=name,
                 subject=f"plugin:{name}", what=f"the plugin {name}",
                 specs=_erase_specs_for([entry]), erase=args.get("erase_data"),
-                held=held)
+                held=held, confirm=_confirm,
+                call_extra=(f", acknowledged_conversations={ack!r}" if ack else ""))
             if gate is not None:
                 return _result(gate)
         # #1067: after an Erase everything, the names to clear are computed
@@ -18882,16 +19208,16 @@ async def _plugin_remove_erasing(args: dict, held: list) -> dict:
                  if reports and _erased_everything(reports) else [])
         result = await _plugin_remove_unit(args)
         if not reports:
-            return result
+            return _named(result)
         payload = json.loads(result["content"][0]["text"])
         if payload.get("ok") is not True:
-            return result
+            return _named(result)
         cleared, not_cleared = await _clear_env_references(clear)
     # The reload takes the plugin guard itself, so it runs after the lock.
     if cleared and not await _reload_plugin_env_after_clear():
         payload["env_reload_ok"] = False
     _apply_erasure_to_disclosure(payload, reports, cleared, not_cleared)
-    return _result(payload)
+    return _named(_result(payload))
 
 
 async def _plugin_remove_unit(args: dict) -> dict:

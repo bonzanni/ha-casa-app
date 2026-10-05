@@ -29,12 +29,25 @@ and `plugin_data_note`.
 1. `plugin_list()` to confirm the name + its current targets.
 2. `plugin_unassign(name, target)` or `plugin_remove(name)` (see "A plugin that
    can erase its own data" below when it answers `erase_choice_pending`).
+   If it returns `ok: false, kind: "open_conversations_unconfirmed"`: NOTHING
+   changed (a `plugin_remove` withdrew any erase question and asked none) — a
+   specialist the change reaches has open conversations. Relay the result's
+   `warning` to the operator VERBATIM (it lists each specialist's conversations
+   and says what the change means for them) and ask whether to go ahead. Only
+   on a yes, repeat the same call — the same `erase_data` choice — with
+   `acknowledged_conversations` set to the ids the result lists; on a no, stop
+   and tell the operator nothing changed — a declined warning voids those ids,
+   so never re-pass them without asking again. The calls Casa later tells you
+   to make after the erase question already carry them: make them exactly as
+   given. If a later result carries `opened_after_confirmation` (or
+   `opened_while_this_change_ran`), tell the operator about those
+   conversations too, with the result's `open_conversation_notice` verbatim.
 3. The tool reloads the affected in-casa agents and verifies the plugin is GONE
    from their bindings (an `absent` postcondition). A non-ok result means an
    agent still binds it — surface it.
 4. **Only when the result carries `plugin_data_note`** — a `plugin_remove`
-   that committed; a `plugin_unassign` never carries it, and there is nothing
-   to warn about after one — report `plugin_data_note` to the operator
+   that committed; a `plugin_unassign` never carries it, and there is no data
+   note to give after one — report `plugin_data_note` to the operator
    verbatim, alongside the outcome. It is the only place they learn that
    stored authorizations may have survived — "may", because Casa cannot see
    whether the plugin ever stored any. Do NOT restate it as a deletion or a

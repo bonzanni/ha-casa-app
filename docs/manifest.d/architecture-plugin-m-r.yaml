@@ -4,16 +4,20 @@
 
 - doc: architecture/plugin-mutation-tools.md
   summary: What the plugin and specialist mutation tools guarantee — the commit-then-converge ordering and what an envelope may claim about an integration.
-  when_changing: plugin mutation sequencing, a plugin or specialist mutation envelope, what a result may say about an integration being live, or re-issuing a plugin-consent DM on demand
+  when_changing: plugin mutation sequencing, a plugin or specialist mutation envelope, what a result may say about an integration being live, re-issuing a plugin-consent DM on demand, or how a plugin change warns about a reached specialist's open conversations
   covers:
     - casa/rootfs/opt/casa/tools.py::plugin_add
+    - casa/rootfs/opt/casa/tools.py::_plugin_change_gate
     - casa/rootfs/opt/casa/consent_denials.py
   tests:
     - tests/test_plugin_tools.py
     - tests/test_assistant_prompts.py
+    - tests/test_plugin_open_conversations.py
+    - tests/test_plugin_confirmed_refusal_leaves_artifact.py
   related: [architecture/tools-interface.md, architecture/plugins.md, architecture/plugin-setup.md, architecture/plugin-health.md, architecture/plugin-secret-exploration.md, architecture/plugin-removal.md]
-  defines_invariants: [INV-TOOL-003, INV-TOOL-004, INV-TOOL-005]
+  defines_invariants: [INV-TOOL-003, INV-TOOL-004, INV-TOOL-005, INV-TOOL-013]
   invariant_tests:
+    INV-TOOL-013: [tests/test_plugin_open_conversations.py::test_add_warns_before_publish, tests/test_plugin_open_conversations.py::test_new_assignment_warns, tests/test_plugin_open_conversations.py::test_unassign_warns, tests/test_plugin_open_conversations.py::test_update_warns_before_publish, tests/test_plugin_open_conversations.py::test_remove_without_eraser_warns, tests/test_plugin_open_conversations.py::test_erasing_remove_warns_before_question, tests/test_plugin_open_conversations.py::test_unreached_ack_does_not_confirm, tests/test_plugin_open_conversations.py::test_warning_groups_all_reached_conversations, tests/test_plugin_open_conversations.py::test_update_cross_specialist_confirmation, tests/test_plugin_open_conversations.py::test_remove_cross_specialist_confirmation, tests/test_plugin_open_conversations.py::test_erased_finish_not_ready_still_reports_ops, tests/test_plugin_open_conversations.py::test_closed_engagement_confirms, tests/test_plugin_open_conversations.py::test_continuation_carries_ack, tests/test_plugin_open_conversations.py::test_a_local_guard_refusal_is_not_a_warning, tests/test_plugin_open_conversations.py::test_a_noop_assign_does_not_warn]
     INV-TOOL-003: [tests/test_plugin_tools.py::test_envelope_pre_activation_failure_is_pinned_shape]
     INV-TOOL-004: [tests/test_plugin_tools.py::test_envelope_committed_but_not_ready]
     INV-TOOL-005: [tests/test_assistant_prompts.py::test_shipped_setup_prompt_carries_the_liveness_prohibition, tests/test_assistant_prompts.py::test_no_shipped_prompt_reverts_to_a_known_liveness_claim, tests/test_assistant_prompts.py::test_setup_handback_prompts_defer_to_the_tools_own_result, tests/test_assistant_prompts.py::test_assistant_refuses_to_relay_a_connection_verdict, tests/test_assistant_prompts.py::test_liveness_prohibition_reaches_a_persona_bound_assistant]
