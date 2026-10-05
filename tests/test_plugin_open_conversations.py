@@ -443,3 +443,22 @@ async def test_a_noop_unassign_does_not_warn(reg, plug):
     out = await _call(plug, "plugin_unassign", name="probe", target="specialist:fin")
     assert out.get("ok") is True and out.get("was_assigned") is False, out
     assert "warning" not in out and plug.count("save") == 0
+
+
+@pytest.mark.parametrize("tool,args", [
+    ("plugin_assign", {"name": "probe", "target": "specialist:fin"}),
+    ("plugin_unassign", {"name": "probe", "target": "specialist:fin"}),
+    ("plugin_update", {"name": "probe", "new_ref": "v2"}),
+    ("plugin_remove", {"name": "probe"}),
+], ids=["assign", "unassign", "update", "remove"])
+async def test_an_owned_entry_keeps_its_refusal(reg, plug, tool, args):
+    """An entry a specialist's bundle owns is refused `owned_by_specialist` as at
+    the base, never warned about (red-case acceptor's return, 2026-10-05)."""
+    _targets(plug, "specialist:fin")
+    plug.st.raw["plugins"][0]["owner"] = "specialist:fin"
+    await _open(reg, "fin")
+    before = plug.snapshot()
+    out = await _call(plug, tool, **args)
+    assert out.get("kind") == "owned_by_specialist", out
+    assert "warning" not in out and plug.count("save") == 0
+    assert plug.snapshot() == before
