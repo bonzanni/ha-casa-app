@@ -170,7 +170,7 @@ recomputed on every regeneration and rendered with the plugin, the profile, wher
 and the author's `why` ([`plugin-access-profiles.md`](plugin-access-profiles.md)). A
 specialist desk a stored-call turn left faulted is a `desk_faulted` row against the plugin
 and the specialist, read fresh from the desk registry on every regeneration and standing
-until a restart clears the desk ([`stored-call-buttons.md`](stored-call-buttons.md)).
+until a restart clears the desk ([`stored-call-termination.md`](stored-call-termination.md)).
 
 ## Contracts & invariants
 

@@ -220,13 +220,13 @@ def _echo():
 
 
 async def test_a_tap_on_a_slash_labelled_button_context_is_the_base_context(env):
-    """#1198: the slash statement is a swipe-reply's; a tap's context is unchanged."""
+    """#1198: the slash statement is a swipe-reply's; a tap's context is the
+    base one — since #1282 empty: no frame, no desk block, no slash line."""
     env.desk.append("operator", "earlier question", now=990.0)
     env.desk.append("specialist", "earlier answer", now=990.0)
-    log = list(env.desk.log)
     await _tap(env, meta={"options": ["/new", "More"]})
     (call,) = env.calls
-    assert call.context == sd.turn_frame("Ellen") + "\n\n" + sd.render_block(log, resident_name="Ellen")
+    assert call.context == ""
 
 
 # --- the happy path: one pinned run, the receipt, the exchange, the echo -----------
@@ -240,10 +240,10 @@ async def test_a_tap_runs_one_pinned_turn_on_the_captured_build_input_and_posts_
     assert call.owner is not None and call.owner.build_input is env.build
     assert (call.owner.runtime_name, call.owner.canonical, call.owner.label) == (APPLY, CANON, "Yes")
     assert call.lock_held is True
-    # the prompt (§5.2.3) and the desk block as context
+    # the prompt (§5.2.3), and no context: no desk block, no frame (#1282)
     assert call.task.startswith('[casa stored call] The operator tapped "Yes" on your proposal.')
     assert f"`{APPLY}`" in call.task and CANON in call.task and "Then stop." in call.task
-    assert call.context.startswith(sd.turn_frame("Ellen"))
+    assert call.context == ""
     # the origin: a desk turn's plus the reserved stored_call marker keyed on the run id
     assert call.origin["desk"] == {"role": "finance", "chat_id": OPERATOR}
     assert call.origin["execution_role"] == "finance" and call.origin["_operator_turn"] is True

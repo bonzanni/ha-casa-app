@@ -439,7 +439,7 @@ class TestVoiceStructuredResult:
 
         assert output == tools.DelegatedOutput(
             text="legacy text", structured_output=structured,
-            run_subtype="success",
+            run_subtype="success", reply_messages=("legacy text",),
         )
         assert output.run_aborted is False
         assert _FakeSpecialistClient.captured_options.output_format is VOICE_JOB_OUTPUT_FORMAT

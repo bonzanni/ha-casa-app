@@ -293,7 +293,7 @@ async def test_token_budget_zero_no_sem_calls(monkeypatch):
     # what suppresses both calls here.
     assert output == tools.DelegatedOutput(
         text="ok", structured_output=None,
-        run_subtype="success", result_message_seen=True,
+        run_subtype="success", result_message_seen=True, reply_messages=("ok",),
     )
     assert fake_sem.recall_calls == []
     assert fake_sem.retain_calls == []
@@ -326,7 +326,7 @@ async def test_write_retain_telegram(monkeypatch):
     # this was an aborted run asserting the successful path's behaviour.
     assert out == tools.DelegatedOutput(
         text="Q1 is on track", structured_output=None,
-        run_subtype="success", result_message_seen=True,
+        run_subtype="success", result_message_seen=True, reply_messages=("Q1 is on track",),
     )
     assert out.run_aborted is False
 
@@ -368,7 +368,7 @@ async def test_voice_writes_nothing(monkeypatch):
     # keeps voice out of the bank.
     assert out == tools.DelegatedOutput(
         text="voice answer", structured_output=None,
-        run_subtype="success", result_message_seen=True,
+        run_subtype="success", result_message_seen=True, reply_messages=("voice answer",),
     )
     assert fake_sem.retain_calls == []
     # Recall did fire, with voice clearance tags
@@ -635,6 +635,7 @@ async def test_pin_inv_mem_016_aborted_run_retains_only_caller_task(
         run_subtype=result_subtype,
         result_message_seen=emit_result,
         run_is_error=result_is_error,
+        reply_messages=("partial answer",),
     )
     assert out.run_aborted is True
 

@@ -1240,10 +1240,15 @@ slot of the kind `operator_proposal` and depositing the text with one to six
 buttons, each naming one of the plugin's own tools with fixed arguments. Casa
 posts it labelled, like any specialist post. When you tap, Casa runs that one
 call and nothing else: a short specialist turn in which only that exact tool
-with those exact arguments is allowed — any other call is denied — and the
-plugin's own answer comes back to you, labelled, as the receipt (a plugin
-that answers with a JSON object can give the sentence you see as its
-`receipt`; otherwise you see its answer as it is). A tap by
+with those exact arguments is allowed — any other call is denied — and, when
+the call runs and returns a result, the plugin's own answer comes back to you,
+labelled, as the receipt (a plugin that answers with a JSON object can give
+the sentence you see as its `receipt`; otherwise you see its answer as it is). That turn is told to
+make the call even if the proposal looks out of date, because the plugin
+decides whether the tap still applies, and it is not given the specialist's
+desk thread or its memories. It can still end without making the call; then
+Casa tells you it could not apply your tap (`no_call`), and the tap is not
+retried. A tap by
 anyone else, on an old or restarted keyboard, or a second tap, does nothing
 but show a short toast; a button whose plugin has since been updated,
 unassigned, narrowed or is being erased is refused with the reason. If the

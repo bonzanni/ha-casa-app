@@ -102,7 +102,13 @@ the desk's own scope, prefixed with the label line, and sent through the residen
 specialist, so the operator can reply to the reply. A plugin view, package or file the
 specialist produces during the turn reaches the operator through the delivered-slot path,
 verbatim — the desk never retells a view; a turn whose outcome was such a post and whose
-final text is silent posts no reply. A turn with no proven operator-visible outcome at all —
+final text is silent posts no reply. A reply whose last text-bearing message is nothing but
+`<silent/>` after earlier text posts the earlier messages without it, whether or not the turn
+posted anything (the operator's #1075 rule 2; its rule 1, silence after a proven outcome, is
+not the desk's). It is judged on the runner's own list of the run's text-bearing messages —
+one entry per model message, cut where an approval cut cuts the words — against the words
+shown: one message holding both prose and the sentinel is judged whole and keeps its tag, and
+a reply truncated at the cap is posted truncated. A turn with no proven operator-visible outcome at all —
 an empty answer with no proven post and no delivered media, a refused permit, a full queue,
 an abort, an exception, a failed reply send — ends in ONE labelled, body-free Casa notice.
 
@@ -159,7 +165,7 @@ engagement turn's so the per-chat serial lock is released at once and a stop can
 The map's retention is the invariant's edge: a restart or eviction makes the reply a plain
 message, by design.
 
-**INV-DESK-002**: A desk turn's reply reaches the operator only as an admitted, labelled, paginated post of the specialist's own completed and bounded text — of a run that ended with a protected call waiting on the operator's approval, only the text written before that call — whose messages join the post map; a turn that produces no proven operator-visible outcome, or whose reply is not proven, ends in one labelled Casa notice; the chat's resident learns of the turn only through a body-free line at its next turn, and no resident model turn is spent on it.
+**INV-DESK-002**: A desk turn's reply reaches the operator only as an admitted, labelled, paginated post of the specialist's own completed and bounded text — of a run that ended with a protected call waiting on the operator's approval, only the text written before that call; of a reply whose last text-bearing message is only `<silent/>` after earlier text, the earlier messages without it — whose messages join the post map; a turn that produces no proven operator-visible outcome, or whose reply is not proven, ends in one labelled Casa notice; the chat's resident learns of the turn only through a body-free line at its next turn, and no resident model turn is spent on it.
 
 The desk turn's origin is the DM's own context with the three fields the provenance
 classifier needs, the resident's role, the specialist as the executing role, depth one, a
@@ -194,7 +200,7 @@ had nothing to add.`). A proven outcome is read from the two records that exist 
 map by owner (`PostMap.owned`, each record stamped with its delivery `kind`) — and the sends
 the specialist's turn scope confirmed delivered (one suffices; a later send that failed does not
 erase it — the resident's every-send closing-silence rule is not the desk's). Deliberate silence
-after a proven outcome stays silent; every
+— a reply that is nothing but sentinels — after a proven outcome stays silent; every
 outcome with no S3 echo line of its own (a link post, a send the specialist made itself) adds
 one Casa-composed line per kind, named from the records (`OUTCOME_ECHO`: `📊 Finance posted a
 link to your chat.`, `… sent you a file.`, `… asked you a question.`, `… sent you a
@@ -232,7 +238,7 @@ older post is a plain message to the resident; the next desk turn starts a fresh
 **Buttons on a specialist's post** land in the same desk: a tap is a use of the desk under its
 lock and queue, the stored call its task, and a desk whose pinned run could not be confirmed
 terminated is *faulted* — every later use refused until restart
-([`stored-call-buttons.md`](stored-call-buttons.md)).
+([`stored-call-termination.md`](stored-call-termination.md)).
 
 **The idle bound** is a module constant until tuning has an evidence base; an app option
 follows.
@@ -264,6 +270,8 @@ follows.
 - `tests/test_file_handoff_turn.py`
 - `tests/test_file_handoff_lines.py`
 - `tests/test_pending_approval_desk.py`
+- `tests/test_redcase_1283.py`
+- `tests/test_desk_closing_silence.py`
 
 **Related**
 - [`architecture/plugin-delivered-slots.md`](../architecture/plugin-delivered-slots.md)
