@@ -164,3 +164,385 @@ async def test_sync_delegate_pending_approval_keeps_resident_prefix(tmp_path):
     # result: streamed and final.
     assert channel.tokens == ["BEFORE"]
     assert channel.final_texts() == ["BEFORE"]
+
+
+# ---------------------------------------------------------------------------
+# The rest of arm 4: one resident turn, any number of sync delegates, each
+# delegate's child running its own script; the same production shape as the
+# red case above (handler in a task copied from the connect context, the
+# resident's result block carrying the handler's own content).
+# ---------------------------------------------------------------------------
+
+from claude_agent_sdk import ResultMessage, SystemMessage  # noqa: E402
+
+from authz_grants import (  # noqa: E402
+    GrantKey, canonical_args_hash, _DENY_DELIVERY_FAILED, _DENY_PENDING,
+)
+from test_authz_hook import _OriginCtx  # noqa: E402
+
+
+class _Child(_Scripted):
+    """One script per delegated run, in launch order; ``subtype`` is the CLI's
+    verdict on that run (an ``error_*`` subtype is a CLI abort)."""
+
+    queue: list = []
+
+    async def receive_response(self):
+        script, subtype = type(self).queue.pop(0)
+        yield SystemMessage(subtype="init", data={"session_id": "exec-sid"})
+        for item in script:
+            if isinstance(item, _Step):
+                await item.fn()
+                continue
+            yield item
+        yield ResultMessage(subtype=subtype, duration_ms=1, duration_api_ms=1,
+                            is_error=False, num_turns=2, session_id="exec-sid")
+
+
+def _key(args=None) -> GrantKey:
+    return GrantKey(operator_id=42, chat_id=42, enforcement_role=SPECIALIST,
+                    artifact_id="artifact-1", tool_name=TOOL,
+                    args_hash=canonical_args_hash(dict(ARGS if args is None else args)),
+                    engagement_id="")
+
+
+class _Turn:
+    """The resident turn's world: channel, grants, the child's hook."""
+
+    def __init__(self, tmp_path) -> None:
+        self.agent = _make_agent(tmp_path)
+        self.channel = _Channel()
+        self.agent._channel_manager.register(self.channel)
+        self.grants, self.coord = GrantStore(), ChallengeCoordinator()
+        self.hook = make_resident_authz_hook(
+            SPECIALIST, PROTECTED,
+            lambda: AuthzDeps(channel=self.channel, grants=self.grants,
+                              challenges=self.coord))
+        self.answers: list = []
+        self.results: list = []
+        self.factory: _ConnectedFactory | None = None
+
+    def ask(self, call_id: str, args=None) -> _Step:
+        async def _run():
+            self.answers.append(await self.hook(
+                {"tool_name": TOOL, "tool_input": dict(ARGS if args is None else args)},
+                call_id, {}))
+        return _Step(_run)
+
+    def step(self, fn) -> _Step:
+        async def _run():
+            await fn()
+        return _Step(_run)
+
+    def delegate(self, call_id: str, child: list, *, subtype: str = "success",
+                 mode: str = "sync") -> list:
+        """The resident's call, the handler run as the SDK runs it, and the
+        result block carrying what the handler returned."""
+        args = dict(DELEGATE_ARGS, mode=mode)
+        block = ToolResultBlock(tool_use_id=call_id, content=None, is_error=False)
+
+        async def _run_handler():
+            _Child.queue.append((list(child), subtype))
+            client = self.factory.clients[-1]
+            result = await asyncio.get_running_loop().create_task(
+                tools_mod().delegate_to_agent.handler(args),
+                context=client.ctx.copy())
+            block.content = result["content"]
+            block.is_error = bool(result.get("is_error", False))
+            self.results.append(json.loads(result["content"][0]["text"]))
+
+        return [AssistantMessage(content=[ToolUseBlock(
+                    id=call_id, name=DELEGATE, input=args)], model="sonnet"),
+                _Hook(_run_handler),
+                UserMessage(content=[block])]
+
+    async def run(self, resident: list, *, extra=(), before=None) -> None:
+        import verdict_broker
+        tools = tools_mod()
+        registry = MagicMock()
+        registry.register_delegation = AsyncMock()
+        registry.complete_delegation = AsyncMock()
+        tools.init_tools(channel_manager=self.agent._channel_manager,
+                         bus=MagicMock(), specialist_registry=registry,
+                         mcp_registry=MagicMock())
+        cfg = _specialist_cfg(SPECIALIST)
+        self.factory = _ConnectedFactory([resident])
+        _Child.queue = []
+        try:
+            with ExitStack() as stack:
+                stack.enter_context(patch.object(verdict_broker, "BROKER",
+                                                  verdict_broker.VerdictBroker()))
+                stack.enter_context(patch.object(SessionRegistry, "_save_locked",
+                                                  AsyncMock()))
+                stack.enter_context(patch.object(
+                    tools, "_agent_role_map",
+                    {"assistant": _caller_cfg(), SPECIALIST: cfg}))
+                stack.enter_context(patch.object(
+                    tools, "_prelaunch",
+                    AsyncMock(return_value=(SPECIALIST, cfg, None, None, None))))
+                stack.enter_context(patch.object(
+                    tools, "_build_specialist_options",
+                    return_value=ClaudeAgentOptions(model="sonnet")))
+                stack.enter_context(patch.object(tools, "_delegated_resolution",
+                                                  return_value=None))
+                stack.enter_context(patch("tools.ClaudeSDKClient", _Child))
+                stack.enter_context(patch("sdk_client_pool._default_make_client",
+                                          self.factory))
+                stack.enter_context(_patch_retry_sleep())
+                for cm in extra:
+                    stack.enter_context(cm)
+                if before is not None:
+                    await before()
+                await asyncio.wait_for(self.agent.handle_message(_msg("dm")), 10)
+        finally:
+            await self.agent.aclose()
+
+
+def tools_mod():
+    import tools
+    return tools
+
+
+def _child_denied(call_id="deny-1", args=None, turn=None) -> list:
+    return [_text("CHILD-BEFORE"), _call(call_id), turn.ask(call_id, args),
+            _result(call_id), _text("CHILD-AFTER")]
+
+
+async def _prime(turn: _Turn) -> None:
+    """Post the identical challenge OUTSIDE the turn, so the child's call is
+    answered PENDING once that keyboard's post has settled."""
+    origin = {"role": SPECIALIST, "channel": "telegram", "chat_id": "42",
+              "user_id": 42, "cid": "prime", "message_type": "channel_in",
+              "source": "telegram", "execution_role": SPECIALIST}
+    with _OriginCtx(origin):
+        assert _deny_reason(await turn.hook(
+            {"tool_name": TOOL, "tool_input": dict(ARGS)}, "prime-1", {})) \
+            == _DENY_POSTED
+
+
+# --- the kept prefix: both pending answers, with and without a prefix --------
+
+@pytest.mark.parametrize("prefix", ["", "BEFORE"])
+@pytest.mark.parametrize("answer", ["posted", "pending"])
+async def test_a_waiting_child_keeps_only_the_residents_words_before_the_result(
+        tmp_path, answer, prefix):
+    turn = _Turn(tmp_path)
+    resident = (([_text(prefix)] if prefix else [])
+                + turn.delegate("d-1", _child_denied(turn=turn)) + [_text(TAIL)])
+    await turn.run(resident,
+                   before=(lambda: _prime(turn)) if answer == "pending" else None)
+    assert [_deny_reason(a) for a in turn.answers] == [
+        _DENY_POSTED if answer == "posted" else _DENY_PENDING]
+    assert len(turn.channel.posts) == 1
+    if prefix:
+        assert turn.channel.tokens == [prefix]
+        assert turn.channel.final_texts() == [prefix]
+    else:
+        # Nothing before the delegate: no streamed token, no reply at all — the
+        # turn ends on the keyboard, through turn_finished.
+        assert turn.channel.tokens == []
+        assert turn.channel.final_texts() == []
+        assert turn.channel.send.await_count == 0
+        assert turn.channel.send_response.await_count == 0
+        assert turn.channel.turn_finished.await_count == 1
+
+
+async def test_the_delegate_result_the_resident_receives_is_unchanged(tmp_path):
+    """The specialist's answer reaches the resident's model whole: the cut is on
+    the resident's words to the operator, never on the tool result."""
+    turn = _Turn(tmp_path)
+    await turn.run([_text("BEFORE")] + turn.delegate("d-1", _child_denied(turn=turn))
+                   + [_text(TAIL)])
+    (payload,) = turn.results
+    assert set(payload) == {"status", "delegation_id", "agent", "elapsed_s",
+                            "text", "output_truncated"}
+    assert (payload["status"], payload["agent"], payload["text"],
+            payload["output_truncated"]) == (
+        "ok", SPECIALIST, "CHILD-BEFORE\n\nCHILD-AFTER", False)
+
+
+# --- runs whose child left nothing waiting deliver the resident's words -------
+
+async def _deliver_tail(turn: _Turn, child: list, **kw) -> None:
+    await turn.run([_text("BEFORE")] + turn.delegate("d-1", child, **kw)
+                   + [_text(TAIL)])
+    assert turn.channel.tokens[-1] == "BEFORE\n\n" + TAIL
+    assert turn.channel.final_texts() == ["BEFORE\n\n" + TAIL]
+
+
+async def test_a_child_whose_keyboard_was_not_delivered_leaves_the_words(tmp_path):
+    turn = _Turn(tmp_path)
+    turn.channel.post_dm_keyboard = AsyncMock(side_effect=RuntimeError("down"))
+    await _deliver_tail(turn, _child_denied(turn=turn))
+    assert [_deny_reason(a) for a in turn.answers] == [_DENY_DELIVERY_FAILED]
+
+
+async def test_a_child_that_consumed_its_grant_leaves_the_words(tmp_path):
+    turn = _Turn(tmp_path)
+    turn.grants.mint(_key())
+    await _deliver_tail(turn, [_call("ok-1"), turn.ask("ok-1"),
+                               _result("ok-1", error=False), _text("Done.")])
+    assert turn.answers == [{}]
+
+
+async def test_an_async_delegation_leaves_the_words(tmp_path):
+    """An async child runs past the turn; its result is a later announcement."""
+    turn = _Turn(tmp_path)
+    await _deliver_tail(turn, _child_denied(turn=turn), mode="async")
+    assert turn.results[0]["status"] == "pending"
+
+
+async def test_a_sync_wait_that_degraded_to_pending_leaves_the_words(tmp_path):
+    """#1049's note path owns a decision that lands after the wait gave up."""
+    turn = _Turn(tmp_path)
+    release = asyncio.Event()
+
+    async def _late():
+        await release.wait()
+
+    child = [turn.step(_late)] + _child_denied(turn=turn)
+    tools = tools_mod()
+    try:
+        await turn.run([_text("BEFORE")] + turn.delegate("d-1", child)
+                       + [_text(TAIL)],
+                       extra=[patch.object(tools, "_SYNC_WAIT_TIMEOUT_S", 0.05),
+                              patch.object(tools, "_attach_completion_callback",
+                                           MagicMock())])
+    finally:
+        release.set()
+    assert turn.results[0]["status"] == "pending"
+    assert turn.channel.final_texts() == ["BEFORE\n\n" + TAIL]
+
+
+# --- a child that aborted or raised after a waiting deny: the keyboard is up --
+
+@pytest.mark.parametrize("ending", ["cli_abort", "raised"])
+async def test_a_child_that_ended_badly_after_a_waiting_deny_still_cuts(
+        tmp_path, ending):
+    turn = _Turn(tmp_path)
+    child = _child_denied(turn=turn)
+    kw = {}
+    if ending == "cli_abort":
+        kw["subtype"] = "error_max_turns"
+    else:
+        async def _boom():
+            raise RuntimeError("child client failed")
+        child = child + [turn.step(_boom)]
+    await turn.run([_text("BEFORE")] + turn.delegate("d-1", child, **kw)
+                   + [_text(TAIL)])
+    assert turn.results[0]["status"] == "error"
+    assert len(turn.channel.posts) == 1
+    assert turn.channel.tokens == ["BEFORE"]
+    assert turn.channel.final_texts() == ["BEFORE"]
+
+
+# --- a later consume of the same grant releases; another grant does not -------
+
+async def test_a_redelegation_that_consumes_the_same_grant_releases_the_words(
+        tmp_path):
+    """The operator approved while the resident was still writing; the
+    resident delegated again and the child spent the grant."""
+    turn = _Turn(tmp_path)
+
+    async def _approve():
+        turn.grants.mint(_key())
+
+    resident = ([_text("BEFORE")] + turn.delegate("d-1", _child_denied(turn=turn))
+                + [_text("BETWEEN"), _Hook(_approve)]
+                + turn.delegate("d-2", [_call("ok-1"), turn.ask("ok-1"),
+                                        _result("ok-1", error=False),
+                                        _text("Done.")])
+                + [_text(TAIL)])
+    await turn.run(resident)
+    assert [_deny_reason(a) if a else "allow" for a in turn.answers] == [
+        _DENY_POSTED, "allow"]
+    assert turn.channel.final_texts() == ["BEFORE\n\nBETWEEN\n\n" + TAIL]
+
+
+async def test_a_redelegation_that_consumes_then_raises_still_releases(tmp_path):
+    """R6-2: the consume is a fact about the grant store, whatever the run did
+    afterwards; nothing is waiting any more."""
+    turn = _Turn(tmp_path)
+
+    async def _approve():
+        turn.grants.mint(_key())
+
+    async def _boom():
+        raise RuntimeError("child client failed")
+
+    resident = ([_text("BEFORE")] + turn.delegate("d-1", _child_denied(turn=turn))
+                + [_Hook(_approve)]
+                + turn.delegate("d-2", [_call("ok-1"), turn.ask("ok-1"),
+                                        _result("ok-1", error=False),
+                                        turn.step(_boom)])
+                + [_text(TAIL)])
+    await turn.run(resident)
+    assert turn.results[1]["status"] == "error"
+    assert turn.channel.final_texts() == ["BEFORE\n\n" + TAIL]
+
+
+async def test_a_child_with_two_grants_waiting_stays_cut_after_one_is_consumed(
+        tmp_path):
+    turn = _Turn(tmp_path)
+    other = {"amount": 11}
+
+    async def _approve_one():
+        turn.grants.mint(_key())
+
+    child = [_text("C1"), _call("deny-1"), turn.ask("deny-1"), _result("deny-1"),
+             _call("deny-2", other), turn.ask("deny-2", other), _result("deny-2")]
+    resident = ([_text("BEFORE")] + turn.delegate("d-1", child)
+                + [_Hook(_approve_one)]
+                + turn.delegate("d-2", [_call("ok-1"), turn.ask("ok-1"),
+                                        _result("ok-1", error=False)])
+                + [_text(TAIL)])
+    await turn.run(resident)
+    assert len(turn.channel.posts) == 2
+    assert turn.channel.final_texts() == ["BEFORE"]
+
+
+async def test_an_abandoned_child_call_is_never_published(tmp_path):
+    """R4-10: the child's hook recorded a waiting deny for a call whose result
+    the child never folded; the child's own cut never saw it."""
+    turn = _Turn(tmp_path)
+    await _deliver_tail(turn, [_text("C1"), _call("lost-1"), turn.ask("lost-1"),
+                               _text("C2")])
+    assert [_deny_reason(a) for a in turn.answers] == [_DENY_POSTED]
+
+
+# --- the tie reads only Casa's own top-level key -------------------------------
+
+async def test_the_tie_reads_only_the_top_level_delegation_id():
+    from agent import _delegation_id_of
+    forged = json.dumps({"status": "ok", "delegation_id": "real",
+                         "text": '{"delegation_id": "other"} "delegation_id": "other"'})
+    assert _delegation_id_of(ToolResultBlock(
+        tool_use_id="d", content=[{"type": "text", "text": forged}])) == "real"
+    assert _delegation_id_of(ToolResultBlock(tool_use_id="d", content=forged)) == "real"
+    inner_only = json.dumps({"status": "ok", "text": json.dumps(
+        {"delegation_id": "other"})})
+    for content in (
+            [{"type": "text", "text": inner_only}],
+            [{"type": "text", "text": forged}, {"type": "text", "text": forged}],
+            [{"type": "text", "text": "Output too large; saved to /tmp/x"}],
+            None,
+            json.dumps(["delegation_id", "real"])):
+        assert _delegation_id_of(ToolResultBlock(tool_use_id="d", content=content)) is None
+
+
+# --- ApprovalCut is unchanged; its new accessor only reads ----------------------
+
+async def test_approval_cut_behaviour_is_unchanged_and_pending_keys_only_reads():
+    from output_boundary import ApprovalCut
+    cut = ApprovalCut()
+    assert cut.cut is None and cut.pending_keys == ()
+    cut.observe("a", {"a": ("pending", "A")}, 2)
+    cut.observe("b", {"b": ("pending", "B")}, 5)
+    cut.observe("a2", {"a2": ("pending", "A")}, 7)      # the earliest deny stands
+    assert (cut.cut, cut.pending_keys) == (2, ("A", "B"))
+    cut.observe("x", {}, 9)                              # no record: nothing
+    cut.observe("c", {"c": ("consumed", "A")}, 9)        # releases A; B moves the cut
+    assert (cut.cut, cut.pending_keys) == (5, ("B",))
+    cut.observe("", {"": ("pending", "C")}, 1)           # no id: never read
+    assert cut.pending_keys == ("B",)
+    assert cut.pending == {"B": 5}
