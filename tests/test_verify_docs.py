@@ -1037,6 +1037,8 @@ INV_SHARD_ENTRY = """
     INV-R-001: [tests/test_a.py::test_b]
     INV-RZ-001: [tests/test_a.py::test_b]
     INV-S-001: [tests/test_a.py::test_b]
+    INV-SZ-001: [tests/test_a.py::test_b]
+    INV-T-001: [tests/test_a.py::test_b]
     INV-VOICE-001: [tests/test_a.py::test_b]
 """
 
@@ -1056,7 +1058,9 @@ INV_SHARD_DOC = {
         "**INV-R-001**: the fifth shard owns the whole range up to its bound.\n\n"
         "**INV-RZ-001**: last family of the fifth shard, just below the bound.\n\n"
         "**INV-S-001**: first family of the sixth shard.\n\n"
-        "**INV-VOICE-001**: an ordinary family of the sixth shard.\n"
+        "**INV-SZ-001**: last family of the sixth shard, just below its bound.\n\n"
+        "**INV-T-001**: first family of the seventh shard, exactly at the bound.\n\n"
+        "**INV-VOICE-001**: an ordinary family of the seventh shard.\n"
         + SOURCEMAP
     )
 }
@@ -1071,9 +1075,10 @@ INV_SHARD_PATHS = (
     "doctrine/invariants-f-m.md",
     "doctrine/invariants-n-pk.md",
     "doctrine/invariants-pl-r.md",
-    "doctrine/invariants-s-z.md",
+    "doctrine/invariants-s.md",
+    "doctrine/invariants-t-z.md",
 )
-INV_SHARD_LABELS = ("A-D", "E", "F-M", "N-PK", "PL-R", "S-Z")
+INV_SHARD_LABELS = ("A-D", "E", "F-M", "N-PK", "PL-R", "S", "T-Z")
 
 
 def _shard_rows(root: Path) -> dict[str, list[str]]:
@@ -1089,18 +1094,18 @@ def _shard_rows(root: Path) -> dict[str, list[str]]:
     }
 
 
-def test_every_family_lands_in_exactly_one_shard_at_the_e_f_n_pl_and_s_boundaries(tmp_path):
-    """#843, then #953, then #1218, then #998: each shard outgrew the index ceiling
-    in turn and the index now shards SIX ways. A family sorting exactly AT a
-    boundary (`E`, `F`, `N`, `PL`, `S`) opens the later shard, one sorting just
-    below it (`DZ`, `EVAL`, `MEM`, `PKZ`, `RZ`) closes the earlier one, and every
-    row appears exactly once across the six — so a boundary compared with the wrong
-    inequality, a bound moved off `E` to anywhere in `DZ`..`E` or up to `EVAL`, a
-    bound moved off `PL` to anywhere in `PKZ`..`PL` or up to `PUB`, a bound moved
-    off `S` to anywhere in `R`..`RZ` or up to `T`, a shard
-    table left at five rows, or a family the table assigns nowhere is caught
-    here. The expected layout is literal test data, never read back from
-    `_INV_SHARDS`."""
+def test_every_family_lands_in_exactly_one_shard_at_the_e_f_n_pl_s_and_t_boundaries(tmp_path):
+    """#843, then #953, then #1218, then #998, then #1275: each shard outgrew the
+    index ceiling in turn and the index now shards SEVEN ways. A family sorting
+    exactly AT a boundary (`E`, `F`, `N`, `PL`, `S`, `T`) opens the later shard, one
+    sorting just below it (`DZ`, `EVAL`, `MEM`, `PKZ`, `RZ`, `SZ`) closes the earlier
+    one, and every row appears exactly once across the seven — so a boundary
+    compared with the wrong inequality, a bound moved off `E` to anywhere in
+    `DZ`..`E` or up to `EVAL`, a bound moved off `PL` to anywhere in `PKZ`..`PL` or
+    up to `PUB`, a bound moved off `S` to anywhere in `R`..`RZ` or up to `SZ`, a
+    bound moved off `T` to anywhere in `S`..`SZ` or up to `VOICE`, a shard table
+    left at six rows, or a family the table assigns nowhere is caught here. The
+    expected layout is literal test data, never read back from `_INV_SHARDS`."""
     root = _corpus(tmp_path, manifest=INV_SHARD_ENTRY, docs=INV_SHARD_DOC)
     rows = _shard_rows(root)
     assert rows == {
@@ -1110,19 +1115,20 @@ def test_every_family_lands_in_exactly_one_shard_at_the_e_f_n_pl_and_s_boundarie
         "doctrine/invariants-n-pk.md": ["INV-N-001", "INV-OBS-001", "INV-PKZ-001"],
         "doctrine/invariants-pl-r.md": ["INV-PL-001", "INV-PUB-001", "INV-R-001",
                                        "INV-RZ-001"],
-        "doctrine/invariants-s-z.md": ["INV-S-001", "INV-VOICE-001"],
+        "doctrine/invariants-s.md": ["INV-S-001", "INV-SZ-001"],
+        "doctrine/invariants-t-z.md": ["INV-T-001", "INV-VOICE-001"],
     }
     assert sorted(sum(rows.values(), [])) == [
         "INV-DZ-001", "INV-E-001", "INV-EVAL-001", "INV-F-001", "INV-MEM-001", "INV-N-001", "INV-OBS-001",
         "INV-PKZ-001", "INV-PL-001", "INV-PUB-001", "INV-R-001", "INV-RZ-001",
-        "INV-S-001", "INV-VOICE-001"]
-    assert len(sum(rows.values(), [])) == 14
+        "INV-S-001", "INV-SZ-001", "INV-T-001", "INV-VOICE-001"]
+    assert len(sum(rows.values(), [])) == 16
 
 
 def test_each_shard_names_every_other_shard_and_its_own_range(tmp_path):
-    """A reader landing on any shard can reach the other five in one hop, the
+    """A reader landing on any shard can reach the other six in one hop, the
     title states the range the shard OWNS, and no shard links to itself. Counted
-    across the six: thirty sibling links, zero self-links."""
+    across the seven: forty-two sibling links, zero self-links."""
     root = _corpus(tmp_path, manifest=INV_SHARD_ENTRY, docs=INV_SHARD_DOC)
     targets = verify_docs.nav_targets(root)
     rendered = sorted(p for p in targets if p.startswith("doctrine/invariants"))
@@ -1139,7 +1145,40 @@ def test_each_shard_names_every_other_shard_and_its_own_range(tmp_path):
             want = 0 if other == path else 1
             assert see_also[0].count(f"[`{other}`]({href})") == want
             siblings += see_also[0].count(f"[`{other}`]({href})")
-    assert siblings == 30
+    assert siblings == 42
+
+
+def test_the_real_index_keeps_s_apart_from_t_z_and_every_row_once(tmp_path):
+    """#1275: the S-Z shard outgrew the index ceiling and splits at `T`. Read from
+    the COMMITTED corpus, not a fixture: the manifest declares the S and T-Z shards
+    as generated and no longer declares `doctrine/invariants-s-z.md`; every
+    rendered row whose family sorts at or after `T` sits in
+    `doctrine/invariants-t-z.md`, every `S`..`SZ` row in `doctrine/invariants-s.md`,
+    and each row line occurs exactly ONCE across every markdown file under docs/
+    — so a row left behind in the retained shard, a T family kept on it, or an S
+    family moved off it is caught here."""
+    docs = REPO_ROOT / "docs"
+    manifest = (docs / "manifest.yaml").read_text()
+    assert manifest.count("- doc: doctrine/invariants-s.md\n  kind: generated\n") == 1
+    assert manifest.count("- doc: doctrine/invariants-t-z.md\n  kind: generated\n") == 1
+    assert "doctrine/invariants-s-z.md" not in manifest
+
+    owner: dict[str, list[str]] = {}
+    lines = Counter()
+    for md in sorted(docs.rglob("*.md")):
+        rel = md.relative_to(docs).as_posix()
+        for line in md.read_text().splitlines():
+            if line.startswith("| `INV-"):
+                lines[line] += 1
+                if rel.startswith("doctrine/invariants"):
+                    owner.setdefault(line.split("`")[1], []).append(rel)
+    late = {i: f for i, f in owner.items() if i.split("-")[1] >= "S"}
+    s_rows = sorted(i for i in late if i.split("-")[1] < "T")
+    t_rows = sorted(i for i in late if i.split("-")[1] >= "T")
+    assert len(s_rows) >= 20 and len(t_rows) >= 60
+    assert {i: owner[i] for i in s_rows} == {i: ["doctrine/invariants-s.md"] for i in s_rows}
+    assert {i: owner[i] for i in t_rows} == {i: ["doctrine/invariants-t-z.md"] for i in t_rows}
+    assert [line for line, n in lines.items() if n != 1] == []
 
 
 # --- a manifest that fails to load renders nothing (#812) ---------------------------
