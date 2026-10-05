@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.344.30] - 2026-10-05
+
+### Fixed
+
+- **A tap on an out-of-date button reaches the plugin more often.** When you tap a button on a specialist's proposal, Casa runs a short specialist turn whose only job is to make that button's call. That turn was also given the specialist's desk thread with you, a frame presenting the tap as your message and, if the specialist uses memory, the memories recalled for it. On a proposal that had gone out of date, the model could end the turn without making the call. You then saw "could not apply your tap (no_call)" instead of the plugin's own answer. The turn now gets none of those, and it is told to make the call even if it looks out of date or already done, because the plugin decides whether the tap still applies. This makes the no_call notice less likely, but it can still happen: the model can still end the turn without the call, and the tap is then not retried. Casa adds no out-of-date check of its own, because the plugin decides: when the model makes the call and it runs, a plugin that does not check for out-of-date taps itself applies it. (#1282)
+- **A specialist's answer whose last message is only `<silent/>` no longer shows the tag.** When you reply to a specialist's post (with words or a file, or by answering an approval it asked for), it can answer in several messages. If the last of them was only `<silent/>` after earlier text, Casa posted the tag along with the text. Casa now posts the earlier messages without it. A single message that holds both words and `<silent/>` is still posted as written, tag included. An answer too long to post in full is still cut at the limit as before, without this check. (#1283)
+
 ## [0.344.29] - 2026-10-05
 
 ### Fixed
