@@ -383,7 +383,8 @@ def test_trigger_consent_ownership_agrees_with_plugin_triggers():
     assert routed == [TRIGGER_CONSENT_OWNER]
 
 
-# #687. The reload/launch explanation added to `architecture/engagements.md` and
+# #687. The reload/launch explanation added to `architecture/engagements.md` (moved
+# with INV-ENG-011 to `architecture/engagement-turn-outcomes.md` by #1151) and
 # `architecture/turn-loop.md` answers an investigation: why an `in_casa`
 # engagement turn appeared to end seconds after a mid-task reload. Three of its
 # claims are the ones a future edit could drop or reverse while the paragraph
@@ -424,7 +425,7 @@ RELOAD_LAUNCH_CLAIMS = [
         # — described the defect the detach removed; the reviewed claim is
         # now the opposite, and it is owned by the same document.
         "launch-turn-runs-in-an-anchored-owner-after-pending",
-        "architecture/engagements.md",
+        "architecture/engagement-turn-outcomes.md",
         "The launch turn runs in an owner Casa anchors, on the engagement's "
         "own client, after the launching tool call has already answered "
         "`pending`",
@@ -437,7 +438,7 @@ RELOAD_LAUNCH_CLAIMS = [
     ),
     (
         "benign-case-eliminated-before-blaming-a-reload",
-        "architecture/engagements.md",
+        "architecture/engagement-turn-outcomes.md",
         "Before attributing an ended turn to a reload at all, eliminate the "
         "benign case first",
     ),
