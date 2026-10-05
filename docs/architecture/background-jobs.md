@@ -42,8 +42,11 @@ name and launch model. The record keeps one declaring artifact and the numeric b
 turn limit (the declaration's override, otherwise the resident's configured limit).
 The worker loads that artifact's skills and MCP servers, plus only `report_job_progress`
 and `emit_completion` from Casa. Its native grants are `Skill` and `ToolSearch`;
-`Agent`, `Task` and `AskUserQuestion` are denied, as are the CLI's cross-session tools
-(INV-MCP-013 in [`mcp-and-tools.md`](mcp-and-tools.md)). Empty settings sources, default
+`Agent`, `Task`, `AskUserQuestion` and `Bash` are denied, as are the CLI's cross-session tools
+(INV-MCP-013 in [`mcp-and-tools.md`](mcp-and-tools.md)). `Bash` has to be denied outright: the
+pinned CLI runs a read-only command without asking the fail-closed callback, and when a
+backgrounded command finishes, the live CLI runs a turn Casa never sent, which the next batch
+would read as its own reply. Empty settings sources, default
 permission mode and the fail-closed callback keep the resident's settings and tools out.
 The Casa-owned prompt asks the worker to park items needing answers and report progress;
 it supplies no resident persona or memory. Plugin authorization and result-contract hooks
