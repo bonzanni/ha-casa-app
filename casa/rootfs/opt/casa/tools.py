@@ -4031,6 +4031,12 @@ async def _run_delegated_agent(
                         # client raises before the loop reaches a ResultMessage).
                         result_msg = sdk_msg
     finally:
+        # #1207: the grants this run left waiting on the operator, for a
+        # synchronous launcher's fold — published however the run ended (an
+        # abort or a raise leaves the keyboard up all the same). Only calls
+        # whose result this run folded count.
+        if approval_scope is not None:
+            approval_scope.approval_waiting = approval_cut.pending_keys
         # Emitted on EVERY exit — including the CancelledError the voice budget
         # raises, which is precisely the case we could not see before. It runs
         # BEFORE the origin_var reset so a reset failure can't skip it (Sol
@@ -7347,6 +7353,19 @@ async def delegate_to_agent(args: dict) -> dict:
 
         # Task finished within budget — return ok or error synchronously.
         finished = next(iter(done))
+        # #1207: what the child's run left of the operator's approvals, onto
+        # the launching turn's scope by delegation id, BEFORE this returns —
+        # the CLI writes the result only after, so the resident's fold finds
+        # it at this call's result, whichever payload below it carries
+        # (unless the CLI rewrote that result for size, #1274).
+        _child_scope = _child_origin.get("turn_scope")
+        if _launch_scope is not None and isinstance(_child_scope, TurnScope):
+            _outcome = tuple(
+                ("consumed", key) for kind, key in _child_scope.approvals.values()
+                if kind == "consumed") + tuple(
+                ("pending", key) for key in _child_scope.approval_waiting)
+            if _outcome:
+                _launch_scope.delegated_approvals[delegation_id] = _outcome
         if finished.exception() is not None:
             exc = finished.exception()
             kind = ("busy" if isinstance(exc, _desk_mod.DeskBusy)

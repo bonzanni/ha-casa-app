@@ -196,13 +196,15 @@ async def _posted_then_pending(hook):
 
 
 @pytest.mark.parametrize("kind", ["specialist", "plugin"])
-async def test_engagement_and_plugin_job_answers_are_unchanged_and_record_nowhere(
+async def test_engagement_and_plugin_job_answers_are_unchanged_and_never_reach_the_ambient_scope(
         monkeypatch, kind):
     """The specialist/engagement build (tools.py `_build_specialist_options`)
     and the plugin-job build (`_build_plugin_job_options`) both build this hook
     through `make_resident_authz_hook` (TestWiring in test_authz_hook.py). Under
-    an engagement the record lands on a freshly minted engagement scope, which
-    nothing reads — never on the ambient turn's scope."""
+    an engagement the record goes only to the running turn's holder of the
+    client whose hook it is (#1207; tests/test_pending_approval_topic.py) —
+    here no holder is bound, so it goes nowhere — and never to the ambient
+    turn's scope."""
     import verdict_broker
     monkeypatch.setattr(verdict_broker, "BROKER", verdict_broker.VerdictBroker())
     ambient = TurnScope(id="t", cid="c", role="finance", display_name="F",

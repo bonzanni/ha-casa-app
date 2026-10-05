@@ -83,6 +83,18 @@ synthesized completion turn copies `_inherited_note` from the completion origin,
 narration carries the line whatever the resident writes
 ([`output-boundary.md`](output-boundary.md)).
 
+**What a synchronous child left of the operator's approvals reaches its launcher by
+delegation id (#1207).** The child's view never shares the launcher's approval records —
+the child's call ids never appear in the launcher's stream. The delegated runner publishes on
+its view the grants its run left waiting on the operator (only calls whose result it folded,
+and whatever way the run ended), and once the sync wait returns the finished task, before
+any result is returned, the handler copies every grant the child's hook consumed and then
+those waiting grants onto the launcher's scope under the delegation id. The launcher's turn
+reads them at the delegate call's result, by the delegation id it names (a result the CLI
+rewrote for size names none, #1274)
+([`output-scope-properties.md`](output-scope-properties.md)); the result itself is unchanged.
+A wait that degraded to pending and an async delegation copy nothing.
+
 ## Contracts & invariants
 
 **INV-ENG-004**: An agent reached through delegation cannot delegate onward.

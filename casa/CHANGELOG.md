@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.344.28] - 2026-10-05
+
+### Fixed
+- When the assistant in your Telegram DM handed a request to a specialist and waited for its answer, and the specialist called a plugin tool that needs your approval, the Approve/Deny message was posted (or was already up) and the words the assistant wrote after the specialist's answer reached you too. A specialist's engagement topic or a plugin background job's topic likewise showed the words written after such a call. As ruled on #1252, these turns now show you the approval message and only what was written before: in your DM, the assistant's words written before the specialist's answer came back, while the answer the assistant receives is unchanged; in a topic, the words before the call. An engagement whose first turn wrote nothing before such a call is no longer ended as a turn that showed nothing. If an approval you have given for that call is used later in the same turn, the whole reply is shown, as before. If the approval message could not be posted, the words are shown as before. The words after the specialist's answer still reach you when the assistant stopped waiting and let the specialist finish in the background, when it handed the request over without waiting, and when the specialist's answer is so long that the Claude CLI shortens it before the assistant reads it (#1274). (#1207)
+
 ## [0.344.27] - 2026-10-05
 
 ### Fixed

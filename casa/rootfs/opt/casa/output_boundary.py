@@ -54,9 +54,12 @@ earlier words is the #1075 ruling above, and one more ruled case (#1252): on an
 ``Agent.handle_message`` turn or a specialist desk turn whose protected call is
 waiting on the operator's approval, the words the model wrote after that call
 are withheld from the operator, while those written before it are kept
-(:class:`ApprovalCut`). A synchronous delegation's answer, an engagement topic
-and a plugin background job still carry them. Casa-composed text enters through
-:func:`casa_text`.
+(:class:`ApprovalCut`). The same cut applies to a resident's words after a
+synchronous delegate whose specialist's call is waiting (its child's outcome
+reaches the resident's scope by delegation id; not when the CLI rewrote that
+delegate's result for size, #1274), and to an engagement topic and
+a plugin background job, whose driver applies it (#1207). Casa-composed text
+enters through :func:`casa_text`.
 """
 from __future__ import annotations
 
@@ -229,6 +232,12 @@ class ApprovalCut:
     @property
     def cut(self) -> int | None:
         return min(self.pending.values()) if self.pending else None
+
+    @property
+    def pending_keys(self) -> tuple:
+        """The grants whose cut still stands, in the order first observed —
+        what a delegated run publishes for its launcher (#1207)."""
+        return tuple(self.pending)
 
 
 class UnadmittedText(RuntimeError):
@@ -409,6 +418,15 @@ class TurnScope:
     # #1252: the words a desk run kept, published by the delegated runner
     # when its run ended with an approval pending; None otherwise.
     approval_kept: str | None = None
+    # #1207: the grants a delegated run left waiting on the operator (its
+    # ApprovalCut's standing keys), published by the runner whatever the run's
+    # outcome.
+    approval_waiting: tuple = ()
+    # #1207: a synchronous delegate's approval outcome, by delegation id —
+    # ("consumed" | "pending", GrantKey) records, consumes first — copied here
+    # by the handler before it returns, and read only by this turn's fold at
+    # that delegate call's result.
+    delegated_approvals: dict[str, tuple] = field(default_factory=dict)
 
     # -- minting ------------------------------------------------------------
 

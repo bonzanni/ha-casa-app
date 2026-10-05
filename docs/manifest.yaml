@@ -92,9 +92,13 @@
   kind: generated
   summary: Every INV-* id in families PL-R, its statement, and the file that defines it.
 
-- doc: doctrine/invariants-s-z.md
+- doc: doctrine/invariants-s.md
   kind: generated
-  summary: Every INV-* id in families S-Z, its statement, and the file that defines it.
+  summary: Every INV-* id in families S, its statement, and the file that defines it.
+
+- doc: doctrine/invariants-t-z.md
+  kind: generated
+  summary: Every INV-* id in families T-Z, its statement, and the file that defines it.
 
 - doc: reference/operator-options.md
   summary: The option-by-option operator contract — key, env var, consumer, default, restart-vs-reload.

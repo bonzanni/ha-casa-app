@@ -71,7 +71,7 @@ it ended because it completed the engagement — whose summary may in fact alrea
 operator's screen, since a lost acknowledgement is indistinguishable from a failed send
 from here. That notice is a single attempt and is not ordered against a concurrent
 finalization's topic operations; the contract is INV-ENG-012 in
-[`architecture/engagements.md`](engagements.md). A background job whose record is still live
+[`architecture/engagement-turn-outcomes.md`](engagement-turn-outcomes.md). A background job whose record is still live
 fails when one of its turns draws that notice; any other returned turn hands the job to its
 batch loop.
 
@@ -82,7 +82,7 @@ engagement — it posts Casa's step-limit line once after whatever the turn post
 it posted nothing, posts nothing over a settled terminal record, and logs one WARNING; the
 limit takes precedence over the undelivered-text notice, so an operator's turn in a job topic
 hands the job to its batch loop. A batch turn keeps the handling above. The contract is
-INV-ENG-020 in [`architecture/engagements.md`](engagements.md).
+INV-ENG-020 in [`architecture/engagement-turn-outcomes.md`](engagement-turn-outcomes.md).
 
 ## Extension points
 
