@@ -103,11 +103,14 @@ run left waiting — and the turn, at the result of Casa's `delegate_to_agent` w
 that delegation id at its top level, feeds each to the same cut. The specialist's text inside
 that result is never read for it, and the result the resident receives is unchanged. At a
 delegate result the turn cannot read that way — one the CLI rewrote for size, or an
-interrupted call's text — it feeds every record this attempt's delegates left instead: those
-still unread belong to that call or to a sibling of the same response, whose result folds at
-the same point (#1274). Records an earlier, failed attempt of the turn left are never fed
-there. An engagement topic and a
-plugin background job apply the same cut in their driver
+interrupted call's text — it feeds instead every record not already on the scope when this
+attempt began: by the routes measured, those still unread belong to that call or to a sibling
+of the same response, whose result folds at the same point (#1274). Records an earlier,
+failed attempt of the turn had left by the time this attempt began are never fed there. A
+record such an attempt's handler wrote after this attempt began would be fed. On the routes
+measured none is written then; a handler that ignored the cancellation of a failed attempt's
+calls was not measured, and could only withhold more. An engagement topic and a plugin
+background job apply the same cut in their driver
 ([`plugin-authorization.md`](plugin-authorization.md)). What it does not cover: the transcript
 and memory keep the words on every turn.
 

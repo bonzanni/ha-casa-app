@@ -91,8 +91,8 @@ and whatever way the run ended), and once the sync wait returns the finished tas
 any result is returned, the handler copies every grant the child's hook consumed and then
 those waiting grants onto the launcher's scope under the delegation id. The launcher's turn
 reads them at the delegate call's result, by the delegation id it names — or, at a result it
-cannot read (one the CLI rewrote for size, an interrupted call's text), every record this
-attempt's delegates left, #1274
+cannot read (one the CLI rewrote for size, an interrupted call's text), every record not
+already on its scope when the turn's current attempt began, #1274
 ([`output-scope-properties.md`](output-scope-properties.md)); the result itself is unchanged.
 A wait that degraded to pending and an async delegation copy nothing.
 
