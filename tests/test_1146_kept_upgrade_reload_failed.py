@@ -31,7 +31,8 @@ ROLE = "finance"
 OLD = "component:finance@1.0.0#sha256:" + "a" * 64
 NEW = "component:finance@2.0.0#sha256:" + "b" * 64
 ACTIVE = "the new version is active and stays active"
-PREVIOUS = "when that reload returned the specialist was running its previous version"
+# #1146 residual: the not-loaded text says only what was compared — not the new version.
+PREVIOUS = "when that reload returned the specialist was not running the new version"
 
 
 class _CountingAgents(dict):
