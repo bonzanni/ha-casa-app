@@ -42,7 +42,12 @@ nobody to tell, and the fire only logs.
 
 ## Contracts & invariants
 
-**INV-TRIG-022**: A scheduled trigger carrying `job` registers whenever its resident declares the channel, which for a job entry is `telegram` (schema and upsert refuse any other; never fatal to boot for an unstartable job); the typed upsert refuses a job the resident cannot start; at fire the job is launched through the one launcher `start_job` uses, with an origin carrying the live operator's identity and clearance, and no resident turn runs; a fire that cannot start the job tells the operator once — the admission decision as a past event at the occurrence — and runs nothing; the job then runs, posts and ends exactly as one the resident started.
+**INV-TRIG-022**: A scheduled trigger carrying `job` registers whenever its resident declares the channel, which for a job entry is `telegram` (schema and upsert refuse any other; never fatal to boot for an unstartable job); the typed upsert refuses a job the resident cannot start; at fire the job is launched through the one launcher `start_job` uses, with an origin carrying the live operator's identity and clearance, and no resident turn runs; a fire that cannot start the job tells the operator once — the admission decision as a past event at the occurrence — and runs nothing; the job then runs, posts and ends exactly as one the resident started, except that its launch prompt and briefs say a schedule started it.
+
+That one difference is the starter line, `Started by: scheduled`, which the fire's
+`_scheduled_job` stamp decides at launch ([`background-jobs.md`](background-jobs.md)); a job a
+resident's own scheduled turn starts reads `agent` instead, because an agent turn decided it
+(unless the operator answered a question in that turn).
 
 What it does not cover: catching up an occurrence missed while Casa was down (no scheduled
 trigger is caught up; see [`triggers.md`](triggers.md)); what the job does once started

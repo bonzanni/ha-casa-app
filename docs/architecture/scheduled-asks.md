@@ -113,6 +113,12 @@ continuation and the record. The continuation reproduces the *firing* turn's sha
 session label as chat id, the same scheduled-delivery marker, the epoch the question was
 asked under) and carries no trusted user origin: the operator's tap is reported in the
 turn's content, never as its speaker, so it cannot relabel a machine-authored session.
+When the operator answered (the broker's `answered` outcome, its actor accepted as the
+operator), the continuation also carries one reserved marker, `_answered_by_operator`
+(`provenance.ANSWERED_BY_OPERATOR`), computed by the finish hook from that outcome alone. It is
+read only to record who started a job the turn launches
+([`background-jobs.md`](background-jobs.md)); it is not the turn's speaker, grants nothing, and
+is never set for an expired or cancelled question, an answer by anyone else, or a boot replay.
 
 What it does not cover: the shutdown cancel, which settles nothing, edits nothing and leaves
 the record for the next boot — the keyboard is still on screen and the question is still
@@ -269,6 +275,7 @@ await (INV-JOB-008).
 - `tests/test_scheduled_ask_attention_lane.py`
 - `tests/test_challenge_delivery_displacement.py`
 - `tests/test_scheduled_ask_boot_window_displacement.py`
+- `tests/test_job_starter_line.py`
 
 **Related**
 - [`architecture/jobs-and-delivery.md`](../architecture/jobs-and-delivery.md)

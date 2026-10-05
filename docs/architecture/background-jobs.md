@@ -80,7 +80,7 @@ turn are the same in both modes.
 
 ## Contracts & invariants
 
-**INV-BGJOB-005**: Every turn of a fresh job after its launch is preceded, under the turn lock, by a conversation reset that is confirmed before the turn is accepted, and begins with the job brief built only from the record's task and its clearance-governed launch context; a resume-mode job and every non-job engagement are unchanged.
+**INV-BGJOB-005**: Every turn of a fresh job after its launch is preceded, under the turn lock, by a conversation reset that is confirmed before the turn is accepted, and begins with the job brief built only from the record's task, its clearance-governed launch context, and Casa's record of who started it; a resume-mode job and every non-job engagement are unchanged.
 
 The reset sits after the turn's admission (a terminal engagement is never reset) and before
 the ticket is accepted and the prompt sent, inside the lock that already serialises every
@@ -96,6 +96,36 @@ brief then says the context is withheld, so nothing the clamp withheld returns t
 The launch prompt and every brief also carry one `Job id: <engagement id>` line — an
 identifier, not launch material, so it stays through a downgrade — by which a plugin claims
 work and matches the job-end notice, whose delegation id is that same engagement id.
+
+**Who started the job (#1277).** In the job's launch prompt and in every fresh-turn brief,
+the line IMMEDIATELY AFTER the FIRST line `Job id: <job id>`, before `Request:`, is exactly
+one of `Started by: operator`, `Started by: scheduled` or `Started by: agent`: the whole line,
+LF-terminated, with no leading or trailing spaces and no variable part. It appears exactly
+once. A resume-mode job has it in the launch prompt only. A clearance downgrade keeps it, as it
+keeps `Job id:`. The token is Casa's fact, recorded once at launch and unchanged across
+restarts: `_launch_interactive_engagement` evaluates it from the launching turn's origin
+(`background_jobs.job_started_by`) into `origin["job"]["started_by"]`, and both renderers read
+only that field, never the origin's markers.
+- `scheduled`: a Casa job trigger started the job on its schedule. No agent turn ran.
+- `operator`: the job was started in a turn Casa attributes to an authenticated act of the
+  operator: the operator's own message; the operator's tap on a button the assistant
+  offered, on a question asked in the DM or from a scheduled turn; the operator's Approve tap
+  on a protected call; an operator turn at a specialist desk; a specialist's own start at a
+  desk the operator used, or in a delegation made in such a turn, as Casa's release notes for
+  that version state. It attributes the TURN. It does not say which option was tapped, or what
+  drove the start inside that turn. A start made in such a turn reads `operator` even when the
+  operator tapped "No", or when a scheduled turn's own instructions drove it.
+- `agent`: an agent's turn that the operator did not author or answer started the job. This
+  includes the assistant's own scheduled turns, webhooks, an unanswered or cancelled question,
+  and setup or consent turns.
+
+The evidence is the turn's reserved markers: `_scheduled_job` first, then `_operator_turn` or
+the scheduled ask's `_answered_by_operator` ([`scheduled-asks.md`](scheduled-asks.md)), else
+`agent`. A delegated start, waited for or not, reads the token of the turn that delegated.
+No line (a record written before the release) means "Casa did not say"; nothing is inferred
+for it. The line is Casa-written at a position no model-written text occupies; a look-alike
+inside `Request:` or `Context:` is the model's text, and a reader takes the line immediately
+after the first `Job id:` line, never the first `Started by:` it finds.
 What it does not cover: the launch turn, which runs its own launch prompt with no reset and
 no brief; and the transcript files of earlier conversations, which stay on disk while the
 job runs — once it is terminal, the transcript reaper deletes every session the list names
@@ -332,6 +362,8 @@ belong in the launch and resume builders; both kinds share the batch loop and la
 - `tests/test_job_pending_completion.py`
 - `tests/test_specialist_job_host.py`
 - `tests/test_job_turn_identity.py`
+- `tests/test_job_starter_line.py`
+- `tests/test_job_starter_regressions.py`
 
 **Related**
 - [`architecture/engagements.md`](../architecture/engagements.md)
