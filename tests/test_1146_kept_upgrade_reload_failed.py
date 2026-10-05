@@ -250,3 +250,68 @@ async def test_kept_upgrade_failed_reload_reports_previous_version(h):
             h.journal_completions) == (1, 1, 0, 1), "kept_compensation"
     assert env["kind"] == "reload_failed" and env["kept_new_version"] is True
     assert _phrases(env) == (0, 1), "outcome_phrase_counts"
+
+
+async def test_kept_reload_does_not_identify_unmeasured_previous_version(h):
+    """RED at b6020aa9 (#1146 residual): live A (OLD), this upgrade replaced B,
+    target C (NEW), reload fails at the registry re-scan. The arm compares the
+    live root with the target only, so it may say the specialist was not
+    running the new version, never that A was "its previous version"."""
+    replaced = "component:finance@1.5.0#sha256:" + "c" * 64
+    assert len({OLD, replaced, NEW}) == 3
+
+    h.registry.fail_load = OSError("scan refused")
+    txn = _Txn()
+    txn.before_tuple_files = {
+        "active.yaml": f"root: '{replaced}'\n",
+    }
+
+    seq, env = await _run(h, txn)
+
+    assert h.constructions == 1
+    assert h.registry.loads == 1
+    assert len(h.runtime.agents.writes) == 0
+    assert h.runtime.agents[ROLE] is h.old
+    assert seq["loaded_root_after_reload"] == OLD
+
+    rows = seq["reload_errors"]
+    assert len(rows) == 1
+    assert sum(
+        r.get("kind") == "specialist_reload_failed"
+        and r.get("scope") == "agent"
+        and r.get("role") == ROLE
+        and r.get("message") == "scan refused"
+        for r in rows
+    ) == 1
+    assert (
+        txn.kept_reads,
+        txn.forward_finishes,
+        txn.rollbacks,
+        h.journal_completions,
+    ) == (1, 1, 0, 1)
+    assert env["kind"] == "reload_failed"
+    assert env["kept_new_version"] is True
+
+    fragment = (
+        "when that reload returned the specialist "
+        "was not running the new version"
+    )
+    assert (
+        env["outcome"].count("previous version"),
+        env["outcome"].count(fragment),
+    ) == (0, 1), "outcome_phrase_counts"
+
+
+def test_recovery_doc_does_not_identify_unmeasured_previous_version():
+    from pathlib import Path
+
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "docs/architecture/specialist-bundle-recovery.md"
+    )
+    text = " ".join(path.read_text(encoding="utf-8").split())
+    claim = (
+        "say the specialist was running its previous version "
+        "when the reload returned"
+    )
+    assert text.count(claim) == 0, "unmeasured_previous_version_claim"
