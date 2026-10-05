@@ -202,12 +202,12 @@ message.`), never from a body; a message or file post is echoed once, by its S3 
 
 **The run ends with a protected call waiting on the operator's approval** (#1252). The runner
 reads the authorization hook's records at each call's result, as the resident's turn does
-([`output-scope-properties.md`](output-scope-properties.md)), and when a POSTED or PENDING
-deny is still unanswered by a consume of the same grant at the end of the run it publishes
+([`output-scope-properties.md`](output-scope-properties.md)), and when a call's `pending`
+record — a POSTED deny, or a PENDING deny whose reused keyboard was posted — is still unanswered by a consume of the same grant at the end of the run it publishes
 the messages written before that call (`TurnScope.approval_kept`). Only those are posted
 under the label; when they are nothing, there is no labelled post, and the pending approval
 counts as an outcome (`turn_outcomes(…, approval=True)`), so the echo is `… asked you a
-question.` — also for a PENDING deny, whose keyboard was posted under an earlier turn. The
+question.` — also for a PENDING deny, whose keyboard may have been posted under an earlier turn. The
 exchange logs the specialist's whole text.
 
 **The reply post is not proven.** The exchange is logged (the specialist did answer; a retry

@@ -154,7 +154,8 @@ in an earlier process, whose challenges a restart already dropped with every gra
 
 **What the operator sees of a turn whose protected call waits on an approval** (#1252). On a
 resident's DM, button or setup turn and on a specialist desk turn, when the hook leaves a
-call waiting — a POSTED or PENDING deny — and no later call in the same attempt consumes that
+call waiting — a POSTED deny, or a PENDING deny whose reused challenge's keyboard post
+settled as posted — and no later call in the same attempt consumes that
 grant, the operator sees the keyboard and none of the words the model wrote after the call;
 the words before it are delivered (INV-OUT-006 and INV-TURN-009, INV-DESK-002 on the desk).
 The hook records its decision on the turn's scope before it returns, keyed by the call's

@@ -77,8 +77,9 @@ waiting on the operator's approval, the operator sees the approval keyboard and 
 model wrote after that call, while the words it wrote before the call stay. The
 authorization hook (`authz_grants.make_resident_authz_hook`) tells the turn's scope what it
 decided for each call, keyed by the call's `tool_use_id`, before it returns:
-`TurnScope.note_approval` records `pending` for a POSTED or PENDING deny — the two that
-leave a keyboard up — and `consumed` when the call spent the operator's grant; every other
+`TurnScope.note_approval` records `pending` for a POSTED deny, and for a PENDING deny only
+once the reused challenge's keyboard post has settled as posted — the two that leave a
+keyboard up — and `consumed` when the call spent the operator's grant; every other
 deny records nothing, because without a keyboard the model's words are the operator's only
 explanation. The record is a scope field `for_child` does not pass on, and under an
 engagement the hook resolves a freshly minted scope that nothing reads. The record is read
