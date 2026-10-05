@@ -167,10 +167,23 @@ write never changes the hook's answer: a failure to record is logged and skipped
 DELIVERY_FAILED, INACTIVE, NOT_OPERATOR and the other denies leave no keyboard, so the model's words are the operator's only explanation and are
 delivered as before.
 
-What it does not cover: a synchronous `delegate_to_agent` (the specialist's record lands on
-its own child scope, and the resident relays its answer whole), an interactive specialist
-engagement's topic and a plugin background job (their scope is minted fresh on every
-resolution, so the record lands nowhere) — #1207 stays open for those. The deny strings are
+The same holds on the paths #1207 named. When a resident's synchronous `delegate_to_agent`
+returns and its specialist's call was left waiting, the operator sees none of the words the
+resident wrote after the delegate's result: the child's outcome reaches the resident's turn
+by delegation id ([`delegation.md`](delegation.md)), while the specialist's answer still
+reaches the resident whole. On an interactive specialist engagement's topic and a plugin
+background job's topic, the hook runs in the engagement client's SDK reader, so under an
+engagement it records on that client's running turn — the holder bound before the client was
+entered (`in_casa_driver._EngagementTurn`), live only while its turn runs — and the driver
+stops the topic stream at that call's result and finalizes only the words before it, under
+the same cap. A launch turn whose every word was withheld this way is not reported dead: the
+keyboard is what it showed (INV-ENG-011,
+[`engagement-turn-outcomes.md`](engagement-turn-outcomes.md)).
+
+What it does not cover: a synchronous wait that degraded to pending and an async delegation
+(the child's later decision reaches the resident by #1049's note path), and a delegate result
+too large for the CLI, which replaces it with a pointer to a saved file — no delegation id is
+read there and the resident's words are delivered. The deny strings are
 unchanged. The fallback prompts no longer offer a sentence to write after the call; the
 compiled bundle a resident is served never carried one.
 

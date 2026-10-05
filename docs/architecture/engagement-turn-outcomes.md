@@ -28,7 +28,7 @@ admission ticket. The reasons are under each invariant below.
 
 ## Contracts & invariants
 
-**INV-ENG-011**: An `in_casa` LAUNCH turn ends holding the turn's own terminal artifact and either a terminal engagement record or operator-visible topic output — or the launch's owner reports the death: one durable strict `error` transition, one bounded notice into the still-open topic, a bounded driver teardown, and the topic aborted, whether or not the tool call that launched the engagement is still running. It is never left `active` behind an ended transport with nothing posted, and the path never writes `completed` and never retains to the shared memory bank. A launch turn that stopped at its turn limit is never reported dead (INV-ENG-020); when its one line fails or is cancelled it is left `active`, transport live, with nothing posted.
+**INV-ENG-011**: An `in_casa` LAUNCH turn ends holding the turn's own terminal artifact and either a terminal engagement record, operator-visible topic output, or — when every word it wrote was withheld because a call it made is still waiting on the operator's approval (#1207) — that approval's keyboard posted to the operator — or the launch's owner reports the death: one durable strict `error` transition, one bounded notice into the still-open topic, a bounded driver teardown, and the topic aborted, whether or not the tool call that launched the engagement is still running. It is never left `active` behind an ended transport with nothing posted, and the path never writes `completed` and never retains to the shared memory bank. A launch turn that stopped at its turn limit is never reported dead (INV-ENG-020); when its one line fails or is cancelled it is left `active`, transport live, with nothing posted.
 
 A driver's `start()` returning has always meant *the first turn ran to its end*, never *the
 engagement reported anything*, and that gap is where a launch turn could die unnoticed. The
@@ -41,7 +41,12 @@ built on evidence catches only the trivially empty turn and misses the reachable
 
 The engagement's terminal artifact is its record. An interactive engagement that ends its
 launch turn having posted text is legitimately awaiting the operator and is left alive; one
-that posted nothing, or whose turn was cut off, has left no surface anyone can act on.
+that posted nothing, or whose turn was cut off, has left no surface anyone can act on. One
+whose words were all withheld because a call it made is still waiting on the operator's
+approval is awaiting the operator too, on the keyboard: the driver observes a cut that no
+later consume released, and records nothing, because a record of that call exists only once
+its keyboard was posted. A cut that a consume
+released, a deny that left no keyboard, or no deny at all is still the mute launch.
 
 Three properties make the report safe rather than merely present. The driver only
 **observes** — it records what the turn left behind and neither raises nor reads the
@@ -179,6 +184,7 @@ by that arm's owner; the driver never raises it and never reads the record's sta
 - `tests/test_pin_1141_engagement_turn_limit.py`
 - `tests/test_turn_limit_engagement_regressions.py`
 - `tests/test_in_casa_driver.py`
+- `tests/test_pending_approval_topic.py`
 
 **Related**
 - [`architecture/engagements.md`](../architecture/engagements.md)

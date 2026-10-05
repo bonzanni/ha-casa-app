@@ -54,9 +54,11 @@ earlier words is the #1075 ruling above, and one more ruled case (#1252): on an
 ``Agent.handle_message`` turn or a specialist desk turn whose protected call is
 waiting on the operator's approval, the words the model wrote after that call
 are withheld from the operator, while those written before it are kept
-(:class:`ApprovalCut`). A synchronous delegation's answer, an engagement topic
-and a plugin background job still carry them. Casa-composed text enters through
-:func:`casa_text`.
+(:class:`ApprovalCut`). The same cut applies to a resident's words after a
+synchronous delegate whose specialist's call is waiting (its child's outcome
+reaches the resident's scope by delegation id), and to an engagement topic and
+a plugin background job, whose driver applies it (#1207). Casa-composed text
+enters through :func:`casa_text`.
 """
 from __future__ import annotations
 
