@@ -142,4 +142,13 @@ def test_rc20_no_surface_promises_immediate_activation_and_the_recipe_has_the_ke
              if 'kind: "upgrade_kept_new_version"' in p]
     assert len(steps) == 1, "no single upgrade.md step keyed on the library-kept kind"
     step = steps[0].lower()
-    assert NOT_ACTIVE in step and "previous version" in step and RESTART in step
+    assert NOT_ACTIVE in step and RESTART in step
+    # #1296: the in-use sentence holds only when Casa found the replaced version
+    # running, so the kind's own instruction relays the result's `outcome` as
+    # written, and quotes the ruled sentence only inside that condition.
+    own = step.split('kind: "upgrade_kept_new_version"', 1)[1].split("key this on the `kind`", 1)[0]
+    assert "`outcome`" in own and "as written" in own, own
+    at = [i for i in range(len(step)) if step.startswith(PREVIOUS, i)]
+    for i in at:
+        sentence = step[step.rfind(". ", 0, i) + 1:i]
+        assert "when casa found the replaced version running" in sentence, sentence
