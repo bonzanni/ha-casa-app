@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.344.29] - 2026-10-05
+
+### Fixed
+- A plugin can publish programs into `/config/tools/bin`, and Casa puts that directory first on the PATH it gives the services it supervises. The scripts of Casa's own four services and of its four start-up steps run as root, and they started `bashio` and the programs they ran from that PATH, so a plugin's program named like one of them (`bashio` or `bash`, for example) could run as root in its place. These scripts now start through `/opt/casa/scripts/core-bashio.sh`, which removes that directory, and any entry that is not a full path, from their PATH before bashio or anything the script runs is looked up; if nothing is left, the script refuses to start. Casa itself, its MCP service and the web terminal's shell still get the PATH with `/config/tools/bin` first, so plugin tools stay available to them. 0.344.26 made this change for the scripts of `claude_code` engagement services; this release makes it for Casa's own. (#1268)
+
 ## [0.344.28] - 2026-10-05
 
 ### Fixed
