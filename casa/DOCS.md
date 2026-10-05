@@ -417,7 +417,7 @@ one of its own plugins declares, it starts that job on itself — never another
 agent's job — and the assistant still tells you how it ended. Asked in text for such
 a job, the assistant passes the request to that specialist rather than starting it
 herself; she starts it only if the specialist reports it could not. Jobs do not
-start from a voice call: ask in text. A button never starts
+start from a voice call: ask in text. A button on a specialist's proposal never starts
 a job: ask for the work in words. When the specialist has already posted its answer
 to your chat, the assistant does not repeat it.
 
