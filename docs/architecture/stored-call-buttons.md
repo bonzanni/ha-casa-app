@@ -105,9 +105,14 @@ that same captured input, unchanged — no second resolve, no rebuild — so a r
 artifact carrying the same tool name cannot be reached after the check. The permit is taken
 after the lock, as a desk reply takes it.
 
-**What the pinned turn is given.** Besides the specialist's own role prompt, its one prompt is
-the `<delegation_context>` lines every delegated turn opens with — the resident's role and
-name, the channel, the register — and the task: Casa's note that the operator tapped the
+**What the pinned turn is given.** Its system prompt is the specialist's own role prompt
+followed by a stored-call section: the call is a tool of a plugin assigned to it, the
+operator's tap is the authorisation, and the call is not a delegation to judge against the
+role's scope or remit. Its one prompt opens with a `<stored_call_context>` block naming the
+caller as the operator, by a tap on the specialist's own proposal, in place of the
+`<delegation_context>` lines a delegated turn opens with: a role prompt that limits which
+delegations it answers refused the call when the tap read as the resident's delegation
+(#1308). Then the task: Casa's note that the operator tapped the
 button, the stored tool's runtime name and its canonical arguments, the instruction to make
 that call even if it looks out of date or already done because the plugin decides whether the
 tap still applies and its answer is what the operator sees, and to write nothing to the

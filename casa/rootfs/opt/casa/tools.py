@@ -2248,6 +2248,24 @@ def _capture_build_input(cfg):
                       target=target)
 
 
+# #1308: a stored-call tap's pinned turn — the operator's tap on a proposal the
+# specialist posted, never a delegation, and never judged against the role's
+# scope. The section rides the system prompt, beside the role text it must
+# outrank; the context replaces the delegation block in the one prompt.
+STORED_CALL_SYSTEM_SECTION = (
+    "## Stored call\n"
+    "This turn carries out a stored call. The operator tapped a button on a proposal "
+    "you posted, and the button's call is a tool of a plugin assigned to you. The "
+    "operator's tap is the authorisation. This is not a delegation and not a request "
+    "to judge against your role's scope or remit: place the call exactly as given, "
+    "then stop.")
+STORED_CALL_CONTEXT = (
+    "<stored_call_context>\n"
+    "caller: the operator, by tapping a button on a proposal you posted\n"
+    "authorisation: the operator's tap\n"
+    "</stored_call_context>")
+
+
 def _build_specialist_options(
     cfg,
     *,
@@ -2538,6 +2556,11 @@ def _build_specialist_options(
         projection_for(compiled_bundle, channel="text", origin_route=None).system_prompt
         if compiled_bundle is not None else cfg.system_prompt
     )
+    if _owner is not None and isinstance(resolved_system_prompt, str):
+        # #1308: a role prompt that scopes which delegations it answers is
+        # applied by the model to a tap too, unless the tap is said to be
+        # outside that judgement — said HERE, at the role prompt's own weight.
+        resolved_system_prompt = f"{resolved_system_prompt}\n\n{STORED_CALL_SYSTEM_SECTION}"
 
     return ClaudeAgentOptions(
         model=cfg.model,
@@ -3843,6 +3866,11 @@ async def _run_delegated_agent(
         f"suggested_register: {suggested_register}\n"
         "</delegation_context>"
     )
+    if parent.get("stored_call"):
+        # #1308: a tap is the operator's own act on this specialist's proposal,
+        # not a delegation from the resident — a role that answers only its
+        # own kind of delegation refused it read as one
+        delegation_context = STORED_CALL_CONTEXT
 
     if context_text:
         body_tail = (

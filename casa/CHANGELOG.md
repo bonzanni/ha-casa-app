@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.344.38] - 2026-10-06
+
+### Fixed
+- A tap on a button of a specialist's proposal often failed with "could not apply your tap (no_call)". Since v0.344.30 the short turn that makes the call reached the specialist as a request delegated by the assistant. A specialist whose role limits what it takes on (the finance specialist answers only finance tasks) often refused the call of a plugin outside that subject. The turn now says that the tap is yours, on the specialist's own proposal, and that the call is a tool of a plugin assigned to it, not something to weigh against its role. The specialist can still end that turn without the call; you are then told so as before, and the tap is not retried. (#1308)
+
 ## [0.344.37] - 2026-10-06
 
 ### Added
