@@ -66,11 +66,12 @@ is not proven. The kinds, each deposit's validation, the plan a message is judge
 its first send, the channel's part and the body-free echo the resident's conversation sees
 are in [`plugin-delivered-slots.md`](plugin-delivered-slots.md) (INV-PLUG-025, -026, -028,
 -045, -046); a proposal with stored-call buttons, and the pinned turn a tap on one runs, are
-[`stored-call-buttons.md`](stored-call-buttons.md). One optional result member is read there
+[`stored-call-buttons.md`](stored-call-buttons.md). Two optional result members are read there
 and nowhere else: when a stored call's response is passed through — a `safe` tool's, or a
 `More` tool's no-post shape — a top-level string `receipt` with a non-whitespace character in
-the JSON object it returns is the sentence the operator sees as the receipt; it declares
-nothing and changes no validation or delivery.
+the JSON object it returns is the sentence the operator sees as the receipt; and beside such a
+receipt, a `safe` tool's `next` object is the next card, posted after the receipt as a proposal
+deposit (#1302). Neither declares anything or changes the call's own validation or delivery.
 
 **What this is not.** It is not an outbound scrubber on the delivery path, not taint
 tracking, and not a defence against a producer that lies in its own declaration — a `safe`

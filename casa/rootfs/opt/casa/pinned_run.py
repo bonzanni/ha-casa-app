@@ -64,10 +64,15 @@ class Capture:
       captured.
 
     ``rewritten`` is the trust-and-tell flag (§14.7): the CLI's reported
-    post-hook input differed from the stored canonical."""
+    post-hook input differed from the stored canonical.
+
+    ``next`` (#1302): a ``receipt`` capture whose response also carried a
+    ``next`` object — that object JSON-encoded, judged by the tap's desk use
+    exactly as a proposal deposit; ``""`` otherwise."""
     kind: str
     text: str = ""
     rewritten: bool = False
+    next: str = ""
 
 
 # ---------------------------------------------------------------------------

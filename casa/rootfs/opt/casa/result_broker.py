@@ -1587,18 +1587,25 @@ def make_result_hook(
     return _hook
 
 
-def _receipt_of(text: str) -> str:
+def _receipt_of(text: str) -> tuple[str, str]:
     """#1200: the operator-readable receipt of a stored call's passed-through
     response — the top-level ``receipt`` string of a JSON-object response when
     it has a non-whitespace character, otherwise the text verbatim. A ``safe``
     response was never parsed before this, so a nesting too deep for the
-    parser falls back rather than raising inside the hook."""
+    parser falls back rather than raising inside the hook.
+
+    #1302: returns ``(receipt, next)`` — ``next`` is the response's ``next``
+    object, JSON-encoded, only beside a usable ``receipt`` string; ``""``
+    otherwise (nothing is judged here)."""
     try:
         parsed = _parse_object(text)
     except RecursionError:
         parsed = None
     receipt = parsed.get("receipt") if parsed is not None else None
-    return receipt if isinstance(receipt, str) and receipt.strip() else text
+    if not (isinstance(receipt, str) and receipt.strip()):
+        return text, ""
+    nxt = parsed.get("next")
+    return receipt, (json.dumps(nxt, ensure_ascii=False) if isinstance(nxt, dict) else "")
 
 
 def _capture_of(contract_map, tool_name: str, input_data, out, rewritten: bool):
@@ -1611,7 +1618,10 @@ def _capture_of(contract_map, tool_name: str, input_data, out, rewritten: bool):
     if not out:
         kind = "receipt" if entry is None or entry.kind == "safe" else "no_post"
         text = _response_text((input_data or {}).get("tool_response")) or ""
-        return Capture(kind, _receipt_of(text), rewritten)
+        receipt, nxt = _receipt_of(text)
+        # #1302: only a ``safe`` tool's receipt carries a next card; the
+        # ``More`` exception's no-post shape keeps its own path
+        return Capture(kind, receipt, rewritten, next=nxt if kind == "receipt" else "")
     body = (out.get("hookSpecificOutput") or {}).get("updatedToolOutput") if isinstance(out, dict) else None
     parsed = None
     if isinstance(body, str):

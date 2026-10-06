@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-10-03
+last_reviewed: 2026-10-06
 ---
 
 # Stored-call buttons
@@ -134,6 +134,24 @@ with one Casa line above it (`⚠ the CLI reported this call's arguments changed
 installed hook`), the echo says the same, and an ERROR names the run, the tool and both
 forms. Nothing is prevented or retried: installed hooks are trusted (as every plugin is).
 
+**A tap's result may bring the next card (#1302).** A `safe` stored call whose response is a
+JSON object with a non-blank string `receipt` may also carry `next`: an object of exactly the
+`operator_proposal` deposit shape (`text`, one to six `buttons`, optional `revision`). The
+capture keeps it, encoded, beside the receipt; nothing is judged in the hook. Once the receipt
+has landed, in the same desk use and under the same lock, `_post_next_card` judges it as a
+deposit — `proposal_ok` against the stored tool's own contract entry (its plugin and its one
+server) and the SAME captured maps the tap was re-checked against — and posts it through
+`_post_proposal`: the live bound, the revision supersede, registered before the send. Its
+record is the tapped proposal's own (chat, operator, role, artifact, plugin), so its buttons
+are keyed like any card's and commit only from a tap, through the whole admission chain and
+the re-checks. A walk is therefore one tap per card: the keyboard settles, the receipt lands,
+then the next card. `next` absent or `null`, or not an object, is today's tap; `next` beside
+no usable `receipt` is ignored and the text is the receipt verbatim; the `More` exception's
+no-post shape never carries one. A receipt whose send is not proven, or a desk faulted by the
+run, gets no card: the card follows a receipt the operator has, and a tap on it could only be
+refused on a faulted desk. A plugin re-posting a card with the same `revision` replaces its
+live predecessor (`↻ replaced`).
+
 **The stored tool is in the turn's first request.** The pinned turn has one prompt, and the
 pin admits no call but the stored one, so the stored tool must already be callable when that
 prompt is sent (#1220). Two things would hide it. The CLI defers every MCP tool that is not
@@ -170,11 +188,13 @@ exit sweep, which ends every task at once (Casa-wide behaviour, not S5's).
 
 **INV-PROP-002**: No ordinary model turn runs on a tap; between the tap and the receipt exactly one pinned specialist turn may run, and in it exactly one tool call can execute — the stored tool with the stored arguments, canonical JSON for canonical JSON — on a specialist session the existing builder built from the captured input, under the desk lock; every other call, and any second call, is denied before it runs; nothing the model writes reaches the operator or is retained; the receipt is the executed call's own response — its `receipt` sentence when the response's text is a JSON object carrying a non-blank string `receipt`, otherwise the text verbatim — posted labelled and bounded, the plugin's refusal included; a turn with no executed call is a refusal notice with no retry; the resident learns of it only by a body-free echo line.
 
-**INV-PROP-003**: A keyboard with stored calls exists only for a deposit from a tool declaring the `operator_proposal` slot, whose calls name the same plugin's declared tools with fixed reference-free arguments within the bounds, and whose message was proven delivered; a proposal that did not land holds no stored call, a chat holds at most 32 live proposals, and a proposal expires after one hour.
+**INV-PROP-003**: A keyboard with stored calls exists only for a deposit from a tool declaring the `operator_proposal` slot, or for the `next` card a `safe` stored call returned beside its receipt (INV-PROP-006) judged as such a deposit of the tapped call's own plugin, whose calls name the same plugin's declared tools with fixed reference-free arguments within the bounds, and whose message was proven delivered; a proposal that did not land holds no stored call, a chat holds at most 32 live proposals, and a proposal expires after one hour.
 
 **INV-PROP-004**: A pinned stored-call turn is built with `ToolSearch` disallowed, and its one prompt is sent only after the CLI's MCP status lists no server of the session as pending; an ordinary specialist turn's build adds no `ToolSearch` denial and its prompt is sent without asking for MCP status.
 
 **INV-PROP-005**: A pinned stored-call turn's prompt carries no exchange from the specialist's desk, no memory recalled for the turn, and no frame presenting its task as a message from the operator.
+
+**INV-PROP-006**: A `safe` stored call's `next` card is posted only beside its receipt, after that receipt's send is proven, within the tap's own desk use, and only if it passes the proposal deposit predicate against the stored tool's own plugin and server on the maps the tap was re-checked against; it is registered before it is sent and carries the tapped proposal's own chat, operator, role and artifact, so its buttons execute only from a tap; a card that does not land is one notice and the receipt stands; a response without `next` is today's tap.
 
 **INV-FILE-003**: A `📎` tap arms the next file in that chat for the specialist whose proposal carried the button, for the operator who tapped, for at most ten minutes; the arming exists from the moment the tap is committed, before the keyboard is edited or anything is sent; exactly one file consumes it; a later arming replaces it; a restart forgets it; and Casa sends no message about an arming — the edited keyboard is the whole acknowledgement, and the only text a tap can produce is the past-fact line that the buttons could not be cleared.
 
@@ -201,6 +221,10 @@ it, with the applied echo line.
 **A `More` proposal was withheld or not proven.** The refusal notice with the reason; a
 `More` that posted nothing (the contract's no-post shape) is a success whose own text — its
 `receipt` sentence when it carries one — is the receipt.
+
+**A next card does not land** — the deposit predicate refuses it, the chat already holds 32
+live proposals, or its send is not proven. The receipt stands; one labelled notice
+`📊 Finance could not show the next card (invalid | too many open | not delivered).`; no retry.
 
 **The receipt's send fails.** `📊 Finance applied your tap; the receipt did not go out.` —
 the call ran; the exchange carries the receipt; the applied echo line.
@@ -239,6 +263,7 @@ starts it ([`specialist-job-start.md`](specialist-job-start.md)).
 - `casa/rootfs/opt/casa/result_broker.py::_capture_of`
 - `casa/rootfs/opt/casa/specialist_desk.py::handle_tap`
 - `casa/rootfs/opt/casa/specialist_desk.py::faulted_desk_issues`
+- `casa/rootfs/opt/casa/specialist_desk.py::_post_next_card`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._on_proposal_callback`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.proposal_finish_hook`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._dispatch_proposal_tap`
@@ -257,6 +282,7 @@ starts it ([`specialist-job-start.md`](specialist-job-start.md)).
 - `tests/test_file_handoff_arm.py`
 - `tests/test_redcase_1282.py`
 - `tests/test_pinned_prompt_controls.py`
+- `tests/test_tap_next_card.py`
 
 **Related**
 - [`architecture/stored-call-termination.md`](../architecture/stored-call-termination.md)
