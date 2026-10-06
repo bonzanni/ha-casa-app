@@ -63,3 +63,20 @@
   defines_invariants: [INV-BGJOB-006]
   invariant_tests:
     INV-BGJOB-006: [tests/test_specialist_job_host.py::test_unassign_during_topic_creation_still_blocks, tests/test_specialist_job_host.py::test_legacy_markerless_record_without_its_declaring_row_blocks, tests/test_specialist_job_host.py::test_legacy_record_without_manifest_name_blocks, tests/test_specialist_job_host.py::test_concurrent_starts_of_one_manifest_claim_once, tests/test_specialist_job_host.py::test_installations_sharing_a_manifest_name_serialise, tests/test_specialist_job_host.py::test_the_marker_names_the_plugin_selected_at_start_not_a_later_resolution, tests/test_specialist_job_host.py::test_specialist_job_record_blocks_a_second_start, tests/test_specialist_job_host.py::test_an_incidental_artifact_does_not_block_its_own_plugin, tests/test_specialist_job_host.py::test_a_start_during_a_pending_strict_terminal_write_is_refused, tests/test_specialist_job_host.py::test_a_durably_ended_job_frees_its_plugin_at_once, tests/test_specialist_job_host.py::test_the_pending_window_opens_at_the_commit_and_closes_when_the_write_settles, tests/test_specialist_job_host.py::test_an_unrelated_plugin_starts_while_another_jobs_terminal_write_is_pending, tests/test_specialist_job_host.py::test_the_installed_plugin_check_also_counts_a_pending_terminal_write]
+
+- doc: architecture/background-job-quiet-runs.md
+  summary: A plugin job declaring quietWhenScheduled — a run its schedule started opens no topic, posts no acknowledgement or progress line, and is told nowhere when it completes, while its plugin's delivered slots still reach the operator.
+  when_changing: the quietWhenScheduled job option, a quiet run's missing topic, its withheld turn stream, the notices it skips, its grant identity or handler lock, or how its end is told
+  covers:
+    - casa/rootfs/opt/casa/background_jobs.py::is_quiet_run
+    - casa/rootfs/opt/casa/background_jobs.py::is_quiet_origin
+    - casa/rootfs/opt/casa/drivers/in_casa_driver.py::_WithheldStream
+    - casa/rootfs/opt/casa/channels/telegram.py::_handler_lock_key
+    - casa/rootfs/opt/casa/channels/telegram.py::_require_topic
+    - casa/rootfs/opt/casa/tools.py::_told_nowhere
+  tests:
+    - tests/test_quiet_scheduled_jobs.py
+  related: [architecture/background-jobs.md, architecture/job-triggers.md, architecture/plugin-delivered-slots.md, architecture/engagement-finalization.md]
+  defines_invariants: [INV-BGJOB-010]
+  invariant_tests:
+    INV-BGJOB-010: [tests/test_quiet_scheduled_jobs.py::test_a_quiet_scheduled_run_opens_no_topic_and_posts_nothing, tests/test_quiet_scheduled_jobs.py::test_a_quiet_runs_batch_turn_and_progress_post_nothing, tests/test_quiet_scheduled_jobs.py::test_every_other_run_opens_its_topic_as_today, tests/test_quiet_scheduled_jobs.py::test_a_topic_send_without_a_topic_refuses_rather_than_post_to_general, tests/test_quiet_scheduled_jobs.py::test_topic_less_records_never_share_a_handler_lock, tests/test_quiet_scheduled_jobs.py::test_a_quiet_run_whose_resume_fails_mid_launch_is_not_ended_untold, tests/test_quiet_scheduled_jobs.py::test_a_quiet_run_keeps_the_operators_grant_identity, tests/test_quiet_scheduled_jobs.py::test_a_completed_quiet_run_is_told_nowhere_and_a_failed_one_is_told, tests/test_quiet_scheduled_jobs.py::test_a_completed_run_that_is_not_quiet_is_still_told, tests/test_quiet_scheduled_jobs.py::test_only_a_scheduled_start_of_a_quiet_job_is_quiet]

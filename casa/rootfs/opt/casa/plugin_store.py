@@ -1241,7 +1241,7 @@ def manifest_requires(manifest: dict) -> list[dict]:
 _JOB_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
 _JOB_FIELDS = {
     "name", "skill", "title", "summary", "batches", "turnsPerBatch", "session",
-    "host",
+    "host", "quietWhenScheduled",
 }
 # How a job's turns after its launch see the conversation: "resume" (the
 # default) continues one conversation, "fresh" resets it before every turn and
@@ -1310,6 +1310,11 @@ def manifest_jobs(manifest: dict) -> list[dict]:
         if "host" in job and not (isinstance(job["host"], str)
                                   and job["host"] in _JOB_HOSTS):
             raise _jobs_invalid(index, "host")
+        # #1301: a run the scheduler started opens no topic and posts no
+        # acknowledgement or progress line. Strictly a boolean.
+        if ("quietWhenScheduled" in job
+                and not isinstance(job["quietWhenScheduled"], bool)):
+            raise _jobs_invalid(index, "quietWhenScheduled")
         out.append(dict(job))
     return out
 

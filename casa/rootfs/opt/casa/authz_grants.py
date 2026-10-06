@@ -1313,6 +1313,11 @@ class GrantIdentity:
     desk_role: str = field(default="", compare=False)
 
 
+def _is_quiet_run(rec: Any) -> bool:
+    import background_jobs
+    return background_jobs.is_quiet_run(rec)
+
+
 def resolve_grant_identity(role: str, artifact_id: str = ""):
     """The authz hook's identity derivation, factored (#792).
 
@@ -1375,8 +1380,10 @@ def resolve_grant_identity(role: str, artifact_id: str = ""):
                 or not getattr(rec, "id", "")
                 or getattr(rec, "kind", None) not in ("specialist", "plugin")
                 or getattr(rec, "status", None) != "active"
-                or strict_positive_id(
-                    getattr(rec, "topic_id", None)) is None):
+                or (strict_positive_id(getattr(rec, "topic_id", None)) is None
+                    # #1301: a quiet scheduled run has no topic; its posts
+                    # target the origin's chat like any engagement's.
+                    and not _is_quiet_run(rec))):
             return None, "engagement_unavailable"
         eng_origin = getattr(rec, "origin", None) or {}
         operator_id = strict_positive_id(eng_origin.get("user_id"))

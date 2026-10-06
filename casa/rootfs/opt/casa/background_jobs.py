@@ -73,6 +73,9 @@ class JobDecl:
     # before every turn after the launch and re-states the brief (S1).
     session: str = "resume"
     host: str | None = None        # "specialist" = never hosted by a resident
+    # #1301: a run the scheduler started is quiet — no topic, no
+    # acknowledgement, no progress line, no telling of a completed end.
+    quiet_when_scheduled: bool = False
 
 
 @dataclass(frozen=True)
@@ -183,6 +186,12 @@ def _job_busy_refusal(plugin: str, job: str, title: str, rec: Any | None) -> dic
         return {"status": "error", "kind": "job_busy", "plugin": plugin,
                 "job": job,
                 "message": f"{plugin} is already starting {title}."}
+    if getattr(rec, "topic_id", None) is None:
+        # #1301: a quiet scheduled run has no topic to cancel it in.
+        return {"status": "error", "kind": "job_busy", "plugin": plugin,
+                "job": job, "engagement_id": rec.id,
+                "message": (f"{plugin} is already running {title} on its "
+                            "schedule. Wait for it to finish.")}
     return {"status": "error", "kind": "job_busy", "plugin": plugin, "job": job,
             "engagement_id": rec.id, "topic_id": rec.topic_id,
             "message": (f"{plugin} already has a running job: {title}. "
@@ -267,6 +276,7 @@ def _declared_jobs(plugins: Iterable[Any]) -> dict[str, tuple[JobDecl, Any]]:
                 turns_per_batch=entry.get("turnsPerBatch"),
                 session=entry.get("session", "resume"),
                 host=entry.get("host"),
+                quiet_when_scheduled=entry.get("quietWhenScheduled") is True,
             ), resolved)
     return jobs
 
@@ -418,7 +428,24 @@ def initial_job_state(decl: JobDecl, *, started_by: str | None = None) -> dict:
     }
     if started_by is not None:
         state["started_by"] = started_by
+    if decl.quiet_when_scheduled and started_by == "scheduled":
+        # #1301: decided once, here, and read from the record ever after.
+        state["quiet"] = True
     return state
+
+
+def is_quiet_run(rec: Any) -> bool:
+    """Whether *rec* is a quiet run (#1301): a job declaring
+    ``quietWhenScheduled`` that the scheduler started. It has no topic, posts
+    no acknowledgement or progress line, and a completed end is told nowhere;
+    the plugin's delivered slots still reach the operator."""
+    return is_quiet_origin(getattr(rec, "origin", None))
+
+
+def is_quiet_origin(origin: Any) -> bool:
+    """``is_quiet_run`` over a record's origin (or a frozen copy of it)."""
+    job = origin.get("job") if isinstance(origin, dict) else None
+    return isinstance(job, dict) and job.get("quiet") is True
 
 
 def launch_prompt(decl: JobDecl, task: str, context: str, turns_per_batch: int,

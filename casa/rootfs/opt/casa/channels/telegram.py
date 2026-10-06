@@ -1029,7 +1029,7 @@ class TelegramChannel(Channel):
         # message_thread_id (1:1 with engagement via _topic_index). Mirrors
         # in_casa_driver._locks. Entries are not pruned — bounded growth,
         # cleared on add-on restart.
-        self._engagement_handler_locks: dict[int, asyncio.Lock] = {}
+        self._engagement_handler_locks: dict[Any, asyncio.Lock] = {}
         # #317: per-chat serialization for the DM path (_handle). Handlers run
         # with block=False (H5), so /new and an immediately-following message
         # dispatch concurrently — the follow-up could resume the mid-reset
@@ -2253,7 +2253,12 @@ class TelegramChannel(Channel):
         topic THROUGH the output sequencer (seals open narration + advances the
         high-water under the single writer) so it can never land BELOW live
         narration. Falls back to a direct send when the sequencer seam is not
-        wired (tests) or the engagement's driver has no sequencer (in_casa)."""
+        wired (tests) or the engagement's driver has no sequencer (in_casa).
+        A record with no topic (a quiet scheduled run, #1301) posts nothing."""
+        if getattr(rec, "topic_id", None) is None:
+            logger.debug("engagement %s has no topic; notice not posted",
+                         str(getattr(rec, "id", ""))[:8])
+            return
         if self._driver_post_notice is not None:
             await self._driver_post_notice(rec, text)
         else:
@@ -3199,7 +3204,7 @@ class TelegramChannel(Channel):
             if wait is not None:
                 await wait(rec)
             lock = self._engagement_handler_locks.setdefault(
-                rec.topic_id, asyncio.Lock())
+                _handler_lock_key(rec), asyncio.Lock())
             async with lock:
                 ready = await self._resume_and_ready(rec)
         except asyncio.CancelledError:
@@ -3295,9 +3300,13 @@ class TelegramChannel(Channel):
         # restarts, and its engagements never have sdk_session_id).
         if rec.driver != "claude_code" and self._engagement_driver is not None:
             drv = self._engagement_driver
-            continuing_job = bool(rec.origin.get("job")) and not any(
-                handle.engagement_id == rec.id
-                for handle in getattr(reg, "_launch_handles", {}).values())
+            # #1301: a quiet run (no topic) always takes the job arms — the
+            # direct-mark_error arms below tell only in the topic, which would
+            # end it untold.
+            continuing_job = bool(rec.origin.get("job")) and (
+                rec.topic_id is None or not any(
+                    handle.engagement_id == rec.id
+                    for handle in getattr(reg, "_launch_handles", {}).values()))
             if not drv.is_alive(rec) and rec.sdk_session_id:
                 fail_count = rec.origin.get("_resume_fail_count", 0)
                 try:
@@ -3509,7 +3518,7 @@ class TelegramChannel(Channel):
         handed_off = False
         try:
             lock = self._engagement_handler_locks.setdefault(
-                rec.topic_id, asyncio.Lock())
+                _handler_lock_key(rec), asyncio.Lock())
             async with lock:
                 await_rebuild = self._rebuild_waits_for_turn(rec)
                 if not await_rebuild and not await self._resume_and_ready(
@@ -5133,6 +5142,7 @@ class TelegramChannel(Channel):
         ``kwargs`` is forwarded to ``bot.send_message`` (used by Phase 2+
         callers passing ``reply_markup`` for inline keyboards, etc.).
         """
+        _require_topic(thread_id)
         if not self.engagement_supergroup_id:
             raise RuntimeError("engagement supergroup not configured")
         msg = await self.bot.send_message(
@@ -5173,6 +5183,7 @@ class TelegramChannel(Channel):
         display, entities = render(text)
         if entities is None:
             return await self.send_to_topic(thread_id, text, **kwargs)
+        _require_topic(thread_id)
         if not self.engagement_supergroup_id:
             raise RuntimeError("engagement supergroup not configured")
         try:
@@ -5390,6 +5401,7 @@ class TelegramChannel(Channel):
         by ``update_topic_state`` upstream). Body simplifies to a
         plain ``close_forum_topic``.
         """
+        _require_topic(thread_id)
         if not self.engagement_supergroup_id:
             raise RuntimeError("engagement supergroup not configured")
         try:
@@ -6037,6 +6049,7 @@ class TelegramChannel(Channel):
         pages = render_paged(text)
         if len(pages) == 1:
             return await self.send_to_topic_rich(thread_id, text, **kwargs)
+        _require_topic(thread_id)
         if not self.engagement_supergroup_id:
             raise RuntimeError("engagement supergroup not configured")
         last_mid: int | None = None
@@ -6306,6 +6319,23 @@ def _edit_failure_outcome(exc: TelegramError) -> DeliveryOutcome:
 
 
 _TG_MAX_LENGTH = 4096
+
+
+def _handler_lock_key(rec: Any) -> Any:
+    """The per-engagement handler lock's key: the topic id, which a topic
+    message resolves its record by. A record with no topic (a quiet scheduled
+    run, #1301) is reached only by id, so it keys by its own id and never
+    shares a lock with another topic-less record."""
+    topic_id = getattr(rec, "topic_id", None)
+    return topic_id if topic_id is not None else ("engagement", rec.id)
+
+
+def _require_topic(thread_id: Any) -> None:
+    """#1301: a record with no topic (a quiet scheduled run) must never post.
+    With ``message_thread_id=None`` the Bot API posts into the supergroup's
+    General topic, so a topic send without a topic refuses instead."""
+    if thread_id is None:
+        raise ValueError("engagement has no topic")
 
 
 class TopicStreamHandle:
