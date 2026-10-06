@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.344.37] - 2026-10-06
+
+### Added
+- A button on a specialist's proposal can now send you a file. A plugin tool whose one result slot delivers a file can be stored on a button, so a tap on, say, Get package runs that tool and sends you the file it built, checked and sent exactly as a file the specialist sends in a conversation. The file is the answer to your tap; if it cannot be sent, you are told the tap could not be applied, with the reason. When an installed hook changed a tapped call's arguments on the way, Casa now tells you so whatever the tap's outcome, also when the call failed or nothing could be sent, where before the warning appeared only on a successful answer. (#1303)
+
 ## [0.344.36] - 2026-10-06
 
 ### Added

@@ -35,7 +35,7 @@ import time
 import uuid
 from typing import Any, Callable
 
-from stored_calls import TELL_LINE   # the one tell line (§14.7), shared with the result hook
+from stored_calls import OPERATOR_FILE, TELL_LINE   # the one tell line (§14.7), shared with the result hook
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +64,7 @@ SLASH_TASK_LINE = ('The "/" task is plain text: Casa did not run it as a command
 STORED_CALL_RECEIPT_CHARS = 4000
 NO_RECEIPT = "[no receipt]"
 POSTED_PROPOSAL = "[posted a proposal]"
+POSTED_FILE = "[posted a file]"
 TELL_ECHO = " — the CLI reported arguments changed by an installed hook"
 PROMPT_PREFIX = "(front desk) "
 # §5.6/§6: the body-free echo line for an outcome of a silent turn that has
@@ -1092,7 +1093,7 @@ async def handle_tap(
                 logger.error("stored call %s: the tap was cancelled after its call ran; the "
                              "receipt was not posted", run_id)
                 side = (clip(str(capture.text or ""), STORED_CALL_RECEIPT_CHARS).split("\n", 1)[0]
-                        if capture.kind in ("receipt", "no_post") else POSTED_PROPOSAL)
+                        if capture.kind in ("receipt", "no_post") else _posted(capture))
                 stamp = DESKS.now()
                 desk.append("operator", tapped, stamp)
                 desk.append("specialist", side, stamp)
@@ -1185,9 +1186,17 @@ async def handle_tap(
                                         run_id, why)
                             await _notice(f"{label} could not show the next card ({why}).")
                 elif capture.kind == "delivered":
-                    specialist_side = POSTED_PROPOSAL        # the landed proposal is the receipt
+                    specialist_side = _posted(capture)       # the landed post is the receipt
+                    if tell and capture.text == OPERATOR_FILE:
+                        # #1303: a file's caption is the plugin's, so the tell is
+                        # one notice after it (a proposal composes its own)
+                        await _notice(f"{label} {TELL_LINE}")
                     record_echo(chat_id, applied)
                 else:
+                    if tell:
+                        # #1303: the call ran with changed arguments even though
+                        # nothing landed — the tell precedes the refusal
+                        await _notice(f"{label} {TELL_LINE}")
                     if capture.kind == "error":
                         kind = capture.text or "error"
                     elif capture.kind == "withheld":
@@ -1209,6 +1218,11 @@ async def handle_tap(
         if reservation is not None:
             reservation.release()             # idempotent: a cancel while waiting
         channel._release_typing(context, str(chat_id))
+
+
+def _posted(capture: Any) -> str:
+    """The desk exchange's side for a landed ``delivered`` capture."""
+    return POSTED_FILE if capture.text == OPERATOR_FILE else POSTED_PROPOSAL
 
 
 async def _post_next_card(value: str, *, meta: dict, build: Any, runtime: str, seg: str,

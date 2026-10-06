@@ -369,7 +369,7 @@ async def test_a_receipt_member_never_changes_a_more_results_outcome(env):
     ref, err = env.store.deposit(client_id="c1", slot=SLOT, value=json.dumps(_proposal()))
     assert err is None
     await hook(_post(MORE, {"page": 2}, json.dumps({SLOT: ref, "receipt": "not shown"})), "c-landed", {})
-    assert owner.captured == pr.Capture("delivered") and len(env.rec.proposals) == 1
+    assert owner.captured == pr.Capture("delivered", "operator_proposal") and len(env.rec.proposals) == 1
     owner = _owner(runtime_name=MORE, canonical='{"page":2}')
     hook = rb.make_result_hook(_map(), client_id="c1", store=env.store, owner=owner)
     _open(env.store, call="c-bad", tool=MORE)
@@ -388,7 +388,7 @@ async def test_a_receipt_member_never_changes_a_more_results_outcome(env):
 async def test_the_more_exceptions_capture_is_the_hooks_effective_result_never_the_raw_response(env):
     cases = []
     for name, response, expect in [
-        ("delivered", None, pr.Capture("delivered")),
+        ("delivered", None, pr.Capture("delivered", "operator_proposal")),
         ("withheld", json.dumps({SLOT: "casa-cap-" + "0" * 32}), None),
         ("no_post", json.dumps({SLOT: None, "note": "no more entries"}),
          pr.Capture("no_post", json.dumps({SLOT: None, "note": "no more entries"}))),
@@ -403,7 +403,7 @@ async def test_the_more_exceptions_capture_is_the_hooks_effective_result_never_t
         out = await hook(_post(MORE, {"page": 2}, response), f"call-{name}", {})
         cases.append((name, out, owner.captured))
     name, out, cap = cases[0]
-    assert cap == pr.Capture("delivered") and "casa_delivery" in out["hookSpecificOutput"]["updatedToolOutput"]
+    assert cap == pr.Capture("delivered", "operator_proposal") and "casa_delivery" in out["hookSpecificOutput"]["updatedToolOutput"]
     assert len(env.rec.proposals) == 1
     name, out, cap = cases[1]
     assert cap.kind == "withheld" and cap.text and "casa_result_withheld" in out["hookSpecificOutput"]["updatedToolOutput"]
@@ -434,7 +434,7 @@ async def test_a_more_rewrite_tells_inside_the_next_proposal_when_it_fits_else_i
     _open(env.store, call="c-fit", tool=MORE)
     ref, _ = env.store.deposit(client_id="c1", slot=SLOT, value=json.dumps(_proposal()))
     await hook(_post(MORE, {"page": 2, "__consentNonce": "n"}, json.dumps({SLOT: ref})), "c-fit", {})
-    assert owner.captured == pr.Capture("delivered", rewritten=True)
+    assert owner.captured == pr.Capture("delivered", "operator_proposal", rewritten=True)
     (_, text, _, _, _), = env.rec.proposals
     assert text.startswith(sd.TELL_LINE + "\n" + LABEL + "\n")
     assert rec.notices == []
@@ -453,7 +453,7 @@ async def test_a_more_rewrite_tells_inside_the_next_proposal_when_it_fits_else_i
     (_, text, _, _, _), = env.rec.proposals
     assert sd.TELL_LINE not in text and text.startswith(LABEL + "\n")
     assert rec.notices == [(42, f"{LABEL} {sd.TELL_LINE}")]
-    assert owner.captured == pr.Capture("delivered", rewritten=True)
+    assert owner.captured == pr.Capture("delivered", "operator_proposal", rewritten=True)
     # a proposal whose body plus the tell would fit Telegram's limit but NOT the
     # settlement reserve: the tell goes out as the notice, the message stays settleable
     env.rec.proposals.clear()
@@ -646,7 +646,7 @@ async def test_a_proven_proposal_delivery_is_captured_as_delivered_whatever_the_
     out = await hook(_post(MORE, {"page": 2}, response), "c-x", {})
     assert "casa_delivery" in out["hookSpecificOutput"]["updatedToolOutput"]   # the post was proven
     assert len(env.rec.proposals) == 1
-    assert owner.captured == pr.Capture("delivered")
+    assert owner.captured == pr.Capture("delivered", "operator_proposal")
 
 
 async def test_a_descendant_is_dropped_as_extinct_only_on_its_own_pidfds_evidence(tree, monkeypatch):

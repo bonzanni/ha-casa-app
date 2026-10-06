@@ -52,8 +52,9 @@ class Capture:
 
     - ``receipt``   — a ``safe`` tool's receipt: its response's ``receipt``
       sentence when it carries one, else the response text (#1200);
-    - ``delivered`` — the ``More`` exception's proposal landed (the hook's
-      delivery receipt): the landed proposal IS the operator-visible receipt;
+    - ``delivered`` — the ``More`` exception's proposal, or (#1303) its file,
+      landed (the hook's delivery receipt): the landed post IS the
+      operator-visible receipt; ``text`` is the delivered kind;
     - ``withheld``  — the ``More`` result was refused or its post not proven
       (``text`` = the reason);
     - ``no_post``   — the ``More`` tool's contract no-post shape: its own

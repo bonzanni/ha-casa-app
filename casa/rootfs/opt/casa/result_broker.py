@@ -1564,17 +1564,8 @@ def make_result_hook(
             mine = tool_name == owner.runtime_name
             warning = None
             if mine:
-                from stored_calls import TELL_LINE, canonical_json
-                try:
-                    reported = canonical_json((input_data or {}).get("tool_input") or {})
-                except (TypeError, ValueError):
-                    reported = "<unserialisable>"
-                if reported != owner.canonical:
-                    owner.rewritten = True
-                    logger.error(
-                        "stored call %s: the CLI reported this call's arguments changed by "
-                        "an installed hook (tool=%s stored=%s reported=%s)",
-                        owner.run_id, tool_name, owner.canonical, reported)
+                from stored_calls import TELL_LINE
+                _compare_reported(owner, input_data, tool_name)
                 warning = TELL_LINE if owner.rewritten else None
             out = await _body(input_data, tool_use_id, context, warning)
             if mine:
@@ -1585,6 +1576,24 @@ def make_result_hook(
     _hook._casa_pinned = owner                        # type: ignore[attr-defined]
     _hook._casa_result_broker = "result"             # type: ignore[attr-defined]
     return _hook
+
+
+def _compare_reported(owner, input_data, tool_name: str) -> None:
+    """S5 §14.7 trust and tell: the CLI's reported input of the stored call
+    compared with the stored canonical — told (``owner.rewritten``) and
+    logged at ERROR, never prevented. Both post-hooks run it (#1303: a call
+    that ended in PostToolUseFailure ran with those arguments too)."""
+    from stored_calls import canonical_json
+    try:
+        reported = canonical_json((input_data or {}).get("tool_input") or {})
+    except (TypeError, ValueError):
+        reported = "<unserialisable>"
+    if reported != owner.canonical:
+        owner.rewritten = True
+        logger.error(
+            "stored call %s: the CLI reported this call's arguments changed by "
+            "an installed hook (tool=%s stored=%s reported=%s)",
+            owner.run_id, tool_name, owner.canonical, reported)
 
 
 def _receipt_of(text: str) -> tuple[str, str]:
@@ -1638,7 +1647,10 @@ def _capture_of(contract_map, tool_name: str, input_data, out, rewritten: bool):
     if isinstance(parsed, dict):
         delivery = parsed.get("casa_delivery")
         if isinstance(delivery, dict) and delivery.get("status") == "delivered":
-            return Capture("delivered", rewritten=rewritten)
+            # #1303: the delivered kind from the tool's own contract, never the response
+            delivers = dict(getattr(entry, "delivers", None) or {})
+            dkind = next(iter(delivers.values()), "") if len(delivers) == 1 else ""
+            return Capture("delivered", str(dkind), rewritten=rewritten)
         if parsed.get("casa_result_withheld"):
             return Capture("withheld", str(parsed.get("reason") or "withheld"), rewritten)
     return Capture("withheld", "unexpected result", rewritten)
@@ -1678,8 +1690,10 @@ def make_failure_hook(
     else:
         async def _hook(input_data, tool_use_id, context):
             out = await _body(input_data, tool_use_id, context)
-            if (input_data or {}).get("tool_name") == owner.runtime_name:
+            tool_name = (input_data or {}).get("tool_name")
+            if tool_name == owner.runtime_name:
                 from pinned_run import Capture
+                _compare_reported(owner, input_data, tool_name)
                 owner.resolve(Capture("error", "tool_error", owner.rewritten))
             return out
         _hook = owner.guard(_hook)
