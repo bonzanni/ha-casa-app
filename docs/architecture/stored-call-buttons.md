@@ -39,7 +39,9 @@ writes reaches the operator or the resident; the pinned turn retains nothing int
 **Which calls a button may store.** At deposit, every button's tool must be a declared tool
 of the same plugin on the same (single, stdio) server — a `safe` tool that consumes no
 reference, or a `capability` tool whose only provided slot is its own `operator_proposal`
-(the `More` exception: a button whose call renders the next page, with its own buttons). A
+(the `More` exception: a button whose call renders the next page, with its own buttons), or
+one whose only provided slot delivers an `operator_file` (#1303: the landed file is the
+receipt; the file rides the delivered-slot path unchanged). A
 setup tool, a protected tool, a tool declared on an ambiguous or HTTP server, and any
 tool that consumes a reference are refused; so is a runtime name in place of a bare one.
 Arguments are a JSON object with identifier keys (no `_` prefix), values that are strings
@@ -119,9 +121,9 @@ refusal notice, with no retry. The desk's exchange is still written after the ta
 runs matching PreToolUse hooks concurrently and one hook's deny does not stop its siblings:
 inside the plugin admission hook as its first check, and as a `matcher=None` matcher first
 in the list for every non-plugin tool. The capture resolves at the END of the result hook
-with the hook's own effective result: a `safe` tool's response text; for `More`, the
-delivery receipt of the proposal it just posted (the landed proposal is then the sole
-visible receipt), the withheld replacement, or the no-post pass whose own text is the
+with the hook's own effective result: a `safe` tool's response text; for `More` or its file sibling, the
+delivery receipt of the post it just made, with the delivered kind from the tool's own
+contract (the landed post is then the sole visible receipt), the withheld replacement, or the no-post pass whose own text is the
 receipt. A passed-through text (the `safe` response, the no-post) that parses as a JSON
 object with a non-blank string `receipt` is captured as that string, as given; anything else
 — plain text, another JSON shape, a text over the broker's parse ceiling or nested too deep
@@ -173,7 +175,7 @@ re-measures them.
 
 **The desk and the echo.** A committed tap that reaches execution appends one exchange —
 `[tapped: <label>]` and the receipt's first line, `[posted a proposal]` for a landed `More`,
-or `[no receipt]` — and the resident's echo gets one body-free line (`📊 Finance applied your
+`[posted a file]` for a landed file, or `[no receipt]` — and the resident's echo gets one body-free line (`📊 Finance applied your
 tap (Yes).`, `📊 Finance refused your tap (Yes): no_call.`). A typed verdict still takes the
 desk: a reply on the proposal message routes to the specialist by the post map.
 
@@ -195,6 +197,8 @@ exit sweep, which ends every task at once (Casa-wide behaviour, not S5's).
 **INV-PROP-005**: A pinned stored-call turn's prompt carries no exchange from the specialist's desk, no memory recalled for the turn, and no frame presenting its task as a message from the operator.
 
 **INV-PROP-006**: A `safe` stored call's `next` card is posted only beside its receipt, after that receipt's send is proven, within the tap's own desk use, and only if it passes the proposal deposit predicate against the stored tool's own plugin and server on the maps the tap was re-checked against; it is registered before it is sent and carries the tapped proposal's own chat, operator, role and artifact, so its buttons execute only from a tap; a card that does not land is one notice and the receipt stands; a response without `next` is today's tap.
+
+**INV-PROP-007**: A button may store a `capability` tool only when its one provided slot delivers `operator_proposal` or `operator_file`; a stored file is sent only through the delivered-slot path and, landed, is the tap's receipt; a stored call that ran with arguments an installed hook changed is told to the operator whatever the outcome.
 
 **INV-FILE-003**: A `📎` tap arms the next file in that chat for the specialist whose proposal carried the button, for the operator who tapped, for at most ten minutes; the arming exists from the moment the tap is committed, before the keyboard is edited or anything is sent; exactly one file consumes it; a later arming replaces it; a restart forgets it; and Casa sends no message about an arming — the edited keyboard is the whole acknowledgement, and the only text a tap can produce is the past-fact line that the buttons could not be cleared.
 
@@ -218,9 +222,13 @@ refused echo line. On the ceiling the notice goes out at once and the desk stays
 through the bounded termination path; a receipt that lands during the hold is posted after
 it, with the applied echo line.
 
-**A `More` proposal was withheld or not proven.** The refusal notice with the reason; a
-`More` that posted nothing (the contract's no-post shape) is a success whose own text — its
+**A `More` proposal or a stored file was withheld or not proven.** The refusal notice with the
+reason; one that posted nothing (the contract's no-post shape) is a success whose own text — its
 `receipt` sentence when it carries one — is the receipt.
+
+**A stored call ran with arguments an installed hook changed** (both post-hooks compare): a
+proposal carries the tell in its own message; a landed file, or a refused call, gets one
+`📊 Finance ⚠ …` notice — after the file, before the refusal.
 
 **A next card does not land** — the deposit predicate refuses it, the chat already holds 32
 live proposals, or its send is not proven. The receipt stands; one labelled notice
@@ -283,6 +291,7 @@ starts it ([`specialist-job-start.md`](specialist-job-start.md)).
 - `tests/test_redcase_1282.py`
 - `tests/test_pinned_prompt_controls.py`
 - `tests/test_tap_next_card.py`
+- `tests/test_tap_delivers_file.py`
 
 **Related**
 - [`architecture/stored-call-termination.md`](../architecture/stored-call-termination.md)

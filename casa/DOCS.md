@@ -1280,6 +1280,11 @@ card cannot be shown, the receipt stands and one line says why; if the receipt
 itself could not be posted, no card follows. A card with the
 same `revision` as a live one replaces it.
 
+A button can also send you a file (v0.344.37): a plugin tool whose one slot
+delivers a file may be stored on a button, so a tap on, say, **Get package**
+sends the freshly built file, and the file itself is the answer to your tap. If
+it cannot be sent, Casa tells you it could not apply your tap, with the reason.
+
 #### A file for a specialist (v0.343.0)
 
 A file follows the same rule as a reply. Send a PDF or photo as a swipe-reply on a

@@ -30,6 +30,7 @@ STRING_MAX_CHARS = 2000
 ARGUMENTS_MAX_BYTES = 4096
 SAFE_INT_MAX = 2 ** 53 - 1
 OPERATOR_PROPOSAL = "operator_proposal"
+OPERATOR_FILE = "operator_file"
 # §14.7 trust + tell: the one Casa-composed line above a receipt whose
 # reported arguments differed from the stored call
 TELL_LINE = "⚠ the CLI reported this call's arguments changed by an installed hook"
@@ -104,7 +105,8 @@ class StoredCall:
     """The three identities of a stored call (§2.1): the ``.mcp.json`` server
     key the launch uses, the bare name the server dispatches on, the Casa
     runtime name every hook and policy compares — and whether the tool is the
-    ``More`` exception (a capability whose only slot is its own proposal)."""
+    ``More`` exception (a capability whose only slot is its own proposal, or,
+    #1303, one file it delivers)."""
     server: str
     wire_name: str
     runtime_name: str
@@ -137,7 +139,10 @@ def _entry_ok(runtime_name: str, entry: Any, *, contract_map: Any, protected: An
     if entry.kind == "capability":
         provides = tuple(entry.provides or ())
         delivers = dict(entry.delivers or {})
-        if (len(provides) == 1 and delivers == {provides[0]: OPERATOR_PROPOSAL}):
+        # the `More` exception, and (#1303) its file sibling: one slot, which
+        # delivers the next proposal or one file
+        if (len(provides) == 1
+                and delivers in ({provides[0]: OPERATOR_PROPOSAL}, {provides[0]: OPERATOR_FILE})):
             return None
         return "capability"
     return "capability"
