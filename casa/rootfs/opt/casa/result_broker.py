@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import contextlib
 import dataclasses
 import hmac
 import json
@@ -211,6 +212,7 @@ class _Reference:
     media_kind: str = ""          # S3: operator_file only — a MEDIA_POLICIES key
     proposal: Any = None          # S5: the parsed, validated proposal object
     filename: str = ""            # S7a: operator_file only — the delivered name, validated
+    key: str = ""                 # #1312: delivered slots only — the plugin's delivery key
 
     def __repr__(self) -> str:      # never the value
         return (f"_Reference(slot={self.slot!r}, armed={self.armed is not None}, "
@@ -633,7 +635,8 @@ class ReferenceStore:
                 caption: str | None = None,
                 label: str | None = None,
                 kind: Any = None,
-                filename: Any = None) -> tuple[str | None, str | None]:
+                filename: Any = None,
+                key: Any = None) -> tuple[str | None, str | None]:
         """Bind ``value`` to the UNIQUE in-flight capability call of
         ``client_id`` whose contract provides ``slot``; mint and return a
         reference. Zero or more than one such call ⇒ refused (fail closed).
@@ -668,9 +671,16 @@ class ReferenceStore:
                 return None, "no_identity"
             if slot in call.deposits:
                 return None, "slot_already_deposited"
-            caption_s, label_s, kind_s, filename_s = "", "", "", ""
+            caption_s, label_s, kind_s, filename_s, key_s = "", "", "", "", ""
             proposal_obj = None
             dkind = call.delivers.get(slot)
+            if dkind is not None and key is not None:
+                # #1312: a delivered slot's deposit may name the post; a
+                # remembered name is not sent twice (delivery_keys)
+                from delivery_keys import key_ok
+                if not key_ok(key):
+                    return None, "bad_key"
+                key_s = key
             if dkind == OPERATOR_MESSAGE:
                 if not _message_ok(value):
                     return None, "bad_message"
@@ -715,7 +725,7 @@ class ReferenceStore:
                 value=value, slot=slot, identity=call.identity,
                 minted_at=now, expires_at=now + reference_ttl_s(),
                 caption=caption_s, label=label_s, media_kind=kind_s,
-                proposal=proposal_obj, filename=filename_s)
+                proposal=proposal_obj, filename=filename_s, key=key_s)
             call.deposits[slot] = ref
             return ref, None
 
@@ -724,7 +734,7 @@ class ReferenceStore:
         the reference must exist, be unexpired, unused and unarmed; it is
         marked used (so ``arm``, ``redeem`` and a second take all refuse it;
         the next sweep removes it) and its value blanked. Returns
-        ``(value, caption, label, identity, media_kind, proposal, filename)``
+        ``(value, caption, label, identity, media_kind, proposal, filename, key)``
         or ``None``."""
         with self._lock:
             self._sweep_locked()
@@ -734,7 +744,7 @@ class ReferenceStore:
             r.used = True
             value, r.value = r.value, ""
             return (value, r.caption, r.label, r.identity, r.media_kind, r.proposal,
-                    r.filename)
+                    r.filename, r.key)
 
     def validate_result(self, call: _InFlight, parsed: dict) -> bool:
         """True iff every declared slot of ``call`` is present in ``parsed``
@@ -1298,7 +1308,8 @@ async def _post_operator_file(chat_id: int, path: str, kind: str, caption: str,
 
 
 async def _post_proposal(identity, seg: str, slot: str, call: _InFlight, proposal: dict,
-                         head: str, post: "PostRecord", warning: str | None = None) -> tuple:
+                         head: str, post: "PostRecord", warning: str | None = None,
+                         on_proven: "Callable[..., None] | None" = None) -> tuple:
     """S5 §3: ONE synchronous block — count, supersede by revision, register
     with the finish hook — then the post; a post that is not proven
     unregisters at once (``unregister`` fires no hook; nothing is on screen).
@@ -1364,6 +1375,11 @@ async def _post_proposal(identity, seg: str, slot: str, call: _InFlight, proposa
         delivered = isinstance(mid, int) and not isinstance(mid, bool)
         if delivered:
             req.meta["message_id"] = mid        # the broker's own dict, by reference
+            if on_proven is not None:
+                # #1312: the proof point — before the mark or the tell below await
+                on_proven({"proposal_id": rid, "buttons": len(labels)}, (scope, rid),
+                          PostEvent(call.tool_use_id, seg, slot, head, None, None,
+                                    buttons=len(labels)))
     finally:
         if not delivered:
             BROKER.unregister(namespace="proposal", scope=scope, request_id=rid)
@@ -1392,6 +1408,67 @@ async def _post_proposal(identity, seg: str, slot: str, call: _InFlight, proposa
     return True, {"proposal_id": rid, "buttons": n}, event, None
 
 
+def _repeat_of(seg: str, identity: Any, key: str, dkind: str) -> dict | None:
+    """#1312: the remembered delivery this keyed deposit repeats, or None. A
+    proposal repeats only while its original keyboard is live, unclaimed and
+    registered under the same artifact as this call — after an update the tap
+    path refuses the old card, so a fresh one is posted instead."""
+    from delivery_keys import KEYS
+    try:
+        hit = KEYS.lookup(seg, int(identity.operator_id), key)
+    except Exception:  # noqa: BLE001 — an unusable memory never blocks a post
+        logger.warning("delivery key lookup failed; delivering fresh", exc_info=True)
+        return None
+    if hit is None or hit.get("kind") != dkind:
+        return None
+    if dkind == OPERATOR_PROPOSAL:
+        from verdict_broker import BROKER
+        scope, rid = (hit.get("proposal") or [None, None])[:2]
+        if not (isinstance(scope, str) and isinstance(rid, str)):
+            return None
+        if not BROKER.is_live_unclaimed(namespace="proposal", scope=scope, request_id=rid):
+            return None
+        meta = BROKER.get_meta(namespace="proposal", scope=scope, request_id=rid) or {}
+        if meta.get("artifact_id") != str(getattr(identity, "artifact_id", "") or ""):
+            return None
+        # the tap path's own expiry reading: past its deadline a keyboard
+        # answers "expired" even before the broker's timer has retired it
+        deadline = meta.get("deadline")
+        if (not isinstance(deadline, (int, float))
+                or asyncio.get_running_loop().time() >= deadline):
+            return None
+    return hit
+
+
+async def _settle_repeat(seg: str, identity: Any, dkind: str, value: str,
+                         warning: str | None) -> None:
+    """#1312: what a repeat still owes, nothing of it sent as the post again.
+    A file deposit's staged file is consumed (best-effort: the original
+    delivery stands either way); a ``More`` call's rewritten-input tell goes
+    out as one labelled desk notice, since no card carries it this time."""
+    if dkind == OPERATOR_FILE:
+        try:
+            import tools as tools_mod
+            outbox = tools_mod.outbox_for_current_context()
+            if outbox is not None:
+                def _consume() -> None:
+                    claim = outbox.claim(value)
+                    outbox.remove_claim(claim)
+                await asyncio.to_thread(_consume)
+        except Exception as exc:  # noqa: BLE001 — the original delivery stands
+            logger.warning("repeat file not consumed: %s", type(exc).__name__)
+    elif dkind == OPERATOR_PROPOSAL and warning:
+        channel = _telegram_channel()
+        notice = getattr(channel, "deliver_desk_notice", None)
+        if notice is not None:
+            try:
+                head = post_label(identity.enforcement_role)
+                await asyncio.wait_for(notice(int(identity.chat_id), f"{head} {warning}"),
+                                       DELIVERY_TIMEOUT_S)
+            except Exception as exc:  # noqa: BLE001 — the tell is logged
+                logger.warning("repeat proposal tell failed: %s", type(exc).__name__)
+
+
 async def _deliver_and_replace(store: ReferenceStore, seg: str, call: _InFlight,
                                parsed: dict, warning: str | None = None) -> dict[str, Any]:
     """#1015, after the structural check passed: take the delivered slot's
@@ -1416,52 +1493,104 @@ async def _deliver_and_replace(store: ReferenceStore, seg: str, call: _InFlight,
     event: PostEvent | None = None
     withheld_reason: str | None = None
     identity = None
+    echoed = False          # #1312: a proposal's echo filed at its proof
     try:
         taken = store.take_for_delivery(call.deposits.get(slot, ""))
-        if taken is not None:
-            value, caption, label, identity, media_kind, proposal, filename = taken
-            # S4 §2: the record the channel files every landed message under
-            # — the identity's role and operator, never anything the plugin
-            # authored.
-            post = PostRecord(
-                role=identity.enforcement_role, operator_id=identity.operator_id,
-                plugin=seg, slot=slot, tool_use_id=call.tool_use_id,
-                owner=_post_owner(identity), posted_at=time.time(), kind=dkind)
-            if dkind == OPERATOR_MESSAGE:
-                head = post_label(identity.enforcement_role)
-                text = compose_operator_message(value, head)
-                outcome = await asyncio.wait_for(
-                    _post_operator_message(identity.chat_id, text, post=post),
-                    DELIVERY_TIMEOUT_S)
-                delivered = outcome is DeliveryOutcome.DELIVERED
-                if delivered:
-                    from channels.tg_richtext import render_paged
-                    pages = len(render_paged(text))
-                    detail = {"pages": pages}
-                    event = PostEvent(call.tool_use_id, seg, slot, head, pages, None)
-            elif dkind == OPERATOR_FILE:
-                head = post_label(identity.enforcement_role)
-                outcome = await asyncio.wait_for(
-                    _post_operator_file(identity.chat_id, value, media_kind,
-                                        compose_file_caption(head, caption),
-                                        post=post, delivered_name=filename),
-                    FILE_DELIVERY_TIMEOUT_S)
-                delivered = outcome is DeliveryOutcome.DELIVERED
-                if delivered:
-                    detail = {"kind": media_kind}
-                    event = PostEvent(call.tool_use_id, seg, slot, head, None, media_kind)
-            elif dkind == OPERATOR_PROPOSAL:
-                head = post_label(identity.enforcement_role)
-                delivered, detail, event, withheld_reason = await _post_proposal(
-                    identity, seg, slot, call, proposal, head, post, warning=warning)
-            else:
-                text, entities, plain = compose_operator_link(
-                    value, caption=caption, label=label)
-                outcome = await asyncio.wait_for(
-                    _post_operator_link(identity.chat_id, text, entities, plain,
-                                        post=post),
-                    DELIVERY_TIMEOUT_S)
-                delivered = outcome is DeliveryOutcome.DELIVERED
+        key = taken[7] if taken is not None else ""
+        if not key:
+            hold = contextlib.nullcontext()
+        else:
+            from delivery_keys import KEYS
+            hold = KEYS.hold(seg, int(taken[3].operator_id), key)
+        async with hold:
+            if taken is not None and key:
+                hit = _repeat_of(seg, taken[3], key, dkind)
+                if hit is not None:
+                    # #1312: this post was already delivered — nothing is sent
+                    # again; the call gets the original delivery's receipt
+                    identity = taken[3]
+                    await _settle_repeat(seg, identity, dkind, taken[0], warning)
+                    # the settle awaited: a proposal's original may have been
+                    # superseded or claimed meanwhile — decide again, with no
+                    # await before the receipt; a card no longer usable is
+                    # posted fresh (its tell already went out). Other kinds
+                    # keep the first decision: a file's staged copy is consumed
+                    if dkind == OPERATOR_PROPOSAL:
+                        hit = _repeat_of(seg, identity, key, dkind)
+                    if hit is not None:
+                        delivered = True
+                        detail = {**hit["detail"], "repeat": True}
+                        taken = None
+                    elif dkind == OPERATOR_PROPOSAL:
+                        warning = None
+
+            def _remember(proven: dict, proposal_key: tuple | None = None,
+                          proven_event: "PostEvent | None" = None) -> None:
+                """#1312: synchronous, at the instant the send is proven — before
+                any later await, so a cancellation after the proof cannot skip it.
+                A proposal's echo is filed here too: a repeat never re-files it."""
+                nonlocal echoed
+                if proven_event is not None:
+                    POSTS.record(_post_owner(identity), proven_event)
+                    echoed = True
+                if not key:
+                    return
+                try:
+                    from delivery_keys import KEYS
+                    KEYS.record(seg, int(identity.operator_id), key, kind=dkind,
+                                detail=proven, proposal=proposal_key)
+                except Exception:  # noqa: BLE001 — never undoes the delivery
+                    logger.warning("delivery key not recorded", exc_info=True)
+
+            if taken is not None:
+                value, caption, label, identity, media_kind, proposal, filename, _key = taken
+                # S4 §2: the record the channel files every landed message under
+                # — the identity's role and operator, never anything the plugin
+                # authored.
+                post = PostRecord(
+                    role=identity.enforcement_role, operator_id=identity.operator_id,
+                    plugin=seg, slot=slot, tool_use_id=call.tool_use_id,
+                    owner=_post_owner(identity), posted_at=time.time(), kind=dkind)
+                if dkind == OPERATOR_MESSAGE:
+                    head = post_label(identity.enforcement_role)
+                    text = compose_operator_message(value, head)
+                    outcome = await asyncio.wait_for(
+                        _post_operator_message(identity.chat_id, text, post=post),
+                        DELIVERY_TIMEOUT_S)
+                    delivered = outcome is DeliveryOutcome.DELIVERED
+                    if delivered:
+                        from channels.tg_richtext import render_paged
+                        pages = len(render_paged(text))
+                        detail = {"pages": pages}
+                        _remember(detail)
+                        event = PostEvent(call.tool_use_id, seg, slot, head, pages, None)
+                elif dkind == OPERATOR_FILE:
+                    head = post_label(identity.enforcement_role)
+                    outcome = await asyncio.wait_for(
+                        _post_operator_file(identity.chat_id, value, media_kind,
+                                            compose_file_caption(head, caption),
+                                            post=post, delivered_name=filename),
+                        FILE_DELIVERY_TIMEOUT_S)
+                    delivered = outcome is DeliveryOutcome.DELIVERED
+                    if delivered:
+                        detail = {"kind": media_kind}
+                        _remember(detail)
+                        event = PostEvent(call.tool_use_id, seg, slot, head, None, media_kind)
+                elif dkind == OPERATOR_PROPOSAL:
+                    head = post_label(identity.enforcement_role)
+                    delivered, detail, event, withheld_reason = await _post_proposal(
+                        identity, seg, slot, call, proposal, head, post, warning=warning,
+                        on_proven=_remember)
+                else:
+                    text, entities, plain = compose_operator_link(
+                        value, caption=caption, label=label)
+                    outcome = await asyncio.wait_for(
+                        _post_operator_link(identity.chat_id, text, entities, plain,
+                                            post=post),
+                        DELIVERY_TIMEOUT_S)
+                    delivered = outcome is DeliveryOutcome.DELIVERED
+                    if delivered:
+                        _remember(detail)
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # noqa: BLE001 — not proven ⇒ withheld
@@ -1478,7 +1607,7 @@ async def _deliver_and_replace(store: ReferenceStore, seg: str, call: _InFlight,
     if not delivered:
         return _withheld(seg, withheld_reason
                          or _NOT_DELIVERED_REASONS.get(dkind, _REASON_LINK_NOT_DELIVERED))
-    if event is not None:
+    if event is not None and not echoed:
         POSTS.record(_post_owner(identity), event)
     receipt = dict(parsed)
     receipt["casa_delivery"] = {
@@ -1788,7 +1917,8 @@ def build_broker_deposit_handler(store: ReferenceStore | None = None):
                                  caption=body.get("caption"),
                                  label=body.get("label"),
                                  kind=body.get("kind"),
-                                 filename=body.get("filename"))
+                                 filename=body.get("filename"),
+                                 key=body.get("key"))
         if err:
             return _bad(err)
         return web.json_response({"reference": ref})

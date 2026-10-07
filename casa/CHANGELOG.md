@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.344.39] - 2026-10-07
+
+### Fixed
+- A plugin job that posted you a message and was stopped before it noted the post (at the end of a batch) posted the same message again in its next batch, so you received it twice. A plugin can now give each post a `key`. When it delivers a key Casa already delivered to you, Casa sends nothing and returns the first delivery's receipt, so the plugin records the post as usual. This applies to messages, files and links. A card with buttons counts as already delivered only while its buttons still work, and is posted afresh otherwise. Casa remembers delivered keys for thirty days, across restarts. A post whose delivery Casa could not confirm is not remembered, so its retry is still posted. Nothing changes until a plugin uses `key`; the quarterly-accounting plugin will. (#1312)
+
 ## [0.344.38] - 2026-10-06
 
 ### Fixed
