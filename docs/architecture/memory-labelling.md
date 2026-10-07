@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-10-01
+last_reviewed: 2026-10-07
 ---
 
 # Memory labelling: tier, provenance, and content addressing
@@ -58,6 +58,12 @@ tier, and its speaker provenance is recorded from what the turn actually
 established. Both live in reserved tag namespaces that ordinary application
 tags may not reach, so a caller cannot promote its own fact to a tier the
 classifier did not give it or attribute it to someone it did not come from.
+The item is a whole conversation turn, often a request or a question, so the
+classifier is given it as quoted data between markers (tagged afresh for each
+prompt, so the turn cannot spell the closing one), told not to answer or
+act on it, and given the answer format after it
+(`sensitivity.classification_prompt`). Sent bare, a turn was often answered
+instead of classified.
 
 **A save can raise a memory's tier and never lowers the tier it read.** The
 classifier sees only the text, and the same text is classified again on

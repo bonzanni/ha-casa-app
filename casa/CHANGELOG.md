@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.344.41] - 2026-10-07
+
+### Fixed
+- When saving a conversation to memory, Casa decides for each message who may recall it later. A message that asked something or gave an instruction, such as your request to the assistant or the assistant's reply, was often answered instead of judged, so Casa had to ask a second time and logged a warning each time. When the second answer missed too, the message was kept as private until a later save judged it. Each message is now passed as a quoted message to judge, not one to answer. (#1316)
+
 ## [0.344.40] - 2026-10-07
 
 ### Fixed

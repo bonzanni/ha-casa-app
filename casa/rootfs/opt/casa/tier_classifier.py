@@ -34,6 +34,7 @@ from sensitivity import (
     SENSITIVITY_PROMPT,
     TIER_FORMAT_REMINDER,
     TIERS,
+    classification_prompt,
     parse_tier,
     tier_evidence,
 )
@@ -204,7 +205,7 @@ async def classify_tier(content: str) -> str:
             return reply
         return None  # pragma: no cover — loop always returns
 
-    reply = await _ask(text)
+    reply = await _ask(classification_prompt(text))
     if reply is not None:
         tier = parse_tier(reply)
         if tier:
@@ -229,7 +230,7 @@ async def classify_tier(content: str) -> str:
         # sets a floor. It still counts as ``defaulted`` below.
         floor = max(
             (TIERS.index(t) for t in tier_evidence(reply)), default=-1)
-        reply = await _ask(f"{text}\n\n{TIER_FORMAT_REMINDER}")
+        reply = await _ask(f"{classification_prompt(text)}\n\n{TIER_FORMAT_REMINDER}")
         if reply is not None:
             tier = parse_tier(reply)
             if tier and TIERS.index(tier) >= floor:
