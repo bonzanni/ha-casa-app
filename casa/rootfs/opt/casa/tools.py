@@ -17661,7 +17661,9 @@ async def specialist_upgrade(args: dict) -> dict:
                 # specialist's own reload failed without leaving the new
                 # version's root on the live agent, #1146).
                 # #1296: the in-use clause by the live agent, read here with no
-                # await before the result is returned.
+                # await before the result is returned. #1298: a reload that
+                # landed while the library ran may have loaded the kept version
+                # anyway; the live root equal to the committed one says so.
                 dropped = list(getattr(exc, "dropped_owned_names", ()) or ())
                 live = _kept_live_match(
                     getattr(agent_mod, "active_runtime", None), args["slug"],

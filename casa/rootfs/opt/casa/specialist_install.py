@@ -2909,8 +2909,9 @@ def _kept_new_version_error(txn, journal, slug: str, exc: BaseException, *,
                             replaced_root: "str | None" = None,
                             ) -> "SpecialistInstallError":
     """#975: the library kept the new version after activation failed. #1095
-    (ruling-1095-5/-6): the tool returns this before any reload, so Casa has
-    loaded none of it — the detail says "not active yet", never "active".
+    (ruling-1095-5/-6): the tool returns this before the upgrade's own reload,
+    so this upgrade loaded none of it — the detail says "not active yet", never
+    "active" (#1298: unless a concurrent reload loaded it, the "new" form).
     ``restart_first`` marks the variant whose prior-version cleanup also
     failed: there a re-run is refused until Casa restarts (INV-SPEC-014).
 

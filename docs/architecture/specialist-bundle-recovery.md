@@ -96,8 +96,8 @@ retained prior the capture recorded as absent. Once it is active in that sense �
 restored whole, so nothing is rolled back: the retained prior's pending rotation is finished
 and the prior stripped of the reclassified value per file, the journal is completed, and the
 failure is reported. Two results carry it, and "active" means different things in them.
-`upgrade_kept_new_version` comes from the library, before any reload, so this upgrade loaded none
-of the kept version, and the result says what finishes it — re-running the same upgrade, or,
+`upgrade_kept_new_version` comes from the library, before the upgrade's own reload, so this upgrade
+loaded none of the kept version — though a concurrent reload may have — and the result says what finishes it — re-running the same upgrade, or,
 when finishing the retained prior failed too and further changes are refused until a restart,
 restarting Casa and then re-running it. What else it says depends on the live agent: the
 library carries the root this upgrade committed — the transaction's target root, the one

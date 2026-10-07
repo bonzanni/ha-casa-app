@@ -1675,8 +1675,8 @@ nothing is activated, though a version Casa had already fetched may stay in its
 plugin store. Removing a plugin that can erase its
 data asks the confirmation first, then the erase question.
 
-If an upgrade fails after the new version was already kept but before Casa
-tried to load it, Casa says that re-running the upgrade finishes it (or, in the
+If an upgrade fails after the new version was already kept but before the
+upgrade itself tried to load it, Casa says that re-running the upgrade finishes it (or, in the
 rarer case where cleaning up the previous version also failed, that you should
 restart Casa and then re-run the upgrade). It compares the version the
 specialist is running with the one the upgrade kept and the one it replaced.
