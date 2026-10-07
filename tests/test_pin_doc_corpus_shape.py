@@ -1173,3 +1173,146 @@ def test_transcript_reaping_and_durable_finalization_are_separate():
         total = sum(text.count(lead) for text in texts.values())
         owned = texts[moved].count(lead)
         assert (total, owned) == (1, 1), (lead, total, owned)
+
+
+PLUGIN_SHARD_RANGES = {
+    "architecture/plugin-authorization.md": "manifest.d/architecture-plugin-a-d.yaml",
+    "architecture/plugin-delivered-files.md": "manifest.d/architecture-plugin-a-d.yaml",
+    "architecture/plugin-delivered-slots.md": "manifest.d/architecture-plugin-a-d.yaml",
+    "architecture/plugin-access-profiles.md": "manifest.d/architecture-plugin-a-d.yaml",
+    "architecture/plugin-erasure.md": "manifest.d/architecture-plugin-e-l.yaml",
+    "architecture/plugin-events.md": "manifest.d/architecture-plugin-e-l.yaml",
+    "architecture/plugin-handoff.md": "manifest.d/architecture-plugin-e-l.yaml",
+    "architecture/plugin-health.md": "manifest.d/architecture-plugin-e-l.yaml",
+}
+
+# Parsed rows at 0fca2ec9, sha256 of json.dumps(row, sort_keys=True). The
+# plugin-erasure row is absent on purpose: the erase-episode split (#1270)
+# edits it in the same change.
+PLUGIN_SHARD_ROW_DIGESTS = {
+    "architecture/plugin-authorization.md":
+        "3d428f89a763a6365d072808fb7564576b964ba30cc6b1e77871eec9a45ff4e6",
+    "architecture/plugin-delivered-files.md":
+        "81641b189ea4c55a2a74db557fad021f85798e0a9b19ca06a5d311114bf9786c",
+    "architecture/plugin-delivered-slots.md":
+        "1f8d536048d5aafb9c033ccac2e9ef6a8d1cc1e39167724113ff4a7092143533",
+    "architecture/plugin-events.md":
+        "30ee8209c4833435cbb1d8f2243963f3cbe21716465c6ebd3689a975a93006e2",
+    "architecture/plugin-access-profiles.md":
+        "ca1c473801e423b91cffc4744b02bd49ce7a0d78332e13a9b6670e703e85133e",
+    "architecture/plugin-handoff.md":
+        "3af1f708251df9880de6b38f607635651c76b223824c9c71361afd04b6d80d37",
+    "architecture/plugin-health.md":
+        "cf8eb3d389f0dda9b94d518e613df11ed17ca8a76aa51cf3b1a6af8adfb7dedf",
+}
+
+
+def test_plugin_manifest_rows_follow_their_shard_ranges():
+    """#1322: the split separates the plugin rows by the range each shard
+    label names.
+
+    The rule is the one the corpus states at 0fca2ec9:
+    ``scripts/verify_docs.py:1300-1309`` says a label names the range the
+    shard owns and the path follows the label, since a retained range string
+    "would put a false range claim on whichever shard kept it";
+    ``docs/manifest.yaml:35-37`` allowlists ``architecture-plugin-a-l.yaml``
+    as the shard of plugin-a through plugin-l; ``doc-contract.md:162-166``
+    gives every shard file its own ``kind: meta`` entry. The shard is past
+    its index ceiling at that base, and INV-DOC-007
+    (``docs/contributing/doc-contract.md:75``) owes the split.
+
+    Red case at 0fca2ec9: every one of the eight rows sits in
+    ``manifest.d/architecture-plugin-a-l.yaml``, so the first ``sources``
+    assertion fails. Seven rows move unchanged and are pinned by digest to
+    their base value; the plugin-erasure row is not, because the
+    erase-episode split edits it. No count over either successor shard.
+
+    Specified by **astra** in the drive red-case round.
+    """
+    import hashlib
+    import json
+
+    entries = _entries()
+    shards = {
+        source.relative_to(DOCS).as_posix(): yaml.safe_load(source.read_text())
+        for source in sorted((DOCS / "manifest.d").glob("*.yaml"))
+    }
+    for doc, expected in PLUGIN_SHARD_RANGES.items():
+        sources = [
+            path for path, rows in shards.items()
+            if any(row["doc"] == doc for row in rows)
+        ]
+        assert sources == [expected], (doc, sources)
+        rows = [row for row in entries if row["doc"] == doc]
+        assert len(rows) == 1, (doc, len(rows))
+        if doc in PLUGIN_SHARD_ROW_DIGESTS:
+            digest = hashlib.sha256(
+                json.dumps(rows[0], sort_keys=True).encode("utf-8")
+            ).hexdigest()
+            assert digest == PLUGIN_SHARD_ROW_DIGESTS[doc], (doc, digest)
+    old = "manifest.d/architecture-plugin-a-l.yaml"
+    assert not (DOCS / old).exists(), old
+    assert sum(row["doc"] == old for row in entries) == 0
+    for suffix in ("a-d", "e-l"):
+        path = f"manifest.d/architecture-plugin-{suffix}.yaml"
+        kinds = [row.get("kind") for row in entries if row["doc"] == path]
+        assert kinds == ["meta"], (path, kinds)
+
+
+def test_erase_episode_and_uninstall_flow_are_separate():
+    """#1270: the split separates the erase episode from the uninstall flow
+    and the plugin-author contract.
+
+    The seam is the one the document names itself at 0fca2ec9:
+    ``docs/architecture/plugin-erasure.md:11-16`` lists "the erase episode
+    that runs the chosen eraser" as its own subject beside the author
+    contract and result convention, the question, the finishing call and the
+    env clearing; the row's ``when_changing``
+    (``docs/manifest.d/architecture-plugin-a-l.yaml:74``) routes "the erase
+    episode, the plugin_erase marker" as its own clause, while
+    ``defines_invariants`` (``:99``) lists INV-PLUG-038/039/042 beside
+    034/035/036/037/040/041 on one document. The document is past the 25 KB
+    ceiling at that base and INV-DOC-007
+    (``docs/contributing/doc-contract.md:75``) owes the split.
+
+    At 0fca2ec9 all nine ids resolve to one document: the ownership counts
+    are (1, 1, 1), not (1, 1, 2). The ledger arm (both modules stay with the
+    flow, which keeps the result convention ``plugin_store.py`` cites) and
+    the seven payload-location checks independently hold at base and are
+    regression arms.
+
+    Pins ownership and lead location; byte-identical movement and
+    completeness of the passages remain review obligations.
+
+    Specified by **astra** in the drive red-case round.
+    """
+    episode = {
+        _declaring_document(f"INV-PLUG-{i:03d}")
+        for i in (38, 39, 42)
+    }
+    flow = {
+        _declaring_document(f"INV-PLUG-{i:03d}")
+        for i in (34, 35, 36, 37, 40, 41)
+    }
+    counts = (len(episode), len(flow), len(episode | flow))
+    assert counts == (1, 1, 2), (counts, episode, flow)
+    owner = _declaring_document("INV-PLUG-038")
+    for module in ("plugin_erasure.py", "plugin_erase_consent.py"):
+        assert _ledger_owner(f"casa/rootfs/opt/casa/{module}") == (
+            _declaring_document("INV-PLUG-034")
+        ), module
+    texts = {doc: _normalized((DOCS / doc).read_text())
+             for doc in _text_corpus()}
+    for lead in (
+        "The erase episode runs in the background.",
+        "The eraser reports after the wait.",
+        "A new kind of Casa-dispatched plugin turn** follows the marker "
+        "table rule",
+        "Each plugin's outcome is recorded as an erasure record",
+        "Enforced by the result broker's admission, result and failure hooks.",
+        "Enforced by `plugin_erasure.turn_ended`",
+        "Enforced by `plugin_erasure.EraseFence`",
+    ):
+        total = sum(text.count(lead) for text in texts.values())
+        owned = texts[owner].count(lead)
+        assert (total, owned) == (1, 1), (lead, total, owned)
