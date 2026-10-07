@@ -122,9 +122,10 @@ review question, not a test one.** The suite pins each notice by whole-sentence 
 none of them can change silently; what no test can settle is whether a NEW sentence, shipped
 with its expectation updated alongside it, is true. A blacklist of forbidden phrases was
 tried and cut — it was bypassed three times by respelling the same false claims — so the
-rule lives here and at the production sites, where the person making that edit reads it. It counts as a telling in its own right — if it lands, the topic has been told why the engagement ended,
-which is what a follow-up turn's owner reads (INV-ENG-012) — and its confirmation is the
-returned id, on the same rule as the summary's.
+rule lives here and at the production sites, where the person making that edit reads it.
+The disclosure counts as a telling in its own right — if it lands, the topic has been told
+why the engagement ended, which is what a follow-up turn's owner reads (INV-ENG-012) — and
+its confirmation is the returned id, on the same rule as the summary's.
 
 **The close is unconditional, and bounded.** Withholding the close as a second failure
 signal was considered and rejected on review. It is not authoritative: the mark and the
