@@ -468,3 +468,194 @@ async def test_the_settled_memory_keeps_a_chats_latest_entries_only(env):
     assert len(mine) == tg._PROPOSAL_SETTLED_PER_CHAT
     assert mine[0] == "r3" and mine[-1] == f"r{n - 1}"
     assert env.ch._proposal_settled["other"] == (other, "expired")
+
+
+# --- #1305: a card whose landing is unconfirmed keeps working buttons ------------------
+
+class _Manager:
+    def __init__(self, ch): self._ch = ch
+    def get(self, name): return self._ch if name == "telegram" else None
+
+
+def _post_args(revision=""):
+    from authz_grants import GrantIdentity
+    identity = GrantIdentity(operator_id=OPERATOR, chat_id=OPERATOR, enforcement_role="finance",
+                             artifact_id="7" * 64, engagement_id="", delegation_id="d-1")
+    call = types.SimpleNamespace(tool_use_id="call-1")
+    proposal = {"text": "Pair 17?", "revision": revision,
+                "buttons": [{"label": "Yes", "call": _meta()["calls"][0]},
+                            {"label": "No", "call": _meta()["calls"][1]}]}
+    post = rb.PostRecord(role="finance", operator_id=OPERATOR, plugin="probe", slot="proposal",
+                         tool_use_id="call-1", owner="d-1", posted_at=1.0, kind="operator_proposal")
+    return identity, "probe", "proposal", call, proposal, "📊 Finance", post
+
+
+async def _post(env, monkeypatch, send, *, revision=""):
+    """Run the real ``_post_proposal`` through the real channel, whose bot's
+    ``send_message`` is *send*. Returns (result, rid)."""
+    import tools as tools_mod
+    monkeypatch.setattr(tools_mod, "_channel_manager", _Manager(env.ch), raising=False)
+    sent = []
+
+    async def _send(**kwargs):
+        sent.append(kwargs)
+        return await send(**kwargs)
+    env.bot.send_message = _send
+    result = await rb._post_proposal(*_post_args(revision))
+    rid = sent[-1]["reply_markup"].inline_keyboard[0][0].callback_data.split("|")[2]
+    return result, rid
+
+
+def _live(env):
+    return env.broker.pending(namespace="proposal", scope=f"proposal:{OPERATOR}")
+
+
+async def test_a_card_that_lands_after_the_bound_keeps_its_buttons_and_a_tap_binds_it(env, monkeypatch):
+    """(A) The bound fires after Telegram accepted the card: the caller is told
+    not delivered, the registration stays, and the first tap binds the tapped
+    message and dispatches once.
+
+    MUTATION: the timeout arm unregisters (the tap answers "expired")."""
+    monkeypatch.setattr(rb, "DELIVERY_TIMEOUT_S", 0.05)
+    landed = asyncio.Event()
+
+    async def slow(**kwargs):
+        landed.set()
+        await asyncio.sleep(3600)
+    result, rid = await _post(env, monkeypatch, slow)
+    assert landed.is_set() and result[0] is False
+    assert _live(env) == [rid]
+    assert await _tap(env, _cq(data=f"v1|proposal|{rid}|1", message_id=777)) == "✔"
+    await _settle()
+    assert [t["idx"] for t in env.taps] == [1]
+    assert env.bot.edited[-1]["message_id"] == 777 and "☑ No" in env.bot.edited[-1]["text"]
+    assert await _tap(env, _cq(data=f"v1|proposal|{rid}|0", message_id=777)) == "already answered"
+    await _settle()
+    assert len(env.taps) == 1
+
+
+async def test_a_send_that_times_out_in_transport_keeps_its_buttons(env, monkeypatch):
+    """(B) ``send_message`` raises ``TimedOut`` (the request may have reached
+    Telegram): the same as (A).
+
+    MUTATION: ``deliver_operator_proposal`` swallows ``TimedOut`` as a not-delivered
+    ``None`` (the registration is dropped)."""
+    from telegram.error import TimedOut
+
+    async def timed_out(**kwargs):
+        raise TimedOut()
+    result, rid = await _post(env, monkeypatch, timed_out)
+    assert result[0] is False and _live(env) == [rid]
+    assert await _tap(env, _cq(data=f"v1|proposal|{rid}|0", message_id=778)) == "✔"
+    await _settle()
+    assert [t["idx"] for t in env.taps] == [0]
+
+
+@pytest.mark.parametrize("failure", ["bad_request", "forbidden", "not_started"])
+async def test_a_definite_rejection_unregisters_as_today(env, monkeypatch, failure):
+    """(C) Telegram refused the request, or the channel is not started: nothing
+    is on screen, so the registration goes at once.
+
+    MUTATION: every failure is kept (the live list is not empty)."""
+    from telegram.error import BadRequest, Forbidden
+
+    async def refuse(**kwargs):
+        raise {"bad_request": BadRequest("chat not found"),
+               "forbidden": Forbidden("blocked")}.get(failure, RuntimeError("unused"))
+    if failure == "not_started":
+        import tools as tools_mod
+        monkeypatch.setattr(tools_mod, "_channel_manager", _Manager(env.ch), raising=False)
+        env.ch._app = None
+        result = await rb._post_proposal(*_post_args())
+    else:
+        result, _rid = await _post(env, monkeypatch, refuse)
+    assert result[0] is False and _live(env) == []
+
+
+async def test_a_cancelled_caller_unregisters_as_today(env, monkeypatch):
+    """(D) The caller is cancelled while the send is in flight: it unregisters.
+
+    MUTATION: the cancellation is treated as unconfirmed (the registration stays)."""
+    import tools as tools_mod
+    monkeypatch.setattr(tools_mod, "_channel_manager", _Manager(env.ch), raising=False)
+    started = asyncio.Event()
+
+    async def slow(**kwargs):
+        started.set()
+        await asyncio.sleep(3600)
+    env.bot.send_message = slow
+    task = asyncio.create_task(rb._post_proposal(*_post_args()))
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert _live(env) == []
+
+
+async def test_a_same_revision_retry_replaces_an_unconfirmed_card_and_its_tap_says_so(env, monkeypatch):
+    """(E) A same-revision retry supersedes the unconfirmed card (one live card
+    per revision). Its buttons cannot be edited away (no message id), so a tap
+    on them answers "replaced" and dispatches nothing.
+
+    MUTATION: the unbound settled card keeps the message-id check (the toast is
+    "expired")."""
+    from telegram.error import TimedOut
+
+    async def timed_out(**kwargs):
+        raise TimedOut()
+    _r, old = await _post(env, monkeypatch, timed_out, revision="r1")
+
+    async def ok(**kwargs):
+        return types.SimpleNamespace(message_id=900)
+    result, new = await _post(env, monkeypatch, ok, revision="r1")
+    assert result[0] is True and _live(env) == [new] and new != old
+    await _settle()
+    assert await _tap(env, _cq(data=f"v1|proposal|{old}|0", message_id=899)) == "replaced"
+    assert await _tap(env, _cq(data=f"v1|proposal|{old}|0", message_id=899, user_id=99)) == "not for you"
+    await _settle()
+    assert env.taps == []
+
+
+async def test_a_tap_before_an_on_time_send_returns_binds_the_same_id_once(env, monkeypatch):
+    """(F) The card is on screen and tapped before its send returns: the tap
+    binds the message, the send's own return then writes the same id, and the
+    tap dispatches once.
+
+    MUTATION: binding removed (the early tap answers "expired")."""
+    import tools as tools_mod
+    monkeypatch.setattr(tools_mod, "_channel_manager", _Manager(env.ch), raising=False)
+    release, rid_box = asyncio.Event(), []
+
+    async def held(**kwargs):
+        rid_box.append(kwargs["reply_markup"].inline_keyboard[0][0].callback_data.split("|")[2])
+        await release.wait()
+        return types.SimpleNamespace(message_id=780)
+    env.bot.send_message = held
+    task = asyncio.create_task(rb._post_proposal(*_post_args()))
+    while not rid_box:
+        await asyncio.sleep(0)
+    rid = rid_box[0]
+    assert await _tap(env, _cq(data=f"v1|proposal|{rid}|0", message_id=780)) == "✔"
+    release.set()
+    result = await task
+    await _settle()
+    assert result[0] is True
+    assert env.broker.get_meta(namespace="proposal", scope=f"proposal:{OPERATOR}",
+                               request_id=rid)["message_id"] == 780
+    assert [t["idx"] for t in env.taps] == [0]
+
+
+async def test_a_tap_never_binds_a_request_that_is_not_live(env):
+    """Binding writes only into a LIVE request: an unbound request that is
+    retired (or unknown) is answered "expired" and its meta is not written.
+
+    MUTATION: the liveness check dropped (the tombstone's meta gains an id)."""
+    req = env.register(meta={"message_id": None})
+    env.broker.cancel(namespace="proposal", scope=f"proposal:{OPERATOR}", request_id=RID,
+                      reason="timeout")
+    env.ch._proposal_settled.clear()           # the settled memory forgot it
+    await _settle()
+    assert await _tap(env, _cq(message_id=781)) == "expired"
+    meta = env.broker.get_meta(namespace="proposal", scope=f"proposal:{OPERATOR}", request_id=RID)
+    assert meta is None or meta.get("message_id") is None
+    assert req.meta.get("message_id") is None and env.taps == []

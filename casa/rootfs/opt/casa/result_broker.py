@@ -1313,6 +1313,10 @@ async def _post_proposal(identity, seg: str, slot: str, call: _InFlight, proposa
     """S5 §3: ONE synchronous block — count, supersede by revision, register
     with the finish hook — then the post; a post that is not proven
     unregisters at once (``unregister`` fires no hook; nothing is on screen).
+    #1305: a post whose landing is UNCONFIRMED (the bound fired, or the
+    channel raised ``UnconfirmedDelivery``) keeps its registration until the
+    TTL — its card may be on screen, and a tap binds its message id — and is
+    returned as not delivered, since nothing proves it.
     Returns ``(delivered, detail, event, withheld_reason)``.
 
     ``warning`` (§14.7, the ``More`` exception with a rewritten input): the
@@ -1367,11 +1371,21 @@ async def _post_proposal(identity, seg: str, slot: str, call: _InFlight, proposa
     factory = getattr(channel, "proposal_finish_hook", None)
     if factory is not None:
         BROKER.set_finish_hook(req, factory(rid=rid, req=req))
-    delivered = False
+    from channels import UnconfirmedDelivery
+    delivered = unconfirmed = False
     try:
-        mid = await asyncio.wait_for(
-            _post_operator_proposal(chat_id, text, labels, rid, post=post),
-            DELIVERY_TIMEOUT_S)
+        try:
+            mid = await asyncio.wait_for(
+                _post_operator_proposal(chat_id, text, labels, rid, post=post),
+                DELIVERY_TIMEOUT_S)
+        except (asyncio.TimeoutError, UnconfirmedDelivery) as exc:
+            # #1305: the card may be on screen. It stays registered until its
+            # TTL, and a tap binds its message id; the caller is told what it
+            # is told for a failure, since nothing here proves the post.
+            unconfirmed = True
+            logger.warning("proposal post unconfirmed (%s); its buttons stay live until "
+                           "the TTL", type(exc).__name__)
+            mid = None
         delivered = isinstance(mid, int) and not isinstance(mid, bool)
         if delivered:
             req.meta["message_id"] = mid        # the broker's own dict, by reference
@@ -1381,7 +1395,7 @@ async def _post_proposal(identity, seg: str, slot: str, call: _InFlight, proposa
                           PostEvent(call.tool_use_id, seg, slot, head, None, None,
                                     buttons=len(labels)))
     finally:
-        if not delivered:
+        if not delivered and not unconfirmed:
             BROKER.unregister(namespace="proposal", scope=scope, request_id=rid)
     if not delivered:
         return False, {}, None, None
