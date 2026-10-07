@@ -16,3 +16,15 @@
   invariant_tests:
     INV-CONT-002: [tests/test_safe_fs.py::test_refuses_symlink_final_component, tests/test_safe_fs.py::test_refuses_symlink_intermediate_component, tests/test_safe_fs.py::test_owner_uid_mismatch_refused]
     INV-CONT-003: [tests/test_root_workspace_accessor_inventory.py::test_no_control_state_under_workspace_root]
+- doc: architecture/engagement-transcript-reaping.md
+  summary: Where a finished in_casa engagement's CLI transcripts are deleted — the pass that removes what a terminal record names, what it never selects, and what it retries.
+  when_changing: deleting a finished engagement's transcripts
+  covers:
+    - casa/rootfs/opt/casa/engagement_transcript_reaper.py::reap_engagement_transcripts
+  tests:
+    - tests/test_engagement_transcript_reaper.py
+    - tests/test_engagement_transcript_reaper_pins.py
+  related: [architecture/engagement-finalization.md, architecture/memory-lifecycle.md, architecture/persistent-state.md, architecture/background-job-fresh-sessions.md]
+  defines_invariants: [INV-ENG-022]
+  invariant_tests:
+    INV-ENG-022: [tests/test_engagement_transcript_reaper.py::test_terminal_sdk_transcripts_are_reaped, tests/test_engagement_transcript_reaper_pins.py::test_named_sessions_go_in_the_record_dir_zero_byte_included, tests/test_engagement_transcript_reaper_pins.py::test_nothing_a_terminal_record_does_not_name_is_touched, tests/test_engagement_transcript_reaper_pins.py::test_a_live_engagement_is_never_touched, tests/test_engagement_transcript_reaper_pins.py::test_a_terminal_status_not_yet_on_disk_is_not_acted_on, tests/test_engagement_transcript_reaper_pins.py::test_a_session_named_after_a_pass_goes_on_the_next, tests/test_engagement_transcript_reaper_pins.py::test_the_reaper_imports_without_the_private_sdk_surface, tests/test_engagement_transcript_reaper_pins.py::test_an_unavailable_private_surface_deletes_nothing_and_retries, tests/test_engagement_transcript_reaper_pins.py::test_clearance_retired_sessions_survive_restart_until_terminal_reap, tests/test_engagement_transcript_reaper_pins.py::test_plugin_workdir_reaped_only_after_durable_terminal_independent_of_sdk, tests/test_engagement_transcript_reaper_pins.py::test_never_written_tombstone_is_quiet_but_waiting_terminal_warns, tests/test_engagement_transcript_reaper_pins.py::test_an_entry_vanishing_mid_walk_does_not_stop_the_removal]

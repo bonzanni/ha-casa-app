@@ -122,7 +122,7 @@
 
 - doc: architecture/engagement-finalization.md
   summary: How a durable engagement ends — the single-winner terminal transition, strict creation and terminal persistence, the finalization side effects behind the flip, and topic output ordering.
-  when_changing: who may mark a job or an engagement terminal, terminal transitions, engagement creation strictness, finalization side effects, engagement output ordering, or deleting a finished engagement's transcripts
+  when_changing: who may mark a job or an engagement terminal, terminal transitions, engagement creation strictness, finalization side effects, or engagement output ordering
   covers:
     - casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.create
     - casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.try_transition_terminal
@@ -133,23 +133,19 @@
     - casa/rootfs/opt/casa/tools.py::cancel_engagement
     - casa/rootfs/opt/casa/channels/output_sequencer.py::OutputSequencer
     - casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver
-    - casa/rootfs/opt/casa/engagement_transcript_reaper.py::reap_engagement_transcripts
   tests:
     - tests/test_emit_completion_tool.py
     - tests/test_cancel_engagement_tool.py
     - tests/test_engagement_registry.py
     - tests/test_output_sequencer.py
     - tests/test_anchor_narration_buffer.py
-    - tests/test_engagement_transcript_reaper.py
-    - tests/test_engagement_transcript_reaper_pins.py
-  related: [architecture/engagements.md, architecture/engagement-turn-admission.md, architecture/engagement-completion-gate.md, architecture/engagement-inbound-disclosure.md, architecture/engagement-terminal-telling.md, architecture/engagement-containment.md, architecture/tools-interface.md, architecture/overview.md, architecture/jobs-and-delivery.md]
-  defines_invariants: [INV-ENG-001, INV-ENG-002, INV-ENG-005, INV-ENG-010, INV-ENG-022]
+  related: [architecture/engagements.md, architecture/engagement-turn-admission.md, architecture/engagement-completion-gate.md, architecture/engagement-inbound-disclosure.md, architecture/engagement-terminal-telling.md, architecture/engagement-transcript-reaping.md, architecture/engagement-containment.md, architecture/tools-interface.md, architecture/overview.md, architecture/jobs-and-delivery.md]
+  defines_invariants: [INV-ENG-001, INV-ENG-002, INV-ENG-005, INV-ENG-010]
   invariant_tests:
     INV-ENG-001: [tests/test_emit_completion_tool.py::test_cancel_during_g2_reload_window_finalizes_once, tests/test_engagement_registry.py::test_mark_idle_never_overwrites_terminal, tests/test_engagement_registry.py::test_mark_error_loses_to_terminal_winner, tests/test_engagement_registry.py::test_sweep_does_not_resurrect_concurrently_finalized]
     INV-ENG-002: [tests/test_engagement_registry.py::test_strict_transition_rolls_back_full_field_on_persist_failure, tests/test_engagement_registry.py::test_create_persist_failure_raises_and_rolls_back]
     INV-ENG-005: [tests/test_anchor_narration_buffer.py::test_terminal_latch_discards_via_sequencer_writers, tests/test_output_sequencer.py::test_post_intent_locked_discards_under_terminal_latch]
     INV-ENG-010: [tests/test_emit_completion_tool.py::TestEmitCompletionCancellation::test_in_casa_teardown_cannot_cancel_finalize_tail]
-    INV-ENG-022: [tests/test_engagement_transcript_reaper.py::test_terminal_sdk_transcripts_are_reaped, tests/test_engagement_transcript_reaper_pins.py::test_named_sessions_go_in_the_record_dir_zero_byte_included, tests/test_engagement_transcript_reaper_pins.py::test_nothing_a_terminal_record_does_not_name_is_touched, tests/test_engagement_transcript_reaper_pins.py::test_a_live_engagement_is_never_touched, tests/test_engagement_transcript_reaper_pins.py::test_a_terminal_status_not_yet_on_disk_is_not_acted_on, tests/test_engagement_transcript_reaper_pins.py::test_a_session_named_after_a_pass_goes_on_the_next, tests/test_engagement_transcript_reaper_pins.py::test_the_reaper_imports_without_the_private_sdk_surface, tests/test_engagement_transcript_reaper_pins.py::test_an_unavailable_private_surface_deletes_nothing_and_retries, tests/test_engagement_transcript_reaper_pins.py::test_clearance_retired_sessions_survive_restart_until_terminal_reap, tests/test_engagement_transcript_reaper_pins.py::test_plugin_workdir_reaped_only_after_durable_terminal_independent_of_sdk, tests/test_engagement_transcript_reaper_pins.py::test_never_written_tombstone_is_quiet_but_waiting_terminal_warns, tests/test_engagement_transcript_reaper_pins.py::test_an_entry_vanishing_mid_walk_does_not_stop_the_removal]
 
 - doc: architecture/engagements.md
   summary: Durable engagements — their records, how one is launched, and the driver protocol.

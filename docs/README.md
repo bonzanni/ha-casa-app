@@ -53,6 +53,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | bundle-transaction failure behaviour, the compensation a failed sync phase or sequencer runs, the pre-journal door that refuses a before-state it cannot record without loss, the reclassifying upgrade kept after activation, boot reconciliation of bundle journals, or the consent-receipt and staging age sweeps | [`architecture/specialist-bundle-recovery.md`](architecture/specialist-bundle-recovery.md) |
 | config-tree reconciliation, the entry-level merge, or `${VAR}` placeholder resolution | [`architecture/config-reconciliation.md`](architecture/config-reconciliation.md) |
 | config_git_commit's reload obligation, which reload scope discharges which committed path, its plugins-only exemption and the pre-activation credit | [`architecture/engagement-reload-obligation.md`](architecture/engagement-reload-obligation.md) |
+| deleting a finished engagement's transcripts | [`architecture/engagement-transcript-reaping.md`](architecture/engagement-transcript-reaping.md) |
 | engagement lifecycle, engagement launch, or the driver protocol | [`architecture/engagements.md`](architecture/engagements.md) |
 | hook resolution or authentication, hook policy parameters or fallbacks, or the containment-floor snapshot | [`architecture/hook-resolution.md`](architecture/hook-resolution.md) |
 | how a deferred answer reaches a device, the delivery frame protocol, leases or TTLs, per-device ordering, or what a voice result may disclose | [`architecture/voice-delivery.md`](architecture/voice-delivery.md) |
@@ -112,7 +113,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | what the operator sees from a turn — the turn scope, the admission of model text, the read-before-describe disclosure, a stored payload's note, or the Telegram channel's admitted-text contract | [`architecture/output-boundary.md`](architecture/output-boundary.md) |
 | whether a turn streams, whether a final reply is closing silence or how a closing silence sentinel after earlier text is judged, the OperatorSend or SendAttempt records, the approval records and cut, or where an untrusted webhook turn's send or reply goes | [`architecture/output-scope-properties.md`](architecture/output-scope-properties.md) |
 | which specialist turns are offered start_job, how a specialist's start_job resolves its job and host, the gates a specialist's own start passes, or the origin a specialist-started job records | [`architecture/specialist-job-start.md`](architecture/specialist-job-start.md) |
-| who may mark a job or an engagement terminal, terminal transitions, engagement creation strictness, finalization side effects, engagement output ordering, or deleting a finished engagement's transcripts | [`architecture/engagement-finalization.md`](architecture/engagement-finalization.md) |
+| who may mark a job or an engagement terminal, terminal transitions, engagement creation strictness, finalization side effects, or engagement output ordering | [`architecture/engagement-finalization.md`](architecture/engagement-finalization.md) |
 | wipe consent or its doors, the wipe orchestrator's order, the retain fence, the writer drain, or what a wipe leaves behind | [`architecture/memory-wipe.md`](architecture/memory-wipe.md) |
 <!-- END ROUTING -->
 

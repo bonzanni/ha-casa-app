@@ -87,7 +87,7 @@ after the first `Job id:` line, never the first `Started by:` it finds.
 What it does not cover: the launch turn, which runs its own launch prompt with no reset and
 no brief; and the transcript files of earlier conversations, which stay on disk while the
 job runs — once it is terminal, the transcript reaper deletes every session the list names
-([`engagement-finalization.md`](engagement-finalization.md)).
+([`engagement-transcript-reaping.md`](engagement-transcript-reaping.md)).
 
 **INV-BGJOB-007**: A completion a fresh job's worker requested and the completion gate refused for unread input is recorded on the job and named in every later brief until the record is terminal — without its text once the clearance was lowered; while it is recorded, a held ingress reservation holds the next batch back, and a job that reaches its batch cap or the no-progress guard is spared one batch, once per job.
 

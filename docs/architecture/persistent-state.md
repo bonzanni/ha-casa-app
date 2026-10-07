@@ -152,7 +152,7 @@ restart even though the registry file does.
 
 **Engagement transcripts are reaped by the engagement's record, not by a pointer.** Once an
 `in_casa` engagement's terminal status is on disk, a separate pass deletes the CLI sessions
-that record names (INV-ENG-022, `architecture/engagement-finalization.md`); sessions no
+that record names (INV-ENG-022, `architecture/engagement-transcript-reaping.md`); sessions no
 record names are not touched by either pass.
 
 An entry also records the digest of the structural prompt surface the session was
