@@ -20,7 +20,8 @@ through the terminal funnel is [`engagement-finalization.md`](engagement-finaliz
 
 **Warn, then act on the operator's yes.** A persona apply, upgrade or rollback of a
 specialist with open conversations does not commit while no acknowledgement in the call
-names one of them: it returns a warning that lists them, and the configurator asks. An
+names an engagement of that specialist, open or since closed: it returns a warning that
+lists the open ones, and the configurator asks. An
 uninstall that does not erase is warned the same way until its acknowledgement names every
 one of them. The acknowledgement travels in the call itself, so it is matched to no earlier
 warning. After an uninstall commits, it attempts to close the conversations still open.
