@@ -1218,6 +1218,14 @@ conversation learns only that the specialist posted something and how large
 it was, never what it said — ask the specialist if you want the detail
 repeated. Needs Casa 0.339.0 or later.
 
+Since v0.344.39 a plugin can give a post a `key`, its own name for that
+post. Casa remembers each key it delivered to you, for thirty days. If the
+plugin delivers the same key again (for example, because its job was stopped
+after posting but before it noted the post), Casa sends nothing and hands the
+plugin the first delivery's receipt, so you do not get the message twice. A
+card with buttons counts as already delivered only while its buttons still
+work; otherwise you get a fresh card.
+
 #### Reply to a specialist's post and the specialist answers (v0.341.0)
 
 Swipe-reply (quote) on any message a specialist posted — a report, a file, a

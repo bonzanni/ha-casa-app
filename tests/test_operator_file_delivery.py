@@ -194,7 +194,7 @@ def test_deposit_for_a_file_slot_keeps_kind_and_a_fitting_caption(names):
     assert (r.media_kind, r.caption, r.label) == ("text", "c" * 1014, "")
     assert len(LABEL) + 1 + 1014 == rb.MAX_FILE_CAPTION_CHARS == tools_mod._CAPTION_MAX
     assert store.take_for_delivery(ref) == (
-        "/x/report.csv", "c" * 1014, "", _identity(), "text", None, "")   # S5: + proposal; S7a: + filename
+        "/x/report.csv", "c" * 1014, "", _identity(), "text", None, "", "")   # S5: + proposal; S7a: + filename; #1312: + key
 
 
 def test_deposit_for_a_file_slot_does_not_read_the_file(names, tmp_path):

@@ -75,7 +75,7 @@ def test_a_declared_tool_keeps_a_valid_name(names):
     ref, err = store.deposit(client_id="c1", slot=SLOT, value="/x/stage-91.csv",
                              kind="text", filename="Q3 export.csv")
     assert err is None
-    assert store.take_for_delivery(ref)[-1] == "Q3 export.csv"
+    assert store.take_for_delivery(ref)[6] == "Q3 export.csv"
 
 
 @pytest.mark.parametrize("filename", ["a/b.csv", "../x.csv", "x.exe", "bad\x01.csv",
@@ -106,7 +106,7 @@ def test_no_name_is_today(filename, declared, names):
     ref, err = store.deposit(client_id="c1", slot=SLOT, value="/x/stage.csv", kind="text",
                              filename=filename)
     assert err is None
-    assert store.take_for_delivery(ref)[-1] == ""
+    assert store.take_for_delivery(ref)[6] == ""
 
 
 def test_the_member_is_ignored_on_any_other_slot(names):

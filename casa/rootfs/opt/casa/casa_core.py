@@ -4186,6 +4186,10 @@ async def main() -> None:
     # uninitialised store; reconciled after the Telegram channel is ready.
     import scheduled_asks
     scheduled_asks.init_store(os.path.join(DATA_DIR, "scheduled_asks.json"))
+    # #1312: the remembered keyed deliveries — a repeated plugin post is not
+    # sent twice, across a restart too
+    import delivery_keys
+    delivery_keys.init_store(os.path.join(DATA_DIR, "delivery_keys.json"))
 
     # 4. Session registry + TTL sweeper (spec 5.2 §6)
     sessions_path = os.path.join(DATA_DIR, "sessions.json")

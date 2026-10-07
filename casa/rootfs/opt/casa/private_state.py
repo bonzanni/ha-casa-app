@@ -90,6 +90,9 @@ FILES: tuple[Entry, ...] = (
     Entry("/data/jobs.json", 0o600, PRIVATE,
           "Delegated job rows: creator identity, task, context, result and "
           "failure text for resident and specialist work."),
+    Entry("/data/delivery_keys.json", 0o600, PRIVATE,
+          "Keys of plugin posts already delivered to the operator, per plugin and "
+          "operator id, with each post's receipt detail (#1312)."),
     Entry("/data/scheduled_asks.json", 0o600, PRIVATE,
           "Pending scheduled questions: the operator's chat and user id, the "
           "question body and its options, and which resident session is "

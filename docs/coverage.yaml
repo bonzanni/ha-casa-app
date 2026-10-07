@@ -17,6 +17,8 @@
   doc: architecture/background-jobs.md
 - item: casa/rootfs/opt/casa/bus.py
   doc: architecture/concurrency-model.md
+- item: casa/rootfs/opt/casa/delivery_keys.py
+  doc: architecture/plugin-delivery-repeats.md
 - item: casa/rootfs/opt/casa/callback_acks.py
   doc: architecture/callbacks.md
 - item: casa/rootfs/opt/casa/callback_attempts.py
