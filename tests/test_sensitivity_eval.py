@@ -37,7 +37,7 @@ def test_eval_set_schema_and_values():
 async def _classify_one(fact: str) -> str | None:
     """Run SENSITIVITY_PROMPT over one fact via the one-shot SDK query -> parsed tier."""
     import claude_agent_sdk as sdk
-    from sensitivity import SENSITIVITY_PROMPT, parse_tier
+    from sensitivity import SENSITIVITY_PROMPT, classification_prompt, parse_tier
 
     opts = sdk.ClaudeAgentOptions(
         # max_turns=8 / tools=[] / disallowed Bash,Task,Agent mirrors the
@@ -49,7 +49,8 @@ async def _classify_one(fact: str) -> str | None:
         permission_mode="bypassPermissions",
     )
     text = ""
-    async for msg in sdk.query(prompt=fact, options=opts):
+    # #1316: the production framing, so the eval measures what ships.
+    async for msg in sdk.query(prompt=classification_prompt(fact), options=opts):
         if isinstance(msg, sdk.AssistantMessage):
             for block in getattr(msg, "content", []) or []:
                 # text blocks expose a `.text`; tolerate other block kinds
