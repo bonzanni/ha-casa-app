@@ -4795,8 +4795,8 @@ async def main() -> None:
     ) -> int | None:
         if telegram_channel is not None:
             # R2a (v0.89.0): route narration/notice topic sends through the RICH
-            # primitive so markdown renders as MessageEntity spans (plain text is
-            # sent verbatim — render() returns entities=None and falls back).
+            # primitive so markdown renders as MessageEntity spans (plain text
+            # sends as ``plain_text`` — render() returns entities=None; #1330).
             if reply_to_message_id is not None:
                 # v0.79.0 (§3): reply-quote the operator's message (Sol-verified
                 # PTB 22.7 spelling).

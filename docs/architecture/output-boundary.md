@@ -38,7 +38,9 @@ the one object. The Telegram channel's model-text methods accept only an `Admitt
 `casa_text`, whose call sites are a recorded list. Any string operation on an `Admitted`
 yields a plain `str`, which is right: derived text is not admitted text, and the one Casa
 prepend that happens after admission — the plugin-health notice — re-wraps through
-`Admitted.with_text`.
+`Admitted.with_text`. The channel re-wraps the same way when it sends a text with no
+formatting span plain: its escapes are consumed, as the rich path would show them, which is
+rendering, not new words ([`telegram-rendering.md`](telegram-rendering.md), INV-TG-010).
 
 **Admission happens when text is committed, against the evidence gathered so far.**
 `TurnScope.admit(kind, text)` applies the scope's obligations at that moment and returns
