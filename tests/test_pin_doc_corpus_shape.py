@@ -1026,3 +1026,150 @@ def test_output_scope_properties_and_admission_are_separate():
         total = sum(text.count(lead) for text in texts.values())
         owned = texts[moved].count(lead)
         assert (total, owned) == (1, 1), (lead, total, owned)
+
+
+def test_turn_outcomes_row_moves_to_launch_shard():
+    """#1288: the split separates the launch-and-telling turn-outcomes row
+    from the E manifest shard.
+
+    The seam is the one the corpus names itself at 814ce23c:
+    ``docs/manifest.yaml:15-17`` declares ``architecture-e-launch.yaml`` the
+    shard of "the engagement launch and telling documents (split from E at
+    the 40 KB index ceiling)", and the turn-outcomes row
+    (``docs/manifest.d/architecture-e.yaml:183-185``) is about the launch
+    turn's death report and the follow-up turn's notice. The E shard is past
+    its index ceiling at that base, and INV-DOC-007
+    (``docs/contributing/doc-contract.md:75``) owes the split.
+
+    Red case at 814ce23c: the row's only shard is
+    ``manifest.d/architecture-e.yaml``, so the ``sources`` assertion fails.
+    The row moves unchanged: its parsed content is pinned by digest to its
+    base value, and no later change of the split edits it. The eval-framework
+    row stays in the E shard (membership only, no count over the shard).
+
+    Specified by **astra** in the drive red-case round.
+    """
+    import hashlib
+    import json
+
+    target = "architecture/engagement-turn-outcomes.md"
+    rows = [entry for entry in _entries() if entry["doc"] == target]
+    assert len(rows) == 1, len(rows)
+    sources = [
+        source.relative_to(DOCS).as_posix()
+        for source in sorted((DOCS / "manifest.d").glob("*.yaml"))
+        if any(entry["doc"] == target
+               for entry in yaml.safe_load(source.read_text()))
+    ]
+    assert sources == ["manifest.d/architecture-e-launch.yaml"], sources
+    digest = hashlib.sha256(
+        json.dumps(rows[0], sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    assert digest == (
+        "c7bec4456dd19d589cc13b0a726b473df3"
+        "ccd7833180dd77d57ec8bbaa59efd7"
+    ), digest
+    retained = yaml.safe_load(
+        (DOCS / "manifest.d/architecture-e.yaml").read_text()
+    )
+    assert any(entry["doc"] == "architecture/eval-framework.md"
+               for entry in retained)
+
+
+def test_root_workspace_crossings_and_uid_containment_are_separate():
+    """#1281: the split separates root's crossings into an engagement's
+    workspace from the uid and its extinction.
+
+    The seam is the one the document names itself at 814ce23c:
+    ``docs/architecture/engagement-containment.md:11-15`` lists how root
+    reaches into the workspace and where root-only run-state lives as their
+    own clauses beside the uid, the preflight and the boot sweep; the row's
+    ``when_changing`` (``docs/manifest.d/architecture-e.yaml:85-87``) routes
+    "root's access into a workspace" as its own clause, while
+    ``defines_invariants`` (``:122``) lists INV-CONT-002/003 beside
+    001/004/005/006 on one document. The document is past the 25 KB ceiling
+    at that base and INV-DOC-007 (``docs/contributing/doc-contract.md:75``)
+    owes the split.
+
+    At 814ce23c all six ids resolve to one document: the ownership counts
+    are (1, 1, 1), not (1, 1, 2). The ledger arm and the ten payload-location
+    checks independently hold at base and are regression arms.
+
+    Pins ownership and lead location; byte-identical movement and
+    completeness of the passages remain review obligations.
+
+    Specified by **astra** in the drive red-case round.
+    """
+    moved = {_declaring_document(inv)
+             for inv in ("INV-CONT-002", "INV-CONT-003")}
+    retained = {_declaring_document(inv)
+                for inv in ("INV-CONT-001", "INV-CONT-004",
+                            "INV-CONT-005", "INV-CONT-006")}
+    counts = (len(moved), len(retained), len(moved | retained))
+    assert counts == (1, 1, 2), (counts, moved, retained)
+    owner = _declaring_document("INV-CONT-002")
+    assert _ledger_owner("casa/rootfs/opt/casa/safe_fs.py") == owner
+    texts = {doc: _normalized((DOCS / doc).read_text())
+             for doc in _text_corpus()}
+    for lead in (
+        "Two directories, not one",
+        "Root still reaches in",
+        "Enforced by `safe_fs.py`'s `open_beneath`/`read_text_beneath` "
+        "and `atomic_write_beneath`,",
+        "What it does not cover: root's own reachability into a workspace",
+        "That root is reachable by the subprocess via `--add-dir`,",
+        "What it does not cover: a static, symbol-name-based check",
+        "Root's accessor meets a symlink.",
+        "A file resolves cleanly but is owned by the wrong uid.",
+        "A new root-side read or write",
+        "New run-state that only root touches",
+    ):
+        total = sum(text.count(lead) for text in texts.values())
+        owned = texts[owner].count(lead)
+        assert (total, owned) == (1, 1), (lead, total, owned)
+
+
+def test_transcript_reaping_and_durable_finalization_are_separate():
+    """#1195: the split separates the transcript reaper from how a durable
+    engagement ends.
+
+    The seam is the one the document names itself at 814ce23c:
+    ``docs/architecture/engagement-finalization.md:11-15`` joins how a
+    durable engagement ends to "where a finished `in_casa` engagement's CLI
+    transcripts are deleted"; the row's ``when_changing``
+    (``docs/manifest.d/architecture-e.yaml:131-133``) ends "or deleting a
+    finished engagement's transcripts", while ``defines_invariants``
+    (``:154``) lists INV-ENG-022 beside INV-ENG-001/002/005/010 on one
+    document. The document is past the 25 KB ceiling at that base and
+    INV-DOC-007 (``docs/contributing/doc-contract.md:75``) owes the split.
+
+    At 814ce23c all five ids resolve to one document: the ownership counts
+    are (1, 1), not (1, 2). The ledger arm and the five payload-location
+    checks independently hold at base and are regression arms.
+
+    Pins ownership and lead location; byte-identical movement and
+    completeness of the passages remain review obligations.
+
+    Specified by **astra** in the drive red-case round.
+    """
+    moved = _declaring_document("INV-ENG-022")
+    retained = {_declaring_document(inv)
+                for inv in ("INV-ENG-001", "INV-ENG-002",
+                            "INV-ENG-005", "INV-ENG-010")}
+    counts = (len(retained), len(retained | {moved}))
+    assert counts == (1, 2), (counts, retained, moved)
+    assert _ledger_owner(
+        "casa/rootfs/opt/casa/engagement_transcript_reaper.py"
+    ) == moved
+    texts = {doc: _normalized((DOCS / doc).read_text())
+             for doc in _text_corpus()}
+    for lead in (
+        "Casa owns transcript deletion:",
+        "The condition is the status",
+        "The folder lookup is the SDK's own private helper",
+        "What it does not cover, and these are gaps",
+        "A transcript removal fails.",
+    ):
+        total = sum(text.count(lead) for text in texts.values())
+        owned = texts[moved].count(lead)
+        assert (total, owned) == (1, 1), (lead, total, owned)

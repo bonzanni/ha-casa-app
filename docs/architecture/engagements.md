@@ -24,9 +24,11 @@ address and launch one another — the delegation ACL, the depth cap, the agent-
 lives in [`architecture/delegation.md`](delegation.md). What an `in_casa` launch or
 follow-up turn must leave behind, and who reports one that did not, is
 [`architecture/engagement-turn-outcomes.md`](engagement-turn-outcomes.md). The OS boundary a `claude_code`
-engagement runs inside — its uid, workspace ownership, root's access into that workspace,
-the privilege drop, and the confirmed-down sweep boot replay requires — is
-[`architecture/engagement-containment.md`](engagement-containment.md). It does not cover the
+engagement runs inside — its uid, workspace ownership, the privilege drop, and the
+confirmed-down sweep boot replay requires — is
+[`architecture/engagement-containment.md`](engagement-containment.md); root's access into
+that workspace is
+[`architecture/engagement-workspace-access.md`](engagement-workspace-access.md). It does not cover the
 turn loop itself, nor what a driver's underlying runtime does once started.
 
 ## Mental model
@@ -124,7 +126,8 @@ suspension point; the launcher then aborts rather than deliver a prompt rendered
 pre-downgrade materials. A driver without the split keeps its whole first turn inside the
 launching tool call. A driver that runs its agent as a separate OS
 process, or that reaches into a workspace as root, owes the rules in
-[`architecture/engagement-containment.md`](engagement-containment.md) as well — the protocol
+[`architecture/engagement-containment.md`](engagement-containment.md) and, for that reach,
+[`architecture/engagement-workspace-access.md`](engagement-workspace-access.md) as well — the protocol
 says nothing about identity or filesystem reach.
 
 **`start()`'s `prompt` is the first turn, for every driver.** For an in-process engagement

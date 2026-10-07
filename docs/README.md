@@ -53,6 +53,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | bundle-transaction failure behaviour, the compensation a failed sync phase or sequencer runs, the pre-journal door that refuses a before-state it cannot record without loss, the reclassifying upgrade kept after activation, boot reconciliation of bundle journals, or the consent-receipt and staging age sweeps | [`architecture/specialist-bundle-recovery.md`](architecture/specialist-bundle-recovery.md) |
 | config-tree reconciliation, the entry-level merge, or `${VAR}` placeholder resolution | [`architecture/config-reconciliation.md`](architecture/config-reconciliation.md) |
 | config_git_commit's reload obligation, which reload scope discharges which committed path, its plugins-only exemption and the pre-activation credit | [`architecture/engagement-reload-obligation.md`](architecture/engagement-reload-obligation.md) |
+| deleting a finished engagement's transcripts | [`architecture/engagement-transcript-reaping.md`](architecture/engagement-transcript-reaping.md) |
 | engagement lifecycle, engagement launch, or the driver protocol | [`architecture/engagements.md`](architecture/engagements.md) |
 | hook resolution or authentication, hook policy parameters or fallbacks, or the containment-floor snapshot | [`architecture/hook-resolution.md`](architecture/hook-resolution.md) |
 | how a deferred answer reaches a device, the delivery frame protocol, leases or TTLs, per-device ordering, or what a voice result may disclose | [`architecture/voice-delivery.md`](architecture/voice-delivery.md) |
@@ -68,6 +69,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | read clearance, the per-sender origin stamp, the engagement clearance clamp, or the executor-archive epoch scoping | [`architecture/memory-scoping.md`](architecture/memory-scoping.md) |
 | recall behaviour or the absence contract | [`architecture/memory.md`](architecture/memory.md) |
 | reminder creation or cancellation, the reminder sweep, or recurrence derivation | [`architecture/reminders.md`](architecture/reminders.md) |
+| root's access into a workspace, or where root-only engagement run-state lives | [`architecture/engagement-workspace-access.md`](architecture/engagement-workspace-access.md) |
 | session persistence, the save/reset guard protocol, the retirement claims, or the retry spool | [`architecture/memory-lifecycle.md`](architecture/memory-lifecycle.md) |
 | specialist install identity, consent, or materialization | [`architecture/specialist-lifecycle.md`](architecture/specialist-lifecycle.md) |
 | the HA facade, HA tool exposure, or anything about what an agent may control | [`architecture/home-assistant-control.md`](architecture/home-assistant-control.md) |
@@ -79,7 +81,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | the contribution rules, the verification discipline, or how documentation is kept honest | [`doctrine/working-on-casa.md`](doctrine/working-on-casa.md) |
 | the delegation ACL or alias resolution, the delegates block, the delegation depth cap, or the agent-spawn cap | [`architecture/delegation.md`](architecture/delegation.md) |
 | the documentation rules themselves, or adding a document to the corpus | [`contributing/doc-contract.md`](contributing/doc-contract.md) |
-| the engagement uid allocator, workspace ownership, root's access into a workspace, the privilege drop, whether an engagement's process is actually stopped, or boot replay's down-first sweep | [`architecture/engagement-containment.md`](architecture/engagement-containment.md) |
+| the engagement uid allocator, workspace ownership, the privilege drop, whether an engagement's process is actually stopped, or boot replay's down-first sweep | [`architecture/engagement-containment.md`](architecture/engagement-containment.md) |
 | the event manifest surface, the emission spool, event consent or reconciliation, the delivery worker, or the ack tools | [`architecture/plugin-events.md`](architecture/plugin-events.md) |
 | the in_casa launch handoff, the launch-turn owner, what the engager is told about a launch outcome, the graceful stop's launch drains, or the engagement-outcome envelope | [`architecture/engagement-launch-detach.md`](architecture/engagement-launch-detach.md) |
 | the mental-model overlay, or the mental models Casa declares and reconciles | [`architecture/memory-mental-models.md`](architecture/memory-mental-models.md) |
@@ -111,7 +113,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | what the operator sees from a turn — the turn scope, the admission of model text, the read-before-describe disclosure, a stored payload's note, or the Telegram channel's admitted-text contract | [`architecture/output-boundary.md`](architecture/output-boundary.md) |
 | whether a turn streams, whether a final reply is closing silence or how a closing silence sentinel after earlier text is judged, the OperatorSend or SendAttempt records, the approval records and cut, or where an untrusted webhook turn's send or reply goes | [`architecture/output-scope-properties.md`](architecture/output-scope-properties.md) |
 | which specialist turns are offered start_job, how a specialist's start_job resolves its job and host, the gates a specialist's own start passes, or the origin a specialist-started job records | [`architecture/specialist-job-start.md`](architecture/specialist-job-start.md) |
-| who may mark a job or an engagement terminal, terminal transitions, engagement creation strictness, finalization side effects, engagement output ordering, or deleting a finished engagement's transcripts | [`architecture/engagement-finalization.md`](architecture/engagement-finalization.md) |
+| who may mark a job or an engagement terminal, terminal transitions, engagement creation strictness, finalization side effects, or engagement output ordering | [`architecture/engagement-finalization.md`](architecture/engagement-finalization.md) |
 | wipe consent or its doors, the wipe orchestrator's order, the retain fence, the writer drain, or what a wipe leaves behind | [`architecture/memory-wipe.md`](architecture/memory-wipe.md) |
 <!-- END ROUTING -->
 
