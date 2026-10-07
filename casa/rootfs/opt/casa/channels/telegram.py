@@ -58,7 +58,7 @@ from ingress_identity import (
     TELEGRAM_OPERATOR_CLEARANCE,
     ingress_identity,
 )
-from channels import Channel, DeliveryOutcome
+from channels import Channel, DeliveryOutcome, UnconfirmedDelivery
 from output_boundary import Admitted, UnadmittedText
 # v0.79.0 (§2 Primitive A): the per-topic OUTPUT SEQUENCER + relay-mediated
 # discrete-posting intent registry. Implemented in the sibling module and
@@ -2065,7 +2065,12 @@ class TelegramChannel(Channel):
         the proposal was posted for AND still the operator now), S5's own
         deadline — then claim and commit once. The handler NEVER edits or
         dispatches: the finish hook installed at post time owns everything
-        after the commit, as the resident_ask contract does."""
+        after the commit, as the resident_ask contract does.
+
+        #1305: a request with no message id yet (its landing was never
+        confirmed) is matched by the rid in the callback data instead; a LIVE
+        one is bound to the tapped message before the claim, and a settled one
+        answers its settled word."""
         from verdict_broker import BROKER
 
         toast = "expired"
@@ -2085,7 +2090,11 @@ class TelegramChannel(Channel):
                 return
             if meta.get("chat_id") != chat:
                 return
-            if meta.get("message_id") != getattr(cq.message, "message_id", None):
+            tapped = getattr(cq.message, "message_id", None)
+            # #1305: a card whose landing was never confirmed has no message id
+            # yet; the rid in its callback data proves the card instead
+            unbound = meta.get("message_id") is None and isinstance(tapped, int)
+            if not unbound and meta.get("message_id") != tapped:
                 return
             options = meta.get("options") or []
             if idx is None or not (0 <= idx < len(options)):      # S6: by the buttons, not the calls
@@ -2102,6 +2111,13 @@ class TelegramChannel(Channel):
             if settled is not None:
                 toast = settled[1]          # what happened, only after every check passed
                 return
+            if unbound:
+                # bind only a LIVE request's own meta, never a retired copy
+                if not BROKER.is_live_unclaimed(namespace="proposal", scope=scope,
+                                                request_id=rid):
+                    return
+                meta["message_id"] = tapped
+                logger.info("proposal %s bound to its tapped message", rid[:8])
             claim = BROKER.claim(namespace="proposal", scope=scope, request_id=rid,
                                  option_index=idx, actor_id=cq.from_user.id)
             if isinstance(claim, str):
@@ -5891,6 +5907,13 @@ class TelegramChannel(Channel):
             else:
                 msg = await self._app.bot.send_message(
                     chat_id=chat_id, text=text, reply_markup=kbd)
+        except NetworkError as exc:
+            if isinstance(exc, BadRequest):
+                logger.warning("deliver_operator_proposal send failed (chat=%s): %s", chat_id, exc)
+                return None
+            # #1305: a transport failure after the request was sent may have
+            # landed the card; the result broker keeps it registered
+            raise UnconfirmedDelivery(type(exc).__name__) from exc
         except Exception as exc:  # noqa: BLE001 — not proven
             logger.warning("deliver_operator_proposal send failed (chat=%s): %s", chat_id, exc)
             return None

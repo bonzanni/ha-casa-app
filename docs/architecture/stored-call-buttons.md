@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-10-06
+last_reviewed: 2026-10-07
 ---
 
 # Stored-call buttons
@@ -70,14 +70,14 @@ and a live record (chat, operator, role, artifact, plugin segment, the stored ca
 text) — so a tap can never find a keyboard the broker does not know. At most 32 live
 proposals per chat; the 33rd deposit is withheld. A non-empty `revision` supersedes the
 earlier live proposals of the same chat, plugin and role carrying the same revision (their
-keyboards are edited to `↻ replaced`, and a tap on one answers "replaced"). A post that is not proven unregisters at once and
-withholds the result. A Casa restart empties the broker: a tap on an older keyboard answers
+keyboards are edited to `↻ replaced`, and a tap on one answers "replaced"). A post not proven is withheld and
+unregistered, unless its send broke off (a timeout, a lost link): its card may be on screen and stays. A Casa restart empties the broker: a tap on an older keyboard answers
 "expired".
 
 **The tap's admission is a chain, fail closed, nothing claimed before every check passes.**
 The callback's message and sender are present; the record is known (live, or settled and
 remembered — below); its chat is the callback's chat; the message id is the message the
-keyboard was posted as; the index names a button; the tapper is the operator the proposal was posted for and is still the configured
+keyboard was posted as (if none, the request id proves it and a live one is bound to it); the index names a button; the tapper is the operator the proposal was posted for and is still the configured
 operator; the deadline has not passed. Then one claim and one commit — a second tap is
 "already answered". The handler edits nothing and dispatches nothing: the finish hook the
 post installed edits the keyboard away first (`☑ <label>`), then reserves the desk.
@@ -195,7 +195,7 @@ exit sweep, which ends every task at once (Casa-wide behaviour, not S5's).
 
 **INV-PROP-002**: No ordinary model turn runs on a tap; between the tap and the receipt exactly one pinned specialist turn may run, and in it exactly one tool call can execute — the stored tool with the stored arguments, canonical JSON for canonical JSON — on a specialist session the existing builder built from the captured input, under the desk lock; every other call, and any second call, is denied before it runs; nothing the model writes reaches the operator or is retained; the receipt is the executed call's own response — its `receipt` sentence when the response's text is a JSON object carrying a non-blank string `receipt`, otherwise the text verbatim — posted labelled and bounded, the plugin's refusal included; a turn with no executed call is a refusal notice with no retry; the resident learns of it only by a body-free echo line.
 
-**INV-PROP-003**: A keyboard with stored calls exists only for a deposit from a tool declaring the `operator_proposal` slot, or for the `next` card a `safe` stored call returned beside its receipt (INV-PROP-006) judged as such a deposit of the tapped call's own plugin, whose calls name the same plugin's declared tools with fixed reference-free arguments within the bounds, and whose message was proven delivered; a proposal that did not land holds no stored call, a chat holds at most 32 live proposals, and a proposal expires after one hour.
+**INV-PROP-003**: A keyboard with stored calls exists only for a deposit from a tool declaring the `operator_proposal` slot, or for the `next` card a `safe` stored call returned beside its receipt (INV-PROP-006) judged as such a deposit of the tapped call's own plugin, whose calls name the same plugin's declared tools with fixed reference-free arguments within the bounds, and whose message was proven delivered or whose send broke off; a proposal Telegram refused holds no stored call, a chat holds at most 32 live proposals, and a proposal expires after one hour.
 
 **INV-PROP-004**: A pinned stored-call turn is built with `ToolSearch` disallowed, and its one prompt is sent only after the CLI's MCP status lists no server of the session as pending; an ordinary specialist turn's build adds no `ToolSearch` denial and its prompt is sent without asking for MCP status.
 

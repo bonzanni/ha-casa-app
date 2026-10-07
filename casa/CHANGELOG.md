@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.344.43] - 2026-10-07
+
+### Fixed
+- A specialist's proposal whose sending timed out, or lost its connection, after Telegram had already shown it, kept its buttons on your screen, but every tap answered "expired". Casa now keeps such a proposal's buttons working for their usual hour: your first tap is matched to the proposal and applied as on any other. The specialist is still told the proposal was not delivered, since Casa could not confirm it, so you may then see a second card. A re-sent proposal replaces the old card only when the plugin marks it as a new version of the same proposal (the same `revision`); a tap on the old card then answers "replaced". Otherwise both cards work. (#1305)
+
 ## [0.344.42] - 2026-10-07
 
 ### Fixed

@@ -28,6 +28,13 @@ class DeliveryOutcome(Enum):
     UNKNOWN = "unknown"
 
 
+class UnconfirmedDelivery(RuntimeError):
+    """#1305: a send whose request may have reached Telegram (a timeout or a
+    dropped connection after it was sent), so its message may be on screen.
+    Neither delivered nor not delivered: a caller that holds state for the
+    message keeps it, and tells its own caller what it tells for a failure."""
+
+
 class OperatorNotifyBeforeStart(RuntimeError):
     """The operator-notice seam found no ready Telegram channel BEFORE
     :meth:`ChannelManager.start_all` completed (#930).
