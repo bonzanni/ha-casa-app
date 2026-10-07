@@ -42,7 +42,8 @@ from telegram.error import (
 )
 
 from channels.tg_richtext import (
-    missing_link_targets, plain_with_link_targets, render, render_paged,
+    missing_link_targets, plain_text, plain_with_link_targets, render,
+    render_paged,
 )
 from telegram.ext import (
     Application,
@@ -103,6 +104,16 @@ def _unadmitted(method: str, text: Any) -> bool:
     logger.error("unadmitted model text refused: %s (%s)", method,
                  type(text).__name__)
     return True
+
+
+def _plain(text):
+    """#1330: ``plain_text`` for a send without entities, keeping the
+    admission of model text — the plain transports refuse a bare string, and
+    consuming an escape is rendering, not new text."""
+    shown = plain_text(text)
+    if shown is not text and isinstance(text, Admitted):
+        return text.with_text(shown)
+    return shown
 
 
 def _overflow_head(text: Any, outcome: DeliveryOutcome) -> str:
@@ -4381,9 +4392,9 @@ class TelegramChannel(Channel):
         (a SINGLE-ATTEMPT rich send, fail-closed on an entity ``BadRequest``) so
         markdown (``**bold**``, `` `code` ``) renders as ``MessageEntity`` spans
         instead of leaking literal markers, WITHOUT the double-send that the
-        round-4 single-post cancellation gate forecloses. Plain bodies still send
-        raw (``render()`` returns ``entities=None`` ⇒ verbatim plain), so no
-        escaping pass is needed.
+        round-4 single-post cancellation gate forecloses. Plain bodies send
+        ``plain_text`` (``render()`` returns ``entities=None``; #1330: their
+        escapes consumed), so no escaping pass is needed.
         """
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -4504,8 +4515,8 @@ class TelegramChannel(Channel):
         string into ``MessageEntity`` spans and edit them in, so markdown
         (``**bold**``, `` `code` ``, fenced-pre) renders instead of leaking
         literal markers. Plain (no markup / over limits ⇒ ``entities is None``)
-        delegates to the plain ``edit_topic_message`` and edits the RAW text
-        verbatim. On an entity ``BadRequest`` the ORIGINAL text is edited in
+        delegates to the plain ``edit_topic_message`` and edits ``plain_text``
+        (#1330: escapes consumed, a text over the limits as authored). On an entity ``BadRequest`` the ORIGINAL text is edited in
         plain once (fail-literal); a "not modified" ``BadRequest`` is tolerated
         as success (JC4, matching ``edit_topic_message``). ``clear_keyboard``
         drops the tappable buttons via an explicit empty ``InlineKeyboardMarkup``
@@ -4527,7 +4538,7 @@ class TelegramChannel(Channel):
         display, entities = render(text)
         if entities is None:
             return await self.edit_topic_message(
-                topic_id, message_id, text, clear_keyboard=clear_keyboard)
+                topic_id, message_id, _plain(text), clear_keyboard=clear_keyboard)
         if not self.engagement_supergroup_id:
             return False
         markup_kwargs: dict = {}
@@ -4592,7 +4603,7 @@ class TelegramChannel(Channel):
         sibling (``edit_topic_message_markup`` has rendered since R2c v0.89.0 —
         a discrete post showed literal ``**`` until its settle-edit re-rendered
         it). Same contract as R2c: entities on success; no markup / over caps ⇒
-        ORIGINAL raw text plain; an entity ``BadRequest`` (which posted
+        ``plain_text`` plain (#1330); an entity ``BadRequest`` (which posted
         NOTHING) retries ONCE plain — this is not the cancellation-gated ask
         poster, so the retry cannot double-post an ask."""
         if not self.engagement_supergroup_id:
@@ -4625,7 +4636,7 @@ class TelegramChannel(Channel):
                     )
             msg = await self.bot.send_message(
                 chat_id=self.engagement_supergroup_id,
-                text=text,
+                text=text if entities is not None else _plain(text),
                 message_thread_id=topic_id,
                 **kwargs,
             )
@@ -4662,8 +4673,8 @@ class TelegramChannel(Channel):
         entity ``BadRequest`` retry ONCE plain with the ORIGINAL raw text — an
         EDIT is NOT the cancellation-gated POST, so this second edit introduces
         no double-send race. ``entities is None`` (plain text / the marker
-        literals from the re-anchor/orphan edits) ⇒ edit the RAW text verbatim
-        (behaviour-preserving). The ``text is None`` markup-only branch never
+        literals from the re-anchor/orphan edits) ⇒ edit ``plain_text`` (#1330:
+        escapes consumed; a text with none is unchanged). The ``text is None`` markup-only branch never
         renders. The F1 no-op cache in ``edit_discrete`` keys on the raw ``text``
         ABOVE this wire, so rendering below it stays consistent."""
         from channels.output_sequencer import _ABSENT
@@ -4688,7 +4699,7 @@ class TelegramChannel(Channel):
             if entities is None:
                 await self.bot.edit_message_text(
                     chat_id=self.engagement_supergroup_id,
-                    message_id=message_id, text=text, **markup_kwargs,
+                    message_id=message_id, text=_plain(text), **markup_kwargs,
                 )
                 return True
             try:
@@ -4813,8 +4824,8 @@ class TelegramChannel(Channel):
         # ``post_ask_body_rich``) — agent-authored ask bodies are markdown-heavy
         # and this was the dominant literal-``**`` DM surface. Buttons and
         # ``callback_data`` are untouched (index-addressed). Single-shot
-        # ``render()``: no markup / over caps ⇒ the ORIGINAL raw text sends
-        # plain. An entity ``BadRequest`` posted NOTHING (Telegram rejected the
+        # ``render()``: no markup / over caps ⇒ ``plain_text`` sends plain
+        # (#1330). An entity ``BadRequest`` posted NOTHING (Telegram rejected the
         # send), so ONE plain retry with the original text cannot duplicate the
         # ask; any other failure keeps the delivery-failure contract (None).
         display, entities = render(text)
@@ -4835,7 +4846,7 @@ class TelegramChannel(Channel):
                     )
             else:
                 msg = await self.bot.send_message(
-                    chat_id=chat_id, text=text, reply_markup=kbd,
+                    chat_id=chat_id, text=_plain(text), reply_markup=kbd,
                 )
         except Exception as exc:  # noqa: BLE001 — delivery failure, not fatal
             logger.warning(
@@ -4894,7 +4905,8 @@ class TelegramChannel(Channel):
                         chat_id, message_id, exc,
                     )
             await self.bot.edit_message_text(
-                chat_id=chat_id, message_id=message_id, text=text,
+                chat_id=chat_id, message_id=message_id,
+                text=text if entities is not None else _plain(text),
                 reply_markup=cleared,
             )
             return True
@@ -5241,9 +5253,9 @@ class TelegramChannel(Channel):
         the COMPLETE current string on every call — see the matching per-edit
         render in ``edit_topic_message_rich``.
 
-        Plain (no markup / over limits ⇒ ``entities is None``) → send the RAW
-        text verbatim through the plain ``send_to_topic`` (mirrors the
-        raw-when-no-entities precedent elsewhere in this module). On an entity
+        Plain (no markup / over limits ⇒ ``entities is None``) → send
+        ``plain_text`` through the plain ``send_to_topic`` (#1330: escapes
+        consumed, a text over the limits as authored). On an entity
         ``BadRequest`` the ORIGINAL text is resent plain once (fail-literal); a
         duplicate is harmless for narration, which is not under the cancellation
         gate. ``kwargs`` (e.g. ``reply_parameters``) forward to both paths.
@@ -5257,7 +5269,7 @@ class TelegramChannel(Channel):
         """
         display, entities = render(text)
         if entities is None:
-            return await self.send_to_topic(thread_id, text, **kwargs)
+            return await self.send_to_topic(thread_id, _plain(text), **kwargs)
         _require_topic(thread_id)
         if not self.engagement_supergroup_id:
             raise RuntimeError("engagement supergroup not configured")
@@ -5287,11 +5299,11 @@ class TelegramChannel(Channel):
         why this method must NOT be ``send_to_topic_rich`` / ``send_response_to_topic``
         — their rich→``BadRequest``→plain fallback is that forbidden second send.
 
-        Behaviour (mirrors the raw-when-no-entities precedent of the other rich
-        primitives, but with NO fallback):
+        Behaviour (mirrors the other rich primitives, but with NO fallback):
         * killswitch off / ``entities is None`` (no markup, or markers stripped
-          e.g. >100 spans) → send the ORIGINAL RAW ``text`` plain in ONE attempt
-          (never the marker-stripped ``display``);
+          e.g. >100 spans) → send ``plain_text`` plain in ONE attempt — the
+          display when there is no span (#1330), otherwise the authored text,
+          never the marker-stripped ``display``;
         * entities present → send WITH entities in ONE attempt. An entity
           ``BadRequest`` FAILS CLOSED — it PROPAGATES to the caller (which treats
           a failed post as ``delivery_failed``); there is NO plain retry and NO
@@ -5302,7 +5314,7 @@ class TelegramChannel(Channel):
         """
         display, entities = render(text)
         if entities is None:
-            return await self.send_to_topic(thread_id, text, **kwargs)
+            return await self.send_to_topic(thread_id, _plain(text), **kwargs)
         if not self.engagement_supergroup_id:
             raise RuntimeError("engagement supergroup not configured")
         # ONE physical send. On BadRequest this raises — fail-closed, never a
@@ -5906,7 +5918,7 @@ class TelegramChannel(Channel):
                         chat_id=chat_id, text=text, reply_markup=kbd)
             else:
                 msg = await self._app.bot.send_message(
-                    chat_id=chat_id, text=text, reply_markup=kbd)
+                    chat_id=chat_id, text=_plain(text), reply_markup=kbd)
         except NetworkError as exc:
             if isinstance(exc, BadRequest):
                 logger.warning("deliver_operator_proposal send failed (chat=%s): %s", chat_id, exc)
@@ -5954,7 +5966,7 @@ class TelegramChannel(Channel):
         v2 (RC3): an oversized response paginates through ``render_paged()`` —
         every page sends rendered (previously the whole message fell back to
         plain raw chunks via ``send()``). Single page keeps the v0.70.0
-        contract exactly (raw-when-no-entities, BadRequest → raw resend);
+        contract (no entities → ``plain_text``, #1330; BadRequest → raw resend);
         multi-page fallbacks use each page's DISPLAY."""
         # Release the lease before the availability guard (reconnect-safe).
         target_chat = _resolve_chat_id(context, self.chat_id)
@@ -5977,7 +5989,7 @@ class TelegramChannel(Channel):
                 if post is None:
                     # Delegate's outcome, VERBATIM (#556 design §2.1) — rewrapping
                     # it here is how a delegation path loses the distinction.
-                    return await self.send(message, context)
+                    return await self.send(_plain(message), context)
                 _landed(await self._app.bot.send_message(
                     chat_id=target_chat, text=display))
                 context["_delivery_head_sent"] = True
@@ -6032,11 +6044,12 @@ class TelegramChannel(Channel):
         # v2 (RC3): an oversized SUCCESSFUL response no longer delegates to
         # the plain finalize_stream (raw-marker chunks); page 1 rich-edits the
         # streamed message, the rest send rendered. Single page keeps the
-        # v0.70.0 contract (no markup → plain finalize, BadRequest → raw edit).
+        # v0.70.0 contract (no markup → plain finalize of ``plain_text``,
+        # #1330; BadRequest → raw edit).
         pages = render_paged(full_text)
         if len(pages) == 1 and pages[0][1] is None:
             return await self.finalize_stream(  # verbatim (§2.1)
-                full_text, context, on_token)
+                _plain(full_text), context, on_token)
         display0, entities0 = pages[0]
         # #831: a rejected multi-page page-1 edit carries its link
         # destinations; the single page keeps its authored text verbatim.
@@ -6121,8 +6134,8 @@ class TelegramChannel(Channel):
         length. ``send_to_topic_rich`` stays the sequencer's ONE-message
         narration primitive and is only used here for the single-page case.
 
-        Single page keeps the v0.89.0 contract exactly (raw-when-no-entities,
-        BadRequest → raw resend). Multi-page: every page sends its DISPLAY
+        Single page keeps the v0.89.0 contract (no entities → ``plain_text``,
+        #1330; BadRequest → raw resend). Multi-page: every page sends its DISPLAY
         slice (markers already consumed — raw source offsets no longer
         correspond), falling back to the same display plain on an entity
         BadRequest; ``kwargs`` (e.g. ``reply_parameters``) attach to the FIRST
@@ -6574,10 +6587,12 @@ class TopicStreamHandle:
                         text=fallback0,
                     )
             else:
+                # #1330: a single page with no entities shows its escapes
+                # consumed; a later page's display already has them consumed.
                 await bot.edit_message_text(
                     chat_id=self._channel.engagement_supergroup_id,
                     message_id=self._message_id,
-                    text=fallback0,
+                    text=_plain(full_text) if len(pages) == 1 else fallback0,
                 )
         except TelegramError as exc:
             if "not modified" not in str(exc).lower():

@@ -729,7 +729,11 @@ def render(text: str) -> tuple[str, "list[MessageEntity] | None"]:
 
     v2: judged on DISPLAY length — a raw text whose markers push it past 4096
     but whose display fits still renders. Single-message contract; callers
-    that may exceed one message use ``render_paged()``."""
+    that may exceed one message use ``render_paged()``.
+
+    When entities is None, send ``plain_text(text)`` — not *display*, which
+    has lost the formatting of a text over the limits, and not *text*, which
+    shows the escapes of a text with no span (#1330)."""
     display, spans = parse_markdown(text)
     if (
         not spans
@@ -739,6 +743,27 @@ def render(text: str) -> tuple[str, "list[MessageEntity] | None"]:
     ):
         return display, None
     return display, _spans_to_entities(display, spans)
+
+
+def plain_text(text: str) -> str:
+    """What a single message sent WITHOUT entities shows for *text* (#1330).
+
+    A text with no span: its display — the escapes consumed, as the rich path
+    would show them. Nothing else differs between the two (a span-less parse
+    changes the text only where a backslash escapes a punctuation mark), so
+    nothing is lost; a plugin card escaped for markdown no longer shows its
+    backslashes just because it carries no bold word.
+
+    A text WITH spans that are not being sent (over the limits, or not
+    convertible): the authored text, unchanged — its markers are the only
+    place its formatting and its link addresses still exist (fail-literal).
+
+    Returns *text* itself whenever the answer equals it, so a caller holding
+    a subclass of ``str`` keeps it in the common case. Never raises."""
+    display, spans = parse_markdown(text)
+    if spans or display == text:
+        return text
+    return display
 
 
 def _link_spans(display: str, entities) -> "list[tuple[int, int, str]]":

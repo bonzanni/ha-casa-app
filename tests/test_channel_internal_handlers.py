@@ -398,6 +398,27 @@ async def test_post_inline_keyboard_supports_url_buttons(app_factory) -> None:
     assert btn.callback_data is None
 
 
+async def test_post_inline_keyboard_plain_body_shows_no_escape_backslash(
+    app_factory,
+) -> None:
+    """#1330: a body with no formatting span posts the text the rich path
+    would show — escapes consumed — not the authored ``\\-``."""
+    app, ch, _reg = app_factory()
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/internal/channel/post_inline_keyboard",
+            json={
+                "engagement_id": "eng-1",
+                "engagement_token": "tok-eng-1",
+                "text": "chose CUWVSRB8\\-0007",
+                "buttons": [[{"text": "Ok", "callback_data": "ok"}]],
+            },
+        )
+        assert resp.status == 200
+    assert ch.calls[0]["text"] == "chose CUWVSRB8-0007"
+    assert "entities" not in ch.calls[0]["kwargs"]
+
+
 async def test_post_inline_keyboard_unknown_engagement_returns_error(
     app_factory,
 ) -> None:

@@ -574,15 +574,17 @@ def _make_post_inline_keyboard(
         # an explicit parse_mode (parse_mode wins — entities and parse_mode
         # are mutually exclusive at the Bot API; no caller passes parse_mode
         # today, the passthrough stays for that contract). Plain body / over
-        # caps ⇒ entities None ⇒ the pre-v0.109 plain send, byte-identical.
+        # caps ⇒ entities None ⇒ a plain send of ``plain_text`` (#1330).
         _text = body.get("text") or ""
         _extra: dict = {}
         if not body.get("parse_mode"):
-            from channels.tg_richtext import render as _render
+            from channels.tg_richtext import plain_text, render as _render
             _display, _entities = _render(_text)
             if _entities is not None:
                 _text = _display
                 _extra["entities"] = _entities
+            else:
+                _text = plain_text(_text)  # #1330: escapes consumed
         try:
             try:
                 msg_id = await telegram_channel.send_to_topic(
@@ -1867,8 +1869,8 @@ def _make_ask(
                         # BadRequest → plain fallback), and a cancel landing during
                         # the awaited first attempt would not be re-checked before
                         # the fallback posted the abandoned anchor — the double-send
-                        # this forecloses. Plain bodies still send raw (render() →
-                        # entities=None ⇒ verbatim), so this remains one send either
+                        # this forecloses. Plain bodies send plain_text (render() →
+                        # entities=None, #1330), so this remains one send either
                         # way; markdown now renders as MessageEntity spans.
                         try:
                             mid = await telegram_channel.post_ask_body_rich(
@@ -2600,7 +2602,7 @@ async def _withdraw_anchor(
     lock on the relay task; no reacquisition from poster context). R2c (v0.89.0):
     routes through the RICH edit primitive for parity with every other ask/anchor
     lifecycle edit (the withdrawn copy is plain, so render() ⇒ entities=None ⇒
-    verbatim — behaviour-preserving). An unconfirmed edit leaves one stale
+    ``plain_text``, which is the copy unchanged — behaviour-preserving). An unconfirmed edit leaves one stale
     plain-text line — the documented visual-orphan class."""
     try:
         confirmed = await confirmed_settle_edit(

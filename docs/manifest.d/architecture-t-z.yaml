@@ -48,6 +48,7 @@
   when_changing: Telegram message rendering, pagination and its budgets, link-destination fallback, or the UTF-16 measurement
   covers:
     - casa/rootfs/opt/casa/channels/tg_richtext.py::render_paged
+    - casa/rootfs/opt/casa/channels/tg_richtext.py::plain_text
     - casa/rootfs/opt/casa/channels/telegram.py::_split_message
   tests:
     - tests/test_tg_richtext.py
@@ -56,11 +57,13 @@
     - tests/test_telegram_split.py
     - tests/test_telegram_link_fallback.py
     - tests/test_telegram_link_fallback_shapes.py
+    - tests/test_telegram_plain_escapes.py
   related: [architecture/telegram.md, architecture/overview.md]
-  defines_invariants: [INV-TG-005, INV-TG-008]
+  defines_invariants: [INV-TG-005, INV-TG-008, INV-TG-010]
   invariant_tests:
     INV-TG-005: [tests/test_tg_richtext.py::test_pin_inv_tg_005_render_paged_enforces_length_and_entity_budgets]
     INV-TG-008: [tests/test_tg_richtext.py::test_render_paged_conversion_failure_keeps_well_formed_link_target, tests/test_telegram_link_fallback.py::test_all_four_senders_deliver_the_target_when_conversion_fails]
+    INV-TG-010: [tests/test_telegram_plain_escapes.py::test_plain_text_consumes_the_escapes_of_a_span_less_text, tests/test_telegram_plain_escapes.py::test_a_plain_proposal_card_shows_no_backslash, tests/test_telegram_plain_escapes.py::test_plain_text_keeps_the_authored_text_when_spans_could_not_be_sent]
 
 - doc: architecture/tools-interface.md
   summary: The mutation interface — the one tool registry, result envelopes, the question lifecycle, and which failures roll back versus report.

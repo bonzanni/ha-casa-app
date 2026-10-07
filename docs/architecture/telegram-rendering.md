@@ -45,6 +45,17 @@ stanza prints a field line only where there is a value, so such a column would c
 no line at all and its header cell — and any address that cell carried — would appear
 nowhere. A table like that stays in the plain-rows form, where every header cell survives.
 
+**A message with no formatting shows what the rich path would show.** Some text carries no
+span at all, such as a plugin card whose fields are escaped for markdown but contain no bold
+word. Such a text has nothing to send as entities, so it goes out plain. What it shows is its
+display, with the backslash escapes consumed, so `CUWVSRB8\-0007` reads `CUWVSRB8-0007`
+whether or not the same message happens to carry a bold word. That is lossless, because the
+escapes are the only thing a span-less parse changes. One helper decides this for every sender
+of a single message. A text whose spans exist but cannot be sent is different: it is over the
+length or entity budget, or it cannot be converted. Its markers are the only record of its
+formatting and of its link addresses, so it goes out as authored. The once-only retry after
+the platform refuses a message's entities also sends the authored text, as described next.
+
 **A page whose formatting is refused, or cannot be expressed, still carries its link
 destinations.** Formatting fails in two ways. The platform can REFUSE a message's
 entities; the sender then re-sends that message as plain text, exactly once. A single-page
@@ -110,6 +121,16 @@ None of those exclusions is a lost reply: a lone surrogate on any page, this arm
 replaced at the channel's request boundary before the text is encoded (INV-TG-009 in
 [`architecture/telegram.md`](telegram.md)).
 
+**INV-TG-010**: A single message sent without entities, whose text has no formatting span, shows that text's display — its markdown escapes consumed — never the authored backslashes.
+
+Enforced in the rich renderer's plain-text helper, which every single-message sender's
+no-entities branch uses.
+
+What it does not cover: a text whose spans exist but cannot be sent (over the budgets, or
+not convertible), which goes out as authored; the retry after the platform refuses a
+message's entities, which re-sends the authored text; and the plain transports used for
+tool output, notices and error text, which never parse markdown.
+
 ## Failure behavior
 
 **Formatting is refused, or cannot be expressed.** Both cases are described under the
@@ -130,6 +151,7 @@ units but sends unformatted text only.
 
 **Source**
 - `casa/rootfs/opt/casa/channels/tg_richtext.py::render_paged`
+- `casa/rootfs/opt/casa/channels/tg_richtext.py::plain_text`
 - `casa/rootfs/opt/casa/channels/telegram.py::_split_message`
 
 **Tests**
@@ -139,6 +161,7 @@ units but sends unformatted text only.
 - `tests/test_telegram_split.py`
 - `tests/test_telegram_link_fallback.py`
 - `tests/test_telegram_link_fallback_shapes.py`
+- `tests/test_telegram_plain_escapes.py`
 
 **Related**
 - [`architecture/telegram.md`](../architecture/telegram.md)
