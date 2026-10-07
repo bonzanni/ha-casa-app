@@ -78,15 +78,14 @@
   when_changing: adding a tool, changing tool dispatch, or anything about tool authorization
   covers:
     - casa/rootfs/opt/casa/internal_handlers.py::_make_internal_tools_call_handler
-    - casa/rootfs/opt/casa/svc_casa_mcp.py
     - casa/rootfs/opt/casa/tools.py::init_tools
   tests:
     - tests/test_internal_handlers.py
     - tests/test_svc_casa_mcp.py
     - tests/test_mcp_envelope.py
     - tests/test_casa_engagement_channel.py
-  related: [architecture/plugins.md, architecture/hook-resolution.md, architecture/http-surface.md]
-  defines_invariants: [INV-MCP-001, INV-MCP-002, INV-MCP-003, INV-MCP-004, INV-MCP-005, INV-MCP-009, INV-MCP-010, INV-MCP-011, INV-MCP-013, INV-MCP-014]
+  related: [architecture/plugins.md, architecture/hook-resolution.md, architecture/http-surface.md, architecture/mcp-bridge.md]
+  defines_invariants: [INV-MCP-001, INV-MCP-002, INV-MCP-003, INV-MCP-004, INV-MCP-005, INV-MCP-009, INV-MCP-010, INV-MCP-013, INV-MCP-014]
   invariant_tests:
     INV-MCP-001: [tests/test_pin_g4_invariants.py::test_pin_inv_mcp_001_internal_dispatch_enforces_engagement_grant, tests/test_bridge_tools_allowed_gate.py::test_ungranted_tool_is_rejected, tests/test_internal_handlers.py::TestNotLiveIsDistinctFromNotGranted::test_authenticated_but_unbindable_says_not_live, tests/test_internal_handlers.py::TestNotLiveIsDistinctFromNotGranted::test_bound_but_ungranted_still_says_not_granted, tests/test_internal_handlers.py::TestNotLiveIsDistinctFromNotGranted::test_unbound_caller_still_says_not_granted]
     INV-MCP-002: [tests/test_unix_socket_runner.py::test_unix_runner_creates_socket_with_mode_0600, tests/test_casa_engagement_channel.py::TestChannelServerTransportIsTcp8100::test_channel_server_posts_to_8100_not_unix_socket, tests/test_svc_casa_mcp.py::test_svc_admin_reload_not_reachable_on_8100]
@@ -95,9 +94,20 @@
     INV-MCP-005: [tests/test_engagement_auth_token.py::test_peek_refuses_to_return_mcp_json_contents]
     INV-MCP-009: [tests/test_specialist_tool_ceiling.py::TestDispatchCeiling::test_specialist_record_cannot_reach_forbidden_casa_tool, tests/test_specialist_tool_ceiling.py::TestDispatchCeiling::test_specialist_record_keeps_allowlisted_tool, tests/test_specialist_tool_ceiling.py::TestDispatchCeiling::test_executor_record_is_not_ceilinged, tests/test_specialist_tool_ceiling.py::TestDispatchCeiling::test_unbound_caller_is_not_ceilinged]
     INV-MCP-010: [tests/test_workspace_tools_self_binding.py::test_peek_refuses_foreign_target_when_engagement_bound, tests/test_workspace_tools_self_binding.py::test_peek_allows_own_workspace_when_engagement_bound, tests/test_workspace_tools_self_binding.py::test_delete_refuses_foreign_target_when_engagement_bound, tests/test_workspace_tools_self_binding.py::test_list_filters_to_own_entry_when_engagement_bound]
-    INV-MCP-011: [tests/test_svc_casa_mcp.py::test_svc_hooks_resolve_own_refusals_are_http_200, tests/test_svc_casa_mcp.py::test_svc_hooks_resolve_unexpected_forwarder_exception_denies, tests/test_pin_doc_corpus_shape.py::test_bridge_owner_documents_other_hook_refusals]
     INV-MCP-013: [tests/test_cross_session_tools.py::test_shared_constants_name_the_three_tools_and_refuse, tests/test_cross_session_tools.py::test_resident_options, tests/test_cross_session_tools.py::test_restricted_webhook_options, tests/test_cross_session_tools.py::test_specialist_and_executor_options, tests/test_cross_session_tools.py::test_engagement_resume_options, tests/test_plugin_job_launch.py::test_worker_options_record_and_topic, tests/test_cross_session_tools.py::test_query_engager_synthesis_options, tests/test_cross_session_tools.py::test_observer_decider_options, tests/test_cross_session_tools.py::test_tier_classifier_options, tests/test_cross_session_tools.py::test_claude_code_driver_settings, tests/test_workspace.py::TestProvisionWorkspace::test_legacy_path_writes_permissions_allow_filtered, tests/test_cross_session_tools.py::test_pinned_sdk_forwards_the_denial_and_the_refusal_to_the_cli, tests/test_cross_session_tools.py::test_every_production_claude_options_passes_denial_and_settings, tests/test_boot_replay.py::test_replay_restores_cross_session_refusal_and_denials]
     INV-MCP-014: [tests/test_cross_session_tools.py::test_shared_constants_name_the_three_tools_and_refuse, tests/test_cross_session_tools.py::test_resident_options, tests/test_cross_session_tools.py::test_restricted_webhook_options, tests/test_cross_session_tools.py::test_specialist_and_executor_options, tests/test_cross_session_tools.py::test_engagement_resume_options, tests/test_plugin_job_launch.py::test_worker_options_record_and_topic, tests/test_cross_session_tools.py::test_query_engager_synthesis_options, tests/test_cross_session_tools.py::test_observer_decider_options, tests/test_cross_session_tools.py::test_tier_classifier_options, tests/test_cross_session_tools.py::test_claude_code_driver_settings, tests/test_cross_session_tools.py::test_pinned_sdk_forwards_the_denial_and_the_refusal_to_the_cli, tests/test_cross_session_tools.py::test_every_production_claude_options_passes_denial_and_settings]
+
+- doc: architecture/mcp-bridge.md
+  summary: The MCP bridge service's own refusals, its answers while the main application is unreachable, and the environment that moves its topology.
+  when_changing: the MCP bridge service (svc-casa-mcp), its hook-resolution route's refusals, the window in which the main application is unreachable, or the environment variables that move the MCP topology
+  covers:
+    - casa/rootfs/opt/casa/svc_casa_mcp.py
+  tests:
+    - tests/test_svc_casa_mcp.py
+  related: [architecture/mcp-and-tools.md, architecture/hook-resolution.md, architecture/http-surface.md]
+  defines_invariants: [INV-MCP-011]
+  invariant_tests:
+    INV-MCP-011: [tests/test_svc_casa_mcp.py::test_svc_hooks_resolve_own_refusals_are_http_200, tests/test_svc_casa_mcp.py::test_svc_hooks_resolve_unexpected_forwarder_exception_denies, tests/test_pin_doc_corpus_shape.py::test_bridge_owner_documents_other_hook_refusals]
 
 - doc: architecture/hook-resolution.md
   summary: The hook-resolution path — credential-bound identity, per-executor policy maps and their fail-closed fallbacks, and the claude_code containment floor.

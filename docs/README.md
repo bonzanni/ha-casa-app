@@ -73,6 +73,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | session persistence, the save/reset guard protocol, the retirement claims, or the retry spool | [`architecture/memory-lifecycle.md`](architecture/memory-lifecycle.md) |
 | specialist install identity, consent, or materialization | [`architecture/specialist-lifecycle.md`](architecture/specialist-lifecycle.md) |
 | the HA facade, HA tool exposure, or anything about what an agent may control | [`architecture/home-assistant-control.md`](architecture/home-assistant-control.md) |
+| the MCP bridge service (svc-casa-mcp), its hook-resolution route's refusals, the window in which the main application is unreachable, or the environment variables that move the MCP topology | [`architecture/mcp-bridge.md`](architecture/mcp-bridge.md) |
 | the PinnedRun controller, the pinned run's termination, walks or signals, the one release path of a pinned run, or the faulted desk | [`architecture/stored-call-termination.md`](architecture/stored-call-termination.md) |
 | the callback route, callback consent or reconciliation, or the validated redirect base URL | [`architecture/callbacks.md`](architecture/callbacks.md) |
 | the callback spool protocol, the attempt ledger or its ack protocol, or the delivery worker | [`architecture/callback-delivery.md`](architecture/callback-delivery.md) |

@@ -274,7 +274,7 @@
 - item: casa/rootfs/opt/casa/result_broker.py
   doc: architecture/plugin-result-contract.md
 - item: casa/rootfs/opt/casa/svc_casa_mcp.py
-  doc: architecture/mcp-and-tools.md
+  doc: architecture/mcp-bridge.md
 - item: casa/rootfs/opt/casa/system_requirements/orchestrator.py
   doc: architecture/specialist-lifecycle.md
 - item: casa/rootfs/opt/casa/system_requirements/tarball.py
@@ -540,13 +540,13 @@
 - item: route:casa/rootfs/opt/casa/personality_admin_handlers.py:POST:/admin/specialist/status
   doc: architecture/personality.md
 - item: route:casa/rootfs/opt/casa/svc_casa_mcp.py:GET:/mcp/casa-framework
-  doc: architecture/mcp-and-tools.md
+  doc: architecture/mcp-bridge.md
 - item: route:casa/rootfs/opt/casa/svc_casa_mcp.py:POST:/hooks/resolve
-  doc: architecture/mcp-and-tools.md
+  doc: architecture/mcp-bridge.md
 - item: route:casa/rootfs/opt/casa/svc_casa_mcp.py:POST:/mcp/casa-framework
-  doc: architecture/mcp-and-tools.md
+  doc: architecture/mcp-bridge.md
 - item: "route:casa/rootfs/opt/casa/svc_casa_mcp.py:POST:f'/internal/channel/{tail}'"
-  doc: architecture/mcp-and-tools.md
+  doc: architecture/mcp-bridge.md
 - item: casa/Dockerfile
   doc: architecture/overview.md
 - item: casa/rootfs/opt/casa/agent_home.py
@@ -652,13 +652,13 @@
 - item: env:CASA_EVENT_SPOOL_ROOT
   doc: architecture/plugin-events.md
 - item: env:CASA_FRAMEWORK_MCP_URL
-  doc: architecture/mcp-and-tools.md
+  doc: architecture/mcp-bridge.md
 - item: env:CASA_HA_MCP_URL
   doc: architecture/home-assistant-control.md
 - item: env:CASA_IMAGE_VERSION
   doc: architecture/overview.md
 - item: env:CASA_INTERNAL_SOCKET
-  doc: architecture/mcp-and-tools.md
+  doc: architecture/mcp-bridge.md
 - item: env:CASA_PLUGIN_OUTBOX_DIR
   doc: architecture/plugins.md
 - item: env:CASA_HANDOFF_DIR
@@ -792,6 +792,6 @@
 - item: env:WEBHOOK_SESSION_TTL_DAYS
   doc: architecture/persistent-state.md
 - item: env:N8N_API_KEY
-  doc: architecture/mcp-and-tools.md
+  doc: architecture/mcp-bridge.md
 - item: env:N8N_URL
-  doc: architecture/mcp-and-tools.md
+  doc: architecture/mcp-bridge.md

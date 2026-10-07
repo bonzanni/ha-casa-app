@@ -38,6 +38,7 @@ Code is the source of truth; these files are a map.
 - [architecture/job-triggers.md](architecture/job-triggers.md): A resident's scheduled trigger whose target is a plugin job — the entry's rails, the checks at write, load and registration, and a fire that starts the job through the one launcher with no resident turn.
 - [architecture/jobs-and-delivery.md](architecture/jobs-and-delivery.md): Durable background jobs — execution vs delivery state, restart reconciliation, and what a graceful stop does to a live row.
 - [architecture/mcp-and-tools.md](architecture/mcp-and-tools.md): How tools reach an agent, and where authorization for a tool call actually happens.
+- [architecture/mcp-bridge.md](architecture/mcp-bridge.md): The MCP bridge service's own refusals, its answers while the main application is unreachable, and the environment that moves its topology.
 - [architecture/memory-labelling.md](architecture/memory-labelling.md): Item labelling — how each item is labelled on the way in to long-term memory, with its sensitivity tier and the floor a stored tier sets, its speaker provenance, the scheduled mark, and the content addressing that deduplicates it.
 - [architecture/memory-lifecycle.md](architecture/memory-lifecycle.md): Retention lifecycle — how a conversation becomes long-term memory, how a reset retires it, and how a failed retain is retried durably.
 - [architecture/memory-mental-models.md](architecture/memory-mental-models.md): The mental-model overlay and the models Casa declares for it.
