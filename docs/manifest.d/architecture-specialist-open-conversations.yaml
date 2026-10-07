@@ -1,0 +1,16 @@
+# Manifest shard: the specialist open-conversations document (born in its own shard: the S
+# shard stands just under the index ceiling).
+- doc: architecture/specialist-open-conversations.md
+  summary: What each change to an installed specialist does to its open conversations — the warning a persona apply, upgrade, rollback or uninstall returns first, the acknowledgement carried in the call, and the close after an uninstall commits.
+  when_changing: the open-conversation warning before a specialist persona apply, upgrade, rollback or uninstall, acknowledged_conversations, the close of a removed specialist's conversations, or SPECIALIST_OPEN_CONVERSATION_NOTICE
+  covers:
+    - casa/rootfs/opt/casa/tools.py::_ordinary_change_gate
+    - casa/rootfs/opt/casa/tools.py::close_specialist_engagements
+  tests:
+    - tests/test_pin_1095_warn_then_act.py
+    - tests/test_pin_1095_removal_close.py
+    - tests/test_1095_open_conversation_regressions.py
+  related: [architecture/specialist-bundle-transactions.md, architecture/persona-lifecycle.md, architecture/plugin-mutation-tools.md, architecture/engagement-finalization.md, architecture/engagements.md]
+  defines_invariants: [INV-SPEC-022]
+  invariant_tests:
+    INV-SPEC-022: [tests/test_pin_1095_warn_then_act.py::test_rc1_persona_apply_warns_then_commits_on_acknowledgement, tests/test_pin_1095_warn_then_act.py::test_rc2_rollback_warns_and_enters_no_transaction, tests/test_pin_1095_warn_then_act.py::test_rc3_upgrade_warns_before_the_transaction, tests/test_pin_1095_warn_then_act.py::test_rc4_uninstall_erase_unset_voids_the_question_and_posts_nothing, tests/test_pin_1095_warn_then_act.py::test_rc5_j4_a_declined_reask_after_a_complete_erasure, tests/test_pin_1095_warn_then_act.py::test_rc6_keep_path_closes_the_question_then_commits_on_acknowledgement, tests/test_pin_1095_warn_then_act.py::test_rc7_a_set_that_grew_since_the_acknowledgement_re_warns, tests/test_pin_1095_warn_then_act.py::test_rc8_an_engagement_opened_during_an_acknowledged_rollback_is_named, tests/test_pin_1095_warn_then_act.py::test_rc9_the_pending_configuration_follow_up_carries_the_acknowledgement, tests/test_pin_1095_warn_then_act.py::test_rc10_the_ruled_sentence_has_one_source, tests/test_pin_1095_removal_close.py::test_rc11_a_confirmed_uninstall_closes_after_the_commit, tests/test_pin_1095_removal_close.py::test_rc12_a_background_job_is_listed_and_closed, tests/test_pin_1095_removal_close.py::test_rc13_j2_an_arrival_during_the_erasure_is_closed_and_named, tests/test_1095_open_conversation_regressions.py::test_an_uninstall_that_does_not_commit_closes_nothing, tests/test_1095_open_conversation_regressions.py::test_only_the_removed_specialists_conversations_close, tests/test_1095_open_conversation_regressions.py::test_a_confirmed_uninstalls_continuations_carry_its_acknowledgement, tests/test_1095_open_conversation_regressions.py::test_an_acknowledgement_must_name_one_of_the_specialists_engagements]
