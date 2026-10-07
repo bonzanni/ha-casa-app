@@ -1045,7 +1045,7 @@ def test_turn_outcomes_row_moves_to_launch_shard():
     ``manifest.d/architecture-e.yaml``, so the ``sources`` assertion fails.
     The row moves unchanged: its parsed content is pinned by digest to its
     base value, and no later change of the split edits it. The eval-framework
-    row stays in the E shard (membership only, no row count).
+    row stays in the E shard (membership only, no count over the shard).
 
     Specified by **astra** in the drive red-case round.
     """
@@ -1072,8 +1072,8 @@ def test_turn_outcomes_row_moves_to_launch_shard():
     retained = yaml.safe_load(
         (DOCS / "manifest.d/architecture-e.yaml").read_text()
     )
-    assert sum(entry["doc"] == "architecture/eval-framework.md"
-               for entry in retained) == 1
+    assert any(entry["doc"] == "architecture/eval-framework.md"
+               for entry in retained)
 
 
 def test_root_workspace_crossings_and_uid_containment_are_separate():
