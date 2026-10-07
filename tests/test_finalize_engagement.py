@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import ast
 import json
+import re
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -655,7 +658,7 @@ def test_terminal_hook_abort_raises_and_leaves_live():
 # string and its expectation together — that is a judgment about whether a
 # sentence is true, and it belongs to review. So the rule is written at both
 # production sites, where the person making that edit reads it, and in
-# `architecture/engagement-finalization.md`, where the reviewer does.
+# `architecture/engagement-terminal-telling.md`, where the reviewer does.
 
 
 _EXPECTED_DISCLOSURE = (
@@ -1262,3 +1265,159 @@ class TestFinalizeConfirmationMutationPins:
         assert telegram.close_topic.await_count == 1
         assert telegram.send_to_topic.await_count == 1
         assert bus.notify.await_count == 1
+
+
+# ---------------------------------------------------------------------------
+# #1323 red case: every pointer to the terminal-notice rule names a document
+# that carries it
+# ---------------------------------------------------------------------------
+#
+# The rule (a reword of a notice together with its expectation is a judgment for
+# review; the phrase blacklist was cut) is stated in
+# docs/architecture/engagement-terminal-telling.md. Five sites point a reader at
+# it — two production docstrings and three test-side notes. Each is read as
+# SOURCE TEXT (attribute docstrings are not reachable as ``__doc__``), must hold
+# exactly one corpus pointer, and the document it names must exist and carry the
+# rule, identified by two of the rule paragraph's own phrases.
+
+# A pointer is the WHOLE path-shaped token that mentions ``architecture/`` (so a
+# ``docs/archive/architecture/…`` prefix is seen, not silently trimmed), and it
+# is well formed only in one of the two spellings the sites use.
+_RULE_POINTER_TOKEN = re.compile(r"[A-Za-z0-9_./-]*architecture/[A-Za-z0-9_./-]*")
+_RULE_POINTER_FORM = re.compile(r"(?:docs/)?architecture/[A-Za-z0-9_.-]+")
+_RULE_LEAD_PHRASES = (
+    "A blacklist of forbidden phrases was",
+    "bypassed three times",
+)
+
+
+def _repo_root():
+    return Path(__file__).resolve().parent.parent
+
+
+def _module_tree(rel):
+    src = (_repo_root() / rel).read_text(encoding="utf-8")
+    return src, ast.parse(src)
+
+
+def _assignment(tree, name):
+    hits = [
+        (i, node) for i, node in enumerate(tree.body)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == name for t in node.targets)
+    ]
+    assert len(hits) == 1, f"{name}: {len(hits)} module-level assignments"
+    return hits[0]
+
+
+def _attribute_docstring(rel, name):
+    _src, tree = _module_tree(rel)
+    i, _node = _assignment(tree, name)
+    nxt = tree.body[i + 1]
+    assert isinstance(nxt, ast.Expr) and isinstance(nxt.value, ast.Constant) \
+        and isinstance(nxt.value.value, str), f"{name} has no attribute docstring"
+    return nxt.value.value
+
+
+def _comment_block_above(rel, name):
+    src, tree = _module_tree(rel)
+    _i, node = _assignment(tree, name)
+    lines = src.splitlines()
+    block = []
+    j = node.lineno - 2
+    while j >= 0 and (not lines[j].strip() or lines[j].lstrip().startswith("#")):
+        block.append(lines[j])
+        j -= 1
+    assert any(ln.lstrip().startswith("#") for ln in block), \
+        f"no comment block above {name}"
+    return "\n".join(reversed(block))
+
+
+def _comment_block_above_assert(rel, cls, meth, assertion):
+    src, tree = _module_tree(rel)
+    classes = [n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == cls]
+    assert len(classes) == 1, f"{cls}: {len(classes)} classes"
+    fns = [
+        n for n in classes[0].body
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == meth
+    ]
+    assert len(fns) == 1, f"{cls}.{meth}: {len(fns)} definitions"
+    lines = src.splitlines()[fns[0].lineno - 1:fns[0].end_lineno]
+    at = [i for i, ln in enumerate(lines) if ln.strip() == assertion]
+    assert len(at) == 1, f"{cls}.{meth}: {len(at)} lines {assertion!r}"
+    block = []
+    j = at[0] - 1
+    while j >= 0 and lines[j].lstrip().startswith("#"):
+        block.append(lines[j])
+        j -= 1
+    assert block, f"no comment block above {assertion!r}"
+    return "\n".join(reversed(block))
+
+
+def _rule_pointer_sites():
+    return {
+        "tools.py _DISCLOSURE_UNCONFIRMED": _attribute_docstring(
+            "casa/rootfs/opt/casa/tools.py", "_DISCLOSURE_UNCONFIRMED"),
+        "channels/telegram.py _TURN_ENDED_UNCONFIRMED_NOTICE": _attribute_docstring(
+            "casa/rootfs/opt/casa/channels/telegram.py",
+            "_TURN_ENDED_UNCONFIRMED_NOTICE"),
+        "test_finalize_engagement.py _EXPECTED_DISCLOSURE": _comment_block_above(
+            "tests/test_finalize_engagement.py", "_EXPECTED_DISCLOSURE"),
+        "test_launch_death_reporter.py _EXPECTED_TERMINAL_UNCONFIRMED_NOTICE":
+            _attribute_docstring(
+                "tests/test_launch_death_reporter.py",
+                "_EXPECTED_TERMINAL_UNCONFIRMED_NOTICE"),
+        "test_launch_death_reporter.py TestTerminalStatusIsNotProofOfATelling":
+            _comment_block_above_assert(
+                "tests/test_launch_death_reporter.py",
+                "TestTerminalStatusIsNotProofOfATelling",
+                "test_a_terminal_record_that_told_nobody_still_gets_its_notice",
+                "assert _notice == _EXPECTED_TERMINAL_UNCONFIRMED_NOTICE"),
+    }
+
+
+def test_every_terminal_notice_rule_pointer_names_a_document_carrying_the_rule():
+    docs = _repo_root() / "docs"
+    sites = _rule_pointer_sites()
+    assert len(sites) == 5
+    problems = []
+    for site, text in sites.items():
+        pointers = [t.rstrip(".") for t in _RULE_POINTER_TOKEN.findall(text)]
+        if len(pointers) != 1:
+            problems.append(f"{site}: {len(pointers)} pointers {pointers}")
+            continue
+        if not _RULE_POINTER_FORM.fullmatch(pointers[0]):
+            problems.append(f"{site}: {pointers[0]} is not a docs/ corpus pointer")
+            continue
+        target = docs / pointers[0].removeprefix("docs/")
+        if not target.is_file():
+            problems.append(f"{site}: {pointers[0]} does not resolve under docs/")
+            continue
+        body = " ".join(target.read_text(encoding="utf-8").split())
+        missing = [p for p in _RULE_LEAD_PHRASES if p not in body]
+        if missing:
+            problems.append(f"{site}: {pointers[0]} does not carry {missing}")
+    assert problems == []
+
+
+def test_the_finalization_citations_that_are_not_about_the_rule_stay():
+    """Regression, green at base (not a red case): two comments cite
+    engagement-finalization.md correctly — the driver for the direct-send
+    fallback, the #632 suite for INV-ENG-010 — and must not be swept up in a
+    retarget of the rule pointers."""
+    src, tree = _module_tree("casa/rootfs/opt/casa/drivers/claude_code_driver.py")
+    fns = [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.AsyncFunctionDef | ast.FunctionDef)
+        and n.name == "finalize_completion_post"
+    ]
+    assert len(fns) == 1
+    fn_src = "\n".join(src.splitlines()[fns[0].lineno - 1:fns[0].end_lineno])
+    assert "architecture/engagement-finalization.md" in fn_src
+    _src, tree = _module_tree("tests/test_emit_completion_tool.py")
+    classes = [
+        n for n in tree.body
+        if isinstance(n, ast.ClassDef) and n.name == "TestEmitCompletionCancellation"
+    ]
+    assert len(classes) == 1
+    assert "docs/architecture/engagement-finalization.md" in ast.get_docstring(classes[0])
