@@ -75,8 +75,11 @@ to the same names retires nothing.
 
 **INV-HA-001**: No code in this application restricts a control action by entity or domain.
 
-Stated as an invariant precisely because it is an absence. Action arguments pass through
-unchanged; the only filtering applied is to returned content on the read path.
+Stated as an invariant precisely because it is an absence. Ordinary action arguments pass
+through unchanged; the one exception is the live-context tool, whose upstream arguments the
+facade replaces with `{}`, so a requested domain never leaves the facade. Returned content is
+unfiltered: the facade hands back each result's content items and error flag, and only logs
+the live-context response shape.
 
 What it does not cover: this says nothing about what Home Assistant will accept. Exposure
 settings there are the real constraint.

@@ -1044,6 +1044,74 @@ async def test_pin_inv_ha_001_action_arguments_pass_through_unchanged():
         await facade.aclose()
 
 
+@pytest.mark.asyncio
+async def test_pin_inv_ha_001_explanation_matches_live_context():
+    """#1103: the INV-HA-001 explanation agrees with the facade — the
+    live-context tool's upstream arguments are replaced with {}, and nothing
+    filters returned content (nor is the result forwarded verbatim:
+    _sdk_result keeps only content items and isError).
+
+    Red case demonstrated: the base paragraph's "the only filtering applied
+    is to returned content on the read path" fails the no-filtering check.
+    """
+    from pathlib import Path
+    import re
+
+    upstream = FakeHaSession(tools=[live_context_tool()])
+    facade = make_facade(upstream)
+    await facade.start()
+    try:
+        await invoke_sdk_tool(
+            facade.server_config, "GetLiveContext", {"domain": "light"},
+        )
+        assert upstream.calls == [("GetLiveContext", {})], "upstream substitution"
+    finally:
+        await facade.aclose()
+
+    doc = (
+        Path(__file__).resolve().parents[1]
+        / "docs/architecture/home-assistant-control.md"
+    ).read_text(encoding="utf-8")
+    statements = list(re.finditer(r"(?m)^\*\*INV-HA-001\*\*:.*$", doc))
+    assert len(statements) == 1, "one INV-HA-001 statement"
+    tail = doc[statements[0].end():]
+    boundary = re.search(r"(?m)^What it does not cover:", tail)
+    assert boundary is not None, "explanation boundary"
+    paragraphs = re.split(r"\n\s*\n", tail[:boundary.start()].strip())
+    assert len(paragraphs) == 1 and paragraphs[0], "one explanation paragraph"
+    p = " ".join(paragraphs[0].replace(chr(96), "").lower().split())
+
+    assert re.search(
+        r"\b(?:no (?:returned[- ]content|response[- ]content) filtering"
+        r"|(?:returned content|response content|responses?) "
+        r"(?:is |are |passes? through )?unfiltered"
+        r"|(?:does not|never) filters? (?:returned|response) content)\b", p
+    ), "no returned-content filtering"
+    assert not re.search(
+        r"\b(?:only filtering applied is to returned content"
+        r"|filters? (?:the )?returned content on the read path)\b", p
+    ), "no retained filtering claim"
+    assert "verbatim" not in p, "no verbatim-result claim"
+    assert not re.search(
+        r"\b(?:results?|responses?)\b[^.;]*\b"
+        r"(?:forwarded|returned|passed(?: through)?) unchanged\b", p
+    ), "no unchanged-result claim"
+
+    clauses = re.split(r"[.;]\s*", p)
+    assert any(
+        re.search(r"\b(?:live[- ]context|getlivecontext)\b", c)
+        and re.search(r"\barguments?\b", c)
+        and "{}" in c
+        and re.search(r"\b(?:replac\w*|substitut\w*|reset\w*)\b", c)
+        for c in clauses
+    ), "live-context argument substitution"
+    for c in clauses:
+        if re.search(r"\barguments (?:pass through|are forwarded) unchanged\b", c):
+            assert re.search(
+                r"\b(?:ordinary|non[- ]live[- ]context|except|exception)\b", c
+            ), "no unqualified argument passthrough"
+
+
 async def test_pin_inv_ha_003_tool_cache_has_no_time_expiry():
     """Pins INV-HA-003: the facade's cached tool surface never expires by
     time — only explicit refresh or transport recovery rediscovers.
