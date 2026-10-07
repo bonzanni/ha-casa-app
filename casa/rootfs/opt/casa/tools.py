@@ -11541,7 +11541,7 @@ Nothing in the suite stops an author who edits this string and its expectation
 TOGETHER, and nothing can: whether a new sentence is TRUE is a judgment, and the
 blacklist that tried to encode it was bypassed three times by respelling the same
 false claims. So if you are editing this string, the rule above is the control,
-and it is on you. See `architecture/engagement-finalization.md`.
+and it is on you. See `architecture/engagement-terminal-telling.md`.
 """
 
 # #632: detached finalize tails, anchored so the event loop cannot collect

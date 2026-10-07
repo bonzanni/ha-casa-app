@@ -1047,7 +1047,7 @@ production string alone — and no test stops a reword of this string and its
 expectation together, because whether a new sentence is TRUE is a judgment that
 belongs to review. The rule the sentence obeys is stated at the production site,
 in ``channels/telegram.py``, and in
-``docs/architecture/engagement-finalization.md``."""
+``docs/architecture/engagement-terminal-telling.md``."""
 
 
 def _seam(drv):
@@ -1492,7 +1492,7 @@ class TestTerminalStatusIsNotProofOfATelling:
         # false claims, and was cut. The equality stops a reword of the
         # production string alone; a reword of both together is a judgment for
         # review, and the rule is stated at the production site and in
-        # docs/architecture/engagement-finalization.md. See the note in
+        # docs/architecture/engagement-terminal-telling.md. See the note in
         # tests/test_finalize_engagement.py.
         assert _notice == _EXPECTED_TERMINAL_UNCONFIRMED_NOTICE
         # And the funnel had already made its OWN one bounded attempt and
