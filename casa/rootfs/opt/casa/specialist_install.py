@@ -2879,13 +2879,24 @@ def _kept_new_version(txn, journal, slug: str, exc: BaseException,
 # `tools._KEPT_RUNNING_UNKNOWN_OUTCOME`), dated by this upgrade instead of "that
 # reload". The library runs off the event loop and cannot read the live agent,
 # so it builds every form and the tool picks one.
+# #1298: "new" is a live root equal to the root this upgrade committed — a
+# reload of the specialist that landed while the library ran loaded it. Its
+# telling also drops "not active yet" and "before Casa loaded it", both false
+# there (see `_kept_new_version_error`). "unknown" drops them too: with no root
+# to compare (a persona override, no live agent) such a reload may have loaded
+# it, and no evidence must never read as "not loaded" (#1146).
 _KEPT_IN_USE_CLAUSES = {
     "matched": ", so new and open conversations still use the previous version",
     "other": (", and when this upgrade returned the specialist was not running the "
               "new version"),
-    "unknown": (", and which version it was running when this upgrade returned could "
-                "not be established"),
+    "unknown": (", and which version the specialist was running when this upgrade "
+                "returned could not be established"),
+    "new": (", and when this upgrade returned the specialist was running the new "
+            "version"),
 }
+# The states whose telling says "the upgrade did not finish" instead of "not
+# active yet ... before Casa loaded it".
+_KEPT_UNFINISHED_LIVE = frozenset({"new", "unknown"})
 
 
 def _active_root_of(tuple_files: "dict[str, str | None]") -> "str | None":
@@ -2903,19 +2914,32 @@ def _kept_new_version_error(txn, journal, slug: str, exc: BaseException, *,
                             replaced_root: "str | None" = None,
                             ) -> "SpecialistInstallError":
     """#975: the library kept the new version after activation failed. #1095
-    (ruling-1095-5/-6): the tool returns this before any reload, so Casa has
-    loaded none of it — the detail says "not active yet", never "active".
+    (ruling-1095-5/-6): the tool returns this before the upgrade's own reload,
+    so this upgrade loaded none of it — the detail says "not active yet", never
+    "active" (#1298: unless a concurrent reload loaded it, the "new" form, or
+    there is no live root to tell, the "unknown" form — neither says "not
+    active yet").
     ``restart_first`` marks the variant whose prior-version cleanup also
     failed: there a re-run is refused until Casa restarts (INV-SPEC-014).
 
     #1296: ``detail`` is the ruled text; ``details_by_live`` holds the same text
     with each in-use clause of `_KEPT_IN_USE_CLAUSES`, and ``replaced_root`` the
-    root the upgrade replaced, for the tool to choose by the live agent."""
+    root the upgrade replaced, for the tool to choose by the live agent.
+
+    #1298: ``committed_root`` is the root this upgrade committed — the
+    transaction's ``target_root``, the root `BundleTxn.activation_kept` found
+    ``active.yaml`` naming — or None when *txn* carries none (a double)."""
     import specialist_bundle_journal
 
     step = f"{type(exc).__name__}: {exc}"
 
-    def kept(clause: str) -> str:
+    def kept(live: str) -> str:
+        clause = _KEPT_IN_USE_CLAUSES[live]
+        if live in _KEPT_UNFINISHED_LIVE:
+            return (f"{slug!r}: the upgrade did not finish. The new version is kept — the "
+                    f"version it replaced cannot be restored whole, because a setting it "
+                    f"kept as a plain value is now secret — but the upgrade then failed "
+                    f"({step}){clause}")
         return (f"{slug!r}: the upgrade is not active yet. The new version is kept — the "
                 f"version it replaced cannot be restored whole, because a setting it kept "
                 f"as a plain value is now secret — but the upgrade then failed ({step}) "
@@ -2927,20 +2951,21 @@ def _kept_new_version_error(txn, journal, slug: str, exc: BaseException, *,
     except Exception as cleanup_exc:  # noqa: BLE001 — reported, boot retries
         cleanup_failure = cleanup_exc
 
-    def told(clause: str) -> str:
+    def told(live: str) -> str:
         if cleanup_failure is not None:
-            return (f"{kept(clause)}. Finishing the retained prior failed too "
+            return (f"{kept(live)}. Finishing the retained prior failed too "
                     f"({cleanup_failure}); its undo record is kept, so further changes "
                     f"to this specialist are refused until Casa restarts and finishes "
                     f"it: restart Casa, then re-run the upgrade. Nothing was deleted")
-        return (f"{kept(clause)}, and its owned plugins may still be the previous "
+        return (f"{kept(live)}, and its owned plugins may still be the previous "
                 f"version's. Re-running the same upgrade finishes it. Nothing was "
                 f"deleted")
     err = SpecialistInstallError(
-        "upgrade_kept_new_version", told(_KEPT_IN_USE_CLAUSES["matched"]))
+        "upgrade_kept_new_version", told("matched"))
     err.restart_first = cleanup_failure is not None
     err.replaced_root = replaced_root
-    err.details_by_live = {k: told(c) for k, c in _KEPT_IN_USE_CLAUSES.items()}
+    err.committed_root = getattr(txn, "target_root", None) or None
+    err.details_by_live = {live: told(live) for live in _KEPT_IN_USE_CLAUSES}
     return err
 
 

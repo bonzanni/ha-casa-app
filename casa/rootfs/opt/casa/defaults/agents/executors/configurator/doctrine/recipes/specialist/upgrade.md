@@ -57,12 +57,17 @@ apply unchanged, step 3's open-conversation warning included.
    Keep the acknowledged ids: the pending-configuration re-commit (step 4) and a re-run of a kept
    upgrade (below) pass the same `acknowledged_conversations` again, so the operator is not asked
    twice in this conversation.
-   If `ok: false, kind: "upgrade_kept_new_version"`: the new version is kept on disk but Casa has
-   not loaded it. Relay the result's `outcome` to the operator as written: it says the upgrade is
-   not active yet and, when Casa found the replaced version running, that new and open
-   conversations still use the previous version; otherwise, that the specialist was not running the
-   new version when the upgrade returned, or that which version it was running could not be
-   established. Do not add the previous-version sentence yourself.
+   If `ok: false, kind: "upgrade_kept_new_version"`: the new version is kept on disk and this
+   upgrade did not finish. Relay the result's `outcome` to the operator as written. When Casa
+   found the new version running (a reload during the upgrade can load it), it says the upgrade
+   did not finish and that the specialist was running the new version when the upgrade returned.
+   When Casa could not read which version is running (a persona override, no live agent), it says
+   the upgrade did not finish and that which version the specialist was running when the upgrade
+   returned could not be established; do not tell the operator that Casa has not loaded the new
+   version. Otherwise it says the upgrade is not active yet and, when Casa found the replaced
+   version running, that new and open conversations still use the previous version; otherwise,
+   that the specialist was not running the new version when the upgrade returned. Do not add the
+   previous-version sentence yourself.
    Then do the finishing step the result names — normally re-run this same `specialist_upgrade`
    call (same arguments, same `acknowledged_conversations`); when it says
    "restart Casa, then re-run the upgrade", ask the operator to restart Casa first

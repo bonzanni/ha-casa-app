@@ -14,7 +14,9 @@ the root this upgrade replaced (captured by the library before the commit):
 equal keeps the ruled text byte-for-byte; a different root says #1146's
 "was not running the new version"; no root (a persona override, no live agent)
 says #1146's "could not be established". Both reused phrases are dated by this
-upgrade instead of "that reload".
+upgrade instead of "that reload". #1298's fold: with no root, the result says
+the upgrade did not finish rather than that Casa has not loaded it — a reload
+during the upgrade may have.
 
 Everything real: `tools.specialist_upgrade.handler`, `upgrade_specialist`, the
 reload dispatcher, on `_UpgradeFixture`'s on-disk specialist and the #1146
@@ -51,8 +53,8 @@ REAL_VALIDATE = si.validate_resume_inputs
 
 IN_USE = "new and open conversations still use the previous version"
 NOT_NEW = ", and when this upgrade returned the specialist was not running the new version"
-UNKNOWN = (", and which version it was running when this upgrade returned could not be "
-           "established")
+UNKNOWN = (", and which version the specialist was running when this upgrade returned "
+           "could not be established")
 RULED = ", so " + IN_USE
 HEAD = "the upgrade is not active yet: the new version is kept on disk, but Casa has not loaded it"
 RERUN_TAIL = ". Re-running the same upgrade finishes it."
@@ -91,6 +93,50 @@ def _detail(clause: str, *, restart: bool) -> str:
 
 def _outcome(clause: str, *, restart: bool) -> str:
     return HEAD + clause + (RESTART_TAIL if restart else RERUN_TAIL)
+
+
+# #1298 fold (Terra): with no root to compare, the texts written out in full.
+# Nothing in them says Casa has not loaded the new version — a concurrent reload
+# may have — only that the upgrade did not finish, the new version is kept, and
+# which version was running when the upgrade returned could not be established.
+UNKNOWN_OUTCOME = (
+    "the upgrade did not finish: the new version is kept on disk, and which "
+    "version the specialist was running when this upgrade returned could not be "
+    "established. Re-running the same upgrade finishes it.")
+UNKNOWN_RESTART_OUTCOME = (
+    "the upgrade did not finish: the new version is kept on disk, and which "
+    "version the specialist was running when this upgrade returned could not be "
+    "established. Finishing the version it replaced failed too, so further "
+    "changes to this specialist are refused until Casa restarts: restart Casa, "
+    "then re-run the upgrade.")
+UNKNOWN_DETAIL = (
+    "'mtg': the upgrade did not finish. The new version is kept — the version it "
+    "replaced cannot be restored whole, because a setting it kept as a plain value "
+    "is now secret — but the upgrade then failed (OSError: injected owned swap "
+    "failure), and which version the specialist was running when this upgrade "
+    "returned could not be established, and its owned plugins may still be the "
+    "previous version's. Re-running the same upgrade finishes it. Nothing was "
+    "deleted")
+UNKNOWN_RESTART_DETAIL = (
+    "'mtg': the upgrade did not finish. The new version is kept — the version it "
+    "replaced cannot be restored whole, because a setting it kept as a plain value "
+    "is now secret — but the upgrade then failed (OSError: injected owned swap "
+    "failure), and which version the specialist was running when this upgrade "
+    "returned could not be established. Finishing the retained prior failed too "
+    "(injected cleanup failure); its undo record is kept, so further changes to "
+    "this specialist are refused until Casa restarts and finishes it: restart "
+    "Casa, then re-run the upgrade. Nothing was deleted")
+
+
+def _assert_unknown(out, *, restart):
+    """Both fields are the no-evidence texts exactly, and neither carries the
+    in-use clause or any phrase saying Casa has not loaded the new version."""
+    for field in ("outcome", "detail"):
+        text = out[field]
+        assert IN_USE not in text, (field, text)
+        assert [p for p in NOT_LOADED_PHRASES if p in text] == [], (field, text)
+    assert out["outcome"] == (UNKNOWN_RESTART_OUTCOME if restart else UNKNOWN_OUTCOME)
+    assert out["detail"] == (UNKNOWN_RESTART_DETAIL if restart else UNKNOWN_DETAIL)
 
 
 def test_the_composed_ruled_texts_are_the_shipped_ones():
@@ -300,7 +346,7 @@ async def test_p5_no_live_root_says_it_could_not_be_established(world, live, res
     out = await world.call(world.fx.insp2, {"j": "plain-j"}, ["k"])
     assert out["kind"] == "upgrade_kept_new_version", out
     assert out["kept_new_version"] is True
-    _assert_told(out, UNKNOWN, restart=restart)
+    _assert_unknown(out, restart=restart)
 
 
 async def test_p7_the_library_carries_the_root_this_upgrade_replaced(world):
@@ -313,6 +359,22 @@ async def test_p7_the_library_carries_the_root_this_upgrade_replaced(world):
     assert b != c
     assert len(world.raised) == 1
     assert getattr(world.raised[0], "replaced_root", "<absent>") == b
+
+
+@pytest.mark.parametrize("restart", [False, True], ids=["rerun", "restart"])
+async def test_p7_1298_the_library_carries_the_root_this_upgrade_committed(world, restart):
+    """#1298: the error the real library raises on a kept B → C carries C — the
+    root active.yaml names after the commit — as `committed_root`, beside B as
+    `replaced_root`, whether or not finishing the retained prior failed."""
+    await world.first("reload")
+    b = world.root()
+    await world.second(restart)
+    c = world.root()
+    assert b != c
+    assert len(world.raised) == 1
+    assert world.raised[0].replaced_root == b
+    assert world.raised[0].committed_root == c
+    assert world.raised[0].restart_first is restart
 
 
 @pytest.mark.parametrize("carrier", ["none", "absent"])
@@ -344,7 +406,7 @@ async def test_p8_no_carried_replaced_root_says_it_could_not_be_established(
     assert out["kind"] == "upgrade_kept_new_version", out
     assert world.root() != world.a
     assert world.h.runtime.agents.writes == []
-    _assert_told(out, UNKNOWN, restart=restart)
+    _assert_unknown(out, restart=restart)
 
 
 # ── Regression controls added with the fix (green; not red cases) ───────────
@@ -365,16 +427,228 @@ def test_p6_the_four_argument_call_still_builds_the_ruled_detail(monkeypatch):
     assert err.kind == "upgrade_kept_new_version" and err.restart_first is False
     assert err.detail == _detail(RULED, restart=False)
     assert err.replaced_root is None
+    assert err.committed_root is None
     assert err.details_by_live == {
         "matched": _detail(RULED, restart=False), "other": _detail(NOT_NEW, restart=False),
-        "unknown": _detail(UNKNOWN, restart=False)}
+        "unknown": UNKNOWN_DETAIL, "new": NEW_DETAIL}
 
 
-def test_the_tool_and_the_library_carry_the_same_three_clauses():
+def test_the_tool_and_the_library_carry_the_same_four_clauses():
     """The outcome and the detail choose from the same clauses, and the ruled
     outcome constants keep their exact value."""
     import tools
     assert tools._KEPT_IN_USE_CLAUSES == si._KEPT_IN_USE_CLAUSES == {
-        "matched": RULED, "other": NOT_NEW, "unknown": UNKNOWN}
+        "matched": RULED, "other": NOT_NEW, "unknown": UNKNOWN, "new": RUNNING_NEW}
+    assert tools._KEPT_NOT_ACTIVE_OUTCOMES[(False, "new")] == NEW_OUTCOME
+    assert tools._KEPT_NOT_ACTIVE_OUTCOMES[(True, "new")] == NEW_RESTART_OUTCOME
+    assert tools._KEPT_NOT_ACTIVE_OUTCOMES[(False, "unknown")] == UNKNOWN_OUTCOME
+    assert tools._KEPT_NOT_ACTIVE_OUTCOMES[(True, "unknown")] == UNKNOWN_RESTART_OUTCOME
     assert tools._KEPT_NOT_ACTIVE_OUTCOME == RULED_OUTCOME
     assert tools._KEPT_NOT_ACTIVE_RESTART_OUTCOME == RULED_RESTART_OUTCOME
+
+
+# ── #1298: a concurrent reload that loads the kept version ──────────────────
+
+RUNNING_NEW = ", and when this upgrade returned the specialist was running the new version"
+FALSE_WHEN_NEW = ("not active yet", "has not loaded it", "before Casa loaded it",
+                  "was not running the new version")
+# The exact texts for that state, written out independently of the helpers above.
+NEW_OUTCOME = (
+    "the upgrade did not finish: the new version is kept on disk, and when this "
+    "upgrade returned the specialist was running the new version. Re-running the "
+    "same upgrade finishes it.")
+NEW_RESTART_OUTCOME = (
+    "the upgrade did not finish: the new version is kept on disk, and when this "
+    "upgrade returned the specialist was running the new version. Finishing the "
+    "version it replaced failed too, so further changes to this specialist are "
+    "refused until Casa restarts: restart Casa, then re-run the upgrade.")
+NEW_DETAIL = (
+    "'mtg': the upgrade did not finish. The new version is kept — the version it "
+    "replaced cannot be restored whole, because a setting it kept as a plain value "
+    "is now secret — but the upgrade then failed (OSError: injected owned swap "
+    "failure), and when this upgrade returned the specialist was running the new "
+    "version, and its owned plugins may still be the previous version's. Re-running "
+    "the same upgrade finishes it. Nothing was deleted")
+NEW_RESTART_DETAIL = (
+    "'mtg': the upgrade did not finish. The new version is kept — the version it "
+    "replaced cannot be restored whole, because a setting it kept as a plain value "
+    "is now secret — but the upgrade then failed (OSError: injected owned swap "
+    "failure), and when this upgrade returned the specialist was running the new "
+    "version. Finishing the retained prior failed too (injected cleanup failure); "
+    "its undo record is kept, so further changes to this specialist are refused "
+    "until Casa restarts and finishes it: restart Casa, then re-run the upgrade. "
+    "Nothing was deleted")
+
+
+class _ConcurrentReload:
+    """A real `reload.dispatch("agent")` for `mtg`, run on the event loop from the
+    library's worker thread while `upgrade_specialist` is still running — what an
+    unfenced `casa_reload` / `POST /admin/reload` scope `agent` does during the
+    thread hop. The loader stand-in binds what the specialist loader binds,
+    `active.yaml`'s binding (`activate_binding_for_config`: `InstanceDir(...)
+    .active()`, `binding = active_tuple.binding`), never a hand-assigned root."""
+
+    def __init__(self, world, loop):
+        from personality_binding import InstanceDir
+
+        self.world, self.loop = world, loop
+        self.results: list = []
+        self.disk_roots: list = []
+
+        def load(*a, **kw):
+            cfg = harness._cfg(None)
+            cfg.binding = InstanceDir(world.fx.slug_dir).active().binding
+            return cfg
+        world.mp.setattr("agent_loader.load_agent_from_dir", load)
+
+    def run(self):
+        import asyncio
+        import reload as reload_mod
+        self.disk_roots.append(self.world.root())
+        fut = asyncio.run_coroutine_threadsafe(
+            reload_mod.dispatch("agent", runtime=self.world.h.runtime, role="mtg"), self.loop)
+        self.results.append(fut.result(timeout=30))
+
+
+async def _b_loaded(world) -> "_ConcurrentReload":
+    """A → B, completed through the real handler (the sequencer's reload loads B
+    through the loader stand-in), then C staged: B is installed and live."""
+    import asyncio
+    racer = _ConcurrentReload(world, asyncio.get_running_loop())
+    out = await world.call(world.fx.insp2, {"j": "plain-j"}, ["k"])
+    assert out.get("ok") is True, out
+    b = world.root()
+    assert world.h.runtime.agents["mtg"].config.binding.component_root == b
+    return racer
+
+
+@pytest.mark.parametrize("restart", [False, True], ids=["rerun", "restart"])
+async def test_1298_a_concurrent_reload_that_loads_the_kept_version_is_told_as_running(
+        world, restart):
+    """#1298: B live, B → C library-kept (owned swap fails after C is committed);
+    while the library is still in its worker thread a real reload of the
+    specialist loads C. Both fields say that when this upgrade returned the
+    specialist was running the new version, and none of the not-loaded phrases."""
+    racer = await _b_loaded(world)
+    b = world.root()
+    h = world.h
+    insp = world.stage_c()
+    swaps = []
+
+    def fail_swap_after_reload(**kw):
+        swaps.append(world.root())
+        racer.run()
+        raise OSError("injected owned swap failure")
+    world.mp.setattr(plugin_registry, "apply_owned_swap", fail_swap_after_reload)
+    world.cleanup_fails(restart)
+    writes, constructions, loads = len(h.runtime.agents.writes), h.constructions, h.registry.loads
+    raised = len(world.raised)
+    out = await world.call(insp, {}, ["k", "j"])
+    world.swap_fails(False)
+    c = world.root()
+
+    # The interleaving happened as specified, and nothing else did.
+    assert b != c
+    assert swaps == [c] and racer.disk_roots == [c]
+    assert len(racer.results) == 1 and racer.results[0].get("status") == "ok", racer.results
+    assert len(h.runtime.agents.writes) - writes == 1
+    assert h.constructions - constructions == 1
+    assert h.registry.loads - loads == 1
+    assert len(world.raised) - raised == 1
+    exc = world.raised[-1]
+    assert exc.kind == "upgrade_kept_new_version"
+    assert "injected owned swap failure" in str(exc.__cause__)
+    assert world.prior_root() == b
+    assert h.runtime.agents["mtg"].config.binding.component_root == c
+    assert world.finish_calls == 2
+    assert out["kind"] == "upgrade_kept_new_version", out
+    assert out["kept_new_version"] is True
+
+    for field in ("outcome", "detail"):
+        text = out[field]
+        assert (text.count(RUNNING_NEW), *(text.count(p) for p in FALSE_WHEN_NEW)) == (
+            1, 0, 0, 0, 0), (field, text)
+    assert out["outcome"] == (NEW_RESTART_OUTCOME if restart else NEW_OUTCOME)
+    assert out["detail"] == (NEW_RESTART_DETAIL if restart else NEW_DETAIL)
+
+
+@pytest.mark.parametrize("restart", [False, True], ids=["rerun", "restart"])
+async def test_1298_control_a_reload_before_the_commit_keeps_the_ruled_text(
+        world, restart, monkeypatch):
+    """Control: the concurrent reload lands BEFORE C is committed, so it loads B
+    again; C is then committed and kept with no further reload. Live B is the
+    replaced version: the ruled matched text, byte for byte."""
+    racer = await _b_loaded(world)
+    b = world.root()
+    h = world.h
+    insp = world.stage_c()
+    core = si._upgrade_core
+
+    def reload_then_commit(**kw):
+        racer.run()
+        return core(**kw)
+    monkeypatch.setattr(si, "_upgrade_core", reload_then_commit)
+    world.swap_fails(True)
+    world.cleanup_fails(restart)
+    writes = len(h.runtime.agents.writes)
+    out = await world.call(insp, {}, ["k", "j"])
+    world.swap_fails(False)
+    c = world.root()
+
+    assert b != c and racer.disk_roots == [b]
+    assert len(racer.results) == 1 and racer.results[0].get("status") == "ok", racer.results
+    assert len(h.runtime.agents.writes) - writes == 1
+    assert h.runtime.agents["mtg"].config.binding.component_root == b
+    assert out["kind"] == "upgrade_kept_new_version", out
+    assert out["outcome"] == (RULED_RESTART_OUTCOME if restart else RULED_OUTCOME)
+    assert out["detail"] == _detail(RULED, restart=restart)
+
+
+# ── #1298 fold (Terra): no root to compare is never told as "not loaded" ────
+
+# Phrases that assert Casa has not loaded the kept version. With no live root to
+# compare (a persona override, no live agent, nothing carried) that is no
+# evidence either way: a concurrent reload may have loaded it.
+NOT_LOADED_PHRASES = ("not active yet", "has not loaded", "not loaded",
+                      "before Casa loaded")
+
+
+@pytest.mark.parametrize("restart", [False, True], ids=["rerun", "restart"])
+async def test_1298_an_override_a_concurrent_reload_loaded_is_not_told_not_loaded(
+        world, restart):
+    """Terra's finding on the #1298 candidate: B live, the specialist then loads
+    as a persona override (its binding carries no component root); B → C is
+    library-kept, and while the library is in its worker thread a real reload of
+    the specialist loads it from the `active.yaml` that names C. The live root
+    cannot be compared, so the result says which version was running could not
+    be established — and never that Casa has not loaded the new version."""
+    from personality_binding import InstanceDir
+
+    racer = await _b_loaded(world)
+    b = world.root()
+    h = world.h
+    read_roots: list = []
+
+    def load_override(*a, **kw):
+        read_roots.append(InstanceDir(world.fx.slug_dir).active().root)
+        return harness._cfg(None)
+    world.mp.setattr("agent_loader.load_agent_from_dir", load_override)
+    insp = world.stage_c()
+
+    def fail_swap_after_reload(**kw):
+        racer.run()
+        raise OSError("injected owned swap failure")
+    world.mp.setattr(plugin_registry, "apply_owned_swap", fail_swap_after_reload)
+    world.cleanup_fails(restart)
+    writes = len(h.runtime.agents.writes)
+    out = await world.call(insp, {}, ["k", "j"])
+    world.swap_fails(False)
+    c = world.root()
+
+    assert b != c and read_roots == [c] and racer.disk_roots == [c]
+    assert len(racer.results) == 1 and racer.results[0].get("status") == "ok", racer.results
+    assert len(h.runtime.agents.writes) - writes == 1
+    assert h.runtime.agents["mtg"].config.binding.component_root is None
+    assert out["kind"] == "upgrade_kept_new_version", out
+    assert out["kept_new_version"] is True
+    _assert_unknown(out, restart=restart)

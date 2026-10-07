@@ -1675,16 +1675,22 @@ nothing is activated, though a version Casa had already fetched may stay in its
 plugin store. Removing a plugin that can erase its
 data asks the confirmation first, then the erase question.
 
-If an upgrade fails after the new version was already kept but before Casa
-tried to load it, Casa says the upgrade is not active yet and that re-running the
-upgrade finishes it (or, in the rarer case where cleaning up the previous version
-also failed, that you should restart Casa and then re-run the upgrade). It
-compares the version the specialist is running with the one the upgrade
-replaced: when they are the same it says new and open conversations still use
-the previous version; when they differ (an earlier failed upgrade can leave an
-older version running), it says the specialist was not running the new version
-when the upgrade returned; and for a specialist whose running version it cannot read, it says
-that version could not be established. If Casa did
+If an upgrade fails after the new version was already kept but before the
+upgrade itself tried to load it, Casa says that re-running the upgrade finishes it (or, in the
+rarer case where cleaning up the previous version also failed, that you should
+restart Casa and then re-run the upgrade). It compares the version the
+specialist is running with the one the upgrade kept and the one it replaced.
+When it is the kept one (a reload of the specialist during the upgrade can load
+it), Casa says the upgrade did not finish and that the specialist was running
+the new version when the upgrade returned. For a specialist whose running version
+it cannot read, Casa says the upgrade did not finish and that which version the
+specialist was running when the upgrade returned could not be established; it
+does not say that Casa has not loaded the new version, because such a reload may
+have. Otherwise it says the upgrade is not active yet: when the running version
+is the replaced one, that new and open conversations still use the previous
+version; when it is another one (an earlier failed upgrade can leave an older
+version running), that the specialist was not running the new version when the
+upgrade returned. If Casa did
 try to load the kept version and reloading the specialist failed, Casa reports
 that failure; when it read that the specialist was not running the new version
 when that reload returned, it says so instead of saying the new version is
