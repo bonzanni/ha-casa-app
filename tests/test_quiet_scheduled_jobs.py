@@ -232,3 +232,36 @@ async def test_a_busy_refusal_for_a_quiet_run_does_not_point_at_a_topic():
     rec = SimpleNamespace(id="job-q", topic_id=None)
     refusal = jobs._job_busy_refusal("ledger", "ledger:classify", "Classify entries", rec)
     assert "topic" not in refusal["message"] and "topic_id" not in refusal
+
+
+@pytest.mark.parametrize("outcome", ["completed", "error"])
+async def test_a_quiet_runs_completed_end_is_logged_as_deliberately_untold(
+        runtime, monkeypatch, caplog, outcome):
+    """#1310: the turn that completes a quiet run ends with no ResultMessage and
+    no topic telling, by design. That end logs one INFO saying it was not told,
+    and no WARNING that the operator is being told. A failed end keeps both
+    WARNINGs: it is still owed a telling.
+
+    MUTATION: the quiet-run arm removed from ``_report_incomplete_turn`` (the
+    completed case logs the two WARNINGs again)."""
+    async def send(bus, **kw):
+        return None
+    monkeypatch.setattr(tools, "send_engagement_outcome", send)
+    rec = await _launch(runtime, QUIET, scheduled=True)
+    await tools._finalize_engagement(rec, outcome=outcome, text="nothing new",
+                                     artifacts=[], next_steps=[], driver=runtime.driver)
+    runtime.channel._driver_turn_incomplete = lambda r, t: "followup_missing_result"
+    caplog.clear()
+    with caplog.at_level("DEBUG", logger="channels.telegram"):
+        assert await runtime.channel._report_incomplete_turn(
+            runtime.registry.get(rec.id), "tok", system_turn=True) is True
+    records = [r for r in caplog.records if r.name == "channels.telegram"]
+    warnings = [r.getMessage() for r in records if r.levelname == "WARNING"]
+    infos = [r.getMessage() for r in records if r.levelname == "INFO"]
+    if outcome == "completed":
+        assert warnings == [], warnings
+        assert len([m for m in infos if "deliberately not told" in m]) == 1, infos
+    else:
+        assert len(warnings) == 2 and all("telling the operator" in m for m in warnings)
+        assert not any("deliberately not told" in m for m in infos)
+    runtime.bot.send_message.assert_not_awaited()
