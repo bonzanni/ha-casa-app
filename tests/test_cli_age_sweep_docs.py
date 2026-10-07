@@ -41,9 +41,9 @@ def test_memory_lifecycle_inv_mem_017_names_the_cli_cleanup():
     assert "INV-MEM-021" in para
 
 
-def test_engagement_finalization_gives_the_reason_with_the_claim():
+def test_engagement_transcript_reaping_gives_the_reason_with_the_claim():
     para = _paragraph(
-        (DOCS / "engagement-finalization.md").read_text(encoding="utf-8"),
+        (DOCS / "engagement-transcript-reaping.md").read_text(encoding="utf-8"),
         "Casa owns transcript deletion:")
     assert "never fires" in para
     assert "`cleanupPeriodDays`" in para
