@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.344.47] - 2026-10-08
+
+### Fixed
+
+- A message with no bold, code, heading or link showed the backslashes its text used to escape markdown. A plugin's proposal card read `CUWVSRB8\-0007` instead of `CUWVSRB8-0007`, while the same card with one bold word read correctly. The same happened to asks, replies, topic posts and their edits. Casa now shows such a message the way it shows a formatted one, with the escapes removed. A message that Telegram refuses to format is still re-sent exactly as written, as is one too long or too heavily formatted for one Telegram message. (#1330)
+
 ## [0.344.46] - 2026-10-07
 
 ### Fixed
