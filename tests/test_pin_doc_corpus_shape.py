@@ -1356,3 +1356,52 @@ def test_question_lifecycle_and_tool_interface_are_separate():
         total = sum(text.count(lead) for text in texts.values())
         owned = texts[moved].count(lead)
         assert (total, owned) == (1, 1), (lead, total, owned)
+
+
+def test_bridge_refusal_surface_and_tool_dispatch_are_separate():
+    """#1266: the split separates the bridge's own refusal and availability
+    surface from tool dispatch and authorization.
+
+    The seam is the one the document names itself at e22525f3:
+    ``docs/architecture/mcp-and-tools.md:9-13`` lists "the separate bridge
+    service" as its own subject beside the internal dispatch path and where
+    authorization happens; the row (``docs/manifest.d/architecture-f-mcp.yaml:76-100``)
+    routes only tool dispatch and authorization in ``when_changing``, while
+    ``covers`` holds ``svc_casa_mcp.py`` and ``defines_invariants`` lists
+    INV-MCP-011 beside the dispatch and authorization ids on one document;
+    ``docs/architecture/http-surface.md:15,27`` assigns the bridge to that
+    document. The document is past the 25 KB ceiling at that base and
+    INV-DOC-007 (``docs/contributing/doc-contract.md:75``) owes the split.
+
+    At e22525f399fd131930a8db41acb48d8c663b3f04, the partition counts
+    are (1, 1), not (1, 2). The ledger and ten payload-location checks
+    independently hold at base and are regression arms.
+
+    Pins ownership and payload location; byte-identical movement and
+    completeness remain review obligations.
+
+    Specified by **astra** in the drive red-case round.
+    """
+    moved = _declaring_document("INV-MCP-011")
+    retained = {_declaring_document(inv) for inv in (
+        "INV-MCP-001", "INV-MCP-002", "INV-MCP-003", "INV-MCP-004",
+        "INV-MCP-005", "INV-MCP-009", "INV-MCP-010", "INV-MCP-013",
+        "INV-MCP-014",
+    )}
+    counts = (len(retained), len(retained | {moved}))
+    assert counts == (1, 2), (counts, retained, moved)
+    assert _ledger_owner("casa/rootfs/opt/casa/svc_casa_mcp.py") == moved
+
+    texts = {doc: _normalized((DOCS / doc).read_text())
+             for doc in _text_corpus()}
+    for lead in (
+        *SOCKET_UNREACHABLE_CLAIMS,
+        *OTHER_HOOK_REFUSAL_CLAIMS,
+        "Bridge tool forwarding carries a hard three-minute timeout",
+        "Two environment variables move pieces of this topology",
+        "The shim is deliberately fail-open on transport",
+        "The last of those is why the route holds an unnarrowed catch",
+    ):
+        total = sum(text.count(lead) for text in texts.values())
+        owned = texts[moved].count(lead)
+        assert (total, owned) == (1, 1), (lead, total, owned)
