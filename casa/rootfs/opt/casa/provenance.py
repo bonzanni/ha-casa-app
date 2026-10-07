@@ -133,6 +133,11 @@ RESERVED_CONTEXT_KEYS = frozenset({
     "_turn_scope",
     "_inherited_note",
     "_scheduled_job",          # S6: a job trigger's fire, never a chat message
+    # #1314: the Telegram channel's note of the message an operator's reply
+    # answered, which the resident's turn reads into its Casa notes. Stamped
+    # only by the channel; a caller who could set it would put words in the
+    # turn that read as Casa's own.
+    "_reply_note",
     # #1277: stamped only by the scheduled-ask continuation for the operator's
     # answer; a caller who could set it would have a job it starts say the
     # operator asked.

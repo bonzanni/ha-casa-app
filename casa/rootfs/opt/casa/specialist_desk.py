@@ -85,6 +85,23 @@ def clip(text: str, limit: int) -> str:
     return text[:keep] + CLIP
 
 
+# -- #1314: a reply the desk does not take ----------------------------------------
+
+REPLY_QUOTE_CHARS = 600
+
+
+def reply_note(who: str, posted: str | None, quoted_text: str | None) -> str:
+    """The Casa note the resident's turn carries when the operator's message
+    replied to another and the desk did not take it: who posted that message
+    (a phrase the channel chose from Casa's records and Telegram's sender
+    ids, never from text), when, and what it read, clipped."""
+    when = f", posted {posted}" if posted else ""
+    body = clip(quoted_text, REPLY_QUOTE_CHARS) if quoted_text else "(no text)"
+    return (f"The person sent this as a reply to {who}{when}, which read:\n"
+            f"«{body}»\n"
+            "Their words answer that message, which may not be your latest one.")
+
+
 # -- S6 §2.6: one bounded composer for every line the slice introduces or changes ----------
 
 FIELD_MIN_CHARS = 8          # the least a label or a display field keeps (then CLIP)
@@ -554,17 +571,24 @@ def drain_echo_lines(chat_id: int) -> list[str]:
     return lines
 
 
-def prompt_prefix(chat_id: Any) -> str:
-    """What the resident's next prompt starts with: the drained lines, each
-    marked as Casa's, then a blank line — or nothing."""
+def prompt_lines(chat_id: Any) -> list[str]:
+    """The drained lines for the resident's next prompt, each marked as Casa's
+    — or none. The turn carries them in its Casa notes block
+    (``timekeeping.compose_turn_preamble``), which the readback strips (#1317)."""
     try:
         chat = int(chat_id)
     except (TypeError, ValueError):
-        return ""
-    lines = drain_echo_lines(chat)
+        return []
+    return [f"{PROMPT_PREFIX}{line}" for line in drain_echo_lines(chat)]
+
+
+def prompt_prefix(chat_id: Any) -> str:
+    """:func:`prompt_lines` as one text, a blank line after — or nothing."""
+    lines = prompt_lines(chat_id)
     if not lines:
         return ""
-    return "".join(f"{PROMPT_PREFIX}{line}\n" for line in lines) + "\n"
+    return "".join(f"{line}\n" for line in lines) + "\n"
+
 
 
 # -- §8: the resident's delegations are uses of the desk too ------------------

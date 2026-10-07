@@ -41,6 +41,7 @@ def test_reserved_context_keys_are_exactly_the_spec_set():
         "_origin_route", "_origin_clearance",
         # S6 (INV-TRIG-022): a job trigger's fire — never a chat message.
         "_scheduled_job",
+        "_reply_note",
         # #1142: the webhook route's `deliver` enum — a caller who could set
         # it would choose where an untrusted turn's final reply goes.
         "_webhook_deliver",

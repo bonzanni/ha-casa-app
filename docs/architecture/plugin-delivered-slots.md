@@ -72,8 +72,8 @@ the echo owner) and the channel files each page, each fallback chunk, the media 
 the link message under it in the post map the moment its send returns — so the operator's
 swipe-reply on any of them reaches that specialist's desk
 ([`specialist-desk.md`](specialist-desk.md)), a page that landed before a later page failed
-included. The map is memory-only and count-bounded; a reply on a forgotten message is a
-plain message to the resident.
+included. The map is memory-only and count-bounded; a reply on a forgotten message reaches
+the resident, its words unchanged, with Casa's note of what it replied to (INV-DESK-004).
 
 **The channel's part for a link.**
 When a plugin tool's result carries a slot declared `operator_link`, the result broker

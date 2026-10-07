@@ -30,6 +30,17 @@ wall-clock time survives out-of-band as the retain item's timestamp. The
 composer and splitter are a pinned pair, so the envelope's shape cannot drift
 from what is stripped.
 
+**Casa's own per-turn notes are split off with the envelope.** A turn that
+carries Casa's notes — a Telegram resident turn's drained front-desk lines and
+a reply's note ([`architecture/specialist-desk.md`](specialist-desk.md)) —
+carries them in one `<casa_notes>` block directly after the envelope
+(`compose_turn_preamble`; with no notes the preamble is exactly the envelope).
+The splitter recognises that block only there and strips it with the
+envelope, so nothing Casa wrote is retained as the speaker's words; a block
+the speaker typed anywhere else is their text. A note's own close tag is broken
+with a zero-width space when composed, so a quoted `</casa_notes>` cannot end
+the block early.
+
 **A scheduled session's output is saved dated and marked; nothing stops being
 saved.** Each session entry records whether a turn Casa's own schedule fired
 registered it ([`architecture/persistent-state.md`](persistent-state.md)).
@@ -115,6 +126,15 @@ Writers that bypass the transcript readback (delegated retains) never carried
 the envelope in the first place. Model lines saved from an entry that predates the
 scheduled marker carry no time, so the backend dates them by the save.
 
+**INV-MEM-022**: Casa's per-turn notes block, composed directly after the time envelope, is split off with that envelope at the transcript-readback boundary, so no note it carries reaches the stored memory text or the document id.
+
+Enforced by the same pinned composer and splitter as INV-MEM-009: the block's
+close is recognised only as the composer writes it, followed by a blank line
+or by whitespace to the end, so a turn whose body after the notes is
+whitespace only retains nothing. What it does not cover: a turn retained before
+the block existed, when the front-desk lines were prepended ahead of the
+envelope, keeps those lines in its stored text.
+
 **INV-MEM-012**: A tier-classifier reply yields a tier only when it is a single line holding one (possibly decorated) tier token, or when a multi-line reply's final non-empty line is the literal `Tier: <word>` answer line whose earlier tier-token or Tier-label lines all resolve to the same tier; prose tier words, conflicts, and unresolvable labels yield no tier; the item defaults to private.
 
 Enforced in `parse_tier`: the single-line arm full-matches one decorated
@@ -195,6 +215,7 @@ is about to write.
 - `casa/rootfs/opt/casa/memory_provenance.py::build_retain_items`
 - `casa/rootfs/opt/casa/timekeeping.py::compose_time_envelope`
 - `casa/rootfs/opt/casa/timekeeping.py::split_time_envelope`
+- `casa/rootfs/opt/casa/timekeeping.py::compose_turn_preamble`
 
 **Tests**
 - `tests/test_memory_provenance.py`

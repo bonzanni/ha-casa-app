@@ -1156,11 +1156,18 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # over base-vs-new compiled text, word by word: exactly ONE `insert` per
 # assistant and butler carrier, that paragraph and nothing else; the three
 # concierge carriers byte-identical. No retention claim anywhere.
+# MOVED 2026-10-07 (#1315), the `assistant:text` carrier ONLY. The Text
+# projection gains one paragraph: a message meant for something a delegate owns
+# is delegated in the person's own words, quoted exactly in `task=`, before any
+# clarifying question the delegate could settle. Measured with `difflib` over
+# base-vs-new compiled text, word by word: exactly ONE `insert` on
+# `assistant:text`, that paragraph and nothing else; the other eight carriers
+# byte-identical. No retention claim anywhere.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
         "f38c3f4917d068c681fc589ec023831a1f42428331aa118bd66d225c2a01703a",
     "assistant:text":
-        "60f6a5f7badb0856d7e7fb3546018754d1f2c563bb1fb9434dd3c4a7e7eae247",
+        "953f96de6c7a8dcf77835dad76bbe813b8c1a821031e5f6f69a24a8e24d3936f",
     "assistant:voice":
         "df1a1579d052429afd7b77d9d1a5d129e145344690408bb4f6643db6ff44a8bb",
     "butler:restricted_webhook":
@@ -1623,3 +1630,43 @@ def test_casas_note_under_the_post_lines_names_the_silence_sentinel():
     from output_boundary import SILENCE_SENTINEL
     assert tools.POST_ECHO_SILENCE_NOTE.count(SILENCE_SENTINEL) == 1
     assert "Do not retell them." in tools.POST_ECHO_SILENCE_NOTE
+
+
+# ---------------------------------------------------------------------------
+# #1315: a message meant for a delegate reaches it in the person's own words,
+# delegated before any clarifying question. The rule reaches only the
+# assistant's text projection and the legacy carrier, once each. Its live
+# effect is measured by test-local/eval/ellen_delegation_fidelity.py.
+# ---------------------------------------------------------------------------
+
+_OWN_WORDS_DOCTRINE = (
+    "When a message is meant for something a delegate owns — an answer to a "
+    "question its plugin posted, a phrase its plugin asked the person to send, "
+    "or a short request in its area — delegate it with the person's own words "
+    "quoted exactly in `task=`, and put your reading of them, if any, in "
+    "`context=`. Do not turn their words into a different action. When you "
+    "cannot tell which of a delegate's actions they mean, delegate their words "
+    "and let the delegate settle it; ask the person to choose only when the "
+    "delegate's result asks, or when no delegate owns the request. A sign-in "
+    "link or one-time code still never goes into a brief."
+)
+
+
+def test_the_own_words_rule_reaches_only_the_assistant_text_projection():
+    needle = _collapse_ws(_OWN_WORDS_DOCTRINE)
+    compiled = _compiled_resident_carriers()
+    assert {name: _collapse_ws(body).count(needle) for name, body in compiled} == {
+        f"{slot}:{surface}": int(slot == "assistant" and surface == "text")
+        for slot in _RESIDENT_SLOTS
+        for surface in ("text", "voice", "restricted_webhook")}
+    legacy = dict(_legacy_prompt_carriers())
+    assert _collapse_ws(legacy["assistant"]).count(needle) == 1
+
+
+def test_the_eval_measures_the_shipped_rule():
+    import ast
+    path = Path(__file__).resolve().parents[1] / "test-local/eval/ellen_delegation_fidelity.py"
+    text = path.read_text(encoding="utf-8")
+    start = text.index("DOCTRINE_PARAGRAPH = (") + len("DOCTRINE_PARAGRAPH = ")
+    shipped = ast.literal_eval(text[start:text.index("\n)\n", start) + 2])
+    assert _collapse_ws(shipped) == _collapse_ws(_OWN_WORDS_DOCTRINE)

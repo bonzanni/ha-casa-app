@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-10-03
+last_reviewed: 2026-10-07
 ---
 
 # The specialist desk
@@ -32,7 +32,8 @@ not meet the route's four conditions — the sender is the authenticated operato
 message is retained in the post map for this chat and was posted for this operator, the
 poster is not the chat's own resident, and the poster is a specialist (`is_specialist`: the
 loaded role's `kind`, the same predicate the delegation gate reads) the resident may
-delegate to now — takes the path that existed before, byte for byte. The route runs first in
+delegate to now — takes the resident's path as before, its text unchanged (a reply carrying
+Casa's note of what it answered, below). The route runs first in
 the DM handler, ahead of the `/new` interception (so `/new, start over` on a Finance post is
 Finance's turn, as text: it resets nothing, neither the resident nor the desk), and after the
 chat's rate decision, taken exactly as today's path takes it.
@@ -45,7 +46,23 @@ message id, the moment that message's send returns. A page the operator holds is
 routable even when a later page failed and the plugin's result was withheld. The map is
 memory-only and count-bounded (4,096 entries, FIFO): a restart forgets it, and an entry
 older than 4,096 newer posted messages is evicted. Both are stated behaviour, not a gap — a
-reply on such a message is a plain message to the resident, which routes it by judgement.
+reply on such a message reaches the resident with Casa's note of what it answered, and the
+resident routes it by judgement.
+
+**A reply the desk does not take still says what it answered.** A text message in the DM
+that replies to another and does not route — on the resident's own post, a forgotten one, a
+specialist's the resident may not delegate to now, anyone else's — reaches the resident with
+its words unchanged and one Casa-composed note on the reserved `_reply_note` context key,
+stamped after sanitization (`TelegramChannel._reply_note_for`, composed by `reply_note`): who
+posted the quoted message, when (in Casa's zone), and what it read — its text or caption,
+clipped to 600 characters (`REPLY_QUOTE_CHARS`), or `(no text)`. Who posted it is decided
+from the post map and Telegram's sender ids, never from text, the first match winning: a
+retained post names the specialist's label, or "on your behalf" for the chat's resident; a
+message sent on behalf of a chat (`sender_chat` on either message) names no person; the
+bot's own id with no record left is "an earlier message from Casa", which cannot say whether
+the resident or a specialist posted it; the sender's own id is their own earlier message;
+anything else is someone else's message. The resident's turn carries the note in its Casa
+notes block, after the desk lines (below); a reply the desk takes carries none.
 
 **A desk is a window on a dialogue, not a session.** Each (chat, specialist) pair has a desk:
 an ordered log of exchanges — the operator's words, the resident's brief when it delegated,
@@ -139,9 +156,13 @@ echo. Every such line states a past or standing fact: what happened, never what 
 **The resident learns, without a turn.** Each desk turn leaves one Casa line on the chat's
 echo ledger (`📊 Finance answered your reply (2 pages).`, `… could not handle your reply
 (specialist_turn_limit).`), with the delivered-slot echo lines of any post the turn made; the
-resident's next turn in that chat drains them (read-and-clear) and prepends them to its
-prompt, each marked `(front desk)`, at most five then a count, each within 120 characters.
-No narration turn is synthesised; the origin's `user_text` stays raw; nothing is persisted.
+resident's next turn in that chat drains them (read-and-clear), each marked `(front desk)`,
+at most five then a count, each within 120 characters, as the first note of its Casa notes
+block: one `<casa_notes>` block directly after the turn's `<current_time>` envelope
+(`timekeeping.compose_turn_preamble`), which the transcript readback strips with the
+envelope, so no Casa line is retained as the operator's words (INV-MEM-022 in
+[`memory-labelling.md`](memory-labelling.md)). No narration turn is synthesised; the
+origin's `user_text` and the recall query stay raw; nothing is persisted.
 
 **An approval raised inside a desk turn continues the desk.** The desk turn's grant identity
 carries an advisory `desk_role` beside its advisory `target_role` (which stays the resident,
@@ -162,8 +183,8 @@ operator check the ingress already makes, the post map the channel filed, the ch
 resident, the live delegate map the ACL reads — never from text. The route runs first in the
 serialised DM handler and after the chat's rate decision; the desk task is tracked like an
 engagement turn's so the per-chat serial lock is released at once and a stop can drain it.
-The map's retention is the invariant's edge: a restart or eviction makes the reply a plain
-message, by design.
+The map's retention is the invariant's edge: a restart or eviction makes the reply a
+resident message carrying Casa's note (INV-DESK-004), by design.
 
 **INV-DESK-002**: A desk turn's reply reaches the operator only as an admitted, labelled, paginated post of the specialist's own completed and bounded text — of a run that ended with a protected call waiting on the operator's approval, only the text written before that call; of a reply whose last text-bearing message is only `<silent/>` after earlier text, the earlier messages without it — whose messages join the post map; a turn that produces no proven operator-visible outcome, or whose reply is not proven, ends in one labelled Casa notice; the chat's resident learns of the turn only through a body-free line at its next turn, and no resident model turn is spent on it.
 
@@ -185,6 +206,14 @@ context budget — newest exchanges kept, possibly none — after the resident's
 an async launch or a degraded sync still returns `pending` to the resident at once while its
 task waits for the desk. A delegation launched elsewhere (an engagement, a scheduled or
 webhook turn, another chat), a job batch, and a voice turn touch no desk.
+
+**INV-DESK-004**: A Telegram DM text message that replies to another message and that the desk does not take reaches the chat's resident with its text unchanged and one Casa-composed note on the reserved `_reply_note` context key, naming who posted the quoted message — decided from Casa's post map and Telegram's sender ids, never from text — when, and what it read, clipped to 600 characters.
+
+The key is in `provenance.RESERVED_CONTEXT_KEYS`, so no external ingress can set it, and the
+channel stamps it after sanitization; the resident's turn reads it only on a Telegram turn.
+What it does not cover: once the post map has forgotten a message Casa posted, the note
+cannot say which party posted it, only that Casa did; a file sent as a reply, and a message
+in an engagement topic, carry no note.
 
 ## Failure behavior
 
@@ -222,7 +251,8 @@ confirmed.` (some pages may have landed), no retry;
 if the notice itself fails, nothing more is attempted.
 
 **A reply whose quoted message is not retained, by a non-operator, on the resident's own post,
-or in a chat whose id does not normalise.** Today's path, untouched.
+or in a chat whose id does not normalise.** The resident's path, the text untouched, with
+Casa's reply note (INV-DESK-004).
 
 **An approval continuation whose desk is no longer delegable, or whose approver is not the
 operator.** One labelled notice (`… could not continue (not delegable).`), the same line in
@@ -231,7 +261,8 @@ still one the resident may delegate to, not merely loaded — runs under the loc
 desk turn, a file's included.
 
 **Casa restarts.** The map, the desks and the echo ledger are gone; the next reply on an
-older post is a plain message to the resident; the next desk turn starts a fresh log.
+older post reaches the resident with a note naming an earlier message from Casa, which can no
+longer say who posted it; the next desk turn starts a fresh log.
 
 ## Extension points
 
@@ -257,6 +288,7 @@ follows.
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._dispatch_desk_continuation`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.deliver_desk_notice`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._record_post`
+- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._reply_note_for`
 - `casa/rootfs/opt/casa/output_boundary.py::TurnScope.for_desk`
 
 **Tests**
@@ -272,6 +304,7 @@ follows.
 - `tests/test_pending_approval_desk.py`
 - `tests/test_redcase_1283.py`
 - `tests/test_desk_closing_silence.py`
+- `tests/test_reply_note.py`
 
 **Related**
 - [`architecture/plugin-delivered-slots.md`](../architecture/plugin-delivered-slots.md)
@@ -280,4 +313,5 @@ follows.
 - [`architecture/plugin-authorization.md`](../architecture/plugin-authorization.md)
 - [`architecture/telegram.md`](../architecture/telegram.md)
 - [`architecture/output-boundary.md`](../architecture/output-boundary.md)
+- [`architecture/memory-labelling.md`](../architecture/memory-labelling.md)
 <!-- END SOURCEMAP -->

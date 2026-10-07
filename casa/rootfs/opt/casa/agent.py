@@ -58,7 +58,7 @@ from log_cid import cid_var
 import sdk_logging
 from mcp_registry import McpServerRegistry
 from channel_trust import channel_trust_display
-from timekeeping import compose_time_envelope, resolve_tz
+from timekeeping import compose_turn_preamble, resolve_tz
 from hindsight_ids import bank_id
 from sensitivity import clearance_for_origin, readable_tiers
 from personality_types import SpeakerProvenance
@@ -2207,15 +2207,22 @@ class Agent:
             # Composed via timekeeping so retention's strip_time_envelope
             # (#471) can never drift from what is actually prepended here.
             # S4 §6: what the specialist desks of this chat did since the
-            # resident's last turn — Casa's own body-free lines, drained once,
-            # ahead of the envelope; the origin's user_text stays raw.
+            # resident's last turn — Casa's own body-free lines, drained once —
+            # then (#1314) the channel's note of the message this one replied
+            # to. Both ride in the Casa notes block right after the envelope,
+            # which the readback strips with it (#1317); the origin's
+            # user_text stays raw.
             import specialist_desk
-            desk_prefix = (
-                specialist_desk.prompt_prefix(msg.context.get("chat_id"))
-                if msg.channel == "telegram" else "")
+            notes: list[str] = []
+            if msg.channel == "telegram":
+                desk_lines = specialist_desk.prompt_lines(msg.context.get("chat_id"))
+                if desk_lines:
+                    notes.append("\n".join(desk_lines))
+                reply_note = msg.context.get("_reply_note")
+                if isinstance(reply_note, str) and reply_note.strip():
+                    notes.append(reply_note)
             prompt_text = (
-                desk_prefix
-                + compose_time_envelope(datetime.now(resolve_tz())) + user_text
+                compose_turn_preamble(datetime.now(resolve_tz()), notes) + user_text
             )
 
             # Eligibility gate (spec §4, AR-6/AR-7): a pooled warm turn iff the

@@ -42,6 +42,18 @@ _FALLBACK_TZ = "UTC"
 _TIME_ENVELOPE_RE = re.compile(
     r"\A<current_time>\n(\S+)[^\n]*\n</current_time>(?:\n\n|\s*\Z)")
 
+# #1314/#1317: Casa's own per-turn notes (the front-desk lines, a reply's note)
+# ride in ONE block directly after the envelope, so the readback strips them
+# with it and nothing Casa wrote is retained as the speaker's words. The block
+# is recognised only right after an envelope, and its close only as the
+# composer writes it: a note's own text can never contain the close tag (the
+# composer breaks it with a zero-width space). Same terminator rule as the
+# envelope: the readback's whitespace strip eats the blank line when the body
+# after the block is whitespace only.
+NOTES_OPEN = "<casa_notes>\n"
+NOTES_CLOSE = "</casa_notes>"
+_NOTES_RE = re.compile(r"<casa_notes>\n.*?\n</casa_notes>(?:\n\n|\s*\Z)", re.S)
+
 logger = logging.getLogger(__name__)
 
 
@@ -173,6 +185,18 @@ def compose_time_envelope(now: datetime) -> str:
     )
 
 
+def compose_turn_preamble(now: datetime, notes: "list[str] | tuple[str, ...]" = ()) -> str:
+    """What Agent._process prepends to a turn's query text: the envelope, then
+    — only when there are notes — ONE ``<casa_notes>`` block, each note a
+    paragraph. With no notes it is exactly :func:`compose_time_envelope`.
+    Pinned with :func:`split_time_envelope`, which strips both."""
+    envelope = compose_time_envelope(now)
+    kept = [n.replace(NOTES_CLOSE, "</casa_notes\u200b>").strip("\n") for n in notes if n and n.strip()]
+    if not kept:
+        return envelope
+    return envelope + NOTES_OPEN + "\n\n".join(kept) + "\n" + NOTES_CLOSE + "\n\n"
+
+
 def split_time_envelope(text: str) -> tuple[str | None, str]:
     """Split ONE leading turn envelope off ``text``: ``(iso_timestamp, rest)``
     when the envelope is present, ``(None, text)`` otherwise — no envelope, an
@@ -184,7 +208,12 @@ def split_time_envelope(text: str) -> tuple[str | None, str]:
     m = _TIME_ENVELOPE_RE.match(text)
     if m is None:
         return None, text
-    return m.group(1), text[m.end():]
+    rest = text[m.end():]
+    # the composer's notes block, only where it puts it (#1314/#1317)
+    notes = _NOTES_RE.match(rest)
+    if notes is not None:
+        rest = rest[notes.end():]
+    return m.group(1), rest
 
 
 def strip_time_envelope(text: str) -> str:

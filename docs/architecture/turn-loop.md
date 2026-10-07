@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-30
+last_reviewed: 2026-10-07
 ---
 
 # The turn loop
@@ -50,7 +50,11 @@ is [`output-boundary.md`](output-boundary.md) (INV-OUT-006 in
 used to be inline checks here and in `send_message`).
 
 **The origin snapshot records the turn's question, which is usually its text.** The prompt,
-the options and the recall query are built from the message's own text. The origin's
+the options and the recall query are built from the message's own text; the query sent
+puts `compose_turn_preamble` ahead of it — the `<current_time>` envelope, then, on a Telegram
+turn that has any, one `<casa_notes>` block of Casa's per-turn notes (the drained front-desk
+lines, then a reply's note: [`specialist-desk.md`](specialist-desk.md)), which retention
+strips with the envelope (INV-MEM-022 in [`memory-labelling.md`](memory-labelling.md)). The origin's
 `user_text` normally holds that same text, and it is what a delegation launched from the turn
 records and quotes back. The one exception is a turn `handle_message` synthesized from a
 delegation completion. For that turn it passes `_process` the completion's own question as the

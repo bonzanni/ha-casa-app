@@ -57,16 +57,16 @@ def _erase_origin(role="assistant", target="assistant", **over) -> dict:
 async def _run(tmp_path, msg, role="assistant"):
     agent = _make_agent(tmp_path, role=role)
     captured: list = []
-    real = agent_mod.compose_time_envelope
+    real = agent_mod.compose_turn_preamble
 
-    def intercept(now):
+    def intercept(now, notes=()):
         captured.append((dict(agent_mod.origin_var.get() or {}),
                          resolve_grant_identity(role), turn_provenance()))
-        return real(now)
+        return real(now, notes)
 
     ScriptedToolClient.reset([_mk_assistant("done"), _mk_result("sid-e")])
     with patch("sdk_client_pool._default_make_client", ScriptedToolClient), \
-            patch.object(agent_mod, "compose_time_envelope", intercept), \
+            patch.object(agent_mod, "compose_turn_preamble", intercept), \
             _capture_reports():
         await agent._process(msg)
     assert len(captured) == 1

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.344.42] - 2026-10-07
+
+### Fixed
+- When you replied to a message (a swipe-reply) and the reply did not go straight to a specialist, the assistant received only your words, not what you were answering. That happens after a restart, on one of the assistant's own messages, or on a specialist it cannot reach right now. It then read your words as an answer to whatever it had said last, for example as a "yes" to its own offer of a reset. The assistant is now also told which message you replied to: who posted it (as far as Casa's own records and Telegram can say), when, and what it read, shortened to 600 characters. Your words reach it unchanged. (#1314)
+- The assistant now passes a message meant for a specialist on in your own words, and delegates before asking you to choose between readings the specialist can settle. Before, it could rewrite a phrase a plugin had asked you to send into a different request: "start from Q2 2026" became "run the accounting check again", which started an extra run. It could also stop on a clarifying question that then expired unanswered. (#1315)
+- The assistant's notes about what a specialist did since your last message ("Finance answered your reply …") were saved to long-term memory as if you had said them, with that turn's timestamp. Casa's own notes now travel in a separate block that is removed before anything is saved, and only your own words are kept. (#1317)
+
 ## [0.344.41] - 2026-10-07
 
 ### Fixed
