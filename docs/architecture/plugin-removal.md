@@ -88,8 +88,9 @@ removal is confirmed rather than measured or unknown. A payload no recipe relays
 disclosure the operator never sees, so the payload gate and the recipe gate cover the same
 set of doors.
 
-**A plugin that declares an eraser is asked about first**: the question, the erase episode and
-the finishing `erase_data=true` call are [`plugin-erasure.md`](plugin-erasure.md)'s.
+**A plugin that declares an eraser is asked about first**: the question and the finishing
+`erase_data=true` call are [`plugin-erasure.md`](plugin-erasure.md)'s, the erase episode is
+[`plugin-erase-episode.md`](plugin-erase-episode.md)'s.
 
 The wording is bounded by INV-TOOL-005, which is why it reads the way it does. `may remain`,
 because Casa cannot see whether the plugin ever stored anything; and

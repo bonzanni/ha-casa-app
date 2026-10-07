@@ -76,7 +76,7 @@ The two markers are one rule, not two: `provenance.CASA_PLUGIN_TURN_TARGETS` pai
 marker with its target key, and the identity derivation, the transport classification and
 both delegation mode gates read that table. The erase turn — Casa running a plugin's
 declared eraser on the operator's Erase tap — is
-[`plugin-erasure.md`](plugin-erasure.md)'s; this invariant is only its identity.
+[`plugin-erase-episode.md`](plugin-erase-episode.md)'s; this invariant is only its identity.
 
 What it does not cover: turns with no identity at all — voice, webhook, scheduled,
 callback-nudge and every other synthetic marker, and executor sessions — which refuse a
