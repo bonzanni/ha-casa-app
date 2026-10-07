@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.344.44] - 2026-10-07
+
+### Fixed
+- When a specialist upgrade failed after the new version was already kept, and a reload of that specialist during the upgrade had already loaded the new version, the upgrade's result said the upgrade was not active yet, that Casa had not loaded the new version, and that the specialist was not running it. Following the operator's ruling on #1298, Casa now also compares the version the specialist was running when the upgrade returned with the version the upgrade kept. When they are the same, the result says the upgrade did not finish and that the specialist was running the new version when the upgrade returned. When Casa cannot read which version the specialist was running (it uses a persona override, or Casa has no running agent for it), the result no longer says that Casa has not loaded the new version: it says the upgrade did not finish and that which version the specialist was running when the upgrade returned could not be established. The finishing step is unchanged: re-run the upgrade, or restart Casa first when the result says so. A specialist that uses a persona override is still not told that it was running the new version, even when a reload had loaded it; that case is tracked in #1324. (#1298)
+
 ## [0.344.43] - 2026-10-07
 
 ### Fixed
