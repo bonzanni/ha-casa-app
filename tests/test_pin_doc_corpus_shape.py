@@ -1316,3 +1316,43 @@ def test_erase_episode_and_uninstall_flow_are_separate():
         total = sum(text.count(lead) for text in texts.values())
         owned = texts[owner].count(lead)
         assert (total, owned) == (1, 1), (lead, total, owned)
+
+
+def test_question_lifecycle_and_tool_interface_are_separate():
+    """#1153: the split separates the question lifecycle from the tool
+    interface.
+
+    The seam is the one the manifest names itself at 0fca2ec9:
+    ``docs/manifest.d/architecture-t-z.yaml:66-67`` — the tools-interface
+    row's ``summary`` and ``when_changing`` — name "the question lifecycle"
+    as its own clause beside the registry, the result contract and
+    completion semantics, while ``defines_invariants`` (``:80``) lists
+    INV-TOOL-008 beside INV-TOOL-001/002/006 on one document. The document
+    is past the 25 KB ceiling at that base and INV-DOC-007
+    (``docs/contributing/doc-contract.md:75``) owes the split.
+
+    At 0fca2ec9 all four ids resolve to one document: the ownership counts
+    are (1, 1), not (1, 2). The four payload-location checks independently
+    hold at base and are regression arms.
+
+    Pins ownership and lead location; byte-identical movement and
+    completeness of the passages remain review obligations.
+
+    Specified by **astra** in the drive red-case round.
+    """
+    moved = _declaring_document("INV-TOOL-008")
+    retained = {_declaring_document(inv)
+                for inv in ("INV-TOOL-001", "INV-TOOL-002", "INV-TOOL-006")}
+    counts = (len(retained), len(retained | {moved}))
+    assert counts == (1, 2), (counts, retained, moved)
+    texts = {doc: _normalized((DOCS / doc).read_text())
+             for doc in _text_corpus()}
+    for lead in (
+        "A question cannot be delivered.",
+        "A question is over before the tool returns.",
+        "Enforced by one synchronous sample of that live map",
+        "The delivery marker is not the oracle and never was",
+    ):
+        total = sum(text.count(lead) for text in texts.values())
+        owned = texts[moved].count(lead)
+        assert (total, owned) == (1, 1), (lead, total, owned)
