@@ -9,10 +9,11 @@ last_reviewed: 2026-08-15
 ## Scope
 
 The OS-level boundary around a `claude_code` executor engagement: the uid it is given and
-never shares, the workspace that uid owns, how root reaches into that workspace without
-being redirected out of it, where the run-state root alone touches lives, the preflight that
+never shares, the workspace that uid owns, the preflight that
 refuses a launch whose privilege drop could not succeed, and the confirmed-down sweep boot
-replay runs before it migrates or resumes a service.
+replay runs before it migrates or resumes a service. How root reaches into that workspace
+without being redirected out of it, and where the run-state root alone touches lives, are
+[`architecture/engagement-workspace-access.md`](engagement-workspace-access.md).
 
 The engagement *record* and its creation are
 [`architecture/engagements.md`](engagements.md); how a turn is admitted to a live engagement
@@ -49,20 +50,6 @@ to substitute a sentinel or a below-base uid, the preflight refuses to plant a s
 drop it cannot prove, and boot replay keeps services down rather than starting one that would
 run as root or crash-loop under its supervisor.
 
-**Two directories, not one, and that is what removes the symlink primitive.** The uid-owned
-workspace holds what the engagement's own CLI reads and writes by path. Every file only root
-touches — the captured session id, the spawn-epoch fence, the per-epoch stderr rings, the
-inbound spool, the stdin FIFO, the stream cursor, the cached executor-memory block, the
-record's crash-recovery metadata — lives instead in a root-owned control directory the CLI is
-never `--add-dir`ed into. A symlink the CLI plants in its own workspace cannot redirect
-root's read or write of any of them, because none of them is a path under the workspace at
-all.
-
-**Root still reaches in, and that reach is the boundary's remaining weak point.** casa-core
-stays root and has to read and write inside a workspace owned by the very process the drop
-exists to contain, so those crossings go through the confined accessors rather than a plain
-`open()` on a joined path.
-
 **The boundary is enforced at start and at boot; it is not re-established by a process
 ending.** A launch is gated by the preflight. A boot sweeps every engagement service before
 it migrates or resumes anything, each through a bounded ladder whose last rungs attempt a
@@ -92,27 +79,6 @@ reach. One survivor class follows from that and is mitigated rather than closed:
 process from before the drop existed, killed best-effort by the boot sweep below. A process
 still running under the engagement's own uid after its record has gone terminal is no longer
 in that company — INV-CONT-006 kills it and says whether it worked.
-
-**INV-CONT-002**: Root's own read and write accessors for engagement workspace files refuse to follow a symlink at the final path component or any intermediate one, and can require the resolved file's owner to match an expected uid.
-
-Enforced by `safe_fs.py`'s `open_beneath`/`read_text_beneath` and `atomic_write_beneath`,
-preferring `openat2` with `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS`, falling back to an
-FD-relative `O_NOFOLLOW` walk on a kernel without it.
-
-What it does not cover: root's own reachability into a workspace it already has filesystem
-access to — not a boundary between two non-root uids, which ordinary file permissions after
-`chown_workspace` enforce instead.
-
-**INV-CONT-003**: Root-touched engagement run-state is never joined into the uid-owned workspace root a `claude_code` engagement's own CLI process can reach.
-
-That root is reachable by the subprocess via `--add-dir`, so a control-only file placed there
-would be a symlink-planting target for the process the uid drop exists to contain. Every root
-module touching run-state is held to a fixed allowlist of control-only basenames that must
-never be path-joined to a workspace-root symbol.
-
-What it does not cover: a static, symbol-name-based check over a fixed set of root modules,
-not a full dataflow analysis — it catches established naming for "the workspace root," not an
-arbitrarily renamed variable.
 
 **INV-CONT-004**: A `claude_code` run script is never rendered or planted while its uid drop cannot be established — no `setpriv`, an unallocated uid, a workspace not owned by that uid, no passwd entry for it, or a pinned plugin directory neither owned by that uid nor world-readable and traversable — and the service is refused rather than started as root or left to crash-loop under its supervisor.
 
@@ -282,26 +248,7 @@ terminal record — a fresh launch surfaces the refusal as a stale launch, a con
 simply leaves the service down. The fence also serialises the ladder against that start, so
 the two can never interleave.
 
-**Root's accessor meets a symlink.** The read or write raises `SymlinkRefused`, an `OSError`
-subclass, and the caller decides what a refused file means — the accessor never resolves
-through it. On a kernel without `openat2` the same refusal comes from the fd-relative
-`O_NOFOLLOW` walk, which is a second implementation of the guarantee rather than a weaker
-one.
-
-**A file resolves cleanly but is owned by the wrong uid.** With an expected owner supplied,
-it is refused on the `fstat` of the final descriptor — so root reading a workspace file back
-is reading one the engagement's own uid wrote, not one substituted by something else.
-
 ## Extension points
-
-**A new root-side read or write of an engagement file** goes through the confined accessors
-with the record's uid as the expected owner, never a plain `open()` on a joined path. Root's
-crossings are the surface this boundary exists to narrow, and a plain open follows whatever
-the workspace's owner planted.
-
-**New run-state that only root touches** gets its basename under the control directory, and
-joins the inventory check's control-only allowlist so the static scan keeps covering it. A
-name the check does not know is a name it cannot notice being joined to the workspace root.
 
 **A new evidence source for the high-water** is folded into the reconstruction, where it may
 only raise the mark. A source that cannot be read has to poison rather than be skipped — a
@@ -341,10 +288,6 @@ never runs, and anything that replaces it drops the privilege drop with it.
 - `casa/rootfs/opt/casa/drivers/s6_rc.py::wanted_down`
 - `casa/rootfs/opt/casa/drivers/s6_rc.py::_run`
 - `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.quiesce`
-- `casa/rootfs/opt/casa/safe_fs.py::open_beneath`
-- `casa/rootfs/opt/casa/safe_fs.py::read_text_beneath`
-- `casa/rootfs/opt/casa/safe_fs.py::atomic_write_beneath`
-- `casa/rootfs/opt/casa/drivers/workspace.py::provision_control_dir`
 - `casa/rootfs/opt/casa/drivers/workspace.py::render_run_script`
 - `casa/rootfs/opt/casa/drivers/workspace.py::chown_workspace`
 - `casa/rootfs/opt/casa/drivers/claude_code_driver.py::_preflight_uid_drop`
@@ -353,8 +296,6 @@ never runs, and anything that replaces it drops the privilege drop with it.
 
 **Tests**
 - `tests/test_engagement_uids.py`
-- `tests/test_safe_fs.py`
-- `tests/test_root_workspace_accessor_inventory.py`
 - `tests/test_boot_replay.py`
 - `tests/test_claude_code_driver.py`
 - `tests/test_engagement_quiesce.py`
@@ -368,6 +309,7 @@ never runs, and anything that replaces it drops the privilege drop with it.
 
 **Related**
 - [`architecture/engagements.md`](../architecture/engagements.md)
+- [`architecture/engagement-workspace-access.md`](../architecture/engagement-workspace-access.md)
 - [`architecture/engagement-finalization.md`](../architecture/engagement-finalization.md)
 - [`architecture/engagement-completion-gate.md`](../architecture/engagement-completion-gate.md)
 - [`architecture/hook-resolution.md`](../architecture/hook-resolution.md)

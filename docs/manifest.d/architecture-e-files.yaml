@@ -1,0 +1,18 @@
+# Manifest shard: the engagement documents about files root handles from outside an engagement
+# (born in their own shard so the E shard, split at the 40 KB index ceiling, keeps its headroom).
+- doc: architecture/engagement-workspace-access.md
+  summary: Root's crossings into a claude_code engagement's workspace — the no-follow accessors it reads and writes through, and the control directory that keeps root-only run-state off the workspace root.
+  when_changing: root's access into a workspace, or where root-only engagement run-state lives
+  covers:
+    - casa/rootfs/opt/casa/safe_fs.py::open_beneath
+    - casa/rootfs/opt/casa/safe_fs.py::read_text_beneath
+    - casa/rootfs/opt/casa/safe_fs.py::atomic_write_beneath
+    - casa/rootfs/opt/casa/drivers/workspace.py::provision_control_dir
+  tests:
+    - tests/test_safe_fs.py
+    - tests/test_root_workspace_accessor_inventory.py
+  related: [architecture/engagement-containment.md, architecture/engagements.md]
+  defines_invariants: [INV-CONT-002, INV-CONT-003]
+  invariant_tests:
+    INV-CONT-002: [tests/test_safe_fs.py::test_refuses_symlink_final_component, tests/test_safe_fs.py::test_refuses_symlink_intermediate_component, tests/test_safe_fs.py::test_owner_uid_mismatch_refused]
+    INV-CONT-003: [tests/test_root_workspace_accessor_inventory.py::test_no_control_state_under_workspace_root]

@@ -102,7 +102,7 @@
 - item: casa/rootfs/opt/casa/engagement_uids.py
   doc: architecture/engagement-containment.md
 - item: casa/rootfs/opt/casa/safe_fs.py
-  doc: architecture/engagement-containment.md
+  doc: architecture/engagement-workspace-access.md
 - item: casa/rootfs/opt/casa/event_acks.py
   doc: architecture/plugin-events.md
 - item: casa/rootfs/opt/casa/event_attempts.py
