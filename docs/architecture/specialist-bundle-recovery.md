@@ -102,10 +102,12 @@ when finishing the retained prior failed too and further changes are refused unt
 restarting Casa and then re-running it. What else it says depends on the live agent: the
 library carries the root this upgrade committed — the transaction's target root, the one
 `active.yaml` names — and the root `active.yaml` named before the commit, and the tool compares
-the live agent's binding root with them when the library returns. A reload of the specialist
+the live agent's component root with them when the library returns: its binding's, or, for a
+persona override, whose binding carries none, the root of the tuple its config was activated
+from, which activation keeps on the config. A reload of the specialist
 that lands while the library runs loads what `active.yaml` names, so a live root equal to the
 committed one makes it say the upgrade did not finish and that when this upgrade returned the
-specialist was running the new version. No root to compare (a persona override, no live agent)
+specialist was running the new version. No root to compare (no live agent)
 makes it say the upgrade did not finish and that which version the specialist was running when
 this upgrade returned could not be established; it never says Casa has not loaded the new
 version, since such a reload may have. Otherwise it says the upgrade is not active yet: a live
@@ -115,11 +117,11 @@ the specialist was not running the new version when this upgrade returned. None 
 version. An unrelated reload before the re-run can load
 parts of the kept version for new conversations.
 `kept_new_version: true` on a failed reload-and-verify comes after the sequencer ran. It says the
-new version is active unless the specialist's own reload failed. Then the live agent's binding,
-read when that reload returned, decides: a component root other than the new version's makes it
+new version is active unless the specialist's own reload failed. Then the live agent's component
+root, read the same way when that reload returned, decides: a component root other than the new version's makes it
 say the specialist was not running the new version when the reload returned, naming no older
-version, since the root is compared with the new version's alone; no root to read (a
-persona-override binding carries none, or there was no live agent) makes it say which version was
+version, since the root is compared with the new version's alone; no root to read (there was no
+live agent) makes it say which version was
 running could not be established; the new version's root keeps the active sentence. Both other
 texts say the reload failed and that Casa tries to load the new version at the next reload or
 restart. A failure between the commit and the owned-plugin
