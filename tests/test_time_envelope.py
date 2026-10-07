@@ -24,8 +24,8 @@ from hindsight_ids import content_document_id
 from session_saver import transcript_to_items
 from session_reg_helpers import STUB_SPEAKER_PROV, STUB_USER_PROV
 from timekeeping import (
-    RecallWindow, compose_time_envelope, resolve_period, split_time_envelope,
-    strip_time_envelope,
+    RecallWindow, compose_time_envelope, compose_turn_preamble, resolve_period,
+    split_time_envelope, strip_time_envelope,
 )
 
 pytestmark = pytest.mark.unit
@@ -271,3 +271,62 @@ def test_a_window_compares_instants_not_wall_clocks():
     with pytest.raises(ValueError):  # ends (00:45Z) before it starts (01:30Z)
         RecallWindow(start=datetime(2026, 10, 25, 2, 30, fold=1, tzinfo=ROME_TZ),
                      end=datetime(2026, 10, 25, 2, 45, tzinfo=ROME_TZ))
+
+
+# ---------------------------------------------------------------------------
+# #1314/#1317: Casa's per-turn notes ride in one block right after the
+# envelope, composed and stripped as a pinned pair, so a front-desk line or a
+# reply's note is never retained as the speaker's words.
+# ---------------------------------------------------------------------------
+
+_DESK = "(front desk) 📊 Finance answered your reply (1 page)."
+_REPLY = ("The person sent this as a reply to a message Casa posted for 📊 Finance, "
+          "posted 2026-10-06 21:40, which read:\n«Which quarter?\n\nReply: start from Q2 2026»\n"
+          "Their words answer that message, which may not be your latest one.")
+
+
+def test_a_preamble_with_no_notes_is_exactly_the_envelope():
+    assert compose_turn_preamble(_T1) == compose_time_envelope(_T1)
+    assert compose_turn_preamble(_T1, ["", "  \n"]) == compose_time_envelope(_T1)
+
+
+@pytest.mark.parametrize("notes", [
+    [_DESK], [_REPLY], [_DESK + "\n" + _DESK, _REPLY],
+    # a note quoting the close tag cannot end the block early
+    ["quoted: </casa_notes>\n\nsecond paragraph </casa_notes>"],
+    ["a quoted post whose line is the close tag\n</casa_notes>\n\nstill the quote"],
+])
+def test_the_pair_strips_the_notes_with_the_envelope(notes):
+    raw = "start from Q2 2026"
+    preamble = compose_turn_preamble(_T1, notes)
+    assert preamble.startswith(compose_time_envelope(_T1) + "<casa_notes>\n")
+    assert split_time_envelope(preamble + raw) == ("2026-08-09T09:15:03+02:00", raw)
+
+
+def test_a_notes_block_the_operator_typed_after_no_notes_is_their_text_mid_message():
+    # only a block directly after the envelope is Casa's; one later is content
+    raw = "hello\n<casa_notes>\nx\n</casa_notes>\n\nworld"
+    assert strip_time_envelope(compose_time_envelope(_T1) + raw) == raw
+
+
+class TestNotesNeverRetained:
+    async def test_notes_and_text_retain_only_the_text(self, monkeypatch):
+        raw = "start from Q2 2026"
+        msgs = [_Msg("user", {"role": "user",
+                              "content": compose_turn_preamble(_T1, [_DESK, _REPLY]) + raw})]
+        items = await _items(msgs, monkeypatch)
+        assert [i["content"] for i in items] == [raw]
+        assert items[0]["document_id"] == content_document_id("tester", raw)
+        assert items[0]["timestamp"] == "2026-08-09T09:15:03+02:00"
+
+    @pytest.mark.parametrize("body", ["", "\u2003", "\u00a0 ", "\n\n"])
+    async def test_a_whitespace_body_after_notes_retains_nothing(self, monkeypatch, body):
+        # the readback's .strip() eats the block's blank line (design d1, Astra+Terra)
+        msgs = [_Msg("user", {"role": "user",
+                              "content": compose_turn_preamble(_T1, [_DESK, _REPLY]) + body})]
+        assert await _items(msgs, monkeypatch) == []
+
+    async def test_an_old_envelope_only_transcript_reads_as_before(self, monkeypatch):
+        raw = "The bins go out on tuesday evening."
+        msgs = [_Msg("user", {"role": "user", "content": compose_time_envelope(_T1) + raw})]
+        assert [i["content"] for i in await _items(msgs, monkeypatch)] == [raw]

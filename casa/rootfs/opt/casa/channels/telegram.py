@@ -84,6 +84,7 @@ from provenance import (
     strict_positive_id,
 )
 from rate_limit import RateLimiter
+from timekeeping import resolve_tz
 
 import topic_ledger
 
@@ -1887,6 +1888,11 @@ class TelegramChannel(Channel):
         # synthesized/scheduled/delegated turns never carry it.
         if self._sender_is_operator(user):
             context["_operator_turn"] = True
+        # #1314: a reply the desk did not take still tells the resident what
+        # it answered — Casa's note, on a reserved key; the text stays raw.
+        reply_note = self._reply_note_for(update, chat_id)
+        if reply_note is not None:
+            context["_reply_note"] = reply_note
 
         msg = BusMessage(
             type=MessageType.CHANNEL_IN,
@@ -1898,6 +1904,51 @@ class TelegramChannel(Channel):
             trusted_user_origin=trusted_origin,
         )
         await self._bus.send(msg)
+
+    def _reply_note_for(self, update: Update, chat_id: str) -> str | None:
+        """#1314: the note of what a message the desk did not take replied to,
+        or ``None`` for a message that is not a reply. Who posted it is decided
+        from Casa's post map and Telegram's sender ids, never from its text: a
+        message sent on behalf of a chat names no person (its ``from_user`` may
+        be a placeholder shared by every anonymous admin)."""
+        import result_broker
+        import specialist_desk
+        message = update.message
+        quoted = getattr(message, "reply_to_message", None)
+        if quoted is None:
+            return None
+        chat = strict_positive_id(chat_id)
+        record = (result_broker.POST_MAP.get(chat, getattr(quoted, "message_id", None))
+                  if chat is not None else None)
+        quoted_from = getattr(quoted, "from_user", None)
+        sender = getattr(message, "from_user", None) or update.effective_user
+        bot = getattr(self._app, "bot", None) if self._app is not None else None
+        try:
+            bot_id = getattr(bot, "id", None)
+        except Exception:  # noqa: BLE001 — an uninitialised bot has no id yet
+            bot_id = None
+        if record is not None:
+            who = ("a message Casa posted on your behalf" if record.role == self.default_agent
+                   else f"a message Casa posted for {specialist_desk.label_for(record.role)}")
+        elif (getattr(quoted, "sender_chat", None) is not None
+              or getattr(message, "sender_chat", None) is not None):
+            who = "a message sent on behalf of a chat"
+        elif quoted_from is not None and bot_id is not None and quoted_from.id == bot_id:
+            who = ("an earlier message from Casa (you or a specialist; Casa no longer "
+                   "has a record of which)")
+        elif quoted_from is not None and sender is not None and quoted_from.id == sender.id:
+            who = "their own earlier message"
+        else:
+            who = "someone else's message"
+        posted = None
+        date = getattr(quoted, "date", None)
+        if date is not None:
+            try:
+                posted = date.astimezone(resolve_tz()).strftime("%Y-%m-%d %H:%M")
+            except (TypeError, ValueError, AttributeError):
+                posted = None
+        text = getattr(quoted, "text", None) or getattr(quoted, "caption", None)
+        return specialist_desk.reply_note(who, posted, text)
 
     # ------------------------------------------------------------------
     # S4: the specialist desk — a swipe-reply on a specialist's post

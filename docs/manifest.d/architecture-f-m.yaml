@@ -126,15 +126,17 @@
     - casa/rootfs/opt/casa/memory_provenance.py::build_retain_items
     - casa/rootfs/opt/casa/timekeeping.py::compose_time_envelope
     - casa/rootfs/opt/casa/timekeeping.py::split_time_envelope
+    - casa/rootfs/opt/casa/timekeeping.py::compose_turn_preamble
   tests:
     - tests/test_memory_provenance.py
     - tests/test_time_envelope.py
     - tests/test_pin_1123_tier_floor.py
   related: [architecture/memory-lifecycle.md, architecture/memory.md, architecture/persistent-state.md]
-  defines_invariants: [INV-MEM-004, INV-MEM-009, INV-MEM-012, INV-MEM-018]
+  defines_invariants: [INV-MEM-004, INV-MEM-009, INV-MEM-012, INV-MEM-018, INV-MEM-022]
   invariant_tests:
     INV-MEM-004: [tests/test_pin_memory_invariants.py::test_pin_inv_mem_004_reserved_tags_refused_before_io, tests/test_pin_1123_tier_floor.py::test_rc5_callers_cannot_supply_tier_namespace]
     INV-MEM-009: [tests/test_time_envelope.py::TestDedupAcrossTimestamps::test_same_utterance_two_timestamps_is_one_document, tests/test_time_envelope.py::TestDedupAcrossTimestamps::test_timestamp_survives_out_of_band, tests/test_time_envelope.py::TestComposeStripPair::test_round_trip_is_identity_on_the_raw_text]
+    INV-MEM-022: [tests/test_time_envelope.py::test_the_pair_strips_the_notes_with_the_envelope, tests/test_time_envelope.py::test_a_notes_block_the_operator_typed_after_no_notes_is_their_text_mid_message, tests/test_time_envelope.py::TestNotesNeverRetained::test_notes_and_text_retain_only_the_text, tests/test_time_envelope.py::TestNotesNeverRetained::test_a_whitespace_body_after_notes_retains_nothing, tests/test_desk_echo_prompt.py::test_the_residents_next_turn_carries_the_echo_once_then_nothing]
     INV-MEM-012: [tests/test_sensitivity.py::test_parse_tier_rejects_a_tier_word_inside_a_chatty_reply, tests/test_sensitivity.py::test_parse_tier_accepts_labeled_final_line_after_verbose_reply, tests/test_sensitivity.py::test_parse_tier_answer_line_is_the_literal_labeled_form_only, tests/test_sensitivity.py::test_parse_tier_conflicting_answer_lines_are_ambiguous, tests/test_sensitivity.py::test_parse_tier_agreeing_prior_answer_lines_parse, tests/test_tier_classifier.py::test_classify_chatty_reply_with_tier_words_defaults_private, tests/test_tier_classifier.py::test_classify_verbose_reply_with_labeled_final_line_parses, tests/test_tier_classifier.py::test_classify_word_plus_answer_line_parses, tests/test_tier_classifier.py::test_classify_conflicting_answer_lines_still_default]
     INV-MEM-018: [tests/test_pin_1123_tier_floor.py::test_rc1_stored_real_tier_never_lowers, tests/test_pin_1123_tier_floor.py::test_rc2_unmarked_existing_document_has_floor, tests/test_pin_1123_tier_floor.py::test_rc3_fallback_preserves_real_floor_unmarked, tests/test_pin_1123_tier_floor.py::test_rc4_unreadable_floor_prevents_entire_save, tests/test_pin_1123_tier_floor.py::test_rc6_cross_ask_conflict_establishes_real_floor, tests/test_pin_1123_tier_floor.py::test_rc7_first_fallback_is_provisional, tests/test_1123_tier_floor_regressions.py::test_hindsight_read_only_the_document_not_found_404_is_never_saved, tests/test_1123_tier_floor_regressions.py::test_hindsight_read_fails_on_every_other_answer]
 

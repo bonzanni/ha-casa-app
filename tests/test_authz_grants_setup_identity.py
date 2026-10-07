@@ -11,7 +11,7 @@ supplied from outside Casa.
 The dispatch path is tested END TO END: a ``BusMessage`` shaped exactly as
 ``casa_core._setup_dispatch`` composes it runs through the real
 ``Agent._process`` (the ``_make_agent``/``_msg`` harness), intercepting
-``compose_time_envelope`` after ``origin_var`` is set and before any SDK
+``compose_turn_preamble`` after ``origin_var`` is set and before any SDK
 client, and the identity is resolved INSIDE the interception. A hand-built
 origin fixture passes on a tree that never copies the stamp; this does not.
 """
@@ -85,20 +85,20 @@ def _dispatch_msg(target="assistant", context_extra=None) -> BusMessage:
 
 async def _run_dispatch(tmp_path, msg, role="assistant"):
     """Run *msg* through the real ``Agent._process``; capture the origin and
-    the resolver's answer at the ``compose_time_envelope`` seam."""
+    the resolver's answer at the ``compose_turn_preamble`` seam."""
     import plugin_setup_episodes as pse
     agent = _make_agent(tmp_path, role=role)
     captured: list[tuple[dict, tuple]] = []
-    real = agent_mod.compose_time_envelope
+    real = agent_mod.compose_turn_preamble
 
-    def intercept(now):
+    def intercept(now, notes=()):
         captured.append((dict(agent_mod.origin_var.get() or {}),
                          resolve_grant_identity(role)))
-        return real(now)
+        return real(now, notes)
 
     ScriptedToolClient.reset([_mk_assistant("done"), _mk_result("sid-1015")])
     with patch("sdk_client_pool._default_make_client", ScriptedToolClient), \
-            patch.object(agent_mod, "compose_time_envelope", intercept), \
+            patch.object(agent_mod, "compose_turn_preamble", intercept), \
             patch.object(pse, "dispatch_still_owed", lambda _e: True), \
             _capture_reports():
         await agent._process(msg)
