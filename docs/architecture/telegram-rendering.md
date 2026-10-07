@@ -49,8 +49,11 @@ nowhere. A table like that stays in the plain-rows form, where every header cell
 span at all, such as a plugin card whose fields are escaped for markdown but contain no bold
 word. Such a text has nothing to send as entities, so it goes out plain. What it shows is its
 display, with the backslash escapes consumed, so `CUWVSRB8\-0007` reads `CUWVSRB8-0007`
-whether or not the same message happens to carry a bold word. That is lossless, because the
-escapes are the only thing a span-less parse changes. One helper decides this for every sender
+whether or not the same message happens to carry a bold word. Besides the escapes, a
+span-less parse re-emits a table from its cells (its row spacing and its delimiter row) and
+replaces a NUL character, exactly as the rich path shows them, and a text with no span has no
+link address to lose. A table's padding can make that display longer than the text, so a
+display that would not fit one message is not used and the text goes out as authored. One helper decides this for every sender
 of a single message. A text whose spans exist but cannot be sent is different: it is over the
 length or entity budget, or it cannot be converted. Its markers are the only record of its
 formatting and of its link addresses, so it goes out as authored. The once-only retry after
@@ -121,7 +124,7 @@ None of those exclusions is a lost reply: a lone surrogate on any page, this arm
 replaced at the channel's request boundary before the text is encoded (INV-TG-009 in
 [`architecture/telegram.md`](telegram.md)).
 
-**INV-TG-010**: A single message sent without entities, whose text has no formatting span, shows that text's display — its markdown escapes consumed — never the authored backslashes.
+**INV-TG-010**: A single message sent without entities, whose text has no formatting span and whose display fits one message, shows that text's display — its markdown escapes consumed, as the rich path shows it — never the authored backslashes.
 
 Enforced in the rich renderer's plain-text helper, which every single-message sender's
 no-entities branch uses.

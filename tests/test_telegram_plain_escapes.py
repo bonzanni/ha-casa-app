@@ -42,6 +42,28 @@ async def test_plain_text_returns_the_same_object_when_nothing_changes():
     assert plain_text(adm) is adm
 
 
+async def test_a_span_less_table_shows_its_rich_display_with_every_cell():
+    # Terra x1: a separator-less table with no span re-spaces its rows from
+    # the parsed cells. The plain send shows that display, as the rich path
+    # does, and no cell content is lost.
+    text = "|  " + "x" * 30 + "   |  " + "y" * 30 + "  |\n|  a  |  b\\-c  |\n|d|e|"
+    display, entities = render(text)
+    assert entities is None
+    assert plain_text(text) == display
+    assert display.split() and "".join(display.split()) == "".join(
+        text.replace("\\-", "-").split())
+
+
+async def test_a_span_less_display_over_one_message_keeps_the_authored_text():
+    # Astra x1: a span-less table's display is padded LONGER than its text;
+    # sent as display it would exceed one message and land nothing.
+    text = "\n".join(["|a|b|c|d|e|f|g|h|i|j|"] * 100) + "\nx\\-y"
+    display, entities = render(text)
+    assert entities is None
+    assert len(text) <= 4096 < len(display)
+    assert plain_text(text) is text
+
+
 async def test_plain_text_keeps_the_authored_text_when_spans_could_not_be_sent():
     # 101 bold spans: over the entity budget, so render() sends nothing rich.
     # The authored text is what carries the formatting (and any address).

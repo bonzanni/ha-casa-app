@@ -748,11 +748,13 @@ def render(text: str) -> tuple[str, "list[MessageEntity] | None"]:
 def plain_text(text: str) -> str:
     """What a single message sent WITHOUT entities shows for *text* (#1330).
 
-    A text with no span: its display — the escapes consumed, as the rich path
-    would show them. Nothing else differs between the two (a span-less parse
-    changes the text only where a backslash escapes a punctuation mark), so
-    nothing is lost; a plugin card escaped for markdown no longer shows its
-    backslashes just because it carries no bold word.
+    A text with no span: its display, exactly as the rich path would show it —
+    the backslash escapes consumed, a table re-emitted from its parsed cells
+    (row spacing, the delimiter row), a NUL replaced. Without a span there is
+    no link address to lose; a plugin card escaped for markdown no longer
+    shows its backslashes just because it carries no bold word. A display that
+    would not fit one message (a table's padding can make it LONGER than the
+    text) is not used: the authored text goes out as before.
 
     A text WITH spans that are not being sent (over the limits, or not
     convertible): the authored text, unchanged — its markers are the only
@@ -761,7 +763,7 @@ def plain_text(text: str) -> str:
     Returns *text* itself whenever the answer equals it, so a caller holding
     a subclass of ``str`` keeps it in the common case. Never raises."""
     display, spans = parse_markdown(text)
-    if spans or display == text:
+    if spans or display == text or _utf16_units(display) > MAX_LEN:
         return text
     return display
 
