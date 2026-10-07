@@ -105,12 +105,14 @@ library carries the root this upgrade committed — the transaction's target roo
 the live agent's binding root with them when the library returns. A reload of the specialist
 that lands while the library runs loads what `active.yaml` names, so a live root equal to the
 committed one makes it say the upgrade did not finish and that when this upgrade returned the
-specialist was running the new version. Otherwise it says the upgrade is not active yet:
-a live root equal to the replaced one adds that new and open conversations still use the
-previous version; a different root — an earlier failed upgrade can leave an older version
-loaded — that the specialist was not running the new version when this upgrade returned; no
-root to compare (a persona override, no live agent) that which version was running could not
-be established. None names an older version. An unrelated reload before the re-run can load
+specialist was running the new version. No root to compare (a persona override, no live agent)
+makes it say the upgrade did not finish and that which version the specialist was running when
+this upgrade returned could not be established; it never says Casa has not loaded the new
+version, since such a reload may have. Otherwise it says the upgrade is not active yet: a live
+root equal to the replaced one adds that new and open conversations still use the previous
+version; a different root — an earlier failed upgrade can leave an older version loaded — that
+the specialist was not running the new version when this upgrade returned. None names an older
+version. An unrelated reload before the re-run can load
 parts of the kept version for new conversations.
 `kept_new_version: true` on a failed reload-and-verify comes after the sequencer ran. It says the
 new version is active unless the specialist's own reload failed. Then the live agent's binding,

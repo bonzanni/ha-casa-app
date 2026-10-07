@@ -15780,6 +15780,9 @@ _KEPT_RUNNING_UNKNOWN_OUTCOME = (
 # root this upgrade committed is "new", tested first; its head drops "not active
 # yet ... has not loaded it", which is false there, and its clause is dated like
 # the others — never a claim about what is running when the result is read.
+# "unknown" (no root to compare: a persona override, no live agent) uses the
+# same head: such a reload may have loaded the kept version, and no evidence
+# must never read as "not loaded" (#1146).
 _KEPT_NOT_ACTIVE_HEAD = (
     "the upgrade is not active yet: the new version is kept on disk, but Casa "
     "has not loaded it")
@@ -15788,8 +15791,8 @@ _KEPT_IN_USE_CLAUSES = {
     "matched": ", so new and open conversations still use the previous version",
     "other": (", and when this upgrade returned the specialist was not running "
               "the new version"),
-    "unknown": (", and which version it was running when this upgrade returned "
-                "could not be established"),
+    "unknown": (", and which version the specialist was running when this "
+                "upgrade returned could not be established"),
     "new": (", and when this upgrade returned the specialist was running the new "
             "version"),
 }
@@ -15800,7 +15803,8 @@ _KEPT_NOT_ACTIVE_TAILS = {
            "then re-run the upgrade."),
 }
 _KEPT_NOT_ACTIVE_OUTCOMES = {
-    (restart, live): (_KEPT_LOADED_HEAD if live == "new" else _KEPT_NOT_ACTIVE_HEAD)
+    (restart, live): (_KEPT_LOADED_HEAD if live in ("new", "unknown")
+                      else _KEPT_NOT_ACTIVE_HEAD)
     + clause + tail
     for live, clause in _KEPT_IN_USE_CLAUSES.items()
     for restart, tail in _KEPT_NOT_ACTIVE_TAILS.items()}

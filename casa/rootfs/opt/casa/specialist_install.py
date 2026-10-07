@@ -2882,16 +2882,21 @@ def _kept_new_version(txn, journal, slug: str, exc: BaseException,
 # #1298: "new" is a live root equal to the root this upgrade committed — a
 # reload of the specialist that landed while the library ran loaded it. Its
 # telling also drops "not active yet" and "before Casa loaded it", both false
-# there (see `_kept_new_version_error`).
+# there (see `_kept_new_version_error`). "unknown" drops them too: with no root
+# to compare (a persona override, no live agent) such a reload may have loaded
+# it, and no evidence must never read as "not loaded" (#1146).
 _KEPT_IN_USE_CLAUSES = {
     "matched": ", so new and open conversations still use the previous version",
     "other": (", and when this upgrade returned the specialist was not running the "
               "new version"),
-    "unknown": (", and which version it was running when this upgrade returned could "
-                "not be established"),
+    "unknown": (", and which version the specialist was running when this upgrade "
+                "returned could not be established"),
     "new": (", and when this upgrade returned the specialist was running the new "
             "version"),
 }
+# The states whose telling says "the upgrade did not finish" instead of "not
+# active yet ... before Casa loaded it".
+_KEPT_UNFINISHED_LIVE = frozenset({"new", "unknown"})
 
 
 def _active_root_of(tuple_files: "dict[str, str | None]") -> "str | None":
@@ -2911,7 +2916,9 @@ def _kept_new_version_error(txn, journal, slug: str, exc: BaseException, *,
     """#975: the library kept the new version after activation failed. #1095
     (ruling-1095-5/-6): the tool returns this before the upgrade's own reload,
     so this upgrade loaded none of it — the detail says "not active yet", never
-    "active" (#1298: unless a concurrent reload loaded it, the "new" form).
+    "active" (#1298: unless a concurrent reload loaded it, the "new" form, or
+    there is no live root to tell, the "unknown" form — neither says "not
+    active yet").
     ``restart_first`` marks the variant whose prior-version cleanup also
     failed: there a re-run is refused until Casa restarts (INV-SPEC-014).
 
@@ -2928,7 +2935,7 @@ def _kept_new_version_error(txn, journal, slug: str, exc: BaseException, *,
 
     def kept(live: str) -> str:
         clause = _KEPT_IN_USE_CLAUSES[live]
-        if live == "new":
+        if live in _KEPT_UNFINISHED_LIVE:
             return (f"{slug!r}: the upgrade did not finish. The new version is kept — the "
                     f"version it replaced cannot be restored whole, because a setting it "
                     f"kept as a plain value is now secret — but the upgrade then failed "
