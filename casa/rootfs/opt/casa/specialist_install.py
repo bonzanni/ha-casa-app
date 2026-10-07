@@ -2564,6 +2564,10 @@ def activate_binding_for_config(
         display_name=bound_persona.identity["display_name"],
         binding_digest=binding.binding_digest,
     )
+    # #1324: the version this config was activated from, readable even for an
+    # override binding (which carries no component_root). The #597 re-derive
+    # keeps the root (`replace_active_same_generation` refuses a root change).
+    cfg.active_tuple_root = active_tuple.root
 
 
 @_under_specialist_lifecycle_lock
@@ -2883,7 +2887,7 @@ def _kept_new_version(txn, journal, slug: str, exc: BaseException,
 # reload of the specialist that landed while the library ran loaded it. Its
 # telling also drops "not active yet" and "before Casa loaded it", both false
 # there (see `_kept_new_version_error`). "unknown" drops them too: with no root
-# to compare (a persona override, no live agent) such a reload may have loaded
+# to compare (no live agent, nothing carried) such a reload may have loaded
 # it, and no evidence must never read as "not loaded" (#1146).
 _KEPT_IN_USE_CLAUSES = {
     "matched": ", so new and open conversations still use the previous version",

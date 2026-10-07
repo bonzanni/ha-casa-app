@@ -604,6 +604,14 @@ class AgentConfig:
     compiled_prompt_bundle: "CompiledPromptBundle | None" = dataclasses.field(default=None, kw_only=True)
     binding_digest: str = dataclasses.field(default="", kw_only=True)
     speaker_provenance: "SpeakerProvenance | None" = dataclasses.field(default=None, kw_only=True)
+    # #1324: the root of the specialist instance tuple this config's binding was
+    # activated from — set by specialist_install.activate_binding_for_config
+    # together with the fields above, None when nothing was activated. In memory
+    # only. A specialist tuple's root is its component root in every binding
+    # mode, so this is the loaded version even when the binding (a persona
+    # override) carries no component_root; for a resident tuple a root is only a
+    # label, and the resident activation never sets this.
+    active_tuple_root: "str | None" = dataclasses.field(default=None, kw_only=True)
 
 
 @dataclass
