@@ -1,0 +1,100 @@
+# Manifest shard (split from architecture-plugin-a-l.yaml at the 40 KB index ceiling, #1322) —
+# architecture documents plugin-a through plugin-d. Loaded with the root
+# docs/manifest.yaml by scripts/verify_docs.py; same entry format.
+
+- doc: architecture/plugin-authorization.md
+  summary: What a protected plugin tool call needs before it runs — the single-use grant it consumes, the challenge that mints it, who may answer, and what retires an unanswered one.
+  when_changing: authorization grants, the protected-tool challenge, who may approve a protected call, or what a finished engagement does to its challenges
+  covers:
+    - casa/rootfs/opt/casa/authz_grants.py::GrantKey
+    - casa/rootfs/opt/casa/authz_grants.py::GrantStore
+    - casa/rootfs/opt/casa/authz_grants.py::ChallengeCoordinator.cancel_matching
+    - casa/rootfs/opt/casa/authz_grants.py::note_delegation_awaiting_approval
+    - casa/rootfs/opt/casa/authz_grants.py::_note_approval
+    - casa/rootfs/opt/casa/specialist_limits.py::SpecialistLimiter.wait_until_free
+    - casa/rootfs/opt/casa/tools.py::wait_for_delegation_slot
+  tests:
+    - tests/test_authz_grants.py
+    - tests/test_authz_hook.py
+    - tests/test_approval_outlives_raiser.py
+    - tests/test_pending_approval_pins.py
+  related: [architecture/plugins.md, architecture/engagement-finalization.md, architecture/scheduled-asks.md, architecture/delegation-announcements.md]
+  defines_invariants: [INV-PLUG-004, INV-PLUG-005, INV-PLUG-007, INV-PLUG-033]
+  invariant_tests:
+    INV-PLUG-004: [tests/test_authz_hook.py::test_third_call_rechallenges_single_use, tests/test_authz_hook.py::test_args_drift_rechallenges, tests/test_authz_grants.py::test_exactly_one_thread_consumes, tests/test_authz_hook.py::TestEngagementBackedAuthz::test_grant_from_other_engagement_not_consumable]
+    INV-PLUG-005: [tests/test_authz_hook.py::test_restart_loses_grants_fresh_store_rechallenges]
+    INV-PLUG-007: [tests/test_authz_hook.py::test_non_operator_sender_is_denied_with_no_challenge, tests/test_authz_hook.py::test_non_operator_with_live_grant_consumes_nothing, tests/test_authz_hook.py::test_accept_all_mode_denies_protected_tools_for_everyone]
+    INV-PLUG-033: [tests/test_approval_outlives_raiser.py::TestEngagementEndRetiresItsChallenges::test_cancel_matching_by_engagement_touches_only_that_one, tests/test_approval_outlives_raiser.py::TestEngagementEndRetiresItsChallenges::test_terminal_transition_withdraws_the_keyboard, tests/test_approval_outlives_raiser.py::TestEngagementEndRetiresItsChallenges::test_a_tap_right_after_the_transition_is_refused]
+
+- doc: architecture/plugin-delivered-files.md
+  summary: A file a plugin's capability tool delivers — the operator_file slot, its deposit, the claim from the plugin outbox under the kind's media policy, and the delivered name a deposit may carry.
+  when_changing: the operator_file slot, a file deposit's kind, caption or delivered name, the outbox claim of a delivered file, or the channel's file post
+  covers:
+    - casa/rootfs/opt/casa/result_broker.py::compose_file_caption
+    - casa/rootfs/opt/casa/result_broker.py::_post_operator_file
+    - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.deliver_operator_file
+    - casa/rootfs/opt/casa/tools.py::outbox_for_current_context
+  tests:
+    - tests/test_operator_file_delivery.py
+    - tests/test_operator_file_filename.py
+  related: [architecture/plugin-delivered-slots.md, architecture/plugin-result-contract.md, architecture/telegram.md]
+  defines_invariants: [INV-PLUG-046, INV-PLUG-047]
+  invariant_tests:
+    INV-PLUG-046: [tests/test_operator_file_delivery.py::test_deposit_for_a_file_slot_keeps_kind_and_a_fitting_caption, tests/test_operator_file_delivery.py::test_deposit_for_a_file_slot_does_not_read_the_file, tests/test_operator_file_delivery.py::test_a_delivered_file_is_claimed_sent_labelled_and_receipted, tests/test_operator_file_delivery.py::test_a_file_with_no_plugin_caption_is_still_labelled, tests/test_operator_file_delivery.py::test_an_engagements_file_is_claimed_from_its_private_outbox, tests/test_operator_file_delivery.py::test_a_path_outside_the_outbox_is_withheld_with_zero_sends, tests/test_operator_file_delivery.py::test_a_missing_file_is_withheld_with_zero_sends, tests/test_operator_file_delivery.py::test_a_policy_refusal_withholds_and_still_consumes_the_file, tests/test_operator_file_delivery.py::test_an_extension_outside_the_kinds_policy_is_withheld_and_consumed, tests/test_operator_file_delivery.py::test_not_delivered_outcome_withholds_and_drops, tests/test_operator_file_delivery.py::test_channel_exception_withholds_and_drops, tests/test_operator_file_delivery.py::test_channel_absent_withholds_and_drops, tests/test_operator_file_delivery.py::test_delivery_past_the_file_bound_withholds_and_drops, tests/test_operator_file_delivery.py::test_the_real_channel_method_sends_once_through_the_kinds_policy_method, tests/test_operator_file_delivery.py::test_a_claim_that_lands_after_the_bound_is_still_removed]
+    INV-PLUG-047: [tests/test_operator_file_filename.py::test_the_declaration_is_accepted_on_a_tool_delivering_a_file, tests/test_operator_file_filename.py::test_the_declaration_is_refused_anywhere_else, tests/test_operator_file_filename.py::test_a_declared_tool_keeps_a_valid_name, tests/test_operator_file_filename.py::test_a_declared_tool_refuses_a_bad_name_before_minting, tests/test_operator_file_filename.py::test_an_undeclared_tool_refuses_a_name, tests/test_operator_file_filename.py::test_no_name_is_today, tests/test_operator_file_filename.py::test_the_deposit_route_passes_the_member_through, tests/test_operator_file_filename.py::test_a_declared_name_is_what_the_operator_receives, tests/test_operator_file_filename.py::test_no_name_still_delivers_under_the_staged_basename, tests/test_operator_file_filename.py::test_the_name_never_decides_which_staged_file_is_sent, tests/test_operator_file_filename.py::test_a_staged_file_whose_own_name_is_invalid_is_still_withheld]
+- doc: architecture/plugin-delivered-slots.md
+  summary: A slot a plugin's capability tool delivers — a link, a message or a file Casa posts to the operator's chat, labelled, the result replaced by a receipt — and the body-free echo the resident's conversation sees.
+  when_changing: a delivered-slot kind, the deposit validation of a link, message or file, the delivery hook or its receipt, the channel's operator-post methods, or the post echo ledger
+  covers:
+    - casa/rootfs/opt/casa/result_broker.py::_deliver_and_replace
+    - casa/rootfs/opt/casa/result_broker.py::compose_operator_link
+    - casa/rootfs/opt/casa/result_broker.py::compose_operator_message
+    - casa/rootfs/opt/casa/result_broker.py::post_label
+    - casa/rootfs/opt/casa/result_broker.py::_post_operator_message
+    - casa/rootfs/opt/casa/result_broker.py::PostLedger
+    - casa/rootfs/opt/casa/result_broker.py::echo_lines
+    - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.deliver_operator_link
+    - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.deliver_operator_message
+    - casa/rootfs/opt/casa/tools.py::_with_post_echo
+  tests:
+    - tests/test_operator_link_delivery.py
+    - tests/test_operator_link_no_link_outcome.py
+    - tests/test_operator_message_delivery.py
+    - tests/test_operator_post_echo.py
+    - tests/test_result_contract.py
+  related: [architecture/plugin-delivered-files.md, architecture/plugin-result-contract.md, architecture/plugin-authorization.md, architecture/telegram.md, architecture/output-boundary.md, architecture/plugin-runtime.md, architecture/delegation-announcements.md]
+  defines_invariants: [INV-PLUG-025, INV-PLUG-026, INV-PLUG-028, INV-PLUG-045]
+  invariant_tests:
+    INV-PLUG-025: [tests/test_operator_link_delivery.py::test_delivered_link_posts_once_to_the_identity_chat_and_returns_the_receipt, tests/test_operator_link_delivery.py::test_entity_offsets_are_utf16_units_on_a_non_bmp_label, tests/test_operator_link_delivery.py::test_host_is_printed_from_the_url_never_from_the_label, tests/test_operator_link_delivery.py::test_not_delivered_outcome_withholds_and_drops, tests/test_operator_link_delivery.py::test_channel_exception_withholds_and_drops, tests/test_operator_link_delivery.py::test_channel_absent_withholds_and_drops, tests/test_operator_link_delivery.py::test_delivery_past_the_bound_withholds_and_drops, tests/test_operator_link_delivery.py::test_a_deposit_that_cannot_be_taken_withholds_with_zero_sends, tests/test_operator_link_delivery.py::test_a_malformed_delivered_result_sends_nothing, tests/test_operator_link_delivery.py::test_cancellation_at_the_delivery_await_propagates_and_drops, tests/test_operator_link_delivery.py::test_a_setup_tool_declared_capability_takes_the_path_through_both_real_hooks, tests/test_operator_link_delivery.py::test_an_engagements_link_goes_to_the_origin_chat_not_the_topic, tests/test_result_broker.py::test_deposit_for_a_delivered_slot_refuses_a_bad_link, tests/test_result_broker.py::test_deposit_for_a_delivered_slot_validates_caption_and_label, tests/test_result_broker.py::test_take_for_delivery_is_once_and_refuses_used_expired_and_armed, tests/test_result_broker.py::test_matchers_and_env_shape, tests/test_result_broker.py::test_deposit_route_ignores_metadata_for_an_undelivered_slot, tests/test_operator_link_delivery.py::test_the_real_channel_method_sends_once_and_falls_back_plain]
+    INV-PLUG-026: [tests/test_result_contract.py::test_malformed_delivers_declarations_raise_result_contract_invalid, tests/test_result_contract.py::test_delivers_is_normalized_and_a_delivering_setup_tool_is_accepted, tests/test_result_contract.py::test_map_carries_delivers_and_keeps_a_capability_setup_entry]
+    INV-PLUG-028: [tests/test_operator_link_no_link_outcome.py::test_an_explicit_no_link_result_passes_unchanged_with_nothing_sent, tests/test_operator_link_no_link_outcome.py::test_a_null_slot_after_a_deposit_is_withheld_and_the_deposit_dropped, tests/test_operator_link_no_link_outcome.py::test_only_json_null_is_a_no_link_statement, tests/test_operator_link_no_link_outcome.py::test_a_missing_slot_member_is_not_a_no_link_statement, tests/test_operator_link_no_link_outcome.py::test_a_non_delivering_capability_call_keeps_0_318_behaviour, tests/test_operator_link_no_link_outcome.py::test_a_multi_slot_call_passes_only_when_every_slot_is_null, tests/test_operator_link_no_link_outcome.py::test_a_capability_setup_tool_with_no_link_passes_through_both_real_hooks, tests/test_operator_link_no_link_outcome.py::test_a_no_link_setup_run_counts_as_run]
+    INV-PLUG-045: [tests/test_operator_message_delivery.py::test_deposit_for_a_message_slot_ignores_caption_label_and_kind, tests/test_operator_message_delivery.py::test_a_delivered_message_posts_once_labelled_to_the_identity_chat_and_returns_the_receipt, tests/test_operator_message_delivery.py::test_the_label_is_the_roles_persona_name_or_the_role_itself, tests/test_operator_message_delivery.py::test_the_receipt_counts_the_pages_the_plan_has, tests/test_operator_message_delivery.py::test_not_delivered_outcome_withholds_and_drops, tests/test_operator_message_delivery.py::test_channel_exception_withholds_and_drops, tests/test_operator_message_delivery.py::test_channel_absent_withholds_and_drops, tests/test_operator_message_delivery.py::test_delivery_past_the_bound_withholds_and_drops, tests/test_operator_message_delivery.py::test_cancellation_at_the_delivery_await_propagates_and_drops, tests/test_operator_message_delivery.py::test_the_real_channel_method_sends_each_page_and_nothing_else, tests/test_operator_message_delivery.py::test_a_single_page_is_sent_through_the_multi_page_loop_never_the_authored_retry, tests/test_operator_message_delivery.py::test_a_refused_pages_fallback_chunks_all_go_out_before_delivered, tests/test_operator_message_delivery.py::test_a_later_page_failure_propagates, tests/test_operator_message_delivery.py::test_a_plan_over_the_page_cap_sends_nothing, tests/test_operator_message_delivery.py::test_a_link_destination_no_chunk_can_carry_whole_sends_nothing, tests/test_operator_message_delivery.py::test_the_hook_withholds_a_refused_plan_with_zero_sends, tests/test_operator_message_delivery.py::test_a_page_over_the_platform_budget_sends_nothing, tests/test_operator_message_delivery.py::test_a_destination_the_fallback_would_split_across_messages_sends_nothing, tests/test_operator_message_delivery.py::test_a_fallback_chunk_over_the_platform_budget_sends_nothing]
+- doc: architecture/plugin-access-profiles.md
+  summary: How an assignment gives an agent a subset of a plugin's tools — the registry profiles map, casa.profiles and casa.requires, the plan every options build enforces through a PreToolUse barrier, and what the configurator is told about recommendations.
+  when_changing: a plugin access profile, the registry profiles map, casa.profiles or casa.requires, the profile plan or guard matcher, requirement candidates, dependents or leftover requirements, or the requirement_unmet warning
+  covers:
+    - casa/rootfs/opt/casa/plugin_requirements.py
+    - casa/rootfs/opt/casa/plugin_grants.py::profile_plan
+    - casa/rootfs/opt/casa/plugin_grants.py::apply_profile_plan
+    - casa/rootfs/opt/casa/hooks.py::profile_guard_matcher
+    - casa/rootfs/opt/casa/plugin_store.py::manifest_profiles
+    - casa/rootfs/opt/casa/plugin_store.py::manifest_requires
+    - casa/rootfs/opt/casa/plugin_store.py::expand_tool_names
+    - casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.update_plugin_profiles
+    - casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver._persist_applied_profiles
+    - casa/rootfs/opt/casa/tools.py::_requirement_candidates_for
+    - casa/rootfs/opt/casa/tools.py::_dependents_for
+    - casa/rootfs/opt/casa/tools.py::_profile_tools_denied_by_config
+  tests:
+    - tests/test_plugin_profiles_registry.py
+    - tests/test_plugin_profiles_manifest.py
+    - tests/test_plugin_profiles_plan.py
+    - tests/test_plugin_profiles_builders.py
+    - tests/test_plugin_profiles_record.py
+    - tests/test_plugin_profiles_tools.py
+    - tests/test_plugin_profiles_withheld.py
+  related: [architecture/plugins.md, architecture/plugin-mutation-tools.md, architecture/plugin-health.md, architecture/plugin-authorization.md, architecture/mcp-and-tools.md, architecture/background-jobs.md]
+  defines_invariants: [INV-PLUG-043, INV-PLUG-044]
+  invariant_tests:
+    INV-PLUG-043: [tests/test_plugin_profiles_builders.py::test_specialist_builder_enforces_the_live_profile, tests/test_plugin_profiles_builders.py::test_specialist_builder_strips_a_config_level_server_allow, tests/test_plugin_profiles_builders.py::test_resident_builder_enforces_the_live_profile, tests/test_plugin_profiles_builders.py::test_plugin_job_builder_enforces_the_live_profile, tests/test_plugin_profiles_builders.py::test_recorded_artifact_row_restores_the_effective_profile, tests/test_plugin_profiles_plan.py::test_profile_guard_matcher_denies_outside_and_permits_inside, tests/test_plugin_profiles_plan.py::test_namespaces_come_from_the_loaded_artifact_not_the_live_one, tests/test_plugin_profiles_plan.py::test_fallback_without_live_assignment_uses_the_prior_binding, tests/test_plugin_profiles_record.py::test_resume_rebuild_reapplies_the_live_plan_onto_the_record, tests/test_plugin_profiles_record.py::test_resume_persists_the_applied_profile_before_opening, tests/test_plugin_profiles_record.py::test_open_fresh_persists_the_applied_profile_before_opening, tests/test_plugin_job_launch.py::test_worker_record_carries_the_effective_profile, tests/test_plugin_job_launch.py::test_launch_records_the_plan_the_builder_applied_without_rereading, tests/test_plugin_profiles_withheld.py::test_launch_withheld_profiled_plugin_stays_profiled_after_unassign, tests/test_plugin_profiles_withheld.py::test_resume_withheld_under_a_profiled_reassignment_stays_profiled, tests/test_plugin_profiles_withheld.py::test_withheld_without_a_live_profile_keeps_the_recorded_row, tests/test_plugin_profiles_withheld.py::test_withheld_profile_survives_a_build_that_loads_another_plugin, tests/test_plugin_profiles_withheld.py::test_every_withheld_plugin_is_decided_on_its_own_state, tests/test_plugin_profiles_withheld.py::test_withheld_profile_through_the_real_builder_in_every_build_context]
+    INV-PLUG-044: [tests/test_plugin_profiles_tools.py::test_assign_with_a_profile_writes_it_only_for_a_new_target, tests/test_plugin_profiles_tools.py::test_assign_on_an_existing_target_is_a_noop_that_reports_held_access, tests/test_plugin_profiles_tools.py::test_assign_with_an_undeclared_profile_is_refused_before_any_write, tests/test_plugin_profiles_tools.py::test_unassign_drops_the_profile_key_in_the_same_save, tests/test_plugin_profiles_tools.py::test_update_refuses_a_manifest_that_drops_a_held_profile, tests/test_plugin_profiles_tools.py::test_add_reports_requirement_candidates, tests/test_plugin_profiles_tools.py::test_an_omitted_requirement_profile_means_full, tests/test_plugin_profiles_tools.py::test_add_reports_a_required_profile_the_plugin_does_not_declare, tests/test_plugin_profiles_tools.py::test_a_full_holder_satisfies_a_requirement_naming_an_absent_profile, tests/test_plugin_profiles_tools.py::test_a_wider_profile_covers_a_narrower_named_requirement]
