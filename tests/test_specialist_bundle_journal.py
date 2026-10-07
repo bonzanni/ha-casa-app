@@ -286,7 +286,7 @@ def test_reconcile_boot_retains_pending_candidate_restored_by_replay(tmp_path):
     restored a marker naming a receipt that no longer exists — a visible,
     unresumable candidate whose only exit is uninstall and reinstall. The
     exemption the corpus states for the boot pass as a whole
-    (`docs/architecture/specialist-bundle-transactions.md:205-217`,
+    (`docs/architecture/specialist-bundle-recovery.md:152-166`,
     `specialist_receipt.sweep_aged:217-233`,
     `specialist_install.sweep_staging_aged:363-373`) has to hold here too.
     """
