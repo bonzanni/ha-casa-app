@@ -15774,15 +15774,24 @@ _KEPT_RUNNING_UNKNOWN_OUTCOME = (
 # ruled text; a different root uses _KEPT_NOT_LOADED_OUTCOME's phrase, and no
 # root to compare uses _KEPT_RUNNING_UNKNOWN_OUTCOME's, both dated by this
 # upgrade. Every other byte is the ruled text's.
+#
+# #1298 (the operator's ruling): a reload of the specialist that lands while
+# the library runs can load the kept version itself. A live root equal to the
+# root this upgrade committed is "new", tested first; its head drops "not active
+# yet ... has not loaded it", which is false there, and its clause is dated like
+# the others — never a claim about what is running when the result is read.
 _KEPT_NOT_ACTIVE_HEAD = (
     "the upgrade is not active yet: the new version is kept on disk, but Casa "
     "has not loaded it")
+_KEPT_LOADED_HEAD = "the upgrade did not finish: the new version is kept on disk"
 _KEPT_IN_USE_CLAUSES = {
     "matched": ", so new and open conversations still use the previous version",
     "other": (", and when this upgrade returned the specialist was not running "
               "the new version"),
     "unknown": (", and which version it was running when this upgrade returned "
                 "could not be established"),
+    "new": (", and when this upgrade returned the specialist was running the new "
+            "version"),
 }
 _KEPT_NOT_ACTIVE_TAILS = {
     False: ". Re-running the same upgrade finishes it.",
@@ -15791,20 +15800,29 @@ _KEPT_NOT_ACTIVE_TAILS = {
            "then re-run the upgrade."),
 }
 _KEPT_NOT_ACTIVE_OUTCOMES = {
-    (restart, live): _KEPT_NOT_ACTIVE_HEAD + clause + tail
+    (restart, live): (_KEPT_LOADED_HEAD if live == "new" else _KEPT_NOT_ACTIVE_HEAD)
+    + clause + tail
     for live, clause in _KEPT_IN_USE_CLAUSES.items()
     for restart, tail in _KEPT_NOT_ACTIVE_TAILS.items()}
 _KEPT_NOT_ACTIVE_OUTCOME = _KEPT_NOT_ACTIVE_OUTCOMES[(False, "matched")]
 _KEPT_NOT_ACTIVE_RESTART_OUTCOME = _KEPT_NOT_ACTIVE_OUTCOMES[(True, "matched")]
 
 
-def _kept_live_match(runtime, slug: str, replaced_root) -> str:
+def _kept_live_match(runtime, slug: str, replaced_root, *,
+                     committed_root=None) -> str:
     """#1296: how *slug*'s live agent compares with the root a library-kept
     upgrade replaced — "matched", "other", or "unknown" when either side has no
     root (a persona override, no live agent, nothing carried). Synchronous: the
-    caller reads it in the step that composes the result."""
+    caller reads it in the step that composes the result.
+
+    #1298: "new" first, when the live root is the root the upgrade committed. No
+    carried committed root is never "new"; the other states are unchanged."""
     live = _live_component_root(runtime, slug)
-    if not isinstance(live, str) or not isinstance(replaced_root, str):
+    if not isinstance(live, str):
+        return "unknown"
+    if isinstance(committed_root, str) and live == committed_root:
+        return "new"
+    if not isinstance(replaced_root, str):
         return "unknown"
     return "matched" if live == replaced_root else "other"
 
@@ -17647,7 +17665,8 @@ async def specialist_upgrade(args: dict) -> dict:
                 dropped = list(getattr(exc, "dropped_owned_names", ()) or ())
                 live = _kept_live_match(
                     getattr(agent_mod, "active_runtime", None), args["slug"],
-                    getattr(exc, "replaced_root", None))
+                    getattr(exc, "replaced_root", None),
+                    committed_root=getattr(exc, "committed_root", None))
                 details = getattr(exc, "details_by_live", None) or {}
                 return {"ok": False, "kind": exc.kind,
                         "detail": details.get(live, exc.detail),

@@ -315,6 +315,22 @@ async def test_p7_the_library_carries_the_root_this_upgrade_replaced(world):
     assert getattr(world.raised[0], "replaced_root", "<absent>") == b
 
 
+@pytest.mark.parametrize("restart", [False, True], ids=["rerun", "restart"])
+async def test_p7_1298_the_library_carries_the_root_this_upgrade_committed(world, restart):
+    """#1298: the error the real library raises on a kept B → C carries C — the
+    root active.yaml names after the commit — as `committed_root`, beside B as
+    `replaced_root`, whether or not finishing the retained prior failed."""
+    await world.first("reload")
+    b = world.root()
+    await world.second(restart)
+    c = world.root()
+    assert b != c
+    assert len(world.raised) == 1
+    assert world.raised[0].replaced_root == b
+    assert world.raised[0].committed_root == c
+    assert world.raised[0].restart_first is restart
+
+
 @pytest.mark.parametrize("carrier", ["none", "absent"])
 @pytest.mark.parametrize("live", ["a", "no_agent"])
 @pytest.mark.parametrize("restart", [False, True], ids=["rerun", "restart"])
@@ -365,17 +381,20 @@ def test_p6_the_four_argument_call_still_builds_the_ruled_detail(monkeypatch):
     assert err.kind == "upgrade_kept_new_version" and err.restart_first is False
     assert err.detail == _detail(RULED, restart=False)
     assert err.replaced_root is None
+    assert err.committed_root is None
     assert err.details_by_live == {
         "matched": _detail(RULED, restart=False), "other": _detail(NOT_NEW, restart=False),
-        "unknown": _detail(UNKNOWN, restart=False)}
+        "unknown": _detail(UNKNOWN, restart=False), "new": NEW_DETAIL}
 
 
-def test_the_tool_and_the_library_carry_the_same_three_clauses():
+def test_the_tool_and_the_library_carry_the_same_four_clauses():
     """The outcome and the detail choose from the same clauses, and the ruled
     outcome constants keep their exact value."""
     import tools
     assert tools._KEPT_IN_USE_CLAUSES == si._KEPT_IN_USE_CLAUSES == {
-        "matched": RULED, "other": NOT_NEW, "unknown": UNKNOWN}
+        "matched": RULED, "other": NOT_NEW, "unknown": UNKNOWN, "new": RUNNING_NEW}
+    assert tools._KEPT_NOT_ACTIVE_OUTCOMES[(False, "new")] == NEW_OUTCOME
+    assert tools._KEPT_NOT_ACTIVE_OUTCOMES[(True, "new")] == NEW_RESTART_OUTCOME
     assert tools._KEPT_NOT_ACTIVE_OUTCOME == RULED_OUTCOME
     assert tools._KEPT_NOT_ACTIVE_RESTART_OUTCOME == RULED_RESTART_OUTCOME
 
