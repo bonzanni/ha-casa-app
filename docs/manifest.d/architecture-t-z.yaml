@@ -65,9 +65,23 @@
     INV-TG-008: [tests/test_tg_richtext.py::test_render_paged_conversion_failure_keeps_well_formed_link_target, tests/test_telegram_link_fallback.py::test_all_four_senders_deliver_the_target_when_conversion_fails]
     INV-TG-010: [tests/test_telegram_plain_escapes.py::test_plain_text_consumes_the_escapes_of_a_span_less_text, tests/test_telegram_plain_escapes.py::test_a_plain_proposal_card_shows_no_backslash, tests/test_telegram_plain_escapes.py::test_plain_text_keeps_the_authored_text_when_spans_could_not_be_sent]
 
+- doc: architecture/tool-questions.md
+  summary: The question lifecycle — what ask_user's operator-DM arm and wipe_memory's consent keyboard report when the question cannot be delivered or is over before the tool returns; split out of tools-interface.md at the corpus ceiling (#1153).
+  when_changing: the question lifecycle — what ask_user's operator-DM arm or wipe_memory's consent keyboard reports when its question is undelivered, already retired, or still live
+  covers:
+    - casa/rootfs/opt/casa/tools.py::ask_user
+  tests:
+    - tests/test_scheduled_ask_attention_lane.py
+    - tests/test_wipe_memory_tool.py
+    - tests/test_scheduled_ask_user.py
+  related: [architecture/tools-interface.md, architecture/scheduled-asks.md, architecture/memory-wipe.md]
+  defines_invariants: [INV-TOOL-008]
+  invariant_tests:
+    INV-TOOL-008: [tests/test_scheduled_ask_attention_lane.py::test_plain_text_during_human_post_cancels_replacement_not_scheduled, tests/test_scheduled_ask_attention_lane.py::test_a_live_plain_ask_still_returns_the_unchanged_awaiting_payload, tests/test_wipe_memory_tool.py::TestConsentFlow::test_cancel_during_post_returns_neutral_settlement, tests/test_wipe_memory_tool.py::TestConsentFlow::test_a_live_consent_request_returns_the_unchanged_payload, tests/test_scheduled_ask_user.py::TestTerminalOutcomes::test_shutdown_during_live_state_save_returns_awaiting_and_restores]
+
 - doc: architecture/tools-interface.md
-  summary: The mutation interface — the one tool registry, result envelopes, the question lifecycle, and which failures roll back versus report.
-  when_changing: adding a tool, a tool's result contract, the question lifecycle, or completion semantics
+  summary: The mutation interface — the one tool registry, result envelopes, and which failures roll back versus report.
+  when_changing: adding a tool, a tool's result contract, or completion semantics
   covers:
     - casa/rootfs/opt/casa/tools.py::create_casa_tools
     - casa/rootfs/opt/casa/tools.py::_result
@@ -79,13 +93,12 @@
     - tests/test_casa_reload_role_forms.py
     - tests/test_internal_handlers.py
     - tests/test_emit_completion_tool.py
-  related: [architecture/mcp-and-tools.md, architecture/engagements.md, architecture/plugin-mutation-tools.md]
-  defines_invariants: [INV-TOOL-001, INV-TOOL-002, INV-TOOL-006, INV-TOOL-008]
+  related: [architecture/mcp-and-tools.md, architecture/engagements.md, architecture/plugin-mutation-tools.md, architecture/tool-questions.md]
+  defines_invariants: [INV-TOOL-001, INV-TOOL-002, INV-TOOL-006]
   invariant_tests:
     INV-TOOL-001: [tests/test_internal_handlers.py::test_pin_inv_tool_001_result_marks_errors_only_for_error_status]
     INV-TOOL-006: [tests/test_delegate_to_agent.py::TestClusterSRedAbortFanOut::test_red_nonvoice_abort_reaches_both_consumers, tests/test_delegate_to_agent.py::TestClusterSRedAbortFanOut::test_red_abort_write_failure_reconciles_original_failure_only, tests/test_delegate_to_agent.py::TestClusterSAbortMatrix::test_nonvoice_abort_matrix, tests/test_delegate_to_agent.py::TestClusterSAbortMatrix::test_empty_text_completed_run_is_still_successful, tests/test_delegate_to_agent.py::TestClusterSAbortMatrix::test_abort_write_failure_retries_the_original_failure]
     INV-TOOL-002: [tests/test_internal_handlers.py::test_tools_call_inactive_engagement_is_rejected_fail_closed, tests/test_internal_handlers.py::test_tools_call_terminal_engagement_binds_for_emit_completion]
-    INV-TOOL-008: [tests/test_scheduled_ask_attention_lane.py::test_plain_text_during_human_post_cancels_replacement_not_scheduled, tests/test_scheduled_ask_attention_lane.py::test_a_live_plain_ask_still_returns_the_unchanged_awaiting_payload, tests/test_wipe_memory_tool.py::TestConsentFlow::test_cancel_during_post_returns_neutral_settlement, tests/test_wipe_memory_tool.py::TestConsentFlow::test_a_live_consent_request_returns_the_unchanged_payload, tests/test_scheduled_ask_user.py::TestTerminalOutcomes::test_shutdown_during_live_state_save_returns_awaiting_and_restores]
 
 - doc: architecture/trigger-secrets.md
   summary: The secrets that authenticate webhook triggers — who mints one and when, the mint receipt and provenance, the per-slot reload report, and what is not retired.

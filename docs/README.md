@@ -38,7 +38,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | a scheduled trigger that starts a plugin job — its schema keys, the upsert refusals, the fire's origin and launcher, or the line a refused fire sends | [`architecture/job-triggers.md`](architecture/job-triggers.md) |
 | a specialist upgrade, rollback or uninstall, the owned-plugin generation a rollback republishes, or the bundle journal's contracts | [`architecture/specialist-bundle-transactions.md`](architecture/specialist-bundle-transactions.md) |
 | adding a route, changing webhook authentication, or anything crossing the container boundary | [`architecture/http-surface.md`](architecture/http-surface.md) |
-| adding a tool, a tool's result contract, the question lifecycle, or completion semantics | [`architecture/tools-interface.md`](architecture/tools-interface.md) |
+| adding a tool, a tool's result contract, or completion semantics | [`architecture/tools-interface.md`](architecture/tools-interface.md) |
 | adding a tool, changing tool dispatch, or anything about tool authorization | [`architecture/mcp-and-tools.md`](architecture/mcp-and-tools.md) |
 | adding an agent or a tier, the required file set, or role resolution | [`architecture/agent-taxonomy.md`](architecture/agent-taxonomy.md) |
 | adding an evaluator, or before assuming behaviour is evaluated somewhere | [`architecture/eval-framework.md`](architecture/eval-framework.md) |
@@ -92,6 +92,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | the plugin file handoff folder, publish or capture, its sweep, or share_inbound_file's handoff side | [`architecture/plugin-handoff.md`](architecture/plugin-handoff.md) |
 | the plugin health report or its regeneration, the operator health notice or DM, health repeat suppression or dedup marks, or the plugin status tool | [`architecture/plugin-health.md`](architecture/plugin-health.md) |
 | the post map, the swipe-reply route, the specialist desk or its bounds, the desk turn or its notices, the resident's front-desk echo, the note a reply the desk does not take carries, or an approval continuation's destination | [`architecture/specialist-desk.md`](architecture/specialist-desk.md) |
+| the question lifecycle — what ask_user's operator-DM arm or wipe_memory's consent keyboard reports when its question is undelivered, already retired, or still live | [`architecture/tool-questions.md`](architecture/tool-questions.md) |
 | the quietWhenScheduled job option, a quiet run's missing topic, its withheld turn stream, the notices it skips, its grant identity or handler lock, or how its end is told | [`architecture/background-job-quiet-runs.md`](architecture/background-job-quiet-runs.md) |
 | the removal disclosure — what plugin_remove, a specialist bundle's owned-set swap or its compensation says a committed removal left behind | [`architecture/plugin-removal.md`](architecture/plugin-removal.md) |
 | the response-shape or prompt-file write guards, or why an edit to a resident's per-agent file is refused | [`architecture/prompt-file-guards.md`](architecture/prompt-file-guards.md) |
