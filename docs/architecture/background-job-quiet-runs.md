@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-10-06
+last_reviewed: 2026-10-07
 ---
 
 # Quiet scheduled job runs
@@ -67,6 +67,11 @@ What it does not cover: the operator cannot reply to a quiet run, `/cancel` it o
 A topic send attempted for a record without a topic raises `ValueError` instead of posting,
 so nothing reaches the General topic. The topic paths of the launch aborts, the launch-death
 report, the finalize funnel and the topic-state paint already skip a record without a topic.
+
+The turn that completes a quiet run ends without a result and without a telling, which is
+how an interrupted turn looks. The incomplete-turn check in `channels/telegram.py` logs that
+end at INFO as deliberately not told, and posts nothing. A cancelled or failed quiet run's
+end still logs the WARNINGs that it is telling the operator.
 
 ## Extension points
 

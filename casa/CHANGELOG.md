@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.344.40] - 2026-10-07
+
+### Fixed
+- When a job declaring `quietWhenScheduled` completed a scheduled run, the log showed two warnings saying the operator was being told about an interrupted turn. Nothing was wrong: a quiet run's completed end is told to no one by design. That end is now logged once, at INFO, as deliberately not told. A cancelled or failed quiet run still logs its warnings and is still told. (#1310)
+
 ## [0.344.39] - 2026-10-07
 
 ### Fixed

@@ -2833,6 +2833,7 @@ class TelegramChannel(Channel):
         # not hold and returns "" for one, so the guard would be unpinnable
         # (see casa_core.read_followup_incomplete). The seam-wired check IS
         # load-bearing — an unwired channel has no seam to call.
+        import background_jobs
         if self._driver_turn_incomplete is None:
             return False
         try:
@@ -2876,6 +2877,13 @@ class TelegramChannel(Channel):
                 "turn %s ended incompletely on an already-terminal "
                 "engagement (%s) whose terminal path DID tell this topic — it "
                 "owns the telling", rec.id[:8], status)
+            return True
+        # #1310: a quiet scheduled run's completed end is told to no one by
+        # design (INV-BGJOB-010), so an untold completion is not a fault here.
+        if status == "completed" and background_jobs.is_quiet_run(rec):
+            logger.info(
+                "turn %s ended on a quiet scheduled run's completed end — "
+                "deliberately not told (reason=%s)", rec.id[:8], reason)
             return True
         terminal_untold = status in ("completed", "cancelled", "error")
         if terminal_untold:
