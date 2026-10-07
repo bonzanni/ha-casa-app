@@ -32,9 +32,13 @@
   kind: meta
   summary: Manifest shard — architecture documents N through personality.
 
-- doc: manifest.d/architecture-plugin-a-l.yaml
+- doc: manifest.d/architecture-plugin-a-d.yaml
   kind: meta
-  summary: Manifest shard — architecture documents plugin-a through plugin-l (split from N-plugin-l at the 40 KB index ceiling).
+  summary: Manifest shard — architecture documents plugin-a through plugin-d (split from plugin-a-l at the 40 KB index ceiling).
+
+- doc: manifest.d/architecture-plugin-e-l.yaml
+  kind: meta
+  summary: Manifest shard — architecture documents plugin-e through plugin-l (split from plugin-a-l at the 40 KB index ceiling).
 
 - doc: manifest.d/architecture-plugin-m-r.yaml
   kind: meta
