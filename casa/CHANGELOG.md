@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.344.45] - 2026-10-07
+
+### Fixed
+
+- Comments beside the terminal-notice texts, and in the tests that pin them, sent a reader to the wrong architecture document for the rule on rewording those notices; they now point to the document that states it. One sentence in that document now names what it is about. No runtime behaviour changes; this is developer-facing material only. (#1323)
+
 ## [0.344.44] - 2026-10-07
 
 ### Fixed
