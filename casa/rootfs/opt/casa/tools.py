@@ -15626,15 +15626,21 @@ async def _bundle_reload_and_verify(
 
 
 def _live_component_root(runtime, slug: str) -> "str | None":
-    """#1146: the `component_root` of *slug*'s live agent's binding, or None.
+    """#1146: the component root of *slug*'s live agent, or None.
 
-    Synchronous, so the caller reads it in the same step as the reload's
-    return. None — no evidence, never "a different version" — when there is no
-    agent, no binding, or a binding that carries no root (a persona override
-    sets none)."""
-    agent = (getattr(runtime, "agents", None) or {}).get(slug)
-    binding = getattr(getattr(agent, "config", None), "binding", None)
+    The binding's `component_root` first; #1324: when the binding carries none
+    (a persona override), the root of the tuple the config was activated from
+    (`active_tuple_root`, set by `activate_binding_for_config` with the
+    binding). Synchronous, so the caller reads it in the same step as the
+    reload's return. None — no evidence, never "a different version" — when
+    there is no agent, no binding, or no root on either."""
+    config = getattr((getattr(runtime, "agents", None) or {}).get(slug), "config", None)
+    binding = getattr(config, "binding", None)
+    if binding is None:
+        return None
     root = getattr(binding, "component_root", None)
+    if root is None:
+        root = getattr(config, "active_tuple_root", None)
     return root if isinstance(root, str) else None
 
 
@@ -15749,8 +15755,9 @@ _KEPT_NOT_LOADED_OUTCOME = (
     "load the new version at the next reload or restart")
 
 # #1146: the same kept failure when the specialist's own reload failed and left
-# no root to compare — a persona-override binding carries none, the specialist
-# had no live agent, or the sequencer recorded nothing. That is no evidence
+# no root to compare — the specialist had no live agent, its live config names
+# no root (#1324: a persona override's is the tuple root it was activated from,
+# so it has one), or the sequencer recorded nothing. That is no evidence
 # either way, so it says neither "active" nor "previous version".
 _KEPT_RUNNING_UNKNOWN_OUTCOME = (
     "the new version is kept: its files are committed and active.yaml names "
@@ -15780,7 +15787,7 @@ _KEPT_RUNNING_UNKNOWN_OUTCOME = (
 # root this upgrade committed is "new", tested first; its head drops "not active
 # yet ... has not loaded it", which is false there, and its clause is dated like
 # the others — never a claim about what is running when the result is read.
-# "unknown" (no root to compare: a persona override, no live agent) uses the
+# "unknown" (no root to compare: no live agent, nothing carried) uses the
 # same head: such a reload may have loaded the kept version, and no evidence
 # must never read as "not loaded" (#1146).
 _KEPT_NOT_ACTIVE_HEAD = (
@@ -15816,8 +15823,8 @@ def _kept_live_match(runtime, slug: str, replaced_root, *,
                      committed_root=None) -> str:
     """#1296: how *slug*'s live agent compares with the root a library-kept
     upgrade replaced — "matched", "other", or "unknown" when either side has no
-    root (a persona override, no live agent, nothing carried). Synchronous: the
-    caller reads it in the step that composes the result.
+    root (no live agent, nothing carried). Synchronous: the caller reads it in
+    the step that composes the result.
 
     #1298: "new" first, when the live root is the root the upgrade committed. No
     carried committed root is never "new"; the other states are unchanged."""
@@ -15859,7 +15866,7 @@ async def _bundle_seq_failure(txn, seq: dict, *, slug: str) -> dict:
         # #1146: after a failed reload "active" holds only when the root the
         # reload left is the new version's (the swap landed, e.g. a
         # reregister_failed). A different root says the new version was not
-        # running; no root (an override binding, no agent, no key) is no
+        # running; no root (no agent, no key) is no
         # evidence either way, and the text says it could not be established.
         loaded_root = seq.get("loaded_root_after_reload")
         if seq.get("reload_errors"):

@@ -61,7 +61,7 @@ apply unchanged, step 3's open-conversation warning included.
    upgrade did not finish. Relay the result's `outcome` to the operator as written. When Casa
    found the new version running (a reload during the upgrade can load it), it says the upgrade
    did not finish and that the specialist was running the new version when the upgrade returned.
-   When Casa could not read which version is running (a persona override, no live agent), it says
+   When Casa could not read which version is running (no live agent), it says
    the upgrade did not finish and that which version the specialist was running when the upgrade
    returned could not be established; do not tell the operator that Casa has not loaded the new
    version. Otherwise it says the upgrade is not active yet and, when Casa found the replaced

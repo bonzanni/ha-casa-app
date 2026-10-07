@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.344.46] - 2026-10-07
+
+### Fixed
+
+- When an upgrade of a specialist that has had a persona applied to it failed after the new version was already kept, the upgrade's result said that which version the specialist was running could not be established, even when Casa was running a copy of it. Casa now compares the running version of such a specialist with the version the upgrade kept and the one it replaced, the same way as for any other specialist. So when a reload of the specialist during the upgrade had loaded the new version, the result says the upgrade did not finish and that the specialist was running the new version when the upgrade returned. When the specialist was still running the version the upgrade replaced, it says the upgrade is not active yet and that new and open conversations still use the previous version. When the upgrade did try to load the kept version and that reload failed, the result now says that the specialist was not running the new version when that reload returned if it was still running an earlier one, and that the new version is active if it was running the new one. The result still says that which version was running could not be established when Casa cannot read one, for example when no copy of the specialist is running. (#1324)
+
 ## [0.344.45] - 2026-10-07
 
 ### Fixed
