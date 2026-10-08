@@ -208,8 +208,8 @@ sweep — never started as a root service, never left crash-looping under their 
 **The base image's s6-overlay sources are not where the compile looks.** Every `claude_code`
 launch, its rollback, a cancel and a boot replay with a live engagement recompile the s6-rc
 database from the base image's own s6-overlay sources together with Casa's and the
-engagements'. The release image floats on the base's `bookworm` tag, so the overlay version
-inside it is whatever the base shipped at build time; Casa therefore compiles through the
+engagements'. The overlay version inside the release image is whatever the base named by
+`casa/Dockerfile` ships, and a base bump changes it; Casa therefore compiles through the
 version-less `/package/admin/s6-overlay` link the base ships, never a versioned directory,
 and the image build refuses to complete when that link's sources directory is absent. A base
 that drops the link fails the build, not the first launch on an operator's install; the
