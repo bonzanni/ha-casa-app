@@ -45,6 +45,13 @@ argument or a bad enum before the handler runs — code and tests rely on it. Th
 bridge route checks only that the name is known and passes the arguments through, so a
 tool reachable both ways must carry its own validation for the bridge side.
 
+**A grant can be narrower inside the tool.** Some tools check the caller's role
+themselves, past the grant: `cleanup_engagement_topics` is granted to the configurator and
+the assistant, and its immediate `all_terminal` purge runs only for those two roles, read as
+the engagement's own role when one is bound, so an executor the assistant engaged does not
+pass as her. The assistant's doctrine keeps that purge to a Telegram text conversation and puts a dry
+run, the count and the operator's confirmation in front of it; the tool itself does not.
+
 **One table is the whole media surface, and a kind is not a file type.** The
 `send_media` capability derives everything type-specific — the schema's `kind` enum, the
 argument check, the content gate, the delivered-filename extension allowlist, the size cap

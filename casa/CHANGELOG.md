@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.344.63] - 2026-10-09
+
+### Changed
+
+- You can now ask the assistant in Telegram to "remove all the closed topics", and she removes every finished engagement topic Casa has on record herself, whatever its age. Before, she could only delete the ones older than 7 days, and removing all of them needed the configurator, which opened one more topic. She first counts the topics, asks you with the number ("Delete all 12 finished topics? This can't be undone."), and deletes only after you tap Delete; tapping Keep deletes nothing. Deleting a topic also deletes all its messages. Open engagements are never touched, and topics Casa never recorded, such as ones from an older install, still have to be removed by hand in Telegram. On a voice call she does not do this and asks you to send the request in Telegram. The confirmation is an instruction to the assistant, not a lock in the tool: in testing she asked first in 9 of 9 runs and deleted nothing on Keep. (#1373)
+
 ## [0.344.62] - 2026-10-09
 
 ### Fixed

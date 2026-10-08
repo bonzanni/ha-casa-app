@@ -10,7 +10,8 @@ the ledger meets the platform:
   unretryable).
 - The pre-driver abort path (``tools._abort_engagement_topic``) appends
   too (outcome="error") — those topics are today's most orphan-prone.
-- [AR-7] the configurator's on-demand ``cleanup_engagement_topics`` tool.
+- [AR-7] the on-demand ``cleanup_engagement_topics`` tool (configurator and,
+  since #1373, the assistant for both scopes).
 - [AR-8] casa_core's periodic topics pass: skips cleanly when telegram is
   unconfigured, sweeps scope="due", and nags the operator for the
   "Delete messages" right at most once per boot.
@@ -387,14 +388,40 @@ async def test_tool_due_scope_allowed_for_assistant(monkeypatch):
     assert calls[0]["scope"] == "due"
 
 
-async def test_tool_all_terminal_refused_for_assistant(monkeypatch):
-    """v0.69.12: the irreversible all_terminal purge stays configurator-only —
-    a non-privileged caller (Ellen) is refused and nudged to due."""
+async def test_tool_all_terminal_allowed_for_assistant(monkeypatch):
+    """#1373: the operator asks Ellen (assistant) to "remove all the closed
+    topics" and she does it herself — the all_terminal purge is open to the
+    assistant as well as the configurator (her prompt asks for a dry run,
+    the count and the operator's confirmation first)."""
     calls = _sweep_recorder(monkeypatch)
     _wire_tool(_telegram_channel())
 
     import agent as agent_mod
     tok = agent_mod.origin_var.set({"role": "assistant"})
+    try:
+        res = await tools_mod.cleanup_engagement_topics.handler(
+            {"scope": "all_terminal", "dry_run": True},
+        )
+    finally:
+        agent_mod.origin_var.reset(tok)
+    payload = json.loads(res["content"][0]["text"])
+
+    assert payload["status"] == "ok"
+    assert len(calls) == 1
+    assert calls[0]["scope"] == "all_terminal"
+    assert calls[0]["dry_run"] is True
+
+
+@pytest.mark.parametrize("role", ["finance", "butler", "plugin-agent", None])
+async def test_tool_all_terminal_refused_for_other_roles(monkeypatch, role):
+    """#1373 keeps the purge to {configurator, assistant}: any other caller
+    (a specialist, another resident, a plugin agent, or an unbound context)
+    is refused and nudged to due, before the sweep runs."""
+    calls = _sweep_recorder(monkeypatch)
+    _wire_tool(_telegram_channel())
+
+    import agent as agent_mod
+    tok = agent_mod.origin_var.set({"role": role} if role else None)
     try:
         res = await tools_mod.cleanup_engagement_topics.handler(
             {"scope": "all_terminal"},
@@ -407,6 +434,36 @@ async def test_tool_all_terminal_refused_for_assistant(monkeypatch):
     assert payload["kind"] == "not_authorized"
     assert "due" in payload["message"]
     assert calls == []          # never reached the sweep
+
+
+async def test_tool_all_terminal_refused_inside_a_non_privileged_engagement(
+    monkeypatch,
+):
+    """Inside an engagement the engagement's own role decides, not the
+    engager's origin: an executor Ellen engaged inherits her origin role
+    ("assistant") through the contextvar, and must still be refused."""
+    calls = _sweep_recorder(monkeypatch)
+    _wire_tool(_telegram_channel())
+
+    import agent as agent_mod
+    eng = MagicMock()
+    eng.role_or_type = "finance"
+    eng.origin = {}
+    eng.context_rebuild_pending = False
+    otok = agent_mod.origin_var.set({"role": "assistant"})
+    etok = tools_mod.engagement_var.set(eng)
+    try:
+        res = await tools_mod.cleanup_engagement_topics.handler(
+            {"scope": "all_terminal"},
+        )
+    finally:
+        tools_mod.engagement_var.reset(etok)
+        agent_mod.origin_var.reset(otok)
+    payload = json.loads(res["content"][0]["text"])
+
+    assert payload["status"] == "error"
+    assert payload["kind"] == "not_authorized"
+    assert calls == []
 
 
 async def test_tool_dry_run_passthrough(monkeypatch):

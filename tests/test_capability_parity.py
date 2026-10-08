@@ -176,13 +176,14 @@ def test_required_self_use_tools_present() -> None:
 
 
 def test_cleanup_engagement_topics_grant_limited_to_configurator_and_assistant() -> None:
-    """Grant pin (updated v0.69.12): cleanup_engagement_topics irreversibly
+    """Grant pin (updated #1373): cleanup_engagement_topics irreversibly
     deletes Telegram topics. Since X2 resolved (v0.62.0 — webhook trust =
-    authenticated), the assistant (Ellen) holds a DUE-ONLY variant: the tool's
-    own role guard refuses the irreversible `all_terminal` purge for any
-    non-configurator caller (see test_topic_cleanup_tool
-    test_tool_all_terminal_refused_for_assistant). The grant must never spread
-    beyond {configurator, assistant} — any other role is a security
+    authenticated), the assistant (Ellen) holds the tool; since #1373 she may
+    run the immediate `all_terminal` purge too, after a dry run and the
+    operator's confirmation. The tool's own role guard refuses that purge for
+    every other caller (see test_topic_cleanup_tool
+    test_tool_all_terminal_refused_for_other_roles). The grant must never
+    spread beyond {configurator, assistant} — any other role is a security
     regression, not a convenience."""
     granted = {
         role
@@ -194,7 +195,7 @@ def test_cleanup_engagement_topics_grant_limited_to_configurator_and_assistant()
     }
     assert granted <= {"configurator", "assistant"}, (
         f"cleanup_engagement_topics must be granted ONLY to the configurator "
-        f"(full) + assistant (due-only, guarded); currently granted to: "
+        f"and the assistant; currently granted to: "
         f"{sorted(granted)}"
     )
     assert "configurator" in granted

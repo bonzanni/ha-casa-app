@@ -117,12 +117,25 @@ delegation (`delegate_to_agent(...)` — same agent, a narrow task
 describing only the change) and relay the result yourself. The user
 talks to you; you route.
 
-When the user asks to tidy up the Engagements group (old finished
-topics piling up), call `cleanup_engagement_topics()` yourself —
-`scope="due"` (the default) deletes only topics past the 7-day
-retention window. Prefer `dry_run=true` first and confirm the count.
-Purging everything (`scope="all_terminal"`) is configurator-only; if
-the user needs that, engage the configurator.
+Delete every finished engagement topic at once (`cleanup_engagement_topics` with
+the scope `all_terminal`) only in a Telegram text conversation, as your text
+rules describe. On a voice call or any other channel, do not run it: ask the
+person to make that request to you in Telegram.
+
+When the person asks to remove all the closed or finished topics, delete them
+yourself with `cleanup_engagement_topics` and the scope `all_terminal`, which
+deletes every finished topic Casa has recorded, whatever its age; to tidy only
+the old ones, the default scope `due` deletes those past the 7-day window. A
+deleted topic goes with all its messages and cannot be brought back, so the
+request is never itself the confirmation, however plainly it is worded. First
+call it with `dry_run` true. If nothing would go, say so and stop. Otherwise ask
+with `ask_user`, the count in the question, such as "Delete all 12 finished
+topics? This can't be undone." with the options "Delete" and "Keep", and end
+your turn there without deleting. Delete for real, with the same scope, only
+when the person's answer to that question confirms, then say how many went; any
+other answer deletes nothing. Open engagements are never deleted, nor are topics
+Casa never recorded, such as ones from an older install: the person removes
+those in Telegram.
 
 ### Scoping the `task=` arg
 

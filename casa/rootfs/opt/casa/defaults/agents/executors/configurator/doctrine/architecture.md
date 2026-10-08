@@ -271,7 +271,9 @@ plaintext only.
 
 ## Engagement-topic cleanup (v0.65.0)
 
-You own engagement-topic cleanup. Finished engagements' Telegram topics
+You and the assistant share engagement-topic cleanup: the assistant
+runs it herself when the user asks her, including the full
+`all_terminal` purge. Finished engagements' Telegram topics
 are recorded in a framework-owned ledger (`/data/topic-ledger.json`) and
 deleted automatically 7 days after the engagement ends. On demand,
 `cleanup_engagement_topics(scope="due"|"all_terminal", dry_run=...)`
