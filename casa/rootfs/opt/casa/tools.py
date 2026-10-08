@@ -446,6 +446,17 @@ POST_ECHO_SILENCE_NOTE = (
     "<silent/>.)")
 
 
+# #1348: the note a DM turn's ask_user result carries once its question is
+# live in the person's chat. The question already stands there with its
+# buttons, so anything the resident writes after the call only narrates it;
+# like the post echo's note, the sentinel lives here in Casa's text because a
+# compiled doctrine may not carry markup.
+ASK_USER_SILENCE_NOTE = (
+    "(Casa: the person now sees this question with its buttons in their chat. "
+    "Do not announce or retell it. If you have nothing else for them, reply "
+    "with exactly <silent/>.)")
+
+
 def _with_post_echo_payload(payload: dict, owner: str) -> dict:
     """The sync delegation's result, ok or error: the echo rides ``text``
     when the result has one, else ``message`` — a post proven before the
@@ -1367,6 +1378,7 @@ async def ask_user(args: dict) -> dict:
                         "message": _SETTLED_ASK_MESSAGE})
     scheduled_asks.displace_scheduled_for_chat(chat_id, "superseded")
     return _result({"status": "awaiting_user", "request_id": rid,
+                    "note": ASK_USER_SILENCE_NOTE,
                     **({"casa_prefixed": list(body.annotations)}
                        if body.annotations else {})})
 
