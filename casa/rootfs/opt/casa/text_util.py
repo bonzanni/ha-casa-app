@@ -136,7 +136,8 @@ _TRAILING_PUNCT = ",;:."
 def truncate_for_topic(text: str, *, byte_budget: int) -> str:
     """Truncate ``text`` so its UTF-8 byte length is ≤ ``byte_budget``.
 
-    Breaks on the last whitespace boundary when possible and signals
+    Breaks on the last whitespace boundary when that keeps at least half
+    the budget before the ellipsis (else cuts inside the word), and signals
     truncation with a trailing Unicode ellipsis '…' (3 UTF-8 bytes).
     Strips trailing punctuation in {',;:.'} before the ellipsis to
     avoid orphan punctuation. The returned string's UTF-8 byte length
@@ -146,7 +147,8 @@ def truncate_for_topic(text: str, *, byte_budget: int) -> str:
     - empty ``text`` → empty string.
     - ``text`` already fits → returned unchanged.
     - ``byte_budget`` < 3 (cannot fit '…') → empty string.
-    - ``byte_budget`` ≥ 3 but no whitespace boundary fits → hard
+    - ``byte_budget`` ≥ 3 but no whitespace boundary fits, or the last one
+      keeps under half the body budget → hard
       byte-cut on the last UTF-8 boundary that fits within
       ``byte_budget - 3`` bytes, then append '…'.
     """
@@ -181,9 +183,12 @@ def truncate_for_topic(text: str, *, byte_budget: int) -> str:
         # Even the first char doesn't fit; return just the ellipsis.
         return _ELLIPSIS
 
-    # Prefer to break on the last whitespace if we found one; else
-    # hard-cut.
-    if last_space_idx_in_body > 0:
+    # Prefer to break on the last whitespace if we found one and it keeps
+    # at least half the body budget; else hard-cut (#1368: a lone short
+    # first word like "Remove…" names nothing).
+    if (last_space_idx_in_body > 0
+            and len("".join(body[:last_space_idx_in_body]).rstrip()
+                    .encode("utf-8")) * 2 >= body_byte_budget):
         truncated = "".join(body[:last_space_idx_in_body])
     else:
         truncated = "".join(body)

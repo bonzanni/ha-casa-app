@@ -90,7 +90,8 @@ def normalize_topic_title(raw: object) -> str:
 
     Rejects UNSAFE-TEXT (control/bidi codepoints incl. newlines — the v0.78
     predicate) by returning ``""`` so the caller falls back to a Casa-derived
-    label. A safe title is capped to ~24 chars / 3 words at a WORD boundary.
+    label. A safe title is capped to ~24 chars / 3 words at a WORD boundary,
+    or inside a word (ellipsized) when the boundary would keep under half.
     Returns ``""`` for a non-str, blank, or unsafe value."""
     if not isinstance(raw, str):
         return ""
@@ -102,12 +103,15 @@ def normalize_topic_title(raw: object) -> str:
         s = " ".join(words[:TOPIC_TITLE_WORD_CAP])
     if len(s) > TOPIC_TITLE_CHAR_CAP:
         head = s[:TOPIC_TITLE_CHAR_CAP]
-        if " " in head:
+        # #1368: cut at the last word boundary only when that keeps at least
+        # half the cap; otherwise ("Remove water-plants-test trigger" kept
+        # only "Remove") cut inside the word and ellipsize, as #357 does for
+        # a first word longer than the cap.
+        if " " in head and len(head.rsplit(" ", 1)[0].rstrip()) >= \
+                TOPIC_TITLE_CHAR_CAP // 2:
             head = head.rsplit(" ", 1)[0]
         else:
-            # #357: a first word longer than the cap has no boundary to
-            # cut at — ellipsize rather than pass off a slice as the word.
-            head = s[:TOPIC_TITLE_CHAR_CAP - 1] + "…"
+            head = s[:TOPIC_TITLE_CHAR_CAP - 1].rstrip() + "…"
         s = head.rstrip()
     return s
 
