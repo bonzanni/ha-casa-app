@@ -97,8 +97,10 @@ def env(tmp_path, monkeypatch):
         _agent, "agent_home_for_role_id", lambda role: str(project_dir))
     classify_gate = asyncio.Event()
     classify_gate.set()
+    classify_entered = asyncio.Event()
 
     async def fake_classify(content: str) -> str:
+        classify_entered.set()
         await classify_gate.wait()
         return "private"
     monkeypatch.setattr(session_saver, "classify_tier", fake_classify)
@@ -110,7 +112,7 @@ def env(tmp_path, monkeypatch):
     return types.SimpleNamespace(
         reg=SessionRegistry(str(registry_path)), registry_path=registry_path,
         project_dir=project_dir, retry_dir=retry_dir,
-        classify_gate=classify_gate,
+        classify_gate=classify_gate, classify_entered=classify_entered,
     )
 
 
@@ -278,9 +280,17 @@ async def test_a_recall_only_channel_records_and_retains_nothing(
 async def test_a_memory_clear_right_after_the_reset_leaves_nothing_behind(
     env, monkeypatch,
 ):
-    """The clear starts the moment /new returns, before the background retain
-    has run. Whatever the interleaving, nothing is written into the bank after
-    it is deleted, and no record of the old conversation is left."""
+    """The clear completes after /new returned and BEFORE the background
+    retain enters the retain fence: the retain must discard (the fence
+    generation it carries was captured at the reset's snapshot), and the clear
+    drops the reset's record with the rest of the spool.
+
+    The ordering is forced, not left to the scheduler: the background retain
+    does not start at all until the clear has finished, so whatever it would
+    capture on its own (a late fence generation, say) is captured after the
+    clear. Left to the scheduler, CI ran the retain first, which is the
+    ordering the next test pins, and an assertion written for this one
+    failed."""
     import memory_wipe as mw
     import session_gate
 
@@ -289,18 +299,26 @@ async def test_a_memory_clear_right_after_the_reset_leaves_nothing_behind(
     monkeypatch.setattr(mw, "FENCE", fence)
     monkeypatch.setattr(mw.mental_models, "schedule_reconcile",
                         lambda *a, **k: None)
+    clear_done = asyncio.Event()
+    real_retain = session_saver.retain_cold_session
+
+    async def retain_after_the_clear(*args, **kwargs):
+        await clear_done.wait()
+        await real_retain(*args, **kwargs)
+
+    monkeypatch.setattr(session_saver, "retain_cold_session", retain_after_the_clear)
 
     await _register(env.reg)
     sem = _Memory()
     await asyncio.wait_for(reset_channel(_KEY, env.reg, sem, channel="telegram"), timeout=2)
-    report = await mw.wipe_long_term_memory(
+    report = await asyncio.wait_for(mw.wipe_long_term_memory(
         registry=env.reg, semantic_memory=sem, fence=fence, bank="casa",
         retry_dir=env.retry_dir,
-    )
+    ), timeout=5)
+    clear_done.set()
     await _settle()
-    assert report.spool_records_dropped == 1
-    assert "delete_bank" in sem.events
-    assert "retain" not in sem.events[sem.events.index("delete_bank"):]
+    assert report.spool_records_dropped == 1      # the reset's record went
+    assert sem.events == ["delete_bank"]          # and the retain discarded
     assert _records(env.retry_dir) == []
 
 
@@ -323,8 +341,10 @@ async def test_a_memory_clear_during_the_background_save_waits_for_it(
     sem = _Memory()
     env.classify_gate.clear()
     await asyncio.wait_for(reset_channel(_KEY, env.reg, sem, channel="telegram"), timeout=2)
-    for _ in range(20):
-        await asyncio.sleep(0)          # let the retain enter the fence
+    # Classification runs inside the fence's shared section, so once it has
+    # been entered the retain holds the fence (a bounded wait, not a count of
+    # scheduler turns: the transcript read before it runs in a thread).
+    await asyncio.wait_for(env.classify_entered.wait(), timeout=5)
     wipe = asyncio.create_task(mw.wipe_long_term_memory(
         registry=env.reg, semantic_memory=sem, fence=fence, bank="casa",
         retry_dir=env.retry_dir,
