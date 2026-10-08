@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.344.50] - 2026-10-08
+
+### Fixed
+
+- When you tapped a plugin button, its card showed "☑ <button>" with its buttons removed before the tap had done anything. For a tap that updates the card in place, such as a page turn, the card looked like a final answer for several seconds until the next page appeared. While a tap runs, its card now shows "⏳ <button>". When the tap is done, the card shows "☑ <button>" above the receipt, is replaced by its next page, or shows "✖" with the reason, as before. A 📎 button still shows "☑" at once. If Telegram briefly refuses to update a card, for example because of its rate limit, Casa now tries once more. (#1341)
+
 ## [0.344.49] - 2026-10-08
 
 ### Fixed
