@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.344.67] - 2026-10-09
+
+### Added
+
+- A plugin can now show a list longer than one message with its buttons after it. Its card may bring up to six plain pages; Casa posts each page in order as its own message and then the card, all as one delivery, whether the card comes from a specialist's answer or from a button tap. You can reply to any page and the specialist knows which page you meant. If a page cannot be posted, the card is not posted either. Cards without pages behave as before. (#1377)
+
 ## [0.344.66] - 2026-10-09
 
 ### Fixed

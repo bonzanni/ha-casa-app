@@ -6061,6 +6061,27 @@ class TelegramChannel(Channel):
                     _landed(await self._app.bot.send_message(chat_id=chat_id, text=chunk))
         return DeliveryOutcome.DELIVERED
 
+    async def deliver_operator_page(self, chat_id: int, text: str, *,
+                                    post=None) -> DeliveryOutcome:
+        """#1377: one plain page before a card — *text* is Casa's label line and
+        the page as the result broker composed it, one message by the deposit's
+        rule. Sent as exactly ONE message, rendered rich like the card; when the
+        platform refuses its entities the authored text is resent plain as one
+        message (``_send_one``), never split into fallback chunks, so a reply on
+        the page quotes the page whole. Filed under *post* as it lands."""
+        if self._app is None:
+            logger.warning("Telegram channel not started; cannot deliver operator page")
+            return DeliveryOutcome.NOT_DELIVERED
+
+        def _landed(sent):
+            self._record_post(chat_id, sent, post)
+        display, entities = render(text)
+        if entities is not None:
+            await self._send_one(chat_id, text, display, entities, record=_landed)
+        else:
+            _landed(await self._app.bot.send_message(chat_id=chat_id, text=_plain(text)))
+        return DeliveryOutcome.DELIVERED
+
     async def deliver_operator_proposal(self, chat_id: int, text: str, labels: list,
                                         rid: str, *, post=None):
         """S5 §3.3: post *text* (Casa's label line and the proposal body, as the

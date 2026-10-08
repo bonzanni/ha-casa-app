@@ -10,8 +10,9 @@ last_reviewed: 2026-10-09
 
 What a stored-call tap may show besides its receipt: the next card a `safe` stored call
 returns beside its receipt (#1302), the same card shown in place of the tapped one
-(#1339), the tapped card left live by a file button that keeps it (#1362), and a Close
-button whose tap only removes the card's buttons (#1375). The proposal, the tap's admission chain and re-checks, the pinned turn, the capture
+(#1339), the tapped card left live by a file button that keeps it (#1362), a Close
+button whose tap only removes the card's buttons (#1375), and the plain pages a card may bring
+before it (#1377). The proposal, the tap's admission chain and re-checks, the pinned turn, the capture
 and the receipt are [`stored-call-buttons.md`](stored-call-buttons.md); the delivered-slot
 path a proposal rides on is [`plugin-delivered-slots.md`](plugin-delivered-slots.md).
 Telegram only.
@@ -92,6 +93,26 @@ no desk use, no plugin call, no model turn, no exchange, no echo line, no notice
 Telegram refuses is a log line; the card's buttons then only answer the toast. An older Casa
 refuses a deposit with a Close button as `bad_proposal`.
 
+**A card may bring plain pages before it (#1377).** A list longer than one message, with its
+actions on a card after it: any `operator_proposal` deposit — a plugin's deposit, a `More`
+call's, or a tap's `next` card, all judged by `proposal_ok` — may carry `pages`, a list of one
+to six strings, each obeying the card text's own rule (non-blank, at most 4,000 characters, no
+control character but newline and tab, and one Telegram message with Casa's label line);
+anything else is `bad_proposal`, and absent or `null` is today's card. `_post_proposal` keeps
+its synchronous block first (the live count, the revision supersede, the card's record), then
+sends each page in order as one labelled message — `deliver_operator_page`, rendered like the
+card and, when Telegram refuses its formatting, resent whole as one plain message (never split),
+filed in the post map under the card's own post record as it lands, so a swipe-reply on any page reaches the specialist's desk with that page's
+text — all pages under one delivery bound, and then the card as before. The delivery is proven
+only when every page and the card landed; its receipt adds `pages` (the count), and the echo
+line says "posted N pages and a proposal". A page that does not land sends no card: the record
+is unregistered and the call is told how many pages landed. A keyed repeat (#1312) of a live
+card sends neither the pages nor the card. A card with pages is never placed in place:
+`_post_next_card` refuses the edit before anything is registered or sent, and the tap's
+fallback posts the receipt, the pages and the card. The whole deposit still fits the 64 KiB
+value cap. An older Casa ignores `pages` and posts the card alone, so a plugin that relies on
+them requires this version.
+
 ## Contracts & invariants
 
 **INV-PROP-006**: A `safe` stored call's `next` card that is not shown in place (INV-PROP-008) is posted only beside its receipt, after that receipt's send is proven, within the tap's own desk use, and only if it passes the proposal deposit predicate against the stored tool's own plugin and server on the maps the tap was re-checked against; it is registered before it is sent and carries the tapped proposal's own chat, operator, role and artifact, so its buttons execute only from a tap; a card that does not land is one notice and the receipt stands; a response without `next` is today's tap.
@@ -104,11 +125,18 @@ refuses a deposit with a Close button as `bad_proposal`.
 
 **INV-PROP-011**: A `close` button stores no call and is accepted only as JSON `true` beside no `call`, `arm_file` or `keep_card`, at most one per card; its tap, admitted by the same chain and the same one claim and commit as any settling tap, removes the card's keyboard by a markup-only edit that leaves the text as posted, and runs no desk use, no plugin call and no model turn; every later tap on that card runs nothing; a card without a `close` button behaves as before.
 
+**INV-PROP-012**: An `operator_proposal` deposit's optional `pages` — one to six texts, each obeying the card text's rule, else `bad_proposal` — are posted in order after the card's record is registered and before the card, each as one labelled message filed in the post map under the card's post record as it lands; the card is sent only after every page landed, and the delivery is proven only when the card landed too; a page that does not land sends no card and unregisters the record; a card with pages is never shown in place; a deposit without `pages` behaves as before.
+
 What it does not cover: an edit whose landing is unconfirmed. Its record stays live until the
 deadline, since the edited card may be on screen, and the fallback still posts the receipt and
 the card, so the operator may see two working cards; a card carrying the same `revision`
 replaces the edited one (`↻ replaced`). If that edit did not land, the tapped card keeps `⏳ <label>` until
 then, when the record's deadline marks it `⌛ expired`.
+
+Nor does it cover a card with pages whose card send is unconfirmed (Telegram may have
+accepted it before a timeout). As for any unproven send, the key is not remembered and the call
+is told the card was withheld, so a plugin's retry posts the pages and the card again; a card
+carrying the same `revision` marks the earlier one `↻ replaced`, so one card stays live.
 
 ## Failure behavior
 
@@ -153,12 +181,15 @@ of the same card; a tap that confirms, files or sends leaves it out, and its rec
 - `casa/rootfs/opt/casa/specialist_desk.py::keeps_card`
 - `casa/rootfs/opt/casa/stored_calls.py::delivers_file`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.clear_dm_keyboard`
+- `casa/rootfs/opt/casa/result_broker.py::_pages_reason`
+- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.deliver_operator_page`
 
 **Tests**
 - `tests/test_tap_next_card.py`
 - `tests/test_tap_in_place_card.py`
 - `tests/test_tap_keep_card.py`
 - `tests/test_tap_close_button.py`
+- `tests/test_proposal_pages.py`
 
 **Related**
 - [`architecture/stored-call-buttons.md`](../architecture/stored-call-buttons.md)

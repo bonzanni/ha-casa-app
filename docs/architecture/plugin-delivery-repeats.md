@@ -40,7 +40,8 @@ A repeat still owes what is not the post: a file deposit's staged file is consum
 carries it this time. Both await. A proposal's repeat is therefore decided again afterwards, with no await before
 its receipt: one whose original was superseded, claimed or expired meanwhile is posted fresh,
 without a second tell. A file's repeat keeps its first decision, since its staged copy is
-already consumed. A repeat adds nothing to the post echo; the original is already
+already consumed. A card that brought pages (#1377) is one delivery: its receipt detail counts them, and its
+repeat sends neither the pages nor the card. A repeat adds nothing to the post echo; the original is already
 there, because a proposal's echo is filed at the instant its post is proven, before anything
 else awaits.
 
