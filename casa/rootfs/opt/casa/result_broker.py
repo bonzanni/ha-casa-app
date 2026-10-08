@@ -321,7 +321,7 @@ def proposal_ok(value: Any, call: Any) -> tuple[dict | None, str | None]:
         return None, "bad_proposal"
     seg, server = entry.plugin_seg, servers[0]
     resolved = []
-    arm_buttons = 0
+    arm_buttons = close_buttons = 0
     for button in buttons:
         if not isinstance(button, dict):
             return None, "bad_proposal"
@@ -329,6 +329,17 @@ def proposal_ok(value: Any, call: Any) -> tuple[dict | None, str | None]:
         if (not isinstance(label, str) or not label.strip()
                 or len(label) > PROPOSAL_LABEL_CHARS or not _text_ok(label, PROPOSAL_LABEL_CHARS)):
             return None, "bad_proposal"
+        # #1375: a Close button stores no call — Casa removes the card's keyboard itself;
+        # at most one per proposal, never beside another kind (it counts toward the six)
+        if "close" in button:
+            if (button.get("close") is not True or "call" in button or "arm_file" in button
+                    or "keep_card" in button):
+                return None, "bad_proposal"
+            close_buttons += 1
+            if close_buttons > 1:
+                return None, "bad_proposal"
+            resolved.append({"label": label, "close": True})
+            continue
         # S6 §2.4: a button is EITHER a stored call OR an `arm_file` button — never both,
         # never neither; at most one arm button per proposal (it counts toward the six)
         if "arm_file" in button:
@@ -1388,12 +1399,13 @@ async def _post_proposal(identity, seg: str, slot: str, call: _InFlight, proposa
         "operator_id": int(identity.operator_id), "role": role,
         "artifact_id": str(getattr(identity, "artifact_id", "") or ""),
         "plugin_seg": seg,
-        # S6 §2.4: `calls` keeps one entry per button (None at an arm_file index, so every
+        # S6 §2.4: `calls` keeps one entry per button (None at an arm_file or close index, so every
         # reader keeps its indexing); `kinds` is the parallel per-button kind
         "calls": [dict(b["call"]) if "call" in b else None for b in proposal["buttons"]],
-        # #1362: a `keep_card` button's tap settles nothing (INV-PROP-010)
+        # #1362: a `keep_card` button's tap settles nothing (INV-PROP-010); #1375: a
+        # `close` button's tap only removes the keyboard (INV-PROP-011)
         "kinds": ["arm_file" if b.get("arm_file") else "keep_card" if b.get("keep_card")
-                  else "call" for b in proposal["buttons"]],
+                  else "close" if b.get("close") else "call" for b in proposal["buttons"]],
         "revision": revision, "label": head, "text": text, "options": list(labels),
         "message_id": None, "owner": _post_owner(identity), "_scope": scope,
     }

@@ -103,7 +103,8 @@ composed caption as plain text — no rendering, no entities, no thread id (INV-
 Both are Casa-composed notices under the output boundary, like the delivered link.
 
 **A fourth kind, `operator_proposal`, is a decision offered as buttons.** The deposit is a
-one-page text with one to six buttons, each a stored call of the same plugin; the post is
+one-page text with one to six buttons, each a stored call of the same plugin (or a button
+that stores none: `📎`, or Close); the post is
 registered with the verdict broker before it is sent, and a tap executes exactly the stored
 call through one pinned specialist turn — [`stored-call-buttons.md`](stored-call-buttons.md)
 (INV-PROP-001, -002, -003).

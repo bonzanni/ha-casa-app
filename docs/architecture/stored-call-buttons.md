@@ -59,7 +59,9 @@ next non-text message the same operator sends there within ten minutes goes to t
 specialist's inbox as if it were a reply to its post ([`inbound-files.md`](inbound-files.md)).
 A later arming replaces it, a text message leaves it, the first file consumes it — a
 swipe-reply file too, which still goes where the reply points — and a restart forgets it. The finish hook only edits the keyboard to `☑ <label>`: no turn runs, nothing is
-dispatched, and by the operator's ruling no message about the arming is ever sent.
+dispatched, and by the operator's ruling no message about the arming is ever sent. A Close
+button (`{"label", "close": true}`, #1375) stores no call either; its tap only removes the
+card's buttons — [`stored-call-next-card.md`](stored-call-next-card.md).
 
 **Register, then post; bound; supersede.** The composed post — label line and text — must
 render to one page with room left for the longest line Casa appends when the keyboard

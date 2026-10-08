@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-10-08
+last_reviewed: 2026-10-09
 ---
 
 # Stored-call buttons: the next card and the card replaced in place
@@ -10,7 +10,8 @@ last_reviewed: 2026-10-08
 
 What a stored-call tap may show besides its receipt: the next card a `safe` stored call
 returns beside its receipt (#1302), the same card shown in place of the tapped one
-(#1339), and the tapped card left live by a file button that keeps it (#1362). The proposal, the tap's admission chain and re-checks, the pinned turn, the capture
+(#1339), the tapped card left live by a file button that keeps it (#1362), and a Close
+button whose tap only removes the card's buttons (#1375). The proposal, the tap's admission chain and re-checks, the pinned turn, the capture
 and the receipt are [`stored-call-buttons.md`](stored-call-buttons.md); the delivered-slot
 path a proposal rides on is [`plugin-delivered-slots.md`](plugin-delivered-slots.md).
 Telegram only.
@@ -76,6 +77,21 @@ card's hour ran out while it waited for the desk. The button can be tapped again
 one file), and another button still settles the card as before; a tap on a settled card is
 "already answered".
 
+**A card may carry a Close button (#1375).** A card's author — a plugin's deposit, or a tap's
+`next` card, both judged by `proposal_ok` — may include one button `{"label", "close": true}`:
+it stores no call, `close` is JSON `true` only, and it never sits beside `call`, `arm_file` or
+`keep_card`; a second Close button, a `close` that is not `true`, or `close` beside one of
+those keys makes the deposit `bad_proposal` (other members are ignored, as on any button). It
+counts toward the six, its label is the author's, and its kind is `close` (`calls` holds `None`
+at its index). Casa never adds one. Its tap runs the whole admission chain and the one claim
+and commit of any settling tap, so the card is settled: every later tap on it answers a toast
+("already answered" while the settlement is remembered, "expired" after) and runs nothing. The
+finish hook then removes the keyboard by one markup-only edit (`clear_dm_keyboard`, an explicit
+empty keyboard), so the text stays exactly as posted, with no line added; nothing else follows —
+no desk use, no plugin call, no model turn, no exchange, no echo line, no notice. A removal
+Telegram refuses is a log line; the card's buttons then only answer the toast. An older Casa
+refuses a deposit with a Close button as `bad_proposal`.
+
 ## Contracts & invariants
 
 **INV-PROP-006**: A `safe` stored call's `next` card that is not shown in place (INV-PROP-008) is posted only beside its receipt, after that receipt's send is proven, within the tap's own desk use, and only if it passes the proposal deposit predicate against the stored tool's own plugin and server on the maps the tap was re-checked against; it is registered before it is sent and carries the tapped proposal's own chat, operator, role and artifact, so its buttons execute only from a tap; a card that does not land is one notice and the receipt stands; a response without `next` is today's tap.
@@ -85,6 +101,8 @@ one file), and another button still settles the card as before; a tap on a settl
 **INV-PROP-009**: A stored-call tap's card never reads as settled before its call answered: the commit edits it to `⏳ <label>`, and only the tap's desk use, after the call's outcome is known, replaces that line — with `☑ <label>` before the receipt is sent, with the new card in place, or with `✖ <reason>`; it is never marked over a message an unconfirmed in-place edit may have changed.
 
 **INV-PROP-010**: A `keep_card` button stores only a call whose one provided slot delivers `operator_file`; its tap, admitted by the same chain while the proposal is live and unclaimed, claims and commits nothing, leaves the card's text and keyboard as they were, runs one desk use of the stored call per admitted tap, and never writes a line over the card; every other button of the card still settles it as before.
+
+**INV-PROP-011**: A `close` button stores no call and is accepted only as JSON `true` beside no `call`, `arm_file` or `keep_card`, at most one per card; its tap, admitted by the same chain and the same one claim and commit as any settling tap, removes the card's keyboard by a markup-only edit that leaves the text as posted, and runs no desk use, no plugin call and no model turn; every later tap on that card runs nothing; a card without a `close` button behaves as before.
 
 What it does not cover: an edit whose landing is unconfirmed. Its record stays live until the
 deadline, since the edited card may be on screen, and the fallback still posts the receipt and
@@ -97,6 +115,7 @@ then, when the record's deadline marks it `⌛ expired`.
 **A card's edit fails transiently** (flood control, a lost link). Every DM card edit is tried
 once more — after flood control's stated wait, at most ten seconds, else after a second; if
 that fails too, the card keeps its previous line and the receipt below it tells the outcome.
+A Close tap's keyboard removal is the exception: it is tried once, and a failure is a log line.
 
 **A tap is cancelled while its call runs** (Casa is stopping). The card keeps `⏳ <label>`;
 everything else is a cancelled tap's usual handling (`stored-call-buttons.md`).
@@ -133,11 +152,13 @@ of the same card; a tap that confirms, files or sends leaves it out, and its rec
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._spawn_keep_tap`
 - `casa/rootfs/opt/casa/specialist_desk.py::keeps_card`
 - `casa/rootfs/opt/casa/stored_calls.py::delivers_file`
+- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.clear_dm_keyboard`
 
 **Tests**
 - `tests/test_tap_next_card.py`
 - `tests/test_tap_in_place_card.py`
 - `tests/test_tap_keep_card.py`
+- `tests/test_tap_close_button.py`
 
 **Related**
 - [`architecture/stored-call-buttons.md`](../architecture/stored-call-buttons.md)
