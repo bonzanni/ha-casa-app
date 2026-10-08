@@ -13,7 +13,9 @@ FAKES carrying the PRODUCTION descriptions and input schemas from
 in the production sync result shape. Nothing is started, asked or posted.
 
 A run passes when the resident's reply is exactly the case's expected
-answer — the delegate's text attributed "Alex: ", whitespace collapsed — or,
+answer — the delegate's text attributed "Alex: " exactly, then word for word,
+in order (case, whitespace and the punctuation that only joins or ends a clause
+aside: ``_words``), or,
 for a question the delegate asks Ellen to put to the person, when the reply is
 the delegate's answer attributed and verbatim (its closing full stop may become
 a dash or a comma joining the question), then that one question in one of its
@@ -60,6 +62,8 @@ from claude_agent_sdk import (  # noqa: E402
     create_sdk_mcp_server,
     tool,
 )
+from claude_runtime import CLAUDE_CLI_PATH  # noqa: E402
+from config import effort_for  # noqa: E402
 from policies import load_policies  # noqa: E402
 from prompt_compiler import projection_for  # noqa: E402
 import tools as casa_tools  # noqa: E402
@@ -237,11 +241,36 @@ def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", text.replace("’", "'")).strip()
 
 
+# #1369: a relay that keeps every word of the delegate's text in order but
+# joins two clauses differently ("your email — I'll post" relayed as "your
+# email. I'll post") is still the delegate's own words. So double quotes are
+# dropped (the expected forms already accept the answer quoted or not), an em
+# or en dash not followed by a number or currency sign, and a full stop, comma,
+# colon or semicolon before a space or the end, count as one word break, and
+# case is ignored. Every word still counts, in order, as do "?", "!", a hyphen
+# and a decimal point ("€412.30"), and a dash before an amount (it may be a
+# sign): a reply with one word changed, added, dropped or moved is not the
+# delegate's answer. The attribution is not a clause: the reply must open with
+# it exactly, as every expected form does.
+_ATTRIBUTION = "Alex: "
+_QUOTES = re.compile(r"[\"“”]")
+_CLAUSE_DASH = re.compile(r"\s*[—–](?!\s*[\d€$£])\s*")
+_CLAUSE_MARK = re.compile(r"\s*[.,;:](?=\s|$)")
+
+
+def _words(text: str) -> str:
+    t = _CLAUSE_MARK.sub(" ", _CLAUSE_DASH.sub(" ", _QUOTES.sub("", _norm(text))))
+    return re.sub(r"\s+", " ", t).strip().casefold()
+
+
 def _judge(case: dict, reply: str) -> tuple[bool, str]:
     r = _norm(reply)
     if "expect" in case:
-        ok = r in {_norm(e) for e in case["expect"]}
-        return ok, "exact" if ok else "not the attributed answer"
+        if not r.startswith(_ATTRIBUTION):
+            return False, "not attributed"
+        n = len(_ATTRIBUTION)
+        ok = _words(r[n:]) in {_words(e[n:]) for e in case["expect"]}
+        return ok, "the attributed answer" if ok else "not the attributed answer"
     prefix = _norm(case["prefix"])
     if not r.startswith(prefix):
         return False, "answer not passed on verbatim"
@@ -290,7 +319,8 @@ async def _one(case: dict, system_prompt: str, model: str) -> tuple[bool, str, l
     ]
     server = create_sdk_mcp_server(name="casa-framework", tools=fakes)
     opts = ClaudeAgentOptions(
-        model=model, system_prompt=system_prompt,
+        model=model, effort=effort_for(model), cli_path=CLAUDE_CLI_PATH,
+        system_prompt=system_prompt,
         mcp_servers={"casa-framework": server}, tools=[],
         allowed_tools=[f"mcp__casa-framework__{f.name}" for f in fakes],
         strict_mcp_config=True, setting_sources=[], skills=[],

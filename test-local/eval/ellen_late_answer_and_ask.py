@@ -325,6 +325,8 @@ async def _turn(client, text: str) -> tuple[str, str, str]:
 
 async def _one(case: dict, system_prompt: str, model: str) -> tuple[bool, str, list, str]:
     from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, create_sdk_mcp_server
+    from claude_runtime import CLAUDE_CLI_PATH
+    from config import effort_for
     import tools as casa_tools
     captured: list = []
     pending = json.dumps({"status": "pending", "delegation_id": "0f3c9a2e-eval",
@@ -335,7 +337,8 @@ async def _one(case: dict, system_prompt: str, model: str) -> tuple[bool, str, l
     ]
     server = create_sdk_mcp_server(name="casa-framework", tools=fakes)
     opts = ClaudeAgentOptions(
-        model=model, system_prompt=system_prompt,
+        model=model, effort=effort_for(model), cli_path=CLAUDE_CLI_PATH,
+        system_prompt=system_prompt,
         mcp_servers={"casa-framework": server}, tools=[],
         allowed_tools=[f"mcp__casa-framework__{f.name}" for f in fakes],
         strict_mcp_config=True, setting_sources=[], skills=[],

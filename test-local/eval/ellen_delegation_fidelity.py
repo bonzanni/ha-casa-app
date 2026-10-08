@@ -44,6 +44,8 @@ from claude_agent_sdk import (  # noqa: E402
     create_sdk_mcp_server,
     tool,
 )
+from claude_runtime import CLAUDE_CLI_PATH  # noqa: E402
+from config import effort_for  # noqa: E402
 from policies import load_policies  # noqa: E402
 from prompt_compiler import projection_for  # noqa: E402
 import tools as casa_tools  # noqa: E402
@@ -161,7 +163,8 @@ async def _one(case: dict, system_prompt: str, model: str) -> tuple[bool, list]:
     ]
     server = create_sdk_mcp_server(name="casa-framework", tools=fakes)
     opts = ClaudeAgentOptions(
-        model=model, system_prompt=system_prompt,
+        model=model, effort=effort_for(model), cli_path=CLAUDE_CLI_PATH,
+        system_prompt=system_prompt,
         mcp_servers={"casa-framework": server}, tools=[],
         allowed_tools=[f"mcp__casa-framework__{f.name}" for f in fakes],
         strict_mcp_config=True, setting_sources=[], skills=[],

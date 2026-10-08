@@ -43,6 +43,8 @@ from claude_agent_sdk import (  # noqa: E402
     create_sdk_mcp_server,
     tool,
 )
+from claude_runtime import CLAUDE_CLI_PATH  # noqa: E402
+from config import effort_for  # noqa: E402
 from policies import load_policies  # noqa: E402
 import tools as casa_tools  # noqa: E402 — production engage_executor contract
 
@@ -148,6 +150,8 @@ async def _run() -> bool:
     # tool the model can reach is the fake engage_executor above.
     opts = ClaudeAgentOptions(
         model=model,
+        effort=effort_for(model),
+        cli_path=CLAUDE_CLI_PATH,
         system_prompt=cfg.system_prompt,
         mcp_servers={"casa-framework": server},
         tools=[],
