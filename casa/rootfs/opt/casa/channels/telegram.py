@@ -1945,8 +1945,11 @@ class TelegramChannel(Channel):
               or getattr(message, "sender_chat", None) is not None):
             who = "a message sent on behalf of a chat"
         elif quoted_from is not None and bot_id is not None and quoted_from.id == bot_id:
-            who = ("an earlier message from Casa (you or a specialist; Casa no longer "
-                   "has a record of which)")
+            # #1335: the post map never held the resident's own replies, so
+            # nothing was lost; nor does its absence prove who wrote it (a
+            # specialist's file, Casa's notices, a forgotten post)
+            who = ("an earlier message from Casa with no record of who wrote it (Casa keeps "
+                   "none for your own replies, so it is most likely one of yours)")
         elif quoted_from is not None and sender is not None and quoted_from.id == sender.id:
             who = "their own earlier message"
         else:

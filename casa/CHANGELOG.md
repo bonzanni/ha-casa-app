@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.344.49] - 2026-10-08
+
+### Fixed
+
+- When you swipe-replied to one of the assistant's own recent replies, the note Casa gives the assistant said the message came from "you or a specialist" and that Casa "no longer" had a record of which, as if a record had been lost. Casa never records the assistant's own replies, so nothing was lost. The note now says Casa has no record of who wrote that message, that it keeps none for the assistant's own replies, and that the message is therefore most likely the assistant's own. It still names no certain author, because a file a specialist sent or a Casa notice has no record either. Replies to a specialist's recorded post keep their wording. (#1335)
+
 ## [0.344.48] - 2026-10-08
 
 ### Added

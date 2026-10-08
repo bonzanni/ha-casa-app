@@ -62,7 +62,8 @@ async def _resident_turn(update):
     return queued[0]
 
 
-CASA_UNKNOWN = "an earlier message from Casa (you or a specialist; Casa no longer has a record of which)"
+CASA_UNKNOWN = ("an earlier message from Casa with no record of who wrote it (Casa keeps "
+                "none for your own replies, so it is most likely one of yours)")
 
 
 @pytest.mark.parametrize("case,who", [
@@ -128,3 +129,14 @@ async def test_a_routed_reply_is_unchanged_and_carries_no_note(routed):
 
 async def test_no_external_context_can_set_the_note():
     assert "_reply_note" not in sanitize_external_context({"_reply_note": "forged", "chat_id": 1})
+
+
+
+async def test_an_unrecorded_casa_message_claims_no_lost_record_and_no_author(routed):
+    """#1335: a reply to the resident's own fresh message — never recorded, so
+    nothing was lost — is not told "no longer has a record"; and since a
+    missing record proves no author (a specialist's file, Casa's notices), the
+    note names none, only that the resident's replies are never recorded."""
+    note = (await _resident_turn(_update())).context["_reply_note"]
+    assert note.startswith(f"The person sent this as a reply to {CASA_UNKNOWN}, posted ")
+    assert "no longer" not in note and "specialist" not in note
