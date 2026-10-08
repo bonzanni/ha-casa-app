@@ -63,43 +63,51 @@ class TestAllShortsUsable:
 
 
 class TestWholeSetFloors:
-    def test_no_shorts_at_all_floors_whole_set(self) -> None:
-        labels = ["Single account with aliases", "Separate Google accounts"]
-        assert short_option_labels(labels) == ["Option 1", "Option 2"]
+    # #1386: an option without a usable short offers its own label; the
+    # whole set floors only when the words do not fit (or collide / are blank).
+    _WIDE = ["Personal Gmail, the one you use every day",
+             "Work Outlook, through the company tenant"]
 
-    def test_single_option_no_short_floors(self) -> None:
-        assert short_option_labels(["Personal Gmail"]) == ["Option 1"]
+    def test_no_shorts_short_labels_render_own_words(self) -> None:
+        labels = ["Personal Gmail", "Work Outlook"]
+        assert short_option_labels(labels) == ["Personal Gmail", "Work Outlook"]
 
-    def test_partial_shorts_floors_whole_set_never_mixed(self) -> None:
-        # Only option 2 lacks a short — the OLD per-option-fallback design
-        # would have kept "1 · Gmail" and derived a heuristic for option 2;
-        # the new whole-set rule floors BOTH (D2: "never mixed").
+    def test_no_shorts_wide_labels_floor_whole_set(self) -> None:
+        assert short_option_labels(self._WIDE) == ["Option 1", "Option 2"]
+
+    def test_partial_shorts_borrow_own_label_numbered(self) -> None:
         labels = ["Personal Gmail", "Work Outlook"]
         shorts = ["Gmail", None]
-        assert short_option_labels(labels, shorts) == ["Option 1", "Option 2"]
+        assert short_option_labels(labels, shorts) == [
+            "1 · Gmail", "2 · Work Outlook"]
+
+    def test_partial_shorts_wide_label_floors_whole_set(self) -> None:
+        assert short_option_labels(self._WIDE, ["Gmail", None]) == [
+            "Option 1", "Option 2"]
 
     def test_blank_short_floors_whole_set(self) -> None:
-        labels = ["Personal Gmail", "Work Outlook"]
-        shorts = ["Gmail", "   "]
-        assert short_option_labels(labels, shorts) == ["Option 1", "Option 2"]
+        assert short_option_labels(self._WIDE, ["Gmail", "   "]) == [
+            "Option 1", "Option 2"]
 
     def test_duplicate_shorts_floors_whole_set(self) -> None:
-        labels = ["Personal Gmail", "Work Outlook"]
-        shorts = ["Same", "Same"]
-        assert short_option_labels(labels, shorts) == ["Option 1", "Option 2"]
+        assert short_option_labels(self._WIDE, ["Same", "Same"]) == [
+            "Option 1", "Option 2"]
 
-    def test_non_string_short_floors_whole_set(self) -> None:
+    def test_duplicate_shorts_fall_back_to_fitting_labels(self) -> None:
         labels = ["Personal Gmail", "Work Outlook"]
-        shorts = ["Gmail", 7]
-        assert short_option_labels(labels, shorts) == ["Option 1", "Option 2"]
+        assert short_option_labels(labels, ["Same", "Same"]) == labels
 
-    def test_shorts_shorter_than_labels_floors(self) -> None:
+    def test_non_string_short_uses_own_label(self) -> None:
+        labels = ["Personal Gmail", "Work Outlook"]
+        assert short_option_labels(labels, ["Gmail", 7]) == [
+            "1 · Gmail", "2 · Work Outlook"]
+
+    def test_shorts_shorter_than_labels_borrow_own_labels(self) -> None:
         # ``shorts`` has fewer entries than ``labels`` — the missing tail
-        # entries have no short at all.
+        # entries show their own labels.
         labels = ["Personal Gmail", "Work Outlook", "Yahoo Mail"]
-        shorts = ["Gmail"]
-        assert short_option_labels(labels, shorts) == [
-            "Option 1", "Option 2", "Option 3"]
+        assert short_option_labels(labels, ["Gmail"]) == [
+            "1 · Gmail", "2 · Work Outlook", "3 · Yahoo Mail"]
 
 
 class TestCaptionCapBoundary:
@@ -111,7 +119,9 @@ class TestCaptionCapBoundary:
 
     def test_65_char_decorated_caption_floors(self) -> None:
         short = "s" * 61  # 65 > 64
-        assert short_option_labels(["full label text"], [short]) == ["Option 1"]
+        assert short_option_labels(
+            ["full label text, far too wide for one button"], [short]) == [
+                "Option 1"]
 
     def test_sol_live_case_no_shorts_never_elides(self) -> None:
         # The exact live F-BTN regression — no agent shorts supplied, so the

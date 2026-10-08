@@ -364,15 +364,16 @@ def _parse_callback_data(
 # Round 4 (spec D2, Sol r1-3/r2-3/r2-7/r3-5): the v0.83.0 per-option elision
 # ladder is GONE — it garbled labels ("1 · A —…MCP…MCPB"). Button labels are now MODEL-generated: the agent
 # supplies an optional ``short`` per option, resolved with WHOLE-SET semantics by
-# ``resolve_button_labels`` below. Either EVERY option has a usable short and
-# the whole set renders ``n · <short>`` verbatim, or the WHOLE set floors to
-# ``Option 1``, ``Option 2``, … — never mixed, never mutated, never a
-# rejection. The Haiku label-generation fallback is explicitly DEFERRED (D2
-# item 4): until it ships (on the hardened CLI runtime, only if telemetry shows
-# the floor is materially inadequate), an ask with no agent-supplied shorts
-# always floors. ``floored_ask_telemetry`` is the CONTENT-FREE log line for
-# that floor (never the option/question text).
+# ``resolve_button_labels`` below. #1386: an option without a short offers its
+# own label, so a set of short options ("Delete" / "Keep") renders its own
+# words; the WHOLE set floors to ``Option 1``, ``Option 2``, … only when the
+# words do not fit, collide or are blank — never mutated, never a rejection.
+# ``floored_ask_telemetry`` is the CONTENT-FREE log line for that floor (never
+# the option/question text).
 _ASK_BUTTON_CAPTION_CAP = 64
+# #1386: an option's OWN label becomes its button when it is at most this many
+# characters — about what a full-width button shows on a phone without cutting.
+_ASK_BUTTON_WORDS_FIT = 32
 
 # #1201: settled proposals remembered per chat for their tap toast — eight
 # times result_broker.PROPOSAL_MAX_LIVE, since the live bound does not bound
@@ -413,56 +414,72 @@ def _floor_captions(n: int) -> list[str]:
     return [f"Option {i + 1}" for i in range(n)]
 
 
+def _fit_captions(
+    texts: list, own: list, numbered: bool, multi: bool,
+) -> "tuple[str | None, list[str]]":
+    """One whole-set attempt: ``(None, captions)`` when every text is non-blank,
+    the set is pairwise-distinct (casefold) and every caption fits, else
+    ``(reason, floor)``. ``own[i]`` marks a text that is the option's own label
+    (it must fit ``_ASK_BUTTON_WORDS_FIT``); ``numbered`` prefixes ``n · ``."""
+    n = len(texts)
+    # wb1-4: ``strip()`` is used ONLY as the BLANK predicate (verbatim-or-
+    # floor, never mutated): distinctness, captions and lengths read the RAW
+    # text, so ``"  Setup  "`` renders ``"1 ·   Setup  "``.
+    if any(t.strip() == "" for t in texts):
+        return "blank", _floor_captions(n)
+    if len({t.casefold() for t in texts}) != n:
+        return "dup", _floor_captions(n)
+    captions = [f"{i + 1} · {t}" if numbered else t for i, t in enumerate(texts)]
+    for i, cap in enumerate(captions):
+        decorated = f"{_MULTI_BOX_ON} {cap}" if multi else cap
+        if (own[i] and len(texts[i]) > _ASK_BUTTON_WORDS_FIT) or (
+                len(decorated) > _ASK_BUTTON_CAPTION_CAP):
+            return "too_long", _floor_captions(n)
+    return None, captions
+
+
 def _classify_button_labels(
     options: list, multi: bool,
 ) -> "tuple[str | None, list[str]]":
     """Whole-set classification shared by ``resolve_button_labels`` and
     ``floored_ask_telemetry`` (Sol r2-3/r2-7).
 
-    Every option must carry a ``short`` that is (1) a ``str``, (2) non-blank
-    after ``strip()``, (3) pairwise-distinct (casefold-insensitive) across the
-    WHOLE set, and (4) whose DECORATED caption — ``f"☑ {i+1} · {short}"`` for a
-    multi ask, ``f"{i+1} · {short}"`` otherwise — fits the 64-char product
-    contract (Sol r3-5: the same short can pass single-select and fail multi
-    at the identical length). Any failure floors the WHOLE set.
+    #1386: each option offers its agent-supplied ``short`` when it has one (a
+    ``str``), otherwise its OWN label. When no option has a short, the buttons
+    are the labels verbatim (``Delete`` / ``Keep``); when any has one, every
+    caption is ``n · <text>`` so a summary still points at its numbered full
+    option in the body. The set floors to ``Option n`` only when a text is
+    blank, two collide (casefold), an own label is wider than
+    ``_ASK_BUTTON_WORDS_FIT``, or a DECORATED caption (``☑ `` prefix on a
+    multi ask) exceeds the 64-char contract (Sol r3-5). If the shorts fail, the
+    plain labels get one try of their own before the floor. Purely mechanical
+    — length and distinctness, never content.
 
-    Returns ``(floor_reason, captions)``: ``floor_reason`` is ``None`` and
-    ``captions`` are the stored ``n · <short>`` captions VERBATIM (undecorated
-    — the checkbox glyph is a separate render-time concern, D2 item 3) when
-    every option passes; otherwise ``floor_reason`` is one of
-    ``no_shorts|blank|dup|too_long`` and ``captions`` is the numbered floor.
-    Pure; never mutates ``options``; never raises.
+    Returns ``(floor_reason, captions)``: ``None`` and the stored captions
+    (undecorated — the checkbox glyph is a render-time concern, D2 item 3), or
+    one of ``blank|dup|too_long`` and the numbered floor. Pure; never mutates
+    ``options``; never raises.
     """
-    n = len(options)
-    raw = [_button_short(o) for o in options]
-    if any(s is None for s in raw):
-        return "no_shorts", _floor_captions(n)
-    # wb1-4: ``strip()`` is used ONLY as the BLANK predicate (D2: verbatim-or-
-    # floor, never mutated). Distinctness, caption construction, and the ≤64
-    # decorated-length check all read the RAW short — stripping first would
-    # silently change uniqueness (" Setup " vs "Setup") and length decisions
-    # (trailing padding that overflows the 64-char caption), both mutations the
-    # verbatim contract forbids. A short renders exactly as authored:
-    # ``"  Setup  "`` → ``"1 ·   Setup  "``.
-    if any(s.strip() == "" for s in raw):
-        return "blank", _floor_captions(n)
-    if len({s.casefold() for s in raw}) != n:
-        return "dup", _floor_captions(n)
-    captions = [f"{i + 1} · {raw[i]}" for i in range(n)]
-    for cap in captions:
-        decorated = f"{_MULTI_BOX_ON} {cap}" if multi else cap
-        if len(decorated) > _ASK_BUTTON_CAPTION_CAP:
-            return "too_long", _floor_captions(n)
-    return None, captions
+    shorts = [_button_short(o) for o in options]
+    labels = [_button_label_text(o) for o in options]
+    has_short = [s is not None for s in shorts]
+    texts = [s if s is not None else lab for s, lab in zip(shorts, labels)]
+    own = [not h for h in has_short]
+    reason, captions = _fit_captions(texts, own, any(has_short), multi)
+    if reason is not None and any(has_short):
+        alt_reason, alt = _fit_captions(labels, [True] * len(labels), False, multi)
+        if alt_reason is None:
+            return None, alt
+    return reason, captions
 
 
 def resolve_button_labels(options: list, multi: bool) -> list[str]:
     """THE pure whole-set button-label resolver (spec D2 item 1).
 
     ``options`` items are either a bare ``str`` (full label, no short) or
-    ``{"label": str, "short": ...}``. Returns the final captions
-    ``f"{i+1} · {short}"`` for ALL options iff EVERY option has a usable short
-    (see ``_classify_button_labels``); otherwise the whole-set floor
+    ``{"label": str, "short": ...}``. Returns the final captions — the
+    options' own words, or ``n · <short or label>`` when shorts are in play
+    (see ``_classify_button_labels``) — or the whole-set floor
     ``["Option 1", "Option 2", …]``. Never mixed (some real, some floored),
     never mutated, never raises. Run BEFORE ``BROKER.register`` so the
     resolved captions can be placed in static broker meta (wiring: Task A5).
@@ -475,7 +492,7 @@ def floored_ask_telemetry(options: list, *, multi: bool = False) -> str:
     """CONTENT-FREE log line for a floored ask (spec D2 item 4, Sol r2-7).
 
     Records only safe dimensions — option count, floor reason
-    (``no_shorts|blank|dup|too_long|none`` when it didn't float), a
+    (``blank|dup|too_long``, or ``none`` when it didn't floor), a
     short-presence bitmap (``1`` iff the option carries a ``str`` short,
     regardless of blank/dup/length validity — a diagnostic aid for *which*
     option(s) are missing one), and a bounded (12 hex char) hash of the
@@ -521,9 +538,9 @@ def short_option_labels(
     ``post_dm_keyboard(short_labels=True)``, wired from parallel-owned
     ``tools.py``).
 
-    Agent shorts win VERBATIM when every ``labels[i]`` has a usable, paired
-    ``shorts[i]`` (same whole-set rule as ``resolve_button_labels``); otherwise
-    the WHOLE set floors to the numbered placeholder. No elision anywhere
+    Same whole-set rule as ``resolve_button_labels``: agent shorts VERBATIM,
+    an option without one shows its own label, and the WHOLE set floors to the
+    numbered placeholder only when the words do not fit. No elision anywhere
     (spec D2's ``short_option_labels()`` note) — this is a thin convenience
     wrapper that zips ``labels``/``shorts`` into ``resolve_button_labels``'s
     input shape for a single-select ask.
@@ -4925,9 +4942,9 @@ class TelegramChannel(Channel):
 
         ``short_labels`` (v0.81.0, W-R3b; v0.84.0 round 4 D2): when True, derive
         button labels via the whole-set ``short_option_labels`` — this call site
-        has no per-option agent ``short`` to offer it (``options`` is a plain
-        label list), so it always floors to the numbered placeholder until the
-        deferred Haiku label-generation fallback ships (D2 item 4). Telegram
+        has no per-option agent ``short`` (``options`` is a plain label list),
+        so each button shows its option's own words when they fit (#1386) and
+        the set floors to the numbered placeholder otherwise. Telegram
         truncates long labels, which made ``ask_user`` options unpickable; the
         FULL options must already live VERBATIM in ``text`` (the caller renders
         them with ``render_ask_body``). Default False keeps the authz-challenge

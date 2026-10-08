@@ -20,7 +20,7 @@ stored caption) — so the SAME short can pass for single-select and fail for
 multi at the exact same length (Sol r3-5's decoration-budget-is-an-input point).
 
 ``floored_ask_telemetry`` is the CONTENT-FREE log line (Sol r2-7): option count,
-floor reason (``no_shorts|blank|dup|too_long``), a short-presence bitmap, and a
+floor reason (``blank|dup|too_long``), a short-presence bitmap, and a
 bounded hash of the option set — NEVER the option/question text itself.
 """
 
@@ -100,7 +100,7 @@ def test_length_check_uses_raw_short_floors_when_padding_overflows() -> None:
     # "1 · " + 64 == 68 > 64 → the RAW length overflows and the set floors. A
     # stripped length check (60 → decorated 64) would have WRONGLY passed.
     short = "s" * 60 + "    "
-    options = [{"label": "full label text", "short": short}]
+    options = [{"label": "full label text, far too wide for one button", "short": short}]
     assert resolve_button_labels(options, multi=False) == ["Option 1"]
 
 
@@ -111,9 +111,9 @@ def test_length_check_uses_raw_short_floors_when_padding_overflows() -> None:
 
 def test_one_blank_short_floors_whole_set() -> None:
     options = [
-        {"label": "Python MCP server", "short": "Py-MCPB"},
-        {"label": "Python venv install", "short": "   "},  # blank after strip
-        {"label": "curl install skill", "short": "curl-skill"},
+        {"label": "Python MCP server, packaged as MCPB", "short": "Py-MCPB"},
+        {"label": "Python MCP server via a venv install", "short": "   "},
+        {"label": "A curl-based install skill for the server", "short": "curl"},
     ]
     assert resolve_button_labels(options, multi=False) == [
         "Option 1", "Option 2", "Option 3",
@@ -127,9 +127,9 @@ def test_one_blank_short_floors_whole_set() -> None:
 
 def test_duplicate_shorts_floor_whole_set() -> None:
     options = [
-        {"label": "Python MCP server", "short": "Setup"},
-        {"label": "Python venv install", "short": "Setup"},
-        {"label": "curl install skill", "short": "curl-skill"},
+        {"label": "Python MCP server, packaged as MCPB", "short": "Setup"},
+        {"label": "Python MCP server via a venv install", "short": "Setup"},
+        {"label": "A curl-based install skill for the server", "short": "curl"},
     ]
     assert resolve_button_labels(options, multi=False) == [
         "Option 1", "Option 2", "Option 3",
@@ -139,39 +139,45 @@ def test_duplicate_shorts_floor_whole_set() -> None:
 def test_duplicate_shorts_case_insensitive_floor() -> None:
     # Pairwise-distinct is casefold-insensitive — "Setup"/"setup" collide.
     options = [
-        {"label": "Python MCP server", "short": "Setup"},
-        {"label": "Python venv install", "short": "setup"},
+        {"label": "Python MCP server, packaged as MCPB", "short": "Setup"},
+        {"label": "Python MCP server via a venv install", "short": "setup"},
     ]
     assert resolve_button_labels(options, multi=False) == ["Option 1", "Option 2"]
 
 
 # ---------------------------------------------------------------------------
-# (d) non-string short treated as absent → floor reason ``no_shorts``
+# (d) non-string short treated as absent → the option offers its own label
+#     (#1386); it floors only when that label is too wide
 # ---------------------------------------------------------------------------
 
 
-def test_non_string_short_treated_as_absent_floors_no_shorts() -> None:
+def test_non_string_short_treated_as_absent_uses_own_label() -> None:
     options = [
         {"label": "Python MCP server", "short": "Py-MCPB"},
         {"label": "Python venv install", "short": "Py-venv"},
         {"label": "curl install skill", "short": 7},  # non-string — absent
     ]
     assert resolve_button_labels(options, multi=False) == [
+        "1 · Py-MCPB", "2 · Py-venv", "3 · curl install skill",
+    ]
+    wide = [dict(o) for o in options]
+    wide[2]["label"] = "A curl-based install skill for the server"
+    assert resolve_button_labels(wide, multi=False) == [
         "Option 1", "Option 2", "Option 3",
     ]
-    telemetry = floored_ask_telemetry(options)
-    assert "reason=no_shorts" in telemetry
+    assert "reason=too_long" in floored_ask_telemetry(wide)
 
 
-def test_bare_str_option_has_no_short_floors_no_shorts() -> None:
-    # A bare ``str`` item never carries a short — mixing it with dict items
-    # that DO have usable shorts still floors the WHOLE set (never mixed).
+def test_bare_str_option_has_no_short_uses_own_label() -> None:
+    # A bare ``str`` item never carries a short — beside a dict item with a
+    # short it shows its own words, numbered like the rest (#1386).
     options = [
         "Python MCP server",
         {"label": "Python venv install", "short": "Py-venv"},
     ]
-    assert resolve_button_labels(options, multi=False) == ["Option 1", "Option 2"]
-    assert "reason=no_shorts" in floored_ask_telemetry(options)
+    assert resolve_button_labels(options, multi=False) == [
+        "1 · Python MCP server", "2 · Py-venv"]
+    assert "reason=none" in floored_ask_telemetry(options)
 
 
 # ---------------------------------------------------------------------------
@@ -182,7 +188,7 @@ def test_bare_str_option_has_no_short_floors_no_shorts() -> None:
 
 def test_single_select_caption_exactly_64_chars_passes() -> None:
     short = "s" * 60  # "1 · " (4) + 60 == 64
-    options = [{"label": "full label text", "short": short}]
+    options = [{"label": "full label text, far too wide for one button", "short": short}]
     caption = resolve_button_labels(options, multi=False)[0]
     assert len(caption) == _ASK_BUTTON_CAPTION_CAP == 64
     assert caption == f"1 · {short}"
@@ -190,13 +196,13 @@ def test_single_select_caption_exactly_64_chars_passes() -> None:
 
 def test_single_select_caption_65_chars_floors() -> None:
     short = "s" * 61  # "1 · " (4) + 61 == 65 > 64
-    options = [{"label": "full label text", "short": short}]
+    options = [{"label": "full label text, far too wide for one button", "short": short}]
     assert resolve_button_labels(options, multi=False) == ["Option 1"]
 
 
 def test_multi_decorated_caption_exactly_64_passes() -> None:
     short = "s" * 58  # "☑ 1 · " (6) + 58 == 64
-    options = [{"label": "full label text", "short": short}]
+    options = [{"label": "full label text, far too wide for one button", "short": short}]
     caption = resolve_button_labels(options, multi=True)[0]
     assert caption == f"1 · {short}"  # returned caption stays undecorated
     assert len(f"☑ {caption}") == 64
@@ -208,7 +214,7 @@ def test_same_short_passes_single_but_floors_multi() -> None:
     # chars for "☑ ") pushes past it (floors) — the divergence the decoration
     # budget must catch (Sol r3-5).
     short = "s" * 60
-    options = [{"label": "full label text", "short": short}]
+    options = [{"label": "full label text, far too wide for one button", "short": short}]
 
     single = resolve_button_labels(options, multi=False)
     multi = resolve_button_labels(options, multi=True)
@@ -226,13 +232,13 @@ def test_same_short_passes_single_but_floors_multi() -> None:
 
 def test_telemetry_line_has_dimensions_but_no_option_text() -> None:
     options = [
-        {"label": "Secret project codename Falcon", "short": "Falcon"},
-        {"label": "Secret project codename Osprey", "short": None},
+        {"label": "Secret project codename Falcon, phase one", "short": "Falcon"},
+        {"label": "Secret project codename Osprey, phase two", "short": None},
     ]
     telemetry = floored_ask_telemetry(options)
 
     assert "count=2" in telemetry
-    assert "reason=no_shorts" in telemetry
+    assert "reason=too_long" in telemetry
     assert "shorts=" in telemetry
     assert "hash=" in telemetry
 
@@ -269,7 +275,7 @@ def test_telemetry_multi_uses_multi_decoration_budget() -> None:
     # asked about the multi ask specifically, and no floor reason at all for
     # the single-select ask (it never floored).
     short = "s" * 60
-    options = [{"label": "full label text", "short": short}]
+    options = [{"label": "full label text, far too wide for one button", "short": short}]
     assert "reason=too_long" in floored_ask_telemetry(options, multi=True)
     assert "reason=none" in floored_ask_telemetry(options, multi=False)
 
@@ -309,3 +315,52 @@ def test_pure_no_mutation_of_input() -> None:
     resolve_button_labels(options, multi=False)
     floored_ask_telemetry(options)
     assert options == snapshot
+
+
+# ---------------------------------------------------------------------------
+# #1386 — an option without a short shows its OWN words when they fit
+# ---------------------------------------------------------------------------
+
+
+def test_1386_short_options_without_shorts_render_their_own_words() -> None:
+    # The live case: the assistant's purge confirmation, bare options, no
+    # shorts — the buttons read the options, not "Option 1" / "Option 2".
+    assert resolve_button_labels(["Delete", "Keep"], multi=False) == [
+        "Delete", "Keep"]
+    from channels.telegram import short_option_labels
+    assert short_option_labels(["Delete", "Keep"]) == ["Delete", "Keep"]
+
+
+def test_1386_own_words_fit_is_a_width_boundary() -> None:
+    from channels.telegram import _ASK_BUTTON_WORDS_FIT
+    fits = "w" * _ASK_BUTTON_WORDS_FIT
+    wide = "w" * (_ASK_BUTTON_WORDS_FIT + 1)
+    assert resolve_button_labels([fits, "Keep"], multi=False) == [fits, "Keep"]
+    assert resolve_button_labels([wide, "Keep"], multi=False) == [
+        "Option 1", "Option 2"]
+    assert "reason=too_long" in floored_ask_telemetry([wide, "Keep"])
+
+
+def test_1386_a_missing_short_borrows_the_options_own_label() -> None:
+    # Mixed: one option has a short, the other is already a couple of words —
+    # numbered captions, the short-less option showing its own label.
+    options = [
+        "Personal Gmail",
+        {"label": "Configure the enterprise SSO integration", "short": "SSO"},
+    ]
+    assert resolve_button_labels(options, multi=False) == [
+        "1 · Personal Gmail", "2 · SSO"]
+
+
+def test_1386_failed_shorts_fall_back_to_fitting_labels() -> None:
+    options = [
+        {"label": "Morning", "short": "Setup"},
+        {"label": "Evening", "short": "setup"},
+    ]
+    assert resolve_button_labels(options, multi=False) == ["Morning", "Evening"]
+    assert "reason=none" in floored_ask_telemetry(options)
+
+
+def test_1386_multi_own_words_stay_undecorated_in_storage() -> None:
+    assert resolve_button_labels(["Lights", "Heating"], multi=True) == [
+        "Lights", "Heating"]

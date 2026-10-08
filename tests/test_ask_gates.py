@@ -2476,7 +2476,9 @@ class TestFloorTelemetry:
         payload = _btn_payload(
             wired["rec"], "flr1",
             question="SecretQuestionZZZ?",
-            options=["ApproveZZZ", "RejectZZZ"],   # bare labels ⇒ no shorts ⇒ floor
+            # #1386: bare labels too wide for a button ⇒ floor
+            options=["ApproveZZZ, and carry on with the whole plan",
+                     "RejectZZZ, and stop everything right here"],
         )
         with caplog.at_level(logging.INFO, logger="channels.channel_handlers"):
             task = asyncio.ensure_future(wired["ask"](_FakeRequest(payload)))
@@ -2489,7 +2491,7 @@ class TestFloorTelemetry:
         assert len(lines) == 1                       # EXACTLY once
         line = lines[0]
         assert "count=2" in line
-        assert "reason=no_shorts" in line
+        assert "reason=too_long" in line
         assert "shorts=00" in line
         assert "hash=" in line
         # CONTENT-FREE: no question / option text ever appears.

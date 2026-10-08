@@ -739,10 +739,9 @@ class TestPostOptionsKeyboard:
         kbd = kwargs["reply_markup"]
         rows = kbd.inline_keyboard
         assert len(rows) == 3
-        # v0.84.0 (round 4, D2): no agent-supplied ``short`` per option → the
-        # WHOLE set floors to the numbered placeholder (the FULL option is
-        # carried verbatim in the message body, not the button).
-        assert [r[0].text for r in rows] == ["Option 1", "Option 2", "Option 3"]
+        # #1386: no agent-supplied ``short``, and every option fits a button
+        # → each button shows its option's own words.
+        assert [r[0].text for r in rows] == ["Yes", "No", "Maybe"]
         assert [r[0].callback_data for r in rows] == [
             "v1|engagement_ask|rid_ask|0",
             "v1|engagement_ask|rid_ask|1",
