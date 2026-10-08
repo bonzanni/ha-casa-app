@@ -138,3 +138,26 @@ def test_normalize_topic_title_blank_and_non_str_fall_back_to_empty():
     assert normalize_topic_title("   ") == ""
     assert normalize_topic_title(None) == ""
     assert normalize_topic_title(123) == ""
+
+
+# #1368: a long middle word crossing the cap must not leave the first word
+# alone — "Remove water-plants-test trigger" was shown as just "Remove" in
+# the topic name and in the hand-off line of the person's chat.
+def test_normalize_topic_title_keeps_the_object_when_a_long_word_crosses_the_cap():
+    from channels.state_emoji import normalize_topic_title, TOPIC_TITLE_CHAR_CAP
+    out = normalize_topic_title("Remove water-plants-test trigger")
+    assert out == "Remove water-plants-tes…"
+    assert len(out) <= TOPIC_TITLE_CHAR_CAP
+
+
+def test_normalize_topic_title_still_cuts_at_a_word_when_that_keeps_most():
+    from channels.state_emoji import normalize_topic_title
+    assert normalize_topic_title("Add water-plants-test trigger") == \
+        "Add water-plants-test"
+
+
+def test_concise_task_keeps_the_object_when_a_long_word_crosses_the_budget():
+    from channels.state_emoji import concise_task, U3_TASK_BYTE_BUDGET
+    out = concise_task("Remove water-plants-test trigger")
+    assert out == "Remove water-plants-tes…"
+    assert len(out.encode("utf-8")) <= U3_TASK_BYTE_BUDGET

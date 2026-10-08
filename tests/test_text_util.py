@@ -196,3 +196,10 @@ def test_utf16_prefix_end_never_splits_inside_astral_pair():
 
 def test_utf16_prefix_end_honours_start():
     assert utf16_prefix_end("abcdef", 2, 2) == 4
+
+
+def test_truncate_cuts_inside_a_word_when_the_boundary_keeps_too_little():
+    """#1368: a break at the only space before the budget would keep one short
+    word ("Remove…"); a cut inside the long word keeps the object visible."""
+    out = truncate_for_topic("Remove water-plants-test trigger", byte_budget=26)
+    assert out == "Remove water-plants-tes…"

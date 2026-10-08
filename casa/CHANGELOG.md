@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.344.60] - 2026-10-08
+
+### Fixed
+
+- A configurator topic's title no longer shrinks to its first word when a long word follows it. Asking to remove a trigger named `water-plants-test` showed "⚙️ Passed to the configurator: “Remove”." in your chat, and the topic was named just "Remove". The title is still kept short, but when cutting at a space would leave less than half of it, it is now cut inside the long word instead, so the same request shows “Remove water-plants-tes…”. Titles that already fit, or that lose only their last word, are unchanged. (#1368)
+
 ## [0.344.59] - 2026-10-08
 
 ### Added
