@@ -756,7 +756,8 @@ async def handle_reply(
     import tools as tools_mod
     from channels import DeliveryOutcome
     from channels.tg_richtext import render_paged
-    from output_boundary import IntentKind, TurnScope, closing_silence_prefix, strips_to_silence
+    from output_boundary import (IntentKind, TurnScope, closing_silence_prefix, strips_to_silence,
+                                 without_sentinels)
 
     label = label_for(desk_role)
     context = {"chat_id": str(chat_id), "cid": cid}
@@ -903,6 +904,9 @@ async def handle_reply(
                 trimmed = closing_silence_prefix(shown, getattr(output, "reply_messages", ()))
                 if trimmed is not None:
                     shown = trimmed
+                # #1342: words and a sentinel in one message (or a sentinel
+                # before words) — the words are the reply, the tag is dropped
+                shown = without_sentinels(shown)
                 admitted = scope.admit(IntentKind.FINAL_REPLY, shown)
                 labelled = admitted.with_text(f"{label}\n{admitted}")
                 post = rb.PostRecord(role=desk_role, operator_id=user_id, plugin="",

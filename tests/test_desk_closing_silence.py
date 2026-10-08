@@ -1,7 +1,7 @@
 """#1283 controls (#1075 rule 2 on the specialist desk): the closing-silence
-rule reads the runner's OWN message list against the words shown, so a
-single message that carries prose and a sentinel stays under the whole-text
-rule, prose after a sentinel is delivered whole, the #1252 cut composes first,
+rule reads the runner's OWN message list against the words shown; since #1342
+any sentinel left in words that are shown is dropped too (a single message
+carrying prose and a sentinel, prose after a sentinel), the #1252 cut composes first,
 a truncated reply and a list-less double keep the base reply, and the other
 two entry points — an approval continuation and a file turn — reach the same
 rule. The real ``handle_reply`` over the real bounded runner and
@@ -32,30 +32,31 @@ def _replies(env):
     return [str(m) for m, _ctx in env.channel.replies]
 
 
-async def test_one_message_with_prose_and_a_sentinel_is_judged_whole(desk):
-    """Astra (red-case specify) / N2-2: the same joined text from ONE message
-    is not a closing run — the reply is verbatim, as at the base; a list
-    re-derived by splitting the text on blank lines would drop the tag."""
+async def test_one_message_with_prose_and_a_sentinel_posts_the_prose(desk):
+    """N2-2, changed by #1342: the same joined text from ONE message is not a
+    closing run, and the tag is still dropped from the words shown."""
     _Scripted.load(_text(NARRATION + "\n\n<silent/>"))
     await _reply(desk, text="the Snelstart Software one is wrong")
-    assert _replies(desk) == [f"{LABEL}\n{NARRATION}\n\n<silent/>"]
+    assert _replies(desk) == [f"{LABEL}\n{NARRATION}"]
 
 
 async def test_two_text_blocks_of_one_message_are_one_message(desk):
     """R8-6: a message's TextBlocks join as written, one list entry per
     message (the resident's granularity), so a sentinel block closing a
-    message that also holds prose is not a closing message (measured)."""
+    message that also holds prose is not a closing message (measured); since
+    #1342 its tag is dropped from the words shown."""
     _Scripted.load(AssistantMessage(content=[TextBlock(text=NARRATION),
                                              TextBlock(text="<silent/>")], model="sonnet"))
     await _reply(desk, text="the Snelstart Software one is wrong")
-    assert _replies(desk) == [f"{LABEL}\n{NARRATION}<silent/>"]
+    assert _replies(desk) == [f"{LABEL}\n{NARRATION}"]
 
 
-async def test_prose_after_a_sentinel_message_is_delivered_whole(desk):
-    """N2-3 (G-3): only a CLOSING run is dropped; an earlier sentinel stays."""
+async def test_prose_after_a_sentinel_message_is_delivered(desk):
+    """N2-3 (G-3): prose after a sentinel is delivered — since #1342 without
+    the tag."""
     _Scripted.load(_text("<silent/>"), _text("Real text"))
     await _reply(desk, text="the Snelstart Software one is wrong")
-    assert _replies(desk) == [f"{LABEL}\n<silent/>\n\nReal text"]
+    assert _replies(desk) == [f"{LABEL}\nReal text"]
 
 
 async def _cut_reply(desk, *items):
@@ -96,13 +97,14 @@ async def test_a_truncated_reply_keeps_the_base_handling(desk, monkeypatch):
     assert _replies(desk) == [f"{LABEL}\n{(NARRATION + chr(10) * 2 + '<silent/>')[:cap]}"]
 
 
-async def test_a_double_that_reports_no_message_list_keeps_the_base_reply(env):
-    """N2-6: a DelegatedOutput without the field is judged on its whole text."""
+async def test_a_double_that_reports_no_message_list_posts_its_words(env):
+    """N2-6: a DelegatedOutput without the field is judged on its whole text,
+    and since #1342 that text is shown without the tag."""
     async def respond(call):
         return tools_mod.DelegatedOutput(text=NARRATION + "\n\n<silent/>")
     env.respond = respond
     await _reply(env)
-    assert _replies(env) == [f"{LABEL}\n{NARRATION}\n\n<silent/>"]
+    assert _replies(env) == [f"{LABEL}\n{NARRATION}"]
 
 
 async def test_an_approval_continuation_drops_the_closing_sentinel(desk):
