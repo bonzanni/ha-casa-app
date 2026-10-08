@@ -1163,11 +1163,18 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # base-vs-new compiled text, word by word: exactly ONE `insert` on
 # `assistant:text`, that paragraph and nothing else; the other eight carriers
 # byte-identical. No retention claim anywhere.
+# MOVED 2026-10-08 (#1332), the `assistant:text` carrier ONLY. The Text
+# projection gains one paragraph, after the already-posted rule: a delegate's
+# answer is the whole reply, passed on in its own words and attributed by name,
+# with nothing of the resident's own around it. Measured with `difflib` over
+# base-vs-new compiled text, word by word: exactly ONE `insert` on
+# `assistant:text`, that paragraph and nothing else; the other eight carriers
+# byte-identical. No retention claim anywhere.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
         "f38c3f4917d068c681fc589ec023831a1f42428331aa118bd66d225c2a01703a",
     "assistant:text":
-        "953f96de6c7a8dcf77835dad76bbe813b8c1a821031e5f6f69a24a8e24d3936f",
+        "7e02ddab0eceec7d145df36abbf83de2371b65646048dd988790e8a2bf42754f",
     "assistant:voice":
         "df1a1579d052429afd7b77d9d1a5d129e145344690408bb4f6643db6ff44a8bb",
     "butler:restricted_webhook":
@@ -1670,3 +1677,86 @@ def test_the_eval_measures_the_shipped_rule():
     start = text.index("DOCTRINE_PARAGRAPH = (") + len("DOCTRINE_PARAGRAPH = ")
     shipped = ast.literal_eval(text[start:text.index("\n)\n", start) + 2])
     assert _collapse_ws(shipped) == _collapse_ws(_OWN_WORDS_DOCTRINE)
+
+
+# ---------------------------------------------------------------------------
+# #1332: a delegate's answer reaches the person once, in the delegate's own
+# words, attributed by name — not rewritten into a second version with a
+# question added. The rule reaches only the assistant's text projection and
+# the legacy carrier, once each. Its live effect is measured by
+# test-local/eval/ellen_relay_fidelity.py.
+# ---------------------------------------------------------------------------
+
+_RELAY_DOCTRINE = (
+    "When a delegate's result answers the person, that answer is your whole "
+    "reply: pass it on in the delegate's own words, introduced only by its "
+    "name (\"Alex: …\") so that its \"I\" and \"me\" stay the delegate's. Write "
+    "nothing of your own around it: do not announce that you are asking the "
+    "delegate, and add no rewrite or restatement, no question, offer or next "
+    "step it did not make, no note on what you will do. A line meant for you "
+    "rather than the person is not passed on, except a question or request it "
+    "asks you to put to them: put that to them. Your other rules on what a "
+    "reply may hold still apply to what you pass on."
+)
+
+
+def test_the_relay_rule_reaches_only_the_assistant_text_projection():
+    needle = _collapse_ws(_RELAY_DOCTRINE)
+    compiled = _compiled_resident_carriers()
+    assert {name: _collapse_ws(body).count(needle) for name, body in compiled} == {
+        f"{slot}:{surface}": int(slot == "assistant" and surface == "text")
+        for slot in _RESIDENT_SLOTS
+        for surface in ("text", "voice", "restricted_webhook")}
+    assert {slot: _collapse_ws(body).count(needle)
+            for slot, body in _legacy_prompt_carriers()} == {
+        slot: int(slot == "assistant") for slot in _RESIDENT_SLOTS}
+
+
+def test_the_relay_rule_follows_the_already_posted_rule():
+    """The eval inserts its copy right after the "When a request falls within"
+    paragraph; the shipped text sits in the same place on both carriers."""
+    compiled = dict(_compiled_resident_carriers())
+    legacy = dict(_legacy_prompt_carriers())
+    for body in (compiled["assistant:text"], legacy["assistant"]):
+        flat = _collapse_ws(body)
+        assert flat.index(_collapse_ws(_POSTED_DOCTRINE)) < flat.index(
+            _collapse_ws(_RELAY_DOCTRINE)) < flat.index(_collapse_ws(_OWN_WORDS_DOCTRINE))
+
+
+def test_the_relay_eval_measures_the_shipped_rule():
+    import ast
+    path = Path(__file__).resolve().parents[1] / "test-local/eval/ellen_relay_fidelity.py"
+    text = path.read_text(encoding="utf-8")
+    start = text.index("DOCTRINE_PARAGRAPH = (") + len("DOCTRINE_PARAGRAPH = ")
+    shipped = ast.literal_eval(text[start:text.index("\n)\n", start) + 2])
+    assert _collapse_ws(shipped) == _collapse_ws(_RELAY_DOCTRINE)
+
+
+_RELAY_PREFIX = "Alex: Two invoices fit the €120 payment of 3 September"
+
+
+@pytest.mark.parametrize("reply, ok", [
+    (f"{_RELAY_PREFIX}. Which one does it pay: Snelstart or Moneybird?", True),
+    (f"{_RELAY_PREFIX} — which one does it pay, Snelstart or Moneybird?", True),
+    (f"{_RELAY_PREFIX}. Please tell me which one it pays: Snelstart or Moneybird.", True),
+    # the reviewers' counterexamples (#1332 x1, x2): each must be refused
+    ("I rewrote Alex's answer: Which invoice was it—Snelstart or Moneybird? "
+     "I can help further.", False),
+    ("Alex: Snelstart or Moneybird? I have already matched it to Snelstart. "
+     "Would you like me to delete the other invoice?", False),
+    (f"{_RELAY_PREFIX}. Which one does it pay: Snelstart or Moneybird? "
+     "I can help further.", False),
+    (f"{_RELAY_PREFIX}. I picked Snelstart and rejected Moneybird.", False),
+    (f"{_RELAY_PREFIX}. Which one: Snelstart or Moneybird, and shall I audit "
+     "your accounts?", False),
+    (f"{_RELAY_PREFIX}. Please delete Snelstart or Moneybird.", False),
+    (f"{_RELAY_PREFIX} — Ellen asks: Snelstart or Moneybird?", False),
+])
+def test_the_relay_eval_judges_the_relayed_question(reply, ok):
+    import importlib.util
+    path = Path(__file__).resolve().parents[1] / "test-local/eval/ellen_relay_fidelity.py"
+    spec = importlib.util.spec_from_file_location("ellen_relay_fidelity", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    case = next(c for c in module.CASES if c["id"] == "question-via-ellen")
+    assert module._judge(case, reply)[0] is ok
