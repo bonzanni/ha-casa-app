@@ -25,7 +25,8 @@ faulted desk are [`stored-call-termination.md`](stored-call-termination.md). The
 A capability tool of a specialist's plugin declares a slot delivering `operator_proposal`
 and deposits a JSON object: a text (one page, with Casa's label line) and one to six
 buttons, each a label and a *stored call* — a bare tool name of the same plugin, resolved
-through the depositing call's own server, with fixed JSON arguments. Casa posts the text
+through the depositing call's own server, with fixed JSON arguments (optionally with plain
+`pages` before it — [`stored-call-next-card.md`](stored-call-next-card.md)). Casa posts the text
 labelled with the buttons as an inline keyboard, filed in the post map like any post. When
 the operator taps, no ordinary model turn runs and no model is asked to decide anything: Casa
 runs one short *pinned* specialist turn whose prompt names the one call, to be made whatever

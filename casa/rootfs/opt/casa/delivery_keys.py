@@ -44,9 +44,11 @@ _DETAIL_OK = {
     "operator_message": lambda d: set(d) == {"pages"} and _int_ge1(d["pages"]),
     "operator_file": lambda d: set(d) == {"kind"} and isinstance(d["kind"], str) and bool(d["kind"]),
     "operator_link": lambda d: d == {},
-    "operator_proposal": lambda d: (set(d) == {"proposal_id", "buttons"}
+    # #1377: a card that brought pages records their count too
+    "operator_proposal": lambda d: (set(d) - {"pages"} == {"proposal_id", "buttons"}
                                     and isinstance(d["proposal_id"], str)
-                                    and bool(d["proposal_id"]) and _int_ge1(d["buttons"])),
+                                    and bool(d["proposal_id"]) and _int_ge1(d["buttons"])
+                                    and ("pages" not in d or _int_ge1(d["pages"]))),
 }
 
 

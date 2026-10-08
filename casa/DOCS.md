@@ -1310,6 +1310,12 @@ A card can also carry a **Close** button (v0.344.64): a button with `"close": tr
 of a call, at most one per card, with the plugin's own label. Tap it, and the card's buttons
 disappear at once while its text stays; nothing runs and nothing is sent, and a later tap on
 the same card does nothing. Casa never adds one by itself.
+A card can also come with a list longer than one message before it (v0.344.67): with a
+`"pages"` list of one to six texts, each fitting one message, Casa posts every page in order
+as its own labelled message and then the card with its buttons, as one delivery. You can
+swipe-reply to any page and the specialist knows which page you meant. If a page cannot be
+posted, the card is not posted either, and the specialist is told how many pages arrived.
+A plugin that sends pages needs Casa 0.344.67 or later: an older Casa posts the card alone.
 
 #### A file for a specialist (v0.343.0)
 

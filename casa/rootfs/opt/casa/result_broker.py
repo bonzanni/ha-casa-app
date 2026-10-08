@@ -128,6 +128,7 @@ PROPOSAL_TEXT_CHARS = 4000
 PROPOSAL_MAX_BUTTONS = 6
 PROPOSAL_LABEL_CHARS = 32
 PROPOSAL_REVISION_CHARS = 64
+PROPOSAL_MAX_PAGES = 6           # #1377: plain pages a card may bring before it
 # S5 (Astra, diff rounds 2–3): the composed post leaves room for the longest
 # line Casa appends when the keyboard settles — `\n☑ <label>` with a label of
 # PROPOSAL_LABEL_CHARS characters that may each be an astral code point (two
@@ -306,6 +307,13 @@ def proposal_ok(value: Any, call: Any) -> tuple[dict | None, str | None]:
         return None, "bad_proposal"
     if not _message_ok(text):
         return None, "bad_proposal"
+    # #1377: optional plain pages posted before the card, each one labelled message
+    pages = obj.get("pages")
+    if pages is not None:
+        if (not isinstance(pages, list) or not 1 <= len(pages) <= PROPOSAL_MAX_PAGES
+                or not all(isinstance(p, str) and p.strip() and len(p) <= PROPOSAL_TEXT_CHARS
+                           and _message_ok(p) for p in pages)):
+            return None, "bad_proposal"
     buttons = obj.get("buttons")
     if not isinstance(buttons, list) or not 1 <= len(buttons) <= PROPOSAL_MAX_BUTTONS:
         return None, "bad_proposal"
@@ -375,10 +383,16 @@ def proposal_ok(value: Any, call: Any) -> tuple[dict | None, str | None]:
                 return None, "bad_proposal"
             kept["keep_card"] = True
         resolved.append(kept)
-    composed = compose_operator_message(text, post_label(call.identity.enforcement_role))
-    if len(render_paged(composed)) != 1 or utf16_len(composed) > 4096 - PROPOSAL_SETTLE_RESERVE:
-        return None, "bad_proposal"
-    return {"text": text, "buttons": resolved, "revision": revision}, None
+    head = post_label(call.identity.enforcement_role)
+    for body in [text, *(pages or ())]:
+        composed = compose_operator_message(body, head)
+        if (len(render_paged(composed)) != 1
+                or utf16_len(composed) > 4096 - PROPOSAL_SETTLE_RESERVE):
+            return None, "bad_proposal"
+    out = {"text": text, "buttons": resolved, "revision": revision}
+    if pages is not None:
+        out["pages"] = list(pages)
+    return out, None
 
 
 def post_label(role: str) -> str:
@@ -557,7 +571,8 @@ def echo_parts(events: list[PostEvent]) -> list[tuple[str, str]]:
     for event in events[:ECHO_MAX_LINES]:
         if getattr(event, "buttons", None) is not None:
             n = event.buttons
-            tail = f"posted a proposal to your chat ({n} button{'s' if n != 1 else ''})."
+            lead = f"{event.pages} pages and " if event.pages else ""
+            tail = f"posted {lead}a proposal to your chat ({n} button{'s' if n != 1 else ''})."
         elif event.media_kind:
             tail = f"posted {_MEDIA_WORDS.get(event.media_kind, 'a file')} to your chat."
         else:
@@ -1257,6 +1272,15 @@ async def _post_operator_message(chat_id: int, text: str,
     return await channel.deliver_operator_message(chat_id, text, post=post)
 
 
+async def _post_operator_page(chat_id: int, text: str, post: "PostRecord | None" = None):
+    """#1377: one page before a card, as ONE message; absent ⇒ ``NOT_DELIVERED``."""
+    from channels import DeliveryOutcome
+    channel = _telegram_channel()
+    if channel is None:
+        return DeliveryOutcome.NOT_DELIVERED
+    return await channel.deliver_operator_page(chat_id, text, post=post)
+
+
 async def _post_operator_proposal(chat_id: int, text: str, labels: list, rid: str,
                                   post: "PostRecord | None" = None):
     """S5: the channel posts the labelled text with one button per label
@@ -1366,7 +1390,13 @@ async def _post_proposal(identity, seg: str, slot: str, call: _InFlight, proposa
     known in advance, so the synchronous block also binds the record to it
     and files it in the post map under *post*, before the edit: an
     unconfirmed edit's record can then still be marked by its finish hook,
-    and a swipe-reply on the message routes (design round 1)."""
+    and a swipe-reply on the message routes (design round 1).
+
+    ``pages`` (#1377): after the synchronous block and before the card, each
+    page goes as one labelled message (``deliver_operator_page``, filed
+    under *post* as it lands), all under one ``DELIVERY_TIMEOUT_S`` bound; a
+    page that does not land sends no card and the record is unregistered. The
+    proof — and the receipt's ``pages`` count — needs every page and the card."""
     from channels.tg_richtext import render_paged
     from text_util import utf16_len
     from verdict_broker import BROKER
@@ -1419,9 +1449,33 @@ async def _post_proposal(identity, seg: str, slot: str, call: _InFlight, proposa
     factory = getattr(channel, "proposal_finish_hook", None)
     if factory is not None:
         BROKER.set_finish_hook(req, factory(rid=rid, req=req))
-    from channels import UnconfirmedDelivery
+    from channels import DeliveryOutcome, UnconfirmedDelivery
     delivered = unconfirmed = False
+    # #1377: the plain pages, each one labelled message, go before the card
+    pages = [compose_operator_message(p, head) for p in proposal.get("pages") or ()]
+    landed = 0
     try:
+        if pages:
+            async def _send_pages() -> bool:
+                nonlocal landed
+                for page in pages:
+                    outcome = await _post_operator_page(chat_id, page, post=post)
+                    if outcome is not DeliveryOutcome.DELIVERED:
+                        return False
+                    landed += 1
+                return True
+            try:
+                pages_ok = await asyncio.wait_for(_send_pages(), DELIVERY_TIMEOUT_S)
+            except asyncio.TimeoutError:
+                pages_ok = False
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — not proven: no card follows
+                logger.warning("proposal page send failed: %s", type(exc).__name__)
+                pages_ok = False
+            if not pages_ok:
+                logger.warning("proposal withheld: %d of %d pages landed", landed, len(pages))
+                return False, {}, None, _pages_reason(landed, len(pages))
         try:
             send = (_post_operator_proposal(chat_id, text, labels, rid, post=post)
                     if edit_message_id is None else
@@ -1441,15 +1495,16 @@ async def _post_proposal(identity, seg: str, slot: str, call: _InFlight, proposa
             req.meta["message_id"] = mid        # the broker's own dict, by reference
             if on_proven is not None:
                 # #1312: the proof point — before the mark or the tell below await
-                on_proven({"proposal_id": rid, "buttons": len(labels)}, (scope, rid),
-                          PostEvent(call.tool_use_id, seg, slot, head, None, None,
-                                    buttons=len(labels)))
+                on_proven(_proposal_detail(rid, len(labels), len(pages)), (scope, rid),
+                          PostEvent(call.tool_use_id, seg, slot, head, len(pages) or None,
+                                    None, buttons=len(labels)))
     finally:
         if not delivered and not unconfirmed:
             BROKER.unregister(namespace="proposal", scope=scope, request_id=rid)
     if not delivered:
-        return False, {}, None, (EDIT_UNCONFIRMED if unconfirmed and edit_message_id is not None
-                                 else None)
+        if unconfirmed and edit_message_id is not None:
+            return False, {}, None, EDIT_UNCONFIRMED
+        return False, {}, None, (_pages_reason(landed, len(pages)) if landed else None)
     settled = req.meta.get("settled_line")
     if settled:
         # the record settled (superseded, expired) while this send was in
@@ -1469,8 +1524,25 @@ async def _post_proposal(identity, seg: str, slot: str, call: _InFlight, proposa
             except Exception as exc:  # noqa: BLE001 — the post is proven; the tell is logged
                 logger.warning("proposal tell notice failed: %s", type(exc).__name__)
     n = len(labels)
-    event = PostEvent(call.tool_use_id, seg, slot, head, None, None, buttons=n)
-    return True, {"proposal_id": rid, "buttons": n}, event, None
+    event = PostEvent(call.tool_use_id, seg, slot, head, len(pages) or None, None, buttons=n)
+    return True, _proposal_detail(rid, n, len(pages)), event, None
+
+
+def _proposal_detail(rid: str, buttons: int, pages: int) -> dict:
+    """A proven proposal's receipt detail; ``pages`` only for a card that had them."""
+    detail: dict[str, Any] = {"proposal_id": rid, "buttons": buttons}
+    if pages:
+        detail["pages"] = pages
+    return detail
+
+
+def _pages_reason(landed: int, total: int) -> str | None:
+    """#1377: what a withheld card with pages tells the call — the pages that
+    landed are on screen; ``None`` (the plain withheld reason) when none did."""
+    if not landed:
+        return None
+    return (f"casa posted {landed} of {total} pages but could not post the card after "
+            "them; the card was withheld and holds no stored call — do not retry blindly")
 
 
 def _repeat_of(seg: str, identity: Any, key: str, dkind: str) -> dict | None:

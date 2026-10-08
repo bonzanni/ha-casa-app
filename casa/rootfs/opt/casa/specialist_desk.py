@@ -1308,7 +1308,10 @@ async def _post_next_card(value: str, *, meta: dict, build: Any, runtime: str, s
 
     #1339: with *edit_message_id* the card replaces the tapped card in place
     (``_post_proposal`` edits that message); *warning* is the rewritten-call
-    tell, composed into the card as for the ``More`` exception."""
+    tell, composed into the card as for the ``More`` exception. A card with
+    ``pages`` (#1377) is never an edit: it returns ``"pages"`` before anything is
+    registered or sent, and the caller's fallback posts the receipt, the pages
+    and the card."""
     import types
     import result_broker as rb
     from authz_grants import GrantIdentity
@@ -1326,6 +1329,8 @@ async def _post_next_card(value: str, *, meta: dict, build: Any, runtime: str, s
         parsed = None
     if parsed is None:
         return "invalid"
+    if edit_message_id is not None and parsed.get("pages"):
+        return "pages"          # #1377: a card with pages is never an edit; the fallback posts it
     post = rb.PostRecord(role=identity.enforcement_role, operator_id=identity.operator_id,
                          plugin=seg, slot=rb.OPERATOR_PROPOSAL, tool_use_id=run_id,
                          owner=run_id, posted_at=DESKS.now(), kind=rb.OPERATOR_PROPOSAL)

@@ -104,7 +104,8 @@ Both are Casa-composed notices under the output boundary, like the delivered lin
 
 **A fourth kind, `operator_proposal`, is a decision offered as buttons.** The deposit is a
 one-page text with one to six buttons, each a stored call of the same plugin (or a button
-that stores none: `📎`, or Close); the post is
+that stores none: `📎`, or Close), optionally preceded by up to six plain pages
+([`stored-call-next-card.md`](stored-call-next-card.md), INV-PROP-012); the post is
 registered with the verdict broker before it is sent, and a tap executes exactly the stored
 call through one pinned specialist turn — [`stored-call-buttons.md`](stored-call-buttons.md)
 (INV-PROP-001, -002, -003).
