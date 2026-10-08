@@ -26,6 +26,7 @@ from bus import BusMessage, MessageType
 from channels import ChannelManager
 from config import AgentConfig, CharacterConfig, MemoryConfig, ToolsConfig
 from mcp_registry import McpServerRegistry
+from ingress_identity import ingress_identity
 from semantic_memory import RecallUnavailable, SemanticMemory
 from session_registry import SessionRegistry
 
@@ -141,6 +142,9 @@ def _msg(chat_id: str) -> BusMessage:
         type=MessageType.CHANNEL_IN, source="telegram", target="x",
         content="what do you remember?", channel="telegram",
         context={"chat_id": chat_id},
+        # #1336: a person typed this — the short person deadline applies.
+        trusted_user_origin=ingress_identity(
+            "telegram", sender_id="9001", sender_is_operator=True),
     )
 
 

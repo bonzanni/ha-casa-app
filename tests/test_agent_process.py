@@ -290,6 +290,12 @@ def _make_agent(
     )
 
 
+def _person_typed():
+    """The trusted origin Telegram ingress stamps on a message a person typed."""
+    from ingress_identity import ingress_identity
+    return ingress_identity("telegram", sender_id="9001", sender_is_operator=True)
+
+
 def _msg(channel: str, chat_id: str, text: str = "ping") -> BusMessage:
     return BusMessage(
         type=MessageType.CHANNEL_IN,
@@ -705,8 +711,12 @@ async def test_telegram_channel_autorecalls_on_fresh_session(tmp_path):
     # auto-recall the opening utterance against the role's bank.
     sem = FakeSemanticMemory(overlay="O", facts="F")
     agent = _make_agent(tmp_path, role="assistant", semantic_memory=sem)
+    # #1336: a person typed this opening — Telegram ingress stamps a trusted
+    # origin; a turn without one recalls with the fixed unauthored query.
+    msg = _msg("telegram", "123", "hi")
+    msg.trusted_user_origin = _person_typed()
     with patch("sdk_client_pool._default_make_client", FakeClient):
-        await agent._process(_msg("telegram", "123", "hi"))
+        await agent._process(msg)
 
     assert len(sem.profile_calls) == 1          # overlay pushed
     assert len(sem.recall_calls) == 1           # telegram auto-recalls
@@ -725,8 +735,10 @@ async def test_fresh_text_turn_pushes_overlay_and_recalls(tmp_path):
     the per-scope fan-out is gone; recall is a single tagged call."""
     sem = FakeSemanticMemory(overlay="overlay-content", facts="recall-content")
     agent = _make_agent(tmp_path, role="assistant", semantic_memory=sem)
+    msg = _msg("telegram", "123", "hi")
+    msg.trusted_user_origin = _person_typed()  # #1336: a person's own words
     with patch("sdk_client_pool._default_make_client", FakeClient):
-        await agent._process(_msg("telegram", "123", "hi"))
+        await agent._process(msg)
 
     # One overlay (profile) call per fresh turn, keyed to the shared casa bank.
     assert sem.profile_calls == ["casa"]

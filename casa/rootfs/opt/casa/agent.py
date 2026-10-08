@@ -791,6 +791,15 @@ def _memory_bank() -> str:
 # HTTP client timeout (20s) waiting for an overloaded reranker — past this
 # deadline the recall is cancelled and the turn runs cold (v0.99.0).
 _AUTO_RECALL_TIMEOUT_S = 5.0
+# #1336: a session no person opened — a trigger prompt, a delegation notice,
+# an event — opens with Casa's own text: hundreds of tokens of instructions,
+# which the backend's CPU reranker scores against every candidate (12–20 s
+# measured) and which rank memories by likeness to the instructions, not to
+# the day. Such a session recalls with this fixed topical query instead, under
+# a longer deadline: mostly nobody is waiting on it, and where someone is (a
+# delegation's answer being relayed) a few seconds' delay is the accepted cost.
+_UNAUTHORED_RECALL_QUERY = "today's appointments, deadlines and open follow-ups"
+_UNAUTHORED_AUTO_RECALL_TIMEOUT_S = 15.0
 _RECALL_BREAKER_THRESHOLD = 3      # consecutive failures before opening
 _RECALL_BREAKER_COOLDOWN_S = 60.0  # open duration before a half-open probe
 
@@ -2061,6 +2070,11 @@ class Agent:
             # /complete in an engagement topic actually owns the engagement.
             "user_id": msg.context.get("user_id"),
             "cid": cid_var.get(),
+            # #1336: no person authored this turn's text at ingress (no
+            # ``trusted_user_origin`` — the same fact #650 and Task 9 read):
+            # a trigger prompt, a delegation notice, an event. Computed here,
+            # never copied from a context, so nothing external can set it.
+            "_unauthored_opening": msg.trusted_user_origin is None,
             "user_text": (
                 user_text if origin_question is None else origin_question
             ),
@@ -3057,6 +3071,10 @@ class Agent:
         elif load_plan.auto_recall:
             _recall_t0 = time.monotonic()
             _recall_clearance = _current_origin_clearance(channel)
+            # #1336: no person typed this opening (``_process`` stamps it from
+            # the turn's trusted ingress); absent — a direct caller — keeps the
+            # turn's own text, the behaviour every operator turn has.
+            _unauthored = _origin.get("_unauthored_opening") is True
             try:
                 # Bounded deadline: never the full HTTP timeout. No synchronous
                 # retry on failure here — a 504 means the reranker is overloaded
@@ -3071,12 +3089,15 @@ class Agent:
                 # their recorded attribution before assignment to ``facts``.
                 _hits = await asyncio.wait_for(
                     self._semantic_memory.recall_items(
-                        bank, user_text, tags=_recall_tier_tags(channel),
+                        bank,
+                        _UNAUTHORED_RECALL_QUERY if _unauthored else user_text,
+                        tags=_recall_tier_tags(channel),
                         max_tokens=self.config.memory.token_budget,
                         clearance=_recall_clearance,
                         budget="mid",  # auto_recall is always non-voice (see _plan_load); voice uses the recall_memory pull tool at budget=low
                     ),
-                    timeout=_AUTO_RECALL_TIMEOUT_S,
+                    timeout=(_UNAUTHORED_AUTO_RECALL_TIMEOUT_S if _unauthored
+                             else _AUTO_RECALL_TIMEOUT_S),
                 )
                 self._recall_breaker.record_success()
                 _recall_hits = _hits
