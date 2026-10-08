@@ -115,7 +115,9 @@ caption the channel refuses reports `kind_error: refused`, never a down channel;
 `set_reminder` stores the resolved note as the entry's `output_note` with the prompt
 unchanged and reports it as `note`; `list_inbound_files` arms the obligation from the files
 it lists; `delegate_to_agent` resolves the brief's note at every launch and reports it as
-`casa_note` on either pending result; and
+`casa_note` on either pending result; `delegate_to_agent`'s async result and
+`engage_executor`'s `pending` carry `note` when Casa posted its hand-off line in the
+operator's chat ([`delegation.md`](delegation.md)); and
 `wipe_memory`'s consent keyboard is Casa's own text. The rules are INV-OUT-002 to
 INV-OUT-005 in [`output-boundary.md`](output-boundary.md). Each call of `send_message`,
 `send_media` or `ask_user` is also recorded as a send attempt on that scope, refusals

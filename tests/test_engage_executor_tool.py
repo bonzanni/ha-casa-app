@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from unittest.mock import AsyncMock, MagicMock
@@ -2080,3 +2081,141 @@ class TestEngageExecutorBriefDelivery:
         assert FIRST_CONTACT_PARAGRAPH not in prompt
         rec = list(registry._records.values())[0]
         assert rec.interaction_state == ""
+
+
+# ---------------------------------------------------------------------------
+# #1350: the hand-off line in the chat and the topic's opening line
+# ---------------------------------------------------------------------------
+
+
+async def _engage_with_lines(tmp_path, monkeypatch, origin, *, driver="in_casa",
+                             executor_type="configurator", task=None, split=False):
+    from tools import engage_executor, init_tools
+    import agent as agent_mod
+    import tools as tools_mod
+
+    defn = _mock_executor_def(driver=driver, type=executor_type)
+    p = tmp_path / "prompt.md"
+    p.write_text("You are {task}. Context: {context}.")
+    defn.prompt_template_path = str(p)
+    reg = MagicMock()
+    reg.get = MagicMock(return_value=defn)
+    reg.list_types = MagicMock(return_value=[executor_type])
+
+    lines: list = []
+    topic_posts: list = []
+
+    async def send_handoff_line(chat_id, text):
+        lines.append((chat_id, text))
+        return True
+
+    async def send_to_topic(topic_id, text, **kw):
+        topic_posts.append((topic_id, text, kw))
+        return 7
+
+    channel = MagicMock()
+    channel.engagement_supergroup_id = -100123
+    channel.engagement_permission_ok = True
+    channel.open_engagement_topic = AsyncMock(return_value=42)
+    channel.bot = MagicMock()
+    channel.bot.edit_forum_topic = AsyncMock()
+    channel.send_handoff_line = send_handoff_line
+    channel.send_to_topic = send_to_topic
+
+    er = MagicMock()
+    mock_rec = MagicMock()
+    mock_rec.id = "abcd1234" + "0" * 24
+    mock_rec.topic_id = 42
+    mock_rec.topic_title = "Gmail plugin"
+    er.create = AsyncMock(return_value=mock_rec)
+    er.mark_error = AsyncMock()
+    er.try_transition_terminal = AsyncMock(return_value=True)
+    er.launch_shutdown_active = MagicMock(return_value=False)
+    cm = MagicMock()
+    cm.get = MagicMock(return_value=channel)
+    init_tools(
+        channel_manager=cm, bus=MagicMock(),
+        specialist_registry=MagicMock(), mcp_registry=MagicMock(),
+        trigger_registry=MagicMock(), engagement_registry=er,
+        executor_registry=reg,
+    )
+    eng_driver = (MagicMock(open=AsyncMock(), supports_split_launch=True) if split
+                  else MagicMock(start=AsyncMock()))
+    if split:
+        monkeypatch.setattr(tools_mod, "_hand_off_launch_turn",
+                            lambda *a, **k: None)
+    monkeypatch.setattr(agent_mod, "active_engagement_driver",
+                        eng_driver, raising=False)
+    monkeypatch.setattr(agent_mod, "active_claude_code_driver",
+                        MagicMock(start=AsyncMock()), raising=False)
+    token = agent_mod.origin_var.set(dict(origin))
+    try:
+        r = await engage_executor.handler({
+            "executor_type": executor_type,
+            "task": task or "Update the Gmail plugin to the latest version.",
+            "context": "",
+        })
+    finally:
+        agent_mod.origin_var.reset(token)
+    await asyncio.gather(*list(tools_mod._handoff_line_tasks))
+    return json.loads(r["content"][0]["text"]), lines, topic_posts
+
+
+_OP = {"role": "assistant", "channel": "telegram", "chat_id": "c1", "cid": "x",
+       "user_text": "hi", "_operator_turn": True}
+
+
+class TestEngageHandoffLines:
+    async def test_an_operator_engagement_shows_both_lines_and_notes_it(
+            self, tmp_path, monkeypatch):
+        payload, lines, topic_posts = await _engage_with_lines(
+            tmp_path, monkeypatch, _OP)
+        assert payload["status"] == "pending", payload
+        assert lines == [("c1", "⚙️ Passed to the configurator: “Gmail plugin”. "
+                                "Its topic is in Engagements.")]
+        assert payload["note"].startswith(
+            "(Casa: the person is shown a line saying this was passed to "
+            "the configurator.")
+        assert topic_posts == [(42, "📋 Gmail plugin\nUpdate the Gmail plugin to "
+                                    "the latest version.",
+                                {"disable_notification": True})]
+
+    async def test_a_turn_no_operator_opened_gets_the_topic_line_only(
+            self, tmp_path, monkeypatch):
+        origin = {k: v for k, v in _OP.items() if k != "_operator_turn"}
+        payload, lines, topic_posts = await _engage_with_lines(
+            tmp_path, monkeypatch, origin)
+        assert payload["status"] == "pending"
+        assert lines == [] and "note" not in payload
+        assert len(topic_posts) == 1
+
+    async def test_a_claude_code_engagement_gets_no_topic_line(
+            self, tmp_path, monkeypatch):
+        payload, lines, topic_posts = await _engage_with_lines(
+            tmp_path, monkeypatch, _OP, driver="claude_code")
+        assert payload["status"] == "pending", payload
+        assert len(lines) == 1 and topic_posts == []
+
+
+    async def test_the_line_names_the_launched_executor(self, tmp_path, monkeypatch):
+        payload, lines, _ = await _engage_with_lines(
+            tmp_path, monkeypatch, _OP, executor_type="plugin-developer")
+        assert payload["status"] == "pending", payload
+        assert lines == [("c1", "⚙️ Passed to the plugin-developer: “Gmail plugin”. "
+                                "Its topic is in Engagements.")]
+        assert "passed to the plugin-developer." in payload["note"]
+
+    async def test_the_split_launch_shows_both_lines(self, tmp_path, monkeypatch):
+        payload, lines, topic_posts = await _engage_with_lines(
+            tmp_path, monkeypatch, _OP, split=True)
+        assert payload["status"] == "pending", payload
+        assert len(lines) == 1 and len(topic_posts) == 1 and "note" in payload
+
+    async def test_the_opening_line_cuts_a_long_task(self, tmp_path, monkeypatch):
+        task = "Update the Gmail plugin. " + "x" * 400
+        _, _, topic_posts = await _engage_with_lines(
+            tmp_path, monkeypatch, _OP, task=task)
+        text = topic_posts[0][1]
+        body = text.split("\n", 1)[1]
+        assert body.endswith("…") and len(body) <= 301
+        assert body.startswith("Update the Gmail plugin.")

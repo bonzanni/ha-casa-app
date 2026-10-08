@@ -1373,7 +1373,8 @@ def _observation_records(caplog, family):
     return [
         r for r in caplog.records
         if r.name == "drivers.in_casa_driver"
-        and r.funcName == "_deliver_turn"
+        # #1350: the turn's body (the outer method closes its step log)
+        and r.funcName == "_deliver_turn_body"
         and family in r.getMessage()
     ]
 

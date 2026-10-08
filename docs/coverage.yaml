@@ -91,6 +91,8 @@
   doc: architecture/engagements.md
 - item: casa/rootfs/opt/casa/drivers/topic_stream.py
   doc: architecture/engagements.md
+- item: casa/rootfs/opt/casa/drivers/turn_progress.py
+  doc: architecture/engagements.md
 - item: casa/rootfs/opt/casa/drivers/workspace.py
   doc: architecture/engagement-containment.md
 - item: casa/rootfs/opt/casa/engagement_registry.py

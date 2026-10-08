@@ -2729,3 +2729,98 @@ class TestClusterSVerdictMatrix:
         )
         assert out.text == "fine"
         assert out.run_is_error is False
+
+
+# ---------------------------------------------------------------------------
+# #1350: the hand-off line
+# ---------------------------------------------------------------------------
+
+
+class _HandoffChannel:
+    name = "telegram"
+
+    def __init__(self):
+        self.lines: list[tuple[Any, str]] = []
+
+    async def send_handoff_line(self, chat_id, text):
+        self.lines.append((chat_id, text))
+        return True
+
+
+class TestHandoffLine:
+    async def _run(self, tmp_path, monkeypatch, *, mode, origin):
+        from tools import delegate_to_agent, init_tools
+        import tools as tools_mod
+
+        specialists = tmp_path / "ex"
+        specialists.mkdir()
+        _seed_specialist_dir(specialists, "finance", enabled=True)
+        _use_synthetic_roles_dir(monkeypatch, tmp_path, "finance")
+        reg = SpecialistRegistry(str(specialists),
+                                 tombstone_path=str(tmp_path / "del.json"))
+        reg.load()
+        bus = MessageBus()
+        bus.register("assistant", None)
+        cm = ChannelManager()
+        ch = _HandoffChannel()
+        cm.register(ch)
+        fin = _specialist_cfg()
+        fin.character = CharacterConfig(name="Alex")
+        init_tools(cm, bus, reg, agent_role_map={
+            "assistant": _caller_cfg(delegates=("finance",)), "finance": fin})
+        _FakeSpecialistClient.reset(response="Alex's answer")
+        with patch("tools.ClaudeSDKClient", _FakeSpecialistClient), \
+             patch("plugin_registry.resolve_for",
+                   return_value=ResolutionResult(registry_valid=True)):
+            result = await _with_origin(delegate_to_agent.handler({
+                "agent": "finance", "task": "x", "context": "", "mode": mode,
+            }), origin)
+            await asyncio.gather(*list(tools_mod._handoff_line_tasks))
+            await asyncio.gather(*list(tools_mod._specialist_bg_tasks),
+                                 return_exceptions=True)
+        return json.loads(result["content"][0]["text"]), ch.lines
+
+    async def test_an_operator_sync_delegation_shows_the_line(self, tmp_path, monkeypatch):
+        payload, lines = await self._run(
+            tmp_path, monkeypatch, mode="sync",
+            origin={**_origin(chat_id=7), "_operator_turn": True})
+        assert lines == [(7, "📊 Passed to Alex.")]
+        assert payload["status"] == "ok" and "note" not in payload
+
+    async def test_an_async_delegation_shows_it_and_tells_the_resident(
+            self, tmp_path, monkeypatch):
+        payload, lines = await self._run(
+            tmp_path, monkeypatch, mode="async",
+            origin={**_origin(chat_id=7), "_operator_turn": True})
+        assert lines == [(7, "📊 Passed to Alex.")]
+        assert payload["status"] == "pending"
+        assert payload["note"].startswith(
+            "(Casa: the person is shown a line saying this was passed to Alex.")
+        assert payload["note"].endswith("reply with exactly <silent/>.)")
+
+    async def test_no_line_from_an_engagement_bound_turn(self, tmp_path, monkeypatch):
+        import tools as tools_mod
+        from unittest.mock import MagicMock
+        eng = MagicMock()
+        eng.origin = {}
+        eng.context_rebuild_pending = False
+        tok = tools_mod.engagement_var.set(eng)
+        try:
+            payload, lines = await self._run(
+                tmp_path, monkeypatch, mode="async",
+                origin={**_origin(chat_id=7), "_operator_turn": True})
+        finally:
+            tools_mod.engagement_var.reset(tok)
+        assert lines == [] and "note" not in payload
+
+    @pytest.mark.parametrize("origin", [
+        _origin(chat_id=7),                                   # no operator ingress
+        {**_origin(chat_id=7), "_operator_turn": True, "delegation_depth": 1},
+        {**_origin(channel="webhook", chat_id=7), "_operator_turn": True},
+    ])
+    async def test_no_line_outside_an_operator_telegram_turn(
+            self, tmp_path, monkeypatch, origin):
+        payload, lines = await self._run(tmp_path, monkeypatch, mode="async",
+                                         origin=origin)
+        assert lines == []
+        assert "note" not in payload

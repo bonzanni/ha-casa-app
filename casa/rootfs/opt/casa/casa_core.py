@@ -4759,6 +4759,23 @@ async def main() -> None:
         )
         return telegram_channel.create_topic_stream(topic_id)
 
+    # #1350: an executor turn's step log in its topic (drivers/turn_progress).
+    # Plain text, silent; each call is bounded inside the line itself.
+    def _turn_progress_factory(topic_id: int):
+        from drivers.turn_progress import TurnProgressLine
+        ch = telegram_channel
+        if ch is None:
+            return None
+
+        async def _send(text: str):
+            return await ch.send_to_topic(
+                topic_id, text, disable_notification=True)
+
+        async def _edit(message_id: int, text: str) -> bool:
+            return await ch.edit_topic_message(topic_id, message_id, text)
+
+        return TurnProgressLine(send=_send, edit=_edit)
+
     # Task 6 (spec §4.6): observe interactive specialist ResultMessages so
     # their cost/usage reaches SpecialistTelemetry too (ephemeral sync/async
     # delegations are captured in tools._run_delegated_agent). Only
@@ -4776,6 +4793,7 @@ async def main() -> None:
 
     engagement_driver = InCasaDriver(
         topic_stream_factory=_topic_stream_factory,
+        turn_progress_factory=_turn_progress_factory,
         persist_session_id=engagement_registry.persist_session_id,
         # S8: the profile a rebuilt session enforces is persisted before it opens.
         persist_plugin_profiles=engagement_registry.update_plugin_profiles,

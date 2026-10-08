@@ -2356,6 +2356,21 @@ class TelegramChannel(Channel):
             logger.warning("desk notice failed: %s", type(exc).__name__)
             return False
 
+    async def send_handoff_line(self, chat_id: int | str, text: str) -> bool:
+        """#1350: Casa's one-line record that the operator's request was
+        passed to a specialist or an executor — a notice, never model text,
+        sent without a notification sound (the answer that follows notifies).
+        A failure is logged and nothing more is attempted."""
+        if self._app is None:
+            return False
+        try:
+            await self._app.bot.send_message(
+                chat_id=chat_id, text=text, disable_notification=True)
+            return True
+        except Exception as exc:  # noqa: BLE001 — a notice fault is logged
+            logger.warning("hand-off line failed: %s", type(exc).__name__)
+            return False
+
     # ------------------------------------------------------------------
     # Engagement routing (Task 11)
     # ------------------------------------------------------------------

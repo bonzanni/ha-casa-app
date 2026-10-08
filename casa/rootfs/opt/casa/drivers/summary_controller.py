@@ -92,6 +92,43 @@ _ACTIVITY_EDITING = frozenset({"Write", "Edit", "NotebookEdit"})
 _ACTIVITY_RESEARCH = frozenset({"WebFetch", "WebSearch"})
 
 
+# #1350: Casa's own tools, in the operator's words — "using casa-framework
+# tools" told a configurator topic nothing about what was happening. Keyed on
+# the tool name after the ``mcp__casa-framework__`` prefix: exact names first,
+# then name prefixes; anything unlisted keeps the generic phrase.
+_CASA_TOOL_PREFIX = "mcp__casa-framework__"
+_CASA_ACTIVITY_EXACT: dict[str, str] = {
+    "config_git_commit": "committing the change",
+    "casa_reload": "reloading Casa",
+    "casa_reload_triggers": "reloading Casa",
+    "casa_restart_supervised": "reloading Casa",
+    "list_vault_items": "wiring secrets",
+    "get_item_fields": "wiring secrets",
+    "set_plugin_env_reference": "wiring secrets",
+    "remove_plugin_env_reference": "wiring secrets",
+    "emit_completion": "wrapping up",
+}
+_CASA_ACTIVITY_PREFIX: tuple[tuple[str, str], ...] = (
+    ("plugin_", "updating plugins"),
+    ("specialist_", "managing specialists"),
+    ("persona_", "managing personas"),
+    ("resident_persona_", "managing personas"),
+    ("config_trigger_", "updating triggers"),
+)
+
+
+def _casa_activity(name: str) -> str | None:
+    if not name.startswith(_CASA_TOOL_PREFIX):
+        return None
+    short = name[len(_CASA_TOOL_PREFIX):]
+    if short in _CASA_ACTIVITY_EXACT:
+        return _CASA_ACTIVITY_EXACT[short]
+    for prefix, phrase in _CASA_ACTIVITY_PREFIX:
+        if short.startswith(prefix):
+            return phrase
+    return None
+
+
 def activity_for_tool(tool_name: str) -> str:
     """Coarse activity phrase for a ``tool_use`` block (§5 S5).
 
@@ -111,6 +148,9 @@ def activity_for_tool(tool_name: str) -> str:
         return "planning"
     if name in _ACTIVITY_RESEARCH:
         return "researching"
+    casa = _casa_activity(name)
+    if casa is not None:
+        return casa
     if name.startswith("mcp__"):
         parts = name.split("__")
         server = parts[1] if len(parts) > 1 and parts[1] else "mcp"
