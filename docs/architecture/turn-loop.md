@@ -50,7 +50,9 @@ is [`output-boundary.md`](output-boundary.md) (INV-OUT-006 in
 used to be inline checks here and in `send_message`).
 
 **The origin snapshot records the turn's question, which is usually its text.** The prompt,
-the options and the recall query are built from the message's own text; the query sent
+the options and the recall query are built from the message's own text, except that a fresh
+session no person opened (no trusted ingress identity) recalls with one fixed short query
+instead ([`memory.md`](memory.md)); the query sent
 puts `compose_turn_preamble` ahead of it — the `<current_time>` envelope, then, on a Telegram
 turn that has any, one `<casa_notes>` block of Casa's per-turn notes (the drained front-desk
 lines, then a reply's note: [`specialist-desk.md`](specialist-desk.md)), which retention

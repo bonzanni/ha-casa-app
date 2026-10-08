@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.344.53] - 2026-10-08
+
+### Fixed
+
+- The morning briefing, the hourly heartbeat, and other conversations Casa starts on its own never got any memories. Those include a turn that tells the assistant a delegated task has finished. Casa searched memory with the turn's whole opening text: the trigger's instructions, or the notice. The memory service took 12–20 seconds to rank results for a query that long, so the search always ran past Casa's 5-second limit and was dropped. These turns now search with a short query about today's appointments, deadlines and open follow-ups, and wait up to 15 seconds. Most of these turns run while nobody is waiting. When one relays a delegated task's answer in a new conversation, that answer can arrive a few seconds later than before. A conversation a person starts still searches with their own words and waits at most 5 seconds. (#1336)
+
 ## [0.344.52] - 2026-10-08
 
 ### Fixed

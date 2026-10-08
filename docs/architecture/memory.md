@@ -115,6 +115,19 @@ fresh non-voice session only — a warm reused client skips that path entirely, 
 auto-recalls. Both can still recall explicitly through the tool. "The agent remembers
 automatically" is true of a narrower set of turns than it sounds.
 
+**What auto-recall searches for.** A session a person opened — the operator or anyone else
+Telegram admits, typing or tapping — searches with that person's own opening text and waits
+at most 5 s. Other sessions open with Casa's own text, not a topic: a trigger's instruction
+prompt, a reminder, a delegation's completion notice, an event. "No person" means the turn
+arrived without a trusted ingress identity. Searching with that text is slow, because the
+backend reranks every candidate against the whole query, and it ranks memories by how much
+they resemble the instructions. So such a session searches with one fixed short query about
+today's appointments, deadlines and open follow-ups, and waits at most 15 s. Mostly nobody
+is waiting on such a turn. Where someone is, as with a delegation's answer being relayed on a
+fresh session, that answer can arrive up to 15 s later. The query is the same for every such turn and is not derived
+from its text, so memories about one reminder's or notice's own subject are found only if
+they match it.
+
 **Writing is narrower than reading, and it has its own document.** Only write-trusted
 channels retain to the shared bank; *when* a conversation is retained, reset, or wiped is
 the retention lifecycle, and how a fact is *labelled* on the way in — tier classification,
@@ -293,6 +306,7 @@ since what may be disclosed is decided per surface.
 - `tests/test_recall_readable_slice_framing.py`
 - `tests/test_1123_tier_floor_regressions.py`
 - `tests/test_pin_1120_recall_period.py`
+- `tests/test_1336_unauthored_recall_query.py`
 
 **Related**
 - [`architecture/overview.md`](../architecture/overview.md)

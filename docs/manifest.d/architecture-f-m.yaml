@@ -23,6 +23,7 @@
     - tests/test_recall_readable_slice_framing.py
     - tests/test_1123_tier_floor_regressions.py
     - tests/test_pin_1120_recall_period.py
+    - tests/test_1336_unauthored_recall_query.py
   related: [architecture/overview.md, architecture/turn-loop.md, architecture/memory-lifecycle.md, architecture/memory-mental-models.md, architecture/memory-scoping.md, architecture/memory-wipe.md]
   defines_invariants: [INV-MEM-001, INV-MEM-002, INV-MEM-010, INV-MEM-019]
   invariant_tests:
