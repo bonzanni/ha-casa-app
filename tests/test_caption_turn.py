@@ -84,7 +84,7 @@ async def test_a_captioned_file_is_stored_and_runs_one_turn_with_the_caption_ver
     assert ch._app.bot.texts == []                     # the turn's reply replaces the ack
     rf = turn.context["_received_file"]
     path = os.path.join(wired.ready_dir, stored.name)
-    assert rf["path"] == path and rf["name"] == "invoice-0912.pdf"
+    assert rf["files"] == [{"path": path, "name": "invoice-0912.pdf"}]
     for fact in ("invoice-0912.pdf", "PDF", path, "caption"):
         assert fact in rf["note"], fact
     # admitted as the operator's own text turn is
@@ -153,21 +153,26 @@ async def test_the_caption_turn_waits_for_the_chats_serial_lock(wired):
     assert [m.content for m in await _drain_bus(bus)] == [CAPTION]
 
 
-async def test_an_album_turn_names_its_own_file_and_the_uncaptioned_ones_are_acknowledged(wired):
+async def test_an_album_turn_names_every_kept_file_of_the_album(wired):
+    """#1379: an album's caption is about the album — one turn over its files,
+    and no acknowledgement beside her reply."""
     ch, bus = _ch()
-    await ch._on_non_text_message(NS(message=_file_msg(
-        "file these", media_group_id="g1", document=_doc("a.pdf"))))
-    await ch._on_non_text_message(NS(message=_file_msg(
-        None, media_group_id="g1", document=_doc("b.pdf"))))
+    ch.ALBUM_SETTLE_S = 0.05
+    await asyncio.gather(
+        ch._on_non_text_message(NS(message=_file_msg(
+            "file these", media_group_id="g1", document=_doc("a.pdf")))),
+        ch._on_non_text_message(NS(message=_file_msg(
+            None, media_group_id="g1", document=_doc("b.pdf")))))
     [turn] = await _drain_bus(bus)
-    assert turn.context["_received_file"]["name"] == "a.pdf"
-    assert "album" in turn.context["_received_file"]["note"]
-    assert [t[:9] for t in ch._app.bot.texts] == ["Got b.pdf"]
+    assert [f["name"] for f in turn.context["_received_file"]["files"]] == ["a.pdf", "b.pdf"]
+    assert "2 files together" in turn.context["_received_file"]["note"]
+    assert ch._app.bot.texts == []
 
 
 async def test_no_external_context_can_set_the_received_file():
     assert "_received_file" not in sanitize_external_context(
-        {"_received_file": {"path": "/x", "name": "x", "note": "n"}, "chat_id": "1"})
+        {"_received_file": {"files": [{"path": "/x", "name": "x"}], "note": "n"},
+         "chat_id": "1"})
 
 
 async def test_the_turn_carries_casas_note_and_owes_its_own_file(tmp_path, monkeypatch):
@@ -180,7 +185,8 @@ async def test_the_turn_carries_casas_note_and_owes_its_own_file(tmp_path, monke
     from timekeeping import split_time_envelope
     monkeypatch.setattr(sd, "DESK_ECHO", rb.PostLedger(max_events=64))
     agent = _agent(tmp_path)
-    rf = {"path": "/data/agent-inbox/assistant/ready/1-ab.pdf", "name": "invoice.pdf",
+    rf = {"files": [{"path": "/data/agent-inbox/assistant/ready/1-ab.pdf",
+                     "name": "invoice.pdf"}],
           "note": "The person sent a file with this message: invoice.pdf (PDF, 1 KB)."}
     query = await _turn(agent, text=CAPTION, _received_file=rf)
     assert "<casa_notes>\n" + rf["note"] + "\n</casa_notes>\n\n" + CAPTION in query

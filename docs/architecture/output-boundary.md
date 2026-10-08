@@ -57,8 +57,8 @@ ever held.** `ReadBeforeDescribe` is armed by `list_inbound_files`, from the rec
 lists rather than from the rendered text, and by a `Read` attempt on an inbox path the turn
 never listed (a path copied from an earlier listing makes this a file turn too). A turn that
 received a file of its own — a file desk turn, or the default agent's turn for a captioned
-file, armed from the reserved `_received_file` key when the scope is minted
-([`inbound-files.md`](inbound-files.md)) — is armed over that file alone before it runs
+file or album, armed from the reserved `_received_file` key when the scope is minted
+([`inbound-files.md`](inbound-files.md)) — is armed over those files alone before it runs
 (`TurnScope.receive_files`), and neither a listing
 nor a `Read` attempt widens it. It is discharged by a successful `Read` of any one armed file
 or by handing one to a plugin (`share_inbound_file` published the copy:

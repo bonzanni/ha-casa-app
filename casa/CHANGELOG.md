@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.344.68] - 2026-10-09
+
+### Fixed
+
+- Several files sent to the assistant at once now get one reply instead of one each. An album, or several files sent within a few seconds of each other, gets a single message that lists each file as it arrives — "Got 3 files: a.pdf (34 KB), b.pdf (37 KB), c.pdf (12 KB). Ask me any time and I'll read them. I'll keep them 7 days." A file Casa could not keep (too large, a kind she cannot read) is named in that same message. A caption on an album is now about the whole album: she waits until every file has arrived and acts on all of them in one reply, and no "Got …" message appears beside it. (#1379)
+
 ## [0.344.67] - 2026-10-09
 
 ### Added

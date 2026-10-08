@@ -857,16 +857,23 @@ def _classify_inbound(msg) -> _InboundClass:
         f"I can't read that kind of message. I can take {_ACCEPTED_KINDS_TEXT}."))
 
 
-def caption_file_note(name: str, kind: str, size: str, path: str, *, album: bool) -> str:
-    """#1378: Casa's note on the turn a file's caption starts — the file's facts,
-    never the caption, which is the operator's message itself."""
-    note = (f"The person sent a file with this message: {name} ({kind}, {size}). "
-            f"It is in your inbox at {path}; that path is for your tools, not for "
-            "your reply. Their message is the caption they wrote on the file.")
-    if album:
-        note += (" The file was one of an album sent together; the album's other "
-                 "files reach your inbox as separate files.")
-    return note
+def caption_file_note(files: list[tuple[str, str, str, str]], *, album: bool) -> str:
+    """#1378/#1379: Casa's note on the turn a caption starts — the facts of the
+    files it covers as ``(name, kind, size, path)``, never the caption, which
+    is the operator's message itself. An album's caption covers the album."""
+    if len(files) == 1:
+        name, kind, size, path = files[0]
+        note = (f"The person sent a file with this message: {name} ({kind}, {size}). "
+                f"It is in your inbox at {path}; that path is for your tools, not for "
+                "your reply. Their message is the caption they wrote on the file.")
+        if album:
+            note += " It came in an album; it is the only file of the album you have."
+        return note
+    listed = "; ".join(f"{name} ({kind}, {size}) at {path}"
+                       for name, kind, size, path in files)
+    return (f"The person sent {len(files)} files together with this message: {listed}. "
+            "They are in your inbox; those paths are for your tools, not for your "
+            "reply. Their message is the caption they wrote on the files.")
 
 
 def _inbound_reply(receipt, cls: _InboundClass) -> str:
@@ -903,6 +910,77 @@ def _inbound_reply(receipt, cls: _InboundClass) -> str:
         return ("I couldn't confirm that file was saved — it may or may not "
                 "still be there. Send it again to be sure.")
     return "I couldn't save that one. Nothing's been kept — try sending it again."
+
+
+#: #1379: files whose events (an arrival, an outcome) fall within this many
+#: seconds of the previous one in the chat — or that share a Telegram album —
+#: share one acknowledgement, edited as each lands. Mechanical only.
+ACK_WINDOW_S = 10.0
+#: An album's size; with names shortened in a list, ten files' lines always fit
+#: one Telegram message (design round d1, Astra).
+ACK_MAX_FILES = 10
+
+
+@dataclass(eq=False)
+class _AckClaim:
+    """#1379: a caption's claim on its album (or on its own file): the files it
+    covers are left out of the acknowledgement while the claim is open, and for
+    good once its turn was dispatched."""
+
+    captions: list
+    touched: float = 0.0
+    sealed: bool = False             # its turn took its files and words: none join now
+    done: bool = False
+
+
+@dataclass(eq=False)
+class _AckEntry:
+    """#1379: one non-text message of the default agent's path, created on arrival."""
+
+    name: str
+    group: str | None
+    line: str | None = None          # its own one-line outcome; None while pending
+    stored: tuple | None = None      # (name, kind, size, path) once stored
+    claim: _AckClaim | None = None
+    covered: bool = False            # a dispatched caption turn acts on it
+
+
+@dataclass(eq=False)
+class _AckBurst:
+    """#1379: the files sent together in one chat and their one message."""
+
+    entries: list
+    touched: float
+    claims: dict
+    message_id: int | None = None
+    shown: str = ""
+
+
+def _ack_text(burst: _AckBurst) -> str:
+    """The acknowledgement for what has landed: one file's own line, byte for
+    byte as before; several files as one list of what was kept, then a line for
+    each file that was not. Files a caption turn covers are its reply's."""
+    import agent_inbox
+    shown = [e for e in burst.entries if e.line is not None and not e.covered
+             and not (e.claim is not None and not e.claim.done)]
+    if len(shown) == 1 and len(burst.entries) == 1:
+        return shown[0].line
+    def short(name: str) -> str:
+        return name if len(name) <= 64 else name[:63] + "…"
+    kept = [e for e in shown if e.stored is not None]
+    lines = []
+    if len(kept) == 1:
+        lines.append(kept[0].line)
+    elif kept:
+        days = agent_inbox.RETENTION_S // 86400
+        noun = "photos" if all(not e.name for e in kept) else "files"
+        listed = ", ".join(f"{short(e.name) or 'a photo'} ({e.stored[2]})" for e in kept)
+        lines.append(f"Got {len(kept)} {noun}: {listed}. Ask me any time and I'll "
+                     f"read them. I'll keep them {days} days.")
+    for e in shown:
+        if e.stored is None:
+            lines.append(f"{short(e.name)}: {e.line}" if e.name else e.line)
+    return "\n".join(lines)
 
 
 class TelegramChannel(Channel):
@@ -1081,6 +1159,10 @@ class TelegramChannel(Channel):
         # by chat_id; entries are not pruned — bounded growth (DM chats),
         # cleared on add-on restart, mirroring _engagement_handler_locks.
         self._chat_serial_locks: dict[str, asyncio.Lock] = {}
+        # #1379: the files of the operator's chat being acknowledged together,
+        # and the lock that keeps their one message's sends and edits in order.
+        self._ack_bursts: dict[tuple[str, str | None], _AckBurst] = {}
+        self._ack_locks: dict[str, asyncio.Lock] = {}
         # #347: per-engagement topic-STATE edit serialization (see
         # update_topic_state) — orders the relay's awaiting/active round-trip
         # against terminal-transition edits so a closed topic can never be
@@ -1764,6 +1846,8 @@ class TelegramChannel(Channel):
             return
 
         chat_id = str(update.effective_chat.id) if update.effective_chat else self.chat_id
+        # #1379: a text in between ends the files sent together
+        self._ack_bursts.pop((chat_id, None), None)
         lock = self._chat_serial_locks.setdefault(chat_id, asyncio.Lock())
         async with lock:
             await self._handle_serialized(update, chat_id)
@@ -3767,8 +3851,10 @@ class TelegramChannel(Channel):
     ) -> None:
         """#1036: every non-text message. Arrival stores and acknowledges; only
         a stored file's caption starts an agent turn (#1378), whose reply takes
-        the acknowledgement's place. Every path ends in a stored file and a
-        turn, or one reply — there is no silent path, and no silent list."""
+        the acknowledgement's place. Files sent together share one
+        acknowledgement, edited as each lands, and an album's caption covers
+        the album (#1379). Every file ends in a turn that acts on it or a line
+        of an acknowledgement — there is no silent path, and no silent list."""
         msg = getattr(update, "message", None)
         if msg is None:
             return
@@ -3825,17 +3911,38 @@ class TelegramChannel(Channel):
             await self._route_addressed_file(chat_id, user, msg, address)
             return
 
+        # #1379: from here on every outcome is one entry of the chat's
+        # acknowledgement — files sent together share one message, edited as
+        # each lands — or, for a caption, of the turn that acts on the files.
         cls = _classify_inbound(msg)
-        if not cls.accept:
-            await reply(cls.refusal)
-            return
+        entry, burst = self._ack_join(str(chat_id), msg, cls)
+        caption = getattr(msg, "caption", None)
+        owner = None
+        if isinstance(caption, str) and caption.strip():
+            owner = self._ack_claim(burst, entry, caption)
+        try:
+            entry.line, entry.stored = await self._store_inbound(cls)
+        finally:
+            if entry.line is None:      # cancelled or raised: never left pending
+                import agent_inbox
+                entry.line = _inbound_reply(
+                    agent_inbox.Receipt(agent_inbox.Outcome.UNCERTAIN), cls)
+            burst.touched = time.monotonic()
+        await self._render_ack(chat_id, burst)
+        if owner is not None:
+            await self._run_claim(update, msg, user, burst, owner)
+            await self._render_ack(chat_id, burst)
 
+    async def _store_inbound(self, cls: "_InboundClass") -> tuple[str, tuple | None]:
+        """The default agent's inbox takes the file: its one-line outcome, and
+        its ``(name, kind, size, path)`` when it was stored."""
         import agent_inbox
+        if not cls.accept:
+            return cls.refusal, None
         inbox = agent_inbox.get_inbox(self.default_agent)
         if inbox is None:
-            await reply(_inbound_reply(
-                agent_inbox.Receipt(agent_inbox.Outcome.STORAGE_FAILED), cls))
-            return
+            return _inbound_reply(
+                agent_inbox.Receipt(agent_inbox.Outcome.STORAGE_FAILED), cls), None
         bot = self.bot
         try:
             receipt = await inbox.receive(
@@ -3850,37 +3957,149 @@ class TelegramChannel(Channel):
             receipt = agent_inbox.Receipt(agent_inbox.Outcome.UNCERTAIN)
         logger.info("inbound file: outcome=%s bytes=%d",
                     receipt.outcome.value, receipt.size)
-        # #1378: a caption is the operator's instruction for the file — the one
-        # mechanical decision is whether there is one; what it asks is the
-        # model's to judge. Its turn's reply stands in for the acknowledgement.
-        caption = getattr(msg, "caption", None)
-        if (receipt.outcome is agent_inbox.Outcome.STORED
-                and isinstance(caption, str) and caption.strip()):
-            if await self._caption_turn(update, msg, user, caption, receipt, cls, inbox):
-                return
-        await reply(_inbound_reply(receipt, cls))
-
-    async def _caption_turn(self, update: Any, msg: Any, user: Any, caption: str,
-                            receipt: Any, cls: "_InboundClass", inbox: Any) -> bool:
-        """#1378: one ordinary turn of the default agent for a stored file that
-        carried a caption — the caption verbatim as the operator's words, the
-        file's facts as Casa's note, admitted exactly as a text message is
-        (the per-chat serial lock, then ``_dispatch_dm_turn``). ``False`` when
-        no turn was dispatched, and the caller acknowledges the file instead."""
-        import agent_inbox
-        chat_key = str(msg.chat.id)
-        stored_path = os.path.join(inbox.ready_dir, receipt.name)
+        line = _inbound_reply(receipt, cls)
+        if receipt.outcome is not agent_inbox.Outcome.STORED:
+            return line, None
         name = agent_inbox._bounded_display(cls.display_name) or "a photo"
         kind = cls.ext.lstrip(".").upper() if cls.ext else "file"
-        note = caption_file_note(name, kind, _human_size(receipt.size), stored_path,
-                                 album=bool(getattr(msg, "media_group_id", None)))
+        return line, (name, kind, _human_size(receipt.size),
+                      os.path.join(inbox.ready_dir, receipt.name))
+
+    def _ack_join(self, chat_key: str, msg: Any, cls: "_InboundClass"):
+        """#1379: the arriving file's entry. An album has one group of its own,
+        keyed by its album id (at most ten files); a lone file joins the chat's
+        lone files when it lands within ``ACK_WINDOW_S`` of their last event, up
+        to ``ACK_MAX_FILES``, else starts a new group. Synchronous, so arrival
+        order is entry order."""
+        import agent_inbox
+        group = getattr(msg, "media_group_id", None) or None
+        now = time.monotonic()
+        key = (chat_key, group)
+        burst = self._ack_bursts.get(key)
+        if burst is None or (group is None and (
+                now - burst.touched > ACK_WINDOW_S
+                or len(burst.entries) >= ACK_MAX_FILES)):
+            # groups long quiet are forgotten (a pending claim keeps its own)
+            for k in [k for k, b in self._ack_bursts.items() if now - b.touched > 600]:
+                del self._ack_bursts[k]
+            burst = _AckBurst(entries=[], touched=now, claims={})
+            self._ack_bursts[key] = burst
+        doc = getattr(msg, "document", None)
+        name = agent_inbox._bounded_display(
+            cls.display_name or (getattr(doc, "file_name", None) or "") if doc else "")
+        entry = _AckEntry(name=name, group=group)
+        claim = burst.claims.get(group) if group is not None else None
+        if claim is not None and not claim.sealed:
+            entry.claim = claim
+            claim.touched = now
+        burst.entries.append(entry)
+        burst.touched = now
+        return entry, burst
+
+    def _ack_claim(self, burst: _AckBurst, entry: _AckEntry, caption: str):
+        """#1379: a caption claims its album (a lone file: itself). The claim's
+        owner runs its turn; a second caption in an open claim adds its words.
+        Returns the claim this file owns, or ``None``."""
+        if entry.claim is not None:
+            entry.claim.captions.append(caption)
+            return None
+        claim = _AckClaim(captions=[caption], touched=time.monotonic())
+        entry.claim = claim
+        if entry.group is not None:
+            burst.claims[entry.group] = claim
+            for e in burst.entries:
+                if e.group == entry.group and e.claim is None:
+                    e.claim = claim
+        return claim
+
+    ALBUM_SETTLE_S = 1.0
+    ALBUM_MAX_WAIT_S = 60.0
+
+    async def _run_claim(self, update: Any, msg: Any, user: Any,
+                         burst: _AckBurst, claim: _AckClaim) -> None:
+        """#1379: once every file of the album has landed (and none arrived for
+        ``ALBUM_SETTLE_S``), ONE turn acts on the files it kept; they are left
+        out of the acknowledgement only when that turn was dispatched."""
+        album = bool(getattr(msg, "media_group_id", None))
+        deadline = time.monotonic() + self.ALBUM_MAX_WAIT_S
+        while time.monotonic() < deadline:
+            members = [e for e in burst.entries if e.claim is claim]
+            if all(e.line is not None for e in members) and (
+                    not album or time.monotonic() - claim.touched >= self.ALBUM_SETTLE_S):
+                break
+            await asyncio.sleep(0.1)
+        claim.sealed = True     # a later caption opens a turn of its own (r1, Terra)
+        files = [e for e in burst.entries if e.claim is claim and e.stored is not None]
+        try:
+            if files and await self._caption_turn(
+                    update, msg, user, "\n\n".join(claim.captions),
+                    [e.stored for e in files], album=album):
+                for e in files:
+                    e.covered = True
+        finally:
+            claim.done = True
+
+    async def _render_ack(self, chat_id: Any, burst: _AckBurst) -> None:
+        """#1379: bring the group's one message up to date — sent the first
+        time, edited after. An edit that fails sends the whole text afresh; a
+        message whose every file a caption turn took over is deleted."""
+        lock = self._ack_locks.setdefault(str(chat_id), asyncio.Lock())
+        async with lock:
+            text = _ack_text(burst)
+            if text == burst.shown:
+                return
+            if not text:
+                if await self._ack_call(self.bot.delete_message, chat_id=chat_id,
+                                        message_id=burst.message_id) is not None:
+                    burst.message_id, burst.shown = None, ""
+                return
+            if burst.message_id is not None and await self._ack_call(
+                    self.bot.edit_message_text, chat_id=chat_id,
+                    message_id=burst.message_id, text=text) is not None:
+                burst.shown = text
+                return
+            sent = await self._ack_call(self.bot.send_message, chat_id=chat_id, text=text)
+            if sent is not None:
+                burst.message_id = getattr(sent, "message_id", None)
+                burst.shown = text
+
+    @staticmethod
+    async def _ack_call(fn: Callable[..., Awaitable[Any]], **kwargs: Any) -> Any:
+        """One Bot API call for an acknowledgement: flood control honoured once,
+        capped; any other failure logged. ``None`` when it did not go through."""
+        for attempt in (1, 2):
+            try:
+                return await fn(**kwargs) or True
+            except RetryAfter as exc:
+                if attempt == 2:
+                    logger.warning("inbound-file reply failed: RetryAfter twice")
+                    return None
+                wait = getattr(exc, "retry_after", 1)
+                wait = wait.total_seconds() if hasattr(wait, "total_seconds") else wait
+                await asyncio.sleep(min(max(float(wait or 0), 0.0), 10.0))
+            except Exception as exc:  # noqa: BLE001 — a reply fault is logged
+                logger.warning("inbound-file reply failed: %s", type(exc).__name__)
+                return None
+        return None
+
+    async def _caption_turn(self, update: Any, msg: Any, user: Any, caption: str,
+                            files: list, *, album: bool) -> bool:
+        """#1378: one ordinary turn of the default agent for stored files whose
+        message carried a caption — the caption verbatim as the operator's
+        words, the files' facts as Casa's note, admitted exactly as a text
+        message is (the per-chat serial lock, then ``_dispatch_dm_turn``).
+        #1379: an album's caption covers every file of it that was kept.
+        ``False`` when no turn was dispatched, and the files are acknowledged."""
+        chat_key = str(msg.chat.id)
+        note = caption_file_note(files, album=album)
+        received = {"files": [{"path": p, "name": n} for n, _k, _s, p in files],
+                    "note": note}
         lock = self._chat_serial_locks.setdefault(chat_key, asyncio.Lock())
         try:
             async with lock:
                 return await self._dispatch_dm_turn(
-                    update, chat_key, caption, user=user,
-                    received_file={"path": stored_path, "name": name, "note": note})
-        except Exception:  # noqa: BLE001 — the file is stored; it is acknowledged
+                    update, chat_key, caption, user=user, received_file=received)
+        except Exception:  # noqa: BLE001 — the files are stored; they are acknowledged
             logger.warning("caption turn not dispatched", exc_info=True)
             return False
 
