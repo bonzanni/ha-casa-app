@@ -135,8 +135,8 @@ A sentinel between two runs of words, or written inside other text — a code sp
 quoting sentence, an escaped `\<silent/>` — is the specialist's content and is posted as
 written, unless it is itself the reply's first or last item: Casa reads text, not intent, so a
 final blockquote line `> <silent/>` posts as `>`, and a code block cut off just after a
-literal sentinel loses that sentinel. That residual is accepted by ruling (reasonable effort,
-not absolute correctness). A turn with no proven operator-visible outcome at all —
+literal sentinel loses that sentinel. That residual is accepted: telling the
+two apart would take a Markdown parser, for a case a specialist hardly ever writes. A turn with no proven operator-visible outcome at all —
 an empty answer with no proven post and no delivered media, a refused permit, a full queue,
 an abort, an exception, a failed reply send — ends in ONE labelled, body-free Casa notice.
 
