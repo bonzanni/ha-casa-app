@@ -1945,8 +1945,14 @@ class TelegramChannel(Channel):
               or getattr(message, "sender_chat", None) is not None):
             who = "a message sent on behalf of a chat"
         elif quoted_from is not None and bot_id is not None and quoted_from.id == bot_id:
-            who = ("an earlier message from Casa (you or a specialist; Casa no longer "
-                   "has a record of which)")
+            # #1335: every specialist post is recorded as it lands, so a Casa
+            # message the map would still hold and does not is the resident's
+            # own; an older one may be a post the map has since forgotten
+            if self._posted_at(quoted) >= result_broker.POST_MAP.complete_since():
+                who = "your own earlier message"
+            else:
+                who = ("an earlier message from Casa (yours or a specialist's; it is older "
+                       "than Casa's records)")
         elif quoted_from is not None and sender is not None and quoted_from.id == sender.id:
             who = "their own earlier message"
         else:
@@ -1960,6 +1966,16 @@ class TelegramChannel(Channel):
                 posted = None
         text = getattr(quoted, "text", None) or getattr(quoted, "caption", None)
         return specialist_desk.reply_note(who, posted, text)
+
+    @staticmethod
+    def _posted_at(message: Any) -> float:
+        """When Telegram says *message* was sent, as a POSIX time; ``-inf``
+        when it carries no usable date."""
+        date = getattr(message, "date", None)
+        try:
+            return date.timestamp()
+        except (AttributeError, TypeError, ValueError, OverflowError, OSError):
+            return float("-inf")
 
     # ------------------------------------------------------------------
     # S4: the specialist desk — a swipe-reply on a specialist's post

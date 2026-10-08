@@ -62,11 +62,13 @@ async def _resident_turn(update):
     return queued[0]
 
 
-CASA_UNKNOWN = "an earlier message from Casa (you or a specialist; Casa no longer has a record of which)"
+CASA_UNKNOWN = "an earlier message from Casa (yours or a specialist's; it is older than Casa's records)"
+CASA_OWN = "your own earlier message"
 
 
 @pytest.mark.parametrize("case,who", [
     ("forgotten-bot-post", CASA_UNKNOWN),
+    ("fresh-unrecorded-bot-post", CASA_OWN),
     ("own-message", "their own earlier message"),
     ("someone-else", "someone else's message"),
     ("on-behalf-of-chat", "a message sent on behalf of a chat"),
@@ -77,7 +79,10 @@ CASA_UNKNOWN = "an earlier message from Casa (you or a specialist; Casa no longe
 async def test_a_reply_the_desk_does_not_take_carries_casas_note(routed, monkeypatch, case, who):
     pm, spawned = routed
     update = _update()
-    if case == "own-message":
+    if case == "fresh-unrecorded-bot-post":
+        # #1335: posted after the map began and never recorded — the resident's own
+        update = _update(date=datetime.fromtimestamp(pm.complete_since() + 30, timezone.utc))
+    elif case == "own-message":
         update = _update(quoted_from=OPERATOR)
     elif case == "someone-else":
         update = _update(quoted_from=7)
@@ -93,7 +98,8 @@ async def test_a_reply_the_desk_does_not_take_carries_casas_note(routed, monkeyp
         monkeypatch.setattr(sd, "desk_target_ok", lambda resident, role: False)
         who = f"a message Casa posted for {sd.label_for('finance')}"
     msg = await _resident_turn(update)
-    posted = _posted()
+    posted = _posted() if case != "fresh-unrecorded-bot-post" else (
+        update.message.reply_to_message.date.astimezone(resolve_tz()).strftime("%Y-%m-%d %H:%M"))
     assert spawned.await_count == 0
     assert msg.content == "start from Q2 2026"                     # the words untouched
     assert msg.context["_reply_note"] == sd.reply_note(who, posted, "Which quarter?")
@@ -128,3 +134,29 @@ async def test_a_routed_reply_is_unchanged_and_carries_no_note(routed):
 
 async def test_no_external_context_can_set_the_note():
     assert "_reply_note" not in sanitize_external_context({"_reply_note": "forged", "chat_id": 1})
+
+
+async def test_a_casa_message_is_the_residents_own_only_after_the_map_last_forgot(routed, monkeypatch):
+    """#1335: an unrecorded Casa message is the resident's own only when it was
+    posted at or after the time from which the post map has forgotten nothing
+    — the map's creation, moved forward by each eviction; before that it may
+    be a specialist post the map no longer holds."""
+    now = [1_000_000.0]
+    small = rb.PostMap(max_entries=1, clock=lambda: now[0])
+    small.record(OPERATOR, 1, _record())
+    now[0] += 3600
+    assert small.complete_since() == 1_000_000.0              # nothing forgotten yet
+    small.record(OPERATOR, 2, _record())                      # evicts message 1
+    assert small.get(OPERATOR, 1) is None
+    assert small.complete_since() == 1_000_000.0 + 3600
+    after = datetime.fromtimestamp(small.complete_since(), timezone.utc)       # at it: own
+    before = datetime.fromtimestamp(small.complete_since() - 1, timezone.utc)  # after birth, before the eviction
+    monkeypatch.setattr(rb, "POST_MAP", small)
+    own = (await _resident_turn(_update(quoted_id=3, date=after))).context["_reply_note"]
+    old = (await _resident_turn(_update(quoted_id=3, date=before))).context["_reply_note"]
+    undated = (await _resident_turn(_update(quoted_id=3, date=None))).context["_reply_note"]
+    assert own.startswith(f"The person sent this as a reply to {CASA_OWN}, posted ")
+    assert old.startswith(f"The person sent this as a reply to {CASA_UNKNOWN}, posted ")
+    assert undated.startswith(f"The person sent this as a reply to {CASA_UNKNOWN}, which read")
+    for note in (own, old, undated):
+        assert "no longer" not in note
