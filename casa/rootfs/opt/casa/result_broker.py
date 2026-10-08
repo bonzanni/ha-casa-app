@@ -476,20 +476,12 @@ class PostMap:
     page failed and the hook withheld the result. Memory-only and
     FIFO-bounded: a restart forgets it and an entry older than
     ``POST_MAP_MAX`` newer messages is evicted — a reply on either is a plain
-    message to the resident (the fallback decision 2 names).
+    message to the resident (the fallback decision 2 names)."""
 
-    #1335: ``complete_since`` is the wall-clock time from which nothing has
-    been forgotten — the map's creation, moved forward by every eviction. A
-    Casa message posted at or after it and absent from the map was never a
-    recorded post."""
-
-    def __init__(self, max_entries: int = POST_MAP_MAX,
-                 clock: Callable[[], float] = time.time) -> None:
+    def __init__(self, max_entries: int = POST_MAP_MAX) -> None:
         self._entries: "collections.OrderedDict[tuple[int, int], PostRecord]" = collections.OrderedDict()
         self._max = max_entries
         self._lock = threading.Lock()
-        self._clock = clock
-        self._complete_since = clock()
 
     @staticmethod
     def _key(chat_id: Any, message_id: Any):
@@ -510,11 +502,6 @@ class PostMap:
             self._entries.move_to_end(key)
             while len(self._entries) > self._max:
                 self._entries.popitem(last=False)
-                self._complete_since = self._clock()
-
-    def complete_since(self) -> float:
-        with self._lock:
-            return self._complete_since
 
     def get(self, chat_id: Any, message_id: Any) -> PostRecord | None:
         key = self._key(chat_id, message_id)

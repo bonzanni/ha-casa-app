@@ -1945,14 +1945,11 @@ class TelegramChannel(Channel):
               or getattr(message, "sender_chat", None) is not None):
             who = "a message sent on behalf of a chat"
         elif quoted_from is not None and bot_id is not None and quoted_from.id == bot_id:
-            # #1335: every specialist post is recorded as it lands, so a Casa
-            # message the map would still hold and does not is the resident's
-            # own; an older one may be a post the map has since forgotten
-            if self._posted_at(quoted) >= result_broker.POST_MAP.complete_since():
-                who = "your own earlier message"
-            else:
-                who = ("an earlier message from Casa (yours or a specialist's; it is older "
-                       "than Casa's records)")
+            # #1335: the post map never held the resident's own replies, so
+            # nothing was lost; nor does its absence prove who wrote it (a
+            # specialist's file, Casa's notices, a forgotten post)
+            who = ("an earlier message from Casa with no record of who wrote it (Casa keeps "
+                   "none for your own replies, so it is most likely one of yours)")
         elif quoted_from is not None and sender is not None and quoted_from.id == sender.id:
             who = "their own earlier message"
         else:
@@ -1966,16 +1963,6 @@ class TelegramChannel(Channel):
                 posted = None
         text = getattr(quoted, "text", None) or getattr(quoted, "caption", None)
         return specialist_desk.reply_note(who, posted, text)
-
-    @staticmethod
-    def _posted_at(message: Any) -> float:
-        """When Telegram says *message* was sent, as a POSIX time; ``-inf``
-        when it carries no usable date."""
-        date = getattr(message, "date", None)
-        try:
-            return date.timestamp()
-        except (AttributeError, TypeError, ValueError, OverflowError, OSError):
-            return float("-inf")
 
     # ------------------------------------------------------------------
     # S4: the specialist desk — a swipe-reply on a specialist's post

@@ -59,11 +59,11 @@ clipped to 600 characters (`REPLY_QUOTE_CHARS`), or `(no text)`. Who posted it i
 from the post map and Telegram's sender ids, never from text, the first match winning: a
 retained post names the specialist's label, or "on your behalf" for the chat's resident; a
 message sent on behalf of a chat (`sender_chat` on either message) names no person; the
-bot's own id with no record is the resident's own earlier message when it was posted at or
-after the moment from which the map has forgotten nothing (`PostMap.complete_since`: its
-creation, moved forward by each eviction), since every specialist post is recorded as it
-lands; an older one is "an earlier message from Casa", the resident's or a specialist's,
-older than Casa's records; the sender's own id is their own earlier message;
+bot's own id with no record is "an earlier message from Casa with no record of who wrote it":
+the map never holds the resident's own replies, so the note says it is most likely one of
+the resident's, without claiming a lost record or a certain author — a specialist's file, Casa's
+notices and a forgotten post have no record either; the sender's own id is their own
+earlier message;
 anything else is someone else's message. The resident's turn carries the note in its Casa
 notes block, after the desk lines (below); a reply the desk takes carries none.
 
@@ -214,10 +214,9 @@ webhook turn, another chat), a job batch, and a voice turn touch no desk.
 
 The key is in `provenance.RESERVED_CONTEXT_KEYS`, so no external ingress can set it, and the
 channel stamps it after sanitization; the resident's turn reads it only on a Telegram turn.
-What it does not cover: once the post map has forgotten a message Casa posted, the note
-cannot say which party posted it, only that Casa did; a specialist post whose send was never
-confirmed although it landed has no record, so a reply on it is described as the resident's
-own; a file sent as a reply, and a message in an engagement topic, carry no note.
+What it does not cover: a Casa message with no record — the resident's own reply, a file a
+specialist sent, a Casa notice, a post the map has forgotten — is named by no author; a file
+sent as a reply, and a message in an engagement topic, carry no note.
 
 ## Failure behavior
 
