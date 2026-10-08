@@ -66,13 +66,14 @@ def test_compile_reads_overlay_sources_at_call_time(monkeypatch):
 
 
 def test_release_build_compile_smoke_reads_the_driver_sources():
-    """#957 regression (green once the smoke exists): `casa/Dockerfile`'s
-    compile smoke hands `s6-rc-compile` the same two source directories the
-    driver compiles from, and runs after `COPY rootfs /`, because the merged
-    `/etc/s6-overlay/s6-rc.d` only exists from there. A path moved in the driver
-    and not in the Dockerfile would leave the smoke compiling something the
-    launch never reads. This pins the TEXT; the smoke's execution is covered by
-    `tests/test_baseline_runtime_assert.py` on the runner's architecture."""
+    """#957/#1357 regression: `casa/Dockerfile`'s compile smoke hands
+    `s6-rc-compile` the same three image source directories the driver compiles
+    from (overlay, Casa's services, Casa's user bundles), and runs after
+    `COPY rootfs /`, because the merged `/etc/s6-overlay` only exists from
+    there. A path moved in the driver and not in the Dockerfile would leave the
+    smoke compiling something the launch never reads. This pins the TEXT; the
+    smoke's execution is covered by `tests/test_baseline_runtime_assert.py` on
+    the runner's architecture."""
     import re
     from pathlib import Path
 
@@ -82,8 +83,54 @@ def test_release_build_compile_smoke_reads_the_driver_sources():
         Path(__file__).resolve().parents[1] / "casa" / "Dockerfile"
     ).read_text(encoding="utf-8")
     smokes = list(re.finditer(
-        r's6-rc-compile "\$\{scratch\}/db" (\S+) (\S+) \\', dockerfile))
+        r's6-rc-compile "\$\{scratch\}/db" (\S+) (\S+) (\S+) \\', dockerfile))
     assert len(smokes) == 1, [m.group(0) for m in smokes]
-    assert smokes[0].groups() == (s6_rc.S6_OVERLAY_SOURCES, s6_rc.CASA_SOURCES)
+    assert smokes[0].groups() == (
+        s6_rc.S6_OVERLAY_SOURCES, s6_rc.CASA_SOURCES, s6_rc.CASA_BUNDLES)
     assert dockerfile.count("\nCOPY rootfs /\n") == 1
     assert dockerfile.index("\nCOPY rootfs /\n") < smokes[0].start()
+
+
+# --------------------------------------------------------------------------
+# #1357: s6-overlay 3.2.3.2 reads the `user` bundle from
+# /etc/s6-overlay/user-bundles.d. A `user` directory left in s6-rc.d makes
+# stage2 take its deprecated branch, which ignores user-bundles.d, and makes
+# the driver's compile fail (a duplicate `user`, or a `user` with no type).
+# --------------------------------------------------------------------------
+
+def _overlay_root():
+    from pathlib import Path
+
+    return (Path(__file__).resolve().parents[1]
+            / "casa" / "rootfs" / "etc" / "s6-overlay")
+
+
+def test_rootfs_ships_no_user_bundle_in_the_service_sources():
+    services = _overlay_root() / "s6-rc.d"
+    assert not (services / "user").exists()
+    assert not (services / "user2").exists()
+
+
+def test_every_service_is_a_member_of_the_user_bundle():
+    """Every Casa service definition is enrolled in the `user` bundle, and the
+    bundle names nothing that is not a Casa service — counted, not truthy."""
+    root = _overlay_root()
+    services = sorted(p.name for p in (root / "s6-rc.d").iterdir() if p.is_dir())
+    members = sorted(
+        p.name for p in (root / "user-bundles.d" / "user" / "contents.d").iterdir())
+    assert len(services) == 8, services
+    assert members == services
+
+
+def test_rootfs_ships_no_bundle_type_of_its_own():
+    """The base ships `user-bundles.d/user/type`; Casa only adds members, as the
+    s6-overlay README documents. A Casa copy would mask a base that moved it."""
+    bundle = _overlay_root() / "user-bundles.d" / "user"
+    assert sorted(p.name for p in bundle.iterdir()) == ["contents.d"]
+
+
+def test_driver_bundle_sources_constant():
+    from drivers import s6_rc
+
+    assert s6_rc.CASA_SOURCES == "/etc/s6-overlay/s6-rc.d"
+    assert s6_rc.CASA_BUNDLES == "/etc/s6-overlay/user-bundles.d"

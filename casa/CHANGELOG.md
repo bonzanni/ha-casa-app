@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.344.61] - 2026-10-08
+
+### Fixed
+
+- Casa builds on the current Home Assistant base image again. The base moved to s6-overlay 3.2.3.2, which keeps the list of services started at boot in a new place, and Casa's image no longer built on it, so 0.344.53 to 0.344.60 were built on the previous base, pinned. Casa now adds its services to that list where the new base keeps it, and the code that rebuilds the service list when a coding engagement starts, stops, is cancelled or resumes after a restart reads it from there too. The pin is lifted: the image follows the base again. Nothing changes in how Casa behaves, and engagements that are running when you update resume as before. (#1357)
+
 ## [0.344.60] - 2026-10-08
 
 ### Fixed

@@ -287,8 +287,10 @@ class TestStopLogService:
 
 
 class TestCompileAndUpdateLocked:
-    async def test_invokes_compile_then_update_with_three_sources(self, monkeypatch):
-        """The canonical call: compile with overlay + casa + engagement sources, update."""
+    async def test_invokes_compile_then_update_with_four_sources(self, monkeypatch):
+        """The canonical call: compile with overlay + casa services + casa
+        bundles + engagement sources, update (#1357: the boot set plus the
+        engagements)."""
         from drivers import s6_rc
 
         calls: list[list[str]] = []
@@ -307,10 +309,14 @@ class TestCompileAndUpdateLocked:
         assert len(calls) == 2
         compile_cmd = calls[0]
         assert compile_cmd[0] == "s6-rc-compile"
-        # Compile receives: new_db, overlay_src, casa_src, engagement_src
-        assert compile_cmd[2] == s6_rc.S6_OVERLAY_SOURCES
-        assert compile_cmd[3] == s6_rc.CASA_SOURCES
-        assert compile_cmd[4] == s6_rc.ENGAGEMENT_SOURCES_ROOT
+        # Compile receives: new_db, overlay_src, casa_src, casa_bundles,
+        # engagement_src — and nothing else.
+        assert compile_cmd[2:] == [
+            s6_rc.S6_OVERLAY_SOURCES,
+            s6_rc.CASA_SOURCES,
+            s6_rc.CASA_BUNDLES,
+            s6_rc.ENGAGEMENT_SOURCES_ROOT,
+        ]
         new_db = compile_cmd[1]
         assert new_db.startswith("/tmp/s6-casa-db-")
 

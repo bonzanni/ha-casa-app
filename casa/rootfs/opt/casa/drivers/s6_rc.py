@@ -31,8 +31,19 @@ logger = logging.getLogger(__name__)
 # (s6-rc-compile: unable to opendir, exit 111). The build asserts the link's
 # sources directory exists in the image; nothing here touches the filesystem
 # at import (dev hosts and CI lanes have no /package/admin).
+#
+# #1357: since s6-overlay 3.2.3.2 (docker-base 2026.10.0) the ``user`` and
+# ``user2`` bundles live in ``/etc/s6-overlay/user-bundles.d`` — the base ships
+# them there and Casa adds its members under ``user/contents.d`` — while the
+# service definitions stay in ``s6-rc.d``. Stage 2 (the overlay's ``rc.init``)
+# compiles the boot database from s6-rc.d + user-bundles.d + the overlay
+# sources, so the runtime compile reads the same set plus the engagements:
+# without CASA_BUNDLES the ``top`` bundle names an undefined ``user2`` and every
+# compile fails, and a set smaller than the boot one would let s6-rc-update
+# stop a boot-started service.
 S6_OVERLAY_SOURCES = "/package/admin/s6-overlay/etc/s6-rc/sources"
 CASA_SOURCES = "/etc/s6-overlay/s6-rc.d"
+CASA_BUNDLES = "/etc/s6-overlay/user-bundles.d"
 ENGAGEMENT_SOURCES_ROOT = "/data/casa-s6-services"
 LIVE_DB_SYMLINK = "/run/s6-rc/compiled"
 
@@ -417,6 +428,7 @@ def _compile_swap_reap_sync(new_db: str, abandoned: threading.Event) -> None:
                     new_db,
                     S6_OVERLAY_SOURCES,
                     CASA_SOURCES,
+                    CASA_BUNDLES,
                     ENGAGEMENT_SOURCES_ROOT,
                 ],
                 check=True,
@@ -449,7 +461,8 @@ def _compile_swap_reap_sync(new_db: str, abandoned: threading.Event) -> None:
 async def _compile_and_update_locked() -> None:
     """Inner helper — caller MUST hold _compile_lock.
 
-    Compiles s6-overlay base + Casa + engagement sources into a fresh
+    Compiles s6-overlay base + Casa services + Casa bundles + engagement
+    sources into a fresh
     /tmp/s6-casa-db-<uuid>/, then atomically swaps the live db via
     s6-rc-update. Reaps the previously-live compiled db after a successful
     swap (or the just-compiled db after a failed one) so /tmp doesn't

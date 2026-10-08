@@ -7,7 +7,8 @@ mechanically:
 
 * every ``.py`` under ``casa/rootfs/opt/casa/`` (no size floor),
 * every ``options:`` / ``schema:`` key in ``casa/config.yaml``,
-* every s6 unit directory under ``casa/rootfs/etc/s6-overlay/s6-rc.d/``,
+* every s6 unit directory under ``casa/rootfs/etc/s6-overlay/s6-rc.d/`` and
+  ``casa/rootfs/etc/s6-overlay/user-bundles.d/``,
 * every tool in ``tools.py``'s ``CASA_TOOLS`` tuple,
 * every HTTP route registration (``add_get``/``add_post``/``add_route``/``add_routes``
   call sites, by AST, so comments and docstrings cannot fake one),
@@ -34,6 +35,7 @@ import yaml
 
 CODE_ROOT = "casa/rootfs/opt/casa"
 S6_ROOT = "casa/rootfs/etc/s6-overlay/s6-rc.d"
+S6_BUNDLES_ROOT = "casa/rootfs/etc/s6-overlay/user-bundles.d"
 SCRIPTS_ROOT = "casa/rootfs/etc/s6-overlay/scripts"
 SCHEMA_ROOT = "casa/rootfs/opt/casa/defaults/schema"
 DOCKERFILE = "casa/Dockerfile"
@@ -87,10 +89,14 @@ def enumerate_options(repo_root: Path) -> list[str]:
 
 
 def enumerate_s6(repo_root: Path) -> list[str]:
-    root = repo_root / S6_ROOT
-    if not root.is_dir():
-        return []
-    return [f"s6:{p.name}" for p in sorted(root.iterdir()) if p.is_dir()]
+    """Every s6 unit directory: the service definitions under ``s6-rc.d`` and
+    the bundles Casa adds members to under ``user-bundles.d`` (#1357)."""
+    names: set[str] = set()
+    for rel in (S6_ROOT, S6_BUNDLES_ROOT):
+        root = repo_root / rel
+        if root.is_dir():
+            names.update(p.name for p in root.iterdir() if p.is_dir())
+    return [f"s6:{name}" for name in sorted(names)]
 
 
 def enumerate_tools(repo_root: Path) -> list[str]:

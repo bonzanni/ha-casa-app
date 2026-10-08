@@ -69,7 +69,7 @@ def build_and_report(image_tag: str) -> None:
     """
     subprocess.run(
         ["docker", "build",
-         "--build-arg", "BUILD_FROM=ghcr.io/home-assistant/amd64-base-debian:bookworm-2026.08.0@sha256:c6a84eec9596b091494a7ba22836090ad56a98a4f73c7b9a9e7590273fc5c5ce",
+         "--build-arg", "BUILD_FROM=ghcr.io/home-assistant/amd64-base-debian:bookworm",
          "-t", image_tag, "-f", "casa/Dockerfile", "casa/"],
         check=True,
     )
@@ -176,7 +176,10 @@ def test_exec_probe_refuses_an_unlaunchable_program(mutation: str, image_tag: st
 
 @pytest.mark.parametrize("mutation", [
     "", "rm /etc/s6-overlay/s6-rc.d/svc-casa/type",
-], ids=["healthy", "service-type-removed"])
+    "rm /etc/s6-overlay/user-bundles.d/user/type",
+    "mkdir -p /etc/s6-overlay/s6-rc.d/user/contents.d",
+], ids=["healthy", "service-type-removed", "user-bundle-type-removed",
+        "user-bundle-left-in-service-sources"])
 def test_compile_smoke_refuses_a_database_that_does_not_compile(
     mutation: str, image_tag: str,
 ) -> None:
