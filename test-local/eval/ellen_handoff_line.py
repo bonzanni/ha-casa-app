@@ -17,9 +17,11 @@ not judged (it is not this change's).
 
 Run inside the deployed container (as the sibling evals), or locally against
 the repository's defaults with ``--local`` (compiles the prompt from
-casa/rootfs/opt/casa/defaults; needs a logged-in Claude Code CLI):
+casa/rootfs/opt/casa/defaults; needs a logged-in Claude Code CLI, named with
+``--cli`` since the image's ``claude_runtime.CLAUDE_CLI_PATH`` is absent there):
 
-    venv_test/bin/python test-local/eval/ellen_handoff_line.py --local --variant note --runs 5
+    venv_test/bin/python test-local/eval/ellen_handoff_line.py --local --variant note --runs 5 \\
+        --cli "$(command -v claude)"
 
 Exit 0 = every run passed.
 """
@@ -92,6 +94,7 @@ async def _one(case: dict, system_prompt: str, model: str, note: bool,
     )
     from output_boundary import strips_to_silence
     import tools as casa_tools
+    from claude_runtime import CLAUDE_CLI_PATH
     from config import effort_for
 
     prod = casa_tools.engage_executor
@@ -110,8 +113,7 @@ async def _one(case: dict, system_prompt: str, model: str, note: bool,
     effort = effort_for(model)
     if effort:
         kw["effort"] = effort
-    if cli:
-        kw["cli_path"] = cli
+    kw["cli_path"] = cli or CLAUDE_CLI_PATH
     before: list[str] = []
     after: list[str] = []
     engaged = False

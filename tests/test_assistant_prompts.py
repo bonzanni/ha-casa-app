@@ -1775,6 +1775,54 @@ def test_the_relay_eval_judges_the_relayed_question(reply, ok):
     assert module._judge(case, reply)[0] is ok
 
 
+@pytest.mark.parametrize("case_id, reply, ok", [
+    ("q3-started", "Alex: Checking the bank and your email — I'll post the result here.", True),
+    # #1369: the same words joined by another clause mark are the delegate's own
+    ("q3-started", "Alex: Checking the bank and your email. I'll post the result here.", True),
+    ("q3-started", 'Alex: "Checking the bank and your email—I\'ll post the result here."', True),
+    ("q1-not-in-books", "Alex: Q1 2026 isn't in the books yet. They start 1 Apr 2026. "
+     "Ask me to do Q1 and I'll start the books from 1 Jan.", True),
+    # refused: a changed, added or dropped word, a changed number, a question
+    # mark of Ellen's, an offer of her own, no attribution
+    ("line-for-ellen", "Alex: September groceries came to €412.30 over 9 payments, "
+     "and most of that was at Esselunga.", False),
+    ("q3-started", "Alex: I'm checking the bank and your email now and will post the "
+     "result here.", False),
+    ("data-answer", "Alex: September groceries came to €412.80 over 9 payments, most of "
+     "it at Esselunga.", False),
+    ("data-answer", "Alex: September groceries came to €412 30 over 9 payments, most of "
+     "it at Esselunga.", False),
+    ("q3-started", "Alex: Checking the bank and your email — I'll post the result here?", False),
+    ("q1-not-in-books", "Alex: Q1 2026 isn't in the books yet: they start 1 Apr 2026. Ask "
+     "me to do Q1 and I'll start the books from 1 Jan. Want me to?", False),
+    ("q3-started", "Checking the bank and your email — I'll post the result here.", False),
+    # #1369 x1 (Terra): the attribution is not a clause mark
+    ("q3-started", "Alex Checking the bank and your email — I'll post the result here.", False),
+    ("q3-started", "Alex — Checking the bank and your email — I'll post the result here.", False),
+    ("q3-started", "Tina: Checking the bank and your email — I'll post the result here.", False),
+    # #1369 x1 (Astra): a dash before an amount may be its sign; a closing quote
+    # does not shield the full stop before it; the order of the words counts
+    ("data-answer", "Alex: September groceries came to - €412.30 over 9 payments, most "
+     "of it at Esselunga.", False),
+    ("data-answer", "Alex: September groceries came to – €412.30 over 9 payments, most "
+     "of it at Esselunga.", False),
+    ("data-answer", "Alex: September groceries came to −€412.30 over 9 payments, most "
+     "of it at Esselunga.", False),
+    ("q3-started", 'Alex: "Checking the bank and your email. I\'ll post the result here"',
+     True),
+    ("q3-started", "Alex: I'll post the result here — checking the bank and your email.",
+     False),
+])
+def test_the_relay_eval_judges_the_attributed_answer_by_its_words(case_id, reply, ok):
+    import importlib.util
+    path = Path(__file__).resolve().parents[1] / "test-local/eval/ellen_relay_fidelity.py"
+    spec = importlib.util.spec_from_file_location("ellen_relay_fidelity", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    case = next(c for c in module.CASES if c["id"] == case_id)
+    assert module._judge(case, reply)[0] is ok
+
+
 _ASK_FULL = ("Alex found two invoices that fit the €120 payment from 3 September. "
              "Which one does it pay?")
 
