@@ -39,8 +39,13 @@ async def test_notify_reset_survives_listener_error(tmp_path):
 async def test_reset_channel_notifies_before_the_retain(tmp_path, monkeypatch):
     """#878 retargeted the seam from save_session to retain_cold_session; the
     ordering this test exists for — flush-close BEFORE the transcript read — is
-    unchanged, and so is the trailing pointer removal."""
+    unchanged, and so is the pointer removal. #1352: the retain now runs in the
+    background after the reset returns, so the test waits for it."""
+    import asyncio
+
     import session_saver
+    monkeypatch.setattr(
+        session_saver, "_COLD_RETAIN_RETRY_DIR", str(tmp_path / "retry"))
     reg = SessionRegistry(str(tmp_path / "sessions.json"))
     await reg.register("telegram-1", "assistant", "sid-1", binding_digest=STUB_BINDING_DIGEST, speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV)
     order = []
@@ -55,5 +60,7 @@ async def test_reset_channel_notifies_before_the_retain(tmp_path, monkeypatch):
     await session_saver.reset_channel(
         "telegram-1", reg, object(), channel="telegram",
     )
+    await asyncio.wait_for(asyncio.gather(
+        *list(session_saver._RESET_RETAINS)), timeout=5)
     assert order == ["reset:telegram-1", "retain"]
     assert reg.get("telegram-1") is None

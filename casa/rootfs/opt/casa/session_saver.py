@@ -350,7 +350,7 @@ def _cold_retry_path(retry_dir: str | Path, sdk_session_id: str) -> Path:
 
 def _spool_cold_retain(
     old: "SessionEntrySnapshot", *, directory: str, channel: str,
-    retry_dir: str | Path,
+    retry_dir: str | Path, pending: bool = False,
 ) -> None:
     """#345: persist a durable retry record for a failed cold retain. Preserves
     an existing record's attempt count; itself best-effort (a spool failure
@@ -378,6 +378,16 @@ def _spool_cold_retain(
             "attempts": attempts,
         }, mode=PRIVATE)
     except Exception:  # noqa: BLE001 — spooling is best-effort
+        if pending:
+            # #1352: the reset's record written BEFORE its background retain.
+            # Nothing has failed to retain yet; that retain still runs, and
+            # its own failure arm spools again (or reports at ERROR below).
+            logger.warning(
+                "could not record the pending reset retain for sid=%s in %s — "
+                "a restart before its background retain lands loses it",
+                old.sdk_session_id, directory, exc_info=True,
+            )
+            return
         # #878: ERROR, and naming the directory. Best-effort is deliberate and
         # unchanged — a spool failure must never crash the retain's caller —
         # but every caller of this writer is already in a retain failure or
@@ -470,6 +480,7 @@ async def retain_cold_session(
     old: "SessionEntrySnapshot", *, directory: str, channel: str, semantic_memory,
     retry_dir: str | Path = _COLD_RETAIN_RETRY_DIR,
     fence_generation: int | None = None,
+    clear_record: bool = False,
 ) -> None:
     """Retain a specific cold SDK session's transcript to the shared ``casa`` bank,
     OFF the turn's critical path and DECOUPLED from the session registry (no
@@ -488,7 +499,14 @@ async def retain_cold_session(
     may not run until after a wipe). The whole retain-and-spool section sits
     behind the fence: a wipe completing in between makes this DISCARD — no
     retain and no spool record, because the operator consented to deleting
-    exactly this transcript's memory."""
+    exactly this transcript's memory.
+
+    ``clear_record`` (#1352): the caller wrote this session's spool record
+    BEFORE spawning the retain (an explicit reset's durable intent), so a
+    successful retain removes it — inside the fence's shared section, where a
+    wipe cannot interleave. Every other arm leaves it alone: a failure or a
+    cancellation re-spools (attempts preserved), and a discarded retain leaves
+    the record to the wipe that discarded it."""
     from memory_wipe import FENCE, StaleGeneration
 
     if not writes_to_bank(channel):
@@ -509,6 +527,18 @@ async def retain_cold_session(
             )
             if items:
                 await semantic_memory.retain(bank_id("casa"), items, async_=True)
+            if clear_record:
+                try:
+                    _cold_retry_path(retry_dir, old.sdk_session_id).unlink(
+                        missing_ok=True)
+                except OSError:
+                    # The retain landed; a record left behind only costs the
+                    # reaper one duplicate, content-addressed retain.
+                    logger.warning(
+                        "cold-session retain for sid=%s landed but its spool "
+                        "record could not be removed", old.sdk_session_id,
+                        exc_info=True,
+                    )
     except StaleGeneration:
         logger.warning(
             "cold-session retain discarded for sid=%s — a memory wipe "
@@ -539,6 +569,57 @@ async def retain_cold_session(
             _spool_cold_retain(old, directory=directory, channel=channel, retry_dir=retry_dir)
 
 
+# #1352: background retains spawned by explicit resets. Held for a strong
+# reference only — durability comes from the record written before the spawn,
+# not from anyone awaiting these tasks.
+_RESET_RETAINS: set[asyncio.Task] = set()
+
+
+def _record_pending_reset_retain(
+    snapshot: "SessionEntrySnapshot", *, directory: str, channel: str,
+    fence_generation: int,
+) -> bool:
+    """Write the reset's spool record before its pointer is dropped (#1352).
+
+    Returns whether a background retain is owed: False when nothing may be
+    banked (a recall-only channel, an entry without usable provenance — the
+    same guards ``retain_cold_session`` applies) or a wipe has completed since
+    the reset's snapshot (INV-MEM-014). A record that cannot be written does
+    not stop the retain; the background retain's own failure arm still spools
+    or reports at ERROR, as it always has."""
+    from memory_wipe import FENCE
+
+    if not writes_to_bank(channel):
+        return False
+    if snapshot.speaker_provenance is None or snapshot.user_provenance is None:
+        return False
+    if FENCE.generation() != fence_generation:
+        return False
+    _spool_cold_retain(
+        snapshot, directory=directory, channel=channel,
+        retry_dir=_COLD_RETAIN_RETRY_DIR, pending=True,
+    )
+    return True
+
+
+def _spawn_reset_retain(
+    snapshot: "SessionEntrySnapshot", *, directory: str, channel: str,
+    semantic_memory, fence_generation: int,
+) -> None:
+    task = asyncio.create_task(
+        retain_cold_session(
+            snapshot, directory=directory, channel=channel,
+            semantic_memory=semantic_memory,
+            retry_dir=_COLD_RETAIN_RETRY_DIR,
+            fence_generation=fence_generation,
+            clear_record=True,
+        ),
+        name=f"reset-retain-{snapshot.sdk_session_id}",
+    )
+    _RESET_RETAINS.add(task)
+    task.add_done_callback(_RESET_RETAINS.discard)
+
+
 async def reset_channel(
     channel_key: str, registry, semantic_memory, *, channel: str,
 ) -> None:
@@ -552,10 +633,17 @@ async def reset_channel(
     anywhere is a permanent deadlock.
 
     Admission matters here even though a reset is not a turn: a wipe that
-    drained every turn but not a concurrent reset can still be followed by
-    that reset's retain (see the capture-point note in ``save_session``).
-    Holding it shared makes the wipe's drain wait for the reset, and a reset
-    that starts after a wipe finds no entry and has nothing to retire.
+    drained every turn but not a concurrent reset could still be followed by
+    that reset's retry record (see the capture-point note in
+    ``save_session``). Holding it shared makes the wipe's drain wait for the
+    reset, and a reset that starts after a wipe finds no entry and has
+    nothing to retire.
+
+    #1352: the retain itself is NOT inside this window any more — the body
+    writes the retry record, drops the pointer and spawns the retain, which
+    takes only the RetainFence. A wipe that starts after this returns either
+    waits for that retain in its fence drain or makes it discard
+    (StaleGeneration) and drops the record with the rest of the spool.
     """
     from session_gate import session_write_gate
     import agent as _agent
@@ -661,15 +749,30 @@ async def _reset_locked(
             # session. #526 deliberately NOT generation-guarded here: the
             # reset's contract (INV-MEM-006) is to drop exactly the
             # conversation the sid names.
-            await retain_cold_session(
+            # #1352: the retain runs in the BACKGROUND, so the operator's
+            # next message is not held behind it (the Telegram handler awaits
+            # this reset inside the per-chat lock, and this body holds turn
+            # admission and the key's write gate). Durability does not move
+            # with it: the spool record is written FIRST, synchronously, while
+            # admission is still held — a crash or shutdown at any later point
+            # leaves the reaper a record to retain, exactly as a failed retain
+            # does. The background retain removes the record when it lands.
+            # It takes only the RetainFence (shared), so it sits outside the
+            # #578 order's other locks entirely; the generation captured in
+            # the no-await block above still governs both it and the record.
+            recorded = _record_pending_reset_retain(
                 snapshot, directory=directory, channel=channel,
-                semantic_memory=semantic_memory,
-                retry_dir=_COLD_RETAIN_RETRY_DIR,
                 fence_generation=fence_generation,
             )
             await registry.remove(
                 channel_key, expected_sid=snapshot.sdk_session_id,
             )
+            if recorded:
+                _spawn_reset_retain(
+                    snapshot, directory=directory, channel=channel,
+                    semantic_memory=semantic_memory,
+                    fence_generation=fence_generation,
+                )
             return
         finally:
             if token is not None:

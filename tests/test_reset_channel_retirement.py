@@ -2,6 +2,7 @@
 the bounded re-derive loop for the sid-less arm, and claim hygiene on every
 exit path."""
 
+import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -12,6 +13,21 @@ from session_registry import SessionRegistry
 from session_reg_helpers import STUB_BINDING_DIGEST, STUB_SPEAKER_PROV, STUB_USER_PROV
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
+
+
+@pytest.fixture(autouse=True)
+def _private_retry_dir(tmp_path, monkeypatch):
+    """#1352: a reset writes its retry record before the background retain."""
+    monkeypatch.setattr(
+        session_saver, "_COLD_RETAIN_RETRY_DIR", str(tmp_path / "retry"))
+
+
+async def _settle():
+    """#1352: the reset's retain runs in the background; wait for it."""
+    pending = list(session_saver._RESET_RETAINS)
+    if pending:
+        await asyncio.wait_for(
+            asyncio.gather(*pending, return_exceptions=True), timeout=5)
 
 
 def _reg(tmp_path) -> SessionRegistry:
@@ -75,6 +91,7 @@ async def test_racing_fresh_registration_survives_reset(tmp_path, monkeypatch):
 
     monkeypatch.setattr(session_saver, "retain_cold_session", capturing_retain)
     await reset_channel("telegram-42", reg, sem, channel="telegram")
+    await _settle()
 
     assert [s.sdk_session_id for s in retained] == ["sid-old"]   # never sid-new
     entry = reg.get("telegram-42")
@@ -113,6 +130,7 @@ async def test_sidless_entry_rederives_and_retires_materialized_session(
     monkeypatch.setattr(session_saver, "classify_tier", fake_classify)
     with patch("session_saver.get_session_messages", return_value=_MSGS):
         await reset_channel("telegram-42", reg, sem, channel="telegram")
+        await _settle()
 
     sem.retain.assert_awaited_once()             # the materialized session was retained
     assert reg.get("telegram-42") is None        # …and its pointer dropped
@@ -131,9 +149,12 @@ async def test_no_entry_no_claim_no_retain(tmp_path):
 async def test_claim_released_when_the_retain_raises(tmp_path, monkeypatch):
     """No exit path may leave the key steering fresh forever.
 
-    #878 retargeted the seam to ``retain_cold_session``; the property — the
-    retirement claim is released in the ``finally`` however the body exits —
-    is unchanged."""
+    #878 retargeted the seam to ``retain_cold_session``; #1352 moved that
+    retain into the background, so its failure no longer reaches the reset at
+    all. The property — the retirement claim is released however the body
+    exits — is pinned on both: a retain that raises (the reset completes and
+    releases), and a body step that still raises inside the reset (the
+    pointer removal), which must release in the ``finally``."""
     reg = _reg(tmp_path)
     await _register(reg, "telegram-42", "sid-old")
     sem = AsyncMock()
@@ -143,6 +164,17 @@ async def test_claim_released_when_the_retain_raises(tmp_path, monkeypatch):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(session_saver, "retain_cold_session", exploding_retain)
+    await reset_channel("telegram-42", reg, sem, channel="telegram")
+    await _settle()
+    assert not reg.retirement_pending("telegram-42")
+    assert reg.get("telegram-42") is None
+
+    await _register(reg, "telegram-42", "sid-two")
+
+    async def exploding_remove(*a, **k):
+        raise RuntimeError("disk gone")
+
+    monkeypatch.setattr(reg, "remove", exploding_remove)
     with pytest.raises(RuntimeError):
         await reset_channel("telegram-42", reg, sem, channel="telegram")
     assert not reg.retirement_pending("telegram-42")
@@ -169,6 +201,7 @@ async def test_inflight_old_turn_republish_refused_then_reset_completes(
     monkeypatch.setattr(session_saver, "classify_tier", fake_classify)
     with patch("session_saver.get_session_messages", return_value=_MSGS):
         await reset_channel("telegram-42", reg, sem, channel="telegram")
+        await _settle()
 
     sem.retain.assert_awaited_once()
     assert reg.get("telegram-42") is None
@@ -212,6 +245,7 @@ async def test_a_wipe_during_the_flush_close_makes_the_reset_discard(
     try:
         with patch("session_saver.get_session_messages", return_value=_MSGS):
             await reset_channel("telegram-42", reg, sem, channel="telegram")
+            await _settle()
         sem.retain.assert_not_awaited()
     finally:
         FENCE._generation = before

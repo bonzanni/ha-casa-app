@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.344.56] - 2026-10-08
+
+### Fixed
+
+- After `/new`, your next message no longer waits while the assistant saves the conversation that just ended. Saving it means checking how private each part is and writing it to memory, which took 18 to 62 seconds in testing, with no typing indicator. The save now runs in the background and the next message is answered as usual. Because the save may still be running, the new conversation's first replies may not yet remember what was said just before `/new`. (#1352)
+
 ## [0.344.55] - 2026-10-08
 
 ### Changed

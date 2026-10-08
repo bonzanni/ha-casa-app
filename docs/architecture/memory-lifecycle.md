@@ -143,7 +143,7 @@ the session id its caller judged (the reaper's cold snapshot, a reset's own
 snapshot): the save entry point releases a claim that landed on a different
 session, `finish_save` and `clear_save_claim` decline when the stored id
 moved, and an explicit reset — which takes no *save* claim, retaining its
-snapshot directly under the retirement claim it already holds — has its
+snapshot directly, in the background, once the pointer is gone — has its
 trailing removal decline the same way — as do the reaper's direct removals
 of unusable and recall-only entries (a snapshot without a session id guards
 on that absence).
@@ -161,6 +161,29 @@ What it does not cover: a caller that passes no expected id gets the
 unconditional behavior; and a turn still running on the *same* session when
 a reset retains it can have its tail exchanges miss retention — the reset
 drops the pointer (its contract) and nothing saves that session again.
+
+**INV-MEM-023**: An explicit reset does not wait for its retain: before it drops the session pointer it writes the ended conversation's retry record whenever that conversation may be banked — a write that fails is reported and does not stop the reset — and the reset's background retain removes the record only after the retain has landed.
+
+`/new` is awaited inside the chat's serial lock, and the reset holds turn
+admission and the key's write gate; a retain inside it held the operator's
+next message for the whole tier classification and memory write — 18 to 62
+seconds measured. The reset therefore ends at the pointer removal and leaves
+the retain to a background task that takes only the retain fence. What moved
+was the wait, not the durability: the record that a failed retain has always
+left behind is now written first, so a process that dies at any point after
+the reset returns leaves the freshness sweep a record to retain — provided the
+record was written. "May be
+banked" is the retain's own guard set — a bank-writable channel, both
+provenances on the snapshot, and the fence generation captured at the snapshot
+— so a recall-only channel, a legacy entry and a reset a wipe has overtaken
+write nothing.
+
+What it does not cover: when the conversation reaches the bank. The fresh
+session's first turns may recall before the background retain lands, and a
+retain that fails waits for the hourly sweep, whose retries are bounded
+(after the last one the record is dropped, loudly). Nor does a record write
+that itself fails stop the reset: a restart before the background retain lands
+then loses the conversation (see Failure behavior).
 
 **INV-MEM-013**: While a retirement claim is live on a key, no resume-decision site resumes the dying session, no registration re-arms its id, and one owner ending its claim never strips another owner's protection.
 
@@ -248,20 +271,25 @@ stays for the next freshness sweep to retry. The time-to-live sweep does
 not take it away in the meantime, however long the retries go on
 (INV-MEM-017).
 
-**An explicit reset's retain fails.** The reset still drops the pointer —
-that is its contract, and the fresh conversation the user asked for starts
-either way — so the entry cannot be what carries the retry. The durable
-retry record is: a reset retains its snapshot through the same
-registry-decoupled path a gap-superseded session uses, and that path spools
-on failure. The conversation is therefore handed to the freshness sweep
-rather than dropped. Two things this does not promise. A retain that fails
-*and* a spool write that fails leave nothing for the sweep to find, which is
-said out loud at ERROR with the session id and the transcript directory — the
-only handle left. And a wipe completing first discards both, by the operator's
-consent (INV-MEM-014).
+**An explicit reset's retain fails, or never gets to run.** The reset drops
+the pointer either way — that is its contract, and the fresh conversation the
+user asked for starts at once — so the entry cannot be what carries the
+retry. The durable retry record is, and the reset writes it *before* it drops
+the pointer (INV-MEM-023): the conversation's retain then runs in the
+background through the same registry-decoupled path a gap-superseded session
+uses, which removes the record when the retain lands and keeps it when the
+retain fails. A restart, a crash or a backend outage after `/new` therefore
+leaves the conversation to the freshness sweep rather than losing it. Two
+things this does not promise. A record that cannot be written is a WARNING,
+not a stop — the background retain still runs, and if it fails too and its own
+spool write fails, that is said out loud at ERROR with the session id and the
+transcript directory, the only handle left. And a wipe completing first
+discards both, by the operator's consent (INV-MEM-014).
 
 Because the reset takes no save claim, a freshness sweep already retaining
-the same session can submit the same transcript alongside it. Retains are
+the same session can submit the same transcript alongside it — and so can the
+sweep's retry pass, which may pick up the reset's record while the background
+retain is still running. Retains are
 content-addressed, so both land on the same documents; each classifies on its
 own, so their tiers can differ, and the one applied last stands — never below
 the tier both read (INV-MEM-018). What is duplicated is work.
@@ -329,6 +357,7 @@ the wipe do — the claim is what keeps racing turns off the dying session.
 - `tests/test_freshness_reaper.py`
 - `tests/test_retirement_claims.py`
 - `tests/test_reset_channel_retirement.py`
+- `tests/test_reset_background_save.py`
 - `tests/test_memory_provenance.py`
 - `tests/test_specialist_memory_tiers.py`
 - `tests/test_session_sweeper.py`

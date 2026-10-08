@@ -1775,13 +1775,15 @@ class TelegramChannel(Channel):
                     reason="new_session",
                 )
                 GRANTS.purge_chat(_chat_int)
-            # M29: ack BEFORE the (potentially multi-second) save so the user
-            # gets instant feedback. reset_channel stays awaited (NOT
-            # backgrounded) — the registry entry must survive until the retain
-            # succeeds so the reaper can retry. Handlers dispatch with
-            # block=False (H5), so PTB no longer serializes updates; the
-            # per-chat lock held by _handle (#317) is what now guarantees no
-            # same-chat follow-up can resume the old session mid-reset.
+            # M29: ack BEFORE the reset so the user gets instant feedback.
+            # reset_channel stays awaited, but it no longer contains the save
+            # (#1352): it writes the conversation's retry record, drops the
+            # pointer and starts the retain in the background, so the next
+            # message is not held behind classification and the memory write.
+            # Handlers dispatch with block=False (H5), so PTB no longer
+            # serializes updates; the per-chat lock held by _handle (#317) is
+            # what guarantees no same-chat follow-up can resume the old
+            # session mid-reset.
             if self._app is not None:
                 try:
                     await self._app.bot.send_message(
