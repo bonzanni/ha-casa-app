@@ -42,6 +42,9 @@ def test_reserved_context_keys_are_exactly_the_spec_set():
         # S6 (INV-TRIG-022): a job trigger's fire — never a chat message.
         "_scheduled_job",
         "_reply_note",
+        # #1378: the file a caption was written on — a caller who could set it
+        # would put Casa's words in the turn and arm it over a file of its choice.
+        "_received_file",
         # #1142: the webhook route's `deliver` enum — a caller who could set
         # it would choose where an untrusted turn's final reply goes.
         "_webhook_deliver",

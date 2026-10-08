@@ -147,16 +147,21 @@
     - casa/rootfs/opt/casa/agent_inbox.py::grants_for
     - casa/rootfs/opt/casa/agent_inbox.py::provision_delegate_inboxes
     - casa/rootfs/opt/casa/specialist_desk.py::file_outcome
+    - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._caption_turn
+    - casa/rootfs/opt/casa/channels/telegram.py::caption_file_note
+    - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._dispatch_dm_turn
   tests:
     - tests/test_agent_inbox.py
     - tests/test_inbound_files.py
+    - tests/test_caption_turn.py
     - tests/test_file_handoff_route.py
     - tests/test_file_handoff_grants.py
     - tests/test_file_handoff_inboxes.py
     - tests/test_file_handoff_lines.py
   related: [architecture/telegram.md, architecture/hook-resolution.md, architecture/tools-interface.md, architecture/persistent-state.md, architecture/specialist-desk.md, architecture/stored-call-buttons.md]
-  defines_invariants: [INV-INBOX-001, INV-INBOX-003, INV-INBOX-004, INV-INBOX-005, INV-FILE-001, INV-FILE-002]
+  defines_invariants: [INV-INBOX-001, INV-INBOX-003, INV-INBOX-004, INV-INBOX-005, INV-FILE-001, INV-FILE-002, INV-FILE-004]
   invariant_tests:
+    INV-FILE-004: [tests/test_caption_turn.py::test_a_captioned_file_is_stored_and_runs_one_turn_with_the_caption_verbatim, tests/test_caption_turn.py::test_a_file_without_a_caption_is_acknowledged_and_runs_no_turn, tests/test_caption_turn.py::test_a_refused_upload_with_a_caption_runs_no_turn, tests/test_caption_turn.py::test_a_rate_limited_caption_falls_back_to_the_acknowledgement, tests/test_caption_turn.py::test_a_caption_turn_no_queue_took_falls_back_to_the_acknowledgement, tests/test_caption_turn.py::test_the_caption_turn_waits_for_the_chats_serial_lock, tests/test_caption_turn.py::test_an_album_turn_names_its_own_file_and_the_uncaptioned_ones_are_acknowledged, tests/test_caption_turn.py::test_no_external_context_can_set_the_received_file, tests/test_caption_turn.py::test_the_turn_carries_casas_note_and_owes_its_own_file, tests/test_inbound_files.py::test_real_ptb_filter_and_attribute_names]
     INV-INBOX-001: [tests/test_agent_inbox.py::test_the_sweep_removes_everything_casa_did_not_write, tests/test_agent_inbox.py::test_listing_is_newest_first_and_shows_only_casa_files, tests/test_agent_inbox.py::test_a_symlinked_inbox_directory_is_refused, tests/test_agent_inbox.py::test_a_staged_file_that_gained_a_link_is_not_published, tests/test_agent_inbox.py::test_a_staged_file_that_changed_size_is_not_published]
     INV-FILE-002: [tests/test_inbound_files.py::test_the_grant_admits_ready_and_nothing_else, tests/test_inbound_files.py::test_the_grant_never_makes_anything_writable, tests/test_inbound_files.py::test_an_explicit_hooks_file_keeps_the_grant, tests/test_inbound_files.py::test_tina_cannot_read_a_file_sent_to_ellen, tests/test_agent_inbox.py::test_only_the_wired_role_gets_a_read_grant, tests/test_agent_inbox.py::test_an_unprovisionable_inbox_grants_nothing, tests/test_agent_inbox.py::test_a_failing_boot_step_leaves_no_inbox, tests/test_agent_inbox.py::test_a_failing_sweep_registration_leaves_no_inbox, tests/test_file_handoff_grants.py::test_grants_for_names_the_ready_dir_and_both_tools_for_an_inbox_role_and_nothing_otherwise, tests/test_file_handoff_grants.py::test_the_delegated_builder_grants_path_and_tools_to_an_inbox_specialist, tests/test_file_handoff_grants.py::test_the_delegated_builder_grants_nothing_to_a_specialist_without_an_inbox, tests/test_file_handoff_grants.py::test_the_fail_closed_callback_denies_either_tool_for_a_specialist_without_an_inbox, tests/test_file_handoff_inboxes.py::test_declared_delegates_that_are_loaded_specialists_get_an_inbox_and_nobody_else, tests/test_file_handoff_inboxes.py::test_a_failed_provision_leaves_that_role_without_an_inbox_and_the_others_intact, tests/test_file_handoff_grants.py::test_a_delegated_inbox_specialist_gets_the_framework_server_exposing_both_tools, tests/test_file_handoff_grants.py::test_an_engagement_build_offers_no_inbox_tools_and_no_inbox_read, tests/test_file_handoff_grants.py::test_a_delegated_resident_keeps_its_read_path_but_takes_no_inbox_tools]
     INV-INBOX-003: [tests/test_agent_inbox.py::test_no_operator_byte_reaches_a_path, tests/test_agent_inbox.py::test_extension_is_drawn_from_the_closed_vocabulary, tests/test_agent_inbox.py::test_display_name_is_kept_as_metadata_only]

@@ -2236,6 +2236,9 @@ class Agent:
                 reply_note = msg.context.get("_reply_note")
                 if isinstance(reply_note, str) and reply_note.strip():
                     notes.append(reply_note)
+                received = msg.context.get("_received_file")
+                if isinstance(received, dict) and isinstance(received.get("note"), str):
+                    notes.append(received["note"])
             prompt_text = (
                 compose_turn_preamble(datetime.now(resolve_tz()), notes) + user_text
             )

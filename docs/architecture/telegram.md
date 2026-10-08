@@ -32,8 +32,10 @@ unaffected, because it does not use that route.
 turn on the bus. A message in an engagement topic is delivered to that engagement's driver
 instead — it is input to running work, not a new conversation. Both are *text*: the text
 handler is one of two message handlers, and the other takes every new non-text message — a
-file, a photo, a sticker, a pin — and never starts a turn. In the operator's chat it stores an
-accepted file and acknowledges it, and answers everything else with a one-line refusal;
+file, a photo, a sticker, a pin. In the operator's chat it stores an accepted file and
+acknowledges it — or, when the file carries a caption, runs one ordinary turn with the caption
+as the operator's words, admitted through the text handler's own dispatch tail
+(`_dispatch_dm_turn`, INV-FILE-004) — and answers everything else with a one-line refusal;
 outside that chat it follows the text path, and in the engagement supergroup only a person's
 content draws a reply or, for a file addressed to a specialist, one specialist desk turn
 ([`inbound-files.md`](inbound-files.md), INV-FILE-001). The two filters

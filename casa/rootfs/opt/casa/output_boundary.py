@@ -467,6 +467,10 @@ class TurnScope:
         note = ctx.get("_inherited_note")
         if isinstance(note, str) and note.strip():
             scope.arm(InheritedNote(note))
+        # #1378: a caption turn received its file, as a file desk turn does
+        received = ctx.get("_received_file")
+        if isinstance(received, dict) and received.get("path"):
+            scope.receive_files(((str(received["path"]), str(received.get("name") or "")),))
         # The per-turn output decisions that used to be inline checks (R2):
         # registered here, from the same facts those checks read.
         if scope.message_type == "scheduled":
