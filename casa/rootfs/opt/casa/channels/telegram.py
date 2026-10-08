@@ -2171,11 +2171,14 @@ class TelegramChannel(Channel):
             if o != "answered":
                 reason = outcome.get("reason") if isinstance(outcome, dict) else None
                 line = "↻ replaced" if reason == "superseded" else "⌛ expired"
+                # settled while its own send is still in flight (a supersede
+                # racing the post): the poster applies this terminal line the
+                # moment the message lands. #1339: recorded for a BOUND record
+                # too — an in-place edit binds its message id before the edit,
+                # and that edit landing after this mark would otherwise restore
+                # a keyboard whose record is gone (x1, both reviewers)
+                meta["settled_line"] = line
                 if not isinstance(message_id, int):
-                    # settled while its own send is still in flight (a
-                    # supersede racing the post): the poster applies this
-                    # terminal line the moment the message lands
-                    meta["settled_line"] = line
                     return
                 if not isinstance(chat_id, int):
                     return

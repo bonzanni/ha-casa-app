@@ -76,6 +76,10 @@ or Telegram refuses the edit (its record is then unregistered). Today's sequence
 visibly: the receipt, then the card as a new message, with the notice above if that fails too.
 An edit whose landing is unconfirmed keeps its record and the same sequence follows.
 
+**The new card is superseded or expires while its edit is in flight.** The finish hook marks
+the message at once and records the terminal line; when the edit then lands, the poster
+applies that line again, so the keyboard of a record that is gone is never left on screen.
+
 ## Extension points
 
 **A tap that acts keeps its receipt.** `in_place` is for a tap whose answer is only a new view

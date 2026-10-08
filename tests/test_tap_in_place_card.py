@@ -150,6 +150,33 @@ async def test_without_in_place_and_a_next_card_the_tap_is_todays(edit_env, resp
     assert [k for k, _ in env.log][:1] == ["receipt"]
 
 
+async def test_a_settlement_during_the_edit_is_marked_again_after_the_edit_lands(edit_env):
+    # x1 (both reviewers): a supersede while the edit is in flight marks the
+    # message first; the edit then lands and would restore a dead keyboard,
+    # so the poster re-applies the terminal line it recorded
+    env = edit_env
+    inner = env.channel.replace_operator_proposal
+
+    async def settled_meanwhile(chat_id, message_id, text, labels, rid, *, post=None):
+        _meta_of(rid)["settled_line"] = "↻ replaced"       # as the real finish hook records it
+        return await inner(chat_id, message_id, text, labels, rid, post=post)
+    env.channel.replace_operator_proposal = settled_meanwhile
+    env.respond = _respond(nxt=_card())
+    await _tap(env)
+    assert [k for k, _ in env.log] == ["edit"]
+    assert env.channel.marks == ["↻ replaced"]
+
+
+async def test_the_finish_hook_records_the_terminal_line_of_a_bound_record():
+    from test_telegram_topic_stream import _mk_channel_with_fake_bot
+    ch, bot = _mk_channel_with_fake_bot()
+    meta = {"chat_id": OPERATOR, "message_id": TAPPED, "text": "card", "deadline": 1e12}
+    hook = ch.proposal_finish_hook(rid="r1", req=SimpleNamespace(meta=meta))
+    await hook({"outcome": "cancelled", "reason": "superseded"})
+    assert meta["settled_line"] == "↻ replaced"
+    assert bot.edit_message_text.await_args.kwargs["text"] == "card\n↻ replaced"
+
+
 # --- the fallback: today's sequence, visibly ----------------------------------------
 
 async def test_a_refused_edit_falls_back_to_the_receipt_and_a_new_card(edit_env):
