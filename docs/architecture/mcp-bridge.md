@@ -17,13 +17,13 @@ lives in [`architecture/hook-resolution.md`](hook-resolution.md).
 
 ## Mental model
 
-**The bridge is a separate process that never waits.** It is s6-supervised beside the main
-application, listens on loopback port 8100 for in-container workspace subprocesses, and
-forwards every tool call and hook decision to the main application over its internal Unix
-socket, connecting afresh per call. Being separate is what lets it outlive a restart of the
-main application: a caller meets an answer rather than a dropped connection. Which tools it
-advertises, and why reaching it is reaching full-map dispatch, belong to
-[`architecture/mcp-and-tools.md`](mcp-and-tools.md).
+**The bridge is a separate process that starts without waiting for the main application.** It
+is s6-supervised beside the main application, listens on loopback port 8100 for in-container
+workspace subprocesses, and forwards tool calls and hook-resolution requests to the main
+application over its internal Unix socket, connecting afresh per call. Being separate is what
+lets it outlive a restart of the main application: a caller meets an answer rather than a
+dropped connection. Which tools it advertises, and why reaching it is reaching full-map
+dispatch, belong to [`architecture/mcp-and-tools.md`](mcp-and-tools.md).
 
 ## Contracts & invariants
 
