@@ -920,6 +920,9 @@ _REASON_PROPOSAL_TOO_MANY = (
     "casa withheld the proposal: too many open proposals in this chat; let the "
     "operator answer or let them expire")
 _NOT_DELIVERED_REASONS[OPERATOR_PROPOSAL] = _REASON_PROPOSAL_NOT_DELIVERED
+# #1341: ``_post_proposal``'s withheld value for an in-place edit whose landing
+# is unconfirmed — only ever returned with ``edit_message_id``
+EDIT_UNCONFIRMED = "edit unconfirmed"
 _KIND_WORDS = {OPERATOR_LINK: "link", OPERATOR_MESSAGE: "message", OPERATOR_FILE: "file",
                OPERATOR_PROPOSAL: "proposal"}
 
@@ -1423,7 +1426,8 @@ async def _post_proposal(identity, seg: str, slot: str, call: _InFlight, proposa
         if not delivered and not unconfirmed:
             BROKER.unregister(namespace="proposal", scope=scope, request_id=rid)
     if not delivered:
-        return False, {}, None, None
+        return False, {}, None, (EDIT_UNCONFIRMED if unconfirmed and edit_message_id is not None
+                                 else None)
     settled = req.meta.get("settled_line")
     if settled:
         # the record settled (superseded, expired) while this send was in

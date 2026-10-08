@@ -236,6 +236,10 @@ supersession, a shutdown. There is no mid-question repaint on this path for the 
 protect, and an opt-in flag is a thing the next call site forgets. The topic path is
 different — it has genuine mid-question edits — and keeps its explicit opt-in.
 
+An edit is idempotent, so a DM settle edit that fails transiently is tried once more: after
+flood control's stated wait (at most ten seconds), or a second after a network error. Any
+other refusal, and a second failure, is logged and the edit reports that it did not land.
+
 What it does not cover: it does not make the edit *succeed*. A settlement whose edit fails
 in transport leaves the keyboard standing, and the failure is logged rather than retried
 (INV-TG-003's caveat applies here too). A tap on such a keyboard is still refused by the

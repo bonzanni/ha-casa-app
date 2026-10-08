@@ -2163,7 +2163,8 @@ class TelegramChannel(Channel):
     def proposal_finish_hook(self, *, rid: str, req: Any) -> Callable[[dict], Any]:
         """S5 §4.2/§4.4: the one owner of what follows a proposal's
         settlement. A tap: the keyboard edited away FIRST with the chosen
-        label, then the desk hand-off; every other outcome — the TTL, a
+        label (``⏳ <label>`` for a call, ``☑ <label>`` for ``📎``), then the
+        desk hand-off; every other outcome — the TTL, a
         supersede, a cancel — only edits the keyboard. The meta is read at
         settle time from the broker's own dict."""
         async def _finish(outcome: dict) -> None:
@@ -2206,7 +2207,10 @@ class TelegramChannel(Channel):
                         label=specialist_desk.label_for(str(meta.get("role") or "")),
                         fields={"button": label}))
                 return
-            edited = await self.edit_dm_message(chat_id, message_id, f"{text}\n☑ {label}")
+            # #1341: a call tap's card says it is working, not settled — the
+            # call's answer decides what it becomes (☑, ✖, or the next card in
+            # place); handle_tap writes that line
+            edited = await self.edit_dm_message(chat_id, message_id, f"{text}\n⏳ {label}")
             if not edited:
                 # the keyboard could not be edited away (Terra, diff round 5):
                 # the operator still sees which button won BEFORE any effect —
@@ -2301,8 +2305,8 @@ class TelegramChannel(Channel):
         return True
 
     async def mark_proposal(self, meta: dict, line: str) -> None:
-        """S5 §10: the proposal message's last line — ``☑ <label>`` replaced
-        by ``✖ <reason>`` or ``⌛ expired`` — edited in place from the live
+        """S5 §10: the proposal message's last line — ``⏳ <label>`` replaced
+        by ``☑ <label>``, ``✖ <reason>`` or ``⌛ expired`` — edited in place from the live
         meta's text; the keyboard stays gone."""
         chat_id, message_id = meta.get("chat_id"), meta.get("message_id")
         if not isinstance(chat_id, int) or not isinstance(message_id, int):
@@ -4894,42 +4898,56 @@ class TelegramChannel(Channel):
 
         cleared = InlineKeyboardMarkup([])
         display, entities = render(text)
-        try:
-            if entities is not None:
-                try:
-                    await self.bot.edit_message_text(
-                        chat_id=chat_id, message_id=message_id, text=display,
-                        entities=entities, reply_markup=cleared,
-                    )
-                    return True
-                except BadRequest as exc:
-                    if "not modified" in str(exc).lower():
+        for attempt in (1, 2):
+            try:
+                if entities is not None:
+                    try:
+                        await self.bot.edit_message_text(
+                            chat_id=chat_id, message_id=message_id, text=display,
+                            entities=entities, reply_markup=cleared,
+                        )
                         return True
-                    logger.warning(
-                        "edit_dm_message rich edit fell back to plain "
-                        "(chat=%s message_id=%s): %s",
-                        chat_id, message_id, exc,
-                    )
-            await self.bot.edit_message_text(
-                chat_id=chat_id, message_id=message_id,
-                text=text if entities is not None else _plain(text),
-                reply_markup=cleared,
-            )
-            return True
-        except BadRequest as exc:
-            if "not modified" in str(exc).lower():
+                    except BadRequest as exc:
+                        if "not modified" in str(exc).lower():
+                            return True
+                        logger.warning(
+                            "edit_dm_message rich edit fell back to plain "
+                            "(chat=%s message_id=%s): %s",
+                            chat_id, message_id, exc,
+                        )
+                await self.bot.edit_message_text(
+                    chat_id=chat_id, message_id=message_id,
+                    text=text if entities is not None else _plain(text),
+                    reply_markup=cleared,
+                )
                 return True
-            logger.warning(
-                "edit_dm_message failed (chat=%s message_id=%s): %s",
-                chat_id, message_id, exc,
-            )
-            return False
-        except Exception as exc:  # noqa: BLE001 — best-effort, never raise
-            logger.warning(
-                "edit_dm_message failed (chat=%s message_id=%s): %s",
-                chat_id, message_id, exc,
-            )
-            return False
+            except BadRequest as exc:
+                if "not modified" in str(exc).lower():
+                    return True
+                logger.warning(
+                    "edit_dm_message failed (chat=%s message_id=%s): %s",
+                    chat_id, message_id, exc,
+                )
+                return False
+            except (RetryAfter, NetworkError) as exc:
+                # #1341: a settle edit that fails transiently leaves a card
+                # reading as still working (its ⏳). An edit is idempotent, so
+                # it is tried once more — after flood control's stated wait
+                # (capped, as the inbound-file reply does), else after a second
+                if attempt == 2:
+                    logger.warning("edit_dm_message failed twice (chat=%s message_id=%s): %s",
+                                   chat_id, message_id, type(exc).__name__)
+                    return False
+                wait = getattr(exc, "retry_after", 1)
+                wait = wait.total_seconds() if hasattr(wait, "total_seconds") else wait
+                await asyncio.sleep(min(max(float(wait or 0), 0.0), 10.0))
+            except Exception as exc:  # noqa: BLE001 — best-effort, never raise
+                logger.warning(
+                    "edit_dm_message failed (chat=%s message_id=%s): %s",
+                    chat_id, message_id, exc,
+                )
+                return False
+        return False
 
     async def _dispatch_button_continuation(
         self, *, chat_id: int, user_id: int, target_role: str,
