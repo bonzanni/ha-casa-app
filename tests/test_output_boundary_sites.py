@@ -116,6 +116,7 @@ RAW_TRANSPORT_FUNCTIONS = {
     ("channels/telegram.py", "reply"): "notice",                    # #1036 arrival replies
     ("channels/telegram.py", "deliver_operator_message"): "notice",  # S3: a plugin's delivered post, Casa-labelled
     ("channels/telegram.py", "deliver_operator_proposal"): "notice", # S5: a plugin's proposal, Casa-labelled, one page with its keyboard
+    ("channels/telegram.py", "replace_operator_proposal"): "notice", # #1339: that proposal edited in place, as a tap's next card
     ("channels/telegram.py", "deliver_desk_notice"): "notice",       # S4: a desk turn's outcome, Casa-composed
     # topic — sequencer-owned engagement-topic methods (out of this boundary)
     ("channels/telegram.py", "edit_topic_message"): "topic",
@@ -219,7 +220,7 @@ TOPIC_METHODS = {"send_to_topic", "send_to_topic_rich", "send_to_topic_paged",
                  "post_topic_message"}
 NOTICE_METHODS = {"deliver_operator_link", "deliver_operator_message",
                   "deliver_operator_file", "deliver_desk_notice", "reply",
-                  "deliver_operator_proposal"}
+                  "deliver_operator_proposal", "replace_operator_proposal"}
 # dispatch — the text becomes a TURN's input, not an emission (Astra r1 item 1)
 DISPATCH_METHODS = {"deliver_system_turn"}
 

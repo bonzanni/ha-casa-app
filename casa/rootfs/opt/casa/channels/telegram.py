@@ -5933,6 +5933,61 @@ class TelegramChannel(Channel):
         mid = getattr(msg, "message_id", None)
         return mid if isinstance(mid, int) else None
 
+    async def replace_operator_proposal(self, chat_id: int, message_id: int, text: str,
+                                        labels: list, rid: str, *, post=None):
+        """#1339: edit the tapped proposal *message_id* in place to *text* (the
+        result broker's composition of a validated next card, as
+        ``deliver_operator_proposal``) with one button per label,
+        ``callback_data = v1|proposal|<rid>|<i>``, rendered rich with the same
+        plain fallback. The broker filed the message under *post* before the
+        edit, so nothing is filed here. Returns *message_id* when the edit
+        landed (a "not modified" answer included), ``None`` when Telegram
+        refused it; a transport failure after the request was sent raises
+        ``UnconfirmedDelivery``, as for a post (#1305)."""
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+        if self._app is None:
+            logger.warning("Telegram channel not started; cannot replace operator proposal")
+            return None
+        kbd = InlineKeyboardMarkup([
+            [InlineKeyboardButton(text=str(label), callback_data=f"v1|proposal|{rid}|{i}")]
+            for i, label in enumerate(labels)])
+        display, entities = render(text)
+        try:
+            try:
+                if entities is not None:
+                    try:
+                        await self._app.bot.edit_message_text(
+                            chat_id=chat_id, message_id=message_id, text=display,
+                            entities=entities, reply_markup=kbd)
+                        return message_id
+                    except BadRequest as exc:
+                        if "not modified" in str(exc).lower():
+                            return message_id
+                        logger.warning("replace_operator_proposal rich edit fell back to "
+                                       "plain (chat=%s): %s", chat_id, type(exc).__name__)
+                        await self._app.bot.edit_message_text(
+                            chat_id=chat_id, message_id=message_id, text=text,
+                            reply_markup=kbd)
+                else:
+                    await self._app.bot.edit_message_text(
+                        chat_id=chat_id, message_id=message_id, text=_plain(text),
+                        reply_markup=kbd)
+                return message_id
+            except BadRequest as exc:
+                if "not modified" in str(exc).lower():
+                    return message_id
+                logger.warning("replace_operator_proposal edit refused (chat=%s): %s",
+                               chat_id, type(exc).__name__)
+                return None
+        except NetworkError as exc:
+            # a transport failure after the request was sent may have landed the edit
+            raise UnconfirmedDelivery(type(exc).__name__) from exc
+        except Exception as exc:  # noqa: BLE001 — not proven
+            logger.warning("replace_operator_proposal failed (chat=%s): %s", chat_id,
+                           type(exc).__name__)
+            return None
+
     async def deliver_operator_file(
         self, chat_id: int, content: bytes, kind: str, filename: str, caption: str,
         *, post=None,

@@ -1180,8 +1180,30 @@ async def handle_tap(
             tell = capture.rewritten
             applied = f"{label} applied your tap ({button}){TELL_ECHO if tell else ''}."
             specialist_side = NO_RECEIPT
+            replaced = False
             try:
-                if capture.kind in ("receipt", "no_post"):
+                tapped_mid = meta.get("message_id")
+                if (capture.kind == "receipt" and capture.next and capture.in_place
+                        and not desk.faulted and isinstance(tapped_mid, int)
+                        and not isinstance(tapped_mid, bool)):
+                    # #1339: the card replaces the tapped one in place and no
+                    # receipt is sent; anything short of a landed edit is
+                    # today's sequence below — the receipt, then the card
+                    why = await _post_next_card(capture.next, meta=meta, build=build,
+                                                runtime=runtime, seg=seg, run_id=run_id,
+                                                edit_message_id=tapped_mid,
+                                                warning=TELL_LINE if tell else None)
+                    if why is None:
+                        specialist_side = clip(str(capture.text or ""),
+                                               STORED_CALL_RECEIPT_CHARS).split("\n", 1)[0]
+                        record_echo(chat_id, applied)
+                        replaced = True
+                    else:
+                        logger.info("stored call %s: the card was not replaced in place (%s)",
+                                    run_id, why)
+                if replaced:
+                    pass
+                elif capture.kind in ("receipt", "no_post"):
                     receipt = clip(str(capture.text or ""), STORED_CALL_RECEIPT_CHARS)
                     body = f"{TELL_LINE}\n{receipt}" if tell else receipt
                     admitted = origin["turn_scope"].admit(IntentKind.FINAL_REPLY, body)
@@ -1250,7 +1272,8 @@ def _posted(capture: Any) -> str:
 
 
 async def _post_next_card(value: str, *, meta: dict, build: Any, runtime: str, seg: str,
-                          run_id: str) -> str | None:
+                          run_id: str, edit_message_id: int | None = None,
+                          warning: str | None = None) -> str | None:
     """#1302: the next card a ``safe`` tap tool returned beside its receipt,
     posted right after the receipt in the same desk use. It is a proposal
     deposit like any other: judged by ``proposal_ok`` against the stored
@@ -1258,7 +1281,11 @@ async def _post_next_card(value: str, *, meta: dict, build: Any, runtime: str, s
     tap was re-checked against, then posted through ``_post_proposal`` (the
     live bound, the revision supersede, registered before the send). The
     identity is the tapped proposal's own record. Returns ``None`` when the
-    card landed, else the reason word for the operator's notice."""
+    card landed, else the reason word for the operator's notice.
+
+    #1339: with *edit_message_id* the card replaces the tapped card in place
+    (``_post_proposal`` edits that message); *warning* is the rewritten-call
+    tell, composed into the card as for the ``More`` exception."""
     import types
     import result_broker as rb
     from authz_grants import GrantIdentity
@@ -1282,7 +1309,8 @@ async def _post_next_card(value: str, *, meta: dict, build: Any, runtime: str, s
     try:
         delivered, _detail, _event, withheld = await rb._post_proposal(
             identity, seg, rb.OPERATOR_PROPOSAL, call, parsed,
-            rb.post_label(identity.enforcement_role), post)
+            rb.post_label(identity.enforcement_role), post, warning=warning,
+            edit_message_id=edit_message_id)
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # noqa: BLE001 — not proven
