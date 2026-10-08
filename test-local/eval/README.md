@@ -15,3 +15,7 @@ manifest at small bank scale — re-run these when the `casa` bank grows 10–10
   `interaction_required=True`, never paraphrased into a feature requirement.
   REQUIRED pre-merge command (see script header for the in-container run
   command); not part of the pytest unit gate (needs a live model).
+- `ellen_caption_file.py` — live-model check (#1378): a file sent with a caption runs
+  one turn whose message is the caption; for an invoice PDF captioned "add it to the
+  invoices" the resident shares the file and delegates to Finance without asking.
+  Runs in the container or with `--local --cli` (see script header).

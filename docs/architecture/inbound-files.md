@@ -20,11 +20,12 @@ says about them is [`output-boundary.md`](output-boundary.md).
 
 ## Mental model
 
-**Arrival stores; asking reads.** A file arriving runs no agent turn. The channel downloads
-it, checks it, publishes it, and posts one acknowledgement of its own — a channel message,
-not model output. The agent reads the file later, in an ordinary text turn, when the operator
-asks: it calls `list_inbound_files` to find the path, then opens it with the `Read` tool it
-already has. A read puts the file into the model request (a PDF becomes a document block),
+**Arrival stores; asking reads — and a caption is asking.** A file arriving without a
+caption runs no agent turn. The channel downloads it, checks it, publishes it, and posts one
+acknowledgement of its own — a channel message, not model output. The agent reads the file
+later, in an ordinary text turn, when the operator asks: it calls `list_inbound_files` to find
+the path, then opens it with the `Read` tool it already has. A caption on the file is that
+asking, sent with the file: the stored file's caption becomes one ordinary turn (below). A read puts the file into the model request (a PDF becomes a document block),
 which is why the size cap is set by the request, not by Telegram's download limit.
 
 **Only the operator's direct chat, only a closed set of kinds.** A file is downloaded only
@@ -77,6 +78,34 @@ check each ran alone; the file flush happens before the lock is taken and the di
 after it is released, so a slow disk never stalls another arrival. An acknowledged file is
 deleted only by age: an hourly sweep removes files seven days after publication, dated from
 the Casa-generated name rather than from `mtime`, so nothing can re-date one.
+
+## A file with a caption (#1378)
+
+A caption is the operator's instruction for the file it was written on. When the default
+agent's path stores a file and the message carries a caption that is not blank, the channel
+posts no acknowledgement and instead runs one ordinary turn of the default agent
+(`TelegramChannel._caption_turn`): the caption, verbatim, is the operator's message, and the
+file's facts — its name, kind and size, its path in the inbox, and that the path is for the
+agent's tools and not for its reply — are Casa's note on the reserved `_received_file` context
+key, which rides in the Casa notes block a reply's note uses
+([`specialist-desk.md`](specialist-desk.md)) and is stripped with it on readback. The same key
+arms the turn over that file as its own, as a file desk turn's is
+([`output-boundary.md`](output-boundary.md)). Casa decides only whether there is a caption;
+what it asks — read the file, hand it to a specialist, share it with a plugin, ask back — is
+the model's to judge, and nothing in code inspects the caption's words (operator ruling,
+2026-10-09).
+
+The turn is admitted exactly as a text message is: under the chat's serial lock, then the one
+dispatch tail the text handler uses (`TelegramChannel._dispatch_dm_turn`) — the rate decision,
+the typed-answer ask cancellation, the operator's trusted identity, the typing lease, one bus
+message. The lock is taken only after the file is stored, so a download never holds the chat;
+a text sent while the download runs can therefore reach the agent first, and each turn still
+names only its own file. When no turn is dispatched — the rate limiter refused it, the
+agent's queue did not accept it, or the dispatch failed — the file is acknowledged as an uncaptioned one is, so the operator is never
+left without a reply. A refused upload runs no turn whatever its caption. In an album Telegram
+puts the caption on one message: that file's turn names it and says the album's other files
+reach the inbox separately, and each uncaptioned file of the album is acknowledged as any
+uncaptioned file is.
 
 ## A file for a specialist (S6)
 
@@ -150,11 +179,11 @@ outcome is unknown rather than that nothing was kept. Display metadata is writte
 publication and is best-effort: a missing display name falls back to Casa's name and is never
 a failure.
 
-**INV-FILE-001**: A non-text message in the operator's chat is ADDRESSED to a specialist when it is a swipe-reply on a retained post of that specialist for this operator, or when it arrives while this operator's `📎` arming for that specialist is live; an addressed file is judged under the per-(chat, specialist) intake lock — delegable now, an inbox, an accepted kind, the download into THAT specialist's inbox, delegable still, a desk place — and starts exactly one desk turn of that specialist, never a resident turn; when any step refuses, the file is stored in no other inbox and the operator is told once, labelled, as a completed event; files addressed to one specialist from one chat take their desk places in the order they were sent; every non-text message addressed to nobody takes the path that existed before, and no non-text message starts a resident turn.
+**INV-FILE-001**: A non-text message in the operator's chat is ADDRESSED to a specialist when it is a swipe-reply on a retained post of that specialist for this operator, or when it arrives while this operator's `📎` arming for that specialist is live; an addressed file is judged under the per-(chat, specialist) intake lock — delegable now, an inbox, an accepted kind, the download into THAT specialist's inbox, delegable still, a desk place — and starts exactly one desk turn of that specialist, never a resident turn; when any step refuses, the file is stored in no other inbox and the operator is told once, labelled, as a completed event; files addressed to one specialist from one chat take their desk places in the order they were sent; every non-text message addressed to nobody takes the default agent's path, which starts a resident turn only for a stored file's caption (INV-FILE-004).
 
 The address is resolved before the classification refusal, synchronously, and an arming is
-consumed there whatever follows; the default agent's path is byte for byte what it was,
-including its reply (an acknowledgement, a refusal that says why, or the uncertainty reply).
+consumed there whatever follows; for a file without a caption the default agent's path is
+byte for byte what it was, including its reply (an acknowledgement, a refusal that says why, or the uncertainty reply).
 A routed file draws no channel reply of its own: the desk turn's labelled reply, or the one
 labelled notice when no turn runs, is what the operator sees — the specialist is not
 delegable (nothing downloaded), it has no inbox (nothing downloaded), the kind is not one the
@@ -171,6 +200,13 @@ What it does not cover: a file sent in an engagement topic (refused today, uncha
 for residents other than the Telegram default agent; a `📎` arming across a restart (memory-only,
 like the proposal keyboards — the next file is the default agent's).
 
+
+**INV-FILE-004**: A file the default agent's path stored whose message carries a caption that is not blank starts exactly one turn of the default agent, admitted under the chat's serial lock through the text handler's own dispatch tail, whose message is the caption verbatim and whose reserved `_received_file` note names that file alone and arms the turn over it; Casa's only decision is whether a non-blank caption is present; such a file draws no acknowledgement unless no turn was dispatched, when it draws the acknowledgement an uncaptioned file draws; a refused upload, and a file without a caption, start no turn.
+
+What it does not cover: the order between a caption turn and a text sent while its file was
+downloading (the lock is taken after the download); a caption on a file addressed to a
+specialist, which rides in that specialist's desk task (INV-FILE-001); and what the agent then
+does with the file, which is the model's to judge.
 
 ## Failure behavior
 
@@ -232,10 +268,14 @@ app documentation spells the period out and changes with them.
 - `casa/rootfs/opt/casa/agent_inbox.py::grants_for`
 - `casa/rootfs/opt/casa/agent_inbox.py::provision_delegate_inboxes`
 - `casa/rootfs/opt/casa/specialist_desk.py::file_outcome`
+- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._caption_turn`
+- `casa/rootfs/opt/casa/channels/telegram.py::caption_file_note`
+- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._dispatch_dm_turn`
 
 **Tests**
 - `tests/test_agent_inbox.py`
 - `tests/test_inbound_files.py`
+- `tests/test_caption_turn.py`
 - `tests/test_file_handoff_route.py`
 - `tests/test_file_handoff_grants.py`
 - `tests/test_file_handoff_inboxes.py`

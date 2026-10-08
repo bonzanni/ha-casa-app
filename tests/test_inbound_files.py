@@ -453,6 +453,12 @@ _REAL_PTB = textwrap.dedent(r"""
           Update(1, business_message=text(chat=chat, from_user=user,
                                           business_connection_id="bc")))],
     }
+    # #1378: a captioned file in an album reaches the non-text handler, not the
+    # text one, and carries its caption and album id under these names
+    cap = msg(document=doc, caption="add it to the invoices", media_group_id="g1")
+    out["captioned"] = [bool(f.check_update(Update(1, message=cap))),
+                        bool(t.check_update(Update(1, message=cap))),
+                        getattr(cap, "caption", None), getattr(cap, "media_group_id", None)]
     print(json.dumps(out))
 """)
 
@@ -482,6 +488,7 @@ def test_real_ptb_filter_and_attribute_names():
         "channel_post": False, "business": False,
         "bare_matches": [True, True, True],
     }
+    assert out["captioned"] == [True, False, "add it to the invoices", "g1"]
 
 
 # ---------------------------------------------------------------------------

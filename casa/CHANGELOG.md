@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.344.65] - 2026-10-09
+
+### Fixed
+
+- A caption on a file you send the assistant is now acted on. Sending an invoice PDF captioned "add it to the invoices" used to get only "Got invoice.pdf — … Ask me any time and I'll read it", and nothing was done with it. Now the file is kept as before and the assistant takes the caption as your message about that file — in this case passing the invoice to Finance, as she would if you had asked in a separate message. Her reply replaces the "Got …" line. She decides what the caption asks for; Casa does not guess from its words. A file sent without a caption is kept and acknowledged as before. In an album, the caption belongs to the file it was written on. (#1378)
+
 ## [0.344.64] - 2026-10-09
 
 ### Added

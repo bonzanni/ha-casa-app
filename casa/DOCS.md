@@ -457,6 +457,13 @@ keeps it: Casa replies with what it saved and how long it will keep it — seven
 Nothing is read on arrival. Ask about the file whenever you like ("what does that
 invoice say?") and she opens it then; if several files could match, she asks which.
 
+**A caption is an instruction (v0.344.65).** Write a caption on the file — "add it to the
+invoices", "what's the total?" — and she acts on it straight away, exactly as if you had
+sent the caption as a message about that file: Casa keeps the file as usual and her reply
+takes the place of the "Got …" line. She decides what the caption asks for; Casa does not
+guess from its words. In an album the caption belongs to the file it was written on, and
+the other files are kept and acknowledged as usual.
+
 Files can be up to 8 MB, and she holds up to 50 files and 200 MB in all. When that is
 full a new file is refused rather than an old one dropped — the oldest go after seven days.
 Anything else you send, such as a sticker, a voice message, a `.zip` or a `.docx`, gets
@@ -484,8 +491,8 @@ with it, so the message that fires later is prefixed *Casa: Ellen wrote this wit
 opening “invoice.pdf”.* Opening any one of the listed files — or handing one to a plugin,
 for example to file it — clears it for the rest of the turn. With several files listed and
 none opened, the line counts them: *Casa: Ellen answered without opening any of the 3
-files Ellen listed.* A file you send to a specialist by replying to its post is that turn's
-own file, and the line names only it. The line never holds back or changes her own words — it
+files Ellen listed.* A file you send with a caption, or to a specialist by replying to its
+post, is that turn's own file, and the line names only it. The line never holds back or changes her own words — it
 is added, nothing is taken away. A reply about a file she neither listed nor tried to open carries no line;
 that case is still down to her instructions.
 

@@ -840,6 +840,18 @@ def _classify_inbound(msg) -> _InboundClass:
         f"I can't read that kind of message. I can take {_ACCEPTED_KINDS_TEXT}."))
 
 
+def caption_file_note(name: str, kind: str, size: str, path: str, *, album: bool) -> str:
+    """#1378: Casa's note on the turn a file's caption starts — the file's facts,
+    never the caption, which is the operator's message itself."""
+    note = (f"The person sent a file with this message: {name} ({kind}, {size}). "
+            f"It is in your inbox at {path}; that path is for your tools, not for "
+            "your reply. Their message is the caption they wrote on the file.")
+    if album:
+        note += (" The file was one of an album sent together; the album's other "
+                 "files reach your inbox as separate files.")
+    return note
+
+
 def _inbound_reply(receipt, cls: _InboundClass) -> str:
     """The one line the operator sees for an upload's outcome."""
     import agent_inbox
@@ -1804,6 +1816,16 @@ class TelegramChannel(Channel):
                 )
             return  # do NOT feed /new to the agent
 
+        await self._dispatch_dm_turn(update, chat_id, update.message.text,
+                                     user=update.effective_user)
+
+    async def _dispatch_dm_turn(self, update: Update, chat_id: str, content: str, *,
+                                user: Any, received_file: dict | None = None) -> bool:
+        """The direct chat's turn admission, run under ``_chat_serial_locks[chat_id]``:
+        the rate decision, the typed-answer ask cancellation, the trusted identity,
+        the typing lease and ONE bus message for the default agent. ``False`` when
+        the rate limiter refused the turn (nothing was dispatched). #1378: a file's
+        caption takes this same path, with ``received_file`` naming the stored file."""
         # Rate limit BEFORE typing indicator or bus dispatch (spec 5.2 §8) —
         # and BEFORE the typed-answer ask cancellation below (#347): a
         # rate-limited reply is dropped, so it must not expire the pending
@@ -1819,7 +1841,7 @@ class TelegramChannel(Channel):
                         chat_id,
                     )
                     await self._send_rate_limit_reply(chat_id)
-                return
+                return False
 
         # v0.76.0 (W5b, r1-B2): a same-DM plain-text reply resolves any
         # pending resident_ask ("the text IS the answer") — cancel it BEFORE
@@ -1842,7 +1864,6 @@ class TelegramChannel(Channel):
             scheduled_asks.cancel_non_scheduled_for_chat(
                 _chat_int, "typed_answer")
 
-        user = update.effective_user
         user_name = user.first_name if user else "unknown"
 
         inherited = cid_var.get()
@@ -1906,17 +1927,29 @@ class TelegramChannel(Channel):
         reply_note = self._reply_note_for(update, chat_id)
         if reply_note is not None:
             context["_reply_note"] = reply_note
+        # #1378: the file a caption was written on — Casa's note of it and the
+        # turn's own file — on a reserved key, stamped only here.
+        if received_file is not None:
+            context["_received_file"] = received_file
 
         msg = BusMessage(
             type=MessageType.CHANNEL_IN,
             source="telegram",
             target=self.default_agent,
-            content=update.message.text,
+            content=content,
             channel="telegram",
             context=context,
             trusted_user_origin=trusted_origin,
         )
-        await self._bus.send(msg)
+        if received_file is None:
+            await self._bus.send(msg)
+            return True
+        # #1378: a caption turn reports whether the agent's queue took it, so a
+        # dropped turn falls back to the acknowledgement rather than to silence
+        if await self._bus.send_checked(msg) == "accepted":
+            return True
+        self._stop_typing(chat_id, cid)
+        return False
 
     def _reply_note_for(self, update: Update, chat_id: str) -> str | None:
         """#1314: the note of what a message the desk did not take replied to,
@@ -3715,9 +3748,10 @@ class TelegramChannel(Channel):
     async def _on_non_text_message(
         self, update, _context: ContextTypes.DEFAULT_TYPE | None = None,
     ) -> None:
-        """#1036: every non-text message. Arrival stores and acknowledges; it
-        never starts an agent turn. Every path ends in a stored file or one
-        reply — there is no silent path, and no silent list."""
+        """#1036: every non-text message. Arrival stores and acknowledges; only
+        a stored file's caption starts an agent turn (#1378), whose reply takes
+        the acknowledgement's place. Every path ends in a stored file and a
+        turn, or one reply — there is no silent path, and no silent list."""
         msg = getattr(update, "message", None)
         if msg is None:
             return
@@ -3799,7 +3833,39 @@ class TelegramChannel(Channel):
             receipt = agent_inbox.Receipt(agent_inbox.Outcome.UNCERTAIN)
         logger.info("inbound file: outcome=%s bytes=%d",
                     receipt.outcome.value, receipt.size)
+        # #1378: a caption is the operator's instruction for the file — the one
+        # mechanical decision is whether there is one; what it asks is the
+        # model's to judge. Its turn's reply stands in for the acknowledgement.
+        caption = getattr(msg, "caption", None)
+        if (receipt.outcome is agent_inbox.Outcome.STORED
+                and isinstance(caption, str) and caption.strip()):
+            if await self._caption_turn(update, msg, user, caption, receipt, cls, inbox):
+                return
         await reply(_inbound_reply(receipt, cls))
+
+    async def _caption_turn(self, update: Any, msg: Any, user: Any, caption: str,
+                            receipt: Any, cls: "_InboundClass", inbox: Any) -> bool:
+        """#1378: one ordinary turn of the default agent for a stored file that
+        carried a caption — the caption verbatim as the operator's words, the
+        file's facts as Casa's note, admitted exactly as a text message is
+        (the per-chat serial lock, then ``_dispatch_dm_turn``). ``False`` when
+        no turn was dispatched, and the caller acknowledges the file instead."""
+        import agent_inbox
+        chat_key = str(msg.chat.id)
+        stored_path = os.path.join(inbox.ready_dir, receipt.name)
+        name = agent_inbox._bounded_display(cls.display_name) or "a photo"
+        kind = cls.ext.lstrip(".").upper() if cls.ext else "file"
+        note = caption_file_note(name, kind, _human_size(receipt.size), stored_path,
+                                 album=bool(getattr(msg, "media_group_id", None)))
+        lock = self._chat_serial_locks.setdefault(chat_key, asyncio.Lock())
+        try:
+            async with lock:
+                return await self._dispatch_dm_turn(
+                    update, chat_key, caption, user=user,
+                    received_file={"path": stored_path, "name": name, "note": note})
+        except Exception:  # noqa: BLE001 — the file is stored; it is acknowledged
+            logger.warning("caption turn not dispatched", exc_info=True)
+            return False
 
     FILE_ARM_TTL_S = 600.0
 
