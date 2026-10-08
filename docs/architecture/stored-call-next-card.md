@@ -50,8 +50,16 @@ new text and keyboard (`replace_operator_proposal`, rendered like a posted card)
 edit is the whole visible answer: no receipt is sent; the desk exchange keeps the receipt's
 first line and the resident's echo says the tap was applied, as for any tap. A call an
 installed hook rewrote carries its tell inside the edited card, or as one notice right after
-it when the card would no longer fit one page. The tapped card shows `☑ <label>` from the
-commit until the edit lands. Taps that act do not set the flag and are unchanged.
+it when the card would no longer fit one page. Taps that act do not set the flag and are
+unchanged.
+
+**A tapped card says it is working until its call answers (#1341).** Which way a tap ends
+is known only from the call's response, so the commit edits a stored-call tap's keyboard away
+to `⏳ <label>`, not to a settled line. Once the call has answered, the desk use writes the
+card's last line: `☑ <label>` for a receipt or a landed post, before the receipt is sent; the
+new card itself when it replaced the tapped one; `✖ <reason>` for a refusal or a failure, as
+before. An in-place edit whose landing is unconfirmed leaves the message alone, since it may
+show the new card's live keyboard. A `📎` tap runs no call and settles to `☑ <label>` at once.
 
 ## Contracts & invariants
 
@@ -59,12 +67,17 @@ commit until the edit lands. Taps that act do not set the flag and are unchanged
 
 **INV-PROP-008**: A `next` card returned with `"in_place": true` replaces the tapped card only by an edit of the tapped message, within the tap's own desk use, after it passed the same deposit predicate and the same registration as a next card, with its record bound to the tapped message id and that message filed under the card's post record before the edit is sent; a landed edit sends no receipt; any other outcome is today's sequence — the receipt, then the card as a new message.
 
+**INV-PROP-009**: A stored-call tap's card never reads as settled before its call answered: the commit edits it to `⏳ <label>`, and only the tap's desk use, after the call's outcome is known, replaces that line — with `☑ <label>` before the receipt is sent, with the new card in place, or with `✖ <reason>`; it is never marked over a message an unconfirmed in-place edit may have changed.
+
 What it does not cover: an edit whose landing is unconfirmed. Its record stays live until the
 deadline, since the edited card may be on screen, and the fallback still posts the receipt and
 the card, so the operator may see two working cards; a card carrying the same `revision`
 replaces the edited one (`↻ replaced`).
 
 ## Failure behavior
+
+**A tap is cancelled while its call runs** (Casa is stopping). The card keeps `⏳ <label>`;
+everything else is a cancelled tap's usual handling (`stored-call-buttons.md`).
 
 **A next card does not land** — the deposit predicate refuses it, the chat already holds 32
 live proposals, or its send is not proven. The receipt stands; one labelled notice

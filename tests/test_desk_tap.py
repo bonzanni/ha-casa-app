@@ -71,11 +71,13 @@ class _Limiter:
 class _Channel:
     def __init__(self, fail_send=False):
         self.replies, self.notices, self.released, self.marks = [], [], [], []
+        self.order = []
         self.fail_send = fail_send
 
     async def send_response(self, message, context):
         assert isinstance(message, Admitted)
         self.replies.append((message, context))
+        self.order.append("receipt")
         if self.fail_send:
             raise RuntimeError("send failed")
         return DeliveryOutcome.DELIVERED
@@ -86,6 +88,7 @@ class _Channel:
 
     async def mark_proposal(self, meta, line):
         self.marks.append(line)
+        self.order.append(line)
 
     def _release_typing(self, context, chat_id):
         self.released.append((chat_id, context.get("cid")))
@@ -256,7 +259,8 @@ async def test_a_tap_runs_one_pinned_turn_on_the_captured_build_input_and_posts_
     assert str(message) == f"{LABEL}\napplied match 17"
     post = context["_post"]
     assert (post.role, post.operator_id, post.kind, post.owner) == ("finance", OPERATOR, "receipt", call.turn_id)
-    assert env.channel.notices == [] and env.channel.marks == []
+    # #1341: the card's working line becomes ☑ once the call answered, before the receipt
+    assert env.channel.notices == [] and env.channel.order == ["☑ Yes", "receipt"]
     assert [(e.who, e.text) for e in env.desk.log] == [("operator", "[tapped: Yes]"),
                                                        ("specialist", "applied match 17")]
     assert env.desk.last_used == 1000.0 and env.desk.waiting == 0
@@ -337,7 +341,7 @@ async def test_a_profile_that_still_allows_the_tool_runs(env):
                           allowed_names=frozenset({APPLY}), declared_excluded=frozenset())
     env.build = _build(plan=ProfilePlan(entries=(wide,), loaded=("probe",)))
     await _tap(env)
-    assert len(env.calls) == 1 and env.channel.marks == []
+    assert len(env.calls) == 1 and env.channel.marks == ["☑ Yes"]
 
 
 async def test_a_plugin_whose_erasure_is_running_is_refused(env):
@@ -402,7 +406,7 @@ async def test_a_validated_capture_is_authoritative_over_an_aborted_turn(env):
     await _tap(env)
     (message, _), = env.channel.replies
     assert str(message) == f"{LABEL}\napplied"
-    assert env.channel.notices == [] and env.channel.marks == []
+    assert env.channel.notices == [] and env.channel.marks == ["☑ Yes"]
     assert env.desk.log[-1].text == "applied"
     assert _echo() == [f"{LABEL} applied your tap (Yes)."]
 
@@ -480,7 +484,7 @@ async def test_a_more_proposal_that_landed_is_the_sole_receipt(env):
         return tools_mod.DelegatedOutput(text="")
     env.respond = respond
     await _tap(env, idx=1)
-    assert env.channel.replies == [] and env.channel.notices == [] and env.channel.marks == []
+    assert env.channel.replies == [] and env.channel.notices == [] and env.channel.marks == ["☑ More"]
     assert [(e.who, e.text) for e in env.desk.log] == [("operator", "[tapped: More]"),
                                                        ("specialist", sd.POSTED_PROPOSAL)]
     assert _echo() == [f"{LABEL} applied your tap (More)."]
@@ -527,7 +531,7 @@ async def test_a_more_tool_that_posted_nothing_has_its_own_text_as_the_receipt(e
     (message, context), = env.channel.replies
     assert str(message) == f"{LABEL}\nno more entries"
     assert context["_post"].kind == "receipt"
-    assert env.channel.notices == [] and env.channel.marks == []
+    assert env.channel.notices == [] and env.channel.marks == ["☑ More"]
     assert _echo() == [f"{LABEL} applied your tap (More)."]
 
 
@@ -536,7 +540,7 @@ async def test_a_receipt_whose_send_fails_is_told_as_applied_without_the_receipt
     await _tap(env)
     assert len(env.channel.replies) == 1
     assert env.channel.notices == [(OPERATOR, f"{LABEL} applied your tap; the receipt did not go out.")]
-    assert env.channel.marks == []
+    assert env.channel.marks == ["☑ Yes"]
     assert env.desk.log[-1].text == "applied match 17"
     assert _echo() == [f"{LABEL} applied your tap (Yes)."]
 
@@ -801,7 +805,7 @@ async def test_a_slow_but_normal_cli_exit_within_the_deadline_produces_no_notice
     env.respond = respond
     try:
         await asyncio.wait_for(_tap(env), 5)
-        assert env.terminated == [] and env.channel.notices == [] and env.channel.marks == []
+        assert env.terminated == [] and env.channel.notices == [] and env.channel.marks == ["☑ Yes"]
         assert [str(m) for m, _ in env.channel.replies] == [f"{LABEL}\napplied"]
         owner = env.calls[0].owner
         assert owner.alive() is False and owner.sealed is True and env.desk.faulted is None

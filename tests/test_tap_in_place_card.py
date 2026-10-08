@@ -127,6 +127,7 @@ async def test_the_tapped_card_is_edited_in_place_and_nothing_is_sent(edit_env):
                                                       ("specialist", "All quarters on.")]
     assert any("applied your tap (Yes)" in line for line in _echo())
     assert env.channel.notices == []
+    assert env.channel.marks == []          # #1341: the new card is the answer; never ☑ first
 
 
 async def test_a_rewritten_call_carries_its_tell_on_the_edited_card(edit_env):
@@ -190,6 +191,7 @@ async def test_a_refused_edit_falls_back_to_the_receipt_and_a_new_card(edit_env)
     assert _live() == [card.rid]                              # the edit's record is gone
     assert edit.rid != card.rid
     assert env.settled == []                                  # unregistered: no hook fired
+    assert env.channel.marks == ["☑ Yes"]   # #1341: the tapped card settles as applied
 
 
 async def test_an_unconfirmed_edit_keeps_its_bound_record_and_the_fallback_supersedes_it(edit_env):
@@ -218,6 +220,8 @@ async def test_an_unconfirmed_edit_without_a_revision_leaves_both_cards_working(
     assert sorted(_live()) == sorted([edit.rid, card.rid])
     assert _meta_of(edit.rid)["message_id"] == TAPPED
     assert rb.POST_MAP.get(OPERATOR, TAPPED) is not None      # swipe-replies still route
+    # #1341: the message may now show the live new card — it is not marked over
+    assert env.channel.marks == []
 
 
 async def test_an_invalid_card_falls_back_to_the_receipt_and_todays_notice(edit_env):
@@ -227,6 +231,7 @@ async def test_an_invalid_card_falls_back_to_the_receipt_and_todays_notice(edit_
     assert env.edits == []
     assert [k for k, _ in env.log] == ["receipt"]
     assert any("could not show the next card (invalid)" in t for _, t in env.channel.notices)
+    assert env.channel.marks == ["☑ Yes"]
 
 
 async def test_a_tapped_card_without_a_message_id_falls_back(edit_env):
@@ -235,6 +240,7 @@ async def test_a_tapped_card_without_a_message_id_falls_back(edit_env):
     await _tap(env, meta={"message_id": None})
     assert env.edits == []
     assert [k for k, _ in env.log] == ["receipt", "card"]
+    assert env.channel.marks == ["☑ Yes"]
 
 
 # --- the channel's edit -------------------------------------------------------------

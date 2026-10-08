@@ -65,6 +65,8 @@ STORED_CALL_RECEIPT_CHARS = 4000
 NO_RECEIPT = "[no receipt]"
 POSTED_PROPOSAL = "[posted a proposal]"
 POSTED_FILE = "[posted a file]"
+# #1341: _post_next_card's word for an in-place edit that may have landed
+UNCONFIRMED = "not confirmed"
 TELL_ECHO = " — the CLI reported arguments changed by an installed hook"
 PROMPT_PREFIX = "(front desk) "
 # §5.6/§6: the body-free echo line for an outcome of a silent turn that has
@@ -1180,7 +1182,7 @@ async def handle_tap(
             tell = capture.rewritten
             applied = f"{label} applied your tap ({button}){TELL_ECHO if tell else ''}."
             specialist_side = NO_RECEIPT
-            replaced = False
+            replaced = in_place_unknown = False
             try:
                 tapped_mid = meta.get("message_id")
                 if (capture.kind == "receipt" and capture.next and capture.in_place
@@ -1201,6 +1203,12 @@ async def handle_tap(
                     else:
                         logger.info("stored call %s: the card was not replaced in place (%s)",
                                     run_id, why)
+                        # an edit that may have landed leaves the message to the
+                        # new card's record; the tapped card is not marked over it
+                        in_place_unknown = why == UNCONFIRMED
+                if not replaced and not in_place_unknown and capture.kind in (
+                        "receipt", "no_post", "delivered"):
+                    await _mark(f"☑ {button}")          # #1341: the tap is applied
                 if replaced:
                     pass
                 elif capture.kind in ("receipt", "no_post"):
@@ -1281,7 +1289,8 @@ async def _post_next_card(value: str, *, meta: dict, build: Any, runtime: str, s
     tap was re-checked against, then posted through ``_post_proposal`` (the
     live bound, the revision supersede, registered before the send). The
     identity is the tapped proposal's own record. Returns ``None`` when the
-    card landed, else the reason word for the operator's notice.
+    card landed, else the reason word for the operator's notice —
+    ``UNCONFIRMED`` for an in-place edit that may have landed (#1341).
 
     #1339: with *edit_message_id* the card replaces the tapped card in place
     (``_post_proposal`` edits that message); *warning* is the rewritten-call
@@ -1318,6 +1327,8 @@ async def _post_next_card(value: str, *, meta: dict, build: Any, runtime: str, s
         return "not delivered"
     if delivered:
         return None
+    if withheld == rb.EDIT_UNCONFIRMED:
+        return UNCONFIRMED
     return "too many open" if withheld == rb._REASON_PROPOSAL_TOO_MANY else "not delivered"
 
 

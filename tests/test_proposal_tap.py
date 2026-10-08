@@ -193,10 +193,11 @@ async def test_a_valid_tap_commits_once_and_the_handler_dispatches_nothing_itsel
     assert await _tap(env, _cq(data=f"v1|proposal|{RID}|1")) == "✔"
     assert await _tap(env, _cq(data=f"v1|proposal|{RID}|0")) == "already answered"
     await _settle()
-    # the finish hook: the keyboard edited away FIRST (the chosen label), then the desk
+    # the finish hook: the keyboard edited away FIRST (the chosen label, working:
+    # #1341 — the call's answer decides the final line), then the desk
     assert len(env.bot.edited) == 1
     edited = env.bot.edited[0]
-    assert edited["message_id"] == 501 and "☑ No" in edited["text"]
+    assert edited["message_id"] == 501 and edited["text"].endswith("\n⏳ No")
     assert len(env.taps) == 1
     tap = env.taps[0]
     assert tap["desk_role"] == "finance" and tap["idx"] == 1 and tap["request_id"] == RID
@@ -400,7 +401,9 @@ async def test_a_maximal_proposals_settlement_edit_fits_telegrams_limit(env, mon
     assert await _tap(env, _cq(data=f"v1|proposal|{rid}|0")) == "✔"
     await _settle()
     (edit,) = env.bot.edited
-    assert edit["text"].endswith(f"\n☑ {label32}") and utf16_len(edit["text"]) <= 4096
+    assert edit["text"].endswith(f"\n⏳ {label32}") and utf16_len(edit["text"]) <= 4096
+    # #1341: the line the desk settles it to afterwards is the same length
+    assert utf16_len(edit["text"].replace("\n⏳ ", "\n☑ ")) == utf16_len(edit["text"])
 
 
 # --- diff round 5 (Terra S2): the keyboard edit fails -------------------------------------
@@ -528,7 +531,7 @@ async def test_a_card_that_lands_after_the_bound_keeps_its_buttons_and_a_tap_bin
     assert await _tap(env, _cq(data=f"v1|proposal|{rid}|1", message_id=777)) == "✔"
     await _settle()
     assert [t["idx"] for t in env.taps] == [1]
-    assert env.bot.edited[-1]["message_id"] == 777 and "☑ No" in env.bot.edited[-1]["text"]
+    assert env.bot.edited[-1]["message_id"] == 777 and env.bot.edited[-1]["text"].endswith("\n⏳ No")
     assert await _tap(env, _cq(data=f"v1|proposal|{rid}|0", message_id=777)) == "already answered"
     await _settle()
     assert len(env.taps) == 1

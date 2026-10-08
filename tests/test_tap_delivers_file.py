@@ -120,7 +120,7 @@ async def test_a_landed_file_is_the_sole_receipt(file_env):
     env = file_env
     env.respond = _respond(pr.Capture("delivered", "operator_file"))
     await _tap(env, meta=_file_meta())
-    assert env.channel.replies == [] and env.channel.notices == [] and env.channel.marks == []
+    assert env.channel.replies == [] and env.channel.notices == [] and env.channel.marks == ["☑ Get package"]
     assert [(e.who, e.text) for e in env.desk.log] == [("operator", "[tapped: Get package]"),
                                                        ("specialist", sd.POSTED_FILE)]
     assert _echo() == [f"{LABEL} applied your tap (Get package)."]

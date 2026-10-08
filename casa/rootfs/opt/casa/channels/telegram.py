@@ -2163,7 +2163,8 @@ class TelegramChannel(Channel):
     def proposal_finish_hook(self, *, rid: str, req: Any) -> Callable[[dict], Any]:
         """S5 §4.2/§4.4: the one owner of what follows a proposal's
         settlement. A tap: the keyboard edited away FIRST with the chosen
-        label, then the desk hand-off; every other outcome — the TTL, a
+        label (``⏳ <label>`` for a call, ``☑ <label>`` for ``📎``), then the
+        desk hand-off; every other outcome — the TTL, a
         supersede, a cancel — only edits the keyboard. The meta is read at
         settle time from the broker's own dict."""
         async def _finish(outcome: dict) -> None:
@@ -2206,7 +2207,10 @@ class TelegramChannel(Channel):
                         label=specialist_desk.label_for(str(meta.get("role") or "")),
                         fields={"button": label}))
                 return
-            edited = await self.edit_dm_message(chat_id, message_id, f"{text}\n☑ {label}")
+            # #1341: a call tap's card says it is working, not settled — the
+            # call's answer decides what it becomes (☑, ✖, or the next card in
+            # place); handle_tap writes that line
+            edited = await self.edit_dm_message(chat_id, message_id, f"{text}\n⏳ {label}")
             if not edited:
                 # the keyboard could not be edited away (Terra, diff round 5):
                 # the operator still sees which button won BEFORE any effect —
@@ -2301,8 +2305,8 @@ class TelegramChannel(Channel):
         return True
 
     async def mark_proposal(self, meta: dict, line: str) -> None:
-        """S5 §10: the proposal message's last line — ``☑ <label>`` replaced
-        by ``✖ <reason>`` or ``⌛ expired`` — edited in place from the live
+        """S5 §10: the proposal message's last line — ``⏳ <label>`` replaced
+        by ``☑ <label>``, ``✖ <reason>`` or ``⌛ expired`` — edited in place from the live
         meta's text; the keyboard stays gone."""
         chat_id, message_id = meta.get("chat_id"), meta.get("message_id")
         if not isinstance(chat_id, int) or not isinstance(message_id, int):

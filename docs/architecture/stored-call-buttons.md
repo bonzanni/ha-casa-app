@@ -62,7 +62,7 @@ dispatched, and by the operator's ruling no message about the arming is ever sen
 
 **Register, then post; bound; supersede.** The composed post — label line and text — must
 render to one page with room left for the longest line Casa appends when the keyboard
-settles (`☑ <label>` with a label of 32 characters that may each take two UTF-16 units;
+settles (`☑ <label>` or `⏳ <label>`, a label of 32 characters that may each take two units;
 `✖ <reason>`, `⌛ expired` and `↻ replaced` are shorter), so a maximal proposal can always be
 settled. Before the message is sent the proposal is
 registered with the verdict broker under the `proposal` namespace with a one-hour deadline
@@ -80,7 +80,7 @@ remembered — below); its chat is the callback's chat; the message id is the me
 keyboard was posted as (if none, the request id proves it and a live one is bound to it); the index names a button; the tapper is the operator the proposal was posted for and is still the configured
 operator; the deadline has not passed. Then one claim and one commit — a second tap is
 "already answered". The handler edits nothing and dispatches nothing: the finish hook the
-post installed edits the keyboard away first (`☑ <label>`), then reserves the desk.
+post installed edits the keyboard away first (`⏳ <label>`; `☑ <label>` for `📎`), then reserves the desk.
 A settled proposal's answer does not end with the broker's short-lived record of it: at the
 moment of settlement the channel remembers the proposal's own record and what happened —
 answered, replaced, or ended otherwise (the deadline, a shutdown) — until the deadline, so
