@@ -2,6 +2,7 @@
 """Per-channel freshness windows (spec §3.3): voice short, telegram long."""
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 from unittest.mock import AsyncMock, patch
 
@@ -21,6 +22,22 @@ class _NeverSavedMemory:
 
 
 _NEVER_SAVED = _NeverSavedMemory()
+
+
+async def _settle():
+    """#1352: a reset's retain runs in the background; wait for it."""
+    pending = list(session_saver._RESET_RETAINS)
+    if pending:
+        await asyncio.wait_for(
+            asyncio.gather(*pending, return_exceptions=True), timeout=5)
+
+
+@pytest.fixture(autouse=True)
+def _private_retry_dir(tmp_path, monkeypatch):
+    """#1352: a reset writes its retry record before the background retain.
+    (The r878 fixture below re-points it at its own directory.)"""
+    monkeypatch.setattr(
+        session_saver, "_COLD_RETAIN_RETRY_DIR", str(tmp_path / "retry"))
 
 
 def test_voice_is_short():
@@ -236,7 +253,7 @@ async def test_save_session_voice_skips_entirely(tmp_path):
     assert reg.get("voice-r1") is not None
 
 
-async def test_reset_channel_saves_then_clears(tmp_path, monkeypatch):
+async def test_reset_channel_saves_and_clears(tmp_path, monkeypatch):
     async def fake_classify(content: str) -> str:
         return "public"
     monkeypatch.setattr(session_saver, "classify_tier", fake_classify)
@@ -249,7 +266,8 @@ async def test_reset_channel_saves_then_clears(tmp_path, monkeypatch):
     msgs = [type("M", (), {"type": "user", "message": {"content": "remember X"}})()]
     with patch("session_saver.get_session_messages", return_value=msgs):
         await reset_channel("telegram-42", reg, sem, channel="telegram")
-    sem.retain.assert_awaited_once()        # saved before clearing
+        await _settle()
+    sem.retain.assert_awaited_once()        # saved (#1352: in the background, after the clear)
     assert reg.get("telegram-42") is None   # pointer cleared → next turn starts fresh
 
 
@@ -259,6 +277,7 @@ async def test_reset_channel_no_entry_is_noop(tmp_path):
     sem = AsyncMock()
     sem.document_tags.return_value = None  # #1123: never saved
     await reset_channel("telegram-99", reg, sem, channel="telegram")
+    await _settle()
     sem.retain.assert_not_awaited()         # nothing to save
     assert reg.get("telegram-99") is None
 
@@ -306,14 +325,17 @@ async def test_save_session_expected_sid_match_proceeds(tmp_path, monkeypatch):
 
 
 async def test_reset_channel_trailing_remove_spares_follow_up_session(tmp_path, monkeypatch):
-    """#317: a follow-up message that registers a NEW session while /new's
-    retain is in flight must not have its fresh session erased by the reset's
+    """#317: a follow-up message that registers a NEW session while /new is
+    still in progress must not have its fresh session erased by the reset's
     trailing remove().
 
     #878 retargeted the seam from ``save_session`` to ``retain_cold_session``
-    (the reset now retains its snapshot registry-decoupled); the assertions are
-    unchanged — the reset must carry its OWN snapshot into the retain, and the
-    follow-up's fresh session must survive."""
+    (the reset now retains its snapshot registry-decoupled). #1352 moved that
+    retain into the background, AFTER the remove, so the window a follow-up can
+    still land in before the remove is the flush-close: the registration is
+    made from the reset listener. The assertions are unchanged — the reset
+    carries its OWN snapshot into the retain, and the follow-up's fresh
+    session survives the sid-guarded remove."""
     from session_registry import SessionRegistry
     reg = SessionRegistry(str(tmp_path / "s.json"))
     await reg.register("telegram-42", "assistant", "sid-old", binding_digest=STUB_BINDING_DIGEST, speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV)
@@ -322,18 +344,21 @@ async def test_reset_channel_trailing_remove_spares_follow_up_session(tmp_path, 
 
     retained = []
 
-    async def racing_retain(old, **kwargs):
-        retained.append(old)
-        # Simulate a follow-up turn landing mid-retain: it re-registers the
-        # channel with a fresh session, then the retain fails silently.
+    async def follow_up_lands_mid_reset(key):
         await reg.register(
-            "telegram-42", "assistant", "sid-follow-up",
+            key, "assistant", "sid-follow-up",
             binding_digest=STUB_BINDING_DIGEST,
             speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV,
         )
 
+    reg.add_reset_listener(follow_up_lands_mid_reset)
+
+    async def racing_retain(old, **kwargs):
+        retained.append(old)
+
     monkeypatch.setattr(session_saver, "retain_cold_session", racing_retain)
     await reset_channel("telegram-42", reg, sem, channel="telegram")
+    await _settle()
 
     # The reset retains the conversation IT snapshotted, never the newer one.
     assert [s.sdk_session_id for s in retained] == ["sid-old"]
@@ -506,6 +531,7 @@ async def test_r878_failed_retain_leaves_one_durable_retry_record(r878):
     sem = _R878Memory(failing=True)
 
     await reset_channel("telegram-42", r878.reg, sem, channel="telegram")
+    await _settle()
 
     assert len(sem.retains) == 1                       # the retain was attempted
     records = _r878_records(r878.retry_dir)
@@ -533,6 +559,7 @@ async def test_r878_record_is_drained_by_a_direct_replay(r878):
     await _r878_register(r878.reg)
     sem = _R878Memory(failing=True)
     await reset_channel("telegram-42", r878.reg, sem, channel="telegram")
+    await _settle()
     assert len(_r878_records(r878.retry_dir)) == 1
 
     sem.failing = False
@@ -553,6 +580,7 @@ async def test_r878_record_is_drained_by_the_real_freshness_sweep(r878):
     await _r878_register(r878.reg)
     sem = _R878Memory(failing=True)
     await reset_channel("telegram-42", r878.reg, sem, channel="telegram")
+    await _settle()
     assert len(_r878_records(r878.retry_dir)) == 1
 
     sem.failing = False
@@ -578,6 +606,7 @@ async def test_r878_recall_only_channel_spools_nothing(r878, caplog):
 
     with caplog.at_level(logging.ERROR, logger="session_saver"):
         await reset_channel("voice-7", r878.reg, sem, channel="voice")
+        await _settle()
 
     assert sem.retains == []
     assert _r878_records(r878.retry_dir) == []
@@ -599,6 +628,7 @@ async def test_r878_unusable_provenance_spools_nothing(r878, caplog, missing):
 
     with caplog.at_level(logging.ERROR, logger="session_saver"):
         await reset_channel("telegram-42", r878.reg, sem, channel="telegram")
+        await _settle()
 
     assert sem.retains == []
     assert _r878_records(r878.retry_dir) == []
@@ -632,6 +662,7 @@ async def test_r878_advanced_fence_generation_spools_nothing(r878):
     before = FENCE._generation
     try:
         await reset_channel("telegram-42", r878.reg, sem, channel="telegram")
+        await _settle()
     finally:
         FENCE._generation = before
 
@@ -654,6 +685,7 @@ async def test_r878_follow_up_session_survives_and_the_old_one_is_spooled(r878):
 
     r878.reg.add_reset_listener(racing_turn)
     await reset_channel("telegram-42", r878.reg, sem, channel="telegram")
+    await _settle()
 
     assert listener_calls == ["telegram-42"]
     assert len(sem.retains) == 1                       # the OLD conversation
@@ -687,9 +719,13 @@ async def test_r878_double_failure_says_so_and_promises_nothing(r878, caplog):
     with caplog.at_level(logging.ERROR, logger="session_saver"), \
             _patch.object(session_saver, "atomic_write_json", exploding_write):
         await reset_channel("telegram-42", r878.reg, sem, channel="telegram")
+        await _settle()
 
     assert len(sem.retains) == 1
-    assert len(spool_writes) == 1
+    # #1352: two writes — the reset's own record before the background retain
+    # (its failure is a WARNING: nothing has failed to retain yet), then the
+    # retain's failure arm. Only the second is the double failure.
+    assert len(spool_writes) == 2
     assert _r878_records(r878.retry_dir) == []
     errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
     assert len(errors) == 1
@@ -710,6 +746,7 @@ async def test_r878_retries_are_bounded_and_the_give_up_is_loud(r878, caplog):
     await _r878_register(r878.reg)
     sem = _R878Memory(failing=True)
     await reset_channel("telegram-42", r878.reg, sem, channel="telegram")
+    await _settle()
     assert len(sem.retains) == 1
 
     with caplog.at_level(logging.ERROR, logger="session_saver"):

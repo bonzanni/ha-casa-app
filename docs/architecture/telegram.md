@@ -60,7 +60,8 @@ admission is taken later, under the engagement's per-turn lock.
 run non-blocking, so nothing about arrival order survives dispatch on its own. Engagement
 topics re-serialize under a per-topic handler lock (a quiet scheduled job run, which has no
 topic, under one keyed by its record), and direct messages re-serialize per
-chat: `/new` holds its chat's lock across the whole reset (retain, then pointer removal),
+chat: `/new` holds its chat's lock across the whole reset (retry record, then pointer
+removal; the retain itself runs in the background afterwards, INV-MEM-023),
 so once the reset holds the lock, no same-chat follow-up can be enqueued — let alone resume
 the dying session — until it finished. Distinct chats never contend. Two boundaries to keep
 in view: the lock serializes in *acquisition* order, which matches arrival order except in
