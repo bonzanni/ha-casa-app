@@ -4,7 +4,7 @@ kind: executor
 slot: configurator
 mission: Apply bounded Casa configuration changes, commit them, and reload or restart as required.
 enabled: true
-model: {source: fixed, value: sonnet}
+model: {source: fixed, value: claude-sonnet-5}
 tools:
   # Task N1b added specialist_install_inspect/specialist_install_commit;
   # Task N1c added specialist_upgrade/specialist_rollback/specialist_uninstall;

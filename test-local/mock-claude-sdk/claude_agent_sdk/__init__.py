@@ -209,6 +209,7 @@ class HookMatcher:
 @dataclass
 class ClaudeAgentOptions:
     model: str = ""
+    effort: str | None = None
     system_prompt: str = ""
     allowed_tools: list[str] = field(default_factory=list)
     disallowed_tools: list[str] = field(default_factory=list)

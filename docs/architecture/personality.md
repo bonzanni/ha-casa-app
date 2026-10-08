@@ -108,9 +108,10 @@ enforces hard persona/total token ceilings (2k/12k text, 400/6k voice, 0/4k rest
 A persona that validates structurally can still fail *activation* on a ceiling, and voice
 behavior written only outside the core never reaches the voice surface.
 
-**The observer and secondary passes run on their own model.** `SECONDARY_AGENT_MODEL`
-(default *haiku*) selects the model for engagement observation and engager-query synthesis
-— a cost/latency/judgment tunable documented nowhere else.
+**The observer and secondary passes run on their own model.** Engagement observation and
+engager-query synthesis run on Haiku, resolved through `MODEL_MAP` to a full model id and
+passed with the effort `MODEL_EFFORT` names for it — not on the primary agent's model, and
+not on a bare CLI alias, which moves with the CLI's release.
 
 **The admin surface is internal-only and redacts by default.** The personality admin
 routes exist only on the internal Unix socket, and the explain route withholds sensitive

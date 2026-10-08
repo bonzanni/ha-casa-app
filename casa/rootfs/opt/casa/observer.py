@@ -15,6 +15,7 @@ import json
 import logging
 from typing import Any, Literal
 
+from config import effort_for
 from claude_runtime import (
     CLAUDE_CLI_PATH,
     SDK_MAX_BUFFER_SIZE,
@@ -233,6 +234,7 @@ class Observer:
         })
         options = ClaudeAgentOptions(
             model=self._model,
+            effort=effort_for(self._model),
             cli_path=CLAUDE_CLI_PATH,
             max_buffer_size=SDK_MAX_BUFFER_SIZE,
             system_prompt=system,

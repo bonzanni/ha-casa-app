@@ -5,17 +5,22 @@ from __future__ import annotations
 import os
 import textwrap
 
-from config import MODEL_MAP
+
+# The shipped executor types pin the full model id in their real role
+# artifact; a definition.yaml for them must resolve to the same id.
+_SHIPPED_EXECUTOR_MODEL = {"configurator": "claude-sonnet-5",
+                           "plugin-developer": "claude-sonnet-5"}
 
 
 def _write_exec(base, name, defn_yaml=None, prompt="Hi."):
     d = os.path.join(base, name)
+    model = _SHIPPED_EXECUTOR_MODEL.get(name, "sonnet")
     os.makedirs(os.path.join(d, "doctrine"), exist_ok=True)
     defn = defn_yaml or textwrap.dedent(f"""\
         schema_version: 1
         type: {name}
         description: A reasonably long description that meets minLength 20.
-        model: sonnet
+        model: {model}
         driver: in_casa
         enabled: true
         tools:
@@ -101,7 +106,7 @@ class TestLoadAllExecutors:
         assert "configurator" in out
         d = out["configurator"]
         assert d.type == "configurator"
-        assert d.model == MODEL_MAP["sonnet"]
+        assert d.model == "claude-sonnet-5"
         assert d.driver == "in_casa"
         assert d.enabled is True
         assert d.prompt_template_path.endswith("prompt.md")

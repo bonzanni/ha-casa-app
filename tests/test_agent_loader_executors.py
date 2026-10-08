@@ -252,11 +252,14 @@ def _write_minimal_executor(base, name, body_override=None):
     import os
     d = os.path.join(base, "executors", name)
     os.makedirs(os.path.join(d, "doctrine"), exist_ok=True)
+    # The shipped types pin the full model id in their real role artifact.
+    model = ("claude-sonnet-5"
+             if name in ("configurator", "plugin-developer") else "sonnet")
     body = body_override or textwrap.dedent(f"""\
         schema_version: 1
         type: {name}
         description: A reasonably long description that meets minLength 20.
-        model: sonnet
+        model: {model}
         driver: in_casa
         enabled: true
         tools:
@@ -515,7 +518,7 @@ class TestExecutorModelBootParity:
         )
         loaded, failed = load_all_executors(str(tmp_path), roles_dir=roles_dir)
         assert failed == []
-        assert loaded["opt"].model == "claude-haiku-4-5"
+        assert loaded["opt"].model == MODEL_MAP["haiku"]
 
     def test_ha_option_mismatch_still_caught(self, tmp_path):
         """...and an ha_option artifact still catches a genuine disagreement."""

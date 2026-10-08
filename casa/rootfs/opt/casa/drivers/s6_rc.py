@@ -275,7 +275,8 @@ _UID_DROP_LINE_RE = re.compile(
 _ROOT_PATH_LINE_RE = re.compile(r"(?m)^PATH=\$_casa_root_path$")
 
 
-def run_script_is_stale(*, svc_root: str, engagement_id: str) -> bool:
+def run_script_is_stale(*, svc_root: str, engagement_id: str,
+                        model_flags: str) -> bool:
     """True iff the persisted MAIN run script is NOT the current contract —
     i.e. it does not carry BOTH ``casa_control`` AND ``--output-format
     stream-json`` (streaming) AND a start-of-line ``exec setpriv --reuid ...
@@ -300,7 +301,14 @@ def run_script_is_stale(*, svc_root: str, engagement_id: str) -> bool:
     # ``exec claude`` script must NOT count as current (S1 r2).
     if _UID_DROP_LINE_RE.search(text) is None:
         return True
-    return _ROOT_PATH_LINE_RE.search(text) is None
+    if _ROOT_PATH_LINE_RE.search(text) is None:
+        return True
+    # #1353: the CLI line carries the executor's CURRENT model and effort
+    # (``model_flags``, from ``drivers.workspace.cli_model_flags``) on a line
+    # of its own; a script rendered before the flags existed, or for another
+    # model, is re-rendered rather than started on the CLI's default model.
+    line = re.compile(r"(?m)^[ \t]+" + re.escape(model_flags) + r" \\$")
+    return line.search(text) is None
 
 
 def service_dirs_absent(*, svc_root: str, engagement_id: str) -> bool:

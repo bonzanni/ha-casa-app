@@ -7,13 +7,15 @@ import subprocess
 
 
 CLAUDE_CLI_PATH = "/usr/local/bin/claude"
-CLAUDE_CLI_VERSION = "2.1.273"
+CLAUDE_CLI_VERSION = "2.1.293"
 
 # #1111: the SDK fails the whole query on any stream-json line longer than
 # ``max_buffer_size`` (1 MiB when unset). A built-in ``Read`` of a PDF carries
 # the file's base64 twice on one line (the tool result's document block and
 # ``tool_use_result``), so a ~400 KB PDF already overflowed the default. The
-# pinned CLI 2.1.273 inlines a whole PDF up to 20 MiB and refuses a larger one
+# CLI inlines a whole PDF up to 20 MiB and refuses a larger one (measured on
+# 2.1.273; the CLI changelog through the pinned 2.1.293 records no change to
+# either limit)
 # (above 3 MiB it first tries ``pdftoppm`` page rendering, absent from this
 # image, and falls back to inlining). Two base64 copies of 20 MiB are ~53.4 MiB,
 # so 64 MiB leaves margin for the envelope. Page-range reads always render
@@ -49,6 +51,13 @@ CROSS_SESSION_TOOLS = ("SendMessage", "ListAgents", "PushNotification")
 SELF_SCHEDULING_TOOLS = ("ScheduleWakeup", "CronCreate", "CronDelete",
                          "CronList", "Monitor", "RemoteTrigger")
 
+# #1353: a built-in that reaches outside Casa for a third reason. CLI 2.1.293
+# offers ``ShareOnboardingGuide``, which uploads ``ONBOARDING.md`` from the
+# working directory to a claude.ai share link under the session's login.
+# Measured on 2.1.293: it runs without a permission prompt, so the fail-closed
+# ``can_use_tool`` never sees it. Denied with the rest.
+OUTBOUND_SHARE_TOOLS = ("ShareOnboardingGuide",)
+
 # The inbound half: ``crossSessionInbound: "refuse"`` makes the CLI drop every
 # message another session delivers to this one. Passed through ``--settings``
 # (the SDK's ``settings=`` option), the source the CLI reads right after
@@ -58,10 +67,12 @@ CROSS_SESSION_INBOUND = "refuse"
 
 
 def with_cross_session_tools_denied(disallowed) -> list[str]:
-    """Return ``disallowed`` (any iterable) plus :data:`CROSS_SESSION_TOOLS`
-    and :data:`SELF_SCHEDULING_TOOLS`, de-duplicated, order-stable."""
+    """Return ``disallowed`` (any iterable) plus :data:`CROSS_SESSION_TOOLS`,
+    :data:`SELF_SCHEDULING_TOOLS` and :data:`OUTBOUND_SHARE_TOOLS`,
+    de-duplicated, order-stable."""
     out = list(disallowed)
-    for t in (*CROSS_SESSION_TOOLS, *SELF_SCHEDULING_TOOLS):
+    for t in (*CROSS_SESSION_TOOLS, *SELF_SCHEDULING_TOOLS,
+              *OUTBOUND_SHARE_TOOLS):
         if t not in out:
             out.append(t)
     return out

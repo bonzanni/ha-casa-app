@@ -23,7 +23,7 @@ description: |
   Installed specialists are managed, not hand-authored. Commits changes via
   config_git and reloads Casa (soft or hard per reload.md doctrine) on
   completion.
-model: sonnet
+model: claude-sonnet-5
 driver: in_casa
 enabled: true
 tools:

@@ -51,11 +51,14 @@ configuration:
   primary_agent_model:
     name: Primary Agent Model
     description: >-
-      Claude model for the primary agent. Opus is most capable, Haiku is fastest.
+      Claude model for the primary agent: opus (Claude Opus 5.5), sonnet
+      (Claude Sonnet 5.5) or haiku (Claude Haiku 5.5). Opus is most capable,
+      Haiku is fastest.
   voice_agent_model:
     name: Voice Agent Model
     description: >-
-      Claude model for the voice agent. Haiku recommended for low latency.
+      Claude model for the voice agents, same choices. Haiku (Claude Haiku 5.5)
+      recommended for low latency.
   enable_terminal:
     name: Enable Web Terminal
     description: >-

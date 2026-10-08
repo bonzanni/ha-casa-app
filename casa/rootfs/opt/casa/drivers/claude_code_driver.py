@@ -1689,6 +1689,7 @@ class ClaudeCodeDriver(DriverProtocol):
                     # sentinel, so a not-yet-allocated record fails closed
                     # here rather than launching a setpriv-less/root CLI.
                     uid=engagement.allocated_uid, gid=engagement.allocated_uid,
+                    model=defn.model,
                 )
                 log_script = render_log_run_script(engagement_id=engagement.id)
                 s6_rc.write_service_dir(

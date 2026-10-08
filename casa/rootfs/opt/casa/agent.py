@@ -47,7 +47,7 @@ from claude_runtime import (
     cli_session_settings,
     with_cross_session_tools_denied,
 )
-from config import AgentConfig
+from config import AgentConfig, effort_for
 from specialist_registry import DelegationComplete
 from hooks import read_evidence_matchers, resolve_hooks
 from output_boundary import (
@@ -1050,6 +1050,7 @@ def build_restricted_webhook_options(
     casa_server = create_casa_tools(frozenset(allowed))
     return ClaudeAgentOptions(
         model=model,
+        effort=effort_for(model),
         cli_path=CLAUDE_CLI_PATH,
         max_buffer_size=SDK_MAX_BUFFER_SIZE,
         system_prompt=system_prompt,
@@ -3386,6 +3387,7 @@ class Agent:
 
         options = ClaudeAgentOptions(
             model=self.config.model,
+            effort=effort_for(self.config.model),
             cli_path=CLAUDE_CLI_PATH,
             max_buffer_size=SDK_MAX_BUFFER_SIZE,
             system_prompt=system_prompt,

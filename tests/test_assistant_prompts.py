@@ -1177,11 +1177,17 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # base-vs-new compiled text, word by word: exactly ONE `insert` on
 # `assistant:text`, that paragraph and nothing else; the other eight carriers
 # byte-identical. No retention claim anywhere.
+# MOVED 2026-10-08 (#1353), the `assistant:text` carrier ONLY. The #1348
+# paragraph's holding line gains "with nothing added: not the task again, not
+# what you have done, not what will happen next" (Opus 5.5 added a promise or
+# restated the task). Measured with `difflib` over base-vs-new compiled text,
+# word by word: exactly ONE `replace` on `assistant:text` ("it." -> "it.",
+# plus that clause) and nothing else; the other eight carriers byte-identical.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
         "f38c3f4917d068c681fc589ec023831a1f42428331aa118bd66d225c2a01703a",
     "assistant:text":
-        "14fd4815c1be50a87418c69529b142860a4ce556009fa36f389c64ef270b2b4e",
+        "f8f18d8c8f347e72163d612bf11a130257ed4a80f8edde883f3346cd26810786",
     "assistant:voice":
         "df1a1579d052429afd7b77d9d1a5d129e145344690408bb4f6643db6ff44a8bb",
     "butler:restricted_webhook":
@@ -1786,7 +1792,9 @@ _LATE_ANSWER_DOCTRINE = (
     "posts: an answer it wrote above them is not among them, and is passed on. "
     "When a delegation comes back pending, the person would otherwise wait in "
     "silence: say only that it is still running, in one short line such as "
-    "\"Alex is still on it.\" When `ask_user` has posted a question, the "
+    "\"Alex is still on it.\", with nothing added: not the task again, not "
+    "what you have done, not what will happen next. When `ask_user` has "
+    "posted a question, the "
     "person already sees it with its buttons: write nothing about it, and "
     "when you have nothing else for them, stay silent exactly as Casa's note "
     "in its result says."

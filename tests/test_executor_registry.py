@@ -16,7 +16,7 @@ def _write(base, name, enabled=True):
             schema_version: 1
             type: {name}
             description: A reasonably long description that meets minLength 20.
-            model: sonnet
+            model: claude-sonnet-5
             driver: in_casa
             enabled: {str(enabled).lower()}
             tools:

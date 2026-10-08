@@ -39,7 +39,7 @@ RUN apt-get update \
          nodejs npm git nginx-light jq yq curl ca-certificates unzip \
          openssh-client \
     && rm -rf /var/lib/apt/lists/* \
-    && npm install -g @anthropic-ai/claude-code@2.1.273 \
+    && npm install -g @anthropic-ai/claude-code@2.1.293 \
     && npm cache clean --force
 
 # Install ttyd (not packaged in Debian).

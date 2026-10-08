@@ -1,8 +1,9 @@
 """Every Casa CLI session hard-denies the CLI's cross-session tools and refuses
 inbound cross-session messages.
 
-The pinned CLI (2.1.273) offers ``SendMessage``, ``ListAgents`` and
-``PushNotification`` by default, and none of them asks for permission, so the
+The CLI (measured on 2.1.273, still offered on the pinned 2.1.293) offers
+``SendMessage``, ``ListAgents`` and ``PushNotification`` by default, and none
+of them asks for permission, so the
 fail-closed ``can_use_tool`` never sees a call. ``SendMessage`` reaches the
 other Claude Code sessions running as the same OS user on the machine, which
 in the Casa container is every agent. Only ``disallowed_tools`` (the CLI's
@@ -45,6 +46,9 @@ NAMES = {"SendMessage", "ListAgents", "PushNotification"}
 # the real tool on every surface.
 SELF_SCHEDULING = {"ScheduleWakeup", "CronCreate", "CronDelete", "CronList",
                    "Monitor", "RemoteTrigger"}
+# #1353: CLI 2.1.293's permission-free upload of ./ONBOARDING.md to a claude.ai
+# share link, typed from its measured tool surface, not from the constant.
+OUTBOUND_SHARE = {"ShareOnboardingGuide"}
 
 
 def _assert_locked(opts) -> None:
@@ -52,6 +56,8 @@ def _assert_locked(opts) -> None:
     assert not missing, f"cross-session tools not denied: {sorted(missing)}"
     missing = SELF_SCHEDULING - set(opts.disallowed_tools or ())
     assert not missing, f"self-scheduling tools not denied: {sorted(missing)}"
+    missing = OUTBOUND_SHARE - set(opts.disallowed_tools or ())
+    assert not missing, f"outbound share tools not denied: {sorted(missing)}"
     assert opts.settings is not None, "no --settings: inbound not refused"
     assert json.loads(opts.settings).get("crossSessionInbound") == "refuse"
 
@@ -113,7 +119,7 @@ def test_shared_constants_name_the_three_tools_and_refuse():
     assert with_cross_session_tools_denied(["Bash", "SendMessage"]) == [
         "Bash", "SendMessage", "ListAgents", "PushNotification",
         "ScheduleWakeup", "CronCreate", "CronDelete", "CronList", "Monitor",
-        "RemoteTrigger"]
+        "RemoteTrigger", "ShareOnboardingGuide"]
 
 
 async def test_resident_options(tmp_path, monkeypatch):

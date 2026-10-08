@@ -20,7 +20,7 @@ class TestRenderRunScript:
     def test_substitutes_all_placeholders(self):
         from drivers.workspace import render_run_script
 
-        out = render_run_script(
+        out = render_run_script(model="claude-sonnet-5",
             engagement_id="abc12345def67890",
             permission_mode="acceptEdits",
             extra_dirs=["/share/casa-plugins-repo"],
@@ -40,7 +40,7 @@ class TestRenderRunScript:
     def test_default_extra_dirs_still_includes_workspace(self):
         from drivers.workspace import render_run_script
 
-        out = render_run_script(
+        out = render_run_script(model="claude-sonnet-5",
             engagement_id="xxxxxxxxxxxxxxxx",
             permission_mode="dontAsk",
             extra_dirs=[],
@@ -51,7 +51,7 @@ class TestRenderRunScript:
     def test_extra_unset_names_appear_in_unset_line(self):
         from drivers.workspace import render_run_script
 
-        out = render_run_script(
+        out = render_run_script(model="claude-sonnet-5",
             engagement_id="xxxxxxxxxxxxxxxx",
             permission_mode="dontAsk",
             extra_dirs=[],
@@ -72,7 +72,7 @@ class TestRenderRunScript:
         import re as _re
         from drivers.workspace import render_run_script
 
-        script = render_run_script(
+        script = render_run_script(model="claude-sonnet-5",
             engagement_id="abcd1234-eng-id", permission_mode="acceptEdits",
             extra_dirs=[], uid=200005, gid=200005)
         collapsed = _re.sub(r"\s+", " ", script.replace("\\\n", " "))
@@ -87,11 +87,11 @@ class TestRenderRunScript:
         --reuid — either would silently skip or defeat the privilege drop."""
         from drivers.workspace import render_run_script
         with pytest.raises(ValueError):
-            render_run_script(
+            render_run_script(model="claude-sonnet-5",
                 engagement_id="abcd1234-eng-id", permission_mode="acceptEdits",
                 extra_dirs=[], uid=-1, gid=-1)
         with pytest.raises(ValueError):
-            render_run_script(
+            render_run_script(model="claude-sonnet-5",
                 engagement_id="abcd1234-eng-id", permission_mode="acceptEdits",
                 extra_dirs=[], uid=0, gid=0)
 
@@ -122,7 +122,7 @@ class TestRenderRunScript:
     def test_render_run_script_contains_channels_flag(self):
         """E-12 (v0.37.0): --channels server:casa-engagement-channel."""
         from drivers.workspace import render_run_script
-        script = render_run_script(
+        script = render_run_script(model="claude-sonnet-5",
             engagement_id="abcd1234-eng-id",
             permission_mode="acceptEdits",
             extra_dirs=[],
@@ -144,7 +144,7 @@ class TestRenderRunScript:
         """
         from drivers.workspace import render_run_script
         eid = "abcd1234567890123456789012345678"
-        script = render_run_script(
+        script = render_run_script(model="claude-sonnet-5",
             engagement_id=eid,
             permission_mode="acceptEdits",
             extra_dirs=[],
@@ -185,7 +185,7 @@ class TestRunScriptResumeArgvBehavior:
         import subprocess as sp
         from drivers.workspace import render_run_script
 
-        script = render_run_script(
+        script = render_run_script(model="claude-sonnet-5",
             engagement_id=self.EID,
             permission_mode="acceptEdits",
             extra_dirs=[],
@@ -304,7 +304,7 @@ class TestRenderRunScriptShellInjection:
     def test_extra_dir_with_semicolon_rejected(self):
         from drivers.workspace import WorkspaceConfigError, render_run_script
         with pytest.raises(WorkspaceConfigError, match="shell-special"):
-            render_run_script(
+            render_run_script(model="claude-sonnet-5",
                 engagement_id="x" * 16,
                 permission_mode="dontAsk",
                 extra_dirs=["/tmp; rm -rf /data"],
@@ -313,7 +313,7 @@ class TestRenderRunScriptShellInjection:
     def test_extra_dir_with_quote_rejected(self):
         from drivers.workspace import WorkspaceConfigError, render_run_script
         with pytest.raises(WorkspaceConfigError, match="shell-special"):
-            render_run_script(
+            render_run_script(model="claude-sonnet-5",
                 engagement_id="x" * 16,
                 permission_mode="dontAsk",
                 extra_dirs=["/tmp/'; touch /tmp/pwned ;#"],
@@ -322,7 +322,7 @@ class TestRenderRunScriptShellInjection:
     def test_extra_dir_with_newline_rejected(self):
         from drivers.workspace import WorkspaceConfigError, render_run_script
         with pytest.raises(WorkspaceConfigError, match="shell-special"):
-            render_run_script(
+            render_run_script(model="claude-sonnet-5",
                 engagement_id="x" * 16,
                 permission_mode="dontAsk",
                 extra_dirs=["/tmp\nrm -rf /data"],
@@ -331,7 +331,7 @@ class TestRenderRunScriptShellInjection:
     def test_relative_extra_dir_rejected(self):
         from drivers.workspace import WorkspaceConfigError, render_run_script
         with pytest.raises(WorkspaceConfigError, match="absolute path"):
-            render_run_script(
+            render_run_script(model="claude-sonnet-5",
                 engagement_id="x" * 16,
                 permission_mode="dontAsk",
                 extra_dirs=["relative/path"],
@@ -340,7 +340,7 @@ class TestRenderRunScriptShellInjection:
     def test_extra_dir_with_space_quoted_via_shlex(self):
         """Spaces in absolute paths are allowed but rendered shlex-quoted."""
         from drivers.workspace import render_run_script
-        out = render_run_script(
+        out = render_run_script(model="claude-sonnet-5",
             engagement_id="x" * 16,
             permission_mode="dontAsk",
             extra_dirs=["/share/with space"],
@@ -354,7 +354,7 @@ class TestRenderRunScriptShellInjection:
         """Bug 5: a newline in the key escapes the export statement."""
         from drivers.workspace import WorkspaceConfigError, render_run_script
         with pytest.raises(WorkspaceConfigError, match="extra_env keys"):
-            render_run_script(
+            render_run_script(model="claude-sonnet-5",
                 engagement_id="x" * 16,
                 permission_mode="dontAsk",
                 extra_dirs=[],
@@ -364,7 +364,7 @@ class TestRenderRunScriptShellInjection:
     def test_extra_env_key_with_dollar_rejected(self):
         from drivers.workspace import WorkspaceConfigError, render_run_script
         with pytest.raises(WorkspaceConfigError, match="extra_env keys"):
-            render_run_script(
+            render_run_script(model="claude-sonnet-5",
                 engagement_id="x" * 16,
                 permission_mode="dontAsk",
                 extra_dirs=[],
@@ -375,7 +375,7 @@ class TestRenderRunScriptShellInjection:
         """Lowercase keys also rejected — convention is upper-snake."""
         from drivers.workspace import WorkspaceConfigError, render_run_script
         with pytest.raises(WorkspaceConfigError):
-            render_run_script(
+            render_run_script(model="claude-sonnet-5",
                 engagement_id="x" * 16,
                 permission_mode="dontAsk",
                 extra_dirs=[],
@@ -385,7 +385,7 @@ class TestRenderRunScriptShellInjection:
     def test_extra_env_value_with_quote_escaped(self):
         """Embedded single-quote in value is escaped via '\\'' idiom."""
         from drivers.workspace import render_run_script
-        out = render_run_script(
+        out = render_run_script(model="claude-sonnet-5",
             engagement_id="x" * 16,
             permission_mode="dontAsk",
             extra_dirs=[],
@@ -395,7 +395,7 @@ class TestRenderRunScriptShellInjection:
 
     def test_valid_extra_env_renders(self):
         from drivers.workspace import render_run_script
-        out = render_run_script(
+        out = render_run_script(model="claude-sonnet-5",
             engagement_id="x" * 16,
             permission_mode="dontAsk",
             extra_dirs=[],
@@ -1566,7 +1566,7 @@ class TestExtraDirContainment:
     def test_outside_approved_roots_rejected(self, bad):
         from drivers.workspace import WorkspaceConfigError, render_run_script
         with pytest.raises(WorkspaceConfigError, match="approved root"):
-            render_run_script(
+            render_run_script(model="claude-sonnet-5",
                 engagement_id="x" * 16,
                 permission_mode="dontAsk",
                 extra_dirs=[bad],
@@ -1575,7 +1575,7 @@ class TestExtraDirContainment:
     @pytest.mark.parametrize("ok", ["/share", "/share/foo", "/media/nas"])
     def test_under_approved_roots_allowed(self, ok):
         from drivers.workspace import render_run_script
-        out = render_run_script(
+        out = render_run_script(model="claude-sonnet-5",
             engagement_id="x" * 16,
             permission_mode="dontAsk",
             extra_dirs=[ok],
@@ -1585,7 +1585,7 @@ class TestExtraDirContainment:
     def test_dotdot_traversal_rejected(self):
         from drivers.workspace import WorkspaceConfigError, render_run_script
         with pytest.raises(WorkspaceConfigError):
-            render_run_script(
+            render_run_script(model="claude-sonnet-5",
                 engagement_id="x" * 16,
                 permission_mode="dontAsk",
                 extra_dirs=["/share/../config"],
@@ -1609,7 +1609,7 @@ class TestExtraDirContainment:
             workspace, "APPROVED_EXTRA_DIR_ROOTS", (str(share),))
 
         with pytest.raises(WorkspaceConfigError, match="resolves to"):
-            render_run_script(
+            render_run_script(model="claude-sonnet-5",
                 engagement_id="x" * 16,
                 permission_mode="dontAsk",
                 extra_dirs=[str(link)],
@@ -1617,7 +1617,7 @@ class TestExtraDirContainment:
         # A real subdir under the root still passes.
         real = share / "ok"
         real.mkdir()
-        out = render_run_script(
+        out = render_run_script(model="claude-sonnet-5",
             engagement_id="x" * 16,
             permission_mode="dontAsk",
             extra_dirs=[str(real)],
@@ -1628,7 +1628,7 @@ class TestExtraDirContainment:
         """plugin_dirs are immutable store paths under /data (§3.8) —
         the containment rule applies to extra_dirs only."""
         from drivers.workspace import render_run_script
-        out = render_run_script(
+        out = render_run_script(model="claude-sonnet-5",
             engagement_id="x" * 16,
             permission_mode="dontAsk",
             extra_dirs=[],
@@ -1643,7 +1643,7 @@ class TestExtraDirContainment:
         no longer has access to the shared, root-only outbox."""
         import plugin_outbox
         from drivers.workspace import render_run_script
-        out = render_run_script(
+        out = render_run_script(model="claude-sonnet-5",
             engagement_id="x" * 16,
             permission_mode="dontAsk",
             extra_dirs=[],
@@ -1658,7 +1658,7 @@ class TestExtraDirContainment:
         one."""
         import plugin_outbox
         from drivers.workspace import render_run_script
-        out = render_run_script(
+        out = render_run_script(model="claude-sonnet-5",
             engagement_id="x" * 16,
             permission_mode="dontAsk",
             extra_dirs=[],
