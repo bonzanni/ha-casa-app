@@ -70,6 +70,12 @@ followed staged the loss. So an agent does not write that file at all. The file 
 refused for that path and the change is made *inside* Casa, in a read-modify-write held under
 `trigger_write_lock.PASS_LOCK` so it cannot interleave with the reminder writer.
 
+**Removing a trigger removes the prompt file it named** (#1372), in the same locked step —
+only a regular file directly in that role's `prompts/` once symlinks resolve, not
+`system.md`, and named by nothing boot still reads (another trigger, or the character's
+prompt or card file, after `${VAR}` substitution). Otherwise it is kept and the result says
+why: the configurator cannot delete a file itself.
+
 This is a bound on agents, not on writers: the operator edits their own file freely. The
 config reconciler rewrites it from a worker thread too, and once did so without coordination;
 #458 closed that by holding the same `PASS_LOCK` across the whole reconcile pass, so the

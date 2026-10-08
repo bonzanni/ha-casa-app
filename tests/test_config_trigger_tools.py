@@ -208,6 +208,228 @@ class TestDelete:
         assert out["kind"] == "not_authorized"
 
 
+class TestDeleteRemovesTheTriggersPromptFile:
+    """#1372: removing a trigger left the prompt file it named behind. The
+    configurator has no file-delete tool, so it emptied the file, committed
+    it, and reported a partial completion. The typed delete now removes the
+    file the deleted entry named, in the same locked step — and nothing a
+    trigger does not own."""
+
+    @staticmethod
+    def _prompts(runtime):
+        import os
+        d = os.path.join(runtime.agents_dir, "butler", "prompts")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    @staticmethod
+    def _file_entry(name, rel):
+        return {"name": name, "type": "cron", "schedule": "0 7 * * *",
+                "channel": "telegram", "prompt_file": rel}
+
+    async def _delete(self, name):
+        from tools import config_trigger_delete
+        return _payload(await config_trigger_delete.handler({
+            "role": "butler", "name": name}))
+
+    async def test_removes_the_entry_and_its_prompt_file(
+        self, configurator_origin, runtime,
+    ):
+        import os
+        d = self._prompts(runtime)
+        f = os.path.join(d, "water.md")
+        with open(f, "w", encoding="utf-8") as fh:
+            fh.write("Water the plants.\n")
+        _write(runtime, [HEARTBEAT, self._file_entry("water", "prompts/water.md")])
+        out = await self._delete("water")
+        assert out["status"] == "ok"
+        assert [e["name"] for e in _read(runtime)["triggers"]] == ["heartbeat"]
+        assert not os.path.lexists(f)
+        assert out["prompt_file"] == {"path": "prompts/water.md",
+                                      "outcome": "removed"}
+        assert "prompts/water.md" in out["message"]
+
+    async def test_an_inline_prompt_reports_no_file(self, configurator_origin,
+                                                     runtime):
+        _write(runtime, [HEARTBEAT])
+        out = await self._delete("heartbeat")
+        assert out["status"] == "ok"
+        assert "prompt_file" not in out
+
+    async def test_a_file_another_trigger_still_uses_is_kept(
+        self, configurator_origin, runtime,
+    ):
+        import os
+        d = self._prompts(runtime)
+        f = os.path.join(d, "shared.md")
+        with open(f, "w", encoding="utf-8") as fh:
+            fh.write("x\n")
+        _write(runtime, [self._file_entry("a", "prompts/shared.md"),
+                         self._file_entry("b", "./prompts/shared.md")])
+        out = await self._delete("a")
+        assert out["status"] == "ok"
+        assert os.path.exists(f)
+        assert out["prompt_file"]["outcome"] == "kept"
+        assert [e["name"] for e in _read(runtime)["triggers"]] == ["b"]
+
+    async def test_the_residents_system_prompt_is_kept(
+        self, configurator_origin, runtime,
+    ):
+        import os
+        d = self._prompts(runtime)
+        f = os.path.join(d, "system.md")
+        with open(f, "w", encoding="utf-8") as fh:
+            fh.write("x\n")
+        _write(runtime, [self._file_entry("a", "prompts/system.md")])
+        out = await self._delete("a")
+        assert out["status"] == "ok"
+        assert os.path.exists(f)
+        assert out["prompt_file"]["outcome"] == "kept"
+
+    @pytest.mark.parametrize("rel", [
+        "notes.md",                    # the role dir, not prompts/
+        "prompts/sub/deep.md",         # below prompts/
+        "../other/prompts/x.md",       # another role's prompts/
+        "prompts/../../other/prompts/x.md",
+    ])
+    async def test_a_file_outside_the_roles_prompts_dir_is_kept(
+        self, configurator_origin, runtime, rel,
+    ):
+        import os
+        role_dir = os.path.join(runtime.agents_dir, "butler")
+        target = os.path.normpath(os.path.join(role_dir, rel))
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target, "w", encoding="utf-8") as fh:
+            fh.write("x\n")
+        _write(runtime, [self._file_entry("a", rel)])
+        out = await self._delete("a")
+        assert out["status"] == "ok"
+        assert os.path.exists(target)
+        assert out["prompt_file"]["outcome"] == "kept"
+
+    async def test_a_symlinked_prompt_file_is_kept_with_its_target(
+        self, configurator_origin, runtime,
+    ):
+        import os
+        d = self._prompts(runtime)
+        target = os.path.join(d, "real.md")
+        with open(target, "w", encoding="utf-8") as fh:
+            fh.write("x\n")
+        os.symlink(target, os.path.join(d, "alias.md"))
+        _write(runtime, [self._file_entry("a", "prompts/alias.md")])
+        out = await self._delete("a")
+        assert out["prompt_file"]["outcome"] == "kept"
+        assert os.path.exists(target)
+        assert os.path.islink(os.path.join(d, "alias.md"))
+
+    async def test_a_symlinked_prompts_dir_is_kept_with_its_target(
+        self, configurator_origin, runtime, tmp_path,
+    ):
+        import os
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        target = outside / "x.md"
+        target.write_text("x\n", encoding="utf-8")
+        os.symlink(str(outside),
+                   os.path.join(runtime.agents_dir, "butler", "prompts"))
+        _write(runtime, [self._file_entry("a", "prompts/x.md")])
+        out = await self._delete("a")
+        assert out["prompt_file"]["outcome"] == "kept"
+        assert target.exists()
+
+    async def test_a_missing_file_is_reported_not_raised(
+        self, configurator_origin, runtime,
+    ):
+        self._prompts(runtime)
+        _write(runtime, [self._file_entry("a", "prompts/gone.md")])
+        out = await self._delete("a")
+        assert out["status"] == "ok"
+        assert out["prompt_file"]["outcome"] == "kept"
+        assert _read(runtime)["triggers"] == []
+
+    async def test_a_refused_delete_leaves_the_file(self, configurator_origin,
+                                                     runtime):
+        import os
+        d = self._prompts(runtime)
+        f = os.path.join(d, "water.md")
+        with open(f, "w", encoding="utf-8") as fh:
+            fh.write("x\n")
+        _write(runtime, [self._file_entry("water", "prompts/water.md")])
+        out = await self._delete("nope")
+        assert out["kind"] == "not_found"
+        assert os.path.exists(f)
+
+    async def test_an_env_spelled_reference_still_counts_as_a_use(
+        self, configurator_origin, runtime, monkeypatch,
+    ):
+        """Design d1 (Astra): the loader resolves `${VAR}` in prompt_file, so a
+        surviving `prompts/${X}.md` naming the same file is a use the raw
+        string comparison missed — deleting it left that trigger unbootable."""
+        import os
+        monkeypatch.setenv("CASA_T1372_PROMPT", "shared")
+        d = self._prompts(runtime)
+        f = os.path.join(d, "shared.md")
+        with open(f, "w", encoding="utf-8") as fh:
+            fh.write("x\n")
+        _write(runtime, [self._file_entry("a", "prompts/shared.md"),
+                         self._file_entry("b", "prompts/${CASA_T1372_PROMPT}.md")])
+        out = await self._delete("a")
+        assert out["status"] == "ok"
+        assert os.path.exists(f)
+        assert out["prompt_file"]["outcome"] == "kept"
+
+    @pytest.mark.parametrize("field", ["prompt_file", "card_file"])
+    async def test_a_file_the_character_names_is_kept(
+        self, configurator_origin, runtime, field,
+    ):
+        """Design d1 (Astra): character.yaml's prose pointers are loaded at
+        boot too; a trigger sharing one must not take it with it."""
+        import os
+        d = self._prompts(runtime)
+        f = os.path.join(d, "shared.md")
+        with open(f, "w", encoding="utf-8") as fh:
+            fh.write("x\n")
+        with open(os.path.join(runtime.agents_dir, "butler", "character.yaml"),
+                  "w", encoding="utf-8") as fh:
+            yaml.safe_dump({"schema_version": 1, "name": "B",
+                            "archetype": "butler", field: "prompts/shared.md"},
+                           fh)
+        _write(runtime, [self._file_entry("a", "prompts/shared.md")])
+        out = await self._delete("a")
+        assert out["status"] == "ok"
+        assert os.path.exists(f)
+        assert out["prompt_file"]["outcome"] == "kept"
+
+
+    async def test_an_unresolvable_own_path_is_kept_not_raised(
+        self, configurator_origin, runtime,
+    ):
+        """Review x1 (Astra): the typed writer accepts a NUL byte in
+        prompt_file, and resolving it raised AFTER the entry was removed — the
+        tool reported an error for a removal that had happened."""
+        self._prompts(runtime)
+        _write(runtime, [self._file_entry("a", "prompts/a\x00.md")])
+        out = await self._delete("a")
+        assert out["status"] == "ok"
+        assert out["prompt_file"]["outcome"] == "kept"
+        assert len(_read(runtime)["triggers"]) == 0
+
+    async def test_an_unresolvable_surviving_reference_keeps_the_file(
+        self, configurator_origin, runtime,
+    ):
+        import os
+        d = self._prompts(runtime)
+        f = os.path.join(d, "water.md")
+        with open(f, "w", encoding="utf-8") as fh:
+            fh.write("x\n")
+        _write(runtime, [self._file_entry("water", "prompts/water.md"),
+                         self._file_entry("b", "prompts/b\x00.md")])
+        out = await self._delete("water")
+        assert out["status"] == "ok"
+        assert out["prompt_file"]["outcome"] == "kept"
+        assert os.path.exists(f)
+        assert [e["name"] for e in _read(runtime)["triggers"]] == ["b"]
+
 async def test_configurator_writers_serialize_under_the_pass_lock(tmp_path):
     """The serialization IS the fix. #403 got it by keeping the whole
     read-modify-write a single synchronous step on the loop, so nothing could
@@ -230,6 +452,8 @@ async def test_configurator_writers_serialize_under_the_pass_lock(tmp_path):
                                   "one_shot": True, "channel": "telegram",
                                   "prompt": "x", "managed_by": "agent"}),
         (reminders.delete_entry, "reminder-cccccc"),
+        # #1372: the tool's own path — entry and prompt file in one locked step
+        (reminders.delete_entry_and_prompt, "reminder-cccccc"),
     )):
         # #778: a managed path, and a DISTINCT one per iteration — this used to
         # be a leaked `tempfile.mkdtemp()`, and the second iteration must not
@@ -259,7 +483,7 @@ async def test_configurator_writers_serialize_under_the_pass_lock(tmp_path):
 
     # #778: both iterations wrote inside the managed root, and nowhere else.
     assert sorted(q.name for q in tmp_path.iterdir()) == [
-        "triggers-0.yaml", "triggers-1.yaml"]
+        "triggers-0.yaml", "triggers-1.yaml", "triggers-2.yaml"]
 
 
 class TestLegacySchemaV1:

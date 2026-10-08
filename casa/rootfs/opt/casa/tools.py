@@ -13798,7 +13798,10 @@ async def config_trigger_upsert(args: dict) -> dict:
     "config_trigger_delete",
     "Remove one trigger from a resident's triggers.yaml by name, leaving every "
     "other entry untouched. Refuses a reminder the resident owns "
-    "(managed_by: agent) — ask the resident to cancel that one. This is the "
+    "(managed_by: agent) — ask the resident to cancel that one. Also deletes "
+    "the prompt file the trigger named (prompt_file under the role's prompts/) "
+    "unless something else still uses it; the result's prompt_file says which. "
+    "This is the "
     "ONLY way to change that file; hand-editing it is denied. Does NOT commit "
     "or reload: follow with config_git_commit + casa_reload_triggers. "
     "Restricted to the configurator executor role.",
@@ -13822,7 +13825,9 @@ async def config_trigger_delete(args: dict) -> dict:
     try:
         # Off the loop, under trigger_write_lock.PASS_LOCK — see
         # config_trigger_upsert for why (#458 / #403).
-        outcome = await asyncio.to_thread(reminders.delete_entry, path, name)
+        # #1372: the prompt file the entry named goes in the same locked step.
+        outcome, prompt = await asyncio.to_thread(
+            reminders.delete_entry_and_prompt, path, name)
     except (OSError, ValueError) as exc:
         return _result({"status": "error", "kind": "trigger_write_refused",
                         "message": str(exc)})
@@ -13836,12 +13841,22 @@ async def config_trigger_delete(args: dict) -> dict:
                         f"(managed_by: agent). Ask {role} to cancel it — this "
                         f"tool must not touch the resident's own entries."),
         })
-    return _result({
+    if prompt is None:
+        file_note = ""
+    elif prompt["outcome"] == "removed":
+        file_note = f", and its prompt file {prompt['path']} was deleted"
+    else:
+        file_note = (f"; its prompt file {prompt['path']} was left in place "
+                     f"({prompt['reason']})")
+    out = {
         "status": "ok", "outcome": "removed", "role": role, "name": name,
-        "message": (f"{name} removed from {role}/triggers.yaml — now commit "
-                    f"and reload: config_git_commit then "
+        "message": (f"{name} removed from {role}/triggers.yaml{file_note} — "
+                    f"now commit and reload: config_git_commit then "
                     f"casa_reload_triggers(role={role!r})"),
-    })
+    }
+    if prompt is not None:
+        out["prompt_file"] = prompt
+    return _result(out)
 
 
 # ---------------------------------------------------------------------------

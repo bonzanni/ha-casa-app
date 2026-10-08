@@ -857,6 +857,27 @@ def upsert_entry(path: str, entry: dict) -> str:
     return outcome
 
 
+def _delete_entry(path: str, name: str) -> "tuple[str, str | None]":
+    """``(outcome, text)`` — :func:`delete_entry`'s body, unlocked. *text* is
+    the document as it was read, for a caller that must judge what the removed
+    entry referenced."""
+    text, doc = _read_doc(path)
+    matches = [e for e in doc["triggers"]
+               if isinstance(e, dict) and e.get("name") == name]
+    if not matches:
+        return "not_found", text
+    if any(_agent_owned(e) for e in matches):
+        return "not_owned", text
+    _refuse_placeholder_rewrite(text, path, "edit")
+    candidate = dict(doc)
+    candidate["triggers"] = [
+        e for e in doc["triggers"]
+        if not (isinstance(e, dict) and e.get("name") == name
+                and not _agent_owned(e))]
+    _save(path, candidate)
+    return "removed", text
+
+
 @_under_pass_lock
 def delete_entry(path: str, name: str) -> str:
     """Remove the non-agent-owned entry called *name*.
@@ -870,21 +891,116 @@ def delete_entry(path: str, name: str) -> str:
     does: a pre-existing defect elsewhere in the file must not make an entry
     undeletable.
     """
-    text, doc = _read_doc(path)
-    matches = [e for e in doc["triggers"]
-               if isinstance(e, dict) and e.get("name") == name]
-    if not matches:
-        return "not_found"
-    if any(_agent_owned(e) for e in matches):
-        return "not_owned"
-    _refuse_placeholder_rewrite(text, path, "edit")
-    candidate = dict(doc)
-    candidate["triggers"] = [
-        e for e in doc["triggers"]
-        if not (isinstance(e, dict) and e.get("name") == name
-                and not _agent_owned(e))]
-    _save(path, candidate)
-    return "removed"
+    return _delete_entry(path, name)[0]
+
+
+@_under_pass_lock
+def delete_entry_and_prompt(path: str, name: str) -> "tuple[str, dict | None]":
+    """:func:`delete_entry`, then remove the prompt file the removed entry
+    named (#1372), in the same locked step.
+
+    ``(outcome, prompt_report)``. *prompt_report* is ``None`` unless the entry
+    was removed and named a ``prompt_file``; otherwise it is
+    ``{"path", "outcome": "removed"|"kept"}`` plus a ``reason`` when kept. The
+    entry's removal stands whatever happens to the file.
+
+    The configurator writes a trigger's prompt into ``prompts/<name>.md`` and
+    has no way to delete a file, so a removed trigger used to leave its prompt
+    behind — emptied, committed, and reported as a partial completion. Only a
+    file the trigger plainly owns goes: see :func:`_trigger_prompt_verdict`.
+    """
+    outcome, text = _delete_entry(path, name)
+    if outcome != "removed":
+        return outcome, None
+    return outcome, _remove_trigger_prompt(path, name, text or "")
+
+
+def _trigger_prompt_verdict(
+    path: str, name: str, text: str,
+) -> "tuple[str | None, str | None, str | None]":
+    """``(rel, real, reason)`` for the prompt file of the entry *name* just
+    removed from the document *text* at *path*. *rel* is ``None`` when the
+    entry named no file; *reason* is ``None`` when *real* may be deleted.
+
+    Read through the LOADER's own parse (:func:`_resolve`, so ``${VAR}`` is
+    substituted exactly as it will be at boot), because the question is which
+    file the loader reads, not how the YAML spells it. The file goes only if:
+
+    - it sits DIRECTLY in this role's ``prompts/`` directory once every symlink
+      is resolved, is a regular ``.md`` file, and its own name is not a symlink
+      — strictly less than the configurator's Write tool reaches;
+    - it is not ``prompts/system.md``, the resident's character prompt;
+    - nothing the loader still reads names it: no remaining entry's
+      ``prompt_file``, and neither of ``character.yaml``'s ``prompt_file`` /
+      ``card_file`` (the only other prose pointers a resident has —
+      ``agent_loader._resolve_prose``'s callers).
+    """
+    agent_dir = os.path.dirname(os.path.abspath(path))
+    try:
+        before = _resolve(text, path)
+    except ValueError as exc:
+        return "?", None, f"could not read {os.path.basename(path)}: {exc}"
+    entries = [e for e in (before.get("triggers") or []) if isinstance(e, dict)]
+    removed = [e for e in entries
+               if e.get("name") == name and not _agent_owned(e)]
+    rel = next((e["prompt_file"] for e in removed
+                if e.get("prompt_file") is not None), None)
+    if rel is None:
+        return None, None, None
+    if not isinstance(rel, str) or not rel or os.path.isabs(rel):
+        return str(rel), None, "not a path relative to the role directory"
+
+    def _real(ref: str) -> str:
+        return os.path.realpath(os.path.join(agent_dir, ref))
+
+    # Any path that cannot be resolved (a NUL byte the typed writer accepts,
+    # say) keeps the file: the entry is already gone, so raising here would
+    # report a failure for a removal that happened, and an unresolvable
+    # surviving reference cannot be proved not to be this file.
+    try:
+        real = _real(rel)
+        if os.path.dirname(real) != os.path.join(os.path.realpath(agent_dir),
+                                                 "prompts"):
+            return rel, None, "not directly inside this role's prompts/ directory"
+        if os.path.islink(os.path.join(agent_dir, rel)):
+            return rel, None, "a symlink, not a file the trigger owns"
+        if not real.endswith(".md") or not os.path.isfile(real):
+            return rel, None, "no such prompt file"
+        if os.path.basename(real) == "system.md":
+            return rel, None, "the resident's own system prompt"
+
+        users = [e.get("prompt_file") for e in entries if e not in removed]
+        char_path = os.path.join(agent_dir, "character.yaml")
+        try:
+            with open(char_path, encoding="utf-8") as fh:
+                character = _resolve(fh.read(), char_path)
+        except FileNotFoundError:
+            character = {}
+        except (OSError, ValueError) as exc:
+            return rel, None, f"could not read character.yaml: {exc}"
+        if isinstance(character, dict):
+            users += [character.get("prompt_file"), character.get("card_file")]
+        if any(isinstance(u, str) and u and not os.path.isabs(u)
+               and _real(u) == real for u in users):
+            return rel, None, "another trigger or the character still uses it"
+        return rel, real, None
+    except (OSError, ValueError) as exc:
+        return rel, None, f"could not resolve a path: {exc}"
+
+
+def _remove_trigger_prompt(path: str, name: str, text: str) -> "dict | None":
+    """Apply :func:`_trigger_prompt_verdict`; a failed unlink is reported as
+    kept, never raised — the entry is already gone and must stay gone."""
+    rel, real, reason = _trigger_prompt_verdict(path, name, text)
+    if rel is None:
+        return None
+    if reason is None:
+        try:
+            os.unlink(real)
+            return {"path": rel, "outcome": "removed"}
+        except OSError as exc:
+            reason = f"could not delete it: {exc}"
+    return {"path": rel, "outcome": "kept", "reason": reason}
 
 
 def agent_entries(path: str) -> "list[dict] | None":

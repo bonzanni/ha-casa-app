@@ -132,7 +132,17 @@ writing anything, so a rejection leaves the operator's config untouched. It
 refuses a name the resident owns (`managed_by: agent` — those are its
 reminders); ask the resident to change one of those instead.
 
-### Add agents/<role>/prompts/<trigger_name>.md (cron/interval only)
+### Or keep the prompt in agents/<role>/prompts/<trigger_name>.md (cron/interval only)
+
+A longer prompt can live in its own file instead of `prompt=`. Write the file,
+then name it on the trigger — an entry takes exactly one of `prompt` and
+`prompt_file`, and a file no trigger names is never read:
+
+    config_trigger_upsert(role="<role>", name="<trigger_name>", type="cron",
+                          schedule="<cron>", channel="telegram",
+                          prompt_file="prompts/<trigger_name>.md")
+
+The file itself:
 
     You are <name>. The <trigger-name> trigger just fired. <Task description.>
     <closing line for this prompt's shape — see "Every scheduled prompt says
@@ -145,6 +155,8 @@ with `send_message` or `send_media`, by asking with `ask_user`, or through any
 other notification it sends — shape B's no-clause ending when the turn's own
 reply is what the operator reads. Match the description against where the copy
 comes from, not against a list of tool names.
+
+Removing the trigger later deletes the file it names (see remove.md).
 
 ## Reload — MANDATORY before emit_completion
 
