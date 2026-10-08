@@ -12,7 +12,7 @@ The two HTTP applications the main Casa process runs, what each exposes, and how
 from outside is authenticated before it can reach an agent. It does not cover what an agent
 does once reached, nor the voice transport's own protocol beyond the point where a request
 becomes a turn. The container also ships a third, separately supervised loopback HTTP
-service — the MCP bridge — which belongs to `architecture/mcp-and-tools.md`, not here.
+service — the MCP bridge — which belongs to `architecture/mcp-bridge.md`, not here.
 
 ## Mental model
 
@@ -24,7 +24,7 @@ agent invocation, the Telegram update sink, conditionally-registered voice route
 inbound webhooks — which are a *single wildcard route* backed by a dynamically-maintained
 trigger allowlist, not per-trigger route registrations. (MCP and hook resolution are not
 on this app: they are served by the standalone loopback bridge `svc-casa-mcp`, which
-belongs to `architecture/mcp-and-tools.md`.) This document does not enumerate the routes; the registration block is the
+belongs to `architecture/mcp-bridge.md`.) This document does not enumerate the routes; the registration block is the
 authority and it changes.
 
 The **internal app** carries routes intended for other processes in the container to call —

@@ -238,7 +238,7 @@ socket. A restart is one such interval and a first boot is another: on a cold bo
 socket has never been opened, and boot replay restarts the engagements that were mid-flight
 before it is opened, so an engagement the system has just resumed can be denied here. The
 deny is one of three answers that condition produces, one per surface;
-[`architecture/mcp-and-tools.md`](mcp-and-tools.md) carries all three and the window they
+[`architecture/mcp-bridge.md`](mcp-bridge.md) carries all three and the window they
 share.
 
 **A hook runs long.** Hook forwarding is deliberately unbounded at the transport, governed
