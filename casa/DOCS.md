@@ -1299,6 +1299,10 @@ Such a button may also leave its card as it was (v0.344.58): with `"keep_card": 
 beside its call, a tap on, say, **See PDF** sends the file and the card keeps its text and
 every button, so you can still answer it. You can tap it again; any other button answers
 the card as before.
+A card can also carry a **Close** button (v0.344.64): a button with `"close": true` in place
+of a call, at most one per card, with the plugin's own label. Tap it, and the card's buttons
+disappear at once while its text stays; nothing runs and nothing is sent, and a later tap on
+the same card does nothing. Casa never adds one by itself.
 
 #### A file for a specialist (v0.343.0)
 

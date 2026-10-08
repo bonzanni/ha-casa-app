@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.344.64] - 2026-10-09
+
+### Added
+
+- A plugin's card can now carry a **Close** button. Tapping it removes the card's buttons at once and leaves its text as it was, so an optional button such as "Show payments without invoice" can no longer be tapped by mistake later. Casa handles the tap itself: no specialist turn runs, the plugin is not called, and nothing else is sent. A plugin adds it to a card as a button marked `"close": true` (with its own label, such as "Close"); Casa never adds one by itself, and cards without it behave as before. (#1375)
+
 ## [0.344.63] - 2026-10-09
 
 ### Changed

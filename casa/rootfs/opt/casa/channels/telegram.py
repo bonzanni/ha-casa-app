@@ -2206,6 +2206,12 @@ class TelegramChannel(Channel):
             labels = meta.get("options") or []
             label = labels[idx] if isinstance(idx, int) and 0 <= idx < len(labels) else "?"
             kinds = meta.get("kinds") or []
+            if isinstance(idx, int) and idx < len(kinds) and kinds[idx] == "close":
+                # #1375: a Close tap removes the keyboard and nothing else — the text stays
+                # as posted, no desk use, no plugin call, no model turn, nothing sent; the
+                # commit already makes every later tap "already answered"
+                await self.clear_dm_keyboard(chat_id, message_id)
+                return
             if isinstance(idx, int) and idx < len(kinds) and kinds[idx] == "arm_file":
                 # S6 §2.4 / R4-1: an arm_file tap edits the keyboard and sends NOTHING; a
                 # failed edit is told with past facts only — never "applying your tap",
@@ -4907,6 +4913,25 @@ class TelegramChannel(Channel):
             )
             return None
         return msg.message_id
+
+    async def clear_dm_keyboard(self, chat_id: int, message_id: int) -> bool:
+        """#1375: remove a posted DM message's inline keyboard by a markup-only edit
+        (an EXPLICIT empty markup — PTB drops a None one), so its text is never
+        re-sent. "Message is not modified" is success; any other failure is logged."""
+        from telegram import InlineKeyboardMarkup
+        try:
+            await self.bot.edit_message_reply_markup(
+                chat_id=chat_id, message_id=message_id, reply_markup=InlineKeyboardMarkup([]))
+            return True
+        except BadRequest as exc:
+            if "not modified" in str(exc).lower():
+                return True
+            logger.warning("clear_dm_keyboard failed (chat=%s message_id=%s): %s",
+                           chat_id, message_id, exc)
+        except Exception as exc:  # noqa: BLE001 — best-effort, never raise
+            logger.warning("clear_dm_keyboard failed (chat=%s message_id=%s): %s",
+                           chat_id, message_id, type(exc).__name__)
+        return False
 
     async def edit_dm_message(
         self, chat_id: int, message_id: int, text: str,
