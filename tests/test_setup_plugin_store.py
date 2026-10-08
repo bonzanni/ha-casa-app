@@ -25,7 +25,8 @@ def test_svc_deps_and_bundle_membership():
     # svc-casa + svc-casa-mcp start AFTER the plugin store; enrolled in bundle.
     assert (_S6 / "svc-casa" / "dependencies.d" / "init-plugin-store").is_file()
     assert (_S6 / "svc-casa-mcp" / "dependencies.d" / "init-plugin-store").is_file()
-    assert (_S6 / "user" / "contents.d" / "init-plugin-store").is_file()
+    assert (_ROOT / "etc" / "s6-overlay" / "user-bundles.d" / "user"
+            / "contents.d" / "init-plugin-store").is_file()
 
 
 def test_setup_plugin_store_script():

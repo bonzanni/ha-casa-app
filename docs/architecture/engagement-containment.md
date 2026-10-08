@@ -213,7 +213,14 @@ engagements'. The overlay version inside the release image is whatever the base 
 version-less `/package/admin/s6-overlay` link the base ships, never a versioned directory,
 and the image build refuses to complete when that link's sources directory is absent. A base
 that drops the link fails the build, not the first launch on an operator's install; the
-compile itself still fails closed (exit 111) and the launch rolls back.
+compile itself still fails closed (exit 111) and the launch rolls back. The same holds for
+the bundles that decide what starts at boot: since s6-overlay 3.2.3.2 the base keeps the
+`user` and `user2` bundles in `/etc/s6-overlay/user-bundles.d`, Casa adds its services to
+`user` there, and the runtime compile reads that directory beside Casa's service
+definitions in `/etc/s6-overlay/s6-rc.d` — the set the container's own boot compiles, plus
+the engagements. The image build compiles the same set, so a base that moves the bundles
+again, or a `user` bundle left among the service definitions, fails the build rather than
+every launch.
 
 **A plugin publishes a file named like an s6 program.** The driver runs every s6 program
 under a PATH without the plugin tools directory, so that file never runs in its place.

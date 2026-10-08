@@ -276,7 +276,7 @@ def _build_pin_image(_pin_image_tag: str) -> None:
         pytest.skip("docker not available")
     subprocess.run(
         ["docker", "build",
-         "--build-arg", "BUILD_FROM=ghcr.io/home-assistant/amd64-base-debian:bookworm-2026.08.0@sha256:c6a84eec9596b091494a7ba22836090ad56a98a4f73c7b9a9e7590273fc5c5ce",
+         "--build-arg", "BUILD_FROM=ghcr.io/home-assistant/amd64-base-debian:bookworm",
          "-t", _pin_image_tag, "-f", "casa/Dockerfile", "casa/"],
         check=True,
     )

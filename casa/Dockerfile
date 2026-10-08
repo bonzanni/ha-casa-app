@@ -4,20 +4,15 @@
 # manifest resolves to the right per-platform layer. We migrated off
 # alpine-python:3.12 in v0.8.1 for glibc wheels (onnxruntime, since retired);
 # the glibc base is kept.
-# Pinned by digest to docker-base 2026.08.0 (s6-overlay 3.2.3.0). The floating
-# `bookworm` tag moved to 2026.10.0 (s6-overlay 3.2.3.2) on 2026-10-08, and the
-# s6-rc launch-database compile below fails on it; the pin is lifted when Casa
-# moves to the new overlay layout. A digest is used as well as the tag because
-# the tag alone can be re-pushed.
-ARG BUILD_FROM=ghcr.io/home-assistant/base-debian:bookworm-2026.08.0@sha256:60cd882d5200157082e568a0b775cca0d9cb5704452ada3cf6f206c4dd6d83c5
+ARG BUILD_FROM=ghcr.io/home-assistant/base-debian:bookworm
 FROM ${BUILD_FROM}
 
 # #925: Casa recompiles the s6-rc database at every claude_code launch from
 # the base image's own s6-overlay sources, resolved through the version-less
 # /package/admin/s6-overlay link the base ships (-> s6-overlay-<version>).
-# The overlay version inside the image is whatever BUILD_FROM's base carries
-# (a floating tag until the 2026-10-08 pin above); this check runs against the
-# image actually released. A base that stops shipping the link fails the build here,
+# BUILD_FROM floats on a tag, so the overlay version inside the image is
+# whatever the base carries at build time; this check runs against the image
+# actually released. A base that stops shipping the link fails the build here,
 # not the first engagement launch on an install. The compile smoke after
 # `COPY rootfs /` below covers this too; this one stays because it fails before
 # the long install layers and names #925's exact diagnosis.
@@ -159,15 +154,18 @@ RUN chmod +x /etc/s6-overlay/scripts/*.sh \
     && chmod +x /usr/local/bin/casactl
 
 # #957: the launch database compiles in this image, as drivers/s6_rc.py compiles
-# it at every claude_code launch: the base's overlay sources plus the MERGED
-# /etc/s6-overlay/s6-rc.d. The base ships its own bundles in that directory, and
-# Casa's half does not compile alone, so this must follow `COPY rootfs /` and the
-# permissions above. The runtime passes a third source, the engagement services
-# under /data, which does not exist at build time and is left out. The database
-# is thrown away inside this layer. tests/test_s6_rc_overlay_sources.py keeps the
-# two paths equal to the driver's.
+# it at every claude_code launch: the base's overlay sources, Casa's service
+# definitions in /etc/s6-overlay/s6-rc.d, and the MERGED
+# /etc/s6-overlay/user-bundles.d. Since s6-overlay 3.2.3.2 (#1357) the base
+# ships the `user` and `user2` bundles in user-bundles.d and Casa only adds
+# members to `user`, so Casa's half does not compile alone and this must follow
+# `COPY rootfs /` and the permissions above. A `user` directory left in s6-rc.d
+# fails here too (a duplicate bundle, or one with no type). The runtime passes a
+# fourth source, the engagement services under /data, which does not exist at
+# build time and is left out. The database is thrown away inside this layer.
+# tests/test_s6_rc_overlay_sources.py keeps the three paths equal to the driver's.
 RUN scratch="$(mktemp -d)" \
-    && s6-rc-compile "${scratch}/db" /package/admin/s6-overlay/etc/s6-rc/sources /etc/s6-overlay/s6-rc.d \
+    && s6-rc-compile "${scratch}/db" /package/admin/s6-overlay/etc/s6-rc/sources /etc/s6-overlay/s6-rc.d /etc/s6-overlay/user-bundles.d \
     && rm -rf "${scratch}" \
     || { echo "the s6-rc launch database does not compile in this image (see drivers/s6_rc.py)" >&2; exit 1; }
 

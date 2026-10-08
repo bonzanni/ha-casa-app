@@ -63,6 +63,8 @@ def _repo(tmp_path: Path, ledger: str | None = None) -> Path:
     s6 = tmp_path / "casa" / "rootfs" / "etc" / "s6-overlay" / "s6-rc.d"
     (s6 / "svc-casa").mkdir(parents=True)
     (s6 / "init-setup").mkdir()
+    bundles = tmp_path / "casa" / "rootfs" / "etc" / "s6-overlay" / "user-bundles.d"
+    (bundles / "user" / "contents.d").mkdir(parents=True)
     (tmp_path / "docs").mkdir()
     (tmp_path / "docs" / "manifest.yaml").write_text(MANIFEST)
     if ledger is not None:
@@ -86,6 +88,7 @@ def test_enumeration_covers_every_surface_kind(tmp_path):
     assert "option:log_level" in items                     # options: key
     assert "option:new_key" in items                       # schema:-only key still counts
     assert "s6:svc-casa" in items and "s6:init-setup" in items
+    assert "s6:user" in items                              # #1357: user-bundles.d
     assert "tool:send_message" in items and "tool:react" in items
     assert "route:casa/rootfs/opt/casa/routes_mod.py:GET:/healthz" in items
     assert "route:casa/rootfs/opt/casa/routes_mod.py:POST:/invoke/{agent}" in items

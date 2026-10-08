@@ -119,8 +119,9 @@ Both edits belong in the same change.
 
 ## Extension points
 
-A new service means a new `s6-rc.d` directory and the dependency files that place it in the
-ordering; nothing in Python decides startup order.
+A new service means a new `s6-rc.d` directory, the dependency files that place it in the
+ordering, and an empty file named after it in `user-bundles.d/user/contents.d` so that it
+starts at boot; nothing in Python decides startup order.
 
 A new agent means a directory of configuration artifacts under the tier it belongs to — but
 what else it requires depends heavily on the tier, and the resident slots are a fixed set
