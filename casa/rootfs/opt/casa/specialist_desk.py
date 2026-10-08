@@ -953,6 +953,13 @@ def _tap_prompt(label: str, runtime_name: str, canonical: str) -> str:
             f"not write anything to the operator — Casa posts the tool's result.")
 
 
+def keeps_card(meta: dict, idx: int) -> bool:
+    """#1362: the tapped button is a ``keep_card`` file button — its tap settled
+    nothing, so nothing it does may write a line over the card."""
+    kinds = meta.get("kinds") or []
+    return isinstance(idx, int) and 0 <= idx < len(kinds) and kinds[idx] == "keep_card"
+
+
 def _assigned_plugin(resolution: Any, seg: str) -> Any:
     """The resolved plugin whose runtime segment is *seg*, or None."""
     from plugin_registry import runtime_name as _runtime_name
@@ -1005,6 +1012,7 @@ async def handle_tap(
     runtime = str(call.get("runtime_name") or "")
     canonical = str(call.get("canonical") or "")
     seg = str(meta.get("plugin_seg") or "")
+    keep = keeps_card(meta, idx)
 
     async def _notice(line: str) -> None:
         try:
@@ -1014,7 +1022,7 @@ async def handle_tap(
 
     async def _mark(line: str) -> None:
         mark = getattr(channel, "mark_proposal", None)
-        if mark is None:
+        if mark is None or keep:          # #1362: a keep_card tap leaves its card live
             return
         try:
             await mark(meta, line)
@@ -1063,8 +1071,10 @@ async def handle_tap(
                 await _refuse(why)
                 return
             deadline = meta.get("deadline")
-            if (not isinstance(deadline, (int, float))
-                    or asyncio.get_running_loop().time() >= deadline):
+            # #1362 (d1, both reviewers): a keep_card tap admitted while its card was
+            # live sends its file even if the TTL passed while it waited for the desk
+            if not keep and (not isinstance(deadline, (int, float))
+                             or asyncio.get_running_loop().time() >= deadline):
                 await _mark("⌛ expired")           # no notice, no exchange
                 return
             now = DESKS.now()

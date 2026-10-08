@@ -41,7 +41,8 @@ of the same plugin on the same (single, stdio) server — a `safe` tool that con
 reference, or a `capability` tool whose only provided slot is its own `operator_proposal`
 (the `More` exception: a button whose call renders the next page, with its own buttons), or
 one whose only provided slot delivers an `operator_file` (#1303: the landed file is the
-receipt; the file rides the delivered-slot path unchanged). A
+receipt; the file rides the delivered-slot path unchanged; such a button may leave its card
+live, #1362, [`stored-call-next-card.md`](stored-call-next-card.md)). A
 setup tool, a protected tool, a tool declared on an ambiguous or HTTP server, and any
 tool that consumes a reference are refused; so is a runtime name in place of a bare one.
 Arguments are a JSON object with identifier keys (no `_` prefix), values that are strings
@@ -171,7 +172,7 @@ desk: a reply on the proposal message routes to the specialist by the post map.
 
 ## Contracts & invariants
 
-**INV-PROP-001**: A tap on a proposal button admits for execution exactly the stored call bound to that button when the proposal was posted — the same tool, the same arguments by value as Casa's pin compares them, with any rewrite by an installed hook told on the receipt and logged, never prevented — at most once per proposal, on a desk that is not released to a later use until the CLI, the plugin servers it started and the ordinary children those servers started by termination time are terminated or the desk is faulted, only when tapped by the operator the proposal was posted for, on the message it was posted as, in the chat it was posted in, and only while the specialist that posted it is still assigned the same plugin artifact with a profile that allows that tool; every other callback is answered and executes nothing.
+**INV-PROP-001**: A tap on a proposal button admits for execution exactly the stored call bound to that button when the proposal was posted — the same tool, the same arguments by value as Casa's pin compares them, with any rewrite by an installed hook told on the receipt and logged, never prevented — at most once per proposal (a `keep_card` button: once per admitted tap, settling nothing — INV-PROP-010), on a desk that is not released to a later use until the CLI, the plugin servers it started and the ordinary children those servers started by termination time are terminated or the desk is faulted, only when tapped by the operator the proposal was posted for, on the message it was posted as, in the chat it was posted in, and only while the specialist that posted it is still assigned the same plugin artifact with a profile that allows that tool; every other callback is answered and executes nothing.
 
 What it does not cover: a worker a plugin deliberately detaches — `setsid`, a double fork —
 so that it is no descendant of the CLI at termination time (the plugin's responsibility); the time between the tap and the desk lock, during

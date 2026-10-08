@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.344.58] - 2026-10-08
+
+### Added
+
+- A plugin's file button can now leave its card as it was. A button that sends a file and is marked `"keep_card": true` (for example **See PDF** on a card that asks you to confirm a document) sends the file, and the card keeps its text and all its buttons, so you can look at the document and then answer the same card. You can tap it again; any other button answers the card as before. Buttons without the mark behave as they always have. (#1362)
+
 ## [0.344.57] - 2026-10-08
 
 ### Changed

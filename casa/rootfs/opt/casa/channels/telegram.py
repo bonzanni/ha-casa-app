@@ -2134,6 +2134,16 @@ class TelegramChannel(Channel):
                     return
                 meta["message_id"] = tapped
                 logger.info("proposal %s bound to its tapped message", rid[:8])
+            kinds = meta.get("kinds") or []
+            if idx < len(kinds) and kinds[idx] == "keep_card":
+                # #1362: a keep_card tap claims and commits nothing — the card keeps its
+                # text and every button; the file goes out through the same desk use
+                if not BROKER.is_live_unclaimed(namespace="proposal", scope=scope,
+                                                request_id=rid):
+                    return
+                toast = "✔"
+                self._spawn_keep_tap(meta=meta, idx=idx, request_id=rid)
+                return
             claim = BROKER.claim(namespace="proposal", scope=scope, request_id=rid,
                                  option_index=idx, actor_id=cq.from_user.id)
             if isinstance(claim, str):
@@ -2270,6 +2280,18 @@ class TelegramChannel(Channel):
                   if not isinstance(m.get("deadline"), (int, float)) or now >= m["deadline"]]:
             del self._proposal_settled[k]
 
+    def _spawn_keep_tap(self, *, meta: dict, idx: int, request_id: str) -> None:
+        """#1362: a keep_card tap has no settlement, so no finish hook hands it to
+        the desk — the callback does, as one tracked task (a stop drains it)."""
+        async def _run() -> None:
+            try:
+                await self._dispatch_proposal_tap(meta=meta, idx=idx, request_id=request_id)
+            except Exception:  # noqa: BLE001 — the card stays live; the tap is logged
+                logger.exception("keep_card tap dispatch failed (rid=%s)", request_id[:8])
+        task = asyncio.create_task(_run())
+        self._turn_tasks.add(task)
+        task.add_done_callback(self._turn_tasks.discard)
+
     async def _dispatch_proposal_tap(self, *, meta: dict, idx: int, request_id: str) -> bool:
         """S5 §4.2 steps 2–5: reserve the specialist's desk (a full queue ⇒
         the busy line on the keyboard and the busy notice, nothing runs), take
@@ -2279,11 +2301,14 @@ class TelegramChannel(Channel):
         chat_id, desk_role = int(meta["chat_id"]), str(meta.get("role") or "")
         label = specialist_desk.label_for(desk_role)
         desk = specialist_desk.DESKS.get_or_create(chat_id, desk_role)
+        # #1362: a keep_card tap never writes a line over its card
+        keep = specialist_desk.keeps_card(meta, idx)
         if desk.faulted:
             line = specialist_desk.faulted_line(label)
             await self.deliver_desk_notice(chat_id, line)
             specialist_desk.record_echo(chat_id, line)
-            await self.mark_proposal(meta, "✖ faulted")
+            if not keep:
+                await self.mark_proposal(meta, "✖ faulted")
             return True
         reservation = desk.reserve()
         if reservation is None:
@@ -2293,7 +2318,8 @@ class TelegramChannel(Channel):
                 chat_id, f"{label} is busy; the specialist will propose again, or type your verdict.")
             # §10: the resident's line names the refused tap, as the desk's own refusals do
             specialist_desk.record_echo(chat_id, f"{label} refused your tap ({button}): busy.")
-            await self.mark_proposal(meta, "✖ busy")
+            if not keep:
+                await self.mark_proposal(meta, "✖ busy")
             return True
         cid = new_cid()
         self._start_typing(str(chat_id), cid)

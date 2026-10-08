@@ -1294,6 +1294,10 @@ A button can also send you a file (v0.344.37): a plugin tool whose one slot
 delivers a file may be stored on a button, so a tap on, say, **Get package**
 sends the freshly built file, and the file itself is the answer to your tap. If
 it cannot be sent, Casa tells you it could not apply your tap, with the reason.
+Such a button may also leave its card as it was (v0.344.58): with `"keep_card": true`
+beside its call, a tap on, say, **See PDF** sends the file and the card keeps its text and
+every button, so you can still answer it. You can tap it again; any other button answers
+the card as before.
 
 #### A file for a specialist (v0.343.0)
 
