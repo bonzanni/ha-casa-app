@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.344.57] - 2026-10-08
+
+### Changed
+
+- When you ask the assistant to change something in Casa, the configurator starts about 3–4 seconds sooner, and so does the assistant's "configurator's on it". Before starting, Casa searched memory for notes from earlier configurator work and waited for the result, though it then set most of those notes aside because they were written under older instructions. The configurator now starts without them. Notes on each finished configurator task are still kept, and the assistant can still look them up. (#1351)
+- When the assistant hands a question to a specialist such as finance, the specialist's memory search before it starts now uses only the first 16 words of the assistant's request instead of the whole request. The memory service ranks results more slowly the longer the search text is, so this cuts a few seconds from each hand-off. The specialist still reads the whole request. (#1351)
+
+### Fixed
+
+- The notes for 0.344.51 said that a specialist's answer that is nothing but `<silent/>` still posts nothing. That is not quite what happens. When you reply to a specialist's post and its answer is nothing but `<silent/>`, and it posted nothing else, Casa tells you "<name> had nothing to add.", as it has since 0.341.0. (#1347)
+
 ## [0.344.56] - 2026-10-08
 
 ### Fixed

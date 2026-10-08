@@ -14,6 +14,7 @@
     - casa/rootfs/opt/casa/recall_renderer.py::render_recall
     - casa/rootfs/opt/casa/recall_health.py::observed_recall
     - casa/rootfs/opt/casa/delegated_memory.py::delegated_recall
+    - casa/rootfs/opt/casa/delegated_memory.py::topical_query
     - casa/rootfs/opt/casa/timekeeping.py::resolve_period
   tests:
     - tests/test_recall_absence_invariant.py
@@ -24,6 +25,7 @@
     - tests/test_1123_tier_floor_regressions.py
     - tests/test_pin_1120_recall_period.py
     - tests/test_1336_unauthored_recall_query.py
+    - tests/test_specialist_memory_tiers.py::test_long_brief_recalls_with_its_opening_words_only
   related: [architecture/overview.md, architecture/turn-loop.md, architecture/memory-lifecycle.md, architecture/memory-mental-models.md, architecture/memory-scoping.md, architecture/memory-wipe.md]
   defines_invariants: [INV-MEM-001, INV-MEM-002, INV-MEM-010, INV-MEM-019]
   invariant_tests:

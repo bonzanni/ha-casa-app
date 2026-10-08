@@ -972,3 +972,21 @@ class TestExecutorDisallowedMerge:
         perms_bash = _build_cc_permissions(defn_bash)
         assert {"Agent", "Task"} <= set(perms_bash["deny"])
         assert "Bash" not in perms_bash["deny"]
+
+
+def test_shipped_configurator_does_not_recall_its_archive_at_launch():
+    """#1351: the configurator's archive recall blocked both the assistant's
+    acknowledgement and the topic's first words for 3–4 s on prod (8–14 s on
+    casa-test), and 68–100 % of its hits were dropped as another doctrine
+    epoch. The shipped configurator therefore starts without it; its
+    engagement summaries are still retained for query_engager."""
+    from pathlib import Path
+    from agent_loader import load_all_executors
+
+    agents_base = (
+        Path(__file__).resolve().parents[1]
+        / "casa" / "rootfs" / "opt" / "casa" / "defaults" / "agents"
+    )
+    out, failed = load_all_executors(str(agents_base))
+    assert failed == []
+    assert out["configurator"].memory.enabled is False

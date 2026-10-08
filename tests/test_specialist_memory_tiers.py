@@ -1072,3 +1072,90 @@ async def test_whitespace_only_task_submits_nothing(
 
     assert retain_invocations == []
     assert fake_sem.retain_calls == []
+
+
+# ---------------------------------------------------------------------------
+# #1351: a delegation recalls with a short topical query, not the whole brief
+# ---------------------------------------------------------------------------
+
+
+async def test_long_brief_recalls_with_its_opening_words_only(monkeypatch):
+    """The memory service's reranker cost grows with the query's length
+    (#1336 measured 1.5 s at ~20 tokens against 12–20 s at 350–450), and a
+    delegation brief runs to hundreds of tokens. The specialist's recall uses
+    the brief's opening words instead."""
+    import agent as agent_mod
+    cfg = _specialist_cfg(role="finance", token_budget=4000)
+    task_text = (
+        "Find what we paid Vodafone for the September mobile bill. "
+        "The operator asked in the chat a minute ago and wants the amount and "
+        "the date it left the account. Check the bank feed first; if it is "
+        "not there, search the mailbox for the invoice and read its total. "
+        "Answer in one or two sentences, and say which source you used."
+    )
+    fake_sem = _FakeSem(recall_ret="")
+    monkeypatch.setattr(agent_mod, "active_semantic_memory", fake_sem, raising=False)
+    _set_origin(monkeypatch, channel="telegram")
+    _FakeSDKClient.reset()
+
+    with patch.object(tools, "ClaudeSDKClient", _FakeSDKClient):
+        await tools._run_delegated_agent(cfg, task_text=task_text, context_text="")
+
+    assert len(fake_sem.recall_calls) == 1
+    assert fake_sem.recall_calls[0]["query"] == (
+        "Find what we paid Vodafone for the September mobile bill. "
+        "The operator asked in the chat"
+    )
+    # the specialist itself still reads the whole brief
+    assert task_text in _FakeSDKClient.captured_prompt
+
+
+async def test_a_run_on_brief_is_capped_in_words(monkeypatch):
+    import agent as agent_mod
+    from delegated_memory import TOPICAL_QUERY_MAX_WORDS
+    cfg = _specialist_cfg(role="finance", token_budget=4000)
+    words = [f"w{i}" for i in range(TOPICAL_QUERY_MAX_WORDS + 25)]
+    task_text = " ".join(words)
+    fake_sem = _FakeSem(recall_ret="")
+    monkeypatch.setattr(agent_mod, "active_semantic_memory", fake_sem, raising=False)
+    _set_origin(monkeypatch, channel="telegram")
+    _FakeSDKClient.reset()
+
+    with patch.object(tools, "ClaudeSDKClient", _FakeSDKClient):
+        await tools._run_delegated_agent(cfg, task_text=task_text, context_text="")
+
+    assert len(fake_sem.recall_calls) == 1
+    assert fake_sem.recall_calls[0]["query"] == " ".join(
+        words[:TOPICAL_QUERY_MAX_WORDS])
+
+
+@pytest.mark.parametrize("task_text, query", [
+    # #1351 x1 (Astra, Terra): a sentence split lost the subject after a
+    # heading, a framing label or an abbreviation
+    ("Task:\nFind the September Vodafone payment.",
+     "Task: Find the September Vodafone payment."),
+    ("# Task\nFind the September Vodafone payment.",
+     "Task Find the September Vodafone payment."),
+    ("# Bank reconciliation\n- Match the €120 payment of 3 September.",
+     "Bank reconciliation Match the €120 payment of 3 September."),
+    ("E.g. find the €1.200,50 transfer to Esselunga in August.",
+     "E.g. find the €1.200,50 transfer to Esselunga in August."),
+    ("Check e.g. Vodafone invoices against September bank payments.",
+     "Check e.g. Vodafone invoices against September bank payments."),
+    # #1351 x2 (Astra): a reply of symbols only still searches, as before
+    ("???", "???"),
+    ("  💡? ", "💡?"),
+])
+async def test_brief_formatting_keeps_the_subject_in_the_query(
+        monkeypatch, task_text, query):
+    import agent as agent_mod
+    cfg = _specialist_cfg(role="finance", token_budget=4000)
+    fake_sem = _FakeSem(recall_ret="")
+    monkeypatch.setattr(agent_mod, "active_semantic_memory", fake_sem, raising=False)
+    _set_origin(monkeypatch, channel="telegram")
+    _FakeSDKClient.reset()
+
+    with patch.object(tools, "ClaudeSDKClient", _FakeSDKClient):
+        await tools._run_delegated_agent(cfg, task_text=task_text, context_text="")
+
+    assert [c["query"] for c in fake_sem.recall_calls] == [query]

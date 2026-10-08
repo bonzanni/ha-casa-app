@@ -17,8 +17,14 @@ answer — the delegate's text attributed "Alex: ", whitespace collapsed — or,
 for a question the delegate asks Ellen to put to the person, when the reply is
 the delegate's answer attributed and verbatim (its closing full stop may become
 a dash or a comma joining the question), then that one question in one of its
-faithful forms (``QUESTION``, full match) and nothing more. A ``silent`` case passes only
-when the reply strips to silence.
+faithful forms (``QUESTION``, full match) and nothing more. Since #1348 the
+question may instead be put with ``ask_user``, whose fake answers in the
+production ``awaiting_user`` shape with Casa's silence note: then the question
+carries the delegate's answer (``_ANSWER_HEAD``) and asks which one, or the
+reply is the attributed answer and the question only asks which one — a
+"which" question judged by its words (``_is_which_question``); its buttons are exactly the two names, and the reply holds
+nothing else (``_judge_asked``). A ``silent`` case passes only when the reply
+strips to silence.
 
 ``--variant baseline`` serves the projection as compiled. ``--variant doctrine``
 serves the same projection with ``DOCTRINE_PARAGRAPH`` inserted after the
@@ -105,6 +111,51 @@ QUESTION = re.compile(
     r"|please tell me which (?:one|invoice) it pays)"
     r"[:,]? (?:the )?snelstart(?: one| invoice)? or (?:the )?moneybird(?: one| invoice)?[.?]",
     re.IGNORECASE)
+# The same question put with ``ask_user`` (#1348): its text carries the
+# delegate's answer in one of these renderings and asks which one, or — when
+# the reply already passed the answer on — only asks which one. The buttons
+# carry the names, so the question may leave them out.
+#
+# The "which one" question is a small grammar, not a list of phrasings (three
+# rounds each found one more faithful phrasing a list missed) and not a bag of
+# words (x4: a bag accepted "which invoice should be paid?" and an appended
+# "please pay the invoice"): "which one|invoice" (optionally after "please
+# tell me"), then at most six words that only relate the payment to an
+# invoice — no "should", "be", "paid" or "please" — then optionally the two
+# names in either order after ":" or ",", then "?" or ".". Nothing else.
+_RELATE_WORDS = frozenset(
+    "does do is was it its the payment pay pays cover covers match matches "
+    "matched belong belongs correspond corresponds to for this that €120".split())
+# Whole relation phrases outside that vocabulary that still only ask which
+# invoice the payment is for (x5: a live model may write them).
+_RELATE_PHRASES = frozenset({"should it be matched to", "should i match it to"})
+_WHICH_HEAD = re.compile(r"(?:please tell me )?which (?:one|invoice) ", re.IGNORECASE)
+_NAMES_TAIL = re.compile(
+    r"(?:[:,] (?:(?:the )?snelstart(?: one| invoice)? or (?:the )?moneybird(?: one| invoice)?"
+    r"|(?:the )?moneybird(?: one| invoice)? or (?:the )?snelstart(?: one| invoice)?))?[.?]$",
+    re.IGNORECASE)
+
+
+def _is_which_question(text: str) -> bool:
+    t = text.strip()
+    head = _WHICH_HEAD.match(t)
+    if head is None:
+        return False
+    rest = t[head.end():]
+    tail = _NAMES_TAIL.search(rest)
+    if tail is None:
+        return False
+    middle = rest[:tail.start()].split()
+    if " ".join(middle).lower() in _RELATE_PHRASES:
+        return True
+    return 1 <= len(middle) <= 6 and all(w.lower() in _RELATE_WORDS for w in middle)
+
+
+_ANSWER_HEAD = re.compile(
+    r"(?:alex: |alex found |alex says )?(?:two|2) invoices (?:that )?"
+    r"(?:fit|could match|match) the €120 payment (?:of|from|on) 3 september"
+    r"(?:\.|,|:| —| –| -) ", re.IGNORECASE)
+ASK_OPTIONS = {"snelstart", "moneybird"}
 CASES = [
     {"id": "q1-not-in-books", "user": "do Q1 2026", "desk": Q1,
      "expect": [f"Alex: {Q1}", f'Alex: "{Q1}"']},
@@ -203,6 +254,27 @@ def _judge(case: dict, reply: str) -> tuple[bool, str]:
     return True, "question reached the person"
 
 
+def _judge_asked(case: dict, reply: str, asked: dict) -> tuple[bool, str]:
+    """The delegate's question put with ``ask_user``: its buttons are exactly
+    the two names, and either the reply is silence and the question carries
+    the answer, or the reply is the attributed answer alone and the question
+    only asks which one. Nothing else is accepted."""
+    options = asked.get("options") or []
+    names = {re.sub(r"\s+invoice$", "", _norm(str(o)).lower()) for o in options}
+    if len(options) != 2 or names != ASK_OPTIONS:
+        return False, "buttons are not the two invoices"
+    question = _norm(str(asked.get("question", "")))
+    from output_boundary import strips_to_silence
+    if strips_to_silence(reply):
+        head = _ANSWER_HEAD.match(question)
+        ok = head is not None and _is_which_question(question[head.end():])
+        return ok, "asked with the answer" if ok else "question not the delegate's"
+    if re.fullmatch(re.escape(_norm(case["prefix"])) + r"\.?", _norm(reply)):
+        ok = _is_which_question(question)
+        return ok, "answer passed on, then asked" if ok else "question not the delegate's"
+    return False, "reply holds more than the answer"
+
+
 async def _one(case: dict, system_prompt: str, model: str) -> tuple[bool, str, list, str]:
     captured: list = []
     result = json.dumps({"status": "ok", "delegation_id": "0f3c9a2e-eval",
@@ -210,7 +282,10 @@ async def _one(case: dict, system_prompt: str, model: str) -> tuple[bool, str, l
                          "output_truncated": False}, ensure_ascii=False)
     fakes = [
         _fake(casa_tools.delegate_to_agent, captured, result),
-        _fake(casa_tools.ask_user, captured, '{"status": "pending"}'),
+        # #1348: the production live-DM result, Casa's silence note included
+        _fake(casa_tools.ask_user, captured, json.dumps({
+            "status": "awaiting_user", "request_id": "5d1e0c7aeval",
+            "note": casa_tools.ASK_USER_SILENCE_NOTE})),
         _fake(casa_tools.start_job, captured, '{"status": "pending"}'),
     ]
     server = create_sdk_mcp_server(name="casa-framework", tools=fakes)
@@ -238,6 +313,12 @@ async def _one(case: dict, system_prompt: str, model: str) -> tuple[bool, str, l
         from output_boundary import strips_to_silence
         ok = strips_to_silence(reply)
         return ok, "silent" if ok else "spoke", captured, reply
+    asks = [args for name, args in captured if name == "ask_user"]
+    if asks:
+        if "question" not in case or len(asks) != 1:
+            return False, "asked", captured, reply
+        ok, why = _judge_asked(case, reply, asks[0])
+        return ok, why, captured, reply
     ok, why = _judge(case, reply)
     return ok, why, captured, reply
 

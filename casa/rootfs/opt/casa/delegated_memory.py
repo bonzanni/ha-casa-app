@@ -38,6 +38,28 @@ from tier_classifier import classify_tier
 
 logger = logging.getLogger(__name__)
 
+# #1351: the memory service's reranker scores every candidate against the
+# query, and its cost grows with the query's length — #1336 measured ~1.5 s
+# for a ~20-token query against 12–20 s for 350–450 tokens. A delegation brief
+# runs to hundreds of tokens, so a specialist recalls with the brief's opening
+# words instead: the first this many words that carry a letter or digit, so
+# markdown markers (``#``, ``-``, ``>``) are skipped. Words, not a sentence:
+# a sentence split stops at "e.g." or at a heading such as "Task:" and loses
+# the subject that follows (#1351 x1).
+TOPICAL_QUERY_MAX_WORDS = 16
+
+
+def topical_query(text: str) -> str:
+    """The opening :data:`TOPICAL_QUERY_MAX_WORDS` words of ``text`` that
+    carry a letter or digit — a short recall query for a long brief. Text
+    with no such word (an operator's "???") is returned stripped as it is, so
+    it still searches (#1351 x2). Blank in, blank out (callers keep their own
+    blank-query guard)."""
+    words = [w for w in (text or "").split() if any(c.isalnum() for c in w)]
+    if not words:
+        return (text or "").strip()
+    return " ".join(words[:TOPICAL_QUERY_MAX_WORDS])
+
 
 async def delegated_recall(
     semantic_memory: Any, *, query: str, origin_channel: str, max_tokens: int,
