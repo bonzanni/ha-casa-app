@@ -227,6 +227,12 @@ directory first, only after `setpriv` has dropped. Both `setpriv` preflights loo
 the same filtered PATH. A run script without that filter reads stale, so boot replay
 re-plants its pair once the service is confirmed down (INV-CONT-005).
 
+**The executor's model moves.** The run script passes the executor's resolved model and the
+effort Casa decides for it (`cli_model_flags`) on a line of its own; left out, the CLI would
+pick its own default model, which moves between CLI releases. Boot replay reads a script whose
+line differs from the executor's current flags as stale and re-plants its pair the same way,
+so an engagement planted before a model change resumes on the new model.
+
 **A service will not confirm down.** By then the ladder has re-issued the stop, latched the
 service down and attempted its kill rungs, and it is still not confirmed down — either the
 strict probe will not call it down, or the last kill could not be delivered at all — its pid

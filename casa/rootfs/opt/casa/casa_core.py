@@ -38,7 +38,7 @@ from claude_runtime import (
     CLAUDE_CLI_VERSION,
     verify_effective_cli,
 )
-from config import AgentConfig
+from config import AgentConfig, resolve_model
 from config_git import init_repo, snapshot_manual_edits
 import engagement_quiesce
 from engagement_uids import (
@@ -518,8 +518,9 @@ async def replay_undergoing_engagements(
         UidDropRefused, _check_plugin_dirs_readable,
     )
     from drivers.workspace import (
-        chown_workspace, fifo_path, refresh_claude_md, render_log_run_script,
-        render_run_script, workspace_mcp_token, workspace_mcp_url,
+        chown_workspace, cli_model_flags, fifo_path, refresh_claude_md,
+        render_log_run_script, render_run_script, workspace_mcp_token,
+        workspace_mcp_url,
         write_workspace_mcp_json,
     )
 
@@ -1513,6 +1514,7 @@ async def replay_undergoing_engagements(
                     if not s6_rc.run_script_is_stale(
                         svc_root=s6_rc.ENGAGEMENT_SOURCES_ROOT,
                         engagement_id=rec.id,
+                        model_flags=cli_model_flags(defn_any.model),
                     ):
                         # Sol r3-2 (#342): the fast path must not trust
                         # pair-completeness as FIFO-existence — recreate
@@ -1521,8 +1523,9 @@ async def replay_undergoing_engagements(
                         await _ensure_stdin_fifo(rec)
                         continue
                     logger.info(
-                        "boot replay: migrating pre-v0.75 run script for "
-                        "engagement %s (%s) — re-rendering pair",
+                        "boot replay: migrating a stale run script (pre-v0.75 "
+                        "contract, or another model) for engagement %s (%s) — "
+                        "re-rendering pair",
                         rec.id[:8], rec.role_or_type,
                     )
                     s6_rc.remove_service_dir(
@@ -1616,6 +1619,7 @@ async def replay_undergoing_engagements(
                     extra_dirs=list(defn.extra_dirs or []),
                     plugin_dirs=[pa["path"] for pa in rec.plugin_artifacts],
                     uid=_rec_uid, gid=_rec_uid,
+                    model=defn.model,
                 )
                 log_script = render_log_run_script(engagement_id=rec.id)
                 s6_rc.write_service_dir(
@@ -4991,7 +4995,8 @@ async def main() -> None:
     observer = Observer(
         bus=bus,
         engagement_registry=engagement_registry,
-        model_name=os.environ.get("SECONDARY_AGENT_MODEL", "haiku"),
+        # #1353: pinned to the full Haiku id, never a bare CLI alias.
+        model_name=resolve_model("haiku"),
     )
     await observer.subscribe()
     # L68/L17: stash so _finalize_engagement can prune per-engagement

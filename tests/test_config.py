@@ -19,13 +19,13 @@ except ImportError:
 
 class TestResolveModel:
     def test_shortname_opus(self):
-        assert resolve_model("opus") == "claude-opus-5"
+        assert resolve_model("opus") == "claude-opus-5-5"
 
     def test_shortname_sonnet(self):
-        assert resolve_model("sonnet") == "claude-sonnet-5"
+        assert resolve_model("sonnet") == "claude-sonnet-5-5"
 
     def test_shortname_haiku(self):
-        assert resolve_model("haiku") == "claude-haiku-4-5"
+        assert resolve_model("haiku") == "claude-haiku-5-5"
 
     def test_passthrough_full_id(self):
         assert resolve_model("claude-sonnet-4-6") == "claude-sonnet-4-6"

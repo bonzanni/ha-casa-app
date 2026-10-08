@@ -11,7 +11,9 @@ from role_artifact import RoleArtifactSource
 
 FIXED_RESIDENT_SLOTS: tuple[str, ...] = ("assistant", "butler", "concierge")
 _KINDS = ("resident", "specialist", "executor")
-_MODELS = ("opus", "sonnet", "haiku")
+# #1353: a fixed model is a shortname, or one pinned full id: the configurator
+# and the plugin-developer stay on Sonnet 5 while ``sonnet`` means Sonnet 5.5.
+_MODELS = ("opus", "sonnet", "haiku", "claude-sonnet-5")
 
 
 def compute_effective_config_digest(config: Mapping[str, object]) -> str:

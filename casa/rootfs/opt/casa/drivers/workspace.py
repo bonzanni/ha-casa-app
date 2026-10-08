@@ -15,6 +15,7 @@ import yaml
 
 from atomic_io import atomic_write_json
 from claude_runtime import CROSS_SESSION_INBOUND, with_cross_session_tools_denied
+from config import effort_for
 from drivers.hook_bridge import translate_hooks_to_settings
 from engagement_uids import (
     UID_BASE, UNALLOCATED_UID, ensure_identity, owner_uid_or_none,
@@ -130,6 +131,9 @@ def executor_memory_path(engagement_id: str, *, root: str | None = None) -> str:
 # export line and ran arbitrary commands. Same upper-snake convention
 # as ``plugin_env_conf._VAR_NAME_RE``.
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+
+# #1353: a model id interpolated into the run script's ``--model`` flag.
+_MODEL_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
 
 # #429 r2 (Terra): the template's OWN exports, which `{EXTRA_EXPORT}` is
 # interpolated AFTER — so an extra_env entry naming one silently overrides
@@ -319,12 +323,31 @@ def _root_path_fragment() -> str:
     )
 
 
+def cli_model_flags(model: str) -> str:
+    """#1353: the ``--model``/``--effort`` flags a claude_code engagement's
+    run script passes — the executor's resolved model at its decided effort.
+    Left out, the CLI picks its own default model, which moves between CLI
+    releases. One constructor for the renderer and for boot replay's
+    staleness check (``drivers.s6_rc.run_script_is_stale``), so a script
+    rendered for another model, or before the flags existed, reads as stale.
+    Validated before it reaches the shell: a model id is lowercase letters,
+    digits and hyphens."""
+    if not isinstance(model, str) or not _MODEL_ID_RE.fullmatch(model):
+        raise ValueError(f"invalid model id {model!r}")
+    flags = f"--model {model}"
+    effort = effort_for(model)
+    if effort is not None:
+        flags += f" --effort {effort}"
+    return flags
+
+
 def render_run_script(
     *, engagement_id: str, permission_mode: str,
     extra_dirs: list[str], extra_unset: list[str] | None = None,
     extra_env: dict[str, str] | None = None,
     plugin_dirs: list[str] | None = None,
     uid: int = UNALLOCATED_UID, gid: int = UNALLOCATED_UID,
+    model: str,
 ) -> str:
     """Read the run-script template and substitute per-engagement values.
 
@@ -365,6 +388,12 @@ def render_run_script(
             f"render_run_script: refusing to render for unallocated/invalid "
             f"gid={gid!r} (must be >= UID_BASE={UID_BASE})"
         )
+
+    # #1353: the engagement runs the executor's resolved model at its
+    # decided effort, passed explicitly — left out, the CLI picks its own
+    # default model, which moves between CLI releases. Validated before it
+    # reaches the shell: a model id is lowercase letters, digits and hyphens.
+    model_flags = cli_model_flags(model)
 
     with open(_TEMPLATE_PATH, "r", encoding="utf-8") as fh:
         template = fh.read()
@@ -447,6 +476,7 @@ def render_run_script(
         .replace("{UID}", str(uid))
         .replace("{GID}", str(gid))
         .replace("{PERMISSION_MODE}", permission_mode)
+        .replace("{MODEL_FLAGS}", model_flags)
         .replace("{ADD_DIR_FLAGS}", add_dir_flags)
         .replace("{PLUGIN_DIR_FLAGS}", plugin_dir_flags)
         .replace("{EXTRA_UNSET}", extra_unset_str)

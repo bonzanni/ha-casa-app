@@ -73,4 +73,5 @@ exec setpriv --reuid {UID} --regid {GID} --clear-groups \
              -- env PATH="$_casa_cli_path" claude --channels server:casa-engagement-channel \
              --print --verbose --output-format stream-json \
              "${RESUME_ARGS[@]}" --permission-mode {PERMISSION_MODE} \
+             {MODEL_FLAGS} \
              {ADD_DIR_FLAGS} {PLUGIN_DIR_FLAGS}

@@ -27,7 +27,7 @@ from pathlib import Path
 import pytest
 
 from drivers import s6_rc
-from drivers.workspace import render_log_run_script, render_run_script
+from drivers.workspace import cli_model_flags, render_log_run_script, render_run_script
 
 REPO_SCRIPTS = Path(__file__).resolve().parent.parent / "casa/rootfs/opt/casa/scripts"
 TEMPLATE = REPO_SCRIPTS / "engagement_run_template.sh"
@@ -142,7 +142,7 @@ def _render_run_script(tmp_path: Path, final: str | None = None) -> Path:
     ws, ctl = tmp_path / "ws", tmp_path / "ctl"
     (ws / ".home").mkdir(parents=True, exist_ok=True)
     ctl.mkdir(parents=True, exist_ok=True)
-    s = render_run_script(engagement_id=ENG_ID, permission_mode="acceptEdits",
+    s = render_run_script(model="claude-sonnet-5", engagement_id=ENG_ID, permission_mode="acceptEdits",
                           extra_dirs=[], plugin_dirs=[], uid=UID, gid=UID)
     for old, new in (
             (f"/data/engagements/{ENG_ID}", str(ws)),
@@ -328,7 +328,8 @@ def _stale(tmp_path: Path, text: str) -> bool:
     run.parent.mkdir(parents=True, exist_ok=True)
     run.write_text(text)
     return s6_rc.run_script_is_stale(svc_root=str(tmp_path / "svc"),
-                                     engagement_id=ENG_ID)
+                                     engagement_id=ENG_ID,
+                                     model_flags=cli_model_flags("claude-sonnet-5"))
 
 
 @pytest.mark.parametrize("decoy", [
@@ -343,7 +344,7 @@ def test_a_pre_fix_run_script_reads_stale(tmp_path, decoy):
 
 def test_a_fresh_render_is_not_stale(tmp_path):
     """Positive control for the case above."""
-    text = render_run_script(engagement_id=ENG_ID, permission_mode="acceptEdits",
+    text = render_run_script(model="claude-sonnet-5", engagement_id=ENG_ID, permission_mode="acceptEdits",
                              extra_dirs=[], plugin_dirs=[], uid=UID, gid=UID)
     assert _stale(tmp_path, text) is False
 

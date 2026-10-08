@@ -191,7 +191,7 @@ def test_template_path_handles_bundled_plugin_developer(tmp_path):
 
 def test_render_run_script_plugin_dir_flags():
     from drivers.workspace import render_run_script
-    out = render_run_script(
+    out = render_run_script(model="claude-sonnet-5",
         engagement_id="e" * 32, permission_mode="acceptEdits", extra_dirs=[],
         plugin_dirs=["/config/plugins/store/a/aaa",
                      "/config/plugins/store/b/bbb"], uid=200005, gid=200005)
@@ -203,7 +203,7 @@ def test_render_run_script_rejects_relative_or_shell_special_plugin_dir():
     from drivers.workspace import render_run_script, WorkspaceConfigError
     for bad in ("relative/path", "/a;rm -rf /", "/a$(evil)", "/a|b"):
         with pytest.raises(WorkspaceConfigError):
-            render_run_script(engagement_id="e" * 32,
+            render_run_script(model="claude-sonnet-5", engagement_id="e" * 32,
                               permission_mode="acceptEdits", extra_dirs=[],
                               plugin_dirs=[bad], uid=200005, gid=200005)
 
@@ -261,14 +261,14 @@ _RINGLOG = os.path.abspath(
 @pytest.fixture
 def rendered_run_script():
     from drivers.workspace import render_run_script
-    return render_run_script(engagement_id="e" * 32, permission_mode="acceptEdits",
+    return render_run_script(model="claude-sonnet-5", engagement_id="e" * 32, permission_mode="acceptEdits",
                               extra_dirs=[], plugin_dirs=[], uid=200005, gid=200005)
 
 
 @pytest.fixture
 def rendered_probe_script():
     from drivers.workspace import render_run_script
-    return render_run_script(engagement_id=_PROBE_ID, permission_mode="acceptEdits",
+    return render_run_script(model="claude-sonnet-5", engagement_id=_PROBE_ID, permission_mode="acceptEdits",
                               extra_dirs=[], plugin_dirs=[], uid=200005, gid=200005)
 
 
@@ -626,7 +626,7 @@ def test_render_run_script_refuses_to_shadow_its_own_exports():
     import pytest as _pytest
     from drivers.workspace import WorkspaceConfigError, render_run_script
     with _pytest.raises(WorkspaceConfigError) as exc:
-        render_run_script(
+        render_run_script(model="claude-sonnet-5",
             engagement_id="e" * 32, permission_mode="acceptEdits",
             extra_dirs=[], extra_env={"MCP_TOOL_TIMEOUT": ""}, uid=200005, gid=200005)
     assert "MCP_TOOL_TIMEOUT" in str(exc.value)
@@ -634,7 +634,7 @@ def test_render_run_script_refuses_to_shadow_its_own_exports():
 
 def test_render_run_script_still_accepts_an_ordinary_extra_env():
     from drivers.workspace import render_run_script
-    out = render_run_script(
+    out = render_run_script(model="claude-sonnet-5",
         engagement_id="e" * 32, permission_mode="acceptEdits",
         extra_dirs=[], extra_env={"CASA_BANKFEED_EB_CP_TOKEN": ""}, uid=200005, gid=200005)
     assert "export CASA_BANKFEED_EB_CP_TOKEN=''" in out

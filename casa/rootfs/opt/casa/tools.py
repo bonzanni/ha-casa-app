@@ -72,6 +72,7 @@ from output_boundary import (
     Admitted, ApprovalCut, IntentKind, ReadBeforeDescribe, TurnScope,
     UnadmittedText, casa_text, resolve_scope,
 )
+from config import current_resident_model, effort_for, resolve_model
 from claude_runtime import (
     CLAUDE_CLI_PATH,
     SDK_MAX_BUFFER_SIZE,
@@ -2576,6 +2577,7 @@ def _build_specialist_options(
 
     return ClaudeAgentOptions(
         model=cfg.model,
+        effort=effort_for(cfg.model),
         cli_path=CLAUDE_CLI_PATH,
         max_buffer_size=SDK_MAX_BUFFER_SIZE,
         system_prompt=resolved_system_prompt,
@@ -2681,8 +2683,10 @@ def _build_plugin_job_options(rec, resolution,
         if _mcp_registry is not None else {})
     cwd = plugin_job_cwd(rec.id)
     cwd.mkdir(parents=True, exist_ok=True)
+    _job_model = current_resident_model(identity["model"])
     return ClaudeAgentOptions(
-        model=identity["model"], cli_path=CLAUDE_CLI_PATH,
+        model=_job_model, effort=effort_for(_job_model),
+        cli_path=CLAUDE_CLI_PATH,
         max_buffer_size=SDK_MAX_BUFFER_SIZE,
         system_prompt=_PLUGIN_JOB_PROMPT,
         allowed_tools=allowed,
@@ -2850,6 +2854,7 @@ def _build_executor_options(
     # plugin-env.conf, etc.).
     return ClaudeAgentOptions(
         model=defn.model,
+        effort=effort_for(defn.model),
         cli_path=CLAUDE_CLI_PATH,
         max_buffer_size=SDK_MAX_BUFFER_SIZE,
         system_prompt="",
@@ -13273,17 +13278,17 @@ async def _synthesize_answer(
     """Run a constrained Anthropic pass via the SDK. Returns the synthesized
     answer, or the literal string 'UNKNOWN' if the context is insufficient.
 
-    Uses SECONDARY_AGENT_MODEL (env-resolved). No tools. No streaming — the
-    caller needs a single string.
+    Runs on Haiku (#1353: pinned through ``resolve_model``, never a bare CLI
+    alias). No tools. No streaming — the caller needs a single string.
     """
-    import os
-    model = os.environ.get("SECONDARY_AGENT_MODEL", "haiku")
+    model = resolve_model("haiku")
     # The pinned claude-agent-sdk's ClaudeAgentOptions has no
     # max_tokens/max_output_tokens field; cap output via the documented
     # Claude Code CLI env knob instead (env merges over the inherited
     # environment for this one CLI subprocess only).
     options = ClaudeAgentOptions(
         model=model,
+        effort=effort_for(model),
         cli_path=CLAUDE_CLI_PATH,
         max_buffer_size=SDK_MAX_BUFFER_SIZE,
         system_prompt=_QUERY_ENGAGER_SYSTEM,

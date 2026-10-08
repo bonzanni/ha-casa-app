@@ -231,6 +231,11 @@ those of the pinned CLI, and a CLI upgrade must re-check them: the CLI accepts a
 name it does not offer, so a misspelt name fails silently. An agent schedules through
 Casa's `set_reminder`.
 
+The same helper also denies `ShareOnboardingGuide`, `OUTBOUND_SHARE_TOOLS` in
+`claude_runtime.py`. The pinned CLI offers it by default; it uploads an onboarding guide
+file from the working directory to a claude.ai share link under the session's login,
+without a permission prompt.
+
 ## Failure behavior
 
 **An unknown tool name.** Resolution fails and the call is refused; nothing is invoked.

@@ -96,7 +96,7 @@ def test_load_all_executors_parses_memory_block(tmp_path):
         "schema_version: 1\n"
         "type: configurator\n"
         "description: Configure Casa via the configurator executor.\n"
-        "model: sonnet\n"
+        "model: claude-sonnet-5\n"
         "driver: in_casa\n"
         "memory:\n"
         "  enabled: true\n"

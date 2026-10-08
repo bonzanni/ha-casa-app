@@ -3232,7 +3232,8 @@ async def test_exposed_credential_refuses_a_complete_pair_fast_path(
             "PATH=$_casa_root_path\n"
             'printf \'{"casa_control": "spawn"}\\n\'\n'
             "exec setpriv --reuid 200001 --regid 200001 --clear-groups"
-            " --bounding-set -all -- claude --print --output-format stream-json\n"
+            " --bounding-set -all -- claude --print --output-format stream-json \\\n"
+            "             --model claude-sonnet-5 --effort high \\\n"
         ),
         depends_on=["init-setup-configs"],
         log_run_script="#!/command/with-contenv sh\nexec s6-log n20 s1000000 /x\n",
@@ -3240,7 +3241,8 @@ async def test_exposed_credential_refuses_a_complete_pair_fast_path(
     assert s6_rc.service_pair_complete(
         svc_root=str(svc_root), engagement_id="keep1")
     assert not s6_rc.run_script_is_stale(
-        svc_root=str(svc_root), engagement_id="keep1"), (
+        svc_root=str(svc_root), engagement_id="keep1",
+        model_flags="--model claude-sonnet-5 --effort high"), (
         "fixture must be a CURRENT pair or this exercises the re-plant path "
         "instead of the fast path it is named for")
 
@@ -3324,13 +3326,14 @@ async def test_boot_setpriv_gate_ignores_a_setpriv_only_in_the_tools_dir(
     monkeypatch.setattr(s6_rc, "SERVICE_SCANDIR_ROOT", str(tmp_path / "noscan"))
     s6_rc.write_service_dir(
         svc_root=str(svc_root), engagement_id="keep1",
-        run_script=render_run_script(
+        run_script=render_run_script(model="claude-sonnet-5",
             engagement_id="keep1", permission_mode="acceptEdits",
             extra_dirs=[], plugin_dirs=[], uid=200001, gid=200001),
         depends_on=["init-setup-configs"],
         log_run_script=render_log_run_script(engagement_id="keep1"))
     assert not s6_rc.run_script_is_stale(
-        svc_root=str(svc_root), engagement_id="keep1")
+        svc_root=str(svc_root), engagement_id="keep1",
+        model_flags="--model claude-sonnet-5 --effort high")
 
     monkeypatch.setattr(s6_rc, "_compile_and_update_locked", AsyncMock())
     started: list[str] = []
@@ -3382,7 +3385,8 @@ async def test_healthy_modes_do_not_refuse_resumes(monkeypatch, tmp_path):
             "#!/command/with-contenv bash\nset -e\n"
             'printf \'{"casa_control": "spawn"}\\n\'\n'
             "exec setpriv --reuid 200001 --regid 200001 --clear-groups"
-            " --bounding-set -all -- claude --print --output-format stream-json\n"
+            " --bounding-set -all -- claude --print --output-format stream-json \\\n"
+            "             --model claude-sonnet-5 --effort high \\\n"
         ),
         depends_on=["init-setup-configs"],
         log_run_script="#!/command/with-contenv sh\nexec s6-log n20 s1000000 /x\n",

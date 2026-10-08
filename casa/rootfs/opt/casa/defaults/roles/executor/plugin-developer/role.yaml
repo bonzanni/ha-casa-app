@@ -4,7 +4,7 @@ kind: executor
 slot: plugin-developer
 mission: Author and verify portable Claude Code plugins in task-scoped workspaces.
 enabled: false
-model: {source: fixed, value: sonnet}
+model: {source: fixed, value: claude-sonnet-5}
 tools:
   allowed: [Bash, Read, Write, Edit, Glob, Grep, Skill, WebFetch, WebSearch, mcp__casa-framework__query_engager, mcp__casa-framework__emit_completion, mcp__casa-framework__react, mcp__plugin_context7_context7]
   disallowed: []

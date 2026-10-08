@@ -879,8 +879,11 @@ class TestRunScriptIsStale:
     _CURRENT = (
         "#!/bin/sh\nPATH=$_casa_root_path\ncasa_control spawn\n"
         "exec setpriv --reuid 200001 --regid 200001 --clear-groups "
-        "-- claude --print --output-format stream-json\n"
+        "-- claude --print --output-format stream-json \\\n"
+        "             --model claude-sonnet-5 --effort high \\\n"
     )
+    # #1353: the CLI line's model flags for the engagement's executor.
+    _FLAGS = "--model claude-sonnet-5 --effort high"
 
     def _write_run(self, svc_root: Path, eid: str, run_text: str) -> None:
         from drivers.s6_rc import _main_service_name
@@ -893,14 +896,16 @@ class TestRunScriptIsStale:
         self._write_run(
             tmp_path, "e1",
             "#!/bin/sh\nexec claude --print --output-format stream-json\n")
-        assert run_script_is_stale(svc_root=str(tmp_path), engagement_id="e1")
+        assert run_script_is_stale(svc_root=str(tmp_path), engagement_id="e1",
+            model_flags=self._FLAGS)
 
     async def test_only_casa_control_is_stale(self, tmp_path):
         from drivers.s6_rc import run_script_is_stale
         self._write_run(
             tmp_path, "e2",
             "#!/bin/sh\ncasa_control spawn\nexec claude --print\n")
-        assert run_script_is_stale(svc_root=str(tmp_path), engagement_id="e2")
+        assert run_script_is_stale(svc_root=str(tmp_path), engagement_id="e2",
+            model_flags=self._FLAGS)
 
     async def test_legacy_no_setpriv_script_is_stale(self, tmp_path):
         # Containment Stage 2: a PRE-Stage-2 script has both streaming markers
@@ -911,12 +916,14 @@ class TestRunScriptIsStale:
             tmp_path, "e2b",
             "#!/bin/sh\ncasa_control spawn\n"
             "exec claude --print --output-format stream-json\n")
-        assert run_script_is_stale(svc_root=str(tmp_path), engagement_id="e2b")
+        assert run_script_is_stale(svc_root=str(tmp_path), engagement_id="e2b",
+            model_flags=self._FLAGS)
 
     async def test_all_three_markers_is_fresh(self, tmp_path):
         from drivers.s6_rc import run_script_is_stale
         self._write_run(tmp_path, "e3", self._CURRENT)
-        assert not run_script_is_stale(svc_root=str(tmp_path), engagement_id="e3")
+        assert not run_script_is_stale(svc_root=str(tmp_path), engagement_id="e3",
+            model_flags=self._FLAGS)
 
     async def test_plugin_dir_substring_setpriv_but_exec_claude_is_stale(
         self, tmp_path):
@@ -933,7 +940,8 @@ class TestRunScriptIsStale:
             "#!/bin/sh\ncasa_control spawn\n"
             "exec claude --print --output-format stream-json "
             "--plugin-dir /data/plugins/my-setpriv-tool\n")
-        assert run_script_is_stale(svc_root=str(tmp_path), engagement_id="e6")
+        assert run_script_is_stale(svc_root=str(tmp_path), engagement_id="e6",
+            model_flags=self._FLAGS)
 
     async def test_real_uid_drop_script_is_fresh(self, tmp_path):
         # The anchored marker still classifies a genuine uid-dropped script
@@ -945,8 +953,10 @@ class TestRunScriptIsStale:
             "#!/bin/sh\nPATH=$_casa_root_path\ncasa_control spawn\n"
             "exec setpriv --reuid 200005 --regid 200005 --clear-groups "
             "-- claude --output-format stream-json "
-            "--plugin-dir /data/plugins/my-setpriv-tool\n")
-        assert not run_script_is_stale(svc_root=str(tmp_path), engagement_id="e7")
+            "--plugin-dir /data/plugins/my-setpriv-tool \\\n"
+            "             --model claude-sonnet-5 --effort high \\\n")
+        assert not run_script_is_stale(svc_root=str(tmp_path), engagement_id="e7",
+            model_flags=self._FLAGS)
 
     async def test_add_dir_forged_setpriv_arg_on_exec_claude_is_stale(
         self, tmp_path):
@@ -965,18 +975,21 @@ class TestRunScriptIsStale:
             "exec claude --print --output-format stream-json "
             "--add-dir '/share/exec setpriv --reuid 200000 --regid 200000 "
             "--clear-groups'\n")
-        assert run_script_is_stale(svc_root=str(tmp_path), engagement_id="e8")
+        assert run_script_is_stale(svc_root=str(tmp_path), engagement_id="e8",
+            model_flags=self._FLAGS)
 
     async def test_missing_run_file_is_stale(self, tmp_path):
         from drivers.s6_rc import _main_service_name, run_script_is_stale
         # main dir exists but no run file (torn) — fail closed.
         (tmp_path / _main_service_name("e4")).mkdir()
-        assert run_script_is_stale(svc_root=str(tmp_path), engagement_id="e4")
+        assert run_script_is_stale(svc_root=str(tmp_path), engagement_id="e4",
+            model_flags=self._FLAGS)
 
     async def test_absent_dir_is_stale(self, tmp_path):
         from drivers.s6_rc import run_script_is_stale
         # nothing planted at all — fail closed.
-        assert run_script_is_stale(svc_root=str(tmp_path), engagement_id="nope")
+        assert run_script_is_stale(svc_root=str(tmp_path), engagement_id="nope",
+            model_flags=self._FLAGS)
 
     async def test_unreadable_run_file_is_stale(self, tmp_path, monkeypatch):
         from drivers import s6_rc
@@ -992,7 +1005,8 @@ class TestRunScriptIsStale:
             return real_read_text(self, *a, **k)
 
         monkeypatch.setattr(Path, "read_text", _boom)
-        assert s6_rc.run_script_is_stale(svc_root=str(tmp_path), engagement_id="e5")
+        assert s6_rc.run_script_is_stale(svc_root=str(tmp_path), engagement_id="e5",
+            model_flags=self._FLAGS)
 
 
 class TestIterEngagementServiceIds:

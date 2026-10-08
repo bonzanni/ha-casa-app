@@ -124,8 +124,8 @@ setting by hand:
 
 | Option | Description |
 |--------|-------------|
-| `primary_agent_model` | Model for the primary agent: `opus`, `sonnet`, or `haiku`. Default: `opus`. |
-| `voice_agent_model` | Model for the voice agent. Default: `haiku`. |
+| `primary_agent_model` | Model for the primary agent: `opus` (Claude Opus 5.5), `sonnet` (Claude Sonnet 5.5), or `haiku` (Claude Haiku 5.5). Default: `opus`. |
+| `voice_agent_model` | Model for the voice agents (butler and concierge), same choices. Default: `haiku`. |
 
 ### Optional -- Features
 

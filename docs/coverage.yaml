@@ -685,8 +685,6 @@
   doc: reference/operator-options.md
 - item: env:PUBLIC_URL
   doc: reference/operator-options.md
-- item: env:SECONDARY_AGENT_MODEL
-  doc: architecture/personality.md
 - item: env:SUPERVISOR_TOKEN
   doc: architecture/overview.md
 - item: env:TELEGRAM_BOT_API_BASE

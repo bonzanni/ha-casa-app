@@ -67,7 +67,8 @@ async def test_worker_options_record_and_topic(worker, monkeypatch, limit):
     assert opts.disallowed_tools == ['Agent', 'Task', 'AskUserQuestion', 'Bash',
                                     'SendMessage', 'ListAgents', 'PushNotification',
                                     'ScheduleWakeup', 'CronCreate', 'CronDelete',
-                                    'CronList', 'Monitor', 'RemoteTrigger']
+                                    'CronList', 'Monitor', 'RemoteTrigger',
+                                    'ShareOnboardingGuide']
     assert opts.permission_mode == 'default' and opts.setting_sources == []
     assert opts.skills == 'all' and opts.model == 'sonnet'
     assert opts.plugins == [{'type': 'local', 'path': str(worker.root)}]
@@ -238,3 +239,23 @@ async def test_launch_aborts_when_the_profile_write_fails(worker, monkeypatch):
     assert (result['status'], result['kind']) == ('error', 'profile_persist_failed'), result
     assert not Client.instances, 'no client may open when the profile write failed'
     assert not worker.registry.active_and_idle()
+
+
+@pytest.mark.parametrize('recorded,model,effort', [
+    ('claude-sonnet-5', 'claude-sonnet-5-5', 'medium'),
+    ('claude-opus-5', 'claude-opus-5-5', 'medium'),
+    ('claude-haiku-4-5', 'claude-haiku-5-5', 'low'),
+    ('claude-opus-5-5', 'claude-opus-5-5', 'medium'),
+])
+async def test_a_job_recorded_before_the_5_5_move_resumes_on_its_successor(
+        worker, monkeypatch, recorded, model, effort):
+    """#1353: a resident-hosted job records its host's model at launch and its
+    resume rebuilds the worker from that record, through the same builder."""
+    monkeypatch.setattr(jobs, 'find_job_host', lambda *args: worker.host)
+    result = await call()
+    assert result['status'] == 'pending', result
+    await tools.drain_launch_turns()
+    rec = worker.registry.get(result['engagement_id'])
+    rec.origin['plugin_job']['model'] = recorded
+    opts = tools.build_engagement_resume_options(rec, 'sid-1')
+    assert (opts.model, opts.effort, opts.resume) == (model, effort, 'sid-1')

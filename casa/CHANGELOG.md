@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.344.55] - 2026-10-08
+
+### Changed
+
+- Casa moves to the 5.5 Claude models and sets each role's reasoning effort itself. The assistant now runs on Claude Opus 5.5 at medium effort; in testing its replies came about a quarter faster (median 8.3 → 6.2 seconds) and its longest replies about a third faster. The voice assistants (the butler and the concierge) run on Claude Haiku 5.5 at low effort: a spoken request is answered in about 1.5 seconds instead of 3.6. The finance specialist runs on Claude Sonnet 5.5 at medium effort, which in testing classified transactions as accurately as before in about a third of the time. The configurator and the plugin developer stay on Claude Sonnet 5 at high effort.
+- The background checks that decide how private a remembered fact is, watch running tasks, and answer a task's questions from what Casa already knows now always run on Claude Haiku 5.5 at low effort. The privacy check used to run on whatever model the Claude Code tool chose by default.
+- The `primary_agent_model` and `voice_agent_model` options keep their values: `opus`, `sonnet` and `haiku` now mean Claude Opus 5.5, Sonnet 5.5 and Haiku 5.5. Nothing needs changing in your settings.
+- The bundled Claude Code tool moves from 2.1.273 to 2.1.293, the first version that knows all three 5.5 models.
+- When a task the assistant handed to a specialist is still running, the assistant now says so in one short line ("Alex is still on it.") and nothing more. On Opus 5.5 it tended to add what it would do next.
+
 ## [0.344.54] - 2026-10-08
 
 ### Fixed

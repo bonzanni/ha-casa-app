@@ -18,6 +18,7 @@ import dataclasses
 import logging
 from collections.abc import Iterator
 
+from config import effort_for, resolve_model
 from claude_runtime import (
     CLAUDE_CLI_PATH,
     SDK_MAX_BUFFER_SIZE,
@@ -133,7 +134,12 @@ async def classify_tier(content: str) -> str:
         return FallbackTier(DEFAULT_TIER)
     import claude_agent_sdk as sdk
 
+    # #1353: pinned to Haiku at its decided effort. Left unset, the call ran
+    # on the CLI's own default model, which moves with every CLI release.
+    model = resolve_model("haiku")
     opts = sdk.ClaudeAgentOptions(
+        model=model,
+        effort=effort_for(model),
         cli_path=CLAUDE_CLI_PATH,
         max_buffer_size=SDK_MAX_BUFFER_SIZE,
         # max_turns=8 (#497 reopen + operator ruling 2026-08-11): on 0.174.0

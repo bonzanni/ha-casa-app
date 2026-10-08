@@ -23,6 +23,12 @@ secret when none is configured, and exporting model parity values for config-syn
 Python configuration module does *not* read add-on options: its only environment use is
 generic placeholder substitution, and model options enter through the role-slot layer.
 
+**A model option names a model family, not a version.** `primary_agent_model` and
+`voice_agent_model` take `opus`, `sonnet` or `haiku`; `MODEL_MAP` resolves each to a full
+model id, and every call passes the effort `MODEL_EFFORT` names for that id. A release that
+moves a family to a newer model moves every install whose option names it, with no change
+to the stored value.
+
 **Every option is restart-required.** No in-process reload scope rereads add-on options
 (INV-CFG-001); values are read once by boot scripts and process initialization. The reload
 system covers repository and plugin configuration, not the manifest.

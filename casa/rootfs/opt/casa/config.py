@@ -24,10 +24,51 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 MODEL_MAP: dict[str, str] = {
-    "opus": "claude-opus-5",
-    "sonnet": "claude-sonnet-5",
-    "haiku": "claude-haiku-4-5",
+    "opus": "claude-opus-5-5",
+    "sonnet": "claude-sonnet-5-5",
+    "haiku": "claude-haiku-5-5",
 }
+
+# #1353: the reasoning effort Casa passes with every call, keyed by the full
+# model id the call runs. Under the shipped option defaults this is the
+# per-role decision: the assistant (Opus 5.5) at medium; the butler, the
+# concierge, the tier classifier, the observer and query_engager's synthesis
+# (Haiku 5.5) at low; the finance specialist (Sonnet 5.5) at medium; the
+# configurator and the plugin-developer (pinned to Sonnet 5) at high. Casa
+# passes it explicitly because the CLI's own default differs by model and
+# moves between CLI versions. An id not listed here gets no effort, and the
+# CLI's default applies.
+MODEL_EFFORT: dict[str, str] = {
+    "claude-opus-5-5": "medium",
+    "claude-haiku-5-5": "low",
+    "claude-sonnet-5-5": "medium",
+    "claude-sonnet-5": "high",
+}
+
+
+# #1353: a resident-hosted plugin job records its host's model at launch
+# (``origin.plugin_job.model``) and is rebuilt from that record when it
+# resumes, so a job launched before the 5.5 move carries an id the residents
+# no longer run. A resident only ever resolves one of MODEL_MAP's values, so a
+# recorded pre-5.5 id is always one of these three and resumes on its
+# successor. Applied to that record only: ``claude-sonnet-5`` is still a model
+# Casa runs, for the configurator and the plugin-developer.
+_RESIDENT_MODEL_SUCCESSOR: dict[str, str] = {
+    "claude-opus-5": MODEL_MAP["opus"],
+    "claude-sonnet-5": MODEL_MAP["sonnet"],
+    "claude-haiku-4-5": MODEL_MAP["haiku"],
+}
+
+
+def current_resident_model(recorded: str) -> str:
+    """The model a resident-hosted job recorded as *recorded* runs on now."""
+    return _RESIDENT_MODEL_SUCCESSOR.get(recorded, recorded)
+
+
+def effort_for(model: str | None) -> str | None:
+    """The effort Casa passes for a call running *model* (a full model id),
+    or ``None`` when the table names none for it."""
+    return MODEL_EFFORT.get(model or "")
 
 
 def resolve_model(shortname: str) -> str:
