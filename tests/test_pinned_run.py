@@ -71,6 +71,7 @@ class _FakeClient:
         self.process = _Process(pid)
         self._transport = types.SimpleNamespace(_process=self.process)
         self.entered = self.exits = 0
+        self.exit_started = asyncio.Event()
         self.hang_exit = hang_exit
         self.hang_enter = hang_enter
 
@@ -82,6 +83,7 @@ class _FakeClient:
 
     async def __aexit__(self, *a):
         self.exits += 1
+        self.exit_started.set()
         if self.hang_exit:
             await asyncio.sleep(3600)
         return False
@@ -233,8 +235,13 @@ async def test_terminate_kills_the_tree_confirms_by_pidfd_abandons_the_client_an
     assert elapsed < pr.PinnedRun.TASK_WAIT_S + pr.PinnedRun.GRACE_S + pr.PinnedRun.EXIT_WAIT_S
     assert task.cancelled() or task.done()
     assert owner.alive() is False and owner.sealed is True
-    assert client.exits == 1                                 # the close was STARTED…
-    assert owner.close_task is not None and not owner.close_task.done()   # …and never awaited
+    # the close was STARTED… — terminate created the detached task; its body runs
+    # on the loop's next turn, and terminate returns without yielding when every
+    # pidfd is already readable, so wait for the body to begin (never a turn count)
+    assert owner.close_task is not None
+    await asyncio.wait_for(client.exit_started.wait(), 5)
+    assert client.exits == 1
+    assert not owner.close_task.done()                       # …and never awaited
     assert reaper == set()                                   # the confirmed-dead CLI left the reaper set
     tree.proc.wait(timeout=5)
     assert tree.proc.returncode is not None
