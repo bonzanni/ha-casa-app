@@ -4,15 +4,20 @@
 # manifest resolves to the right per-platform layer. We migrated off
 # alpine-python:3.12 in v0.8.1 for glibc wheels (onnxruntime, since retired);
 # the glibc base is kept.
-ARG BUILD_FROM=ghcr.io/home-assistant/base-debian:bookworm
+# Pinned by digest to docker-base 2026.08.0 (s6-overlay 3.2.3.0). The floating
+# `bookworm` tag moved to 2026.10.0 (s6-overlay 3.2.3.2) on 2026-10-08, and the
+# s6-rc launch-database compile below fails on it; the pin is lifted when Casa
+# moves to the new overlay layout. A digest is used as well as the tag because
+# the tag alone can be re-pushed.
+ARG BUILD_FROM=ghcr.io/home-assistant/base-debian:bookworm-2026.08.0@sha256:60cd882d5200157082e568a0b775cca0d9cb5704452ada3cf6f206c4dd6d83c5
 FROM ${BUILD_FROM}
 
 # #925: Casa recompiles the s6-rc database at every claude_code launch from
 # the base image's own s6-overlay sources, resolved through the version-less
 # /package/admin/s6-overlay link the base ships (-> s6-overlay-<version>).
-# BUILD_FROM floats on a tag, so the overlay version inside the image is
-# whatever the base carries at build time; this check runs against the image
-# actually released. A base that stops shipping the link fails the build here,
+# The overlay version inside the image is whatever BUILD_FROM's base carries
+# (a floating tag until the 2026-10-08 pin above); this check runs against the
+# image actually released. A base that stops shipping the link fails the build here,
 # not the first engagement launch on an install. The compile smoke after
 # `COPY rootfs /` below covers this too; this one stays because it fails before
 # the long install layers and names #925's exact diagnosis.
