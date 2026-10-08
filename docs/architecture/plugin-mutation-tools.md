@@ -18,8 +18,9 @@ tools' contracts, not the machinery they drive
 per-call authorization in [`plugin-authorization.md`](plugin-authorization.md), the declared setup run in
 [`plugin-setup.md`](plugin-setup.md), and the health surfaces the status tool reads in
 [`plugin-health.md`](plugin-health.md). The tool surface itself — one registry, the
-two-layer result envelope, the question lifecycle and completion — is in
-[`tools-interface.md`](tools-interface.md).
+two-layer result envelope and completion — is in
+[`tools-interface.md`](tools-interface.md), and the question lifecycle in
+[`tool-questions.md`](tool-questions.md).
 
 ## Mental model
 
