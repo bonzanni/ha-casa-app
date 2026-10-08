@@ -812,11 +812,12 @@ Notes:
   **all its messages for every member**. Casa's durable record of each
   engagement is its memory summary plus Ellen's completion message in
   your 1:1 chat (and the workspace artifacts during the 7-day window).
-- **On-demand cleanup:** ask Ellen to *"clean up the engagement group"* —
-  she delegates to the configurator, whose `cleanup_engagement_topics`
-  tool purges known finished topics immediately (optionally as a dry
-  run) without waiting out the retention window. Only topics Casa has
-  on record are deleted; active engagements are never touched.
+- **On-demand cleanup:** ask Ellen to *"clean up the engagement group"*
+  and she deletes the finished topics already past the 7-day window. Ask
+  her in Telegram to *"remove all the closed topics"* and she removes
+  every finished topic at once: she first counts them, asks you with the
+  number, and deletes only after you tap to confirm. Only topics Casa has on record are
+  deleted; active engagements are never touched.
 - **Topics from before v0.65.0** are unknown to Casa (the Telegram Bot
   API cannot enumerate a group's topics), so the existing pile needs
   **one manual cleanup** in the Telegram UI. From this release on, Casa

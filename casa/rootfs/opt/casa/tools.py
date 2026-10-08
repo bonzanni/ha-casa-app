@@ -14311,14 +14311,21 @@ def _walk_workspace_tree(root, *, max_depth: int) -> list[dict]:
 
 _TOPIC_CLEANUP_SCOPES = ("due", "all_terminal")
 
+# #1373: the roles that may run the immediate `all_terminal` purge. The
+# assistant joined the configurator so the operator can ask her directly to
+# remove every finished topic (her prompt runs a dry run, tells the count and
+# asks for confirmation first); every other role keeps `due` only.
+_TOPIC_PURGE_ROLES = frozenset({"configurator", "assistant"})
+
 
 @tool(
     "cleanup_engagement_topics",
     "Delete finished engagements' Telegram forum topics recorded in the "
     "topic ledger. scope='due' (default) deletes only entries past the "
     "7-day retention window; 'all_terminal' purges every ledger entry "
-    "immediately and is configurator-only. Deletion is irreversible — pass "
-    "dry_run=true first to preview what would be deleted.",
+    "immediately and is limited to the configurator and the assistant. "
+    "Deletion is irreversible — pass dry_run=true first to preview what "
+    "would be deleted.",
     # Explicit schema: the assistant prompt's `cleanup_engagement_topics()`
     # passes nothing; the handler defaults scope to "due" (round 2 E3).
     {"type": "object",
@@ -14327,7 +14334,7 @@ _TOPIC_CLEANUP_SCOPES = ("due", "all_terminal")
      "required": []},
 )
 async def cleanup_engagement_topics(args: dict) -> dict:
-    """Configurator-owned on-demand topic cleanup [AR-7] — ledger-only.
+    """On-demand topic cleanup [AR-7] — ledger-only.
 
     Deletes ONLY topics recorded in the terminal-engagement ledger
     (``/data/topic-ledger.json``): never guesses topic ids, never touches
@@ -14335,7 +14342,8 @@ async def cleanup_engagement_topics(args: dict) -> dict:
     IRREVERSIBLE — it removes the topic and all its messages for every
     member — so prefer a ``dry_run=true`` pass first and confirm the
     counts before purging for real (configurator doctrine:
-    architecture.md "Engagement-topic cleanup"). The result echoes
+    architecture.md "Engagement-topic cleanup"; the assistant's prompt,
+    "After a completion"). The result echoes
     ``dry_run`` and lists the affected topics in ``targets``
     (``{engagement_id, topic_id}`` pairs — would-be deletions under
     dry_run, resolved deletions otherwise) alongside the counts.
@@ -14354,18 +14362,18 @@ async def cleanup_engagement_topics(args: dict) -> dict:
                 f"got {scope!r}"
             ),
         })
-    # v0.69.12: Ellen (assistant) holds a due-ONLY variant (X2 resolved →
-    # webhook trust = authenticated, so the AR-7 deferral is cleared). The
-    # irreversible `all_terminal` purge (deletes EVERY ledger topic + all its
-    # messages immediately, for all members) stays configurator-only; a
-    # non-privileged caller requesting it is refused with a nudge to `due`.
-    if scope == "all_terminal" and _effective_caller_role() not in _PRIVILEGED_CONFIG_ROLES:
+    # v0.69.12 gave Ellen (assistant) `due`; #1373 gives her the
+    # irreversible `all_terminal` purge too (deletes EVERY ledger topic + all
+    # its messages immediately, for all members), on the operator's request.
+    # Any other caller requesting it is refused with a nudge to `due`.
+    if scope == "all_terminal" and _effective_caller_role() not in _TOPIC_PURGE_ROLES:
         return _result({
             "status": "error", "kind": "not_authorized",
             "message": (
                 "scope='all_terminal' (immediate purge of every engagement "
-                "topic) is restricted to the configurator; use scope='due' to "
-                "delete only topics past the retention window."
+                "topic) is restricted to the configurator and the assistant; "
+                "use scope='due' to delete only topics past the retention "
+                "window."
             ),
         })
     dry_run = bool(args.get("dry_run", False))
