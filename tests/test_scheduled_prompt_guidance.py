@@ -208,7 +208,7 @@ COVERED_DOCTRINE = {
 }
 # EXEMPT: the file names the path for some other reason, recorded here.
 EXEMPT_DOCTRINE = {
-    "recipes/trigger/remove.md": "offers to delete the file; authors no text",
+    "recipes/trigger/remove.md": "the delete tool removes the file; authors no text",
     "reload.md": "picks the reload scope after an edit",
     "architecture.md": "a layout table row saying where the file lives",
     "safety.md": "an authorization row: allowed, but inert without a reload",

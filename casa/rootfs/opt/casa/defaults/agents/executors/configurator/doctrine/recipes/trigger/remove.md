@@ -16,8 +16,21 @@ It leaves every other entry untouched (including the empty `triggers: []` case)
 and refuses a reminder the resident owns (`managed_by: agent`) — those are the
 resident's to cancel, not yours.
 
-Optionally delete agents/<role>/prompts/<trigger-name>.md if unused — that one
-IS an ordinary edit.
+### The trigger's prompt file goes with it
+
+If the trigger named a prompt file (`prompt_file: prompts/<trigger-name>.md`),
+`config_trigger_delete` deletes that file too, in the same step, and the commit
+records the deletion. Do not empty, rewrite or recreate it yourself. The
+result's `prompt_file` says what happened:
+
+- `outcome: removed` — gone; nothing is left over, and the removal is complete
+  (`status="ok"`).
+- `outcome: kept` — the file was left in place, and `reason` says why: another
+  trigger or the resident's character still uses it, it is the resident's own
+  `prompts/system.md`, it is a symlink or lies outside the role's `prompts/`
+  directory, or it was already gone. A file something still uses is not a
+  leftover; any other kept file is one you cannot delete, so name it to the
+  operator in your completion.
 
 ## Reload — MANDATORY before emit_completion
 

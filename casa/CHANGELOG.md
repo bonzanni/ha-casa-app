@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.344.62] - 2026-10-09
+
+### Fixed
+
+- Asking the assistant to remove a scheduled trigger now also deletes the trigger's prompt file, if it has one. Before, the configurator could only empty that file under `agents/<role>/prompts/`, and it reported the job as only partly done. The file is deleted together with the trigger, and the commit records the deletion. A file is kept if something else still uses it, such as another trigger or the assistant's own character settings, or if it is the assistant's main `system.md`. When a file is kept, the configurator tells you which file and why. (#1372)
+
 ## [0.344.61] - 2026-10-08
 
 ### Fixed
