@@ -64,6 +64,7 @@ enters through :func:`casa_text`.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -199,6 +200,22 @@ def may_still_be_silence(text: str | None) -> bool:
     while rest.startswith(SILENCE_SENTINEL):
         rest = rest[len(SILENCE_SENTINEL):].lstrip()
     return SILENCE_SENTINEL.startswith(rest)
+
+
+def without_sentinels(text: str) -> str:
+    """#1342: *text* without a run of ``<silent/>`` markers at its start or at
+    its end — how a desk reply that holds words as well as the marker is
+    shown: the tag never reaches the operator, the words still do. Only the
+    markers and the whitespace between them and the words go; nothing else is
+    touched (no other whitespace, no line endings, no indentation), and a
+    marker anywhere else — between words, in a code span, a link, a quoting
+    sentence, or escaped as ``\\<silent/>`` — is the specialist's content and
+    stays. Text with no sentinel is returned unchanged."""
+    if SILENCE_SENTINEL not in text:
+        return text
+    tag = re.escape(SILENCE_SENTINEL)
+    text = re.sub(rf"(?:\s*(?<!\\){tag})+\s*\Z", "", text)
+    return re.sub(rf"\A(?:\s*{tag})+(?:(?:[^\S\r\n]*\r?\n)+|[^\S\r\n]*)", "", text)
 
 
 class ApprovalCut:

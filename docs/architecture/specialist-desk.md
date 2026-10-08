@@ -127,8 +127,16 @@ final text is silent posts no reply. A reply whose last text-bearing message is 
 posted anything (the operator's #1075 rule 2; its rule 1, silence after a proven outcome, is
 not the desk's). It is judged on the runner's own list of the run's text-bearing messages —
 one entry per model message, cut where an approval cut cuts the words — against the words
-shown: one message holding both prose and the sentinel is judged whole and keeps its tag, and
-a reply truncated at the cap is posted truncated. A turn with no proven operator-visible outcome at all —
+shown, and a reply truncated at the cap is posted truncated. Whatever that leaves, a
+marker at either end never reaches the operator (#1342): a run of sentinels at the start or
+the end of the words shown, with the whitespace between it and the words, is removed and the
+words are posted (`output_boundary.without_sentinels`); nothing else in the words is touched.
+A sentinel between two runs of words, or written inside other text — a code span, a link, a
+quoting sentence, an escaped `\<silent/>` — is the specialist's content and is posted as
+written, unless it is itself the reply's first or last item: Casa reads text, not intent, so a
+final blockquote line `> <silent/>` posts as `>`, and a code block cut off just after a
+literal sentinel loses that sentinel. That residual is accepted: telling the
+two apart would take a Markdown parser, for a case a specialist hardly ever writes. A turn with no proven operator-visible outcome at all —
 an empty answer with no proven post and no delivered media, a refused permit, a full queue,
 an abort, an exception, a failed reply send — ends in ONE labelled, body-free Casa notice.
 
@@ -189,7 +197,7 @@ engagement turn's so the per-chat serial lock is released at once and a stop can
 The map's retention is the invariant's edge: a restart or eviction makes the reply a
 resident message carrying Casa's note (INV-DESK-004), by design.
 
-**INV-DESK-002**: A desk turn's reply reaches the operator only as an admitted, labelled, paginated post of the specialist's own completed and bounded text — of a run that ended with a protected call waiting on the operator's approval, only the text written before that call; of a reply whose last text-bearing message is only `<silent/>` after earlier text, the earlier messages without it — whose messages join the post map; a turn that produces no proven operator-visible outcome, or whose reply is not proven, ends in one labelled Casa notice; the chat's resident learns of the turn only through a body-free line at its next turn, and no resident model turn is spent on it.
+**INV-DESK-002**: A desk turn's reply reaches the operator only as an admitted, labelled, paginated post of the specialist's own completed and bounded text — of a run that ended with a protected call waiting on the operator's approval, only the text written before that call; of a reply whose last text-bearing message is only `<silent/>` after earlier text, the earlier messages without it; and never with a `<silent/>` marker at the start or end of its words — whose messages join the post map; a turn that produces no proven operator-visible outcome, or whose reply is not proven, ends in one labelled Casa notice; the chat's resident learns of the turn only through a body-free line at its next turn, and no resident model turn is spent on it.
 
 The desk turn's origin is the DM's own context with the three fields the provenance
 classifier needs, the resident's role, the specialist as the executing role, depth one, a
@@ -293,6 +301,7 @@ follows.
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._record_post`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._reply_note_for`
 - `casa/rootfs/opt/casa/output_boundary.py::TurnScope.for_desk`
+- `casa/rootfs/opt/casa/output_boundary.py::without_sentinels`
 
 **Tests**
 - `tests/test_specialist_desk.py`
@@ -306,6 +315,7 @@ follows.
 - `tests/test_file_handoff_lines.py`
 - `tests/test_pending_approval_desk.py`
 - `tests/test_redcase_1283.py`
+- `tests/test_redcase_1342.py`
 - `tests/test_desk_closing_silence.py`
 - `tests/test_reply_note.py`
 

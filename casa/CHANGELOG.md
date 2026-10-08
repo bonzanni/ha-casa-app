@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.344.51] - 2026-10-08
+
+### Fixed
+
+- When you replied to a specialist's post and its answer ended with `<silent/>` after some words in the same message, the tag was posted along with the words. Casa now drops a `<silent/>` at the very start or end of the specialist's answer and posts the words, without changing anything else in them. An answer that is nothing but `<silent/>` still posts nothing. A `<silent/>` between two parts of an answer is still posted as written, and so is one the specialist writes inside other text, unless it is the answer's very first or last item: a final quoted `> <silent/>` line, for example, now shows as `>`. (#1342)
+
 ## [0.344.50] - 2026-10-08
 
 ### Fixed
