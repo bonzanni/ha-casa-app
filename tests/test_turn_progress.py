@@ -122,15 +122,20 @@ async def test_edits_are_spaced():
         await asyncio.sleep(0)
 
     line = _line(wire, clock, sleep=sleep, spacing_s=3.0)
+    clock.t = 0.5                    # the first post lands AFTER the line's start…
     line.step("reading files")
-    for _ in range(3):
-        await asyncio.sleep(0)
+    # wait for that post to have landed before the clock moves: await the pump
+    # itself, never a count of loop turns — Python 3.11's wait_for runs the send
+    # in a task of its own and needs more turns than 3.12's (main QA, v0.344.59)
+    await line._pump
+    assert wire.sent == ["🔧 This turn so far: 1 step — latest: reading files (at 0s)"]
     clock.t = 1.0
     line.step("editing files")
-    for _ in range(5):
-        await asyncio.sleep(0)
+    await line._pump
     await line.close(ok=True)
-    assert waits and waits[0] == pytest.approx(2.0)
+    # …so the spacing is counted from that write (3.0 - 0.5), not from the start,
+    # and the close waits a full spacing after the edit that landed at 3.5
+    assert waits == [pytest.approx(2.5), pytest.approx(3.0)]
     assert wire.edits == [(42, "🔧 This turn so far: 2 steps — latest: editing files (at 1s)"), (42, "☑ This turn: 2 steps in 3s")]
 
 
