@@ -1198,11 +1198,15 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # `assistant:restricted_webhook`, that paragraph; on `assistant:text` two
 # inserts, that paragraph and the one above; the six other carriers
 # byte-identical. No retention claim anywhere.
+# MOVED 2026-10-09 (#1386), `assistant:text` only: the purge paragraph's
+# confirm sentence gains the one-line "Deleting N topics…" notice, and its
+# unrecorded-topics clause is said only when asked. One `replace` inside that
+# paragraph; the eight other carriers byte-identical. No retention claim.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
         "1a3816327f56d5364f1fb63a8a5ee0a317a64e1f5c279b633e92389743fcde52",
     "assistant:text":
-        "916dc4b68b60466969ac5ce0865e295fc637afc5ea7ebaad43b66d1dbc11e75f",
+        "82e4c62fa092e288cbd75a6c3204a6444010b98b139fdfca88debd9dadf5e949",
     "assistant:voice":
         "75fafada7e181825c5a8b1fe51cce313f470cd9bfe360bfc7a04f42b5c3a12e7",
     "butler:restricted_webhook":
@@ -2130,10 +2134,12 @@ _TOPIC_PURGE_DOCTRINE = (
     "`ask_user`, the count in the question, such as \"Delete all 12 finished "
     "topics? This can't be undone.\" with the options \"Delete\" and \"Keep\", "
     "and end your turn there without deleting. Delete for real, with the same "
-    "scope, only when the person's answer to that question confirms, then say "
-    "how many went; any other answer deletes nothing. Open engagements are "
-    "never deleted, nor are topics Casa never recorded, such as ones from an "
-    "older install: the person removes those in Telegram."
+    "scope, only when the person's answer to that question confirms: first "
+    "send one line with `send_message`, such as \"Deleting 12 topics…\", then "
+    "delete, then say how many went; any other answer deletes nothing. Open "
+    "engagements are never deleted, nor are topics Casa never recorded, such "
+    "as ones from an older install; mention those only if the person asks, "
+    "and then say they remove them in Telegram."
 )
 
 

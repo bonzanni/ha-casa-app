@@ -40,15 +40,15 @@ earlier one of yours is still live: the framework refuses the second
   Pass `{"label": "…full text…", "short": "…button caption…"}` instead of a
   bare string whenever the full choice is a phrase or a sentence — `short` is
   what becomes the button caption, so it is the difference between a readable
-  keyboard and a wall of truncated text. Casa can fall back to a plain
-  numbered floor (`Option 1`, `Option 2`, …) for the whole set when shorts
-  are missing, blank, duplicated, or too long once decorated — but that floor
-  is a safety net, not something to write toward. Give a real `short` for
+  keyboard and a wall of truncated text. An option without a `short` shows
+  its own words when they fit a button; otherwise Casa falls back to a plain
+  numbered floor (`Option 1`, `Option 2`, …) for the whole set — a safety
+  net, not something to write toward. Give a real `short` for
   every non-trivial option instead of relying on it.
 - **Never pre-label or pre-number anything yourself** — not options
   (`Option A — …`, `1. …`) and not the question (`Q7: …`). Casa numbers
   both: it prepends its own `Q<n>:` to your question and numbers every
-  option button in order. Write the question and each option's text plain,
+  option in order. Write the question and each option's text plain,
   with no enumerator of your own — your text posts VERBATIM, so a
   self-added number or letter just sits there duplicated next to Casa's own
   numbering (`Q<n>: Q7: …`); it is not stripped or merged away.

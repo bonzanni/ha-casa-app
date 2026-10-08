@@ -243,10 +243,11 @@ async def ask(
     message body and returned on selection. **Supply ``short`` for every
     option that isn't already a couple of words** — it is the button
     caption, so it is the difference between a readable keyboard and a wall
-    of truncated text. Without a usable ``short`` (missing, blank, duplicated
-    across options, or too long once decorated), Casa falls back to a plain
-    numbered floor (``"Option 1"``, ``"Option 2"``, …) for the WHOLE set —
-    that floor is a safety net, not something to write toward. Returns the
+    of truncated text. An option without a ``short`` shows its own words
+    when they fit a button; when they do not (or captions collide or are
+    blank), Casa falls back to a plain numbered floor (``"Option 1"``,
+    ``"Option 2"``, …) for the WHOLE set — that floor is a safety net, not
+    something to write toward. Returns the
     selected FULL label.
 
     Enumerable answers MUST go in ``options`` — never as prose inside

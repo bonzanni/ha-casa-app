@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.344.66] - 2026-10-09
+
+### Fixed
+
+- Question buttons now show the answers' own words. When the assistant asked "Delete all 117 finished topics?" with the answers Delete and Keep, the buttons read "Option 1" and "Option 2", and you had to match them to the numbered list in the message. Now they read **Delete** and **Keep**. An answer short enough for a button is shown as written; "Option 1", "Option 2", … are used only when the answers are too long for a button, or two would look the same. The full answers are still listed in the message.
+- Removing all the closed topics now tells you it has started: the assistant first sends one line such as "Deleting 117 topics…", since deleting many topics can take close to a minute. Her closing reply no longer adds unasked remarks about older topics Casa has no record of; ask her and she will still explain. (#1386)
+
 ## [0.344.65] - 2026-10-09
 
 ### Fixed

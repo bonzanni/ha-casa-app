@@ -136,7 +136,8 @@ class TestShortOptionLabel:
         # cross-reference even without an agent-supplied short.
         from channels.telegram import short_option_labels
 
-        options = ["Personal Gmail", "Work Outlook"]
+        options = ["Personal Gmail, the one you use every day",
+                   "Work Outlook, through the company tenant"]
         body = render_ask_body(1, "Which?", options)
         labels = short_option_labels(options)
         for i, opt in enumerate(options):
