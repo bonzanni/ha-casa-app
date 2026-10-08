@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-10-07
+last_reviewed: 2026-10-08
 ---
 
 # Tool questions: what a tool reports about the question it asked
@@ -42,6 +42,14 @@ otherwise would be a worse lie than the one this rule removes. It also does not 
 scheduled arm, which has no synchronous oracle that separates a retired question from one
 shutdown deliberately preserved for the boot reconcile; that arm's terminal outcomes reach
 its session through its finish hook instead.
+
+**A live question's result tells the agent to stay quiet about it.** On the operator-DM arm
+an `awaiting_user` result also carries `note`, Casa's own line (`ASK_USER_SILENCE_NOTE`): the
+person now sees the question with its buttons, so nothing written after the call should
+announce or retell it, and a turn with nothing else to say ends in the silence sentinel. As
+with the post echo's note, the sentinel lives only in Casa's text; the resident's doctrine
+points at the note rather than carrying it. A settled result carries no note, since that
+question is no longer standing, and neither does the scheduled arm's result.
 
 ## Failure behavior
 

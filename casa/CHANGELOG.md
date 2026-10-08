@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.344.54] - 2026-10-08
+
+### Fixed
+
+- Since 0.344.52 the assistant passes a specialist's answer on as written ("Alex: …"). Two paths still added the assistant's own words. When a specialist took longer than a minute, the assistant first posted a long holding message. When the answer arrived, it kept only the question, rewrote the specialist's reasoning, and added its own doubts about it, for example that it had not checked a connection the specialist mentioned. After asking you a question with buttons, it also posted a line such as "Asked — tap whichever you fancy." under the question. A late answer now goes out like any other: "Alex: …", in the specialist's words. While you wait for it, the assistant says only one short line such as "Alex is still on it.". After a question with buttons, it adds nothing. The assistant's other rules still apply to what it passes on, so a technical detail such as an error code may still be put in plain words. This is a change to what the assistant is told, not a guarantee: in testing, the assistant once still shortened a late answer. (#1348)
+
 ## [0.344.53] - 2026-10-08
 
 ### Fixed

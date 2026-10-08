@@ -182,6 +182,9 @@ class TestAdmission:
         payload, channel = await _ask(monkeypatch)
         assert payload["status"] == "awaiting_user"
         assert payload["delivered_to"] == "operator_dm"
+        # #1348: the silence note is the DM turn's; a scheduled turn's
+        # continuation is its own session, so the note is not carried here.
+        assert "note" not in payload
         # Delivered to the operator's DM, NOT to the session label.
         assert channel.posts[0][0] == OPERATOR
         assert _fresh_broker.pending(
@@ -235,6 +238,10 @@ class TestAdmission:
         })
         assert payload["status"] == "awaiting_user"
         assert "delivered_to" not in payload
+        # #1348: the DM turn's result tells the resident, in Casa's words, that
+        # the question already stands in the chat and silence is the reply.
+        import tools
+        assert payload["note"] == tools.ASK_USER_SILENCE_NOTE
         # No durable record: only scheduled asks are recorded.
         assert _fresh_store.all() == []
 

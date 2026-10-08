@@ -1170,11 +1170,18 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # base-vs-new compiled text, word by word: exactly ONE `insert` on
 # `assistant:text`, that paragraph and nothing else; the other eight carriers
 # byte-identical. No retention claim anywhere.
+# MOVED 2026-10-08 (#1348), the `assistant:text` carrier ONLY. The Text
+# projection gains one paragraph, after the #1332 one: a late answer is passed
+# on the same way, a pending delegation gets one short line, and nothing is
+# written about a question `ask_user` posted. Measured with `difflib` over
+# base-vs-new compiled text, word by word: exactly ONE `insert` on
+# `assistant:text`, that paragraph and nothing else; the other eight carriers
+# byte-identical. No retention claim anywhere.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
         "f38c3f4917d068c681fc589ec023831a1f42428331aa118bd66d225c2a01703a",
     "assistant:text":
-        "7e02ddab0eceec7d145df36abbf83de2371b65646048dd988790e8a2bf42754f",
+        "14fd4815c1be50a87418c69529b142860a4ce556009fa36f389c64ef270b2b4e",
     "assistant:voice":
         "df1a1579d052429afd7b77d9d1a5d129e145344690408bb4f6643db6ff44a8bb",
     "butler:restricted_webhook":
@@ -1760,3 +1767,201 @@ def test_the_relay_eval_judges_the_relayed_question(reply, ok):
     spec.loader.exec_module(module)
     case = next(c for c in module.CASES if c["id"] == "question-via-ellen")
     assert module._judge(case, reply)[0] is ok
+
+
+# ---------------------------------------------------------------------------
+# #1348: the two paths #1332 left — a late answer (a sync delegation past its
+# 60 s wait, back as a notification) goes out the same way, a pending
+# delegation gets one short line, and nothing narrates a question `ask_user`
+# posted. The rule reaches only the assistant's text projection and the legacy
+# carrier, once each. Its live effect is measured by
+# test-local/eval/ellen_late_answer_and_ask.py.
+# ---------------------------------------------------------------------------
+
+_LATE_ANSWER_DOCTRINE = (
+    "A delegate's answer that comes back later, in a notification, is passed "
+    "on the same way. Passed on under the delegate's name, what it says about "
+    "a connection stays its own report: add no note of yours on whether it "
+    "has been checked. Casa's lines about a delegate's posts cover only those "
+    "posts: an answer it wrote above them is not among them, and is passed on. "
+    "When a delegation comes back pending, the person would otherwise wait in "
+    "silence: say only that it is still running, in one short line such as "
+    "\"Alex is still on it.\" When `ask_user` has posted a question, the "
+    "person already sees it with its buttons: write nothing about it, and "
+    "when you have nothing else for them, stay silent exactly as Casa's note "
+    "in its result says."
+)
+_LATE_EVAL = "test-local/eval/ellen_late_answer_and_ask.py"
+
+
+def _late_eval():
+    import importlib.util
+    path = Path(__file__).resolve().parents[1] / _LATE_EVAL
+    spec = importlib.util.spec_from_file_location("ellen_late_answer_and_ask", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_late_answer_rule_reaches_only_the_assistant_text_projection():
+    needle = _collapse_ws(_LATE_ANSWER_DOCTRINE)
+    compiled = _compiled_resident_carriers()
+    assert {name: _collapse_ws(body).count(needle) for name, body in compiled} == {
+        f"{slot}:{surface}": int(slot == "assistant" and surface == "text")
+        for slot in _RESIDENT_SLOTS
+        for surface in ("text", "voice", "restricted_webhook")}
+    assert {slot: _collapse_ws(body).count(needle)
+            for slot, body in _legacy_prompt_carriers()} == {
+        slot: int(slot == "assistant") for slot in _RESIDENT_SLOTS}
+
+
+def test_the_late_answer_rule_follows_the_relay_rule():
+    """The eval inserts its copy right after the #1332 paragraph; the shipped
+    text sits in the same place on both carriers."""
+    compiled = dict(_compiled_resident_carriers())
+    legacy = dict(_legacy_prompt_carriers())
+    for body in (compiled["assistant:text"], legacy["assistant"]):
+        flat = _collapse_ws(body)
+        relay = flat.index(_collapse_ws(_RELAY_DOCTRINE))
+        assert flat.index(_collapse_ws(_LATE_ANSWER_DOCTRINE)) == (
+            relay + len(_collapse_ws(_RELAY_DOCTRINE)) + 1)
+
+
+def test_the_late_answer_eval_measures_the_shipped_rule():
+    module = _late_eval()
+    assert _collapse_ws(module.DOCTRINE_PARAGRAPH) == _collapse_ws(_LATE_ANSWER_DOCTRINE)
+    assert module.ANCHOR in _RELAY_DOCTRINE
+
+
+def test_the_late_answer_eval_fakes_the_production_pending_note():
+    """The eval's fake answers ``pending`` with the note the degraded sync
+    wait returns, so it measures the turn the resident really gets."""
+    source = (_casa_root() / "tools.py").read_text(encoding="utf-8")
+    note = _late_eval().PENDING_NOTE
+    assert note == ("Delegation continues in background; you will receive a "
+                    "NOTIFICATION when complete.")
+    assert '"Delegation continues in background; you will receive a "' in source
+    assert '"NOTIFICATION when complete."' in source
+
+
+def test_the_late_answer_eval_fakes_the_production_ask_note():
+    """The eval's ask fake answers with the note a DM turn's live ask_user
+    result carries (#1348), so a deployed image that predates it is measured
+    with the shipped note. The note carries the one sentinel the output
+    boundary turns into no message — in Casa's text, never in doctrine."""
+    import tools
+    from output_boundary import strips_to_silence
+    module = _late_eval()
+    assert module.ASK_NOTE == tools.ASK_USER_SILENCE_NOTE
+    assert module.AWAITING["note"] == tools.ASK_USER_SILENCE_NOTE
+    assert tools.ASK_USER_SILENCE_NOTE.count("<silent/>") == 1
+    assert strips_to_silence("<silent/>")
+
+
+def _carried(module, reason: str) -> str:
+    return f"Alex: {reason} {module.LIVE_QUESTION}"
+
+
+@pytest.mark.parametrize("reply, ok", [
+    # verbatim, quoted, and the translation the other reply rules make
+    ("verbatim", True),
+    ("quoted", True),
+    ("Alex: The decision is the bank side, not a figure: every sync on the three "
+     "linked accounts has failed since 7 October, and this install is flagged as "
+     "restored from a backup, so those cached balances and transactions can no "
+     "longer be trusted as current. {Q}", True),
+    # the live #1348 reply: question only, reasoning paraphrased, a hedge added
+    ('Alex: "{Q}"\n\nHis reason for asking is his own report on the bank side: he '
+     "says syncs have been failing since 7 October and that this install looks "
+     "restored from a backup, so he doesn't trust the cached balances as current. "
+     "I haven't checked that connection myself, so take it as his account rather "
+     "than confirmed.", False),
+    ("Alex: {R} {Q} Want me to remind you later?", False),
+    ("Alex: Bank syncs are broken. {Q}", False),
+    ("I'll pass it on. Alex: {R} {Q}", False),
+    ("Alex: {Q}", False),
+    ("Alex: The decision is the bank side, not a figure: he says every sync on the "
+     "three linked accounts has failed since 7 October, and this install is flagged "
+     "as restored from a backup, so those cached balances can no longer be trusted. "
+     "{Q}", False),
+    ("Alex: The decision is the bank side, not a figure: every sync on the three "
+     "linked accounts has failed since 7 October, though I have not checked it, so "
+     "those cached balances can no longer be trusted as current. {Q}", False),
+    ("<silent/>", False),
+    # every rendering the live runs produced
+    ("Alex: The decision is the bank side, not a figure: every sync on the three "
+     "linked accounts has been failing since 7 October, and the vault flags this "
+     "install as restored from a backup, so those cached balances and transactions "
+     "can no longer be trusted as current. {Q}", True),
+    ("Alex: The decision is the bank side, not a figure: every sync on the three "
+     "linked accounts has returned an error since 7 October, and the records flag "
+     "this install as restored from a backup, so those cached balances and "
+     "transactions can no longer be trusted as current. {Q}", True),
+    # the reviewers' counterexamples (#1348 x1): a changed fact, a reversed
+    # conclusion — same length, no voice of the resident's own
+    ("Alex: The decision is the bank side, not a figure: every sync on the three "
+     "linked accounts has returned a 404 since 7 September, and the vault flags "
+     "this install as restored from a backup, so those cached balances and "
+     "transactions can no longer be trusted as current. {Q}", False),
+    ("Alex: The decision is the bank side, not a figure: every sync on the three "
+     "linked accounts has returned a 404 since 7 October, and the vault flags this "
+     "install as restored from a backup, so those cached balances and transactions "
+     "can now safely be trusted as current. {Q}", False),
+])
+def test_the_late_answer_eval_judges_the_carried_answer(reply, ok):
+    module = _late_eval()
+    case = next(c for c in module.CASES if c["id"] == "late-live")
+    if reply == "verbatim":
+        reply = _carried(module, module.LIVE_REASON)
+    elif reply == "quoted":
+        reply = f'Alex: "{module.LIVE_ANSWER}"'
+    reply = reply.replace("{Q}", module.LIVE_QUESTION).replace("{R}", module.LIVE_REASON)
+    assert module.judge_carried(case, reply)[0] is ok
+
+
+@pytest.mark.parametrize("case_id, late, asked, ok", [
+    ("late-answer", "Alex: {late}", False, True),
+    # #1348 x1: an ask in the late turn, silent after it, used to pass with
+    # the answer dropped; any ask there now fails
+    ("late-answer", "<silent/>", True, False),
+    ("late-answer", "Alex: {late}", True, False),
+    ("late-live", "Alex: {R} {Q}", True, False),
+    ("late-live", "Alex: {R} {Q}", False, True),
+    ("late-live", "<silent/>", False, False),
+])
+def test_the_late_answer_eval_judges_the_late_turn(case_id, late, asked, ok):
+    module = _late_eval()
+    case = next(c for c in module.CASES if c["id"] == case_id)
+    late = (late.replace("{late}", case.get("late", ""))
+            .replace("{Q}", module.LIVE_QUESTION).replace("{R}", module.LIVE_REASON))
+    assert module.judge_late_turn(case, late, asked)[0] is ok
+
+
+@pytest.mark.parametrize("reply, ok", [
+    ("", True),
+    ("<silent/>", True),
+    ("Alex is still on it.", True),
+    ("Asked him — he's taking a moment, I'll bring his question back as soon as "
+     "it lands.", False),
+    ("Alex is still on it.\nI'll pass it on.", False),
+    ("Still running — want me to check back?", False),
+    ("Alex is still working on it.", True),
+    ("Alex's still on it", True),
+    # the reviewers' counterexamples (#1348 x2): short, one line, no question,
+    # and not a holding line
+    ("Alex has finished; no further answer is coming.", False),
+    ("Your account balance is €500.", False),
+    ("Alex couldn't do it.", False),
+])
+def test_the_late_answer_eval_judges_the_holding_line(reply, ok):
+    assert _late_eval().judge_holding(reply)[0] is ok
+
+
+@pytest.mark.parametrize("after, ok", [
+    ("", True),
+    ("<silent/>", True),
+    ("Asked — tap whichever you fancy.", False),
+    ("Asked — buttons are in your chat.", False),
+])
+def test_the_late_answer_eval_judges_text_after_an_ask(after, ok):
+    assert _late_eval().judge_after_ask(after)[0] is ok

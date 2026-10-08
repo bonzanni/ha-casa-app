@@ -393,6 +393,9 @@ async def test_plain_text_during_human_post_cancels_replacement_not_scheduled(
     assert sum(p.get("request_id") == channel.second_request_id
                for p in results) == 1
     assert sum(p.get("message") == SETTLED_ASK_MESSAGE for p in results) == 1
+    # #1348: the silence note says the question stands in the chat; a settled
+    # one does not, so the note is not carried.
+    assert sum("note" in p for p in results) == 0
     # The single read cannot tell cancelled from answered, so the payload must
     # name no outcome at all.
     assert sum(bool({"outcome", "option_index", "reason", "kind"} & p.keys())
@@ -406,12 +409,18 @@ async def test_a_live_plain_ask_still_returns_the_unchanged_awaiting_payload(
     _fresh_broker, _fresh_store,
 ):
     """The control for the red case above: nothing retires this question, so
-    the happy path's wire payload must stay byte-identical."""
+    the happy path's wire payload must stay byte-identical — the status, the
+    request id and, since #1348, Casa's silence note, and nothing else."""
+    import json
+
+    import tools
+
     channel = _FakeChannel()
     raw = await _ask_on_raw(channel, _dm_origin(), "Celsius?")
 
-    assert sum(_wire(raw) == '{"status": "awaiting_user", "request_id": "<rid>"}'
-               for _ in [0]) == 1
+    expected = json.dumps({"status": "awaiting_user", "request_id": "<rid>",
+                           "note": tools.ASK_USER_SILENCE_NOTE})
+    assert sum(_wire(raw) == expected for _ in [0]) == 1
     assert sum("is_error" in envelope for envelope in [raw]) == 0
     live = _fresh_broker.pending(namespace="resident_ask", scope=f"dm:{OPERATOR}")
     assert len(live) == 1
