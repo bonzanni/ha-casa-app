@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.344.48] - 2026-10-08
+
+### Added
+
+- A plugin button whose tap only changes the card's own view, such as a page turn or a switch, can now update that card in place. You see one card with its new text and buttons instead of three messages: the settled card, a receipt line and the new card. The plugin opts in per tap, so taps that act (confirm, file, send a file) keep their receipt. If the card cannot be edited, for example because the message was deleted, you get the receipt and the new card as before. (#1339)
+
 ## [0.344.47] - 2026-10-08
 
 ### Fixed
