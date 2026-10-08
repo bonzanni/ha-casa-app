@@ -69,11 +69,16 @@ class Capture:
 
     ``next`` (#1302): a ``receipt`` capture whose response also carried a
     ``next`` object — that object JSON-encoded, judged by the tap's desk use
-    exactly as a proposal deposit; ``""`` otherwise."""
+    exactly as a proposal deposit; ``""`` otherwise.
+
+    ``in_place`` (#1339): that response also carried ``"in_place": true`` — the
+    tap asks to show ``next`` in place of the tapped card; ``False`` whenever
+    ``next`` is ``""``."""
     kind: str
     text: str = ""
     rewritten: bool = False
     next: str = ""
+    in_place: bool = False
 
 
 # ---------------------------------------------------------------------------

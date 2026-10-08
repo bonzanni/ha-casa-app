@@ -37,6 +37,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | a resident's turn limit, how a turn-limit stop is detected or returned, or what Casa says about a limit stop and where | [`architecture/turn-limits.md`](architecture/turn-limits.md) |
 | a scheduled trigger that starts a plugin job — its schema keys, the upsert refusals, the fire's origin and launcher, or the line a refused fire sends | [`architecture/job-triggers.md`](architecture/job-triggers.md) |
 | a specialist upgrade, rollback or uninstall, the owned-plugin generation a rollback republishes, or the bundle journal's contracts | [`architecture/specialist-bundle-transactions.md`](architecture/specialist-bundle-transactions.md) |
+| a tap's next card, the in_place answer, or the edit that replaces the tapped card | [`architecture/stored-call-next-card.md`](architecture/stored-call-next-card.md) |
 | adding a route, changing webhook authentication, or anything crossing the container boundary | [`architecture/http-surface.md`](architecture/http-surface.md) |
 | adding a tool, a tool's result contract, or completion semantics | [`architecture/tools-interface.md`](architecture/tools-interface.md) |
 | adding a tool, changing tool dispatch, or anything about tool authorization | [`architecture/mcp-and-tools.md`](architecture/mcp-and-tools.md) |

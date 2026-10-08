@@ -1246,6 +1246,18 @@ async def _post_operator_proposal(chat_id: int, text: str, labels: list, rid: st
     return await channel.deliver_operator_proposal(chat_id, text, labels, rid, post=post)
 
 
+async def _edit_operator_proposal(chat_id: int, message_id: int, text: str, labels: list,
+                                  rid: str, post: "PostRecord | None" = None):
+    """#1339: the channel edits *message_id* to the labelled text with one
+    button per label (``v1|proposal|<rid>|<i>``); returns the message id, or
+    ``None`` when the edit did not land."""
+    channel = _telegram_channel()
+    if channel is None:
+        return None
+    return await channel.replace_operator_proposal(chat_id, message_id, text, labels, rid,
+                                                   post=post)
+
+
 def _claim_and_capture(outbox, path: str, kind: str, delivered_name: str = ""):
     """ONE synchronous unit, run off the loop: claim *path*, validate the
     staged name for *kind* (S7a: the deposit's validated *delivered_name*,
@@ -1309,7 +1321,8 @@ async def _post_operator_file(chat_id: int, path: str, kind: str, caption: str,
 
 async def _post_proposal(identity, seg: str, slot: str, call: _InFlight, proposal: dict,
                          head: str, post: "PostRecord", warning: str | None = None,
-                         on_proven: "Callable[..., None] | None" = None) -> tuple:
+                         on_proven: "Callable[..., None] | None" = None,
+                         edit_message_id: int | None = None) -> tuple:
     """S5 §3: ONE synchronous block — count, supersede by revision, register
     with the finish hook — then the post; a post that is not proven
     unregisters at once (``unregister`` fires no hook; nothing is on screen).
@@ -1324,7 +1337,14 @@ async def _post_proposal(identity, seg: str, slot: str, call: _InFlight, proposa
     still fits one page; otherwise the proposal lands without it and the
     tell goes out as ONE labelled desk notice right after the post — the
     landed proposal stays the sole visible receipt and the tell is never
-    silently dropped."""
+    silently dropped.
+
+    ``edit_message_id`` (#1339): the card replaces the tapped card in place —
+    the channel EDITS that message instead of sending one. The target is
+    known in advance, so the synchronous block also binds the record to it
+    and files it in the post map under *post*, before the edit: an
+    unconfirmed edit's record can then still be marked by its finish hook,
+    and a swipe-reply on the message routes (design round 1)."""
     from channels.tg_richtext import render_paged
     from text_util import utf16_len
     from verdict_broker import BROKER
@@ -1367,6 +1387,9 @@ async def _post_proposal(identity, seg: str, slot: str, call: _InFlight, proposa
     req, _created = BROKER.register(
         namespace="proposal", scope=scope, request_id=rid,
         timeout_s=PROPOSAL_TTL_S, detached=True, supersede=False, meta=meta)
+    if edit_message_id is not None:
+        req.meta["message_id"] = edit_message_id
+        POST_MAP.record(chat_id, edit_message_id, post)
     channel = _telegram_channel()
     factory = getattr(channel, "proposal_finish_hook", None)
     if factory is not None:
@@ -1375,9 +1398,11 @@ async def _post_proposal(identity, seg: str, slot: str, call: _InFlight, proposa
     delivered = unconfirmed = False
     try:
         try:
-            mid = await asyncio.wait_for(
-                _post_operator_proposal(chat_id, text, labels, rid, post=post),
-                DELIVERY_TIMEOUT_S)
+            send = (_post_operator_proposal(chat_id, text, labels, rid, post=post)
+                    if edit_message_id is None else
+                    _edit_operator_proposal(chat_id, edit_message_id, text, labels, rid,
+                                            post=post))
+            mid = await asyncio.wait_for(send, DELIVERY_TIMEOUT_S)
         except (asyncio.TimeoutError, UnconfirmedDelivery) as exc:
             # #1305: the card may be on screen. It stays registered until its
             # TTL, and a tap binds its message id; the caller is told what it
@@ -1746,18 +1771,21 @@ def _receipt_of(text: str) -> tuple[str, str]:
     response was never parsed before this, so a nesting too deep for the
     parser falls back rather than raising inside the hook.
 
-    #1302: returns ``(receipt, next)`` — ``next`` is the response's ``next``
-    object, JSON-encoded, only beside a usable ``receipt`` string; ``""``
-    otherwise (nothing is judged here)."""
+    #1302: returns ``(receipt, next, in_place)`` — ``next`` is the response's
+    ``next`` object, JSON-encoded, only beside a usable ``receipt`` string;
+    ``""`` otherwise (nothing is judged here). #1339: ``in_place`` is True only
+    when ``next`` is an object and the response's ``in_place`` is JSON ``true``."""
     try:
         parsed = _parse_object(text)
     except RecursionError:
         parsed = None
     receipt = parsed.get("receipt") if parsed is not None else None
     if not (isinstance(receipt, str) and receipt.strip()):
-        return text, ""
+        return text, "", False
     nxt = parsed.get("next")
-    return receipt, (json.dumps(nxt, ensure_ascii=False) if isinstance(nxt, dict) else "")
+    if not isinstance(nxt, dict):
+        return receipt, "", False
+    return receipt, json.dumps(nxt, ensure_ascii=False), parsed.get("in_place") is True
 
 
 def _capture_of(contract_map, tool_name: str, input_data, out, rewritten: bool):
@@ -1770,10 +1798,12 @@ def _capture_of(contract_map, tool_name: str, input_data, out, rewritten: bool):
     if not out:
         kind = "receipt" if entry is None or entry.kind == "safe" else "no_post"
         text = _response_text((input_data or {}).get("tool_response")) or ""
-        receipt, nxt = _receipt_of(text)
+        receipt, nxt, in_place = _receipt_of(text)
         # #1302: only a ``safe`` tool's receipt carries a next card; the
         # ``More`` exception's no-post shape keeps its own path
-        return Capture(kind, receipt, rewritten, next=nxt if kind == "receipt" else "")
+        if kind != "receipt":
+            nxt, in_place = "", False
+        return Capture(kind, receipt, rewritten, next=nxt, in_place=in_place)
     body = (out.get("hookSpecificOutput") or {}).get("updatedToolOutput") if isinstance(out, dict) else None
     parsed = None
     if isinstance(body, str):

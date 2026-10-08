@@ -37,7 +37,8 @@ execution task (5 s), signals the CLI through its pidfd (SIGTERM, 5 s, SIGKILL) 
 descendants (SIGKILL), seals its own hook callbacks — a callback entering after the seal has
 no effect; one already inside is drained — waits for every pidfd under 10 s, discards the
 confirmed-dead CLI from the SDK's reaper set, and only then releases the desk and the
-permit. A receipt captured during the hold is still posted.
+permit. A receipt captured during the hold is still posted — or, for a tap that answered
+`in_place`, shown as the edited card ([`stored-call-next-card.md`](stored-call-next-card.md)).
 
 **One release path.** Every end of a pinned run — the normal end, the ceiling and a
 cancellation (a Casa stop cancels the turn's task) — goes through one settle function, run
