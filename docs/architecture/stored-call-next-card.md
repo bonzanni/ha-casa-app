@@ -72,9 +72,14 @@ show the new card's live keyboard. A `📎` tap runs no call and settles to `☑
 What it does not cover: an edit whose landing is unconfirmed. Its record stays live until the
 deadline, since the edited card may be on screen, and the fallback still posts the receipt and
 the card, so the operator may see two working cards; a card carrying the same `revision`
-replaces the edited one (`↻ replaced`).
+replaces the edited one (`↻ replaced`). If that edit did not land, the tapped card keeps `⏳ <label>` until
+then, when the record's deadline marks it `⌛ expired`.
 
 ## Failure behavior
+
+**A card's edit fails transiently** (flood control, a lost link). Every DM card edit is tried
+once more — after flood control's stated wait, at most ten seconds, else after a second; if
+that fails too, the card keeps its previous line and the receipt below it tells the outcome.
 
 **A tap is cancelled while its call runs** (Casa is stopping). The card keeps `⏳ <label>`;
 everything else is a cancelled tap's usual handling (`stored-call-buttons.md`).

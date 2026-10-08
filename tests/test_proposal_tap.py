@@ -662,3 +662,34 @@ async def test_a_tap_never_binds_a_request_that_is_not_live(env):
     meta = env.broker.get_meta(namespace="proposal", scope=f"proposal:{OPERATOR}", request_id=RID)
     assert meta is None or meta.get("message_id") is None
     assert req.meta.get("message_id") is None and env.taps == []
+
+
+# --- #1341 (Astra r1): a rate-limited settle edit is retried once -------------------
+
+@pytest.mark.parametrize("error", ["flood", "network"])
+@pytest.mark.parametrize("failures,landed,calls", [(1, True, 2), (2, False, 2)])
+async def test_a_flood_limited_card_edit_is_retried_once(failures, landed, calls, error, monkeypatch):
+    """The tap's ⏳ and its ☑ are two edits of one card, seconds apart; Telegram's
+    flood control answers the second with a stated wait, or the link drops. The
+    edit is idempotent and is tried once more, so a completed call's card does
+    not stay ⏳ on one transient failure."""
+    from unittest.mock import AsyncMock
+    from telegram.error import NetworkError, RetryAfter
+    from test_telegram_topic_stream import _mk_channel_with_fake_bot
+    import channels.telegram as tg_mod
+    waits = []
+
+    class _Asyncio:                       # the module's own name, never the global sleep
+        def __getattr__(self, name):
+            return getattr(asyncio, name)
+
+        async def sleep(self, s):
+            waits.append(s)
+    monkeypatch.setattr(tg_mod, "asyncio", _Asyncio())
+    ch, bot = _mk_channel_with_fake_bot()
+    exc = RetryAfter(3) if error == "flood" else NetworkError("link lost")
+    bot.edit_message_text = AsyncMock(side_effect=[exc] * failures + [None])
+    assert await ch.edit_dm_message(OPERATOR, 501, "card\n☑ Yes") is landed
+    assert bot.edit_message_text.await_count == calls
+    assert bot.edit_message_text.await_args.kwargs["message_id"] == 501
+    assert waits == [3.0 if error == "flood" else 1.0]
