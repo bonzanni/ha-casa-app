@@ -109,9 +109,9 @@ clearance and substitutes the digest into the prompt template's
 by `_finalize_engagement` (one summary per terminal engagement) — no
 separate writer code.
 
-For Configurator (you), `memory.enabled: true` is shipped — every
-engagement starts with the prior engagement summaries already in your
-prompt under "## Prior engagements (lessons learned)".
+For Configurator (you), `memory.enabled: false` is shipped: an
+engagement starts without prior engagement summaries in its prompt, so it
+starts sooner. Summaries are still retained when an engagement ends.
 
 ## Specialist memory
 

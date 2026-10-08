@@ -49,7 +49,7 @@ from plugin_grants import (
     sanitized_env_for_resolution,
 )
 from authz_grants import CHALLENGES, GRANTS, normalize_role
-from delegated_memory import delegated_recall, retain_delegated
+from delegated_memory import delegated_recall, retain_delegated, topical_query
 from semantic_memory import RecallUnavailable
 
 from claude_agent_sdk import (
@@ -3928,7 +3928,9 @@ async def _run_delegated_agent(
         else:
             try:
                 digest = await delegated_recall(
-                    sem, query=task_text,
+                    # #1351: a short topical query, not the whole brief — the
+                    # reranker's cost grows with the query's length.
+                    sem, query=topical_query(task_text),
                     origin_channel=str(parent.get("channel", "")),
                     max_tokens=cfg.memory.token_budget,
                     # #205: name the path. Left unset this fell to the generic

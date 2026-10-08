@@ -1775,6 +1775,77 @@ def test_the_relay_eval_judges_the_relayed_question(reply, ok):
     assert module._judge(case, reply)[0] is ok
 
 
+_ASK_FULL = ("Alex found two invoices that fit the €120 payment from 3 September. "
+             "Which one does it pay?")
+
+
+@pytest.mark.parametrize("reply, question, options, ok", [
+    # since #1348 the question goes out through ask_user with its two names as
+    # buttons, and the reply around it is silence or the attributed answer
+    ("<silent/>", _ASK_FULL, ["Snelstart", "Moneybird"], True),
+    ("", "Alex: Two invoices fit the €120 payment of 3 September. Which one does "
+         "it pay?", ["Snelstart", "Moneybird"], True),
+    ("", "Two invoices fit the €120 payment from 3 September — which invoice is it "
+         "for: Snelstart or Moneybird?", ["Moneybird", "Snelstart"], True),
+    (f"{_RELAY_PREFIX}.", "Which one does it pay?", ["Snelstart", "Moneybird"], True),
+    (f"{_RELAY_PREFIX}.", "Please tell me which invoice it pays: Snelstart or Moneybird.",
+     ["Snelstart", "Moneybird"], True),
+    ("<silent/>", "Two invoices fit the €120 payment of 3 September. Which invoice does "
+     "the payment cover?", ["Snelstart", "Moneybird"], True),
+    ("<silent/>", "Two invoices fit the €120 payment of 3 September. Which one does it "
+     "pay: Moneybird or Snelstart?", ["Snelstart", "Moneybird"], True),
+    # #1351 x3 (Astra): judged by its words, not a list of phrasings
+    ("<silent/>", "Two invoices fit the €120 payment of 3 September. Which invoice is "
+     "the payment for?", ["Snelstart", "Moneybird"], True),
+    ("<silent/>", "Two invoices fit the €120 payment of 3 September. Which one does "
+     "it belong to?", ["Snelstart", "Moneybird"], True),
+    ("<silent/>", "Two invoices fit the €120 payment of 3 September. Which one should "
+     "I delete?", ["Snelstart", "Moneybird"], False),
+    ("<silent/>", "Two invoices fit the €120 payment of 3 September. Which one does it "
+     "pay: Snelstart, Moneybird or Exact?", ["Snelstart", "Moneybird"], False),
+    ("<silent/>", "Two invoices fit the €120 payment of 3 September. Which one does it "
+     "pay? I can match it for you.", ["Snelstart", "Moneybird"], False),
+    # #1351 x4 (Astra, Terra): a payment instruction is not the delegate's question
+    ("<silent/>", "Two invoices fit the €120 payment of 3 September. Which one should "
+     "it be matched to?", ["Snelstart", "Moneybird"], True),
+    # #1351 x5 (Astra, Terra)
+    ("<silent/>", "Two invoices fit the €120 payment of 3 September. Which invoice does "
+     "the €120 payment match?", ["Snelstart", "Moneybird"], True),
+    ("<silent/>", "Alex: Two invoices fit the €120 payment of 3 September. Which invoice "
+     "should I match it to?", ["Snelstart", "Moneybird"], True),
+    ("<silent/>", "Two invoices fit the €120 payment of 3 September. Which invoice does "
+     "this payment correspond to?", ["Snelstart", "Moneybird"], True),
+    ("<silent/>", "Two invoices fit the €120 payment of 3 September. Which invoice "
+     "should be paid?", ["Snelstart", "Moneybird"], False),
+    ("<silent/>", "Two invoices fit the €120 payment of 3 September. Which one does it "
+     "pay: Snelstart or Moneybird — please pay the invoice?", ["Snelstart", "Moneybird"],
+     False),
+    # refused: narration after the question, a question that drops the answer,
+    # changed choices, an extra choice, a changed fact, a question of Ellen's own
+    ("Asked — tap whichever applies.", _ASK_FULL, ["Snelstart", "Moneybird"], False),
+    ("<silent/>", "Which one does it pay?", ["Snelstart", "Moneybird"], False),
+    ("<silent/>", _ASK_FULL, ["Snelstart", "Exact Online"], False),
+    ("<silent/>", _ASK_FULL, ["Snelstart", "Moneybird", "Neither"], False),
+    ("<silent/>", _ASK_FULL.replace("€120", "€210"), ["Snelstart", "Moneybird"], False),
+    ("<silent/>", _ASK_FULL + " Shall I delete the other one?",
+     ["Snelstart", "Moneybird"], False),
+    (f"{_RELAY_PREFIX}. I'll ask you below.", "Which one does it pay?",
+     ["Snelstart", "Moneybird"], False),
+])
+def test_the_relay_eval_judges_the_question_put_with_buttons(reply, question, options, ok):
+    """#1348 made ask_user's live result tell the assistant the person sees the
+    question with its buttons and to add nothing, so the delegate's question is
+    now put with ask_user; the case judges that form as well as the text one."""
+    import importlib.util
+    path = Path(__file__).resolve().parents[1] / "test-local/eval/ellen_relay_fidelity.py"
+    spec = importlib.util.spec_from_file_location("ellen_relay_fidelity", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    case = next(c for c in module.CASES if c["id"] == "question-via-ellen")
+    asked = {"question": question, "options": options}
+    assert module._judge_asked(case, reply, asked)[0] is ok
+
+
 # ---------------------------------------------------------------------------
 # #1348: the two paths #1332 left — a late answer (a sync delegation past its
 # 60 s wait, back as a notification) goes out the same way, a pending

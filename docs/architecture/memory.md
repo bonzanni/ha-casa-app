@@ -128,6 +128,15 @@ fresh session, that answer can arrive up to 15 s later. The query is the same fo
 from its text, so memories about one reminder's or notice's own subject are found only if
 they match it.
 
+**What a delegated specialist's recall searches for.** A specialist with memory recalls once,
+before it starts, and the delegation waits for it. The brief the delegating agent writes
+runs to hundreds of words, and searching with all of it would cost the same rerank time as
+an instruction prompt. So the search uses the brief's first 16 words, skipping markers
+such as `#` or `-` that carry no letter or digit, while the specialist itself still reads
+the whole brief; text with no such word at all, such as a reply of `???`, is searched as
+written. A brief that does not name its subject in its first 16 words finds memories about
+those words instead.
+
 **Writing is narrower than reading, and it has its own document.** Only write-trusted
 channels retain to the shared bank; *when* a conversation is retained, reset, or wiped is
 the retention lifecycle, and how a fact is *labelled* on the way in — tier classification,
@@ -296,6 +305,7 @@ since what may be disclosed is decided per surface.
 - `casa/rootfs/opt/casa/recall_renderer.py::render_recall`
 - `casa/rootfs/opt/casa/recall_health.py::observed_recall`
 - `casa/rootfs/opt/casa/delegated_memory.py::delegated_recall`
+- `casa/rootfs/opt/casa/delegated_memory.py::topical_query`
 - `casa/rootfs/opt/casa/timekeeping.py::resolve_period`
 
 **Tests**
@@ -307,6 +317,7 @@ since what may be disclosed is decided per surface.
 - `tests/test_1123_tier_floor_regressions.py`
 - `tests/test_pin_1120_recall_period.py`
 - `tests/test_1336_unauthored_recall_query.py`
+- `tests/test_specialist_memory_tiers.py::test_long_brief_recalls_with_its_opening_words_only`
 
 **Related**
 - [`architecture/overview.md`](../architecture/overview.md)

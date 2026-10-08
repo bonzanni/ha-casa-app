@@ -104,6 +104,10 @@ prompt_template_file: prompt.md
 hooks_file: hooks.yaml
 observer_policy_file: observer.yaml
 doctrine_dir: doctrine
+# #1351: no archive recall at launch. It held both the assistant's
+# acknowledgement and the topic's first words for 3-4 s (8-14 s on a slower
+# box), and most of its hits were dropped as another doctrine epoch.
+# Engagement summaries are still retained; query_engager reads them.
 memory:
-  enabled: true
+  enabled: false
   token_budget: 2000
