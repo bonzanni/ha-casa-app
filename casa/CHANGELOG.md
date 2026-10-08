@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.344.52] - 2026-10-08
+
+### Fixed
+
+- When you asked the assistant for something a specialist handles, such as "do Q3", the specialist's answer reached you only through the assistant. The assistant rewrote it into its own version, often with a question or an offer added. It now passes the specialist's answer on as written, introduced by the specialist's name ("Alex: …"), with nothing of its own around it. If the specialist asks the assistant to put a question to you, the question still reaches you. This is a change to the assistant's instructions, not a guarantee: in testing, the assistant occasionally still added a short "I'll ask Alex." first. (#1332)
+
 ## [0.344.51] - 2026-10-08
 
 ### Fixed
