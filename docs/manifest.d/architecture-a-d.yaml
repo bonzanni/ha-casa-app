@@ -211,7 +211,9 @@
     - casa/rootfs/opt/casa/tools.py::_delete_own_delegated_transcript
     - casa/rootfs/opt/casa/tools.py::_reap_bounded_tree
     - casa/rootfs/opt/casa/pinned_run.py::ProcessTree
+    - casa/rootfs/opt/casa/tools.py::_post_handoff_line
   tests:
+    - tests/test_delegate_to_agent.py::TestHandoffLine
     - tests/test_delegated_transcript_delete.py
     - tests/test_bounded_run_processes.py
     - tests/test_delegation_acl.py

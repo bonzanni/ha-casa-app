@@ -458,6 +458,45 @@ ASK_USER_SILENCE_NOTE = (
     "with exactly <silent/>.)")
 
 
+# #1350: the note a pending result carries when Casa has posted the hand-off
+# line in the person's chat (``_post_handoff_line``): they already see that
+# the work was passed on, so the resident does not announce it again.
+HANDOFF_SHOWN_NOTE = (
+    "(Casa: the person is shown a line saying this was passed to {name}. Do not "
+    "announce or repeat the hand-off. If you have nothing else for them, reply "
+    "with exactly <silent/>.)")
+
+_handoff_line_tasks: set[asyncio.Task[Any]] = set()
+
+
+def _post_handoff_line(origin: dict, line: str) -> bool:
+    """#1350: post ``line`` — a past-tense record of a hand-off that has
+    already happened — to the chat of the operator's own Telegram turn,
+    silently, without awaiting it. Only a live operator turn (not an
+    engagement's, a delegated, a scheduled or a notice turn: the spawn cap's
+    ``_is_agent_context``) on Telegram gets one. Returns whether it was
+    spawned; a send failure is logged and nothing more happens."""
+    origin = origin or {}
+    if str(origin.get("channel", "")) != "telegram" or _is_agent_context(origin):
+        return False
+    chat_id = origin.get("chat_id")
+    channel = _channel_manager.get("telegram") if _channel_manager is not None else None
+    send = getattr(channel, "send_handoff_line", None)
+    if chat_id in (None, "") or send is None:
+        return False
+
+    async def _post() -> None:
+        try:
+            await asyncio.wait_for(send(chat_id, line), 10.0)
+        except Exception as exc:  # noqa: BLE001 — a status line is never the work's fault
+            logger.info("hand-off line not posted: %s", type(exc).__name__)
+
+    task = asyncio.ensure_future(_post())
+    _handoff_line_tasks.add(task)
+    task.add_done_callback(_handoff_line_tasks.discard)
+    return True
+
+
 def _with_post_echo_payload(payload: dict, owner: str) -> dict:
     """The sync delegation's result, ok or error: the echo rides ``text``
     when the result has one, else ``message`` — a post proven before the
@@ -7407,6 +7446,10 @@ async def delegate_to_agent(args: dict) -> dict:
             task.add_done_callback(_permit_release_callback(permit))
         owned = None  # __TRANSFER_SYNC__
         _record_launch_safe(agent_name)
+        # #1350: the person sees at once that the work was passed on.
+        _handoff_name = _display_name_for_role(agent_name)
+        _handoff_shown = (not is_voice) and _post_handoff_line(
+            origin, f"📊 Passed to {_handoff_name}.")
 
         if mode == "async":
             _attach_completion_callback(task, record)
@@ -7420,6 +7463,8 @@ async def delegate_to_agent(args: dict) -> dict:
                 "agent": agent_name,
                 "mode": "async",
                 **({"casa_note": _note} if _note else {}),
+                **({"note": HANDOFF_SHOWN_NOTE.format(name=_handoff_name)}
+                   if _handoff_shown else {}),
             })
 
         # mode == "sync"
@@ -10110,12 +10155,48 @@ async def _engage_executor_impl(args: dict, _spawn_holder: dict) -> dict:
         raise
     finally:
         _unregister_launch_safe(_launch_handle)
+    # #1350: the launch was handed off. Two lines stating facts already true,
+    # neither awaited: the hand-off in the person's chat (an operator turn
+    # only), and what an in-process engagement is for at the top of its topic
+    # (a claude_code topic already opens with its pinned summary).
+    _handoff_name = _display_name_for_role(executor_type)
+    _title = getattr(rec, "topic_title", "") or executor_type
+    _handoff_shown = _post_handoff_line(
+        origin, f"⚙️ Passed to the {_handoff_name}: “{_title}”. "
+                "Its topic is in Engagements.")
+    if defn.driver == "in_casa":
+        _post_topic_opening(channel, topic_id, _title, task_text)
     return _result({
         "status": "pending",
         "engagement_id": rec.id,
         "executor_type": executor_type,
         "topic_id": topic_id,
+        **({"note": HANDOFF_SHOWN_NOTE.format(name=f"the {_handoff_name}")}
+           if _handoff_shown else {}),
     })
+
+
+def _post_topic_opening(channel: Any, topic_id: Any, title: str, task: str) -> None:
+    """#1350: the engagement topic's opening line — its title and what it was
+    asked, a standing fact never edited — posted without awaiting it."""
+    send = getattr(channel, "send_to_topic", None)
+    if send is None or topic_id is None:
+        return
+    body = (task or "").strip()
+    if len(body) > 300:
+        body = body[:300].rstrip() + "…"
+    text = f"📋 {title}\n{body}" if body else f"📋 {title}"
+
+    async def _post() -> None:
+        try:
+            await asyncio.wait_for(
+                send(topic_id, text, disable_notification=True), 10.0)
+        except Exception as exc:  # noqa: BLE001 — never the engagement's fault
+            logger.info("topic opening line not posted: %s", type(exc).__name__)
+
+    task_ = asyncio.ensure_future(_post())
+    _handoff_line_tasks.add(task_)
+    task_.add_done_callback(_handoff_line_tasks.discard)
 
 
 def _engagement_supergroup_chat_id(channel: Any | None) -> int | None:

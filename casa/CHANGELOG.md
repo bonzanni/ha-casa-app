@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.344.59] - 2026-10-08
+
+### Added
+
+- When you ask the assistant for something a specialist or the configurator handles, your chat now shows at once that it was passed on: "📊 Passed to Alex." or "⚙️ Passed to the configurator: “Gmail plugin”. Its topic is in Engagements." Before, you saw only "typing…" until the whole answer arrived, often 30 seconds to a minute later. The line arrives without a notification sound. It records that the work was handed over, not how it went: the answer, or a failure, still comes from the assistant. The assistant is told that you already see the configurator line, so it no longer adds its own "I've asked the configurator…"; in testing it added nothing in 10 of 10 runs, but this is an instruction, not a guarantee. The line appears only for messages you send yourself, not for scheduled checks or voice. (#1350)
+- A configurator topic now opens with its title and what it was asked. While it works, each turn shows one line that follows its steps in plain words, for example "🔧 This turn so far: 3 steps — latest: updating plugins (at 32s)". When the turn ends, the line becomes "☑ This turn: 7 steps in 1m 12s", or "✖ This turn stopped after 3 steps". Before, a topic could sit silent for close to a minute while the configurator worked. (#1350)
+
 ## [0.344.58] - 2026-10-08
 
 ### Added

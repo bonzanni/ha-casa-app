@@ -29,6 +29,19 @@ paths exist and they are not symmetrical: ordinary specialist delegation runs ep
 *interactive* specialist delegation creates an engagement; engaging an executor always
 creates one.
 
+**The operator sees a hand-off as it happens.** When the operator's own Telegram turn hands
+work on — a `sync` or `async` delegation once the specialist's run has been created, or an
+executor engagement once its launch has been handed off — Casa posts one silent line in
+that chat recording it (`📊 Passed to Alex.`, `⚙️ Passed to the configurator: “<title>”. …`).
+Every line states a hand-off that has already happened, so it stays true whatever the work
+then does; the answer or the failure still comes from the assistant. The send is spawned,
+never awaited, so it adds no wait and no cancellation point to the tool. Only a turn the spawn
+cap counts as the operator's own (`_operator_turn`, no bound engagement, depth 0) gets one:
+scheduled, notice, nested and voice turns post nothing. An `async` delegation's or an
+engagement's `pending` result then carries a note telling the assistant the person already
+sees the line and to stay silent when it has nothing else; a `sync` result's answer is the
+reply, so it carries none.
+
 **Two different limits bound agent-created work, and they deliberately divide the
 territory.** The *depth cap* stops delegation from chaining: an agent reached through
 delegation — ephemeral or interactive — cannot call the delegation tool again. The
@@ -321,8 +334,10 @@ the agent-spawn cap. Never copy the marker into a synthesized or scheduled turn'
 - `casa/rootfs/opt/casa/tools.py::_delete_own_delegated_transcript`
 - `casa/rootfs/opt/casa/tools.py::_reap_bounded_tree`
 - `casa/rootfs/opt/casa/pinned_run.py::ProcessTree`
+- `casa/rootfs/opt/casa/tools.py::_post_handoff_line`
 
 **Tests**
+- `tests/test_delegate_to_agent.py::TestHandoffLine`
 - `tests/test_delegated_transcript_delete.py`
 - `tests/test_bounded_run_processes.py`
 - `tests/test_delegation_acl.py`

@@ -195,8 +195,10 @@ engagement.
 `send_message` answers `Message sent via telegram. Casa prefixed: “…”`; `set_reminder`'s
 payload carries `note`; `ask_user`'s `awaiting_user` payload gains `casa_prefixed` when a
 line was added; `delegate_to_agent` reports the brief's note as `casa_note` on either
-pending result — the async one and a synchronous wait that degraded to pending. The
-transcript the model builds on therefore says what the operator saw.
+pending result — the async one and a synchronous wait that degraded to pending — and
+its async result, like `engage_executor`'s `pending`, carries `note` naming the hand-off
+line Casa posted in the operator's chat. The transcript the model builds on therefore says
+what the operator saw.
 
 ## Failure behavior
 

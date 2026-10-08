@@ -47,6 +47,20 @@ when the declaring plugin is installed on the calling resident — a worker reco
 its prompt; what Casa then does with a job's engagement is
 [`architecture/background-jobs.md`](background-jobs.md).
 
+**An in-process executor's topic says what it was asked and shows each turn's steps.**
+When an `in_casa` executor's launch is handed off, its topic gets a first line with the
+title and the start of the task. Then each turn that uses tools keeps one step log in the
+topic. The log is posted at the turn's first main-loop tool use and edited as steps start
+(`🔧 This turn so far: 3 steps — latest: updating plugins (at 32s)`). When the turn ends,
+the method that ran it hands the log its real outcome, and the log closes itself in the
+background (`☑ This turn: 7 steps in 1m 12s`, or `✖ This turn stopped after 3 steps`).
+Each text records steps that have already started, so a close that fails, or a topic
+closed first by a completion, leaves a true record, never a claim about the present. No
+write is awaited by the turn, so a slow Telegram never delays a turn or changes its
+outcome; writes are coalesced and spaced, and each Telegram call is bounded. Nothing is
+persisted. A `claude_code` topic keeps its pinned
+live summary instead.
+
 **A specialist's engagements are its open conversations, and a change to the specialist
 does not reach them.** One keeps the personality and the plugin versions it started with
 and reads the specialist's current settings when it resumes. So a persona apply, an upgrade,
@@ -178,8 +192,13 @@ persisting ledger checks it — is answered in the same document.
 - `casa/rootfs/opt/casa/drivers/driver_protocol.py::DriverProtocol`
 - `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver`
 - `casa/rootfs/opt/casa/tools.py::engage_executor`
+- `casa/rootfs/opt/casa/tools.py::_post_topic_opening`
+- `casa/rootfs/opt/casa/drivers/turn_progress.py::TurnProgressLine`
 
 **Tests**
+- `tests/test_turn_progress.py`
+- `tests/test_in_casa_turn_progress.py`
+- `tests/test_engage_executor_tool.py::TestEngageHandoffLines`
 - `tests/test_delegate_to_agent.py`
 - `tests/test_delegate_to_agent_interactive.py`
 - `tests/test_claude_code_driver.py`

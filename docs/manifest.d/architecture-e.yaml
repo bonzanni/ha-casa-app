@@ -155,7 +155,12 @@
     - casa/rootfs/opt/casa/drivers/driver_protocol.py::DriverProtocol
     - casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver
     - casa/rootfs/opt/casa/tools.py::engage_executor
+    - casa/rootfs/opt/casa/tools.py::_post_topic_opening
+    - casa/rootfs/opt/casa/drivers/turn_progress.py::TurnProgressLine
   tests:
+    - tests/test_turn_progress.py
+    - tests/test_in_casa_turn_progress.py
+    - tests/test_engage_executor_tool.py::TestEngageHandoffLines
     - tests/test_delegate_to_agent.py
     - tests/test_delegate_to_agent_interactive.py
     - tests/test_claude_code_driver.py

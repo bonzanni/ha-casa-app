@@ -292,8 +292,12 @@ class InCasaDriver(DriverProtocol):
         result_observer: "ResultObserver | None" = None,
         record_lookup: Callable[[str], Any] | None = None,
         begin_turn_delivery: "Callable[[str], bool] | None" = None,
+        turn_progress_factory: "Callable[[int], Any] | None" = None,
     ) -> None:
         self._topic_stream_factory = topic_stream_factory
+        # #1350: (topic_id) → a fresh drivers.turn_progress.TurnProgressLine —
+        # the step log an executor turn keeps in its topic. None: no step log.
+        self._turn_progress_factory = turn_progress_factory
         self._persist_session_id = persist_session_id
         # S8: persists the rows a rebuilt session's plan decided (the profile
         # it enforces for each loaded plugin; for a withheld one, #1186, the
@@ -1126,6 +1130,41 @@ class InCasaDriver(DriverProtocol):
         *, inbound_token: object | None = None,
         batch: int | None = None, cid: str | None = None,
     ) -> None:
+        """#1350: an executor turn with a topic keeps a step log there, closed
+        with the turn's real outcome — a result-carried refusal raises late in
+        the body and is a failure, which is why the close is decided out here
+        and not in the body's own ``finally``. The close runs in the background
+        (``finish``): nothing here awaits Telegram, so the turn's timing and
+        outcome are the body's alone."""
+        progress = None
+        if (self._turn_progress_factory is not None
+                and getattr(engagement, "kind", "") == "executor"
+                and engagement.topic_id is not None):
+            try:
+                progress = self._turn_progress_factory(engagement.topic_id)
+            except Exception:  # noqa: BLE001 — a step log is never the turn's fault
+                logger.warning("turn progress line unavailable for %s",
+                               engagement.id[:8], exc_info=True)
+        ok = False
+        try:
+            await self._deliver_turn_body(
+                engagement, prompt, inbound_token=inbound_token, batch=batch,
+                cid=cid, progress=progress)
+            ok = True
+        finally:
+            if progress is not None:
+                try:
+                    progress.finish(ok=ok)
+                except Exception:  # noqa: BLE001 — never the turn's fault
+                    logger.warning("turn progress close failed for %s",
+                                   engagement.id[:8], exc_info=True)
+
+    async def _deliver_turn_body(
+        self, engagement: EngagementRecord, prompt: str,
+        *, inbound_token: object | None = None,
+        batch: int | None = None, cid: str | None = None,
+        progress: Any = None,
+    ) -> None:
         # Lazy import: tools imports engagement_registry; doing this at
         # module top-level would create a circular import.
         from tools import engagement_var
@@ -1289,6 +1328,16 @@ class InCasaDriver(DriverProtocol):
                                     tool_names_by_id[
                                         getattr(block, "id", "")
                                     ] = getattr(block, "name", "?")
+                                    # #1350: the main loop's steps only; a
+                                    # sub-agent's are not the turn's steps.
+                                    if (progress is not None and getattr(
+                                            sdk_msg, "parent_tool_use_id",
+                                            None) is None):
+                                        from drivers.summary_controller import (
+                                            activity_for_tool,
+                                        )
+                                        progress.step(activity_for_tool(
+                                            getattr(block, "name", "") or ""))
                                     sdk_logging.log_tool_use(
                                         block,
                                         idx=idx,
