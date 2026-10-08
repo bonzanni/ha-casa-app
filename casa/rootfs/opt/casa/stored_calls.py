@@ -148,6 +148,17 @@ def _entry_ok(runtime_name: str, entry: Any, *, contract_map: Any, protected: An
     return "capability"
 
 
+def delivers_file(entry: Any) -> bool:
+    """#1362: the entry is #1303's file sibling — a ``capability`` whose one
+    provided slot delivers ``operator_file`` (the only call a ``keep_card``
+    button may store)."""
+    if entry is None or getattr(entry, "kind", "") != "capability":
+        return False
+    provides = tuple(getattr(entry, "provides", ()) or ())
+    return (len(provides) == 1
+            and dict(getattr(entry, "delivers", None) or {}) == {provides[0]: OPERATOR_FILE})
+
+
 def _is_proposal_exception(entry: Any) -> bool:
     return entry.kind == "capability"
 

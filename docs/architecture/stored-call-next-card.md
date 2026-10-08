@@ -9,8 +9,8 @@ last_reviewed: 2026-10-08
 ## Scope
 
 What a stored-call tap may show besides its receipt: the next card a `safe` stored call
-returns beside its receipt (#1302), and the same card shown in place of the tapped one
-(#1339). The proposal, the tap's admission chain and re-checks, the pinned turn, the capture
+returns beside its receipt (#1302), the same card shown in place of the tapped one
+(#1339), and the tapped card left live by a file button that keeps it (#1362). The proposal, the tap's admission chain and re-checks, the pinned turn, the capture
 and the receipt are [`stored-call-buttons.md`](stored-call-buttons.md); the delivered-slot
 path a proposal rides on is [`plugin-delivered-slots.md`](plugin-delivered-slots.md).
 Telegram only.
@@ -61,6 +61,21 @@ new card itself when it replaced the tapped one; `✖ <reason>` for a refusal or
 before. An in-place edit whose landing is unconfirmed leaves the message alone, since it may
 show the new card's live keyboard. A `📎` tap runs no call and settles to `☑ <label>` at once.
 
+**A file button may leave its card live (#1362).** A button whose stored call is the file
+sibling (a `capability` whose one slot delivers `operator_file`) may carry
+`"keep_card": true` — JSON `true` only, on no other call and never beside `arm_file`, else
+the deposit is `bad_proposal`; its kind is `keep_card`. Its tap runs the whole admission
+chain, but where a settling tap claims and commits, a `keep_card` tap only requires the
+record to be live and unclaimed (else "expired"), answers `✔`, touches no keyboard, and
+hands the tap to the desk itself (`_spawn_keep_tap`, one tracked task): the card keeps its
+text and every button. The desk use is any tap's — re-checks, the pinned one-call turn, the
+landed file as the receipt, the exchange and the echo — except that it writes no line over
+the card on any path (`keeps_card`): refusals, busy, a faulted desk and failures are their
+notice and echo line only. A tap admitted while the card was live sends its file even if the
+card's hour ran out while it waited for the desk. The button can be tapped again (each tap
+one file), and another button still settles the card as before; a tap on a settled card is
+"already answered".
+
 ## Contracts & invariants
 
 **INV-PROP-006**: A `safe` stored call's `next` card that is not shown in place (INV-PROP-008) is posted only beside its receipt, after that receipt's send is proven, within the tap's own desk use, and only if it passes the proposal deposit predicate against the stored tool's own plugin and server on the maps the tap was re-checked against; it is registered before it is sent and carries the tapped proposal's own chat, operator, role and artifact, so its buttons execute only from a tap; a card that does not land is one notice and the receipt stands; a response without `next` is today's tap.
@@ -68,6 +83,8 @@ show the new card's live keyboard. A `📎` tap runs no call and settles to `☑
 **INV-PROP-008**: A `next` card returned with `"in_place": true` replaces the tapped card only by an edit of the tapped message, within the tap's own desk use, after it passed the same deposit predicate and the same registration as a next card, with its record bound to the tapped message id and that message filed under the card's post record before the edit is sent; a landed edit sends no receipt; any other outcome is today's sequence — the receipt, then the card as a new message.
 
 **INV-PROP-009**: A stored-call tap's card never reads as settled before its call answered: the commit edits it to `⏳ <label>`, and only the tap's desk use, after the call's outcome is known, replaces that line — with `☑ <label>` before the receipt is sent, with the new card in place, or with `✖ <reason>`; it is never marked over a message an unconfirmed in-place edit may have changed.
+
+**INV-PROP-010**: A `keep_card` button stores only a call whose one provided slot delivers `operator_file`; its tap, admitted by the same chain while the proposal is live and unclaimed, claims and commits nothing, leaves the card's text and keyboard as they were, runs one desk use of the stored call per admitted tap, and never writes a line over the card; every other button of the card still settles it as before.
 
 What it does not cover: an edit whose landing is unconfirmed. Its record stays live until the
 deadline, since the edited card may be on screen, and the fallback still posts the receipt and
@@ -113,10 +130,14 @@ of the same card; a tap that confirms, files or sends leaves it out, and its rec
 - `casa/rootfs/opt/casa/result_broker.py::_receipt_of`
 - `casa/rootfs/opt/casa/result_broker.py::_edit_operator_proposal`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.replace_operator_proposal`
+- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._spawn_keep_tap`
+- `casa/rootfs/opt/casa/specialist_desk.py::keeps_card`
+- `casa/rootfs/opt/casa/stored_calls.py::delivers_file`
 
 **Tests**
 - `tests/test_tap_next_card.py`
 - `tests/test_tap_in_place_card.py`
+- `tests/test_tap_keep_card.py`
 
 **Related**
 - [`architecture/stored-call-buttons.md`](../architecture/stored-call-buttons.md)

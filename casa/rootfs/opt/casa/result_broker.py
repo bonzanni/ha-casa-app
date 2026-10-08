@@ -332,7 +332,7 @@ def proposal_ok(value: Any, call: Any) -> tuple[dict | None, str | None]:
         # S6 §2.4: a button is EITHER a stored call OR an `arm_file` button — never both,
         # never neither; at most one arm button per proposal (it counts toward the six)
         if "arm_file" in button:
-            if button.get("arm_file") is not True or "call" in button:
+            if button.get("arm_file") is not True or "call" in button or "keep_card" in button:
                 return None, "bad_proposal"
             arm_buttons += 1
             if arm_buttons > 1:
@@ -352,10 +352,18 @@ def proposal_ok(value: Any, call: Any) -> tuple[dict | None, str | None]:
             protected=getattr(call, "protected", None) or {}, seg=seg, server=server)
         if stored is None:
             return None, "bad_proposal"
-        resolved.append({"label": label, "call": {
+        kept = {"label": label, "call": {
             "server": stored.server, "wire_name": stored.wire_name,
             "runtime_name": stored.runtime_name, "proposal": stored.proposal,
-            "arguments": arguments, "canonical": sc.canonical_json(arguments)}})
+            "arguments": arguments, "canonical": sc.canonical_json(arguments)}}
+        if "keep_card" in button:
+            # #1362: a file button may leave its card live — only #1303's file sibling
+            # (a tap that acts, or posts a card, settles the card it sits on)
+            if button.get("keep_card") is not True or not sc.delivers_file(
+                    call.contract_map.tools.get(stored.runtime_name)):
+                return None, "bad_proposal"
+            kept["keep_card"] = True
+        resolved.append(kept)
     composed = compose_operator_message(text, post_label(call.identity.enforcement_role))
     if len(render_paged(composed)) != 1 or utf16_len(composed) > 4096 - PROPOSAL_SETTLE_RESERVE:
         return None, "bad_proposal"
@@ -1383,7 +1391,9 @@ async def _post_proposal(identity, seg: str, slot: str, call: _InFlight, proposa
         # S6 §2.4: `calls` keeps one entry per button (None at an arm_file index, so every
         # reader keeps its indexing); `kinds` is the parallel per-button kind
         "calls": [dict(b["call"]) if "call" in b else None for b in proposal["buttons"]],
-        "kinds": ["arm_file" if b.get("arm_file") else "call" for b in proposal["buttons"]],
+        # #1362: a `keep_card` button's tap settles nothing (INV-PROP-010)
+        "kinds": ["arm_file" if b.get("arm_file") else "keep_card" if b.get("keep_card")
+                  else "call" for b in proposal["buttons"]],
         "revision": revision, "label": head, "text": text, "options": list(labels),
         "message_id": None, "owner": _post_owner(identity), "_scope": scope,
     }
