@@ -364,3 +364,15 @@ def test_1386_failed_shorts_fall_back_to_fitting_labels() -> None:
 def test_1386_multi_own_words_stay_undecorated_in_storage() -> None:
     assert resolve_button_labels(["Lights", "Heating"], multi=True) == [
         "Lights", "Heating"]
+
+
+def test_ask_user_description_names_the_button_fit() -> None:
+    """#1390: ``ask_user`` has no per-option ``short``, so its description is
+    where the model learns to keep options button-sized. The number it quotes
+    must be the renderer's own fit, or the steer points at the wrong length."""
+    import tools
+    from channels.telegram import _ASK_BUTTON_WORDS_FIT
+
+    desc = tools.ask_user.description
+    assert f"{_ASK_BUTTON_WORDS_FIT} characters or fewer" in desc
+    assert "detail they need in the question" in desc

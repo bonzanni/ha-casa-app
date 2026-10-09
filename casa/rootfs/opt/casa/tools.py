@@ -1207,7 +1207,11 @@ async def _ask_user_scheduled(
 @tool(
     "ask_user",
     "Ask the operator a multiple-choice question with tappable buttons in "
-    "their DM. Two-turn: returns awaiting_user immediately; the answer "
+    "their DM. Keep each option to a few words (32 characters or fewer) so "
+    "its button can show it; one longer option turns every button into a "
+    "bare \"Option n\". Casa lists the options under the question, so give "
+    "any detail they need in the question as plain sentences, not as a "
+    "second list. Two-turn: returns awaiting_user immediately; the answer "
     "arrives as the user's next message. A `settled` status instead means the "
     "question was already over by the time this call returned (a /new, a "
     "typed answer, a replacement question, a timeout, a tap, a shutdown): do "

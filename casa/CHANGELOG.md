@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.344.70] - 2026-10-09
+
+### Changed
+
+- The assistant now keeps the answers on her question buttons to a few words, so the buttons show them instead of "Option 1", "Option 2", … Any longer explanation goes in the question itself. (#1390)
+
 ## [0.344.69] - 2026-10-09
 
 ### Fixed
