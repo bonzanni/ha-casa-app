@@ -4938,6 +4938,28 @@ def persona_name(role: str | None = None) -> str:
     return _persona_name_for_role(role or "assistant") or "the assistant"
 
 
+def engagement_launch_prompt(task_text: str, context_text: str, engager: str) -> str:
+    """#1411: the first message of a specialist's interactive engagement.
+
+    The topic is a conversation the person keeps writing in, and
+    ``emit_completion`` ends it and closes the topic. Without saying so, a
+    specialist read "open a chat and wait" as a task finished by its first
+    reply and closed the topic at once (casa-test, twice)."""
+    return (
+        f"You are engaged with the user in a Telegram forum topic.\n"
+        f"Task: {task_text}\n\n"
+        f"Context from {engager}:\n"
+        f"{context_text or '(none)'}\n\n"
+        "The topic is a conversation: after each reply of yours it stays open "
+        "and the user writes to you there. Calling emit_completion ends the "
+        "engagement and closes the topic, so the user can no longer write in "
+        "it. Call it only when the work the task asks for is done, or the "
+        "user says they are finished, never while the user is expected to "
+        "keep talking with you. Then call emit_completion(text=..., "
+        "artifacts=..., next_steps=..., status='ok')."
+    )
+
+
 def _declared_name_candidates(name: str, declared) -> list[str]:
     """#433: the DECLARED roles whose persona display name matches *name*,
     compared case- and whitespace-insensitively (matching
@@ -6788,14 +6810,8 @@ async def _launch_interactive_engagement(
                 return _result({"status": "error", "kind": "profile_persist_failed",
                                 "message": str(exc)})
 
-            prompt = (
-                f"You are engaged with the user in a Telegram forum topic.\n"
-                f"Task: {task_text}\n\n"
-                f"Context from {persona_name(origin.get('role'))}:\n"
-                f"{context_text or '(none)'}\n\n"
-                f"When the task is complete, call emit_completion(text=..., "
-                f"artifacts=..., next_steps=..., status='ok')."
-            )
+            prompt = engagement_launch_prompt(
+                task_text, context_text, persona_name(origin.get('role')))
 
             if job is not None:
                 prompt = background_jobs.launch_prompt(
@@ -13048,8 +13064,9 @@ async def _record_pending_completion(engagement: Any, status: str, text: str) ->
 
 @tool(
     "emit_completion",
-    "Mark this engagement complete. The agent that started the engagement "
-    "receives the summary. Must be called "
+    "End this engagement: Casa closes its topic, and the user can no longer "
+    "write to you there. The agent that started the engagement receives the "
+    "summary. Must be called "
     "from inside an active engagement. status: 'ok' | 'partial' | 'failed' | "
     "'cancelled'.",
     # Explicit schema: artifacts, next_steps and status are optional in the

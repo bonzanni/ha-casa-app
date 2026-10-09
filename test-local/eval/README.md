@@ -25,3 +25,9 @@ manifest at small bank scale — re-run these when the `casa` bank grows 10–10
   of one long session built under the pre-#1390 description — the live condition; a
   fresh session did not reproduce the failure. Runs in the container or with
   `--local --cli` (see script header).
+- `specialist_engagement_open.py` — live-model check (#1411): asked for an ongoing
+  conversation with Alex, the resident opens an interactive engagement, the finance
+  specialist (its real role and persona from a `casa-specialist-finance` checkout) does not
+  call `emit_completion` on its launch turn but does once the person says they are done,
+  and, in a long resumed session (`--history`), the resident does not relay a completion
+  summary's "the topic will stay open" as fact. `--root` measures another tree.
