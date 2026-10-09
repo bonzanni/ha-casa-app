@@ -2837,6 +2837,13 @@ class TelegramChannel(Channel):
                             )
                             await self._rollback_answer(rec, answer_token)
                             return
+                        if command == "/help":
+                            # #1412: answered by Casa — the engaged CLI has
+                            # no /help of its own here.
+                            await self._post_engagement_notice(
+                                rec, self._engagement_help_text())
+                            await self._rollback_answer(rec, answer_token)
+                            return
 
                     # Resume-if-suspended + lifecycle gate + idle→active turn
                     # stamp — the SINGLE shared core (``_resume_and_ready``),
@@ -2998,7 +3005,8 @@ class TelegramChannel(Channel):
         computed once per update and reused by admission accounting AND the
         command dispatch below — never re-derived (a second, slightly
         different predicate is how a borrowed predicate answers a different
-        question). Returns '/cancel' | '/complete' | '/silent' | None; a
+        question). Returns '/cancel' | '/complete' | '/silent' | '/help' |
+        None (#1412: /help is Casa's, never the engaged CLI's); a
         command explicitly addressed to a DIFFERENT bot is None (it falls
         through to delivery, exactly as the historical dispatch treated it)."""
         if not text.startswith("/"):
@@ -3007,7 +3015,8 @@ class TelegramChannel(Channel):
         command, _, mention = token.partition("@")
         if mention and self._bot_username and mention != self._bot_username:
             return None  # addressed to another bot — not ours
-        return command if command in ("/cancel", "/complete", "/silent") else None
+        return command if command in (
+            "/cancel", "/complete", "/silent", "/help") else None
 
     async def _settle_lost_inbound(self, rec, token) -> None:
         """#649 visibility law: before a still-ledgered admission ticket is
@@ -5517,6 +5526,13 @@ class TelegramChannel(Channel):
         ("complete", "Mark this engagement complete (no agent summary)"),
         ("silent", "Stop proactive notifications for this engagement"),
     ]
+
+    def _engagement_help_text(self) -> str:
+        """#1412: the /help reply in an engagement topic — the commands this
+        topic actually handles, read from the registered menu list."""
+        lines = [f"/{c} — {d}" for c, d in self.ENGAGEMENT_COMMANDS]
+        return ("Commands in this topic:\n" + "\n".join(lines)
+                + "\nAnything else you write goes to the agent.")
 
     async def setup_engagement_features(self) -> None:
         """Idempotent startup wiring for forum-supergroup engagements.

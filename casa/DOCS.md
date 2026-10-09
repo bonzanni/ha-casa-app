@@ -887,6 +887,7 @@ agent drop what it's doing and check in with you, or prefix a message with
 | `/cancel` | End this engagement now. Topic is closed, the engaged agent's client is torn down, Ellen is notified in the main chat. |
 | `/complete` | Mark this engagement complete without requesting an agent summary. Same cleanup as `/cancel` but with a neutral status. |
 | `/silent` | Stop the observer from interjecting to Ellen about this engagement. The specialist keeps working in the topic. |
+| `/help` | List the commands that work in this topic. |
 
 The engaged agent can also end the engagement itself by calling the
 `emit_completion` MCP tool — that produces a structured summary
