@@ -173,6 +173,7 @@
   when_changing: logging, correlation ids, redaction, or a health surface
   covers:
     - casa/rootfs/opt/casa/log_cid.py::install_logging
+    - casa/rootfs/opt/casa/log_cid.py::WaitingStreamHandler
     - casa/rootfs/opt/casa/log_cid.py::new_cid
     - casa/rootfs/opt/casa/log_cid.py::HumanFormatter
     - casa/rootfs/opt/casa/log_cid.py::JsonFormatter
