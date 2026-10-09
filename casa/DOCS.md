@@ -461,8 +461,12 @@ invoice say?") and she opens it then; if several files could match, she asks whi
 invoices", "what's the total?" — and she acts on it straight away, exactly as if you had
 sent the caption as a message about that file: Casa keeps the file as usual and her reply
 takes the place of the "Got …" line. She decides what the caption asks for; Casa does not
-guess from its words. In an album the caption belongs to the file it was written on, and
-the other files are kept and acknowledged as usual.
+guess from its words. In an album the caption is about the whole album: she waits for every
+file to arrive and then acts on all of them in one reply.
+
+**Several files at once (v0.344.68).** Files you send together — an album, or several
+files within a few seconds — get one reply from Casa that lists each file as it arrives
+("Got 3 files: …"), with any file it could not keep named in the same message.
 
 Files can be up to 8 MB, and she holds up to 50 files and 200 MB in all. When that is
 full a new file is refused rather than an old one dropped — the oldest go after seven days.
@@ -492,7 +496,8 @@ opening “invoice.pdf”.* Opening any one of the listed files — or handing o
 for example to file it — clears it for the rest of the turn. With several files listed and
 none opened, the line counts them: *Casa: Ellen answered without opening any of the 3
 files Ellen listed.* A file you send with a caption, or to a specialist by replying to its
-post, is that turn's own file, and the line names only it. The line never holds back or changes her own words — it
+post, is that turn's own file, and the line names only it; a captioned album makes every
+kept file of the album the turn's own, and the line counts those. The line never holds back or changes her own words — it
 is added, nothing is taken away. A reply about a file she neither listed nor tried to open carries no line;
 that case is still down to her instructions.
 

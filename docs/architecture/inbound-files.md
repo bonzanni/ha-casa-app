@@ -22,7 +22,8 @@ says about them is [`output-boundary.md`](output-boundary.md).
 
 **Arrival stores; asking reads — and a caption is asking.** A file arriving without a
 caption runs no agent turn. The channel downloads it, checks it, publishes it, and posts one
-acknowledgement of its own — a channel message, not model output. The agent reads the file
+acknowledgement of its own — a channel message, not model output; files sent together share
+one (below). The agent reads the file
 later, in an ordinary text turn, when the operator asks: it calls `list_inbound_files` to find
 the path, then opens it with the `Read` tool it already has. A caption on the file is that
 asking, sent with the file: the stored file's caption becomes one ordinary turn (below). A read puts the file into the model request (a PDF becomes a document block),
@@ -102,10 +103,30 @@ message. The lock is taken only after the file is stored, so a download never ho
 a text sent while the download runs can therefore reach the agent first, and each turn still
 names only its own file. When no turn is dispatched — the rate limiter refused it, the
 agent's queue did not accept it, or the dispatch failed — the file is acknowledged as an uncaptioned one is, so the operator is never
-left without a reply. A refused upload runs no turn whatever its caption. In an album Telegram
-puts the caption on one message: that file's turn names it and says the album's other files
-reach the inbox separately, and each uncaptioned file of the album is acknowledged as any
-uncaptioned file is.
+left without a reply. A refused upload with nothing else kept runs no turn whatever its caption. In an album Telegram
+puts the caption on one message, and it is about the album: the captioned file claims its
+album at arrival, before any download, the turn waits until every file of the album has
+landed (`ALBUM_SETTLE_S` with no new arrival, at most `ALBUM_MAX_WAIT_S`), and then one
+turn names every kept file of the album and arms it over all of them
+(`TelegramChannel._run_claim`). A second caption in the same album adds its words to that
+turn's message.
+
+## Files sent together (#1379)
+
+Files that arrive together get ONE acknowledgement, edited as each lands
+(`TelegramChannel._render_ack`, `_ack_text`). Together is decided mechanically
+(`TelegramChannel._ack_join`): the same Telegram album, which keeps a message of its own
+found by its album id, or a lone file within `ACK_WINDOW_S` of the chat's previous file event, up to
+`ACK_MAX_FILES` files per message; a text message from the operator ends a group of lone
+files (an album is one sending, so nothing comes between its files). Once a
+caption's turn has taken its files, a later caption starts a turn of its own. One file reads exactly as it always has;
+several read "Got 3 files: a.pdf (34 KB), b.pdf (37 KB), c.pdf (12 KB). Ask me any time and
+I'll read them. I'll keep them 7 days.", followed by one line per file that was refused or
+failed, prefixed with its name. Files a dispatched caption turn covers are her reply's and
+leave the message — so a captioned album with nothing refused draws her reply alone, and a
+message whose every file a turn later took over is deleted. A file whose turn was not
+dispatched stays in the message as an uncaptioned one. An edit that fails sends the whole
+text as a new message, and a send that fails is retried by the next file's update.
 
 ## A file for a specialist (S6)
 
@@ -201,7 +222,9 @@ for residents other than the Telegram default agent; a `📎` arming across a re
 like the proposal keyboards — the next file is the default agent's).
 
 
-**INV-FILE-004**: A file the default agent's path stored whose message carries a caption that is not blank starts exactly one turn of the default agent, admitted under the chat's serial lock through the text handler's own dispatch tail, whose message is the caption verbatim and whose reserved `_received_file` note names that file alone and arms the turn over it; Casa's only decision is whether a non-blank caption is present; such a file draws no acknowledgement unless no turn was dispatched, when it draws the acknowledgement an uncaptioned file draws; a refused upload, and a file without a caption, start no turn.
+**INV-FILE-004**: A file the default agent's path stored whose message carries a caption that is not blank starts exactly one turn of the default agent, admitted under the chat's serial lock through the text handler's own dispatch tail, whose message is the caption verbatim and whose reserved `_received_file` note names that file — and, in an album, every other file of the album that was kept — and arms the turn over them; Casa's only decision is whether a non-blank caption is present; such files draw no acknowledgement unless no turn was dispatched, when they draw the acknowledgement uncaptioned files draw; a caption with no file kept, and files without a caption, start no turn.
+
+**INV-FILE-005**: Every non-text message on the default agent's path ends as a line of its chat's one acknowledgement or in a dispatched caption turn: the files of one album, or lone files arriving within `ACK_WINDOW_S` of the chat's previous file event, share one message, sent once and edited as each lands, which lists every kept file no dispatched turn covers and every refusal, and is deleted only when a turn covers everything it showed.
 
 What it does not cover: the order between a caption turn and a text sent while its file was
 downloading (the lock is taken after the download); a caption on a file addressed to a
@@ -271,11 +294,16 @@ app documentation spells the period out and changes with them.
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._caption_turn`
 - `casa/rootfs/opt/casa/channels/telegram.py::caption_file_note`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._dispatch_dm_turn`
+- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._ack_join`
+- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._run_claim`
+- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._render_ack`
+- `casa/rootfs/opt/casa/channels/telegram.py::_ack_text`
 
 **Tests**
 - `tests/test_agent_inbox.py`
 - `tests/test_inbound_files.py`
 - `tests/test_caption_turn.py`
+- `tests/test_file_ack_group.py`
 - `tests/test_file_handoff_route.py`
 - `tests/test_file_handoff_grants.py`
 - `tests/test_file_handoff_inboxes.py`
