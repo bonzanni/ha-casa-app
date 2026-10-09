@@ -5,5 +5,5 @@ export NO_COLOR=1
 
 if [ "${1}" -ne 0 ] && [ "${1}" -ne 256 ]; then
     bashio::log.error "Casa crashed with exit code ${1}"
-    bashio::addon.stop
+    bashio::app.stop
 fi

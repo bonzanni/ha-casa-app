@@ -128,7 +128,7 @@ fi
 export CASA_CONFIG_DIR="$CONFIG_DIR"
 export CASA_DEFAULTS_DIR="$DEFAULTS_DIR"
 export CASA_DATA_DIR="$DATA_DIR"
-export CASA_IMAGE_VERSION="$(bashio::addon.version 2>/dev/null || echo unknown)"
+export CASA_IMAGE_VERSION="$(bashio::app.version 2>/dev/null || echo unknown)"
 # D1 (2026-07-09 bug review): config_sync's post-sync boot-parity pass runs the
 # real agent loader, which resolves ${PRIMARY_AGENT_MODEL}/${VOICE_AGENT_MODEL}
 # in runtime.yaml via resolve_model(). svc-casa/run exports these for the actual

@@ -117,7 +117,7 @@ _enable_terminal="$(bashio::config 'enable_terminal')"
 [ "$_enable_terminal" = "null" ] && _enable_terminal="false"
 export ENABLE_TERMINAL="$_enable_terminal"
 unset _enable_terminal
-export CASA_VERSION="$(bashio::addon.version)"
+export CASA_VERSION="$(bashio::app.version)"
 
 # 3.3: scheduler timezone — optional, and shipped EMPTY on purpose: not
 # exporting it is what lets timekeeping.resolve_tz() fall back to the TZ env

@@ -40,9 +40,9 @@ bashio::log.error() {{ _k_rec log.error "$*"; }}
 bashio::config() {{ _k_rec config "$1"; }}
 bashio::config.true() {{ _k_rec config.true "$1"; [ "${{K_TERMINAL:-false}}" = true ]; }}
 bashio::config.has_value() {{ _k_rec config.has_value "$1"; }}
-bashio::addon.version() {{ echo 0.0.0; }}
-bashio::addon.ingress_port() {{ echo 8099; }}
-bashio::addon.stop() {{ _k_rec addon.stop; }}
+bashio::app.version() {{ echo 0.0.0; }}
+bashio::app.ingress_port() {{ echo 8099; }}
+bashio::app.stop() {{ _k_rec app.stop; }}
 bashio::net.wait_for() {{ _k_rec net.wait_for "$*"; }}
 bashio::exit.nok() {{ _k_rec exit.nok; exit 1; }}
 """
