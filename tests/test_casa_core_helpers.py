@@ -293,6 +293,7 @@ class TestBrokerShutdownOrdering:
         class _FakeAskChannel:
             async def post_dm_keyboard(
                 self, *, chat_id, request_id, text, options, short_labels=False,
+                shorts=None,
             ):
                 return 77
 

@@ -19,3 +19,9 @@ manifest at small bank scale — re-run these when the `casa` bank grows 10–10
   one turn whose message is the caption; for an invoice PDF captioned "add it to the
   invoices" the resident shares the file and delegates to Finance without asking.
   Runs in the container or with `--local --cli` (see script header).
+- `ellen_ask_buttons.py` — live-model check (#1390): asked to choose with buttons
+  between long natural choices, the resident's buttons show words (a plain short
+  option, or `n · <short>`), not the "Option n" floor. `--history FILE` resumes a fork
+  of one long session built under the pre-#1390 description — the live condition; a
+  fresh session did not reproduce the failure. Runs in the container or with
+  `--local --cli` (see script header).

@@ -284,14 +284,14 @@ class _BlockingSecondPost(_FakeChannel):
         self.second_request_id: str | None = None
 
     async def post_dm_keyboard(self, *, chat_id, request_id, text, options,
-                               short_labels=False):
+                               short_labels=False, shorts=None):
         if self.posts:
             self.second_request_id = request_id
             self.post_started.set()
             await self.release_post.wait()
         return await super().post_dm_keyboard(
             chat_id=chat_id, request_id=request_id, text=text,
-            options=options, short_labels=short_labels)
+            options=options, short_labels=short_labels, shorts=shorts)
 
 
 async def test_delivered_human_ask_displaces_scheduled_after_post_once(
@@ -521,7 +521,7 @@ class _FailingPostChannel(_FakeChannel):
         self.fail_next = False
 
     async def post_dm_keyboard(self, *, chat_id, request_id, text, options,
-                               short_labels=False):
+                               short_labels=False, shorts=None):
         self.posts.append((chat_id, request_id, text, tuple(options)))
         self.calls.append("post")
         if self.fail_next:
