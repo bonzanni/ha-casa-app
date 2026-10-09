@@ -212,6 +212,15 @@ def _make_ask_handler(tmp_path, monkeypatch):
     return handlers["/internal/channel/ask"], reg, ch, fresh
 
 
+def _measure(options: list, multi: bool) -> "tuple[list, bool]":
+    """#1392: the captions the handler resolves, and whether they are the
+    options' own words (body without list, settle with the chosen words)."""
+    from channels.channel_handlers import buttons_show_options
+    from channels.telegram import resolve_button_labels
+    captions = resolve_button_labels(list(options), multi)
+    return captions, buttons_show_options(options, captions)
+
+
 def _oversized_question(
     options: list, *, multi: bool, over_by: int, number: int = _FIRST_N,
 ) -> str:
@@ -220,26 +229,31 @@ def _oversized_question(
     Telegram's 4096-char limit — isolating that it is the SUFFIX (not the raw
     body) causing the refusal, per spec §D1 bullet 3. Rendered with the REAL
     allocated ``number`` (the validator now runs post-allocation, Task A5)."""
+    captions, words = _measure(options, multi)
     worst_suffix_len = max(
         len(s) for s in
-        ask_lifecycle_suffixes(number, options, multi))
+        ask_lifecycle_suffixes(number, options, multi, words=words))
     target_body_len = (_ASK_BODY_LIMIT - worst_suffix_len) + over_by
-    skeleton = render_ask_body(number, "", options)
+    skeleton = render_ask_body(number, "", options, captions)
     question_len = target_body_len - len(skeleton)
     assert question_len > 0
     return "Q" * question_len
 
 
+@pytest.mark.parametrize("options", [
+    ["Alpha", "Beta"],  # #1392: own-word buttons — no list, words settle
+    ["Alpha, the first of the two options", "Beta"],  # floored — listed
+])
 async def test_oversized_ask_refused_with_self_explaining_detail(
-    tmp_path, monkeypatch,
+    tmp_path, monkeypatch, options,
 ) -> None:
-    options = ["Alpha", "Beta"]
     # The refusal now fires POST-allocation with the REAL first number (1).
     question = _oversized_question(options, multi=False, over_by=5)
-    expected_body = render_ask_body(_FIRST_N, question, options)
+    captions, words = _measure(options, False)
+    expected_body = render_ask_body(_FIRST_N, question, options, captions)
     expected_suffix = max(
         len(s) for s in
-        ask_lifecycle_suffixes(_FIRST_N, options, False))
+        ask_lifecycle_suffixes(_FIRST_N, options, False, words=words))
     expected_n = len(expected_body) + expected_suffix
     assert expected_n == _ASK_BODY_LIMIT + 5
 
@@ -350,9 +364,11 @@ async def test_astral_body_over_utf16_limit_refused_invalid_args(
     options = ["Alpha", "Beta"]
     # ~2200 astral chars: code-point length well under 4096, UTF-16 ~4400.
     question = "\U0001F389" * 2200
-    body = render_ask_body(_FIRST_N, question, options)
+    captions, words = _measure(options, False)
+    body = render_ask_body(_FIRST_N, question, options, captions)
     suffix = max(
-        len(s) for s in ask_lifecycle_suffixes(_FIRST_N, options, False))
+        len(s) for s in ask_lifecycle_suffixes(
+            _FIRST_N, options, False, words=words))
     assert len(body) + suffix <= _ASK_BODY_LIMIT      # old gate would pass
     assert utf16_len(body) + suffix > _ASK_BODY_LIMIT
 

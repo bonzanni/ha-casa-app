@@ -1208,7 +1208,18 @@ def _canonical_question(question: str, number: int) -> str:
     return f"Q{number}: {question}"
 
 
-def render_ask_body(number: "int | None", question: str, options: list) -> str:
+def buttons_show_options(options: list, captions: "list | None") -> bool:
+    """#1392: True when the buttons are the options' own words verbatim
+    (``captions`` is what the keyboard shows; ``None`` means no keyboard is
+    known). Then the numbered list under the question only repeats them."""
+    return bool(options) and captions is not None and (
+        [str(c) for c in captions] == [str(o) for o in options])
+
+
+def render_ask_body(
+    number: "int | None", question: str, options: list,
+    captions: "list | None" = None,
+) -> str:
     """v0.81.0 (W-R3, Sol r1-5) — the SINGLE canonical rendered ask body.
 
     Used IDENTICALLY by all four ask consumers so they can never disagree:
@@ -1238,9 +1249,14 @@ def render_ask_body(number: "int | None", question: str, options: list) -> str:
     enforced by a dedicated per-ask render-and-measure lifecycle validator
     (Task A3, spec §D1 bullet 2) rather than by an invented length heuristic
     here — this function never truncates.
+
+    #1392: when ``captions`` (the button captions the keyboard shows) are the
+    options' own words verbatim, the list is left out — the buttons already
+    carry every option in full. The list stays whenever a button shows a
+    ``short`` or the ``Option n`` floor, and when no captions are passed.
     """
     base = _canonical_question(question, number) if number else question
-    if not options:
+    if not options or buttons_show_options(options, captions):
         return base
     numbered = "\n".join(f"{i + 1}. {opt}" for i, opt in enumerate(options))
     return f"{base}\n\n{numbered}"
@@ -1270,18 +1286,36 @@ def _positional_settle_suffix(indices: list[int]) -> str:
     return "\n✅ Options " + ", ".join(str(p) for p in positions)
 
 
-def _ask_settle_text(question: str, outcome: dict, options: list) -> str:
+def _words_settle_suffix(indices: list[int], options: list) -> str:
+    """#1392: the settle copy when the buttons showed the options' own words
+    (no numbered list to point at): the chosen options themselves, in order —
+    ``\\n✅ Delete`` / ``\\n✅ Tea, Coffee``. Each is at most
+    ``_ASK_BUTTON_WORDS_FIT`` characters, so the copy stays bounded."""
+    chosen = [str(options[i]) for i in sorted(set(indices))]
+    if not chosen:
+        return "\n✅ Option ?"
+    return "\n✅ " + ", ".join(chosen)
+
+
+def _ask_settle_text(
+    question: str, outcome: dict, options: list, words: bool = False,
+) -> str:
     """v0.79.0 §4 — render the pinned settle copy below the canonical question.
 
     answered ⇒ the BOUNDED positional copy (v0.84.0 D1 bullet 3) —
     ``\\n✅ Option <n>`` (single-select) or ``\\n✅ Options <n1>, <n2>, …``
-    (multi, 1-based ascending) — never the chosen label(s); expired ⇒
+    (multi, 1-based ascending) — never the chosen label(s), except when
+    ``words`` (#1392: the buttons showed the options' own words and the body
+    has no list) ⇒ the chosen options themselves; expired ⇒
     ``\\n⌛ expired — answer by text below``; cancelled via a fresh operator
     message ⇒ ``\\n🚫 superseded by your message below``; any other cancel ⇒
     ``\\n🚫 cancelled``.
     """
     o = outcome.get("outcome")
     if o == "answered":
+        settle = (
+            (lambda ix: _words_settle_suffix(ix, options)) if words
+            else _positional_settle_suffix)
         # A5 · F-MULTI: a multi submit carries ``option_indices`` → settle
         # copy lists every chosen POSITION (single-select stays one position).
         indices = outcome.get("option_indices")
@@ -1290,12 +1324,12 @@ def _ask_settle_text(question: str, outcome: dict, options: list) -> str:
                 i for i in indices
                 if isinstance(i, int) and 0 <= i < len(options)
             ]
-            return question + _positional_settle_suffix(valid)
+            return question + settle(valid)
         idx = outcome.get("option_index")
         valid_idx = (
             [idx] if isinstance(idx, int) and 0 <= idx < len(options) else []
         )
-        return question + _positional_settle_suffix(valid_idx)
+        return question + settle(valid_idx)
     if o == "cancelled":
         reason = outcome.get("reason")
         if reason == "superseded_by_text":
@@ -1314,6 +1348,7 @@ def _ask_keyboard_finish(
     sleep: "Callable[[float], Awaitable[None]]" = asyncio.sleep,
     settle_edit: "Callable[[str], Awaitable[bool]] | None" = None,
     eng_id: str | None = None, number: int | None = None,
+    words: bool = False,
 ) -> Callable[[dict], "Awaitable[None]"]:
     """Broker finish-hook (r3-B3 shape, mirrors ``hooks._perm_keyboard_finish``)
     -- the engagement_ask namespace's ONLY keyboard-message writer. Fires
@@ -1339,7 +1374,7 @@ def _ask_keyboard_finish(
     """
 
     async def _finish(outcome: dict) -> None:
-        text = _ask_settle_text(question, outcome, options)
+        text = _ask_settle_text(question, outcome, options, words)
         # A5 · F-MULTI: a multi ask's settle edit routes through the SAME
         # sequencer markup primitive (``edit_discrete``) that the toggle redraw
         # uses, so the two writers serialize on ONE lock — a stale toggle redraw
@@ -1506,6 +1541,25 @@ def _make_ask(
         # (which already refused multi + <2 options / anchor). Only the BUTTON
         # ask path can be multi — the anchor path below is never reached.
         multi = bool(body.get("multi", False))
+        # D2 items 2-3: the whole-set button captions, resolved ONCE. They
+        # seed the ``button_labels`` meta below, and (#1392) decide whether the
+        # body still needs its numbered list: buttons showing the options' own
+        # words leave it out and settle with the chosen words.
+        from channels.telegram import resolve_button_labels
+        captions = resolve_button_labels(
+            [
+                {
+                    "label": str(opt),
+                    "short": (
+                        shorts[i] if shorts is not None and i < len(shorts)
+                        else None
+                    ),
+                }
+                for i, opt in enumerate(options)
+            ],
+            multi,
+        )
+        words = buttons_show_options(options, captions)
 
         # D1 bullets 3 & 6 — render-and-measure lifecycle body-limit validator.
         # Moved to its spec-literal placement (AFTER Q-number allocation, with
@@ -1524,10 +1578,11 @@ def _make_ask(
             # #328 family (Terra r1): measured in UTF-16 units — Telegram's
             # unit — so an astral-heavy body is refused ``invalid_args`` here
             # instead of passing ``len()`` and failing the keyboard post.
-            body_ = render_ask_body(number, question, options)
+            body_ = render_ask_body(number, question, options, captions)
             worst_suffix_len = max(
                 utf16_len(s)
-                for s in ask_lifecycle_suffixes(number, options, multi))
+                for s in ask_lifecycle_suffixes(
+                    number, options, multi, words=words))
             rendered_len = utf16_len(body_) + worst_suffix_len
             if rendered_len <= _ASK_BODY_LIMIT:
                 return None
@@ -2073,17 +2128,6 @@ def _make_ask(
                 # race registers COMPLETE captions and the initial render AND
                 # every multi redraw consume the SAME persisted captions
                 # (byte-identical, never re-resolved from ``shorts``).
-                from channels.telegram import resolve_button_labels
-                combined = [
-                    {
-                        "label": str(opt),
-                        "short": (
-                            shorts[i] if shorts is not None and i < len(shorts)
-                            else None
-                        ),
-                    }
-                    for i, opt in enumerate(options)
-                ]
                 return {
                     "options": options,
                     "topic_id": rec.topic_id,
@@ -2094,7 +2138,7 @@ def _make_ask(
                     # (``selected`` is created lazily by ``toggle_selection``).
                     "multi": multi,
                     "shorts": shorts,
-                    "button_labels": resolve_button_labels(combined, multi),
+                    "button_labels": list(captions),
                 }
 
             intent_registered = False
@@ -2284,7 +2328,7 @@ def _make_ask(
             # numbered, below the question. This exact string feeds the keyboard
             # post, the persisted ``open_questions[].text``, the finish-hook settle
             # base, and (via the persisted text) boot reconciliation.
-            display = render_ask_body(number, question, options)
+            display = render_ask_body(number, question, options, captions)
 
             # D1 bullets 3 & 6 (Task A5) — render-and-measure body-limit validator
             # at its spec-literal placement: AFTER Q-number allocation (REAL
@@ -2440,7 +2484,7 @@ def _make_ask(
                             telegram_channel, rec.topic_id, mid, display, options,
                             on_settle=_close_question,
                             settle_edit=_make_settle_edit(mid),
-                            eng_id=eng_id, number=number),
+                            eng_id=eng_id, number=number, words=words),
                     )
                     mid = req.meta.get("message_id")
                     if not isinstance(mid, int):

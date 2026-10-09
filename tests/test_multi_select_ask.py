@@ -650,10 +650,11 @@ class TestHandlerEndToEnd:
         assert body["options"] == ["Alpha", "Gamma"]
         assert body["option_indices"] == [0, 2]
         assert body["option"] == "Alpha"
-        # settle copy: BOUNDED positional (driver None ⇒ edit_topic_message
-        # fallback) — v0.84.0 D1 bullet 3, never the full labels.
+        # settle copy (driver None ⇒ edit_topic_message fallback). #1392:
+        # the buttons showed the options' own words, so the body has no list
+        # and the settle names the chosen options rather than positions.
         settle = wired.ch.edits[-1]
-        assert "✅ Options 1, 3" in settle["text"]
+        assert settle["text"] == "Q1: Which apply?\n✅ Alpha, Gamma"
         assert settle["clear_keyboard"] is True
 
     async def test_multi_supersession_settles(self, wired):

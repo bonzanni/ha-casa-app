@@ -1209,9 +1209,10 @@ async def _ask_user_scheduled(
     "Ask the operator a multiple-choice question with tappable buttons in "
     "their DM. Keep each option to a few words (32 characters or fewer) so "
     "its button can show it; one longer option turns every button into a "
-    "bare \"Option n\". Casa lists the options under the question, so give "
-    "any detail they need in the question as plain sentences, not as a "
-    "second list. Two-turn: returns awaiting_user immediately; the answer "
+    "bare \"Option n\". Casa shows the options itself (on the buttons, or "
+    "listed under the question when one does not fit), so give any detail "
+    "they need in the question as plain sentences, never as a list of the "
+    "options. Two-turn: returns awaiting_user immediately; the answer "
     "arrives as the user's next message. A `settled` status instead means the "
     "question was already over by the time this call returned (a /new, a "
     "typed answer, a replacement question, a timeout, a tap, a shutdown): do "
@@ -1299,6 +1300,7 @@ async def ask_user(args: dict) -> dict:
 
     from verdict_broker import BROKER
     from channels.channel_handlers import render_ask_body
+    from channels.telegram import short_option_labels
 
     rid = uuid.uuid4().hex
     target_role = origin.get("role")
@@ -1308,7 +1310,10 @@ async def ask_user(args: dict) -> dict:
     # while the buttons carry only short number-prefixed labels. Both the post
     # and the settle edits derive from this one ``body`` so they can never
     # disagree (mirrors the engagement single-source discipline).
-    body = render_ask_body(None, question, list(options))
+    # #1392: the buttons' captions go in too — when they are the options' own
+    # words, the body leaves out the list that would only repeat them.
+    body = render_ask_body(
+        None, question, list(options), short_option_labels(list(options)))
     # #1038: the question body is model text — admitted under the turn's scope
     # BEFORE the two arms branch, so the posted keyboard, the stored scheduled
     # record and every settle edit derived from ``body`` carry the same line.
@@ -1495,6 +1500,7 @@ async def wipe_memory(args: dict) -> dict:
 
     from verdict_broker import BROKER
     from channels.channel_handlers import render_ask_body
+    from channels.telegram import short_option_labels
 
     rid = uuid.uuid4().hex
     options = ["Approve — wipe everything", "Cancel"]
@@ -1505,7 +1511,7 @@ async def wipe_memory(args: dict) -> dict:
         "It cannot be undone."
     )
     scope = f"authz:{chat_id}"
-    body = render_ask_body(None, question, options)
+    body = render_ask_body(None, question, options, short_option_labels(options))
     req, _created = BROKER.register(
         namespace="resident_ask", scope=scope, request_id=rid,
         timeout_s=300.0, detached=True, supersede=False,

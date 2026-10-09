@@ -239,8 +239,9 @@ async def ask(
     buttons; with ``options: []`` it posts a numbered free-text question anchor.
 
     Each ``options`` entry is either a plain string OR a ``{"label": str,
-    "short": str}`` dict: ``label`` is the full choice shown VERBATIM in the
-    message body and returned on selection. **Supply ``short`` for every
+    "short": str}`` dict: ``label`` is the full choice shown VERBATIM (on its
+    button when every option's own words fit, else numbered in the message
+    body) and returned on selection. **Supply ``short`` for every
     option that isn't already a couple of words** — it is the button
     caption, so it is the difference between a readable keyboard and a wall
     of truncated text. An option without a ``short`` shows its own words

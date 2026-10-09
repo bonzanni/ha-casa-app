@@ -96,6 +96,60 @@ class TestRenderAskBody:
         assert render_ask_body(None, "Proceed?", ["A", "B"]) == (
             "Proceed?\n\n1. A\n2. B")
 
+    def test_own_word_buttons_leave_out_the_list(self) -> None:
+        # #1392: buttons that read "Delete" / "Keep" already carry every
+        # option in full — the body is the question alone.
+        assert render_ask_body(
+            None, "Delete both?", ["Delete", "Keep"], ["Delete", "Keep"],
+        ) == "Delete both?"
+        assert render_ask_body(
+            2, "Tea or coffee?", ["Tea", "Coffee"], ["Tea", "Coffee"],
+        ) == "Q2: Tea or coffee?"
+
+    def test_list_stays_when_a_button_does_not_show_the_words(self) -> None:
+        # #1392: the "Option n" floor and "n · <short>" captions both need the
+        # numbered full options under the question.
+        options = ["Delete", "Keep"]
+        listed = "Delete both?\n\n1. Delete\n2. Keep"
+        for captions in (["Option 1", "Option 2"], ["1 · Del", "2 · Keep"],
+                         None):
+            assert render_ask_body(
+                None, "Delete both?", options, captions) == listed
+
+    def test_resolved_captions_decide_the_list(self) -> None:
+        # The SAME resolver the keyboards use decides the body: words that fit
+        # drop the list; one option over the button fit floors every button
+        # and brings the list back.
+        from channels.telegram import _ASK_BUTTON_WORDS_FIT, short_option_labels
+        short = ["Delete", "Keep"]
+        assert render_ask_body(
+            None, "Q?", short, short_option_labels(short)) == "Q?"
+        long_ = ["Delete", "K" * (_ASK_BUTTON_WORDS_FIT + 1)]
+        assert render_ask_body(
+            None, "Q?", long_, short_option_labels(long_)
+        ) == f"Q?\n\n1. Delete\n2. {long_[1]}"
+
+    def test_own_word_settle_names_the_chosen_words(self) -> None:
+        # #1392: with no list to point a position at, the answered settle
+        # names the chosen option(s); the positional copy stays the default.
+        opts = ["Tea", "Coffee", "Water"]
+        answered = {"outcome": "answered", "option_index": 1}
+        assert _ask_settle_text("Q?", answered, opts, True) == "Q?\n✅ Coffee"
+        assert _ask_settle_text("Q?", answered, opts) == "Q?\n✅ Option 2"
+        multi = {"outcome": "answered", "option_indices": [2, 0]}
+        assert _ask_settle_text("Q?", multi, opts, True) == (
+            "Q?\n✅ Tea, Water")
+
+    def test_own_word_lifecycle_suffixes_cover_every_settle(self) -> None:
+        # The body-limit validator's worst case must include each words settle.
+        from drivers.claude_code_driver import ask_lifecycle_suffixes
+        opts = ["Tea", "A much longer coffee option"]
+        single = ask_lifecycle_suffixes(1, opts, False, words=True)
+        assert "\n✅ A much longer coffee option" in single
+        assert "\n✅ Tea" in single
+        multi = ask_lifecycle_suffixes(1, opts, True, words=True)
+        assert "\n✅ Tea, A much longer coffee option" in multi
+
     def test_body_stays_well_under_telegram_limit_at_caps(self) -> None:
         # Worst case at _validate_ask_args caps (question 1024, 8 options × 48)
         # is far below Telegram's 4096 — no truncation path needed (Sol r1-5).
@@ -266,8 +320,22 @@ class _FakeRequest:
         return self._payload
 
 
+@pytest.mark.parametrize("options, expected, settled", [
+    # #1392: one option too long for its button floors the set to "Option n",
+    # which is when the body carries the numbered full options.
+    (["Personal Gmail", "Work Outlook (the company account)"],
+     "Q1: Which account?\n\n1. Personal Gmail\n"
+     "2. Work Outlook (the company account)",
+     "\n✅ Option 1"),
+    # #1392: buttons that show the options' own words — no list repeating
+    # them, and the settle names the chosen words (there is no list to point
+    # a position at once the keyboard is cleared).
+    (["Personal Gmail", "Work Outlook"],
+     "Q1: Which account?",
+     "\n✅ Personal Gmail"),
+])
 async def test_body_identical_across_post_persist_and_settle(
-    tmp_path, monkeypatch,
+    tmp_path, monkeypatch, options, expected, settled,
 ) -> None:
     """The initial post body, the persisted ``open_questions[].text`` and the
     finish-hook settle BASE are the SAME render_ask_body output — one source,
@@ -292,7 +360,6 @@ async def test_body_identical_across_post_persist_and_settle(
         telegram_channel=ch, engagement_registry=reg)
     ask = handlers["/internal/channel/ask"]
 
-    options = ["Personal Gmail", "Work Outlook"]
     payload = {
         "engagement_id": eid, "request_id": "a1",
         "engagement_token": rec.auth_token,
@@ -316,7 +383,6 @@ async def test_body_identical_across_post_persist_and_settle(
     await fresh.drain_hooks()
     assert json.loads(resp.text)["ok"] is True
 
-    expected = render_ask_body(1, "Which account?", options)
     # (1) initial post body.
     assert ch.options_keyboards[-1]["question"] == expected
     # (2) persisted open_questions[].text.
@@ -326,7 +392,7 @@ async def test_body_identical_across_post_persist_and_settle(
     # settle base derived from it).
     # (3) settle base == body + BOUNDED positional copy (v0.84.0 D1 bullet 3;
     # option_index=0 is position 1, never the chosen label).
-    assert ch.edits[-1]["text"] == expected + "\n✅ Option 1"
+    assert ch.edits[-1]["text"] == expected + settled
     assert ch.edits[-1]["clear_keyboard"] is True
     # The persisted ledger is now empty (question settled), proving the close
     # path ran over the SAME entry; the persisted text identity is asserted in
@@ -364,7 +430,8 @@ async def test_delivery_survives_slow_registration(tmp_path, monkeypatch) -> Non
         EngagementRegistry, "allocate_question_number", delayed_allocate)
 
     await test_body_identical_across_post_persist_and_settle(
-        tmp_path, monkeypatch)
+        tmp_path, monkeypatch, ["Personal Gmail", "Work Outlook"],
+        "Q1: Which account?", "\n✅ Personal Gmail")
     assert calls == 1
 
 

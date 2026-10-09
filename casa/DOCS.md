@@ -676,10 +676,11 @@ The terminal is an unauthenticated **root** shell, so it is reachable only throu
 Ellen (and the specialists she delegates to) can pause a turn to ask you a
 quick multiple-choice question, posted as inline buttons right in your 1:1
 Telegram DM — the same tap-to-answer pattern engagements use, without
-opening a topic. The full answer choices are spelled out (numbered) in the
-message itself, with short labels on the buttons underneath, so long options
-are always readable and never truncated to the point of being unpickable
-(v0.81.0). Tap an option and the agent picks up from there; a plain-text
+opening a topic. Short answer choices appear on the buttons in their own
+words; when one is too long for its button, the buttons read "Option 1",
+"Option 2", … and the full choices are spelled out (numbered) in the message
+itself, so long options are always readable and never truncated to the point
+of being unpickable. Tap an option and the agent picks up from there; a plain-text
 reply in the same DM answers it too. An unanswered question expires after a
 few minutes, and starting a fresh session (`/new`) cancels any question
 still pending.
@@ -868,10 +869,10 @@ quoted back to yours so it's always clear what it's responding to. If it
 needs a decision from you, it asks one question at a time — via tappable
 inline buttons when the options are enumerable, or a numbered free-text
 question otherwise — and won't ask another while your last message is still
-waiting to be read. The full answer choices are always spelled out in the
-message itself (numbered), with short labels on the buttons underneath, so
-long options are never truncated to the point of being unpickable. Once you
-answer, the question visibly settles (its buttons disappear) instead of just
+waiting to be read. Short answer choices appear on the buttons in their own
+words; longer ones are spelled out in the message itself (numbered), with
+short labels on the buttons underneath, so long options are never truncated
+to the point of being unpickable. Once you answer, the question visibly settles (its buttons disappear) instead of just
 showing a toast.
 
 Need to interrupt? Send `STOP` as the first line of a message to make the
