@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.344.73] - 2026-10-09
+
+### Fixed
+
+- A long log line is no longer lost. When the app's log output was briefly backed up, a long line (most often a debug line) could be dropped with a `--- Logging error --- BlockingIOError` message in its place. Casa now waits for the log to catch up and writes the whole line. (#1384)
+
 ## [0.344.72] - 2026-10-09
 
 ### Fixed

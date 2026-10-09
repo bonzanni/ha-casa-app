@@ -14,9 +14,11 @@ This is a 5.5 change — prior Casa versions defaulted to human.
 
 from __future__ import annotations
 
+import codecs
 import json
 import logging
 import os
+import select
 import sys
 import time
 import uuid
@@ -167,6 +169,57 @@ class JsonFormatter(_RedactingRenderMixin, logging.Formatter):
 
 
 # ---------------------------------------------------------------------------
+# Log stream that survives a non-blocking pipe (#1384)
+# ---------------------------------------------------------------------------
+
+
+class WaitingStreamHandler(logging.StreamHandler):
+    """A :class:`logging.StreamHandler` that waits out a full pipe.
+
+    Casa's stdout and stderr are a pipe shared with every other process in
+    the container, and a Node child (the Claude CLI, an MCP server) may set
+    ``O_NONBLOCK`` on it — a flag of the shared open file, so it applies to
+    Casa too. A long line then meets ``EAGAIN`` once the pipe is full, and the
+    stock handler loses it to ``BlockingIOError``. This handler writes the
+    encoded line straight to the stream's descriptor and, on ``EAGAIN``,
+    waits until the pipe can take more — what a blocking pipe would do.
+    A stream without a descriptor (``StringIO`` in tests), or one in an
+    encoding other than UTF-8, takes the stock path.
+    """
+
+    def emit(self, record: logging.LogRecord) -> None:
+        stream = self.stream
+        try:
+            fd = stream.fileno()
+            encoding = codecs.lookup(stream.encoding).name
+        except (AttributeError, LookupError, OSError, TypeError, ValueError):
+            fd = encoding = None
+        # Only plain UTF-8 (Casa's stdout) goes straight to the descriptor;
+        # any other codec may carry state (a BOM) only the stream knows.
+        if encoding != "utf-8":
+            super().emit(record)
+            return
+        try:
+            data = (self.format(record) + self.terminator).encode(
+                "utf-8", getattr(stream, "errors", None) or "strict",
+            )
+            try:
+                stream.flush()  # keep order with anything else written to it
+            except BlockingIOError:
+                pass
+            view = memoryview(data)
+            while view:
+                try:
+                    view = view[os.write(fd, view):]
+                except BlockingIOError:
+                    select.select([], [fd], [])
+        except RecursionError:
+            raise
+        except Exception:
+            self.handleError(record)
+
+
+# ---------------------------------------------------------------------------
 # Root-logger setup
 # ---------------------------------------------------------------------------
 
@@ -180,7 +233,7 @@ def install_logging(
       ``record.cid = cid_var.get()`` at creation. Works for records
       from any logger (Casa, httpx, caplog, …) because the factory
       runs inside ``Logger.makeRecord``, before any handler or filter.
-    - Attaches exactly one Casa-owned :class:`logging.StreamHandler`;
+    - Attaches exactly one Casa-owned :class:`WaitingStreamHandler`;
       repeated calls remove the previous Casa handler before adding
       the new one.
     - Attaches :class:`log_redact.RedactingFilter` to the new handler
@@ -220,7 +273,7 @@ def install_logging(
         _casa_record_factory._wrapped = orig_factory  # type: ignore[attr-defined]
         logging.setLogRecordFactory(_casa_record_factory)
 
-    handler = logging.StreamHandler(stream if stream is not None else sys.stdout)
+    handler = WaitingStreamHandler(stream if stream is not None else sys.stdout)
     handler._casa_owned = True  # type: ignore[attr-defined]
     handler.addFilter(RedactingFilter())
     if os.environ.get("LOG_FORMAT", "").strip().lower() == "human":

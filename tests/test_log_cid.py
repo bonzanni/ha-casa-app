@@ -194,6 +194,72 @@ class TestInstallLogging:
         wherever ``install_logging`` had set them."""
         restore(self._entry)
 
+    def test_long_line_survives_a_non_blocking_pipe(self, monkeypatch):
+        """#1384: a pipe someone else set O_NONBLOCK on must not lose lines.
+
+        A real pipe, non-blocking, with a reader that only starts draining
+        after the writer has filled it: every line, each longer than a pipe
+        buffer, arrives whole, and nothing goes to handleError."""
+        import os
+        import threading
+        import time
+
+        monkeypatch.setenv("LOG_FORMAT", "human")
+        r, w = os.pipe()
+        os.set_blocking(w, False)
+        received = bytearray()
+
+        def _slow_reader():
+            time.sleep(0.3)
+            with open(r, "rb") as f:
+                received.extend(f.read())
+
+        reader = threading.Thread(target=_slow_reader)
+        reader.start()
+        stream = open(w, "w", encoding="utf-8")
+        errors: list[logging.LogRecord] = []
+        try:
+            install_logging(stream=stream)
+            handler = self._casa_handlers()[0]
+            monkeypatch.setattr(handler, "handleError", errors.append)
+            payload = "y" * 100_000
+            for i in range(3):
+                logging.getLogger("unit").info("line%d %s", i, payload)
+        finally:
+            self._cleanup_casa()
+            stream.close()
+            reader.join(timeout=10)
+
+        assert errors == []
+        lines = received.decode().splitlines()
+        assert len(lines) == 3
+        for i, line in enumerate(lines):
+            assert line.endswith(f"line{i} {payload}")
+
+    @pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig", "utf-16"])
+    def test_records_on_a_real_pipe_decode_cleanly(self, monkeypatch, encoding):
+        """#1384 review: whatever the stream's codec, the handler's output
+        decodes as the stream's own would — no stray BOM mid-stream, even
+        after the stream has already written something itself."""
+        import os
+
+        monkeypatch.setenv("LOG_FORMAT", "json")
+        r, w = os.pipe()
+        stream = open(w, "w", encoding=encoding)
+        try:
+            stream.write("before\n")
+            stream.flush()
+            install_logging(stream=stream)
+            logging.getLogger("unit").info("one")
+            logging.getLogger("unit").info("two")
+        finally:
+            self._cleanup_casa()
+            stream.close()
+        with open(r, "rb") as f:
+            lines = f.read().decode(encoding).splitlines()
+        assert lines[0] == "before"
+        assert [json.loads(line)["msg"] for line in lines[1:]] == ["one", "two"]
+
     def test_human_format_default(self, monkeypatch):
         monkeypatch.setenv("LOG_FORMAT", "human")
         buf = StringIO()

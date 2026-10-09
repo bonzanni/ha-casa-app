@@ -34,6 +34,11 @@ unless `LOG_FORMAT=human` selects UTC human-readable text; structured extras are
 into the record, and the access line carries method, path with query, status, duration and
 bytes. A log consumer configured from guesswork parses production output wrong.
 
+**A full log pipe makes a line wait, never vanish.** Casa's stdout and stderr are a pipe
+shared with the rest of the container, and a Node child may set it non-blocking for every
+holder at once. The application's handler waits out a full pipe instead of dropping the
+line to `BlockingIOError`, exactly as a blocking pipe would.
+
 **Per-turn token telemetry is the cost signal.** Every SDK turn emits a token summary
 (input, output, cache counters), and a budget tracker warns — once per session — after
 three consecutive completed turns land above 110% of the memory-envelope budget; a turn
@@ -141,6 +146,7 @@ it without changing what it means, and other things depend on the current behavi
 
 **Source**
 - `casa/rootfs/opt/casa/log_cid.py::install_logging`
+- `casa/rootfs/opt/casa/log_cid.py::WaitingStreamHandler`
 - `casa/rootfs/opt/casa/log_cid.py::new_cid`
 - `casa/rootfs/opt/casa/log_cid.py::HumanFormatter`
 - `casa/rootfs/opt/casa/log_cid.py::JsonFormatter`
