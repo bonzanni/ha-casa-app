@@ -11,6 +11,9 @@ profile casa flags=(attach_disconnected,mediate_deleted) {
   capability dac_override,
   capability setuid,
   capability setgid,
+  # Casa and s6 run as root and must signal an engagement's processes, which
+  # run as that engagement's own uid; without this the kernel refuses (#1382).
+  capability kill,
 
   # S6-Overlay
   /init ix,
