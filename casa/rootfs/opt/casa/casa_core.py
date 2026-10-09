@@ -2890,7 +2890,7 @@ async def _boot_reconcile_resident_trigger_secrets(
     where ``/data`` is unwritable. Aborting there would trade Telegram, voice,
     every reminder and every engagement for one webhook that would 401 either
     way — and an exception escaping ``main()`` does not restart Casa, it STOPS
-    the app (``svc-casa/finish`` calls ``bashio::addon.stop`` for any exit code
+    the app (``svc-casa/finish`` calls ``bashio::app.stop`` for any exit code
     but 0/256). The failure is carried by a WARN and by the report on the next
     reload, which is also the retry.
     """

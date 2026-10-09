@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.344.69] - 2026-10-09
+
+### Fixed
+
+- Casa no longer prints "bashio::addon.version is deprecated" and "bashio::addon.ingress_port is deprecated" warnings at every start (and a similar one when it stops). Its start and stop scripts now use the newer names the Home Assistant base image provides; nothing else changes. (#1383)
+
 ## [0.344.68] - 2026-10-09
 
 ### Fixed

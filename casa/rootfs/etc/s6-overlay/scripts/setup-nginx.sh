@@ -3,7 +3,7 @@
 export BASHIO_LOG_NO_COLORS=true
 export NO_COLOR=1
 
-INGRESS_PORT=$(bashio::addon.ingress_port)
+INGRESS_PORT=$(bashio::app.ingress_port)
 
 cat > /etc/nginx/nginx.conf <<NGINX
 worker_processes 1;
