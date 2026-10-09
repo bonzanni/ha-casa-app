@@ -171,7 +171,7 @@ class _FastWaitForAsyncio:
 
 
 async def _shutdown(runtime, *, bound: float = 0.05, bus=None,
-                   semantic_memory=None):
+                   semantic_memory=None, ha_facade=None):
     """Run the production ``_shutdown_cleanup`` over ``runtime``'s agents, with
     every unrelated subsystem doubled and the AR-9 bound shortened.
 
@@ -198,9 +198,12 @@ async def _shutdown(runtime, *, bound: float = 0.05, bus=None,
     real_asyncio = casa_core.asyncio
     casa_core.asyncio = _FastWaitForAsyncio(bound)
     try:
+        # #1400: a real facade goes through the production close.
+        close_facade = (casa_core._close_tina_ha_facade if ha_facade is not None
+                        else AsyncMock())
         with patch.object(tools, "stop_engagement_launches", AsyncMock()), \
              patch.object(tools, "drain_delegation_settlements", AsyncMock()), \
-             patch.object(casa_core, "_close_tina_ha_facade", AsyncMock()), \
+             patch.object(casa_core, "_close_tina_ha_facade", close_facade), \
              patch.object(casa_core, "_drain_broker_before_channel_shutdown",
                           AsyncMock()):
             await casa_core._shutdown_cleanup(
@@ -210,7 +213,7 @@ async def _shutdown(runtime, *, bound: float = 0.05, bus=None,
                 session_sweeper=MagicMock(stop=AsyncMock()),
                 freshness_reaper=MagicMock(stop=AsyncMock()),
                 runtime=runtime,
-                ha_facade=None,
+                ha_facade=ha_facade,
                 bus=bus,
                 loop_tasks=[],
                 channel_manager=cm,
@@ -759,3 +762,35 @@ async def test_nothing_runs_between_the_snapshot_and_the_completion_record():
         for t in tasks:
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def test_a_facade_opened_at_boot_does_not_end_the_stop_early():
+    """#1400: the Home Assistant facade's upstream holds anyio task groups. It
+    is opened at boot or by a refresh and closed here, in the stop. Exited from
+    a task other than the one that entered it, the scope stayed open and kept
+    cancelling the stop at every await, so everything after the facade close
+    was skipped and the process exited 1. The stop must reach its completion
+    record with the facade closed.
+
+    Opened here, in the task that then runs the stop, exactly as boot and the
+    stop share Casa's main task. On Python 3.11 — the shipped interpreter and
+    CI's — ``wait_for`` runs the close in a task of its own, which is the
+    cross-task exit; on 3.12+ the close stays in this task and the base passes.
+
+    Base (3.11): the stop raises CancelledError and writes no completion
+    record."""
+    from bus import MessageBus
+    try:
+        from tests.test_ha_mcp_facade import AnyioSessionFactory
+    except ImportError:
+        from test_ha_mcp_facade import AnyioSessionFactory
+
+    factory = AnyioSessionFactory()
+    facade = factory.facade()
+    await facade.start()
+    bus = MessageBus()
+    with _completion_watch() as watch:
+        await _shutdown(SimpleNamespace(agents={}, claude_code_driver=None),
+                        bus=bus, bound=5, ha_facade=facade)
+    assert len(watch.records) == 1, watch.records
+    assert factory.exited == 1

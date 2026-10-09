@@ -22,7 +22,7 @@ from mcp.types import (
     ToolsCapability,
 )
 
-from ha_mcp_facade import HomeAssistantFacade
+from ha_mcp_facade import UNAVAILABLE_TEXT, HomeAssistantFacade
 
 
 pytestmark = pytest.mark.unit
@@ -1135,3 +1135,127 @@ async def test_pin_inv_ha_003_tool_cache_has_no_time_expiry():
         assert sessions.open_count == 1
     finally:
         await facade.aclose()
+
+
+class AnyioSessionFactory:
+    """#1400: a connection that holds an anyio task group, as the streamable
+    HTTP client and ``ClientSession`` do — so a cancel scope entered in one
+    task and exited in another misbehaves here exactly as it does live."""
+
+    def __init__(self, session: FakeHaSession | None = None) -> None:
+        self.entered = 0
+        self.exited = 0
+        self.session = session
+        self.drop = asyncio.Event()
+
+    def __call__(self):
+        import anyio
+
+        async def transport() -> None:
+            await self.drop.wait()
+            raise OSError("Home Assistant went away")
+
+        @asynccontextmanager
+        async def connection():
+            async with anyio.create_task_group() as task_group:
+                task_group.start_soon(transport)
+                self.entered += 1
+                try:
+                    yield (self.session
+                           or FakeHaSession(tools=[action_tool("HassTurnOn")]))
+                finally:
+                    task_group.cancel_scope.cancel()
+                    self.exited += 1
+
+        return connection()
+
+    def facade(self) -> HomeAssistantFacade:
+        return HomeAssistantFacade(
+            "http://ha/mcp",
+            {"Authorization": "Bearer secret"},
+            session_factory=self,
+        )
+
+
+async def _awaits_survive(count: int = 3) -> None:
+    for _ in range(count):
+        await asyncio.sleep(0)
+
+
+async def test_close_from_another_task_leaves_the_opener_uncancelled(caplog):
+    """#1400: opened by this task (as boot opens it in Casa's main task) and
+    closed by another while this one waits — what Python 3.11's ``wait_for``
+    does to the stop's close. Both return and this task keeps running.
+
+    Base: CancelledError out of the wait, every later await cancelled."""
+    import casa_core
+
+    factory = AnyioSessionFactory()
+    facade = factory.facade()
+    await facade.start()
+    await asyncio.create_task(casa_core._close_tina_ha_facade(facade))
+    await _awaits_survive()
+    assert (factory.entered, factory.exited) == (1, 1)
+    assert "upstream close failed" not in caplog.text
+
+
+async def test_close_after_the_opener_ended_exits_the_connection(caplog):
+    """#1400: opened by a task that has since ended (a scheduled refresh) and
+    closed from Casa's stop — the connection's own scope is exited cleanly.
+
+    Base: "upstream close failed" — the scope cannot be exited here."""
+    import casa_core
+
+    factory = AnyioSessionFactory()
+    facade = factory.facade()
+    await asyncio.create_task(facade.start())
+    await casa_core._close_tina_ha_facade(facade)
+    await _awaits_survive()
+    assert (factory.entered, factory.exited) == (1, 1)
+    assert "upstream close failed" not in caplog.text
+
+
+async def test_refresh_from_another_task_leaves_both_tasks_uncancelled():
+    """#1400: a refresh task closes the boot connection and opens its own; the
+    boot task and the later stop both keep running.
+
+    Base: the boot task is cancelled while it awaits the refresh."""
+    factory = AnyioSessionFactory()
+    facade = factory.facade()
+    await facade.start()
+    await asyncio.create_task(facade.refresh())
+    await _awaits_survive()
+    await facade.aclose()
+    await _awaits_survive()
+    assert (factory.entered, factory.exited) == (2, 2)
+
+
+class _UnansweredSession(FakeHaSession):
+    """A call the server never answers: the transport died under it."""
+
+    async def call_tool(self, name, arguments):
+        self.calls.append((name, arguments))
+        await asyncio.Event().wait()
+
+
+async def test_a_connection_that_drops_mid_call_fails_the_call(caplog):
+    """#1400 r1 (Astra): the connection's transport fails while a tool call
+    waits for its answer. The call reports Home Assistant unavailable and a
+    reconnect is scheduled, instead of waiting forever for an answer that
+    cannot come — and no other task is cancelled.
+
+    Base: the waiting task is cancelled by the connection's task group."""
+    session = _UnansweredSession(tools=[action_tool("HassTurnOn")])
+    factory = AnyioSessionFactory(session)
+    facade = factory.facade()
+    await facade.start()
+    call = asyncio.create_task(
+        invoke_sdk_tool(facade.server_config, "HassTurnOn", {}))
+    await wait_until(lambda: session.calls)
+    factory.drop.set()
+    payload = await asyncio.wait_for(call, 5)
+    assert payload == {"content": [{"type": "text", "text": UNAVAILABLE_TEXT}],
+                       "is_error": True}
+    await _awaits_survive()
+    await facade.aclose()
+    assert factory.exited >= 1
