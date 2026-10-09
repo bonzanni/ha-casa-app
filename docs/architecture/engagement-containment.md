@@ -129,7 +129,12 @@ latches the service down and *verifies* `wantedup` before it claims anything, th
 every member through the pidfd path and re-enumerates until the set is empty. Emptiness is a
 measurement, not an inference: a member may fork after a snapshot and before its signal lands,
 and that child is enumerated and killed on the next pass, because a killed process cannot fork
-again. Zombies count as extinct — a `Z` member cannot execute or write.
+again. Zombies count as extinct — a `Z` member cannot execute or write. Signalling another
+uid is a privilege: Casa and the supervisor run as root but the members do not, so the app's
+AppArmor profile has to grant `capability kill`. Without it the kernel refuses every signal,
+the s6 stop as much as the ladder's `SIGKILL`, and a member mid-turn keeps running after the
+ladder gives up; the ladder then reports the uid NOT verified extinct, which is how the missing grant
+showed (#1382).
 
 **What a failed launch leaves of the boundary.** Every artifact this document names — the
 workspace tree, its control directory, the uid's passwd/group identity and that uid's private
@@ -318,6 +323,7 @@ never runs, and anything that replaces it drops the privilege drop with it.
 - `tests/test_s6_quiesce_seams.py`
 - `tests/test_s6_rc_overlay_sources.py`
 - `tests/test_s6_rc_trusted_path.py`
+- `tests/test_apparmor_profile.py`
 - `test-local/e2e/test_engagement_quiesce.sh`
 
 **Related**
