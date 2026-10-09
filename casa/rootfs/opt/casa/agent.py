@@ -1497,7 +1497,7 @@ class Agent:
         # `<silent/>` followed by recanting text → send the whole thing).
         #
         # G-3 (v0.33.0, exploration2): the suppression was originally
-        # scoped to `msg.type == MessageType.SCHEDULED`. Ellen's outer
+        # scoped to `msg.type == MessageType.SCHEDULED`. The assistant's outer
         # USER-driven turn after a configurator engagement (cid
         # `dcc3c30b` 2026-05-01) accidentally absorbed the heartbeat
         # trigger's `<silent/>` doctrine via mid-engagement Read of

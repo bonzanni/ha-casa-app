@@ -11,7 +11,7 @@ kept a live butler on the vanished names:
   history, and the CLI refused them.
 
 These tests run the real facade, the real registry publication
-(``casa_core.wire_tina_ha_facade``), a real butler ``Agent``'s armed surface and
+(``casa_core.wire_butler_ha_facade``), a real butler ``Agent``'s armed surface and
 the real resume gate. Only the HA transport is faked.
 """
 from __future__ import annotations
@@ -154,20 +154,20 @@ class _Publications:
 
 async def _published_butler(tmp_path, sessions):
     """Boot: start the facade and publish it to a real butler, as casa_core does."""
-    from casa_core import wire_tina_ha_facade
+    from casa_core import wire_butler_ha_facade
     from mcp_registry import McpServerRegistry
 
     registry = McpServerRegistry()
     butler = _butler(tmp_path, registry)
     publications = _Publications()
     facade = make_facade(sessions, on_schema_change=publications)
-    publications.wire = lambda: wire_tina_ha_facade(
-        registry, facade, {"butler": butler}, tina_role="butler",
+    publications.wire = lambda: wire_butler_ha_facade(
+        registry, facade, {"butler": butler}, butler_role="butler",
     )
     await facade.start()
     # start() does not run the callback; casa_core publishes once after it.
-    await wire_tina_ha_facade(
-        registry, facade, {"butler": butler}, tina_role="butler",
+    await wire_butler_ha_facade(
+        registry, facade, {"butler": butler}, butler_role="butler",
     )
     return registry, butler, facade, publications
 

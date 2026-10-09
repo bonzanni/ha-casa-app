@@ -5,8 +5,8 @@ Talks to /run/casa/internal.sock; same dispatch path as the
 casa_reload(scope=...) MCP tool. See doctrine reload.md.
 
 Usage:
-    casactl reload --scope=agent --role=ellen
-    casactl reload --scope=triggers --role=ellen
+    casactl reload --scope=agent --role=assistant
+    casactl reload --scope=triggers --role=assistant
     casactl reload --scope=policies
     casactl reload --scope=plugin_env
     casactl reload --scope=agents

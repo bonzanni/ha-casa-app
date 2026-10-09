@@ -165,7 +165,7 @@ _FILE_OUTCOME_CLAUSES = {
 
 def file_outcome(label: str, name: str, outcome: Any, *, kind: str = "file") -> "str | None":
     """The labelled, past-event line for a routed file's receipt outcome — Casa's
-    own composer over ``agent_inbox.Outcome``, never Ellen's first-person
+    own composer over ``agent_inbox.Outcome``, never the assistant's first-person
     ``_inbound_reply`` texts (S6 design §2.1). ``None`` for a stored file (the
     desk turn speaks for it); an UNCERTAIN outcome claims neither that the file
     was kept nor that it was not (INV-INBOX-005)."""

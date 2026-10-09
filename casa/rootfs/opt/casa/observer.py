@@ -3,7 +3,7 @@
 Subscribes to engagement.*.event bus messages via a dedicated ``observer``
 target queue. Static classifier maps events to silent/peek/trigger. Trigger
 events run a bounded LLM pass that may produce an interjection NOTIFICATION
-onto Ellen's queue.
+onto the assistant's queue.
 
 Plan 2 ships with hardcoded defaults; per-executor-type YAML overrides
 arrive in Plan 3 when the first Tier 3 type lands.

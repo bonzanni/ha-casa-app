@@ -75,11 +75,11 @@ class TestSupergroupRouting:
         ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
                              engagement_supergroup_id=-1001)
         ch._driver_send_user_turn = AsyncMock()
-        ch._route_to_ellen = AsyncMock()
+        ch._route_to_assistant = AsyncMock()
 
         u = _mk_update(chat_id=100, text="hi Ellen")
         await ch.handle_update(u)
-        ch._route_to_ellen.assert_awaited_once()
+        ch._route_to_assistant.assert_awaited_once()
         ch._driver_send_user_turn.assert_not_called()
 
 
@@ -110,13 +110,13 @@ class TestOnlyANewMessageStartsATurn:
         ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
                              engagement_supergroup_id=-1001)
         ch._driver_send_user_turn = AsyncMock()
-        ch._route_to_ellen = AsyncMock()
+        ch._route_to_assistant = AsyncMock()
         ch._engagement_registry = engagement_fixture.registry
 
         await ch.handle_update(self._as(field, chat_id=100))
         await ch.handle_update(self._as(field, chat_id=-1001, thread_id=555))
         await _drain_turns(ch)
-        ch._route_to_ellen.assert_not_called()
+        ch._route_to_assistant.assert_not_called()
         ch._driver_send_user_turn.assert_not_called()
         assert fake_telegram_bot.messages == []
 
@@ -224,7 +224,7 @@ class TestPTBDispatchContract:
 
         ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
                              engagement_supergroup_id=-1001)
-        ch._route_to_ellen = AsyncMock()
+        ch._route_to_assistant = AsyncMock()
 
         u = _mk_update(chat_id=100, text="hi Ellen")
         # PTB calls handlers with (update, context). The bound method
@@ -233,7 +233,7 @@ class TestPTBDispatchContract:
         # raised TypeError: "takes 2 positional arguments but 3 were given".
         ptb_context = MagicMock(name="CallbackContext")
         await ch.handle_update(u, ptb_context)
-        ch._route_to_ellen.assert_awaited_once()
+        ch._route_to_assistant.assert_awaited_once()
 
     async def test_handle_update_supergroup_topic_with_ptb_context(
         self, fake_telegram_bot, engagement_fixture,
@@ -943,28 +943,28 @@ class TestForeignChatGate:
         from channels.telegram import TelegramChannel
         ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
                              engagement_supergroup_id=-1001)
-        ch._route_to_ellen = AsyncMock()
+        ch._route_to_assistant = AsyncMock()
         u = _mk_update(chat_id=31337, text="unlock the front door")
         await ch.handle_update(u)
-        ch._route_to_ellen.assert_not_awaited()
+        ch._route_to_assistant.assert_not_awaited()
 
     async def test_all_chats_accepted_when_chat_id_empty(self, fake_telegram_bot):
         from channels.telegram import TelegramChannel
         ch = TelegramChannel(bot=fake_telegram_bot, chat_id="",
                              engagement_supergroup_id=-1001)
-        ch._route_to_ellen = AsyncMock()
+        ch._route_to_assistant = AsyncMock()
         u = _mk_update(chat_id=31337, text="hello")
         await ch.handle_update(u)
-        ch._route_to_ellen.assert_awaited_once()
+        ch._route_to_assistant.assert_awaited_once()
 
     async def test_configured_chat_still_routed(self, fake_telegram_bot):
         from channels.telegram import TelegramChannel
         ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
                              engagement_supergroup_id=-1001)
-        ch._route_to_ellen = AsyncMock()
+        ch._route_to_assistant = AsyncMock()
         u = _mk_update(chat_id=100, text="hi Ellen")
         await ch.handle_update(u)
-        ch._route_to_ellen.assert_awaited_once()
+        ch._route_to_assistant.assert_awaited_once()
 
 
 def test_inbound_message_without_message_id_is_tolerated():

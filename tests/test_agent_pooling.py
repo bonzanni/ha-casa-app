@@ -518,7 +518,7 @@ async def test_agent_invalidate_tool_surface_closes_current_pool_generation(
 async def test_facade_schema_refresh_reconnects_only_butler_with_new_config(
     tmp_path, scripted_factory,
 ):
-    from casa_core import wire_tina_ha_facade
+    from casa_core import wire_butler_ha_facade
 
     registry = McpServerRegistry()
     raw_config = {
@@ -586,7 +586,7 @@ async def test_facade_schema_refresh_reconnects_only_butler_with_new_config(
         facade = type(
             "Facade", (), {"server_config": new_facade_config, "surface_digest": ""},
         )()
-        await wire_tina_ha_facade(
+        await wire_butler_ha_facade(
             registry,
             facade,
             {"butler": butler, "assistant": assistant},

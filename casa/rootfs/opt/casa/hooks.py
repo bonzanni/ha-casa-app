@@ -891,7 +891,7 @@ def _deletes_resident(command: str, *, _depth: int = 0) -> bool:
 
     Argv-aware (via :func:`_split_pipeline`), so it is immune to the
     bypasses that defeated the old regex: quoted paths
-    (``rm -r "/config/agents/ellen"``), long flags (``--recursive``), the
+    (``rm -r "/config/agents/assistant"``), long flags (``--recursive``), the
     ``--`` end-of-options marker, wrapper shells, exec-wrapper prefixes,
     and ``..`` traversal (paths are normalised with
     :func:`_normalize_path`).
@@ -1040,7 +1040,7 @@ def make_agent_home_settings_guard() -> HookCallback:
             if norm.startswith(_PLUGINS_DIR_PREFIX) or norm == "/config/plugins":
                 return _deny(_PLUGINS_DENY_MSG)
         elif tool_name == "Bash":
-            # Finding 1 (codex review v0.69.10): residents with Bash (Ellen)
+            # Finding 1 (codex review v0.69.10): residents with Bash (the assistant)
             # could bypass the file-tool guard with `echo … >
             # .claude/settings.json`. Deny a Bash command that names a
             # settings.json path AND looks like a write. This is best-effort

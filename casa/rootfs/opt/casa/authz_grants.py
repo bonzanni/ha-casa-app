@@ -1642,7 +1642,7 @@ def make_resident_authz_hook(
                     else _DENY_UNSUPPORTED_ORIGIN)
 
             # target_role is the ORIGINATING resident on the DM path (for a
-            # delegated specialist this is origin.role, i.e. Ellen — the
+            # delegated specialist this is origin.role, i.e. the assistant — the
             # continuation routes back to her; B1 ruling) and the engagement's
             # role_or_type on the engagement path.
             return await _authorize(

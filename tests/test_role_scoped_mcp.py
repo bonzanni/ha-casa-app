@@ -27,7 +27,7 @@ def test_role_sdk_override_wins_only_for_target_role():
 
 
 async def test_wire_ha_facade_publishes_before_invalidating_only_butler():
-    from casa_core import wire_tina_ha_facade
+    from casa_core import wire_butler_ha_facade
     from mcp_registry import McpServerRegistry
 
     registry = McpServerRegistry()
@@ -51,11 +51,11 @@ async def test_wire_ha_facade_publishes_before_invalidating_only_butler():
     butler = ObservingAgent("butler")
     assistant = ObservingAgent("assistant")
 
-    await wire_tina_ha_facade(
+    await wire_butler_ha_facade(
         registry,
         type("Facade", (), {"server_config": new_config, "surface_digest": ""})(),
         {"butler": butler, "assistant": assistant},
-        tina_role="butler",
+        butler_role="butler",
     )
 
     assert butler.seen == [new_config]
