@@ -5515,7 +5515,7 @@ class TelegramChannel(Channel):
     ENGAGEMENT_COMMANDS = [
         ("cancel", "Cancel this engagement and close the topic"),
         ("complete", "Mark this engagement complete (no agent summary)"),
-        ("silent", "Stop proactive notifications from Ellen for this engagement"),
+        ("silent", "Stop proactive notifications for this engagement"),
     ]
 
     async def setup_engagement_features(self) -> None:

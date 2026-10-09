@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.344.79] - 2026-10-09
+
+### Fixed
+
+- A renamed assistant is now called by its own name everywhere: the warning before changing a specialist with open conversations ("…ask <name> for a new conversation"), the brief a specialist gets when a conversation opens ("Context from <name>"), and the engagement observer's instructions. The `/silent` command's help no longer names the default assistant. (#1409)
+
 ## [0.344.78] - 2026-10-09
 
 ### Changed

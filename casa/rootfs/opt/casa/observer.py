@@ -216,8 +216,12 @@ class Observer:
         )
         from error_kinds import api_error_kind
         import sdk_logging
+        import tools as tools_mod
+        origin = getattr(rec, "origin", None)
+        role = origin.get("role") if isinstance(origin, dict) else None
+        name = tools_mod.persona_name(role if isinstance(role, str) else None)
         system = (
-            "You are Ellen's observer. Decide whether to interject in the main "
+            f"You are {name}'s observer. Decide whether to interject in the main "
             "chat about an in-flight engagement. Respond with STRICT JSON: "
             "{\"interject\": true|false, \"text\": \"...\"}. "
             "Interject only for actionable events the user should see "
