@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.344.70] - 2026-10-09
+
+### Fixed
+
+- Cancelling a coding engagement now stops it straight away. If you cancelled one while it was in the middle of a step, it could keep working for a while after the cancel, and the log showed "NOT verified extinct". The app's AppArmor profile did not let Casa stop processes running under another user, and each engagement runs under its own user. An engagement waiting for your next message was never affected. (#1382)
+
 ## [0.344.69] - 2026-10-09
 
 ### Fixed
