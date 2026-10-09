@@ -10,7 +10,7 @@ import logging
 import re
 import time
 from contextlib import AsyncExitStack
-from typing import Any, AsyncContextManager, Callable, Protocol
+from typing import Any, AsyncContextManager, Awaitable, Callable, Protocol
 
 from claude_agent_sdk import SdkMcpTool, create_sdk_mcp_server, tool
 from mcp import ClientSession
@@ -67,6 +67,92 @@ class _DiscoveredTools(BaseModel):
     tools: list[_DiscoveredTool]
 
 
+class _UpstreamConnection:
+    """One upstream connection, opened and closed inside a task of its own.
+
+    #1400: the streamable HTTP client and ``ClientSession`` each hold an anyio
+    task group, and an anyio cancel scope may only be exited by the task that
+    entered it. The facade opens a connection in one task (boot, a scheduled
+    refresh) and closes it from another (shutdown, a failed tool call, the
+    next refresh). Exited from the wrong task, the scope fails to close and
+    keeps cancelling the task that opened it at every await from then on —
+    which ended every Casa stop halfway through its cleanup. Owning the
+    connection in one dedicated task makes the enter and the exit the same
+    task whoever asks, and confines a crash of the connection to that task.
+    """
+
+    def __init__(
+        self,
+        enter: Callable[[AsyncExitStack], Awaitable[_UpstreamSession]],
+    ) -> None:
+        self._enter = enter
+        self._release = asyncio.Event()
+        self._task: asyncio.Task[None] | None = None
+
+    async def open(self) -> _UpstreamSession:
+        ready: asyncio.Future[_UpstreamSession] = (
+            asyncio.get_running_loop().create_future()
+        )
+        task = self._task = asyncio.create_task(self._hold(ready))
+        try:
+            return await asyncio.shield(ready)
+        except BaseException:
+            task.cancel()
+            await self.close()
+            raise
+
+    async def close(self) -> None:
+        """Release the connection and wait for its task to exit it. A caller
+        cancelled while waiting cancels the task and is still cancelled."""
+        task = self._task
+        if task is None:
+            return
+        self._release.set()
+        try:
+            await asyncio.wait({task})
+        except asyncio.CancelledError:
+            task.cancel()
+            raise
+
+    async def request(self, awaitable: Awaitable[Any]) -> Any:
+        """Await one request on this connection. A connection that ends first
+        (Home Assistant went away) never answers it: the request is abandoned
+        and ``ConnectionError`` raised, so the caller's failure handling runs
+        instead of waiting forever."""
+        connection = self._task
+        assert connection is not None
+        request = asyncio.ensure_future(awaitable)
+        try:
+            await asyncio.wait(
+                {request, connection}, return_when=asyncio.FIRST_COMPLETED,
+            )
+        except asyncio.CancelledError:
+            request.cancel()
+            raise
+        if not request.done():
+            request.cancel()
+            await asyncio.wait({request})
+            raise ConnectionError("Home Assistant connection ended")
+        return request.result()
+
+    async def _hold(self, ready: asyncio.Future[_UpstreamSession]) -> None:
+        try:
+            async with AsyncExitStack() as stack:
+                ready.set_result(await self._enter(stack))
+                await self._release.wait()
+        except Exception as exc:
+            if not ready.done():
+                ready.set_exception(exc)
+            else:
+                logger.warning(
+                    "Home Assistant upstream close failed; detail suppressed",
+                )
+        except BaseException:
+            if not ready.done():
+                ready.cancel()
+            raise
+
+
 class HomeAssistantFacade:
     """Own an HA MCP connection and mirror its healthy tools eagerly."""
 
@@ -84,7 +170,7 @@ class HomeAssistantFacade:
         self._session_factory = session_factory
         self._monotonic = monotonic
         self._lock = asyncio.Lock()
-        self._stack: AsyncExitStack | None = None
+        self._upstream: _UpstreamConnection | None = None
         self._session: _UpstreamSession | None = None
         self._session_generation = 0
         self._tools: tuple[SdkMcpTool[Any], ...] = ()
@@ -181,16 +267,16 @@ class HomeAssistantFacade:
 
     async def _refresh_locked(self) -> bool:
         await self._close_upstream_locked()
-        stack, session = await self._open_upstream()
+        upstream, session = await self._open_upstream()
         try:
-            discovered = await self._discover_tools(session)
+            discovered = await upstream.request(self._discover_tools(session))
             proxies = tuple(
                 proxy
                 for candidate in discovered
                 if (proxy := self._proxy_for(candidate)) is not None
             )
         except BaseException:
-            await stack.aclose()
+            await upstream.close()
             raise
 
         config = create_sdk_mcp_server(
@@ -200,7 +286,7 @@ class HomeAssistantFacade:
         config["alwaysLoad"] = True
         descriptor = _surface_descriptor_for(proxies)
         surface_changed = descriptor != self._surface_descriptor
-        self._stack = stack
+        self._upstream = upstream
         self._session = session
         self._session_generation += 1
         self._tools = proxies
@@ -224,33 +310,28 @@ class HomeAssistantFacade:
 
     async def _open_upstream(
         self,
-    ) -> tuple[AsyncExitStack, _UpstreamSession]:
-        stack = AsyncExitStack()
-        try:
-            if self._session_factory is not None:
-                session = await stack.enter_async_context(self._session_factory())
-            else:
-                read, write, _ = await stack.enter_async_context(
-                    streamablehttp_client(self._url, headers=self._headers),
-                )
-                session = await stack.enter_async_context(ClientSession(read, write))
-            await session.initialize()
-        except BaseException:
-            await stack.aclose()
-            raise
-        return stack, session
+    ) -> tuple[_UpstreamConnection, _UpstreamSession]:
+        connection = _UpstreamConnection(self._enter_upstream)
+        session = await connection.open()
+        return connection, session
+
+    async def _enter_upstream(self, stack: AsyncExitStack) -> _UpstreamSession:
+        if self._session_factory is not None:
+            session = await stack.enter_async_context(self._session_factory())
+        else:
+            read, write, _ = await stack.enter_async_context(
+                streamablehttp_client(self._url, headers=self._headers),
+            )
+            session = await stack.enter_async_context(ClientSession(read, write))
+        await session.initialize()
+        return session
 
     async def _close_upstream_locked(self) -> None:
-        stack = self._stack
-        self._stack = None
+        connection = self._upstream
+        self._upstream = None
         self._session = None
-        if stack is not None:
-            try:
-                await stack.aclose()
-            except Exception:
-                logger.warning(
-                    "Home Assistant upstream close failed; detail suppressed",
-                )
+        if connection is not None:
+            await connection.close()
 
     def _proxy_for(self, tool_spec: Any) -> SdkMcpTool[Any] | None:
         try:
@@ -274,19 +355,20 @@ class HomeAssistantFacade:
         arguments: dict[str, Any],
     ) -> dict[str, Any]:
         session = self._session
+        upstream = self._upstream
         session_generation = self._session_generation
-        if session is None:
+        if session is None or upstream is None:
             self._ensure_refresh_worker()
             return _unavailable_result()
 
         upstream_arguments = {} if _is_live_context(name) else arguments
         started_ms = self._monotonic() * 1000
         try:
-            result = await self._call_upstream(
+            result = await upstream.request(self._call_upstream(
                 session,
                 name,
                 upstream_arguments,
-            )
+            ))
         except Exception:
             elapsed = int(self._monotonic() * 1000 - started_ms)
             logger.info(
