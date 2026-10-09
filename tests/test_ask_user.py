@@ -564,18 +564,33 @@ class TestDmReadableButtons:
     ):
         """The DM MESSAGE body renders the FULL options verbatim + 1-based
         numbered (render_ask_body), not just the raw question — so a long
-        option is readable even though the button label is short."""
+        option is readable even though its button reads "Option n"."""
         channel = _FakeChannel()
         _res, _payload_, ch = await _ask(
             monkeypatch, channel=channel,
             args={"question": "Which account?",
-                  "options": ["Personal Gmail", "Work Outlook"]},
+                  "options": ["Personal Gmail",
+                              "Configure the enterprise SSO integration"]},
         )
         post = next(c for c in ch.calls if c[0] == "post")
         text = post[3]
-        assert text == "Which account?\n\n1. Personal Gmail\n2. Work Outlook"
-        assert "1. Personal Gmail" in text
-        assert "2. Work Outlook" in text
+        assert text == ("Which account?\n\n1. Personal Gmail\n"
+                        "2. Configure the enterprise SSO integration")
+
+    async def test_dm_body_has_no_list_when_buttons_show_the_words(
+        self, monkeypatch, _fresh_broker,
+    ):
+        """#1392: options that fit their buttons show there in their own
+        words, so the body is the question alone — no "1. Delete / 2. Keep"
+        under buttons that already read Delete and Keep."""
+        channel = _FakeChannel()
+        _res, _payload_, ch = await _ask(
+            monkeypatch, channel=channel,
+            args={"question": "Delete all 2 finished topics?",
+                  "options": ["Delete", "Keep"]},
+        )
+        post = next(c for c in ch.calls if c[0] == "post")
+        assert post[3] == "Delete all 2 finished topics?"
 
     async def test_dm_buttons_short_labeled_with_index(self):
         """v0.84.0 (round 4, spec D2): ``post_dm_keyboard`` has no per-option
@@ -620,7 +635,8 @@ class TestDmReadableButtons:
         _res, payload, ch = await _ask(
             monkeypatch, channel=channel,
             args={"question": "Which account?",
-                  "options": ["Personal Gmail", "Work Outlook"]},
+                  "options": ["Personal Gmail",
+                              "Work Outlook (the company account)"]},
         )
         rid = payload["request_id"]
         assert deliver(_fresh_broker, 
@@ -633,7 +649,7 @@ class TestDmReadableButtons:
         assert settle_text.endswith("Answered: Personal Gmail")
         # The full numbered body is preserved below the settle line.
         assert "1. Personal Gmail" in settle_text
-        assert "2. Work Outlook" in settle_text
+        assert "2. Work Outlook (the company account)" in settle_text
 
 
 # ---------------------------------------------------------------------------

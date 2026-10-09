@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.344.74] - 2026-10-09
+
+### Fixed
+
+- A question whose buttons already show the answers in their own words ("Delete" / "Keep") no longer repeats them as a numbered list underneath. The list now appears only when a button cannot show its answer in full, for example when the buttons read "Option 1", "Option 2". Once you tap, the question shows the answer you picked ("✅ Delete") rather than its number. (#1392)
+
 ## [0.344.73] - 2026-10-09
 
 ### Fixed

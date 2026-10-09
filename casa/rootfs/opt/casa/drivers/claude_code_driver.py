@@ -103,7 +103,7 @@ def _reanchor_moved_terminal(n: "int | None") -> str:
 
 
 def ask_lifecycle_suffixes(
-    number: "int | None", options: list, multi: bool,
+    number: "int | None", options: list, multi: bool, *, words: bool = False,
 ) -> list[str]:
     """v0.84.0 (round 4, D1 bullets 3 & 6, Task A3) — enumerate EVERY terminal
     suffix Telegram lifecycle form THIS ask can render, exactly as the
@@ -124,6 +124,8 @@ def ask_lifecycle_suffixes(
         chosen full label(s)): single-select worst case is the LAST option
         position; multi worst case is EVERY option selected, rendered
         exactly (``✅ Options 1, 2, …, N`` — every index, no elision);
+        with ``words`` (#1392: the buttons showed the options' own words) the
+        chosen words instead — every option (multi) or each one (single);
       * expired / cancelled / superseded / internal-error (live-ask settle
         copies owned by ``channels.channel_handlers``);
       * boot-reconcile answered / expired (``_OPEN_Q_ANSWERED_SUFFIX`` /
@@ -150,6 +152,7 @@ def ask_lifecycle_suffixes(
     from channels.channel_handlers import (
         _SETTLE_ANSWERED_BELOW, _SETTLE_CANCELLED, _SETTLE_EXPIRED,
         _SETTLE_INTERNAL_ERROR, _SETTLE_SUPERSEDED, _positional_settle_suffix,
+        _words_settle_suffix,
     )
     suffixes = [
         _SETTLE_EXPIRED,
@@ -162,6 +165,15 @@ def ask_lifecycle_suffixes(
     ]
     if not options:
         suffixes.append(_SETTLE_ANSWERED_BELOW)
+    elif words:
+        # #1392: buttons with the options' own words settle with the chosen
+        # words — worst case every option (multi) or the longest one.
+        if multi:
+            suffixes.append(
+                _words_settle_suffix(list(range(len(options))), options))
+        else:
+            suffixes.extend(
+                _words_settle_suffix([i], options) for i in range(len(options)))
     elif multi:
         suffixes.append(_positional_settle_suffix(list(range(len(options)))))
     else:

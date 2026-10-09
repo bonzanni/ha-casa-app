@@ -269,11 +269,12 @@ async def test_answered_settles_with_check_and_clears_keyboard(env):
 
     assert _body(resp) == {
         "ok": True, "outcome": "answered", "option": "B", "option_index": 1}
-    # Settle edit: PRESENT clear_keyboard, BOUNDED positional ✅ copy appended
-    # BELOW the canonical body (v0.84.0 D1 bullet 3 — never the full label).
+    # Settle edit: PRESENT clear_keyboard, ✅ copy appended BELOW the
+    # canonical body. #1392: "A"/"B" are on their own buttons, so the body has
+    # no numbered list and the settle names the chosen option.
     edit = env["ch"].edits[-1]
     assert edit["clear_keyboard"] is True
-    assert edit["text"] == "Q1: Proceed?\n\n1. A\n2. B\n✅ Option 2"
+    assert edit["text"] == "Q1: Proceed?\n✅ B"
 
 
 async def test_expired_settles_with_hourglass_and_clears_keyboard(env, monkeypatch):
@@ -299,7 +300,7 @@ async def test_expired_settles_with_hourglass_and_clears_keyboard(env, monkeypat
     edit = env["ch"].edits[-1]
     assert edit["clear_keyboard"] is True
     assert edit["text"] == (
-        "Q1: Proceed?\n\n1. A\n2. B\n"
+        "Q1: Proceed?\n"
         "⌛ expired — engagement paused; reply here to continue")
 
 
@@ -314,7 +315,7 @@ async def test_canonical_qnumber_prepends_verbatim(env):
     # Await the observable (keyboard actually posted), not a fixed sleep.
     await wait_until(lambda: env["ch"].options_keyboards)
     posted_q = env["ch"].options_keyboards[-1]["question"]
-    assert posted_q == "Q1: Q7: Which DB?\n\n1. A\n2. B"
+    assert posted_q == "Q1: Q7: Which DB?"
     # open_questions ledger + summary accessor agree with the message. The
     # ledger write is a separate awaited step after the post — wait for it
     # too before delivering, or the settle-close races the open-write.
@@ -431,7 +432,7 @@ async def test_generation_recheck_supersedes(env):
     edit = ch.edits[-1]
     assert edit["clear_keyboard"] is True
     assert edit["text"] == (
-        "Q1: Proceed?\n\n1. A\n2. B\n🚫 superseded by your message below")
+        "Q1: Proceed?\n🚫 superseded by your message below")
 
 
 # ---------------------------------------------------------------------------
