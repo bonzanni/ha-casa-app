@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.344.76] - 2026-10-09
+
+### Fixed
+
+- Stopping or restarting the app no longer ends with "Casa crashed with exit code 1". Closing the Home Assistant connection used to cut the stop short, so the rest of the shutdown (closing the channels, the web listeners, running coding sessions and memory) was skipped. The stop now runs to the end. (#1400)
+- When Home Assistant goes away in the middle of a command (for example while it restarts), the assistant now hears straight away that Home Assistant is unavailable and Casa reconnects, instead of the command waiting forever. (#1400)
+
 ## [0.344.75] - 2026-10-09
 
 ### Fixed

@@ -24,6 +24,7 @@ from mcp.types import CallToolResult, TextContent
 
 import agent as agent_mod
 from agent import _resume_decision
+from ha_mcp_facade import UNAVAILABLE_TEXT
 
 try:
     from tests.test_ha_mcp_facade import (
@@ -354,6 +355,10 @@ async def test_missing_tool_results_in_one_generation_request_one_rediscovery():
 
 @pytest.mark.asyncio
 async def test_a_late_missing_tool_result_from_a_replaced_connection_asks_nothing():
+    """A call still waiting when a refresh replaces its connection asks for no
+    rediscovery. #1400: closing the connection abandons the call — a closed
+    MCP connection never answers it — so it ends as unavailable rather than
+    carrying the late "not found" back."""
     stale = _GatedSession(
         tools=[action_tool("HassTurnOn"), live_context_tool()],
         results={"HassTurnOn": _error_result(MISSING_TOOL_TEXT)},
@@ -372,7 +377,7 @@ async def test_a_late_missing_tool_result_from_a_replaced_connection_asks_nothin
         stale.release.set()
         result = await asyncio.wait_for(call, timeout=5)
         await _drain_refresh(facade)
-        assert result["content"][0]["text"] == MISSING_TOOL_TEXT
+        assert result["content"][0]["text"] == UNAVAILABLE_TEXT
         assert sessions.open_count == 2
         assert facade._refresh_task is None
     finally:
