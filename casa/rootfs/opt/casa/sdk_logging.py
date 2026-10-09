@@ -249,7 +249,7 @@ def with_stderr_callback(
     """Return a copy of options with our stderr callback if not already set.
 
     Caller provides engagement_id where available (in_casa start /
-    resume / observer / query_engager) and None otherwise (Ellen DM,
+    resume / observer / query_engager) and None otherwise (assistant DM,
     delegate_to_agent specialist invocation). Caller-provided
     ``stderr=`` callbacks (vanishingly rare in Casa code today) are
     preserved — we never overwrite.

@@ -56,7 +56,7 @@ async def test_schedule_agent_close_tolerates_missing_aclose():
 
 
 async def test_close_tina_facade_awaits_aclose():
-    from casa_core import _close_tina_ha_facade
+    from casa_core import _close_butler_ha_facade
 
     class Facade:
         def __init__(self):
@@ -66,19 +66,19 @@ async def test_close_tina_facade_awaits_aclose():
             self.closed = True
 
     facade = Facade()
-    await _close_tina_ha_facade(facade)
+    await _close_butler_ha_facade(facade)
     assert facade.closed
 
 
 async def test_close_tina_facade_failure_is_sanitized(caplog):
-    from casa_core import _close_tina_ha_facade
+    from casa_core import _close_butler_ha_facade
 
     class Facade:
         async def aclose(self):
             raise RuntimeError("private-token at http://private-ha")
 
     with caplog.at_level(logging.WARNING):
-        await _close_tina_ha_facade(Facade())
+        await _close_butler_ha_facade(Facade())
 
     assert [
         record.getMessage() for record in caplog.records
@@ -89,7 +89,7 @@ async def test_close_tina_facade_failure_is_sanitized(caplog):
 
 
 async def test_close_tina_facade_hanging_close_is_bounded(caplog):
-    from casa_core import _close_tina_ha_facade
+    from casa_core import _close_butler_ha_facade
 
     close_started = asyncio.Event()
     close_cancelled = asyncio.Event()
@@ -105,7 +105,7 @@ async def test_close_tina_facade_hanging_close_is_bounded(caplog):
 
     with caplog.at_level(logging.WARNING):
         await asyncio.wait_for(
-            _close_tina_ha_facade(Facade(), timeout=0.01),
+            _close_butler_ha_facade(Facade(), timeout=0.01),
             timeout=1.0,
         )
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.344.78] - 2026-10-09
+
+### Changed
+
+- Internal: code that named the default agents (Ellen, Tina, Gary) now names their roles (assistant, butler, concierge), so a renamed agent leaves no misleading names behind. No change in behaviour. (#1407)
+
 ## [0.344.77] - 2026-10-09
 
 ### Fixed

@@ -1200,7 +1200,7 @@ class VoiceChannel(Channel):
                         and agent_allowed_on("voice", cfg)
                     ):
                         # Pool metadata only. SDK prewarm remains the separate,
-                        # conditional Tina T2 optimization.
+                        # conditional butler T2 optimization.
                         self.pool.ensure(scope_id, role=agent_role)
                     continue
 

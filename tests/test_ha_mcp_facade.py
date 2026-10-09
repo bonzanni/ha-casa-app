@@ -1193,7 +1193,7 @@ async def test_close_from_another_task_leaves_the_opener_uncancelled(caplog):
     factory = AnyioSessionFactory()
     facade = factory.facade()
     await facade.start()
-    await asyncio.create_task(casa_core._close_tina_ha_facade(facade))
+    await asyncio.create_task(casa_core._close_butler_ha_facade(facade))
     await _awaits_survive()
     assert (factory.entered, factory.exited) == (1, 1)
     assert "upstream close failed" not in caplog.text
@@ -1209,7 +1209,7 @@ async def test_close_after_the_opener_ended_exits_the_connection(caplog):
     factory = AnyioSessionFactory()
     facade = factory.facade()
     await asyncio.create_task(facade.start())
-    await casa_core._close_tina_ha_facade(facade)
+    await casa_core._close_butler_ha_facade(facade)
     await _awaits_survive()
     assert (factory.entered, factory.exited) == (1, 1)
     assert "upstream close failed" not in caplog.text

@@ -107,8 +107,8 @@ def agent_document_id(provenance: "SpeakerProvenance", text: str) -> str:
 
     Idempotency is keyed on the AGENT'S IDENTITY, not its exact persona VERSION:
     the digest folds in ``speaker_kind``/``role_id``/``persona_id`` but NOT
-    ``persona_version``/``binding_digest``. So the same fact retained by Tina
-    ``casa/tina@0.1.0`` and by Tina ``casa/tina@0.2.0`` upserts to the SAME
+    ``persona_version``/``binding_digest``. So the same fact retained by the butler
+    ``casa/tina@0.1.0`` and by the butler ``casa/tina@0.2.0`` upserts to the SAME
     Hindsight document (a persona bump is not a new author), while a DIFFERENT
     persona (``casa/ellen``) saying the same words is a distinct document. This
     mirrors ``content_document_id``'s "same speaker + same text = one document"

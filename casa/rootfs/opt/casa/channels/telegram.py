@@ -1178,7 +1178,7 @@ class TelegramChannel(Channel):
         # msg.message_id; MONOTONIC (never regresses to an older id).
         self._current_inbound: dict[str, tuple[int, int, int]] = {}
         # Default routing: forward to the existing PTB handler.
-        self._route_to_ellen = self._route_to_ellen_default
+        self._route_to_assistant = self._route_to_assistant_default
 
     # ------------------------------------------------------------------
     # R5 (v0.89.0): current-inbound target + emoji reaction (react tool)
@@ -1371,13 +1371,13 @@ class TelegramChannel(Channel):
         # E-13: dispatch to handle_update (engagement-aware router) so
         # that /cancel, /complete, /silent in engagement topics are
         # intercepted. handle_update internally calls _handle for
-        # non-engagement chats (Ellen DM via _route_to_ellen).
+        # non-engagement chats (assistant DM via _route_to_assistant).
         #
         # H5 (v0.52.0): block=False dispatches each update via
         # Application.create_task rather than awaiting it inline, so one
         # long engagement turn cannot stall PTB's sequential update fetcher
         # (default max_concurrent_updates=1) — which in polling mode would
-        # otherwise freeze Ellen DMs too. Same-topic ordering stays
+        # otherwise freeze assistant DMs too. Same-topic ordering stays
         # serialized by _engagement_handler_locks; PTB routes task
         # exceptions to the registered error handler.
         app.add_handler(
@@ -2515,7 +2515,7 @@ class TelegramChannel(Channel):
     # Engagement routing (Task 11)
     # ------------------------------------------------------------------
 
-    async def _route_to_ellen_default(self, update) -> None:
+    async def _route_to_assistant_default(self, update) -> None:
         """Default behavior for non-engagement chats: feed into existing _handle."""
         await self._handle(update, None)
 
@@ -2539,7 +2539,7 @@ class TelegramChannel(Channel):
     async def handle_update(
         self, update, _context: ContextTypes.DEFAULT_TYPE | None = None
     ) -> None:
-        """PTB MessageHandler entry-point. Routes by chat_id to engagement or Ellen.
+        """PTB MessageHandler entry-point. Routes by chat_id to engagement or the assistant.
 
         The optional ``_context`` parameter exists so PTB's
         ``Application.process_update`` can call this callback with its
@@ -2556,10 +2556,10 @@ class TelegramChannel(Channel):
         thread_id = getattr(msg, "message_thread_id", None)
         user_id = msg.from_user.id if msg.from_user else None
 
-        # 1) 1:1 chat with Ellen — existing behaviour
+        # 1) 1:1 chat with the assistant — existing behaviour
         # Note: self.chat_id may be a string or int — coerce for comparison
         if str(chat_id) == str(self.chat_id):
-            return await self._route_to_ellen(update)
+            return await self._route_to_assistant(update)
 
         # 2) Engagement supergroup
         if self.engagement_supergroup_id and chat_id == self.engagement_supergroup_id:
@@ -2970,7 +2970,7 @@ class TelegramChannel(Channel):
                 chat_id, user_id,
             )
             return
-        return await self._route_to_ellen(update)
+        return await self._route_to_assistant(update)
 
     async def _rollback_answer(
         self, rec, token, *, suppress_reanchor: bool = False,
@@ -6908,7 +6908,7 @@ class TopicStreamHandle:
     """Per-engagement-topic streaming primitive used by InCasaDriver.
 
     Mirrors the (chat_id-keyed) on_token / finalize_stream pattern that
-    Ellen uses on direct DMs (lines 739-859) but parameterised by
+    the assistant uses on direct DMs (lines 739-859) but parameterised by
     topic_id and bound to the engagement supergroup chat. State
     (message_id, last_edit) lives for the duration of one SDK turn —
     each turn opens a fresh Telegram message in the topic.

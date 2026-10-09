@@ -420,7 +420,7 @@ class InCasaDriver(DriverProtocol):
         # engagement in its ContextVar copy. Tool callbacks dispatched from
         # that inner task (and any spawn_task descendants) inherit the
         # binding. Without this, _effective_caller_role() reads None and
-        # falls through to origin_var.role ("assistant" — Ellen's bus role
+        # falls through to origin_var.role ("assistant" — the assistant's bus role
         # via origin_var inherited along the parent task), every privileged
         # tool refuses, and the engagement orphans. Lazy-imported to avoid
         # circular import (tools imports engagement_registry).

@@ -199,11 +199,11 @@ async def _shutdown(runtime, *, bound: float = 0.05, bus=None,
     casa_core.asyncio = _FastWaitForAsyncio(bound)
     try:
         # #1400: a real facade goes through the production close.
-        close_facade = (casa_core._close_tina_ha_facade if ha_facade is not None
+        close_facade = (casa_core._close_butler_ha_facade if ha_facade is not None
                         else AsyncMock())
         with patch.object(tools, "stop_engagement_launches", AsyncMock()), \
              patch.object(tools, "drain_delegation_settlements", AsyncMock()), \
-             patch.object(casa_core, "_close_tina_ha_facade", close_facade), \
+             patch.object(casa_core, "_close_butler_ha_facade", close_facade), \
              patch.object(casa_core, "_drain_broker_before_channel_shutdown",
                           AsyncMock()):
             await casa_core._shutdown_cleanup(

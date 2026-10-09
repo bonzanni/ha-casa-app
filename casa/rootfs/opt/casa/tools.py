@@ -6199,7 +6199,7 @@ async def _run_voice_job_lifecycle(
             return
 
         # Resolve disclosure without placing either full result or approved
-        # spoken text on a Gary-facing surface. Task 4 re-evaluates this
+        # spoken text on a concierge-facing surface. Task 4 re-evaluates this
         # durable envelope immediately before delivery.
         spoken = spoken_text_for(
             voice_result,
@@ -7685,7 +7685,7 @@ async def delegate_to_agent(args: dict) -> dict:
                     "elapsed_s": elapsed,
                 }, delegation_id))
 
-            # The validated structured envelope is durable job data, not Gary
+            # The validated structured envelope is durable job data, not concierge
             # context. Persist it once, then resolve the only text allowed onto
             # the voice tool wire from sensitivity + server-bound identity.
             await _specialist_registry.job_registry.finish_voice_result(
@@ -9044,7 +9044,7 @@ def _effective_caller_role() -> str | None:
     Inside an active engagement (engagement_var set), the calling role
     IS the engagement's role_or_type — this takes precedence over the
     bus's origin_var.role, which inside in_casa engagements still
-    reflects the engager (Ellen's "assistant") because contextvars
+    reflects the engager (the assistant role) because contextvars
     inherit through the same async task.
 
     Returns None if neither context is bound — caller must refuse rather
@@ -9360,7 +9360,7 @@ async def casa_restart_supervised(_: dict) -> dict:
 # same channel/chat_id within ``_DUPLICATE_TASK_MAX_AGE_S`` seconds at a
 # word-level Jaccard >= ``_DUPLICATE_TASK_JACCARD_THRESHOLD``. Guards
 # against the cumulative-context bleed pattern observed in
-# ``docs/bug-review-2026-05-14-exploration6.md::O-6``: Ellen's
+# ``docs/bug-review-2026-05-14-exploration6.md::O-6``: the assistant's
 # back-to-back tool calls re-emitting a prior turn's task as a stale
 # second engage_executor argument.
 _DUPLICATE_TASK_JACCARD_THRESHOLD = 0.5
@@ -9390,7 +9390,7 @@ def _duplicate_task_refusal(origin: dict, task_text: str) -> dict | None:
     ``_DUPLICATE_TASK_MAX_AGE_S`` seconds; word-level Jaccard overlap >=
     ``_DUPLICATE_TASK_JACCARD_THRESHOLD`` returns the refusal envelope,
     else None. Guards against the cumulative-context bleed pattern observed
-    live (back-to-back Ellen turns re-emitting the prior turn's task).
+    live (back-to-back assistant turns re-emitting the prior turn's task).
 
     #320: called TWICE per spawn — a fast path before the topic-creation
     network RT, then again inside the ``_PLUGIN_TOOLS_LOCK`` critical
@@ -11571,7 +11571,7 @@ async def _abort_engagement_topic(
     an engagement dies before its driver started. Never raises.
 
     Do NOT route these failures through _finalize_engagement — it would
-    double-notify Ellen over the bus (the tool already returns the error
+    double-notify the assistant over the bus (the tool already returns the error
     envelope synchronously), overwrite the specific error kind with
     'emit_completion_error', and run memory-retention side effects.
     """
@@ -11741,7 +11741,7 @@ async def _finalize_engagement(
     inbound_gate: bool = False,         # G4 D1/D2 (v0.96.0): emit/completed only
     detach_teardown_tail: bool = False,  # #632: in_casa self-emit only
 ) -> "FinalizeResult":
-    """End an engagement: update registry, close topic, NOTIFY Ellen,
+    """End an engagement: update registry, close topic, NOTIFY the assistant,
     retain a tier-classified engagement summary on the shared ``casa`` bank.
 
     Never raises on channel/memory side-effects — logs warnings and continues
@@ -12574,7 +12574,7 @@ async def _finalize_engagement_tail(
                 engagement.id[:8], exc,
             )
 
-    # 4. NOTIFY Ellen (via existing DelegationComplete-shaped pathway).
+    # 4. NOTIFY the assistant (via existing DelegationComplete-shaped pathway).
     # #1301: not for a quiet run's completed end — its plugin already posted
     # whatever the operator needs to see.
     if _bus is not None and not _told_nowhere(frozen["origin"], outcome):
@@ -12879,7 +12879,7 @@ async def reap_stale_engagements(*, ttl_days: float | None = None) -> int:
     pass so a to-be-reaped record doesn't get a pointless reminder in the
     same run. Goes through ``_finalize_engagement`` — the same funnel as a
     manual cancel — so the topic is closed + ledger-recorded, the RIGHT
-    driver stops the process, Ellen is notified, and the summary retain
+    driver stops the process, the assistant is notified, and the summary retain
     lands. ``stale_before=cutoff`` makes the staleness check part of the
     locked terminal transition, so a record revived by a user turn between
     the snapshot below and the transition is NOT cancelled. Returns the
@@ -13064,7 +13064,7 @@ async def emit_completion(args: dict) -> dict:
 
     # Bug 9 (v0.14.6): idempotency. Re-emitting completion (e.g. SDK
     # retry, hook misfire) used to re-run _finalize_engagement, which
-    # double-closes the topic, double-NOTIFYs Ellen, and double-retains
+    # double-closes the topic, double-NOTIFYs the assistant, and double-retains
     # the engagement summary on the shared `casa` bank. Re-read the live registry
     # state so we catch transitions that happened on another in-flight
     # turn since this engagement_var snapshot was taken.
@@ -14423,7 +14423,7 @@ async def cleanup_engagement_topics(args: dict) -> dict:
                 f"got {scope!r}"
             ),
         })
-    # v0.69.12 gave Ellen (assistant) `due`; #1373 gives her the
+    # v0.69.12 gave the assistant `due`; #1373 gives her the
     # irreversible `all_terminal` purge too (deletes EVERY ledger topic + all
     # its messages immediately, for all members), on the operator's request.
     # Any other caller requesting it is refused with a nudge to `due`.

@@ -227,7 +227,7 @@ def test_ha_mcp_url_override(monkeypatch):
 async def test_start_tina_facade_uses_supervisor_auth_and_butler_override(
     recording_facade,
 ):
-    from casa_core import _start_tina_ha_facade
+    from casa_core import _start_butler_ha_facade
     from mcp_registry import McpServerRegistry
 
     registry = McpServerRegistry()
@@ -236,7 +236,7 @@ async def test_start_tina_facade_uses_supervisor_auth_and_butler_override(
         headers={"Authorization": "Bearer secret-token"},
     )
 
-    facade = await _start_tina_ha_facade(
+    facade = await _start_butler_ha_facade(
         registry,
         {"butler": SimpleNamespace(channels=["ha_voice"])},
         {},
@@ -260,13 +260,13 @@ async def test_start_tina_facade_uses_supervisor_auth_and_butler_override(
 async def test_tina_facade_callback_uses_current_agents_and_refreshed_config(
     recording_facade,
 ):
-    from casa_core import _start_tina_ha_facade
+    from casa_core import _start_butler_ha_facade
     from mcp_registry import McpServerRegistry
 
     registry = McpServerRegistry()
     registry.register_http("homeassistant", "http://raw")
     agents = {}
-    facade = await _start_tina_ha_facade(
+    facade = await _start_butler_ha_facade(
         registry,
         {"butler": SimpleNamespace(channels=["ha_voice"])},
         agents,
@@ -313,13 +313,13 @@ async def test_tina_facade_callback_uses_current_agents_and_refreshed_config(
 async def test_tina_facade_requires_token_and_ha_voice_butler(
     recording_facade, supervisor_token, role_configs,
 ):
-    from casa_core import _start_tina_ha_facade
+    from casa_core import _start_butler_ha_facade
     from mcp_registry import McpServerRegistry
 
     registry = McpServerRegistry()
     registry.register_http("homeassistant", "http://raw")
 
-    facade = await _start_tina_ha_facade(
+    facade = await _start_butler_ha_facade(
         registry,
         role_configs,
         {},
@@ -338,7 +338,7 @@ async def test_tina_facade_initial_discovery_failure_is_sanitized_degraded(
     recording_facade, caplog,
 ):
     """Pins INV-HA-002. Red case demonstrated: unregistering the raw homeassistant entry in the facade-failure handler fails this test."""
-    from casa_core import _start_tina_ha_facade
+    from casa_core import _start_butler_ha_facade
     from mcp_registry import McpServerRegistry
 
     recording_facade.start_error = RuntimeError(
@@ -348,7 +348,7 @@ async def test_tina_facade_initial_discovery_failure_is_sanitized_degraded(
     registry.register_http("homeassistant", "http://raw")
 
     with caplog.at_level(logging.WARNING):
-        facade = await _start_tina_ha_facade(
+        facade = await _start_butler_ha_facade(
             registry,
             {"butler": SimpleNamespace(channels=["ha_voice"])},
             {},
@@ -383,12 +383,12 @@ def test_main_owns_tina_facade_boot_and_shutdown_lifecycle():
     from casa_core import _shutdown_cleanup, main
 
     source = inspect.getsource(main)
-    assert "ha_facade = await _start_tina_ha_facade(" in source
+    assert "ha_facade = await _start_butler_ha_facade(" in source
     assert "await _shutdown_cleanup(" in source
     assert "ha_facade=ha_facade," in source
     assert source.index("agents[role] = agent") < source.index(
-        "ha_facade = await _start_tina_ha_facade(",
+        "ha_facade = await _start_butler_ha_facade(",
     )
-    assert "await _close_tina_ha_facade(ha_facade)" in inspect.getsource(
+    assert "await _close_butler_ha_facade(ha_facade)" in inspect.getsource(
         _shutdown_cleanup,
     )

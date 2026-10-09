@@ -2214,56 +2214,56 @@ def _maybe_register_n8n(
     return mcp_registry.resolve(["n8n-workflows"]).get("n8n-workflows")
 
 
-async def wire_tina_ha_facade(
+async def wire_butler_ha_facade(
     mcp_registry: "McpServerRegistry",
     facade: Any,
     agents: Mapping[str, Any],
     *,
-    tina_role: str = "butler",
+    butler_role: str = "butler",
 ) -> None:
-    """Publish Tina's eager HA schema and retire her stale SDK clients.
+    """Publish the butler's eager HA schema and retire its stale SDK clients.
 
     The config and its surface digest are read together, with no await
     between them, so the registry pairs them from one facade commit (#1091):
     a turn armed after this publication gates its resume on these tools."""
     mcp_registry.register_role_sdk(
-        "homeassistant", tina_role, facade.server_config,
+        "homeassistant", butler_role, facade.server_config,
         surface_digest=facade.surface_digest,
     )
-    agent = agents.get(tina_role)
+    agent = agents.get(butler_role)
     if agent is not None:
         await agent.invalidate_tool_surface()
 
 
-async def _start_tina_ha_facade(
+async def _start_butler_ha_facade(
     mcp_registry: "McpServerRegistry",
     role_configs: Mapping[str, Any],
     agents: Mapping[str, Any],
     *,
     ha_mcp_url: str,
     supervisor_token: str,
-    tina_role: str = "butler",
+    butler_role: str = "butler",
 ) -> HomeAssistantFacade | None:
-    """Start and publish Tina's eager Home Assistant facade.
+    """Start and publish the butler's eager Home Assistant facade.
 
     v0.125.0 (#228): the facade is unconditional. ``tina_ha_facade_enabled``
     was a diagnostic fallback to the raw Home Assistant MCP connection; the
     facade has been the shipped path throughout and the raw connection is not
     a configuration an operator should be choosing.
     """
-    tina_config = role_configs.get(tina_role)
+    butler_config = role_configs.get(butler_role)
     if (
         not supervisor_token
-        or tina_config is None
-        or "ha_voice" not in (getattr(tina_config, "channels", ()) or ())
+        or butler_config is None
+        or "ha_voice" not in (getattr(butler_config, "channels", ()) or ())
     ):
         return None
 
     facade: HomeAssistantFacade
 
     async def _schema_changed() -> None:
-        await wire_tina_ha_facade(
-            mcp_registry, facade, agents, tina_role=tina_role,
+        await wire_butler_ha_facade(
+            mcp_registry, facade, agents, butler_role=butler_role,
         )
 
     facade = HomeAssistantFacade(
@@ -2280,13 +2280,13 @@ async def _start_tina_ha_facade(
             pass
         logger.warning("ha_facade_initialization_failed status=degraded")
         return None
-    await wire_tina_ha_facade(
-        mcp_registry, facade, agents, tina_role=tina_role,
+    await wire_butler_ha_facade(
+        mcp_registry, facade, agents, butler_role=butler_role,
     )
     return facade
 
 
-async def _close_tina_ha_facade(
+async def _close_butler_ha_facade(
     facade: Any | None,
     *,
     timeout: float = 15.0,
@@ -4656,7 +4656,7 @@ async def main() -> None:
             cfg.memory.read_strategy,
         )
 
-    ha_facade = await _start_tina_ha_facade(
+    ha_facade = await _start_butler_ha_facade(
         mcp_registry,
         role_configs,
         agents,
@@ -4770,7 +4770,7 @@ async def main() -> None:
     from drivers.in_casa_driver import InCasaDriver
 
     # Phase 3b: in_casa engagements stream via TopicStreamHandle (per-turn
-    # edit-in-place, 1s throttle, mirror Ellen's create_on_token pattern
+    # edit-in-place, 1s throttle, mirror the assistant's create_on_token pattern
     # in channels/telegram.py:739-859). Bug 1 fix.
     def _topic_stream_factory(topic_id: int):
         assert telegram_channel is not None, (
@@ -6184,7 +6184,7 @@ async def _shutdown_cleanup(
     ]
     if _agent_closes:
         await asyncio.gather(*_agent_closes)
-    await _close_tina_ha_facade(ha_facade)
+    await _close_butler_ha_facade(ha_facade)
 
     # #316: gate the bus BEFORE cancelling its consumers — the HTTP
     # listeners stay open until runner.cleanup() below, and a signed
