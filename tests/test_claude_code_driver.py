@@ -1156,6 +1156,65 @@ class TestRespawnSignal:
         assert [e for e in events
                 if e.get("event") == "subprocess_respawn"] == []
 
+    async def test_suspend_cancelled_before_signal_still_reports_death(
+        self, tmp_path, monkeypatch,
+    ):
+        """#1403: the operator returns while the forced suspend is still
+        probing, so no signal is ever sent. A later mid-turn death of that same
+        epoch is a real crash, and the observer must hear about it."""
+        from drivers import s6_rc
+        drv, events = self._driver(tmp_path)
+        rec = _make_record()
+        (tmp_path / rec.id).mkdir()
+        sent: list = []
+        started = asyncio.Event()
+
+        async def wedged_probe(scandir):
+            started.set()
+            await asyncio.sleep(30)
+            return ("up", 100)
+        monkeypatch.setattr(s6_rc, "_probe_status_and_pid", wedged_probe)
+        monkeypatch.setattr(s6_rc, "_killpg", lambda *a: sent.append(a))
+
+        await drv._on_stream_event(rec, "spawn", {"epoch": 1})
+        await drv._on_stream_event(rec, "turn_start", {})
+        drv._operator_away[rec.id] = True
+        drv.record_away_refusal(rec.id)
+        drv.record_away_refusal(rec.id)
+        await asyncio.wait_for(started.wait(), timeout=1.0)
+        await drv._clear_operator_away(rec.id)
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert sent == []
+
+        await drv._on_stream_event(rec, "spawn", {"epoch": 2})
+        respawn = [e for e in events if e.get("event") == "subprocess_respawn"]
+        assert len(respawn) == 1
+        assert respawn[0]["previous_epoch"] == 1
+
+    async def test_signalled_suspend_spawn_publishes_nothing(self, tmp_path):
+        """#1403: the mark is set once the signal is sent, so the respawn
+        after a real forced suspend stays quiet."""
+        drv, events = self._driver(tmp_path)
+        rec = _make_record()
+        (tmp_path / rec.id).mkdir()
+
+        async def signalling_ftb(**kw):
+            kw["on_signal"]()
+            return True
+        drv._force_turn_boundary = signalling_ftb
+
+        await drv._on_stream_event(rec, "spawn", {"epoch": 1})
+        await drv._on_stream_event(rec, "turn_start", {})
+        drv._operator_away[rec.id] = True
+        drv.record_away_refusal(rec.id)
+        drv.record_away_refusal(rec.id)
+        for _ in range(5):
+            await asyncio.sleep(0)
+        await drv._on_stream_event(rec, "spawn", {"epoch": 2})
+        assert [e for e in events
+                if e.get("event") == "subprocess_respawn"] == []
+
 
 class TestCancel:
     async def test_cancel_stops_service_and_removes_dir(self, monkeypatch, tmp_path):

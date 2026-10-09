@@ -973,7 +973,7 @@ async def _post_signal_cleanup(
 async def force_turn_boundary(
     *, engagement_id: str, workspace_dir: str | None = None,
     expected_epoch: int | None = None, sleep=asyncio.sleep,
-    track_task=None,
+    track_task=None, on_signal=None,
 ) -> bool:
     """Force-end the engagement's CLI turn by killing its whole process GROUP,
     then VERIFY the group is extinct — the A2b operator-away hard backstop.
@@ -1032,6 +1032,10 @@ async def force_turn_boundary(
     ``asyncio.shield``ed: an outer cancel re-raises but does NOT cancel the
     cleanup — it is handed to the caller-supplied ``track_task`` callback (the
     driver's tracked-tasks registrar) so teardown still owns and finishes it.
+
+    ``on_signal`` (#1403) is called synchronously right after SIGTERM is
+    delivered, and only then, so a caller can tell a turn it ended from one
+    that died by itself.
 
     Returns True IFF the old group is verifiably empty; a False is WARN-logged as
     "forced suspend NOT verified" and never falsely reported as suspended."""
@@ -1103,6 +1107,8 @@ async def force_turn_boundary(
         _killpg(pgid, signal.SIGTERM)
     except ProcessLookupError:
         return True  # group already extinct between probe and signal
+    if on_signal is not None:
+        on_signal()
 
     # SIGTERM is now delivered. The extinction poll + SIGKILL escalation must run
     # to completion even if THIS coroutine is cancelled (Finding 3) — run it as a
