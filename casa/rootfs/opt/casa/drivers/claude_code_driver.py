@@ -2584,7 +2584,6 @@ class ClaudeCodeDriver(DriverProtocol):
         self._attach_inbound_spool(engagement, **_runtime)
 
         tasks = [
-            asyncio.create_task(self._poll_respawns(engagement)),
             asyncio.create_task(
                 sequencer.run_watcher(),
                 name=f"seq_watcher:{engagement.id[:8]}"),
@@ -5512,11 +5511,12 @@ class ClaudeCodeDriver(DriverProtocol):
                     "engagement %s: replayed spawn frame for epoch %s — "
                     "ignored", eng_id[:8], epoch)
                 return
+            abnormal = False
             if prev is not None:
                 # A previous epoch spawned but never emitted a result before
                 # this new spawn — abnormal exit. ``result`` is at-most-once,
                 # so a spawn-without-result is an equally valid turn boundary.
-                self._log_abnormal_exit(engagement, prev)
+                abnormal = self._log_abnormal_exit(engagement, prev)
             # A new spawn means the prior turn ended (result) or died
             # (abnormal) — no turn is running until turn_start.
             self._turn_running[eng_id] = False
@@ -5530,6 +5530,19 @@ class ClaudeCodeDriver(DriverProtocol):
                 # re-anchor latch AFTER on_spawn so a redelivered survivor never
                 # lands below the re-anchored question.
                 await self._consume_reanchor(engagement)
+            if abnormal:
+                # #1401: the observer hears about a respawn only here — the
+                # previous run died mid-turn. A planned spawn after a
+                # ``result`` (every normal turn boundary) is not news.
+                await self._publish_bus_event({
+                    "event": "subprocess_respawn",
+                    "engagement_id": eng_id,
+                    "previous_epoch": prev,
+                    "new_epoch": epoch,
+                    "detail": ("the previous run exited before finishing "
+                               "its turn and was restarted"),
+                    "ts": time.time(),
+                })
         elif kind == "turn_start":
             # Fresh turn — drop the prior turn's reply-text de-dup set, mark the
             # turn running (receipts are now due for new inbound), and consume
@@ -5654,7 +5667,9 @@ class ClaudeCodeDriver(DriverProtocol):
 
     def _log_abnormal_exit(
         self, engagement: EngagementRecord, epoch: int | None,
-    ) -> None:
+    ) -> bool:
+        """Log a spawn-without-result; True when it was genuinely abnormal
+        (False for the forced suspend Casa itself caused)."""
         short = engagement.id[:8]
         # A2b: an epoch we force-ended as the operator-away backstop is NOT a
         # scary abnormal exit — log the expected forced suspend at INFO and
@@ -5666,7 +5681,7 @@ class ClaudeCodeDriver(DriverProtocol):
                 "engagement %s: epoch %s ended by forced suspend "
                 "(operator away)", short, epoch,
             )
-            return
+            return False
         tail = self._read_epoch_stderr_tail(engagement, epoch)
         if tail is None:
             logger.warning(
@@ -5678,6 +5693,7 @@ class ClaudeCodeDriver(DriverProtocol):
                 "engagement %s: epoch %s exited without a result frame "
                 "(abnormal); stderr tail:\n%s", short, epoch, tail,
             )
+        return True
 
     def _read_epoch_stderr_tail(
         self, engagement: EngagementRecord, epoch: int | None,
@@ -5886,26 +5902,6 @@ class ClaudeCodeDriver(DriverProtocol):
             return None
         candidates.sort()
         return candidates[0][1]
-
-    async def _poll_respawns(
-        self, engagement: EngagementRecord, *, interval_s: float = 5.0,
-    ) -> None:
-        """Emit subprocess_respawn bus events when s6-svstat shows a new PID."""
-        last_pid: int | None = None
-        while True:
-            await asyncio.sleep(interval_s)
-            pid = await s6_rc.service_pid(engagement_id=engagement.id)
-            if pid is None:
-                continue
-            if last_pid is not None and pid != last_pid:
-                await self._publish_bus_event({
-                    "event": "subprocess_respawn",
-                    "engagement_id": engagement.id,
-                    "previous_pid": last_pid,
-                    "new_pid": pid,
-                    "ts": time.time(),
-                })
-            last_pid = pid
 
     async def _publish_bus_event(self, event: dict) -> None:
         """Overridable (tests inject). Default no-op at driver layer —

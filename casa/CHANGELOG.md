@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.344.75] - 2026-10-09
+
+### Fixed
+
+- A coding engagement finishing a step normally no longer makes the assistant tell you it "restarted itself" and "may have lost track". Casa now tells the assistant about a restart only when the engagement stopped in the middle of a step, not at the ordinary pause between steps. (#1401)
+
 ## [0.344.74] - 2026-10-09
 
 ### Fixed

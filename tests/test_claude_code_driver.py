@@ -733,12 +733,12 @@ class TestNoRemoteControlNotices:
         with caplog.at_level(logging.DEBUG, logger="subprocess_cli"):
             drv._spawn_background_tasks(rec)
             tasks = drv._tasks[rec.id]
-            # respawn poller + sequencer watcher + session-id capture +
-            # always-on topic relay + DEBUG log relay + summary-pin; no URL
-            # capture. (v0.75.0 added the always-on topic relay; v0.79.0 added
-            # the per-engagement output-sequencer watcher AND the summary
-            # initial-pin task, so DEBUG-enabled is 6.)
-            assert len(tasks) == 6
+            # sequencer watcher + session-id capture + always-on topic relay
+            # + DEBUG log relay + summary-pin; no URL capture. (v0.75.0 added
+            # the always-on topic relay; v0.79.0 added the per-engagement
+            # output-sequencer watcher AND the summary initial-pin task; #1401
+            # removed the PID respawn poller, so DEBUG-enabled is 5.)
+            assert len(tasks) == 5
             await asyncio.sleep(0.3)
             for t in tasks:
                 t.cancel()
@@ -768,11 +768,11 @@ class TestRelaySpawnGate:
         try:
             drv._spawn_background_tasks(rec)
             tasks = drv._tasks[rec.id]
-            # respawn poller + sequencer watcher + session-id capture +
-            # always-on topic relay + summary-pin. The DEBUG raw-log relay is
-            # skipped; the topic relay + sequencer watcher + summary-pin are NOT
-            # (v0.79.0: 5 tasks).
-            assert len(tasks) == 5
+            # sequencer watcher + session-id capture + always-on topic relay
+            # + summary-pin. The DEBUG raw-log relay is skipped; the topic
+            # relay + sequencer watcher + summary-pin are NOT (v0.79.0: 5
+            # tasks; #1401 removed the PID respawn poller: 4).
+            assert len(tasks) == 4
             names = [t.get_name() for t in tasks]
             assert any(n.startswith("topic_relay:") for n in names), names
             assert any(n.startswith("seq_watcher:") for n in names), names
@@ -1104,44 +1104,57 @@ class TestSessionIdCapture:
         )
 
 
-class TestRespawnPoller:
-    async def test_emits_bus_event_on_pid_change(self, monkeypatch, tmp_path):
+class TestRespawnSignal:
+    """#1401: the observer hears ``subprocess_respawn`` only when a run died
+    mid-turn (a spawn with no result since the last spawn). A planned spawn
+    after a ``result`` — every normal turn boundary — publishes nothing."""
+
+    def _driver(self, tmp_path):
         from drivers.claude_code_driver import ClaudeCodeDriver
-        from drivers import s6_rc
-
-        pids = iter([100, 100, 200, 200, 200])
-        async def fake_pid(*, engagement_id):
-            try:
-                return next(pids)
-            except StopIteration:
-                return 200
-        monkeypatch.setattr(s6_rc, "service_pid", fake_pid)
-
-        bus_events: list[dict] = []
-        async def fake_publish(*args, **kwargs):
-            bus_events.append({"args": args, "kwargs": kwargs})
-
         drv = ClaudeCodeDriver(
             engagements_root=str(tmp_path),
             send_to_topic=AsyncMock(), casa_framework_mcp_url="x",
         )
-        drv._publish_bus_event = fake_publish     # dependency injection
+        events: list[dict] = []
 
+        async def fake_publish(event):
+            events.append(event)
+        drv._publish_bus_event = fake_publish
+        return drv, events
+
+    async def test_turn_boundary_spawn_publishes_nothing(self, tmp_path):
+        drv, events = self._driver(tmp_path)
         rec = _make_record()
-        task = asyncio.create_task(
-            drv._poll_respawns(rec, interval_s=0.05)
-        )
-        await asyncio.sleep(0.4)        # enough ticks to see the 100 → 200 change
-        task.cancel()
-        try: await task
-        except asyncio.CancelledError: pass
+        (tmp_path / rec.id).mkdir()
+        await drv._on_stream_event(rec, "spawn", {"epoch": 1})
+        await drv._on_stream_event(rec, "turn_start", {})
+        await drv._on_stream_event(rec, "result", {"subtype": "success"})
+        await drv._on_stream_event(rec, "spawn", {"epoch": 2})
+        assert [e for e in events
+                if e.get("event") == "subprocess_respawn"] == []
 
-        # At least one subprocess_respawn event with previous=100, new=200
-        respawn = [e for e in bus_events if
-                   e["args"][0].get("event") == "subprocess_respawn"]
-        assert len(respawn) >= 1
-        assert respawn[0]["args"][0]["previous_pid"] == 100
-        assert respawn[0]["args"][0]["new_pid"] == 200
+    async def test_spawn_without_result_publishes_respawn(self, tmp_path):
+        drv, events = self._driver(tmp_path)
+        rec = _make_record()
+        (tmp_path / rec.id).mkdir()
+        await drv._on_stream_event(rec, "spawn", {"epoch": 1})
+        await drv._on_stream_event(rec, "turn_start", {})
+        await drv._on_stream_event(rec, "spawn", {"epoch": 2})
+        respawn = [e for e in events if e.get("event") == "subprocess_respawn"]
+        assert len(respawn) == 1
+        assert respawn[0]["engagement_id"] == rec.id
+        assert respawn[0]["previous_epoch"] == 1
+        assert respawn[0]["new_epoch"] == 2
+
+    async def test_forced_suspend_spawn_publishes_nothing(self, tmp_path):
+        drv, events = self._driver(tmp_path)
+        rec = _make_record()
+        (tmp_path / rec.id).mkdir()
+        await drv._on_stream_event(rec, "spawn", {"epoch": 1})
+        drv._forced_suspend_epochs[rec.id] = 1
+        await drv._on_stream_event(rec, "spawn", {"epoch": 2})
+        assert [e for e in events
+                if e.get("event") == "subprocess_respawn"] == []
 
 
 class TestCancel:
