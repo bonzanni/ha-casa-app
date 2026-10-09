@@ -86,7 +86,7 @@ would have counted are still quoted and the sentence above them names no number:
 be false whenever a text-less reservation the failed read would have counted exists, and "at
 least" would be false when the exclusion read also failed and a held text sits beside its own
 spool envelope — the disclosure gives up the number rather than risk a false one. One reservation is excluded
-by construction: the one a recognized command (`/cancel`, `/complete`, `/silent`) holds for
+by construction: the one a recognized command (`/cancel`, `/complete`, `/silent`, `/help`) holds for
 itself while the handler processes it — classified at the reservation's birth, so the
 exclusion holds under *every* terminal winner, not only the command's own finalize — still
 counts toward the completion veto but is never disclosed as lost, because a command is

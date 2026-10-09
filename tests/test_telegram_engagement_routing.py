@@ -303,6 +303,31 @@ class TestSlashCommands:
         await ch.handle_update(u)
         observer.silence.assert_called_once_with(rec.id)
 
+    async def test_slash_help_answered_by_casa_not_the_agent(
+        self, fake_telegram_bot, engagement_fixture,
+    ):
+        """#1412: /help in a topic lists the topic's commands; it never
+        reaches the engaged agent (whose CLI has no /help there)."""
+        from channels.telegram import TelegramChannel
+
+        ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
+                             engagement_supergroup_id=-1001)
+        ch._engagement_registry = engagement_fixture.registry
+        ch._driver_send_user_turn = AsyncMock()
+        ch._post_engagement_notice = AsyncMock()
+        rec = engagement_fixture.active_record
+
+        u = _mk_update(chat_id=-1001, text="/help@CasaBot",
+                       thread_id=rec.topic_id)
+        await ch.handle_update(u)
+        await _drain_turns(ch)
+
+        ch._driver_send_user_turn.assert_not_called()
+        ch._post_engagement_notice.assert_awaited_once()
+        reply = ch._post_engagement_notice.await_args.args[1]
+        for c in ("/cancel", "/complete", "/silent"):
+            assert c in reply
+
     async def test_slash_cancel_with_bot_mention_suffix(
         self, fake_telegram_bot, engagement_fixture,
     ):

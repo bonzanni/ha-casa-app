@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.344.80] - 2026-10-09
+
+### Fixed
+
+- `/help` in an engagement topic is now answered by Casa with the commands that work there (`/cancel`, `/complete`, `/silent`), instead of being passed to the coding agent, which replied that `/help` isn't available. (#1412)
+
 ## [0.344.79] - 2026-10-09
 
 ### Fixed
