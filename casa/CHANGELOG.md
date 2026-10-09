@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.344.72] - 2026-10-09
+
+### Fixed
+
+- After an update that changes the assistant's role, the config history now records the change on its own. Casa updates the assistant's binding files (`bindings/resident-assistant/active.yaml` and `active.prior.yaml`) when it starts, but left them uncommitted, so they were later committed under an unrelated message such as a plugin install. They now get their own commit at startup, "casa: resident binding re-bound at boot". (#1391)
+
 ## [0.344.71] - 2026-10-09
 
 ### Fixed

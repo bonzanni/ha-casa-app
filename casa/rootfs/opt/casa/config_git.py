@@ -133,17 +133,22 @@ def init_repo(config_dir: str) -> None:
          check=False)
 
 
-def commit_config(config_dir: str, message: str) -> str:
+def commit_config(config_dir: str, message: str,
+                  paths: Sequence[str] = ()) -> str:
     """Stage + commit any tracked-file changes. Returns the new sha, or
     an empty string if there were no changes to commit.
+
+    *paths* (#1391) scopes the commit to those paths, so a boot write is
+    recorded under its own message without sweeping in anything else.
     """
+    spec = ["--", *paths] if paths else []
     with _COMMIT_LOCK:
-        status = _run(config_dir, ["status", "--porcelain"])
+        status = _run(config_dir, ["status", "--porcelain", *spec])
         if not status:
             return ""
 
-        _run(config_dir, ["add", "-A"])
-        _run(config_dir, ["commit", "-qm", message])
+        _run(config_dir, ["add", "-A", *spec])
+        _run(config_dir, ["commit", "-qm", message, *spec])
         return _run(config_dir, ["rev-parse", "HEAD"])
 
 

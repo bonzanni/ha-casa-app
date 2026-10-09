@@ -168,6 +168,7 @@
     - tests/test_reload.py
     - tests/test_reload_disabled_specialist_scopes.py
     - tests/test_pin_1095_removal_close.py
+    - tests/test_boot_rebind_commit.py
   related: [architecture/overview.md, architecture/plugins.md, architecture/agent-taxonomy.md, architecture/config-reconciliation.md]
   defines_invariants: [INV-CFG-001, INV-CFG-002, INV-CFG-003, INV-CFG-004, INV-CFG-011, INV-CFG-012, INV-CFG-013]
   invariant_tests:

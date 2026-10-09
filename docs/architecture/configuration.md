@@ -90,7 +90,8 @@ decides it.
 **The config tree is a git repository, but only a whitelist is tracked.** Agents, policies,
 bindings, schema, and specific registry files are versioned; plugin stores, staging areas,
 the environment file and general working state are not. The whitelist is the authority, and
-it is duplicated in the boot script — both must agree.
+it is duplicated in the boot script — both must agree. Boot commits
+`bindings/` again after the agents load, so a re-bind gets its own commit.
 
 **Some identity changes cannot be hot-swapped at all.** If a resident's identity changes, the
 reload path returns a restart-required outcome *before* mutating live state rather than
@@ -350,6 +351,7 @@ None of those are inferred.
 - `tests/test_reload.py`
 - `tests/test_reload_disabled_specialist_scopes.py`
 - `tests/test_pin_1095_removal_close.py`
+- `tests/test_boot_rebind_commit.py`
 
 **Related**
 - [`architecture/overview.md`](../architecture/overview.md)
