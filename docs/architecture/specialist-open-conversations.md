@@ -41,10 +41,13 @@ the call carries and matches no call to the configurator conversation that was w
 call without the ids is warned again and one carrying them commits, whoever makes it. An id counts only when the registry knows it as
 one of that specialist's engagements, so a made-up list acknowledges nothing; the calls
 Casa's erase-question continuations tell the model to make carry the same ids. For a persona, upgrade or rollback the warning
-says, of each conversation, the one sentence `tools.py::SPECIALIST_OPEN_CONVERSATION_NOTICE`
+says, of each conversation, the one sentence `tools.py::SPECIALIST_OPEN_CONVERSATION_NOTICE_TEMPLATE`
 holds — it keeps its personality and the plugin versions it started with, picks up the new
 settings when it resumes, and switches only by closing it with `/complete` and asking for a
-new one — and that constant also feeds the three tool descriptions, so no surface can drift.
+new one — and that template also feeds the three tool descriptions, so no surface can drift.
+The sentence names whom to ask: `tools.py::specialist_open_conversation_notice` fills in the
+assistant's configured persona name at call time, while the descriptions, built at import
+before any persona is registered, say "the assistant".
 A conversation opened after the operator confirmed does not refuse an ordinary change; the
 committed result names it, if it is still open when the change finishes, with the same
 sentence. A pending-configuration upgrade's result and a kept upgrade's result echo the ids,
@@ -88,7 +91,7 @@ above.
 **A new ordinary change to an installed specialist** — one that, like a persona apply, an
 upgrade or a rollback, keeps the specialist — checks in `tools.py::_ordinary_change_gate`
 before it commits, or it lands on conversations the operator was never warned about; its
-warning says the sentence `tools.py::SPECIALIST_OPEN_CONVERSATION_NOTICE` holds, never a
+warning says the sentence `tools.py::specialist_open_conversation_notice` returns, never a
 copy of it.
 
 ## Source & test map

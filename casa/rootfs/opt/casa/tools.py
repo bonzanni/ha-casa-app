@@ -4929,6 +4929,15 @@ def _persona_name_for_role(role: str) -> str | None:
     return (getattr(getattr(cfg, "character", None), "name", "") or "").strip() or None
 
 
+def persona_name(role: str | None = None) -> str:
+    """#1409: the configured persona name of *role* (default: the assistant),
+    for text a model or the operator reads. Never the default persona's name
+    hard-coded: a renamed assistant must not be called something that does
+    not exist. ``"the assistant"`` when no persona is configured (e.g. text
+    built at import time, before any role is registered)."""
+    return _persona_name_for_role(role or "assistant") or "the assistant"
+
+
 def _declared_name_candidates(name: str, declared) -> list[str]:
     """#433: the DECLARED roles whose persona display name matches *name*,
     compared case- and whitespace-insensitively (matching
@@ -6782,7 +6791,8 @@ async def _launch_interactive_engagement(
             prompt = (
                 f"You are engaged with the user in a Telegram forum topic.\n"
                 f"Task: {task_text}\n\n"
-                f"Context from Ellen:\n{context_text or '(none)'}\n\n"
+                f"Context from {persona_name(origin.get('role'))}:\n"
+                f"{context_text or '(none)'}\n\n"
                 f"When the task is complete, call emit_completion(text=..., "
                 f"artifacts=..., next_steps=..., status='ok')."
             )
@@ -13038,7 +13048,8 @@ async def _record_pending_completion(engagement: Any, status: str, text: str) ->
 
 @tool(
     "emit_completion",
-    "Mark this engagement complete. Ellen receives the summary. Must be called "
+    "Mark this engagement complete. The agent that started the engagement "
+    "receives the summary. Must be called "
     "from inside an active engagement. status: 'ok' | 'partial' | 'failed' | "
     "'cancelled'.",
     # Explicit schema: artifacts, next_steps and status are optional in the
@@ -17249,11 +17260,24 @@ async def _settle_install_consent_post(handle) -> "dict | None":
 # Ruling-1095-4's sentence, verbatim. The ONE source for every tool
 # description and result that carries it (pinned by
 # tests/test_pin_1095_warn_then_act.py), so no entry point can drift.
-SPECIALIST_OPEN_CONVERSATION_NOTICE = (
+# #1409: the ruling named the default persona; the sentence names the
+# CONFIGURED assistant through ``specialist_open_conversation_notice()``.
+# Tool descriptions are built at import, before any persona is known, so
+# they carry the neutral "the assistant".
+SPECIALIST_OPEN_CONVERSATION_NOTICE_TEMPLATE = (
     "When it resumes, it picks up Casa's updated settings, but it keeps its "
     "personality and the plugin versions it started with. To get everything "
-    "new, close it with `/complete` and ask Ellen for a new conversation."
+    "new, close it with `/complete` and ask {assistant} for a new conversation."
 )
+
+
+def specialist_open_conversation_notice() -> str:
+    """Ruling-1095-4's sentence naming the configured assistant (#1409)."""
+    return SPECIALIST_OPEN_CONVERSATION_NOTICE_TEMPLATE.format(
+        assistant=persona_name())
+
+
+SPECIALIST_OPEN_CONVERSATION_NOTICE = specialist_open_conversation_notice()
 SPECIALIST_UNINSTALL_CONVERSATION_NOTICE = (
     "Uninstalling it closes each of these conversations once the specialist is "
     "removed; a turn still running in one of them is stopped."
@@ -17359,7 +17383,7 @@ def _open_conversations_pending(tool: str, slug: str, recs: list, *,
     rows = [_conversation_row(r, op) for r in recs]
     n = len(rows)
     notice = (SPECIALIST_UNINSTALL_CONVERSATION_NOTICE if removal
-              else SPECIALIST_OPEN_CONVERSATION_NOTICE)
+              else specialist_open_conversation_notice())
     warning = (f"The specialist {slug} has {n} open conversation"
                f"{'' if n == 1 else 's'}:\n"
                + "\n".join(f"- {row['line']}" for row in rows) + "\n" + notice)
@@ -17409,7 +17433,7 @@ def _after_ordinary_change(out: Any, slug: str, ack: "list | None",
             op = _operator_user_id()
             key = "opened_after_confirmation" if ack else "opened_while_this_change_ran"
             out[key] = [_conversation_row(r, op) for r in new]
-            out["open_conversation_notice"] = SPECIALIST_OPEN_CONVERSATION_NOTICE
+            out["open_conversation_notice"] = specialist_open_conversation_notice()
     return out
 
 

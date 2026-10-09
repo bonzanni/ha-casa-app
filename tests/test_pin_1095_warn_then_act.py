@@ -33,7 +33,10 @@ pytestmark = pytest.mark.asyncio
 
 RULED = ("When it resumes, it picks up Casa's updated settings, but it keeps its "
          "personality and the plugin versions it started with. To get everything "
-         "new, close it with `/complete` and ask Ellen for a new conversation.")
+         "new, close it with `/complete` and ask the assistant for a new conversation.")
+# #1409: the ruling's sentence names the CONFIGURED assistant; with no persona
+# registered (these fixtures, and every tool description, built at import) it
+# says "the assistant".
 PENDING = "open_conversations_unconfirmed"
 SUBJECT = "specialist:fin"
 
@@ -385,4 +388,19 @@ async def test_rc10_the_ruled_sentence_has_one_source(reg, persona):
     a = await _open(reg)
     out = _out(await tools_mod.persona_apply.handler(_persona_args()))
     assert out.get("warning", "").count(RULED) == 1, out
+    assert reg.get(a.id).status == "active"
+
+
+async def test_rc11_the_ruled_sentence_names_the_configured_assistant(
+        reg, persona, monkeypatch):
+    """#1409: a renamed assistant is the one the operator is told to ask —
+    never the default persona's name."""
+    import tools as tools_mod
+    monkeypatch.setattr(tools_mod, "_agent_role_map", {
+        "assistant": SimpleNamespace(character=SimpleNamespace(name="Marta"))})
+    named = RULED.replace("the assistant", "Marta")
+    a = await _open(reg)
+    out = _out(await tools_mod.persona_apply.handler(_persona_args()))
+    assert out.get("warning", "").count(named) == 1, out
+    assert "Ellen" not in json.dumps(out)
     assert reg.get(a.id).status == "active"
