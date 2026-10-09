@@ -39,7 +39,7 @@ from claude_runtime import (
     verify_effective_cli,
 )
 from config import AgentConfig, resolve_model
-from config_git import init_repo, snapshot_manual_edits
+from config_git import commit_config, init_repo, snapshot_manual_edits
 import engagement_quiesce
 from engagement_uids import (
     UID_BASE, UNALLOCATED_UID, UidAllocator, UidStateError, owner_uid_or_none,
@@ -4080,6 +4080,24 @@ def _resolve_password_options(environ=None) -> "list[str]":
     return failed
 
 
+def _load_agents_at_boot(agents_dir: str, *, policies, config_dir: str) -> dict:
+    """Load every resident, then record the binding writes that load made.
+
+    #1391: a resident whose role or persona changed is re-bound inside
+    ``load_all_agents`` (``active.yaml`` written, ``active.prior.yaml``
+    rotated), after the boot snapshot. Committing ``bindings/`` here gives
+    that re-bind its own commit instead of leaving it for the next unrelated
+    one to sweep up.
+    """
+    role_configs = load_all_agents(agents_dir, policies=policies)
+    try:
+        commit_config(config_dir, "casa: resident binding re-bound at boot",
+                      paths=["bindings"])
+    except Exception as exc:  # noqa: BLE001 — history only; never boot-fatal
+        logger.warning("config_git: could not commit the boot re-bind: %s", exc)
+    return role_configs
+
+
 async def main() -> None:
     """Async entry point for the Casa add-on."""
 
@@ -4468,7 +4486,8 @@ async def main() -> None:
     # load_agent_from_dir via asyncio.to_thread). Pure sync function; returns the
     # same role_configs dict.
     role_configs = await asyncio.to_thread(
-        load_all_agents, agents_dir, policies=policy_lib,
+        _load_agents_at_boot, agents_dir, policies=policy_lib,
+        config_dir=CONFIG_DIR,
     )
 
     specialist_configs = specialist_registry.all_configs()

@@ -1264,10 +1264,13 @@ def test_casa_core_boot_offloads_both_lock_acquiring_calls_to_a_worker_thread():
     assert _re.search(
         r"await\s+asyncio\.to_thread\(\s*current_specialist_roles_dir\b", src
     ), "boot must call current_specialist_roles_dir via asyncio.to_thread"
-    # load_all_agents likewise (its reconcile_resident_binding takes the lock).
+    # load_all_agents likewise (its reconcile_resident_binding takes the lock);
+    # #1391: boot reaches it through _load_agents_at_boot, a sync helper that
+    # also commits the re-bind, and that helper is what runs on the thread.
     assert _re.search(
-        r"await\s+asyncio\.to_thread\(\s*load_all_agents\b", src
+        r"await\s+asyncio\.to_thread\(\s*_load_agents_at_boot\b", src
     ), "boot must call load_all_agents via asyncio.to_thread"
     # And neither may be invoked bare (synchronously) on the loop.
-    assert not _re.search(r"^\s*roles_overlay\s*=\s*current_specialist_roles_dir\(", src, _re.M)
-    assert not _re.search(r"^\s*role_configs\s*=\s*load_all_agents\(", src, _re.M)
+    main_src = src[src.index("async def main("):]
+    assert not _re.search(r"^\s*roles_overlay\s*=\s*current_specialist_roles_dir\(", main_src, _re.M)
+    assert not _re.search(r"^\s*role_configs\s*=\s*(load_all_agents|_load_agents_at_boot)\(", main_src, _re.M)
