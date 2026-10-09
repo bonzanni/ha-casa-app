@@ -304,12 +304,15 @@ async def test_second_away_refusal_fires_force_end_once(tmp_path):
     assert drv.record_away_refusal(eid) == 2
     await _drain()
     fake.assert_awaited_once()
-    # the current epoch was marked expected-terminated BEFORE signalling AND is
-    # passed to the kill as the expected-epoch guard, with the workspace dir.
+    # the current epoch is passed to the kill as the expected-epoch guard, with
+    # the workspace dir; it is marked expected-terminated only once the kill
+    # reports a signal (#1403) — this fake never signalled.
     kwargs = fake.await_args.kwargs
     assert kwargs["engagement_id"] == eid
     assert kwargs["expected_epoch"] == 7
     assert kwargs["workspace_dir"].endswith(eid)
+    assert eid not in drv._forced_suspend_epochs
+    kwargs["on_signal"]()
     assert drv._forced_suspend_epochs[eid] == 7
 
     # 3rd refusal in the SAME episode does NOT re-fire.
@@ -1009,7 +1012,7 @@ async def test_cancelled_owner_stays_visible_until_done(tmp_path):
         handed_off.append(True)
         return True
 
-    async def _parked_force_suspend(engagement_id):
+    async def _parked_force_suspend(engagement_id, epoch):
         started.set()
         try:
             await asyncio.Event().wait()  # park until cancelled
@@ -1048,7 +1051,7 @@ async def test_trigger_single_flight_defers_to_inflight_kill(tmp_path):
     started = asyncio.Event()
     calls: list[int] = []
 
-    async def _parked_force_suspend(engagement_id):
+    async def _parked_force_suspend(engagement_id, epoch):
         calls.append(1)
         started.set()
         await asyncio.Event().wait()
@@ -1066,3 +1069,43 @@ async def test_trigger_single_flight_defers_to_inflight_kill(tmp_path):
     first.cancel()
     with __import__("contextlib").suppress(asyncio.CancelledError):
         await first
+
+
+# ---------------------------------------------------------------------------
+# #1403: ``on_signal`` reports a delivered SIGTERM, and only that — the driver
+# marks the epoch force-suspended from it, so an aborted kill leaves no mark.
+# ---------------------------------------------------------------------------
+
+
+async def test_on_signal_called_once_after_sigterm(monkeypatch):
+    seq: list = []
+
+    def killpg(pgid, sig):
+        seq.append(("kill", sig))
+        if sig == 0:
+            raise ProcessLookupError
+
+    _install(monkeypatch, probe="up", pid=555, killpg=killpg)
+    result = await s6_rc.force_turn_boundary(
+        engagement_id="e1", on_signal=lambda: seq.append("signalled"))
+    assert result is True
+    assert seq[:2] == [("kill", signal.SIGTERM), "signalled"]
+    assert seq.count("signalled") == 1
+
+
+@pytest.mark.parametrize("probe,killpg_raises", [
+    ("down", False), ("unknown", False), ("up", True),
+])
+async def test_on_signal_not_called_without_a_signal(
+    monkeypatch, probe, killpg_raises,
+):
+    calls: list = []
+
+    def killpg(pgid, sig):
+        if killpg_raises:
+            raise ProcessLookupError
+
+    _install(monkeypatch, probe=probe, pid=556, killpg=killpg)
+    await s6_rc.force_turn_boundary(
+        engagement_id="e1", on_signal=lambda: calls.append(1))
+    assert calls == []

@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.344.82] - 2026-10-09
+
+### Fixed
+
+- If you came back while Casa was about to pause a specialist that kept asking you questions, and the pause never happened, a later crash of that same run went unreported. The run is now only treated as paused by Casa once Casa actually stopped it, so the crash reaches the assistant as before. (#1403)
+
 ## [0.344.81] - 2026-10-09
 
 ### Fixed

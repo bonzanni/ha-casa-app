@@ -1500,8 +1500,8 @@ class ClaudeCodeDriver(DriverProtocol):
         self._away_refusals: dict[str, int] = {}
         # F-EXPIRE (v0.83.0, A2b): the HARD backstop. On the 2nd away-refusal in
         # an episode the driver force-ends the CLI turn ONCE (``_away_suspend_fired``
-        # gates re-firing; reset when away clears). Before signalling, the current
-        # spawn epoch is stamped into ``_forced_suspend_epochs`` so the ensuing
+        # gates re-firing; reset when away clears). Once the kill has signalled
+        # (#1403), the spawn epoch is stamped into ``_forced_suspend_epochs`` so the ensuing
         # respawn's abnormal-exit log reads "forced suspend (operator away)" at
         # INFO instead of the scary WARN. ``_force_turn_boundary`` is the injected
         # kill callable (defaults to the verified group-kill in s6_rc).
@@ -4020,10 +4020,10 @@ class ClaudeCodeDriver(DriverProtocol):
                 "engagement %s: completion-gate boundary — no live spawn "
                 "epoch, not signalling", eng_id[:8])
             return
-        # Stamp the epoch expected-terminated so the ensuing respawn's
-        # spawn-without-result is logged as an expected forced end, and so
-        # the guard kills ONLY this generation.
-        self._forced_suspend_epochs[eng_id] = epoch
+        # The guard kills ONLY this generation; once it has signalled, the
+        # epoch is stamped so the ensuing spawn-without-result is logged as an
+        # expected forced end (#1403: never before — a kill that aborts
+        # unsent must leave a later real death of this epoch reportable).
         task = asyncio.create_task(
             self._force_turn_boundary(
                 engagement_id=eng_id,
@@ -4034,6 +4034,7 @@ class ClaudeCodeDriver(DriverProtocol):
                 expected_epoch=epoch,
                 track_task=(lambda t, eid=eng_id:
                             self._register_force_cleanup(eid, t)),
+                on_signal=self._mark_forced_suspend(eng_id, epoch),
             ),
             name=f"force_completion:{eng_id[:8]}")
         self._force_tasks[eng_id] = task
@@ -4155,11 +4156,21 @@ class ClaudeCodeDriver(DriverProtocol):
             self._trigger_force_suspend(engagement_id)
         return n
 
+    def _mark_forced_suspend(self, engagement_id: str, epoch: int | None):
+        """#1403: the ``on_signal`` callback for ``force_turn_boundary`` — mark
+        ``epoch`` expected-terminated only once the kill has actually signalled
+        it (so ``_log_abnormal_exit`` annotates the ensuing respawn). A kill that
+        aborts unsent leaves no mark, so a later mid-turn death of that epoch
+        still reaches the observer."""
+        def _mark() -> None:
+            self._forced_suspend_epochs[engagement_id] = epoch
+        return _mark
+
     def _trigger_force_suspend(self, engagement_id: str) -> None:
-        """A2b: mark the current epoch expected-terminated BEFORE signalling (so
-        ``_log_abnormal_exit`` annotates the ensuing respawn), then spawn the
-        verified group-kill as a tracked background task. Degrades to a no-op if
-        no event loop is running (a sync fake context)."""
+        """A2b: spawn the verified group-kill of the current epoch as a tracked
+        background task; the epoch is marked expected-terminated once the kill
+        signals (#1403). Degrades to a no-op if no event loop is running (a sync
+        fake context)."""
         # Whole-branch gate r3: SINGLE-FLIGHT — never overwrite a live owner
         # (a cancelled-but-not-yet-done predecessor must stay visible to the
         # drain until its done callback retires it; overwriting would hide it
@@ -4171,12 +4182,10 @@ class ClaudeCodeDriver(DriverProtocol):
                 "force_turn_boundary: kill already in flight for %s — "
                 "deferring to it", engagement_id[:8])
             return
-        # Stamp the epoch first — the kill races the respawn's spawn event.
-        self._forced_suspend_epochs[engagement_id] = self._epoch_pending.get(
-            engagement_id)
+        epoch = self._epoch_pending.get(engagement_id)
         try:
             task = asyncio.create_task(
-                self._run_force_suspend(engagement_id),
+                self._run_force_suspend(engagement_id, epoch),
                 name=f"force_suspend:{engagement_id[:8]}")
         except RuntimeError:  # no running loop — cannot schedule the kill
             logger.debug(
@@ -4276,7 +4285,9 @@ class ClaudeCodeDriver(DriverProtocol):
                 return False
             # Loop: re-snapshot to catch a handoff that landed during this wait.
 
-    async def _run_force_suspend(self, engagement_id: str) -> None:
+    async def _run_force_suspend(
+        self, engagement_id: str, epoch: int | None,
+    ) -> None:
         """A2b: await the injected verified group-kill and log the truthful
         outcome. A False (unverified) is WARN-logged; the kill helper never
         touches s6 wanted-state, so s6 auto-respawns the run script into the
@@ -4286,10 +4297,11 @@ class ClaudeCodeDriver(DriverProtocol):
                 engagement_id=engagement_id,
                 # Task 4: see the twin call site's comment above.
                 workspace_dir=control_dir(engagement_id),
-                expected_epoch=self._forced_suspend_epochs.get(engagement_id),
+                expected_epoch=epoch,
                 track_task=(
                     lambda t, eid=engagement_id:
                     self._register_force_cleanup(eid, t)),
+                on_signal=self._mark_forced_suspend(engagement_id, epoch),
             )
         except asyncio.CancelledError:
             # A2b: operator returned mid-kill (``_clear_operator_away`` cancelled
