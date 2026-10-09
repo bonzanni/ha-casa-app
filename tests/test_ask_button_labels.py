@@ -367,12 +367,16 @@ def test_1386_multi_own_words_stay_undecorated_in_storage() -> None:
 
 
 def test_ask_user_description_names_the_button_fit() -> None:
-    """#1390: ``ask_user`` has no per-option ``short``, so its description is
-    where the model learns to keep options button-sized. The number it quotes
-    must be the renderer's own fit, or the steer points at the wrong length."""
+    """#1390: the description is where the model learns which options fit a
+    button as written and that a longer one takes a ``short``. The number it
+    quotes must be the renderer's own fit, or the steer points at the wrong
+    length; the ``short`` it names must be a key the schema accepts."""
     import tools
     from channels.telegram import _ASK_BUTTON_WORDS_FIT
 
     desc = tools.ask_user.description
     assert f"{_ASK_BUTTON_WORDS_FIT} characters or fewer" in desc
-    assert "detail they need in the question" in desc
+    assert '"short"' in desc
+    item = tools.ask_user.input_schema["properties"]["options"]["items"]
+    obj = next(a for a in item["anyOf"] if a["type"] == "object")
+    assert set(obj["properties"]) == {"label", "short"}

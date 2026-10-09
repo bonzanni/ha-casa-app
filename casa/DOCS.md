@@ -677,10 +677,11 @@ Ellen (and the specialists she delegates to) can pause a turn to ask you a
 quick multiple-choice question, posted as inline buttons right in your 1:1
 Telegram DM — the same tap-to-answer pattern engagements use, without
 opening a topic. Short answer choices appear on the buttons in their own
-words; when one is too long for its button, the buttons read "Option 1",
-"Option 2", … and the full choices are spelled out (numbered) in the message
-itself, so long options are always readable and never truncated to the point
-of being unpickable. Tap an option and the agent picks up from there; a plain-text
+words. Longer ones are spelled out (numbered) in the message itself, and the
+buttons carry a few words for each ("1 · Plumber today"), written by the
+agent; only when it gives none does a button read "Option 1", "Option 2", ….
+Long options are always readable and never truncated to the point of being
+unpickable. Tap an option and the agent picks up from there; a plain-text
 reply in the same DM answers it too. An unanswered question expires after a
 few minutes, and starting a fresh session (`/new`) cancels any question
 still pending.

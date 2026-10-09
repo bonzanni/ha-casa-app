@@ -5147,7 +5147,7 @@ class TelegramChannel(Channel):
 
     async def post_dm_keyboard(
         self, *, chat_id: int, request_id: str, text: str, options: list[str],
-        short_labels: bool = False,
+        short_labels: bool = False, shorts: "list | None" = None,
     ) -> int | None:
         """Post a plain-text question to a DM chat with one tappable button
         per option (resident_ask).
@@ -5160,9 +5160,10 @@ class TelegramChannel(Channel):
         ``ensure_posted`` treats ``None`` as a delivery failure (r10-B3).
 
         ``short_labels`` (v0.81.0, W-R3b; v0.84.0 round 4 D2): when True, derive
-        button labels via the whole-set ``short_option_labels`` — this call site
-        has no per-option agent ``short`` (``options`` is a plain label list),
-        so each button shows its option's own words when they fit (#1386) and
+        button labels via the whole-set ``short_option_labels`` from the
+        parallel ``shorts`` (#1390: ``ask_user``'s per-option ``short``, ``None``
+        where an option has none): each button shows ``n · <short>``, or its
+        option's own words when no option has a short and they fit (#1386), and
         the set floors to the numbered placeholder otherwise. Telegram
         truncates long labels, which made ``ask_user`` options unpickable; the
         FULL options must already live VERBATIM in ``text`` (the caller renders
@@ -5173,7 +5174,7 @@ class TelegramChannel(Channel):
 
         if _unadmitted("post_dm_keyboard", text):
             return None
-        heuristic = short_option_labels(options) if short_labels else None
+        heuristic = short_option_labels(options, shorts) if short_labels else None
         kbd = InlineKeyboardMarkup([
             [InlineKeyboardButton(
                 text=(heuristic[i] if heuristic is not None else options[i]),

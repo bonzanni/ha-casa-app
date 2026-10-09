@@ -66,8 +66,10 @@ class _FakeChannel:
 
     async def post_dm_keyboard(
         self, *, chat_id, request_id, text, options, short_labels=False,
+        shorts=None,
     ):
         self.calls.append(("post", chat_id, request_id, text, tuple(options)))
+        self.shorts = shorts
         if self._post_raises is not None:
             raise self._post_raises
         return self._post_result
@@ -187,8 +189,17 @@ class TestValidation:
         {"question": "q", "options": [f"o{i}" for i in range(9)]},
         {"question": "q", "options": ["a", "a"]},
         {"question": "q", "options": ["a", ""]},
-        {"question": "q", "options": ["a", "x" * 49]},
+        # #1390: a plain option wider than its button (32) is refused...
+        {"question": "q", "options": ["a", "x" * 33]},
         {"question": "q", "options": ["a", 5]},
+        # #1390: an object option needs a non-empty label within the cap,
+        # and labels stay unique across both forms.
+        {"question": "q", "options": [{"short": "A"}, "b"]},
+        {"question": "q", "options": [{"label": "  ", "short": "A"}, "b"]},
+        {"question": "q", "options": [{"label": "x" * 101, "short": "X"}, "b"]},
+        # ...and a short that is not a string is no short.
+        {"question": "q", "options": [{"label": "x" * 33, "short": 7}, "b"]},
+        {"question": "q", "options": [{"label": "a", "short": "A"}, "a"]},
         {"question": "q", "options": "not-a-list"},
         {"question": "q", "options": ["a", "b"], "timeout_s": "300"},
         {"question": "q", "options": ["a", "b"], "timeout_s": True},
@@ -199,6 +210,31 @@ class TestValidation:
         assert payload["kind"] == "invalid_arguments"
         assert channel.calls == []
         assert _fresh_broker.pending(namespace="resident_ask", scope="dm:500") == []
+
+    async def test_long_plain_option_refusal_names_the_fix(
+        self, monkeypatch, _fresh_broker,
+    ):
+        """#1390: the refusal says how to fix it — the model's next call
+        gives the long option a short, and the buttons get words."""
+        _res, payload, _ch = await _ask(
+            monkeypatch, args={"question": "q", "options": [
+                "Call the plumber today at the emergency rate", "Wait"]},
+        )
+        assert payload["kind"] == "invalid_arguments"
+        assert '"short"' in payload["message"]
+        assert "32 characters" in payload["message"]
+
+    @pytest.mark.parametrize("options", [
+        ["x" * 32, "b"],
+        [{"label": "x" * 100, "short": "X"}, "b"],
+        [{"label": "a"}, {"label": "b", "short": 7}],
+    ])
+    async def test_fitting_or_short_carrying_options_accepted(
+        self, monkeypatch, options,
+    ):
+        _res, payload, _ch = await _ask(
+            monkeypatch, args={"question": "q", "options": options})
+        assert payload["status"] == "awaiting_user"
 
     async def test_valid_minimal_args_accepted(self, monkeypatch):
         _res, payload, _ch = await _ask(
@@ -564,13 +600,14 @@ class TestDmReadableButtons:
     ):
         """The DM MESSAGE body renders the FULL options verbatim + 1-based
         numbered (render_ask_body), not just the raw question — so a long
-        option is readable even though its button reads "Option n"."""
+        option is readable even though its button shows only its short."""
         channel = _FakeChannel()
         _res, _payload_, ch = await _ask(
             monkeypatch, channel=channel,
             args={"question": "Which account?",
                   "options": ["Personal Gmail",
-                              "Configure the enterprise SSO integration"]},
+                              {"label": "Configure the enterprise SSO integration",
+                               "short": "Enterprise SSO"}]},
         )
         post = next(c for c in ch.calls if c[0] == "post")
         text = post[3]
@@ -591,6 +628,60 @@ class TestDmReadableButtons:
         )
         post = next(c for c in ch.calls if c[0] == "post")
         assert post[3] == "Delete all 2 finished topics?"
+
+    async def test_object_options_put_their_shorts_on_the_buttons(
+        self, monkeypatch, _fresh_broker,
+    ):
+        """#1390: ``{"label", "short"}`` options — the keyboard gets the
+        shorts, while the body lists, the broker stores, the settle shows and
+        the continuation carries the FULL label. A non-string short counts as
+        absent rather than refusing the question."""
+        channel = _FakeChannel(dispatch_result=True)
+        long_a = "Call the plumber today at the emergency rate"
+        long_b = "Top it up myself until the November service"
+        _res, payload, ch = await _ask(
+            monkeypatch, channel=channel,
+            args={"question": "The boiler is losing pressure again.",
+                  "options": [{"label": long_a, "short": "Plumber today"},
+                              {"label": long_b, "short": "Top up myself"},
+                              {"label": "Wait", "short": 7}],
+                  },
+        )
+        assert payload["status"] == "awaiting_user"
+        post = next(c for c in ch.calls if c[0] == "post")
+        assert post[4] == (long_a, long_b, "Wait")
+        assert ch.shorts == ["Plumber today", "Top up myself", None]
+        assert post[3] == ("The boiler is losing pressure again.\n\n"
+                           f"1. {long_a}\n2. {long_b}\n3. Wait")
+        rid = payload["request_id"]
+        assert deliver(_fresh_broker,
+            namespace="resident_ask", scope="dm:500", request_id=rid,
+            option_index=1, actor_id=999,
+        ) == "delivered"
+        await _settle(lambda: any(c[0] == "dispatch" for c in ch.calls))
+        assert ch.edits[0][2].endswith(f"Answered: {long_b}")
+        dispatch = next(c for c in ch.calls if c[0] == "dispatch")
+        assert dispatch[5] == f"[button answer to {rid}]: {long_b}"
+
+    async def test_dm_buttons_show_the_shorts(self):
+        """#1390: with per-option shorts the buttons read ``n · <short>``, the
+        number pointing at the full option listed in the body."""
+        from channels import telegram as tg_mod
+
+        ch = tg_mod.TelegramChannel.__new__(tg_mod.TelegramChannel)
+        bot = MagicMock()
+        bot.send_message = AsyncMock(
+            return_value=types.SimpleNamespace(message_id=9))
+        ch._bot = bot
+        options = ["Call the plumber today at the emergency rate",
+                   "Top it up myself until the November service"]
+        await ch.post_dm_keyboard(
+            chat_id=500, request_id="rid", text=admitted("q"), options=options,
+            short_labels=True, shorts=["Plumber today", "Top up myself"],
+        )
+        rows = bot.send_message.call_args.kwargs["reply_markup"].inline_keyboard
+        assert [r[0].text for r in rows] == [
+            "1 · Plumber today", "2 · Top up myself"]
 
     async def test_dm_buttons_short_labeled_with_index(self):
         """v0.84.0 (round 4, spec D2): ``post_dm_keyboard`` has no per-option
@@ -636,7 +727,8 @@ class TestDmReadableButtons:
             monkeypatch, channel=channel,
             args={"question": "Which account?",
                   "options": ["Personal Gmail",
-                              "Work Outlook (the company account)"]},
+                              {"label": "Work Outlook (the company account)",
+                               "short": "Work Outlook"}]},
         )
         rid = payload["request_id"]
         assert deliver(_fresh_broker, 

@@ -77,7 +77,7 @@ class _GatedChannel(_FakeChannel):
         return ev
 
     async def post_dm_keyboard(self, *, chat_id, request_id, text, options,
-                               short_labels=False):
+                               short_labels=False, shorts=None):
         self.posts.append((chat_id, request_id, text, tuple(options)))
         self.calls.append("post")
         for prefix, ev in self.gates.items():

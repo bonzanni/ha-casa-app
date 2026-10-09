@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.344.76] - 2026-10-09
+
+### Fixed
+
+- Question buttons now show a few words for each answer even when the answers are long, instead of "Option 1", "Option 2", …. The assistant writes a short label for each long answer, the button reads "1 · Plumber today", and the full answers stay listed in the message. Before, a long-running conversation could make her forget to keep answers short. (#1390)
+
 ## [0.344.75] - 2026-10-09
 
 ### Fixed

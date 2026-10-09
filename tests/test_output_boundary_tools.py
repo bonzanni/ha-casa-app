@@ -50,7 +50,8 @@ class _Channel:
         self.sent.append(message)
         return self._outcome
 
-    async def post_dm_keyboard(self, *, chat_id, request_id, text, options, short_labels=False):
+    async def post_dm_keyboard(self, *, chat_id, request_id, text, options, short_labels=False,
+                              shorts=None):
         self.posted.append(text)
         return 77
 

@@ -91,7 +91,7 @@ class _FakeChannel:
         return user_id is not None and str(user_id) == str(self._operator)
 
     async def post_dm_keyboard(self, *, chat_id, request_id, text, options,
-                               short_labels=False):
+                               short_labels=False, shorts=None):
         self.posts.append((chat_id, request_id, text, tuple(options)))
         self.calls.append("post")
         return self._post_result

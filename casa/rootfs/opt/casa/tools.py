@@ -1003,7 +1003,9 @@ async def react(args: dict) -> dict:
 _ASK_QUESTION_MAX = 1024
 _ASK_OPTIONS_MIN = 2
 _ASK_OPTIONS_MAX = 8
-_ASK_OPTION_LABEL_MAX = 48
+# #1390: the FULL option (listed in the message, never on a button) — room
+# for a sentence; the button gets its ``short``.
+_ASK_OPTION_LABEL_MAX = 100
 _ASK_TIMEOUT_DEFAULT = 300.0
 _ASK_TIMEOUT_MIN = 30.0
 _ASK_TIMEOUT_MAX = 570.0
@@ -1040,64 +1042,111 @@ ASK_USER_SCHEMA = {
     "type": "object",
     "properties": {
         "question": {"type": "string"},
-        "options": {"type": "array", "items": {"type": "string"}},
+        # #1390: an option is a plain string, or a full label plus the few
+        # words its button shows (the engagement ``ask`` tool's ``short``).
+        "options": {"type": "array", "items": {"anyOf": [
+            {"type": "string"},
+            {"type": "object",
+             "properties": {
+                 "label": {"type": "string", "description":
+                           "the full option, listed under the question and "
+                           "returned when tapped"},
+                 "short": {"type": "string", "description":
+                           "a few words for its button"},
+             },
+             "required": ["label"]},
+        ]}},
         "timeout_s": {"type": "number"},
     },
     "required": ["question", "options"],
 }
 
 
-def _ask_user_validate(args: dict) -> tuple[str | None, list[str] | None, float | None, str | None]:
+def _ask_user_validate(
+    args: dict,
+) -> tuple[str | None, list[str] | None, list | None, float | None, str | None]:
     """Validate ask_user args against the W5 ask contract.
 
-    Returns ``(question, options, timeout_s, error_message)``. On success
-    ``error_message`` is ``None`` and the other three are populated
+    Returns ``(question, options, shorts, timeout_s, error_message)``. On
+    success ``error_message`` is ``None`` and the other four are populated
     (``timeout_s`` already clamped to ``[_ASK_TIMEOUT_MIN,
     _ASK_TIMEOUT_MAX]``). On failure only ``error_message`` is set.
+
+    #1390: an option is a plain string or ``{"label": str, "short": str}``.
+    ``options`` is always the FULL labels (what the body lists, the settle
+    shows and the answer carries); ``shorts`` is the parallel button words,
+    ``None`` where an option has none. A non-string ``short`` counts as
+    absent; a short that does not fit is the button resolver's concern, as
+    for the engagement ``ask``. An option wider than its button WITHOUT a
+    short is refused, with the fix in the message.
     """
     question = args.get("question")
     if not isinstance(question, str) or not question.strip():
-        return None, None, None, "question must be a non-empty string"
+        return None, None, None, None, "question must be a non-empty string"
     if len(question) > _ASK_QUESTION_MAX:
-        return None, None, None, (
+        return None, None, None, None, (
             f"question must be at most {_ASK_QUESTION_MAX} characters"
         )
 
-    options = args.get("options")
-    if not isinstance(options, list):
-        return None, None, None, "options must be a list of strings"
-    if not (_ASK_OPTIONS_MIN <= len(options) <= _ASK_OPTIONS_MAX):
-        return None, None, None, (
+    from channels.telegram import _ASK_BUTTON_WORDS_FIT
+
+    raw = args.get("options")
+    if not isinstance(raw, list):
+        return None, None, None, None, "options must be a list"
+    if not (_ASK_OPTIONS_MIN <= len(raw) <= _ASK_OPTIONS_MAX):
+        return None, None, None, None, (
             f"options must have between {_ASK_OPTIONS_MIN} and "
             f"{_ASK_OPTIONS_MAX} entries"
         )
-    for opt in options:
+    options: list[str] = []
+    shorts: list = []
+    for opt in raw:
+        short = None
+        if isinstance(opt, dict):
+            short = opt.get("short")
+            short = short if isinstance(short, str) else None
+            opt = opt.get("label")
         if not isinstance(opt, str) or not opt.strip():
-            return None, None, None, "every option must be a non-empty string"
+            return None, None, None, None, (
+                "every option must be a non-empty string, or an object with "
+                "a non-empty label"
+            )
         if len(opt) > _ASK_OPTION_LABEL_MAX:
-            return None, None, None, (
+            return None, None, None, None, (
                 f"option labels must be at most {_ASK_OPTION_LABEL_MAX} "
                 "characters"
             )
+        if short is None and len(opt) > _ASK_BUTTON_WORDS_FIT:
+            # #1390: a plain option too long for its button would turn every
+            # button into "Option n". Saying how to fix it gets the buttons
+            # words, where the description alone did not hold in a long
+            # session.
+            return None, None, None, None, (
+                f"an option longer than {_ASK_BUTTON_WORDS_FIT} characters "
+                "does not fit its button: give it as {\"label\": <the full "
+                "option>, \"short\": <a few words for its button>}"
+            )
+        options.append(opt)
+        shorts.append(short)
     if len(set(options)) != len(options):
-        return None, None, None, "options must be unique"
+        return None, None, None, None, "options must be unique"
 
     timeout_arg = args.get("timeout_s")
     if timeout_arg is None:
         timeout_s = _ASK_TIMEOUT_DEFAULT
     else:
         if isinstance(timeout_arg, bool) or not isinstance(timeout_arg, (int, float)):
-            return None, None, None, "timeout_s must be a number"
+            return None, None, None, None, "timeout_s must be a number"
         timeout_s = float(timeout_arg)
     timeout_s = max(_ASK_TIMEOUT_MIN, min(_ASK_TIMEOUT_MAX, timeout_s))
 
-    return question, list(options), timeout_s, None
+    return question, options, shorts, timeout_s, None
 
 
 async def _ask_user_scheduled(
     *, channel, origin: dict, rid: str, scope: str, body: str,
     options: list, chat_id: int, operator_id: int, target_role,
-    timeout_s: float,
+    timeout_s: float, shorts: "list | None" = None,
 ) -> dict:
     """The scheduled arm of ``ask_user`` (#573).
 
@@ -1165,7 +1214,7 @@ async def _ask_user_scheduled(
     async def _post():
         mid = await channel.post_dm_keyboard(
             chat_id=chat_id, request_id=rid, text=body, options=list(options),
-            short_labels=True,
+            short_labels=True, shorts=shorts,
         )
         if isinstance(mid, int):        # the broker's own "posted" test
             body.mark_delivered()       # #1079
@@ -1207,12 +1256,12 @@ async def _ask_user_scheduled(
 @tool(
     "ask_user",
     "Ask the operator a multiple-choice question with tappable buttons in "
-    "their DM. Keep each option to a few words (32 characters or fewer) so "
-    "its button can show it; one longer option turns every button into a "
-    "bare \"Option n\". Casa shows the options itself (on the buttons, or "
-    "listed under the question when one does not fit), so give any detail "
-    "they need in the question as plain sentences, never as a list of the "
-    "options. Two-turn: returns awaiting_user immediately; the answer "
+    "their DM. An option of a few words (32 characters or fewer) can be a "
+    "plain string: its button shows it as written. Give a longer option as "
+    "{\"label\": <the full option>, \"short\": <a few words for its "
+    "button>}. Casa shows the options itself, so give any other detail "
+    "in the question as plain sentences, never as a list of the options. "
+    "Two-turn: returns awaiting_user immediately; the answer "
     "arrives as the user's next message. A `settled` status instead means the "
     "question was already over by the time this call returned (a /new, a "
     "typed answer, a replacement question, a timeout, a tap, a shutdown): do "
@@ -1228,7 +1277,7 @@ async def _ask_user_scheduled(
     ASK_USER_SCHEMA,
 )
 async def ask_user(args: dict) -> dict:
-    question, options, timeout_s, err = _ask_user_validate(args)
+    question, options, shorts, timeout_s, err = _ask_user_validate(args)
     if err is not None:
         return _result({"status": "error", "kind": "invalid_arguments",
                         "message": err})
@@ -1312,8 +1361,10 @@ async def ask_user(args: dict) -> dict:
     # disagree (mirrors the engagement single-source discipline).
     # #1392: the buttons' captions go in too — when they are the options' own
     # words, the body leaves out the list that would only repeat them.
+    # #1390: an option's ``short`` (if any) is only ever its button's words.
     body = render_ask_body(
-        None, question, list(options), short_option_labels(list(options)))
+        None, question, list(options),
+        short_option_labels(list(options), shorts))
     # #1038: the question body is model text — admitted under the turn's scope
     # BEFORE the two arms branch, so the posted keyboard, the stored scheduled
     # record and every settle edit derived from ``body`` carry the same line.
@@ -1327,7 +1378,7 @@ async def ask_user(args: dict) -> dict:
         return await _ask_user_scheduled(
             channel=channel, origin=origin, rid=rid, scope=scope, body=body,
             options=list(options), chat_id=chat_id, operator_id=operator_id,
-            target_role=target_role, timeout_s=timeout_s,
+            target_role=target_role, timeout_s=timeout_s, shorts=shorts,
         )
 
     # #648: `supersede=True` retired EVERY live request in this scope at
@@ -1361,7 +1412,7 @@ async def ask_user(args: dict) -> dict:
     async def _post():
         mid = await channel.post_dm_keyboard(
             chat_id=chat_id, request_id=rid, text=body, options=list(options),
-            short_labels=True,
+            short_labels=True, shorts=shorts,
         )
         if isinstance(mid, int):        # the broker's own "posted" test
             body.mark_delivered()       # #1079
