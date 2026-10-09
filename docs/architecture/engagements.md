@@ -47,6 +47,15 @@ when the declaring plugin is installed on the calling resident — a worker reco
 its prompt; what Casa then does with a job's engagement is
 [`architecture/background-jobs.md`](background-jobs.md).
 
+**A specialist's interactive engagement is a conversation, and completing it closes it.**
+Its first message (`tools.py::engagement_launch_prompt`) carries the task and the engager's
+context, and says that the topic stays open for the person after each reply while
+`emit_completion` ends the engagement and closes the topic — to be called when the work is
+done or the person says they are finished, never while they are expected to keep talking.
+Without that sentence a specialist asked to "open a chat and wait" completed on its first
+turn, so the topic closed at once (#1411). Which call ends it stays the model's judgement;
+Casa adds no gate. A job's launch replaces this message with its own.
+
 **An in-process executor's topic says what it was asked and shows each turn's steps.**
 When an `in_casa` executor's launch is handed off, its topic gets a first line with the
 title and the start of the task. Then each turn that uses tools keeps one step log in the
@@ -193,9 +202,11 @@ persisting ledger checks it — is answered in the same document.
 - `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver`
 - `casa/rootfs/opt/casa/tools.py::engage_executor`
 - `casa/rootfs/opt/casa/tools.py::_post_topic_opening`
+- `casa/rootfs/opt/casa/tools.py::engagement_launch_prompt`
 - `casa/rootfs/opt/casa/drivers/turn_progress.py::TurnProgressLine`
 
 **Tests**
+- `tests/test_engagement_stays_open.py`
 - `tests/test_turn_progress.py`
 - `tests/test_in_casa_turn_progress.py`
 - `tests/test_engage_executor_tool.py::TestEngageHandoffLines`

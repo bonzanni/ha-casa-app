@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.344.81] - 2026-10-09
+
+### Fixed
+
+- Asking for an ongoing conversation with a specialist now keeps its topic open: the specialist is told that the topic stays open for you after each reply and that finishing the engagement closes it, so it no longer wraps up straight after its first message. It still closes when the work is done or you say you are finished. (#1411)
+- When an engagement ends, the assistant is now told plainly that it has ended, and no longer passes on a specialist's claim that the topic "will stay open". (#1411)
+
 ## [0.344.80] - 2026-10-09
 
 ### Fixed

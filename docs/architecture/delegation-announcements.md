@@ -36,6 +36,16 @@ delegation's returned text ends with — on the error arm, after the message. Th
 appended to the bounded answer before it is retained, so a replay carries them too; they
 never quote the body, the caption or the file name.
 
+**An engagement's live completion says the engagement has ended.** When a successful
+completion notice belongs to an engagement (its context carries `engagement_id`), the
+synthesized prompt adds, after the result text, that the engagement has ended and the person
+can no longer talk with the specialist in its topic, and that where the summary — the
+specialist's own words — says the topic or the conversation is still open, that is not passed
+on as fact (#1411: a specialist's summary said its topic "will stay open" in the very call
+that ended it, and the resident relayed it). It claims nothing about the topic's close, which
+is best-effort. A delegation's notice carries no such line, and a replayed engagement outcome takes the
+answerless arm, so INV-JOB-016's live/replay pairs are unchanged.
+
 ## Contracts & invariants
 
 **INV-JOB-010**: An announcement Casa owes a creator is durably owed until it has been DELIVERED or answered by a clean chosen silence — the row's pending marker is cleared only once the consuming resident's channel reports that its turn reached the transport, or once that turn ended in a clean chosen silence (a final text of nothing but one or more `<silent/>` sentinels, with no error, no consumed SDK retry, a channel present, and every piece of model-authored content the turn or a synchronous delegate committed to the operator through Casa's own send paths confirmed delivered), never when the bus accepted the notice for enqueue — so an announcement lost with the process is announced again at the next boot. A turn that ends with no text and no sentinel (an answer given only through tool use) is not a chosen silence and stays owed, and the effect of any other tool on the turn is not observed.
@@ -271,6 +281,7 @@ an answer passed on an arm that owes no notice is not stored.
 
 **Tests**
 - `tests/test_delivery_acked_announcements.py`
+- `tests/test_engagement_stays_open.py`
 - `tests/test_delegation_chain_root_1160.py`
 - `tests/test_delegation_chain_root_1160_regressions.py`
 

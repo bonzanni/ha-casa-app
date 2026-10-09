@@ -1926,6 +1926,18 @@ class Agent:
                 # folded into that one statement, never a separate line.
                 body += _replay_statement(_REPLAY_REANNOUNCEMENT, complete)
             body += f"Result text from {complete.agent}:\n{complete.text}\n"
+            if msg.context.get("engagement_id"):
+                # #1411: an engagement's summary is the specialist's own
+                # words, and live it said its topic "will stay open" — written
+                # in the very call that ended it. Casa's fact goes after it
+                # (the record is terminal; the topic close itself is best-effort).
+                body += (
+                    "\nThis was an engagement, and it has ended: the person "
+                    "can no longer talk with the specialist in its topic. The "
+                    "summary is the specialist's own words; where it says the "
+                    "topic or the conversation is still open, that is not so, "
+                    "and is not passed on as fact.\n"
+                )
         elif complete.kind == "restart_orphan":
             body = (
                 f"[System notification: your delegation to {complete.agent} "

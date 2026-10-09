@@ -189,6 +189,7 @@
     - casa/rootfs/opt/casa/job_registry.py::JobRegistry.ack_terminal_notification
   tests:
     - tests/test_delivery_acked_announcements.py
+    - tests/test_engagement_stays_open.py
     - tests/test_delegation_chain_root_1160.py
     - tests/test_delegation_chain_root_1160_regressions.py
   related: [architecture/jobs-and-delivery.md, architecture/voice-delivery.md, architecture/telegram.md, architecture/plugins.md]

@@ -157,8 +157,10 @@
     - casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver
     - casa/rootfs/opt/casa/tools.py::engage_executor
     - casa/rootfs/opt/casa/tools.py::_post_topic_opening
+    - casa/rootfs/opt/casa/tools.py::engagement_launch_prompt
     - casa/rootfs/opt/casa/drivers/turn_progress.py::TurnProgressLine
   tests:
+    - tests/test_engagement_stays_open.py
     - tests/test_turn_progress.py
     - tests/test_in_casa_turn_progress.py
     - tests/test_engage_executor_tool.py::TestEngageHandoffLines
