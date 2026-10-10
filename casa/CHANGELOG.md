@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.344.83] - 2026-10-10
+
+### Fixed
+
+- When a specialist's run crashed in the middle of its work, its topic kept showing "working" with nothing running, and you could be told it was picking the task back up. Nothing resumes that interrupted step: the topic now stops showing "working", says plainly that the agent stopped and the step was not resumed, and your next message there carries on from where it was. (#1416)
+
 ## [0.344.82] - 2026-10-09
 
 ### Fixed

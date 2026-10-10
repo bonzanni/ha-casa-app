@@ -1294,11 +1294,15 @@ class TestBoundaryConsumers:
         # A prior epoch is pending a result → the next spawn is an abnormal
         # (spawn-without-result) boundary.
         drv._epoch_pending[rec.id] = 1
+        drv._turn_running[rec.id] = True    # it died mid-turn (#1416)
 
         await drv._on_stream_event(rec, "spawn", {"epoch": 2})
 
-        assert len(wire.posts) == 1 and wire.posts[0][0] == "markup"
-        assert _entry(reg, rec, n)["tg_message_id"] == wire.posts[0][1]
+        # #1416: the turn-lost notice posts first; the re-anchored question
+        # stays the LAST message.
+        assert [p[0] for p in wire.posts] == ["text", "markup"]
+        assert "not resumed" in wire.posts[0][2]
+        assert _entry(reg, rec, n)["tg_message_id"] == wire.posts[-1][1]
 
     async def test_spawn_with_no_prior_epoch_does_not_reanchor(self, tmp_path):
         reg, rec = await _make_registry(tmp_path)

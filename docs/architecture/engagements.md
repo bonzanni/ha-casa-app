@@ -94,6 +94,19 @@ decision refuses the delivery outright once the record is terminal. It covers th
 only: a terminal transition landing after a turn has begun cannot revoke it, because a pipe
 has no rollback — stopping an in-flight turn is the finalize path's driver teardown.
 
+**A `claude_code` turn whose CLI dies is lost, and Casa says so rather than resuming it.**
+The run script respawns and waits on its input pipe; the dead turn's message was already
+consumed when that turn started, so nothing is redelivered and nothing runs until the
+operator's next message arrives — one queued during the dead turn is delivered by the
+respawn itself — and the session resumes with it. On the spawn that
+follows a turn that started and has no result — and is not a forced suspend Casa caused —
+the driver moves
+the topic's status line off working exactly as a turn end does, posts one plain notice that
+the turn stopped and was not resumed (ahead of any queued message the respawn then delivers,
+and ahead of a re-anchored question), and tells the observer the same. A run that died
+before its turn started lost nothing: the message it was given is delivered again, so there
+is no notice, and the observer is told exactly that.
+
 **Durable is not indefinite, and engagements can speak up unprompted.** A daily sweep
 suspends a live session after a day idle and posts recurring idle reminders (three days for
 a specialist record, seven for every other kind, refiring weekly); terminal tombstones age
