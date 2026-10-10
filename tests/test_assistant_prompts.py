@@ -1202,11 +1202,17 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # confirm sentence gains the one-line "Deleting N topics…" notice, and its
 # unrecorded-topics clause is said only when asked. One `replace` inside that
 # paragraph; the eight other carriers byte-identical. No retention claim.
+# MOVED 2026-10-10 (#1429), `assistant:text` only: the late-answer paragraph
+# gains one sentence after "is passed on.": a delegate's line above Casa's post
+# lines that only announces, points to or describes those posts is not passed
+# on. Measured with `difflib` over base-vs-new compiled text, word by word:
+# exactly ONE `insert` on `assistant:text`, that sentence; the eight other
+# carriers byte-identical. No retention claim.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
         "1a3816327f56d5364f1fb63a8a5ee0a317a64e1f5c279b633e92389743fcde52",
     "assistant:text":
-        "82e4c62fa092e288cbd75a6c3204a6444010b98b139fdfca88debd9dadf5e949",
+        "c8fabf1a4d0c0ac35ebbb7eddf1eb271e2c7ad3b9271d0eda794b85a893f9de6",
     "assistant:voice":
         "75fafada7e181825c5a8b1fe51cce313f470cd9bfe360bfc7a04f42b5c3a12e7",
     "butler:restricted_webhook":
@@ -1928,6 +1934,10 @@ _LATE_ANSWER_DOCTRINE = (
     "a connection stays its own report: add no note of yours on whether it "
     "has been checked. Casa's lines about a delegate's posts cover only those "
     "posts: an answer it wrote above them is not among them, and is passed on. "
+    "A line above them that only announces those posts, points to them or says "
+    "what they hold or propose, such as \"I'm posting its card now\" or \"it's "
+    "on the card I just posted\", is not an answer: the posts have already "
+    "reached the person and speak for themselves, so that line is not passed on. "
     "When a delegation comes back pending, the person would otherwise wait in "
     "silence: say only that it is still running, in one short line such as "
     "\"Alex is still on it.\", with nothing added: not the task again, not "
