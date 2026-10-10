@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.344.86] - 2026-10-10
+
+### Fixed
+
+- After answering you in its topic, the plugin developer sometimes added a separate message reading just "(end of turn)". Its instructions now say that any text it writes is posted to you, so once it has answered it ends the turn without writing anything more. (#1422)
+
 ## [0.344.85] - 2026-10-10
 
 ### Fixed
