@@ -112,7 +112,8 @@ Both halves of that sentence are the failure — the after-the-fact narration of
 receipts already show the question is live; neither half tells the operator
 anything new. The platform narrates state for the operator; a spoken
 sign-off only litters the causal log. Stop cleanly, with nothing appended
-after the tool call.
+after the tool call. Text you write anyway after one of those `ask`
+outcomes, before your next tool call, is not shown to the operator.
 
 ## Reacting — a lightweight ack, never a decision
 

@@ -230,6 +230,59 @@ def is_mutating_tooluse(frame: dict) -> tuple[bool, str]:
     return (False, "")
 
 
+# #1428: the ask responses in which Casa tells the agent to end its turn
+# silently — the question expired (``outcome: no_answer``) or was refused
+# because the operator is away, a question is already open, or an operator
+# message is waiting unread.
+_ASK_END_SILENTLY_ERRORS = frozenset(
+    {"operator_away", "question_pending", "unread_inbound"})
+
+
+def tool_use_ids(frame: dict) -> list[tuple[str, str]]:
+    """``(id, name)`` of each ``tool_use`` block in an assistant frame."""
+    if not isinstance(frame, dict) or frame.get("type") != "assistant":
+        return []
+    return [
+        (block["id"], block.get("name") or "")
+        for block in (frame.get("message") or {}).get("content") or []
+        if isinstance(block, dict) and block.get("type") == "tool_use"
+        and isinstance(block.get("id"), str)
+    ]
+
+
+def ask_ended_silently(frame: dict, ids: set[str]) -> int | None:
+    """#1428: the ordinal of the first ``tool_result`` block in a user frame
+    that answers an ``ask`` in *ids* with a response telling the agent to end
+    its turn silently, else ``None``. Reads Casa's own response fields only."""
+    if not isinstance(frame, dict) or frame.get("type") != "user":
+        return None
+    content = (frame.get("message") or {}).get("content")
+    if not isinstance(content, list):
+        return None
+    for ordinal, block in enumerate(content):
+        if not (
+            isinstance(block, dict) and block.get("type") == "tool_result"
+            and block.get("tool_use_id") in ids
+        ):
+            continue
+        body = block.get("content")
+        if isinstance(body, list):
+            body = "".join(
+                b.get("text") or "" for b in body
+                if isinstance(b, dict) and b.get("type") == "text"
+            )
+        try:
+            result = json.loads(body) if isinstance(body, str) else None
+        except ValueError:
+            continue
+        if isinstance(result, dict) and (
+            result.get("outcome") == "no_answer"
+            or result.get("error") in _ASK_END_SILENTLY_ERRORS
+        ):
+            return ordinal
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Segment-qualified crash-safe cursor.
 # ---------------------------------------------------------------------------
@@ -742,9 +795,21 @@ class TopicStreamRelay:
         # #1426: set once a ``reply`` from this turn LANDED in the topic; until
         # the agent's next tool call, its text is not relayed. The CLI makes a
         # turn end with visible text, so after a reply that text is the answer
-        # again (or a placeholder) — the reply already posted it. Reset every
-        # turn boundary; replay rebuilds it from ``cursor.answered_at``.
+        # again (or a placeholder) — the reply already posted it. #1428: also
+        # set when an ``ask`` returns a response telling the agent to end its
+        # turn silently (expired, or refused operator_away / question_pending /
+        # unread_inbound):
+        # the CLI's forced closing text is then a restatement or filler. Reset
+        # every turn boundary; replay rebuilds it from ``cursor.answered_at``.
         self._answered = False
+        # #1428: the ``ask`` blocks that were their assistant message's only
+        # tool call, by ``tool_use`` id, so a tool result is attributed to such
+        # an ask (live and replayed frames alike). An ask batched with other
+        # tools does not count: those tools' results are still to be narrated.
+        # The CLI writes a message's tool calls as consecutive frames sharing
+        # ``message.id``, all before any result.
+        self._ask_ids: set[str] = set()
+        self._tool_msg: tuple[str, list[str]] = ("", [])
 
     # -- persistence helpers ------------------------------------------------
 
@@ -947,7 +1012,15 @@ class TopicStreamRelay:
         its frame coordinate and block ordinal are in ``cursor.answered_at``
         (recorded live), so
         a reply that failed keeps its following text in the reconstruction,
-        exactly as it was posted."""
+        exactly as it was posted. #1428: an ask result recorded there (by
+        frame coordinate) sets the same state."""
+        if frame.get("type") == "user":
+            if any(
+                c.get("segment") == list(seg) and c.get("offset") == off_after
+                for c in self.cursor.answered_at
+            ):
+                self._answered = True
+            return
         narr = extract_narration(frame)
         if narr is None:
             return
@@ -2288,6 +2361,18 @@ class TopicStreamRelay:
 
     async def _handle_frame(self, seg, off_after: int, raw: bytes) -> None:
         frame = parse_frame(raw)
+        tools = tool_use_ids(frame) if frame is not None else []
+        if tools:
+            mid = (frame.get("message") or {}).get("id") or ""
+            if mid != self._tool_msg[0] or not mid:
+                self._tool_msg = (mid, [])
+            batch = self._tool_msg[1]
+            # A frame read again (a cold re-run replays it) is not a new call.
+            batch.extend(t for t in tools if t not in batch)
+            if len(batch) == 1 and batch[0][1] == ASK_TOOL:
+                self._ask_ids.add(batch[0][0])
+            else:
+                self._ask_ids.difference_update(tid for tid, _n in batch)
 
         if not self._live:
             # REPLAY: rebuild visible-text state ONLY; suppress all side effects.
@@ -2427,5 +2512,17 @@ class TopicStreamRelay:
             await self._finalize(seg, off_after, subtype=frame.get("subtype"))
             return
 
-        # rate_limit_event / unknown type → invisible checkpoint.
+        if ftype == "user":
+            # #1428: Casa told the agent to end its turn silently — the text the
+            # CLI then forces out of it, before its next tool call, is not
+            # relayed. Recorded with the checkpoint so replay mirrors it.
+            ordinal = ask_ended_silently(frame, self._ask_ids)
+            if ordinal is not None:
+                self._answered = True
+                self.cursor.answered_at.append(
+                    {"segment": list(seg), "offset": off_after,
+                     "block": ordinal}
+                )
+
+        # rate_limit_event / user / unknown type → invisible checkpoint.
         self._checkpoint(seg, off_after)

@@ -13,7 +13,9 @@ import json
 import logging
 import os
 
-from channels.output_sequencer import REPLY_TOOL, projection_hash
+import pytest
+
+from channels.output_sequencer import ASK_TOOL, REPLY_TOOL, projection_hash
 from drivers.topic_stream import (
     SEGMENT_GAP,
     StreamCursor,
@@ -1536,3 +1538,184 @@ async def test_1426_answered_at_clears_at_the_turn_boundary(tmp_path):
     assert [t for _tp, t in rec.sends] == ["[reply]R", "next turn"]
     assert relay.cursor.answered_at == []
     assert StreamCursor.load(tmp_path / ".stream_cursor.json").answered_at == []
+
+
+# ---------------------------------------------------------------------------
+# #1428: after an ask whose response tells the agent to end its turn silently
+# (expired, or refused operator_away / question_pending), the closing text the
+# CLI forces out of it, before its next tool call, is not relayed. Any other
+# ask outcome (an answer, another refusal) leaves the text posting.
+# ---------------------------------------------------------------------------
+
+
+def _ask_frame(tool_id: str, options=("pantry", "larder")) -> dict:
+    return {"type": "assistant", "message": {"content": [{
+        "type": "tool_use", "id": tool_id, "name": ASK_TOOL,
+        "input": {"question": "Which name?", "options": list(options)},
+    }]}}
+
+
+def _tool_result(tool_id: str, body: dict, *, as_blocks: bool = False) -> dict:
+    """A user tool_result frame as the CLI writes it: the MCP tool's JSON in
+    a string (observed on 2.1.293), or in text blocks."""
+    text = json.dumps(body)
+    content = [{"type": "text", "text": text}] if as_blocks else text
+    return {"type": "user", "message": {"content": [
+        {"type": "tool_result", "tool_use_id": tool_id, "content": content},
+    ]}}
+
+
+_EXPIRED = {"ok": True, "outcome": "no_answer", "engagement_paused": True,
+            "message": "end your turn silently"}
+
+
+@pytest.mark.parametrize("body,as_blocks", [
+    (_EXPIRED, False),
+    (_EXPIRED, True),
+    ({"ok": False, "error": "operator_away", "message": "end silently"}, False),
+    ({"ok": False, "error": "question_pending", "message": "wait"}, False),
+    ({"ok": False, "error": "unread_inbound", "message": "stop"}, False),
+])
+async def test_1428_closing_text_after_a_silent_ask_end_is_not_relayed(
+    tmp_path, body, as_blocks,
+):
+    rec, events = Recorder(), []
+    _write_current(tmp_path, [
+        _init(), _ask_frame("toolu_a"), _tool_result("toolu_a", body, as_blocks=as_blocks),
+        _text("*(ending turn silently)*"), _result(),
+    ])
+    relay = _make_relay(tmp_path, tmp_path / ".stream_cursor.json", rec, events)
+    await relay.run()
+
+    assert rec.sends == []
+    assert ("result", {"subtype": "success"}) in events
+
+
+@pytest.mark.parametrize("body", [
+    {"ok": True, "option": "pantry", "option_index": 0},
+    {"ok": False, "error": "invalid_args", "message": "option too long"},
+    {"ok": False, "error": "send_failed"},
+])
+async def test_1428_text_after_other_ask_outcomes_is_relayed(tmp_path, body):
+    rec, events = Recorder(), []
+    _write_current(tmp_path, [
+        _init(), _ask_frame("toolu_a"), _tool_result("toolu_a", body),
+        _text("Going with pantry."), _result(),
+    ])
+    relay = _make_relay(tmp_path, tmp_path / ".stream_cursor.json", rec, events)
+    await relay.run()
+
+    assert [t for _tp, t in rec.sends] == ["Going with pantry."]
+
+
+async def test_1428_only_an_ask_result_counts(tmp_path):
+    """The same response shape from a tool that is not ``ask`` changes nothing."""
+    rec, events = Recorder(), []
+    other = {"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "id": "toolu_b", "name": "Bash", "input": {}},
+    ]}}
+    _write_current(tmp_path, [
+        _init(), other, _tool_result("toolu_b", _EXPIRED), _text("Done."), _result(),
+    ])
+    relay = _make_relay(tmp_path, tmp_path / ".stream_cursor.json", rec, events)
+    await relay.run()
+
+    assert [t for _tp, t in rec.sends] == ["Done."]
+
+
+async def test_1428_a_tool_call_after_the_ask_reopens_narration(tmp_path):
+    rec, events = Recorder(), []
+    _write_current(tmp_path, [
+        _init(), _ask_frame("toolu_a"), _tool_result("toolu_a", _EXPIRED),
+        _text("filler"), _tool("Read"), _text("Found it."), _result(),
+    ])
+    relay = _make_relay(tmp_path, tmp_path / ".stream_cursor.json", rec, events)
+    await relay.run()
+
+    assert [t for _tp, t in rec.sends] == ["Found it."]
+
+
+async def test_1428_cold_replay_mirrors_the_unrelayed_text(tmp_path):
+    """Crash mid-turn after the dropped closing text: a fresh relay rebuilds
+    exactly the live narration (no repost), from the recorded coordinate."""
+    rec, events = Recorder(), []
+    _write_current(tmp_path, [
+        _init(), _text("Looking."), _ask_frame("toolu_a"),
+        _tool_result("toolu_a", _EXPIRED), _text("filler"),
+        _tool("Read"), _text("More work."),
+    ])
+    cursor = tmp_path / ".stream_cursor.json"
+    live = _make_relay(tmp_path, cursor, rec, events)
+    await live.run()
+    wire = [t for _tp, t in rec.sends] + [t for _tp, _mid, t in rec.edits]
+    assert not any("filler" in t for t in wire)
+    assert "More work." in live._per_message_text
+    assert len(StreamCursor.load(cursor).answered_at) == 1
+
+    rec2 = Recorder()
+    replay = _make_relay(tmp_path, cursor, rec2, [])
+    await replay.run()
+    assert rec2.sends == []
+    assert all("filler" not in text for _tp, _mid, text in rec2.edits)
+    assert replay._per_message_text == live._per_message_text
+
+
+@pytest.mark.parametrize("split", [True, False])
+async def test_1428_an_ask_batched_with_another_tool_does_not_count(tmp_path, split):
+    """Terra r1: ask + Read in ONE assistant message (the CLI writes them as
+    two frames sharing message.id; one frame with both blocks also counts).
+    The Read result is still to be narrated, so the text after it posts."""
+    rec, events = Recorder(), []
+    ask = {"type": "tool_use", "id": "toolu_a", "name": ASK_TOOL,
+           "input": {"question": "Which name?", "options": ["a", "b"]}}
+    read = {"type": "tool_use", "id": "toolu_r", "name": "Read", "input": {}}
+    if split:
+        batch = [
+            {"type": "assistant", "message": {"id": "msg_1", "content": [ask]}},
+            {"type": "assistant", "message": {"id": "msg_1", "content": [read]}},
+        ]
+    else:
+        batch = [{"type": "assistant",
+                  "message": {"id": "msg_1", "content": [ask, read]}}]
+    _write_current(tmp_path, [
+        _init(), *batch, _tool_result("toolu_a", _EXPIRED),
+        _tool_result("toolu_r", {"ok": True}), _text("The file says hello."),
+        _result(),
+    ])
+    relay = _make_relay(tmp_path, tmp_path / ".stream_cursor.json", rec, events)
+    await relay.run()
+
+    assert [t for _tp, t in rec.sends] == ["The file says hello."]
+
+
+async def test_1428_an_ask_alone_in_its_message_still_counts(tmp_path):
+    """The ask's own message has one tool call; a later message's tools do
+    not change that."""
+    rec, events = Recorder(), []
+    _write_current(tmp_path, [
+        _init(),
+        {"type": "assistant", "message": {"id": "msg_0", "content": [
+            {"type": "tool_use", "id": "toolu_r", "name": "Read", "input": {}}]}},
+        {"type": "assistant", "message": {"id": "msg_1", "content": [
+            {"type": "tool_use", "id": "toolu_a", "name": ASK_TOOL,
+             "input": {"question": "Q?", "options": ["a", "b"]}}]}},
+        _tool_result("toolu_a", _EXPIRED), _text("filler"), _result(),
+    ])
+    relay = _make_relay(tmp_path, tmp_path / ".stream_cursor.json", rec, events)
+    await relay.run()
+
+    assert rec.sends == []
+
+
+async def test_1428_an_ask_frame_read_again_still_counts_alone(tmp_path):
+    """Astra r2: a cold re-run on the same relay replays the ask frame; the
+    re-read is not a second tool call in its message."""
+    rec, events = Recorder(), []
+    relay = _make_relay(tmp_path, tmp_path / ".stream_cursor.json", rec, events)
+    frame = json.dumps({"type": "assistant", "message": {"id": "msg_1",
+        "content": [{"type": "tool_use", "id": "toolu_a", "name": ASK_TOOL,
+                     "input": {"question": "Q?", "options": ["a", "b"]}}]}})
+    relay._live = False
+    await relay._handle_frame((1, 1), 10, frame.encode())
+    await relay._handle_frame((1, 1), 10, frame.encode())
+    assert relay._ask_ids == {"toolu_a"}

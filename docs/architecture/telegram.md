@@ -93,17 +93,22 @@ relay-mediated path, where a discrete post runs through a caller-supplied poster
 when that poster confirms a message id, when the poster reports a compensated physical send,
 or when it is cancelled mid-flight (ambiguous, like a timeout) — but not when it fails.
 
-**A reply that landed is the answer; the text right after it is not posted.** The agent's
-CLI does not let a turn end without visible text, so after answering with a `reply` the
-agent writes closing text, which repeats the answer or fills the slot. The relay therefore
-drops the agent's text after a `reply` that landed — the intent that reply block matched
-resolved ok, at the block or earlier out of band — until the agent's next tool call. A reply
-that failed, was refused, or had not yet posted when the relay reached its block leaves the
+**A reply that landed is the answer; the text right after it is not posted.** The agent's CLI
+does not let a turn end without visible text, so after answering with a `reply` the agent
+writes closing text, which repeats the answer or fills the slot. The relay therefore drops
+the agent's text after a `reply` that landed — the intent that reply block matched resolved
+ok, at the block or earlier out of band — until the agent's next tool call. A reply that
+failed, was refused, or had not yet posted when the relay reached its block leaves the
 following text posting, since that text may be all the operator gets. The relay's cursor
 records which reply blocks landed, so a replay after a restart rebuilds the narration from
-the same frames that were posted. A crash between a reply landing and that record being
-saved re-reads the reply as unlanded, so its closing text may post once — the relay's
-ordinary at-least-once contract.
+the same frames that were posted. A crash between a reply landing and that record being saved
+re-reads the reply as unlanded, so its closing text may post once — the relay's ordinary
+at-least-once contract. The same rule applies after an `ask`, made as the only tool call of
+its step, whose result tells the agent to end its turn silently — it expired, or was refused
+because the operator is away, a question is already open or an operator message is waiting
+unread: the relay reads that result from the agent's tool-result frame, drops the text that
+follows until the next tool call, and records it the same way. Any other ask outcome, an
+answer or another refusal, leaves the following text posting.
 
 **The turn's first output threads to the message that triggered it.** The inbound envelope
 records a reply target that whichever output posts first this turn consumes — narration, a
