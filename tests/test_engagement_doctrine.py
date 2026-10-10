@@ -84,6 +84,12 @@ class TestSixRulesPresent:
     def test_rule2_end_silently(self, fixture_name, request):
         text = request.getfixturevalue(fixture_name)
         assert "silent" in text  # "silently" / "end turns silently"
+        # #1422: "silent" means no closing text at all — the agent is told its
+        # plain text is posted to the topic, so a placeholder like
+        # "(end of turn)" after a reply is an extra message, not silence.
+        assert "outside a tool call is normally posted" in text
+        assert "no text at all" in text
+        assert "after a reply" in text or "after a `reply`" in text
 
     def test_rule3_buttons_for_choices(self, fixture_name, request):
         text = request.getfixturevalue(fixture_name)
