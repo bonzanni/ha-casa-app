@@ -357,6 +357,28 @@ class TestInstallLogging:
             # itself be the residue.
             self._cleanup_casa()
 
+    def test_markdown_it_tracing_is_quieted_at_debug(self, monkeypatch):
+        """#1421: at log_level debug, markdown-it-py's per-rule tracing must
+        not reach the handler. One persona reload emitted ~9,200 such lines in
+        a second, enough to fill journald's per-unit rate-limit pool on HA OS
+        and drop every app's stdout for the rest of the 30 s window."""
+        monkeypatch.delenv("LOG_FORMAT", raising=False)
+        from markdown_it import MarkdownIt
+
+        buf = StringIO()
+        install_logging(level=logging.DEBUG, stream=buf)
+        try:
+            MarkdownIt().parse("# Title\n\nA paragraph.\n\n- one\n- two\n")
+            logging.getLogger("unit").debug("casa debug still on")
+            logging.getLogger("markdown_it").info("markdown_it info kept")
+        finally:
+            self._cleanup_casa()
+
+        out = buf.getvalue()
+        assert "casa debug still on" in out
+        assert "markdown_it info kept" in out
+        assert sum('"markdown_it' in l for l in out.splitlines()) == 1, out
+
 
 class TestFormatDefaultIsJson:
     """5.5 item 4 — LOG_FORMAT unset now means JSON."""

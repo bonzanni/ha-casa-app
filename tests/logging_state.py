@@ -47,16 +47,20 @@ from typing import Any, Iterator
 
 import pytest
 
-#: The loggers ``install_logging`` pins to WARNING (``log_cid.py:233-234``).
-PINNED_LOGGERS = ("httpx", "opentelemetry")
+#: The loggers ``install_logging`` pins (``httpx``/``opentelemetry`` to WARNING,
+#: ``markdown_it`` to INFO).
+PINNED_LOGGERS = ("httpx", "opentelemetry", "markdown_it")
 
 #: The state the guard establishes before each guarded test. Every value is
 #: distinct from the one ``install_logging`` would leave (root DEBUG or INFO,
-#: both pinned loggers WARNING) AND from the interpreter default (root WARNING,
+#: the pinned loggers WARNING/INFO) AND from the interpreter default (root WARNING,
 #: pinned NOTSET), so a failure to restore any single effect is visible even
 #: when the ambient value happens to coincide with the installed one.
 GUARD_ROOT_LEVEL = logging.ERROR
-GUARD_PINNED_LEVELS = {"httpx": logging.DEBUG, "opentelemetry": logging.CRITICAL}
+GUARD_PINNED_LEVELS = {
+    "httpx": logging.DEBUG, "opentelemetry": logging.CRITICAL,
+    "markdown_it": logging.ERROR,
+}
 
 
 @dataclass(frozen=True)

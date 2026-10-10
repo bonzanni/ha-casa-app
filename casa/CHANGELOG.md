@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.344.85] - 2026-10-10
+
+### Fixed
+
+- With `log_level: debug`, every reload of the agents' instructions wrote thousands of lines of internal Markdown-parser tracing in a second. On Home Assistant OS that burst could make the system journal drop the log output of every app on the host for up to 30 seconds. That tracing is now left out of the debug log; Casa's own debug lines are unchanged. (#1421)
+
 ## [0.344.84] - 2026-10-10
 
 ### Fixed
