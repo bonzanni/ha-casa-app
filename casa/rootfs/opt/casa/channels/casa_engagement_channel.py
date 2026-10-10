@@ -209,6 +209,10 @@ async def _internal_post(
 async def reply(chat_id: str, text: str) -> dict[str, Any]:
     """Append ``text`` to this engagement's operator topic.
 
+    The reply is the answer: once it posts (``ok: true``), text you write
+    after it, before your next tool call, is not shown to the operator — put
+    everything they should see here. If it fails, your next text is posted.
+
     D2 locked: ``chat_id`` is accepted for CLI/SDK schema compatibility but is
     NEVER forwarded. The casa-main handler resolves the target chat/topic from
     ``engagement_id``, which we pass explicitly so the outbound payload is

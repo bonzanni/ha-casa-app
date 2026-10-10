@@ -84,12 +84,15 @@ class TestSixRulesPresent:
     def test_rule2_end_silently(self, fixture_name, request):
         text = request.getfixturevalue(fixture_name)
         assert "silent" in text  # "silently" / "end turns silently"
-        # #1422: "silent" means no closing text at all — the agent is told its
-        # plain text is posted to the topic, so a placeholder like
-        # "(end of turn)" after a reply is an extra message, not silence.
-        assert "outside a tool call is normally posted" in text
-        assert "no text at all" in text
-        assert "after a reply" in text or "after a `reply`" in text
+        # #1426: the CLI makes a turn end with visible text, so the doctrine
+        # no longer asks for silence after a reply (#1422's wording pushed the
+        # model to repeat its answer). It states the relay's contract instead:
+        # text after a landed reply, before the next tool call, is not shown,
+        # and after a failed reply it is.
+        assert "no text at all" not in text
+        assert "your `reply` is the answer" in text
+        assert "before your next tool call, is not shown to the operator" in text
+        assert "if a `reply` fails, the text you write next is posted" in text
 
     def test_rule3_buttons_for_choices(self, fixture_name, request):
         text = request.getfixturevalue(fixture_name)

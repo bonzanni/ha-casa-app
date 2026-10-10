@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.344.87] - 2026-10-10
+
+### Fixed
+
+- Since 0.344.86, the plugin developer posted every answer in its topic twice: once as its reply, then again as a plain message. Whatever it writes after a reply that reached you, until it next does something, is no longer posted, so each answer appears once. If a reply fails to post, the message it writes next still reaches you. (#1426)
+
 ## [0.344.86] - 2026-10-10
 
 ### Fixed
