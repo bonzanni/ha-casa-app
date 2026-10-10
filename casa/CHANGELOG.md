@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.344.90] - 2026-10-10
+
+### Changed
+
+- The status line of a claude_code topic now shows what the agent is doing within about ten seconds of it starting, so a short command shows "running commands" too. Before, an activity that started within ten seconds of the previous update waited for the next one-minute refresh, and a command shorter than that never appeared. (#1425)
+
 ## [0.344.88] - 2026-10-10
 
 ### Fixed
