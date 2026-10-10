@@ -1118,3 +1118,89 @@ class TestActivityAndPlanSameFlush:
         assert c._plan_subject == first_subject  # stale plan rejected
         assert c._activity == "running commands"  # activity still applied
         c.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# #1425: a change the edit throttle holds back is shown when the window ends,
+# not at the next 60 s tick — so a short command shows "running commands".
+# ---------------------------------------------------------------------------
+
+
+class TestDeferredFlush:
+    def _make_recording(self, seq, clock):
+        delays: list[float] = []
+
+        async def sleep(dt: float) -> None:
+            delays.append(dt)
+            await asyncio.Event().wait()
+
+        c = _make(seq, clock=clock)
+        c._sleep = sleep
+        return c, delays
+
+    async def test_a_short_command_shows_within_the_throttle_window(self):
+        """The issue's `sleep 20`: working posts at t=0, the Bash tool_use at
+        t=2 is throttled; its activity shows at t=10, long before the tick."""
+        seq = FakeSequencer()
+        clock = Clock()
+        c, delays = self._make_recording(seq, clock)
+        await c.note_turn_start()
+        await c.submit_status(STATUS_WORKING, 1)
+        assert seq.edits[-1][1].splitlines()[0] == STATUS_WORKING
+        clock.t = 2.0
+        await c.submit_activity("running commands")
+        assert len(seq.edits) == 1  # held back by the throttle
+        await asyncio.sleep(0)
+        assert c._trailing_task is not None and delays[-1] == 8.0
+        clock.t = 10.0
+        await c._trailing_body()
+        assert seq.edits[-1][1].splitlines()[0] == (
+            "⚙️ working — running commands · 10s")
+        assert c._trailing_task is None
+        c.shutdown()
+
+    async def test_one_deferred_flush_per_window(self):
+        seq = FakeSequencer()
+        clock = Clock()
+        c = _make(seq, clock=clock)
+        await c.note_turn_start()
+        await c.submit_activity("reading files")  # edit, window opens
+        clock.t = 2.0
+        await c.submit_activity("running commands")
+        first = c._trailing_task
+        assert first is not None
+        clock.t = 5.0
+        await c.submit_activity("editing files")
+        assert c._trailing_task is first  # still one
+        clock.t = 10.0
+        await c._trailing_body()
+        assert len(seq.edits) == 2
+        assert "editing files" in seq.edits[-1][1]  # the latest state wins
+        c.shutdown()
+
+    async def test_no_deferred_flush_when_the_edit_was_due(self):
+        seq = FakeSequencer()
+        c = _make(seq)
+        await c.note_turn_start()
+        await c.submit_activity("reading files")
+        assert len(seq.edits) == 1 and c._trailing_task is None
+        c.shutdown()
+
+    async def test_finalize_and_shutdown_cancel_the_deferred_flush(self):
+        for end in ("finalize", "shutdown"):
+            seq = FakeSequencer()
+            clock = Clock()
+            c = _make(seq, clock=clock)
+            await c.note_turn_start()
+            await c.submit_activity("reading files")
+            clock.t = 2.0
+            await c.submit_activity("running commands")
+            task = c._trailing_task
+            assert task is not None
+            if end == "finalize":
+                await c.finalize(STATUS_COMPLETED)
+            else:
+                c.shutdown()
+            await asyncio.sleep(0)
+            assert c._trailing_task is None and task.cancelled()
+            c.shutdown()

@@ -68,7 +68,10 @@ closed first by a completion, leaves a true record, never a claim about the pres
 write is awaited by the turn, so a slow Telegram never delays a turn or changes its
 outcome; writes are coalesced and spaced, and each Telegram call is bounded. Nothing is
 persisted. A `claude_code` topic keeps its pinned
-live summary instead.
+live summary instead. Its edits are spaced at least ten seconds apart, except when the status
+changes or a turn ends; an activity change that arrives inside that window is shown when the window ends,
+so even a short command appears, and the elapsed time on a working turn refreshes every
+minute.
 
 **A specialist's engagements are its open conversations, and a change to the specialist
 does not reach them.** One keeps the personality and the plugin versions it started with
