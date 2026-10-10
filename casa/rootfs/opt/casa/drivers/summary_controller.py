@@ -552,6 +552,10 @@ class SummaryController:
         self._pin_warned = False
         # The SINGLE sanctioned timer (§5 B1).
         self._tick_task: asyncio.Task | None = None
+        # #1425: one deferred flush at the end of the throttle window, armed
+        # when a change was held back by the throttle, so a short-lived
+        # activity still shows before the next tick.
+        self._trailing_task: asyncio.Task | None = None
 
     # -- serialization (GLOBAL LOCK-ORDER: sequencer OUTER, summary INNER) ---
     @asynccontextmanager
@@ -628,6 +632,7 @@ class SummaryController:
             self._status = status
             self._turn_running = False
             self._cancel_tick_locked()
+            self._cancel_trailing()
             await self._flush_locked(force=True)
 
     # -- open-questions / pulled-input refresh (never status) ---------------
@@ -857,9 +862,33 @@ class SummaryController:
                 self.engagement_id, exc,
             )
 
+    async def _trailing_body(self) -> None:
+        """#1425: the held-back flush, once the throttle window has passed."""
+        async with self._writing():
+            self._trailing_task = None
+            await self._flush_locked(force=False)
+
+    async def _trailing_flush(self, delay: float) -> None:
+        try:
+            await self._sleep(delay)
+            await self._trailing_body()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            logger.warning(
+                "summary deferred flush error (engagement %s): %s",
+                self.engagement_id, exc,
+            )
+
+    def _cancel_trailing(self) -> None:
+        if self._trailing_task is not None:
+            self._trailing_task.cancel()
+            self._trailing_task = None
+
     def shutdown(self) -> None:
-        """Cancel the tick (driver teardown). Idempotent."""
+        """Cancel the tick and any deferred flush (driver teardown). Idempotent."""
         self._cancel_tick_locked()
+        self._cancel_trailing()
 
     # -- render + flush -----------------------------------------------------
     def _render_locked(self) -> str:
@@ -906,5 +935,13 @@ class SummaryController:
                     # window.
                     self._last_edit_ts = now
                     self._last_rendered = text
+            elif (
+                not due and text != self._last_rendered
+                and self._trailing_task is None
+            ):
+                # #1425: a change the throttle held back is shown when the
+                # window ends, not at the next tick or event.
+                self._trailing_task = asyncio.create_task(self._trailing_flush(
+                    self._last_edit_ts + self._throttle_s - now))
         if force:
             await self._maybe_pin_locked()
