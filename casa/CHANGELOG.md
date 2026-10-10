@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.344.88] - 2026-10-10
+
+### Fixed
+
+- When a specialist answered with a card, the assistant sometimes passed on the specialist's own line about that card, such as "I'm posting its card now" or "it's on the card I just posted", in a second message under the card that had already arrived. Such a line is no longer passed on; an actual answer the specialist wrote alongside its card still is. (#1429)
+
 ## [0.344.87] - 2026-10-10
 
 ### Fixed
