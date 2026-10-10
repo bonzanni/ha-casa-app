@@ -56,6 +56,7 @@ from channels.output_sequencer import (
     DISCARDED,
     FAILED,
     HOLD_ELIGIBLE_TOOLS,
+    REPLY_TOOL,
     SEALED,
     OutputSequencer,
     projection_hash,
@@ -306,6 +307,12 @@ class StreamCursor:
     # ``coord`` — no repost, and a crash BEFORE the edit (no marker) keeps
     # today's at-least-once delivery. Absent-tolerated → ``None``.
     wire_hw: dict | None = None
+    # #1426: coordinates of this turn's frames whose ``reply`` LANDED (its
+    # intent resolved ok). Text after such a reply, up to the agent's next tool
+    # call, is not relayed (the reply already answered); replay reads this list
+    # so a dropped frame never enters the reconstructed narration. Cleared with
+    # the message lists at every turn boundary. Absent-tolerated → ``[]``.
+    answered_at: list[dict] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         # P2: NORMALIZE sep_stripped parallel to message_ids at EVERY
@@ -353,6 +360,10 @@ class StreamCursor:
                 if isinstance(data.get("wire_hw"), dict)
                 else None
             ),
+            answered_at=[
+                c for c in (data.get("answered_at") or [])
+                if isinstance(c, dict)
+            ],
         )
 
     def save(self, path: str | os.PathLike[str]) -> None:
@@ -376,6 +387,7 @@ class StreamCursor:
                 "hold_pending": self.hold_pending,
                 "result_event_pending": self.result_event_pending,
                 "wire_hw": self.wire_hw,
+                "answered_at": self.answered_at,
             },
         )
 
@@ -727,6 +739,12 @@ class TopicStreamRelay:
         # ``result`` / abnormal ``spawn`` / retention gap), after which normal
         # arming resumes. In-memory only; ``False`` on warm re-entry.
         self._replay_disarmed = False
+        # #1426: set once a ``reply`` from this turn LANDED in the topic; until
+        # the agent's next tool call, its text is not relayed. The CLI makes a
+        # turn end with visible text, so after a reply that text is the answer
+        # again (or a placeholder) — the reply already posted it. Reset every
+        # turn boundary; replay rebuilds it from ``cursor.answered_at``.
+        self._answered = False
 
     # -- persistence helpers ------------------------------------------------
 
@@ -801,6 +819,7 @@ class TopicStreamRelay:
         self.cursor.message_ids = []
         self.cursor.message_text_lens = []
         self.cursor.sep_stripped = []
+        self.cursor.answered_at = []
 
     def _seps_append(self, offset: int) -> None:
         self._pending_seps.append(offset)
@@ -919,6 +938,32 @@ class TopicStreamRelay:
                 stripped = flags[j] if 0 <= j < len(flags) else False
                 sep = "" if stripped else _SEP
         return sep
+
+    def _replay_frame(self, frame: dict, seg, off_after: int) -> None:
+        """Reconstruct one replayed frame's narration — no sends.
+
+        #1426: mirrors the live rule that text after a landed ``reply`` is not
+        relayed until the next tool call. A reply block counts as landed iff
+        its frame coordinate and block ordinal are in ``cursor.answered_at``
+        (recorded live), so
+        a reply that failed keeps its following text in the reconstruction,
+        exactly as it was posted."""
+        narr = extract_narration(frame)
+        if narr is None:
+            return
+        blocks = iter_content_blocks(frame)
+        if any(b[0] == "tool_use" for b in blocks):
+            for ordinal, block in enumerate(blocks):
+                if block[0] == "tool_use":
+                    self._answered = block[1] == REPLY_TOOL and {
+                        "segment": list(seg), "offset": off_after,
+                        "block": ordinal,
+                    } in self.cursor.answered_at
+                elif not self._answered:
+                    self._replay_text(block[1], narr.message_id)
+            return
+        if narr.text and not self._answered:
+            self._replay_text(narr.text, narr.message_id)
 
     def _replay_text(self, text: str, message_id: str = "") -> None:
         """Rebuild ``per_message_text`` from a replayed text block — no sends.
@@ -1341,6 +1386,12 @@ class TopicStreamRelay:
         if not text:
             self._checkpoint(seg, off_after)
             return
+        # #1426: a reply from this turn already landed and no tool call came
+        # since — this text is not relayed (the CLI demands closing text, which
+        # repeats the answer). An invisible frame, like a tool-only one.
+        if self._answered:
+            self._checkpoint(seg, off_after)
+            return
         await self._maybe_arm_suppression()
         # §D5: armed (anchor open) — trailing prose is BUFFERED, never posted
         # here. Flushed on a later tool_use / an answer before ``result``, or
@@ -1443,8 +1494,11 @@ class TopicStreamRelay:
         # provenance descriptor + planned ops).
         await self._commit_narration(message_id, text)
 
-    async def _match_discrete_block(self, name: str, tool_input: dict) -> None:
+    async def _match_discrete_block(self, name: str, tool_input: dict) -> bool:
         """Drive relay-mediated discrete matching for ONE tool_use block (§2(3)).
+
+        Returns ``True`` iff the block is a ``reply`` that landed in the topic
+        (#1426).
 
         Computes the block's ``(tool, projection_hash)`` under the pinned
         projection and asks the sequencer to resolve it at this position. An
@@ -1457,15 +1511,15 @@ class TopicStreamRelay:
             block_hash = projection_hash(name, tool_input)
         except ValueError:
             # Non-serializable tool_input can never match a hashed intent.
-            return
+            return False
         try:
-            status = await self.sequencer.post_for_block(name, block_hash)
+            status, landed = await self.sequencer.resolve_block(name, block_hash)
         except Exception as exc:  # noqa: BLE001 — discrete posting is best-effort
             logger.warning(
                 "topic stream discrete-post match failed for engagement %s "
                 "(tool=%s): %s", self.engagement_id, name, exc,
             )
-            return
+            return False
         self._log_oob_match(name, block_hash, status)
         # D5 (Sol r3-6, "Arming survives out-of-band posting"): every matching
         # free-text-anchor ask block (the tool's own bare-question, no
@@ -1493,6 +1547,11 @@ class TopicStreamRelay:
             and not self._replay_disarmed
         ):
             self._anchor_candidate = (name, block_hash)
+        # #1426: did this block put a reply in the topic? Only a LANDED reply
+        # counts (the intent this block matched resolved ok — here, or earlier
+        # out of band); a failed or refused reply leaves the turn's later text
+        # posting, since that text may be the only thing the operator sees.
+        return name == REPLY_TOOL and landed
 
     def _log_oob_match(self, tool_name: str, block_hash: str, status: str) -> None:
         """F-OOB instrumentation (spec D7): content-free log at the
@@ -1729,14 +1788,21 @@ class TopicStreamRelay:
             return
         fired_mutating = False
         flushed_buffer = False
-        for block in blocks:
+        for ordinal, block in enumerate(blocks):
             if block[0] == "text":
+                # #1426: text after a landed reply, before the next tool call,
+                # is not relayed (see ``_answered``).
+                if self._answered:
+                    continue
                 await self._append_narration(block[1], seg, off_after, message_id)
                 if self._dropped:
                     self._advance_dropped(seg, off_after)
                     return
             else:  # tool_use
                 _kind, name, tool_input = block
+                # #1426: any tool call means the agent is working again — text
+                # after it is relayed, unless this block is itself a landed reply.
+                self._answered = False
                 # §D5 r23-2: a tool_use proves the agent is still working — FLUSH
                 # any buffered post-anchor prose (above this block's discrete
                 # post) and DISARM. The flush drops the spent candidate, so if
@@ -1783,7 +1849,12 @@ class TopicStreamRelay:
                         },
                     )
                 )
-                await self._match_discrete_block(name, tool_input)
+                if await self._match_discrete_block(name, tool_input):
+                    self._answered = True
+                    self.cursor.answered_at.append(
+                        {"segment": list(seg), "offset": off_after,
+                         "block": ordinal}
+                    )
 
         # §D5: a frame that still holds UNFLUSHED buffered prose is EXEMPT from
         # checkpoint advancement (mirrors the throttled-text hold at :894) so a
@@ -1817,6 +1888,7 @@ class TopicStreamRelay:
         # (counter 1) is always accepted.
         self._tool_event_seq = 0
         self._last_text_msg_id = None  # §R3: no prior segment in a fresh turn
+        self._answered = False  # #1426: no reply has landed in a fresh turn
         # P2: a fresh turn has no pending separators and starts replay ordinal 0.
         self._seps_clear()
         self._replay_j = 0
@@ -2222,9 +2294,7 @@ class TopicStreamRelay:
             # §R3: re-derive from the SAME (message_id, text) extractor the live
             # path uses, so the separator lands identically on reconstruction.
             if frame is not None:
-                narr = extract_narration(frame)
-                if narr is not None and narr.text:
-                    self._replay_text(narr.text, narr.message_id)
+                self._replay_frame(frame, seg, off_after)
             return
 
         # #523: LIVE frames at/below a persisted wire-high-water coordinate
@@ -2248,9 +2318,7 @@ class TopicStreamRelay:
                 self.cursor.wire_hw = None  # durably cleared by finalize
             elif self._coord_le(seg, off_after, hw_coord):
                 if frame is not None:
-                    narr = extract_narration(frame)
-                    if narr is not None and narr.text:
-                        self._replay_text(narr.text, narr.message_id)
+                    self._replay_frame(frame, seg, off_after)
                 return
 
         if frame is None:

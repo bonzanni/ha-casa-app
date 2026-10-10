@@ -788,10 +788,13 @@ def test_iter_content_blocks_preserves_order():
 
 async def test_multi_block_frame_posts_in_block_order(tmp_path):
     """§2(3): text + a discrete post + text in ONE frame post in block order —
-    the armed reply intent posts at ITS block, between the two narration texts."""
+    the armed reply intent posts at ITS block, between the two narration texts.
+    (#1426: a tool call follows the reply, so the later text is relayed.)"""
     rec, events = Recorder(), []
-    _write_current(tmp_path, [_init(), _mixed_frame("before ", "R", "after"),
-                              _result()])
+    frame = _mixed_frame("before ", "R", "after")
+    frame["message"]["content"].insert(
+        2, {"type": "tool_use", "name": "Read", "input": {}})
+    _write_current(tmp_path, [_init(), frame, _result()])
     cursor = tmp_path / ".stream_cursor.json"
     relay = _make_relay(tmp_path, cursor, rec, events)
     _arm_reply(relay, rec, "R")
@@ -807,8 +810,8 @@ async def test_discrete_post_seals_narration_rollover_on_interleave(tmp_path):
     editing the message now sitting above the discrete post."""
     rec, events = Recorder(), []
     _write_current(tmp_path, [
-        _init(), _text("part one"), _reply_tool_frame("R"), _text("part two"),
-        _result(),
+        _init(), _text("part one"), _reply_tool_frame("R"), _tool("Read"),
+        _text("part two"), _result(),
     ])
     cursor = tmp_path / ".stream_cursor.json"
     relay = _make_relay(tmp_path, cursor, rec, events)
@@ -1104,7 +1107,8 @@ async def test_discrete_rollover_same_process_rerun_keeps_second_msg_text(tmp_pa
     rec, events = Recorder(), []
     # Open turn (NO result): "abc" → armed reply seals → "def" rolls to msg 3.
     _write_current(tmp_path, [
-        _init(), _text("abc"), _reply_tool_frame("R"), _text("def"),
+        _init(), _text("abc"), _reply_tool_frame("R"), _tool("Read"),
+        _text("def"),
     ])
     cursor = tmp_path / ".stream_cursor.json"
     relay = _make_relay(tmp_path, cursor, rec, events)
@@ -1380,3 +1384,155 @@ def test_stream_cursor_legacy_load_defaults_pending_none(tmp_path):
         "message_ids": [],
     }), encoding="utf-8")
     assert StreamCursor.load(path).result_event_pending is None
+
+
+# ---------------------------------------------------------------------------
+# #1426: text after a LANDED reply, before the next tool call, is not relayed.
+# The CLI makes a turn end with visible text, so after a tool-only reply the
+# model writes closing text — usually the answer again. The reply already
+# posted it. A failed reply keeps the following text (it may be the only thing
+# the operator sees), and replay reconstructs exactly what was posted live.
+# ---------------------------------------------------------------------------
+
+
+def _fail_reply(relay, text: str, request_id: str = "rf") -> None:
+    """Register + arm a reply intent whose poster FAILS (no message lands)."""
+    h = projection_hash(REPLY_TOOL, {"text": text})
+
+    async def poster():
+        return None
+
+    relay.sequencer.register_intent(
+        request_id=request_id, tool_name=REPLY_TOOL, projection_hash=h,
+        poster=poster,
+    )
+    relay.sequencer.arm_intent(request_id)
+
+
+async def test_1426_closing_text_after_landed_reply_is_not_relayed(tmp_path):
+    """The observed turn: reply "42" lands, then the closing text "42"."""
+    rec, events = Recorder(), []
+    _write_current(tmp_path, [
+        _init(), _reply_tool_frame("42"), _text("42"), _result(),
+    ])
+    relay = _make_relay(tmp_path, tmp_path / ".stream_cursor.json", rec, events)
+    _arm_reply(relay, rec, "42")
+    await relay.run()
+
+    assert [t for _tp, t in rec.sends] == ["[reply]42"]
+    assert rec.edits == []
+    assert ("result", {"subtype": "success"}) in events
+
+
+async def test_1426_text_after_failed_reply_is_relayed(tmp_path):
+    """A reply that did not land leaves the turn's next text posting."""
+    rec, events = Recorder(), []
+    _write_current(tmp_path, [
+        _init(), _reply_tool_frame("done"), _text("posting failed"), _result(),
+    ])
+    relay = _make_relay(tmp_path, tmp_path / ".stream_cursor.json", rec, events)
+    _fail_reply(relay, "done")
+    await relay.run()
+
+    assert [t for _tp, t in rec.sends] == ["posting failed"]
+
+
+async def test_1426_a_tool_call_after_the_reply_reopens_narration(tmp_path):
+    """Text after the reply but before the next tool call is not relayed;
+    text after that tool call is."""
+    rec, events = Recorder(), []
+    _write_current(tmp_path, [
+        _init(), _reply_tool_frame("R"), _text("Running the tests now."),
+        _tool("Bash"), _text("All tests pass."), _result(),
+    ])
+    relay = _make_relay(tmp_path, tmp_path / ".stream_cursor.json", rec, events)
+    _arm_reply(relay, rec, "R")
+    await relay.run()
+
+    assert [t for _tp, t in rec.sends] == ["[reply]R", "All tests pass."]
+
+
+async def test_1426_reply_landed_out_of_band_counts(tmp_path):
+    """A reply posted out of band before the relay reached its block (a
+    consumed debt) landed too: the closing text after it is not relayed."""
+    rec, events = Recorder(), []
+    clock = {"t": 0.0}
+    relay = _make_relay(
+        tmp_path, tmp_path / ".stream_cursor.json", rec, events,
+        _now=lambda: clock["t"],
+    )
+    _arm_reply(relay, rec, "42")
+    clock["t"] += 1000.0
+    await relay.sequencer.process_intents_once()  # timeout post → debt
+    assert [t for _tp, t in rec.sends] == ["[reply]42"]
+
+    _write_current(tmp_path, [
+        _init(), _reply_tool_frame("42"), _text("42"), _result(),
+    ])
+    await relay.run()
+
+    assert [t for _tp, t in rec.sends] == ["[reply]42"]
+
+
+async def test_1426_block_ordinal_decides_in_a_multi_reply_frame(tmp_path):
+    """Two replies in ONE frame: the first lands, the second fails. The text
+    after them is relayed live, and a cold replay reconstructs it too."""
+    rec, events = Recorder(), []
+    frame = {
+        "type": "assistant",
+        "message": {"content": [
+            {"type": "tool_use", "name": REPLY_TOOL, "input": _reply_input("A")},
+            {"type": "tool_use", "name": REPLY_TOOL, "input": _reply_input("B")},
+        ]},
+    }
+    _write_current(tmp_path, [_init(), frame, _text("B did not post")])
+    cursor = tmp_path / ".stream_cursor.json"
+    live = _make_relay(tmp_path, cursor, rec, events)
+    _arm_reply(live, rec, "A", request_id="ra")
+    _fail_reply(live, "B", request_id="rb")
+    await live.run()
+    assert [t for _tp, t in rec.sends] == ["[reply]A", "B did not post"]
+
+    rec2 = Recorder()
+    replay = _make_relay(tmp_path, cursor, rec2, [])
+    await replay.run()
+    assert replay._per_message_text == live._per_message_text == "B did not post"
+    assert rec2.sends == []
+
+
+async def test_1426_cold_replay_skips_the_unrelayed_text(tmp_path):
+    """Crash mid-turn after a dropped closing text and later narration: a fresh
+    relay reconstructs exactly the live wire (no repost, no mis-split)."""
+    rec, events = Recorder(), []
+    _write_current(tmp_path, [
+        _init(), _text("Looking."), _reply_tool_frame("R"), _text("R"),
+        _tool("Read"), _text("More work."),
+    ])
+    cursor = tmp_path / ".stream_cursor.json"
+    live = _make_relay(tmp_path, cursor, rec, events)
+    _arm_reply(live, rec, "R")
+    await live.run()
+    assert [t for _tp, t in rec.sends] == ["Looking.", "[reply]R", "More work."]
+
+    rec2 = Recorder()
+    replay = _make_relay(tmp_path, cursor, rec2, [])
+    await replay.run()
+    assert rec2.sends == []
+    assert all(text != "R" and "RMore" not in text for _tp, _mid, text in rec2.edits)
+    assert replay._per_message_text == live._per_message_text == "More work."
+    assert replay.cursor.message_text_lens == live.cursor.message_text_lens
+
+
+async def test_1426_answered_at_clears_at_the_turn_boundary(tmp_path):
+    rec, events = Recorder(), []
+    _write_current(tmp_path, [
+        _init(), _reply_tool_frame("R"), _text("R"), _result(),
+        _init("sid-2"), _text("next turn"), _result(),
+    ])
+    relay = _make_relay(tmp_path, tmp_path / ".stream_cursor.json", rec, events)
+    _arm_reply(relay, rec, "R")
+    await relay.run()
+
+    assert [t for _tp, t in rec.sends] == ["[reply]R", "next turn"]
+    assert relay.cursor.answered_at == []
+    assert StreamCursor.load(tmp_path / ".stream_cursor.json").answered_at == []

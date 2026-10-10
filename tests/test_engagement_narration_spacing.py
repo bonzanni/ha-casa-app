@@ -368,6 +368,9 @@ def _open_frames_1():
         _init(),
         _text_id("m0", "Hello"),
         _reply_tool_frame("R"),
+        # #1426: text right after a landed reply is not relayed; a tool call
+        # in between keeps the seal-then-open shape this scenario pins.
+        _tool_in("Read", {}),
         _text_id("m1", "World"),
     ]
 
@@ -456,6 +459,7 @@ async def test_p2_authored_blank_line_after_seal_never_stripped(tmp_path):
     _write_current(tmp_path, [
         _init(), _text_id("m0", "Intro"),
         _reply_tool_frame("R"),
+        _tool_in("Read", {}),  # #1426: a tool call re-opens narration
         _text_id("m0", "\n\nauthored"),  # same id ⇒ no injected sep
     ])
     cursor = tmp_path / ".stream_cursor.json"
@@ -636,8 +640,10 @@ async def test_p2_multi_seal_turn_end_to_end_parity(tmp_path):
         _init(),
         _text_id("m0", "First"),
         _reply_tool_frame("R1"),
+        _tool_in("Read", {}),  # #1426: a tool call re-opens narration
         _text_id("m1", "Second"),
         _reply_tool_frame("R2"),
+        _tool_in("Read", {}),
         _text_id("m2", "Third"),
     ]
     cursor = tmp_path / ".stream_cursor.json"

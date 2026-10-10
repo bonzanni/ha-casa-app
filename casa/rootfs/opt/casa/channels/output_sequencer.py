@@ -1471,6 +1471,18 @@ class OutputSequencer:
           proceed (its late post happens out-of-band via the watcher).
         * absent and not hold-eligible → ``no_match`` immediately.
         """
+        status, _landed = await self.resolve_block(tool_name, block_hash)
+        return status
+
+    async def resolve_block(
+        self, tool_name: str, block_hash: str,
+    ) -> tuple[str, bool]:
+        """:meth:`post_for_block`, plus whether the intent THIS block matched
+        has landed in the topic (its outcome is ok) — posted here, or earlier
+        out of band (a consumed debt). ``False`` for every other result. The
+        relay reads it for a ``reply`` block (#1426): text after a landed reply
+        is not relayed. Read from the matched intent itself, never by a later
+        lookup that could pick a different same-hash intent."""
         deadline = self._now() + self._slot_hold_s
         while True:
             async with self._serialized():
@@ -1488,25 +1500,26 @@ class OutputSequencer:
                     item = self.registry.oldest_matchable(tool_name, block_hash)
                     if item is not None and item.state == "pending":
                         item.slot_missed = True
-                return "slot_timeout"
+                return ("slot_timeout", False)
             await self._sleep(self._hold_poll_s)
 
     async def _resolve_block_locked(
         self, tool_name: str, block_hash: str,
-    ) -> str | None:
+    ) -> tuple[str, bool] | None:
         """Resolve a content block against the registry (caller holds the lock).
 
-        Returns a terminal result code, or ``None`` when the block must HOLD
-        (a matching intent is still pending) — i.e. the caller keeps waiting.
+        Returns ``(result code, landed)`` (see :meth:`resolve_block`), or
+        ``None`` when the block must HOLD (a matching intent is still pending)
+        — i.e. the caller keeps waiting.
         """
         item = self.registry.oldest_matchable(tool_name, block_hash)
         if item is not None:
             if item.state == "armed":
                 await self._post_intent_locked(item, out_of_band=False)
-                return "posted"
+                return ("posted", bool(item.outcome and item.outcome.get("ok")))
             if item.state == "cancelled":
                 item.consumed = True
-                return "consumed_cancelled"
+                return ("consumed_cancelled", False)
             if item.state == "posted" and item.timeout_posted:
                 # §2(5) debt consumed. SEAL open narration at this block's
                 # position: the debt's message was posted out-of-band (the
@@ -1519,11 +1532,11 @@ class OutputSequencer:
                 # relay reaching the emit_completion block means every prior
                 # frame has been processed.
                 self._signal_resolution(item.request_id)
-                return "debt_consumed"
+                return ("debt_consumed", True)
             return None  # pending → HOLD
         if tool_name not in HOLD_ELIGIBLE_TOOLS:
             # Non-fenced tool: keep the fast path — never stall narration.
-            return "no_match"
+            return ("no_match", False)
         # F4: hold-eligible block (ask/reply/emit_completion) with NO matching
         # intent yet. The empty-registry short-circuit that used to proceed here
         # DEFEATED the designed relay-first race: the discrete ingress (an MCP

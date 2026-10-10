@@ -92,14 +92,15 @@ prose-sniffing — doctrine only.
 
 ## End turns silently
 
-Text you write outside a tool call is normally posted into the topic as a
-message of its own, verbatim. So when you end a turn — after a `reply` that
-answered, after asking, on an `ask` refusal (`unread_inbound`/`operator_away`),
-on a `no_answer` outcome — end with NO text at all. A placeholder is not
-silence: `(end of turn)` or `Done.` written after a turn you already answered
-reaches the operator as a pointless extra message.
+Your `reply` is the answer. Once a `reply` has posted (`ok: true`), anything
+you write after it, before your next tool call, is NOT shown to the operator —
+so put everything they should see in the reply itself, and don't restate it
+afterwards. If a `reply` fails, the text you write next IS posted: say there
+what happened.
 
-Nor end with a sign-off: no sentence that names what you just did or what
+When you end a turn — after asking, on an `ask` refusal
+(`unread_inbound`/`operator_away`), on a `no_answer` outcome — end WITHOUT a
+sign-off. That means no sentence that names what you just did or what
 happens next — not "ending my turn…", not "I'll wait for your answer…", and
 not a softer paraphrase of either. A real observed violation, quoted as the
 counter-example:
