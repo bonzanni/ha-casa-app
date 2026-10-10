@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.344.91] - 2026-10-11
+
+### Fixed
+
+- When you replied to a specialist's card and the specialist answered with a new card, a stray line sometimes appeared under it, such as "Hanabi is pid 92.", written by the specialist while it worked. When the specialist ends its turn silently after posting a card, only the card is shown now. A specialist that ends with an actual answer still posts it. (#1433)
+
 ## [0.344.90] - 2026-10-10
 
 ### Changed

@@ -49,8 +49,11 @@ committed to the operator arrived. Every CALL of a send tool also leaves a
 on the record too.
 
 Nothing is held or withheld: the model's words are never suppressed here
-(operator ruling, #1036) — beyond closing silence, whose one case that drops
-earlier words is the #1075 ruling above, and one more ruled case (#1252): on an
+(operator ruling, #1036) — beyond closing silence, whose cases that drop
+earlier words are the #1075 ruling above and its desk twin (#1433: a
+specialist desk turn that proved an outcome, its card posted, and closes in
+``<silent/>`` is silent — applied in ``specialist_desk.handle_reply`` on the
+desk's own outcome record), and one more ruled case (#1252): on an
 ``Agent.handle_message`` turn or a specialist desk turn whose protected call is
 waiting on the operator's approval, the words the model wrote after that call
 are withheld from the operator, while those written before it are kept
