@@ -285,3 +285,6 @@ def install_logging(
     root.setLevel(level)
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("opentelemetry").setLevel(logging.WARNING)
+    # markdown-it-py traces every block rule per line at DEBUG; one persona
+    # reload is ~9k lines, enough to trip journald's rate limit on HA OS (#1421).
+    logging.getLogger("markdown_it").setLevel(logging.INFO)

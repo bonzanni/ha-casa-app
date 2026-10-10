@@ -45,10 +45,13 @@ from logging_state import (
 TESTS_DIR = Path(__file__).resolve().parent
 
 #: A baseline distinct from BOTH what ``install_logging`` leaves (root INFO/DEBUG,
-#: both pinned loggers WARNING) and the interpreter default (root WARNING, pinned
+#: the pinned loggers WARNING/INFO) and the interpreter default (root WARNING, pinned
 #: NOTSET), so a restored value cannot coincide with an unrestored one.
 BASELINE_ROOT = logging.ERROR
-BASELINE_PINNED = {"httpx": logging.DEBUG, "opentelemetry": logging.CRITICAL}
+BASELINE_PINNED = {
+    "httpx": logging.DEBUG, "opentelemetry": logging.CRITICAL,
+    "markdown_it": logging.ERROR,
+}
 
 
 def _casa_handler() -> logging.Handler:
