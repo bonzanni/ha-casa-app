@@ -758,6 +758,28 @@ class TestTickLifecycle:
         assert len(seq.edits) == n + 1
         c.shutdown()
 
+    async def test_new_turn_starts_without_the_previous_turns_activity(self):
+        """#1419: a new turn's status line is plain "working" until its own
+        first tool_use; the previous turn's last activity does not carry over."""
+        seq = FakeSequencer()
+        clock = Clock()
+        c = _make(seq, clock=clock)
+        await c.note_turn_start()
+        await c.submit_activity("running commands")
+        await c.submit_status(STATUS_WAITING_REPLY, 5)
+        await c.note_turn_end()
+        clock.t = 30.0
+        # The driver's order at a turn boundary: note_turn_start, then working.
+        await c.note_turn_start()
+        await c.submit_status(STATUS_WORKING, 6)
+        assert seq.edits[-1][1].splitlines()[0] == STATUS_WORKING
+        # The new turn's own first tool_use still shows its activity.
+        clock.t = 45.0
+        await c.submit_activity("reading files")
+        assert seq.edits[-1][1].splitlines()[0] == (
+            "⚙️ working — reading files · 15s")
+        c.shutdown()
+
     async def test_tick_body_not_eligible_when_not_working(self):
         c = _make()
         await c.note_turn_start()
