@@ -74,7 +74,9 @@ is never discharged. The model's words are never suppressed or withheld by any o
 `<silent/>` convention is judged inside final-reply admission, on the unannotated text and
 before any line is added, so a silent turn is never turned into a visible line. Admission
 withholds words in exactly two ruled cases, both scope properties in
-[`output-scope-properties.md`](output-scope-properties.md): the #1075 closing silence, and
+[`output-scope-properties.md`](output-scope-properties.md): the #1075 closing silence (on a
+specialist desk turn after a proven post too, #1433, applied by the desk —
+[`specialist-desk.md`](specialist-desk.md)), and
 (#1252) the words written after a protected call that is waiting on the operator's approval,
 on a resident's DM, button or setup turn and on a specialist desk turn — on a resident's turn
 also after a synchronous delegate whose specialist left such a call waiting (#1207), whatever

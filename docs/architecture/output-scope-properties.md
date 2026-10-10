@@ -70,7 +70,9 @@ before. Rule 1 drops all the earlier text, and the operator accepted two residua
 narration still arrives, untagged, and a real message written as plain text after a
 confirmed send is dropped. The verdict is taken at
 admission: a synchronous delegate that timed out and sends later belongs to its own
-completion notice.
+completion notice. A specialist desk turn applies rule 1 itself, on its own record of what
+the turn proved (a post that landed, a send confirmed delivered), not through this admission
+(#1433, [`specialist-desk.md`](specialist-desk.md)).
 
 The second exception is the operator's ruling on #1252: on a turn whose protected call is
 waiting on the operator's approval, the operator sees the approval keyboard and nothing the

@@ -882,10 +882,20 @@ async def handle_reply(
             proven, unevented = turn_outcomes(turn_id, posts, scope,
                                               approval=kept is not None)
             specialist_side = NO_REPLY
+            # #1283 (#1075 rule 2): a closing run of sentinel-only messages
+            # after earlier text — judged on the runner's own message list
+            # against the words shown (after the #1252 cut), so a list that is
+            # not this text's leaves the reply whole
+            trimmed = None
+            if failure is None and not strips_to_silence(shown):
+                trimmed = closing_silence_prefix(shown, getattr(output, "reply_messages", ()))
             if failure is not None:
                 what = "your file {name}" if file_name is not None else "your reply"
                 await _tell(f"could not handle {what} ({failure}).", notice=True, receipt=False)
-            elif strips_to_silence(shown):
+            elif strips_to_silence(shown) or (trimmed is not None and proven and kept is None):
+                # #1433 (operator ruling, the #1075 rule 1 on the desk): a turn
+                # that proved an outcome — its card posted — and closes in
+                # silence is silent; the words written before are not posted
                 if proven:
                     specialist_side = reply_text if kept is not None else POSTED_VIEW
                     # every outcome without an S3 line of its own gets one
@@ -896,12 +906,9 @@ async def handle_reply(
                 else:
                     await _tell("had nothing to add.", notice=True)
             else:
-                # #1283 (#1075 rule 2 only): a closing run of sentinel-only
-                # messages after earlier text is dropped and the earlier
-                # messages are the reply — judged on the runner's own message
-                # list against the words shown (after the #1252 cut), so a
-                # list that is not this text's leaves the reply whole
-                trimmed = closing_silence_prefix(shown, getattr(output, "reply_messages", ()))
+                # #1283 (#1075 rule 2): no proven outcome (or an approval
+                # cut) — the closing run is dropped, the earlier messages are
+                # the reply
                 if trimmed is not None:
                     shown = trimmed
                 # #1342: words and a sentinel in one message (or a sentinel

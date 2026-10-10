@@ -34,7 +34,8 @@ async def test_a_closing_silence_after_narration_never_shows_the_sentinel(desk, 
     shown = [str(m) for m, _ctx in desk.channel.replies]
     print("REPLIES", shown, "NOTICES", desk.channel.notices, "ECHO", sd.prompt_prefix(OPERATOR))
     assert not any("<silent/>" in s for s in shown), shown
-    # #1075 rule 2 only (N2-1): the earlier message is kept and only the
-    # closing sentinel messages are dropped, whether or not the plugin posted —
-    # one labelled reply, exactly the narration
-    assert shown == [f"{LABEL}\n{NARRATION}"], shown
+    # #1075 rule 2 (N2-1): with no proven outcome the earlier message is kept
+    # and only the closing sentinel messages are dropped — one labelled reply,
+    # exactly the narration. #1433 (operator ruling): after a post the turn is
+    # silent — no reply at all (test_redcase_1433 pins the rest)
+    assert shown == ([] if posted else [f"{LABEL}\n{NARRATION}"]), shown
