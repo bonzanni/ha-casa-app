@@ -283,6 +283,8 @@ async def ask(
     away and the engagement is now PAUSED: END YOUR TURN silently (no sign-off)
     and wait. Do NOT re-ask; your question stays on record. A further `ask`
     while paused is refused `operator_away` — that too means end your turn.
+    After a response that says to end your turn silently, text you write
+    before your next tool call is not shown to the operator.
     NOT an authorization mechanism.
 
     v0.79.0 (§2, r8-1): RAW-DICT ingress — no client-side validation. The raw

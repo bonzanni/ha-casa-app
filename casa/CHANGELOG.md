@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.344.89] - 2026-10-10
+
+### Fixed
+
+- When a question from a claude_code agent such as the plugin developer expired unanswered, or could not be asked because you were away or another question was still open, the agent often posted a filler line in its topic, such as "ending turn silently, waiting for the operator". What it writes at that point, until it next does something, is no longer posted. (#1428)
+
 ## [0.344.88] - 2026-10-10
 
 ### Fixed
