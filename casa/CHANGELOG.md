@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.344.84] - 2026-10-10
+
+### Fixed
+
+- When a specialist started a new turn in its topic, the status line showed what it had been doing at the end of its previous turn, such as "running commands", even if the new turn ran no command at all. A new turn now shows plain "working" until it actually starts doing something. (#1419)
+
 ## [0.344.83] - 2026-10-10
 
 ### Fixed

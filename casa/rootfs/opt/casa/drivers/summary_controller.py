@@ -760,10 +760,12 @@ class SummaryController:
     # -- turn lifecycle (elapsed base + tick) -------------------------------
     async def note_turn_start(self) -> None:
         """A CLI turn started: reset the elapsed base and (re)start the tick if
-        the status is working."""
+        the status is working. The previous turn's activity is cleared (#1419):
+        the new turn shows plain "working" until its own first tool_use."""
         async with self._writing():
             self._turn_running = True
             self._turn_base = self._now()
+            self._activity = None
             # §5 P1-B r3/r4: a fresh turn re-opens the plan authority window —
             # reset the Todo-plan latch and the ordering watermark so the new
             # turn's first accepted fragment re-establishes authority and no
