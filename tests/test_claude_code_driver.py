@@ -5922,3 +5922,141 @@ class TestReservationReadTimeExclusion:
         assert not hasattr(ccd.ClaudeCodeDriver, "drop_reservation_text")
         for fn in (ccd._InboundSpool.__init__, ccd._InboundSpool.attach_runtime):
             assert "on_durable_enqueue" not in inspect.signature(fn).parameters
+
+
+class TestMidTurnDeath:
+    """#1416: a CLI that dies mid-turn is not resumed — the respawned run
+    script waits on the FIFO for the operator's next message. The status line
+    must stop saying working, the topic is told plainly, and the observer's
+    event says the turn was not resumed."""
+
+    def _driver(self, tmp_path):
+        from drivers.claude_code_driver import ClaudeCodeDriver
+
+        edits: list[tuple[int, str]] = []
+
+        async def edit(topic_id, mid, text):
+            edits.append((mid, text))
+            return True
+
+        class FakeReg:
+            def __init__(self):
+                self.rev = 0
+
+            async def allocate_summary_revision(self, eid):
+                self.rev += 1
+                return self.rev
+
+            def open_question_numbers(self, eid):
+                return []
+
+            def get(self, eid):
+                return None
+
+        send = AsyncMock(return_value=1)
+        drv = ClaudeCodeDriver(
+            engagements_root=str(tmp_path), send_to_topic=send,
+            casa_framework_mcp_url="x", edit_topic_message=edit,
+            registry=FakeReg(),
+        )
+        events: list[dict] = []
+
+        async def fake_publish(event):
+            events.append(event)
+        drv._publish_bus_event = fake_publish
+        rec = _make_record()
+        (tmp_path / rec.id).mkdir()
+        rec.summary_message_id = 500
+        ctrl = drv._ensure_summary(rec)
+        ctrl.adopt_message_id(500)
+        return drv, rec, ctrl, send, events
+
+    @staticmethod
+    def _notices(send):
+        return [c.args[1] for c in send.await_args_list
+                if "not resumed" in c.args[1]]
+
+    async def test_mid_turn_death_stops_working_and_says_so(self, tmp_path):
+        from drivers.summary_controller import (
+            STATUS_WAITING_REPLY, STATUS_WORKING,
+        )
+        drv, rec, ctrl, send, events = self._driver(tmp_path)
+        await drv._on_stream_event(rec, "spawn", {"epoch": 1})
+        await drv._on_stream_event(rec, "turn_start", {})
+        assert ctrl._status == STATUS_WORKING
+        await drv._on_stream_event(rec, "spawn", {"epoch": 2})
+        assert ctrl._status == STATUS_WAITING_REPLY
+        assert ctrl._turn_running is False
+        assert len(self._notices(send)) == 1
+        respawn = [e for e in events if e.get("event") == "subprocess_respawn"]
+        assert len(respawn) == 1
+        assert "not resumed" in respawn[0]["detail"]
+        assert "restarted" not in respawn[0]["detail"]
+        assert "wait" not in respawn[0]["detail"]
+        # A replayed spawn frame for the same epoch posts nothing more.
+        await drv._on_stream_event(rec, "spawn", {"epoch": 2})
+        assert len(self._notices(send)) == 1
+        ctrl.shutdown()
+
+    async def test_normal_boundary_and_forced_suspend_say_nothing(
+        self, tmp_path,
+    ):
+        from drivers.summary_controller import STATUS_WAITING_REPLY
+        drv, rec, ctrl, send, events = self._driver(tmp_path)
+        await drv._on_stream_event(rec, "spawn", {"epoch": 1})
+        await drv._on_stream_event(rec, "turn_start", {})
+        await drv._on_stream_event(rec, "result", {"subtype": "success"})
+        await drv._on_stream_event(rec, "spawn", {"epoch": 2})
+        assert ctrl._status == STATUS_WAITING_REPLY
+        await drv._on_stream_event(rec, "turn_start", {})
+        drv._forced_suspend_epochs[rec.id] = 2
+        await drv._on_stream_event(rec, "spawn", {"epoch": 3})
+        assert self._notices(send) == []
+        assert [e for e in events
+                if e.get("event") == "subprocess_respawn"] == []
+        ctrl.shutdown()
+
+    async def test_notice_precedes_redelivery_and_reanchor(self, tmp_path):
+        """d1: the notice lands above a queued message the respawn delivers
+        and above a re-anchored question, which must stay last."""
+        drv, rec, ctrl, send, events = self._driver(tmp_path)
+        order: list[str] = []
+
+        class _Spool:
+            async def on_spawn(self):
+                order.append("redeliver")
+
+            async def on_turn_start(self):
+                pass
+
+        async def reanchor(_rec):
+            order.append("reanchor")
+
+        orig_notice = drv.post_topic_notice
+
+        async def notice(eng, text, reply_to=None):
+            order.append("notice")
+            return await orig_notice(eng, text, reply_to)
+        drv._inbound[rec.id] = _Spool()
+        drv._consume_reanchor = reanchor
+        drv.post_topic_notice = notice
+        await drv._on_stream_event(rec, "spawn", {"epoch": 1})
+        await drv._on_stream_event(rec, "turn_start", {})
+        order.clear()
+        await drv._on_stream_event(rec, "spawn", {"epoch": 2})
+        assert order == ["notice", "redeliver", "reanchor"]
+        ctrl.shutdown()
+
+    async def test_death_before_turn_start_is_not_a_lost_turn(self, tmp_path):
+        """r1: a run killed before its turn_start (waiting on the FIFO, or
+        dying while starting) lost no turn — its message is delivered again.
+        No notice; the observer hears a true account."""
+        drv, rec, ctrl, send, events = self._driver(tmp_path)
+        await drv._on_stream_event(rec, "spawn", {"epoch": 1})
+        await drv._on_stream_event(rec, "spawn", {"epoch": 2})
+        assert self._notices(send) == []
+        respawn = [e for e in events if e.get("event") == "subprocess_respawn"]
+        assert len(respawn) == 1
+        assert "not resumed" not in respawn[0]["detail"]
+        assert "delivered again" in respawn[0]["detail"]
+        ctrl.shutdown()

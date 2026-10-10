@@ -63,6 +63,23 @@ _REDIRECT_PREFIX = (
     "[OPERATOR REDIRECT — drop your current agenda, re-plan from this message]"
 )
 _RECEIPT_COPY = "📥 Received — I'll get to this after the current step."
+
+# #1416: a run that dies mid-turn is not resumed — the respawned run script
+# waits for the operator's next message. What the topic and the observer hear.
+# Past facts only (d1): a message queued during the dead turn is delivered
+# right after this, so neither text may claim the engagement is waiting.
+_TURN_LOST_NOTICE = (
+    "⚠️ The agent stopped unexpectedly before finishing its turn, and that "
+    "turn was not resumed. Your next message here carries on from there."
+)
+_TURN_LOST_DETAIL = (
+    "the agent's process stopped unexpectedly before finishing its turn; "
+    "that turn was not resumed, and the topic was told"
+)
+_RUN_LOST_BEFORE_TURN_DETAIL = (
+    "the agent's process stopped before it started a turn and was started "
+    "again; any message it had been given but not yet begun is delivered again"
+)
 # §4 boot reconciliation: appended below an open question's stored text when a
 # restart orphans it. This is the RESTART-orphaned copy — distinct from the
 # live-ask expiry settle (``channel_handlers._SETTLE_EXPIRED``, which becomes
@@ -5529,10 +5546,24 @@ class ClaudeCodeDriver(DriverProtocol):
                 # this new spawn — abnormal exit. ``result`` is at-most-once,
                 # so a spawn-without-result is an equally valid turn boundary.
                 abnormal = self._log_abnormal_exit(engagement, prev)
+            # #1416 (r1): only a run that died AFTER its turn_start lost a
+            # turn. One that died before it (killed while waiting on the FIFO,
+            # or before starting) had its delivered message reverted to queued
+            # by ``on_spawn`` below, which delivers it again.
+            turn_lost = abnormal and self._turn_running.get(eng_id, False)
             # A new spawn means the prior turn ended (result) or died
             # (abnormal) — no turn is running until turn_start.
             self._turn_running[eng_id] = False
             self._epoch_pending[eng_id] = epoch
+            if turn_lost:
+                # #1416: the dead turn is not resumed — its envelope was
+                # consumed at its turn_start, so the new run script waits on
+                # the FIFO for the operator's next message. Stop "working" and
+                # say so BEFORE on_spawn, so the notice lands above a
+                # redelivered queued turn and above a re-anchored question
+                # (which stays last). ``_epoch_pending`` is already set, so a
+                # replayed spawn frame cannot post it twice.
+                await self._note_turn_lost(engagement)
             spool = self._inbound.get(eng_id)
             if spool is not None:
                 await spool.on_spawn()
@@ -5551,8 +5582,8 @@ class ClaudeCodeDriver(DriverProtocol):
                     "engagement_id": eng_id,
                     "previous_epoch": prev,
                     "new_epoch": epoch,
-                    "detail": ("the previous run exited before finishing "
-                               "its turn and was restarted"),
+                    "detail": (_TURN_LOST_DETAIL if turn_lost
+                               else _RUN_LOST_BEFORE_TURN_DETAIL),
                     "ts": time.time(),
                 })
         elif kind == "turn_start":
@@ -5676,6 +5707,26 @@ class ClaudeCodeDriver(DriverProtocol):
                 await self._summary_status_transition(
                     eng_id, STATUS_WAITING_REPLY)
                 await summary.note_turn_end()
+
+    async def _note_turn_lost(self, engagement: EngagementRecord) -> None:
+        """#1416: a run died mid-turn and nothing resumes that turn. Move the
+        status line off "working" exactly as a ``result`` does, and tell the
+        topic plainly (past facts plus what to do; no claim about live state).
+        The notice is best-effort: a failed send is logged, never retried."""
+        eng_id = engagement.id
+        summary = self._summaries.get(eng_id)
+        if summary is not None:
+            from drivers.summary_controller import STATUS_WAITING_REPLY
+            await self._summary_status_transition(eng_id, STATUS_WAITING_REPLY)
+            await summary.note_turn_end()
+        try:
+            posted = await self.post_topic_notice(engagement, _TURN_LOST_NOTICE)
+        except Exception:  # noqa: BLE001 — the notice is best-effort
+            posted = False
+        if not posted:
+            logger.warning(
+                "engagement %s: could not post the turn-lost notice",
+                eng_id[:8])
 
     def _log_abnormal_exit(
         self, engagement: EngagementRecord, epoch: int | None,
