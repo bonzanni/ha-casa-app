@@ -15480,18 +15480,31 @@ async def _reload_and_verify_targets(name: str, targets: list,
     ok = (not snapshot_raced and not reload_errors
           and _postcondition_holds(verify, targets, expect=expect,
                                    name=name, runtime=runtime))
-    # #222/#231: the reload+reconcile above activated this plugin mutation
-    # IN-PROCESS. The configurator persists it with a config_git_commit that
-    # runs AFTER this sequencer returns; that commit would arm the reload
-    # obligation for state that is already live. Record this engagement as
-    # pre-activated so config_git_commit declines to arm the obligation for the
-    # plugin-registry persist commit — but ONLY when the whole activation truly
-    # succeeded (postcondition holds AND trigger reconcile ran). A failed
-    # activation must leave the defensive guard armed (Sol/Terra review).
-    if ok and reconcile_ok:
-        eng = engagement_var.get(None)
-        if eng is not None:
-            _ENGAGEMENTS_PREACTIVATED.add(eng.id)
+    # #1436: Casa commits the registry write itself, scoped to that file — the
+    # configurator skipped the persist commit whenever it had made no edit of
+    # its own, leaving /config dirty. When this commit lands, the reload
+    # obligation is decided here exactly as config_git_commit decides it for a
+    # plugins-only commit: none for a fully activated change, armed for one
+    # whose activation did not fully succeed (the defensive guard, Sol/Terra).
+    import config_git
+    eng = engagement_var.get(None)
+    activated = ok and reconcile_ok
+    sha = await asyncio.to_thread(
+        config_git.commit_casa_write, str(plugin_registry.REGISTRY_PATH),
+        f"casa: plugin {name} registry change")
+    if sha:
+        if eng is not None and not activated:
+            _ENGAGEMENTS_PENDING_RELOAD.arm(eng.id, await asyncio.to_thread(
+                config_git.changed_paths, config_git.CONFIG_DIR, sha))
+    # #222/#231: no commit landed here (no repo, a git error), so the
+    # configurator's own config_git_commit persists it AFTER this sequencer
+    # returns; that commit would arm the reload obligation for state the
+    # reload+reconcile above already made live IN-PROCESS. Record this
+    # engagement as pre-activated so config_git_commit declines to arm it for
+    # the plugin-registry persist commit — but ONLY when the whole activation
+    # truly succeeded (postcondition holds AND trigger reconcile ran).
+    elif activated and eng is not None:
+        _ENGAGEMENTS_PREACTIVATED.add(eng.id)
     mutation_issues = _issues_from_mutation(
         name, reload_errors=reload_errors, verify=verify,
         expect=expect, postcondition_ok=ok,

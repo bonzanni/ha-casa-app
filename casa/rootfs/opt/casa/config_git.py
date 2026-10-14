@@ -152,6 +152,34 @@ def commit_config(config_dir: str, message: str,
         return _run(config_dir, ["rev-parse", "HEAD"])
 
 
+# The config repo Casa's own writes are committed into. Module-level so a test
+# can point it at a temporary repo.
+CONFIG_DIR = "/config"
+
+
+def commit_casa_write(path: str, message: str) -> str:
+    """Commit the tracked file Casa itself just wrote at *path* (#1436).
+
+    Casa-side writers of tracked files (a plugin mutation's registry, a
+    reminder in a resident's ``triggers.yaml``) used to leave the commit to the
+    configurator, which skips it when it made no edit of its own, and a
+    resident cannot commit at all. Scoped to *path*, like the boot re-bind
+    (#1391). A path outside the config repo, or no repo, is a no-op; a git
+    failure is logged, never raised — the write itself already happened.
+    Returns the new sha, or ``""``.
+    """
+    root = os.path.abspath(CONFIG_DIR)
+    rel = os.path.relpath(os.path.abspath(path), root)
+    if rel.startswith(os.pardir) or not os.path.isdir(
+            os.path.join(root, ".git")):
+        return ""
+    try:
+        return commit_config(root, message, paths=[rel])
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("config_git: could not commit %s: %s", rel, exc)
+        return ""
+
+
 def commit_config_checked(
     config_dir: str,
     message: str,

@@ -581,6 +581,7 @@ _OBLIGATION = "_ENGAGEMENTS_PENDING_RELOAD"
 _AUTHORIZED = {
     ("<module>", "declaration"): 1,
     ("config_git_commit", "arm"): 1,
+    ("_reload_and_verify_targets", "arm"): 1,   # #1436: its own registry commit
     ("casa_reload", "discharge"): 1,
     ("casa_reload_triggers", "discharge"): 1,
     ("casa_restart_supervised", "discard"): 1,

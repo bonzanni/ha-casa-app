@@ -630,6 +630,14 @@ def add_entry(path: str, entry: dict) -> None:
     text_out = _emit(candidate, path)
     _validate_candidate(text_out, path, name)
     atomic_write_text(path, text_out)
+    _commit(path, f"casa: reminder {name} set")
+
+
+def _commit(path: str, message: str) -> None:
+    """#1436: a reminder write is committed to the config repo by Casa, since
+    the resident that made it cannot commit. Never raises."""
+    import config_git
+    config_git.commit_casa_write(path, message)
 
 
 @_under_pass_lock
@@ -694,6 +702,7 @@ def remove_entry(path: str, name: str) -> str:
         # false report about the operator's own configuration.
         with _PLACEHOLDER_LOCK:
             _placeholder_pending.add(path)
+    _commit(path, f"casa: reminder {name} removed")
     return "removed"
 
 

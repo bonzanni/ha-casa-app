@@ -251,3 +251,70 @@ async def test_changed_paths_failure_arms_and_consumes_credit(
     await _activate(monkeypatch, tmp_path, repo, "probe", "resident:assistant", engagement)
     await _commit("persist plugin probe")
     assert _state(engagement) == (1, 0)
+
+
+# ---------------------------------------------------------------------------
+# #1436: the plugin mutation commits the registry itself
+# ---------------------------------------------------------------------------
+
+def _git(repo: _Repo, *args: str) -> str:
+    import subprocess
+    return subprocess.check_output(
+        ["git", "-C", str(repo.root), *args], text=True).strip()
+
+
+async def test_plugin_mutation_commits_its_registry_write_itself(
+        monkeypatch, tmp_path, configurator_origin, engagement):
+    """#1436: a fully activated mutation leaves /config clean, in one commit
+    of its own that holds only the registry, and owes no reload — the
+    configurator's later commit finds nothing to record."""
+    import config_git
+    import plugin_registry as preg
+
+    repo = _config_repo(tmp_path, ())
+    monkeypatch.setattr(config_git, "CONFIG_DIR", str(repo.root))
+    monkeypatch.setattr(preg, "REGISTRY_PATH", repo.registry)
+    (repo.root / "agents" / "assistant" / "notes.md").write_text(
+        "unrelated\n", encoding="utf-8")
+    base = _git(repo, "rev-parse", "HEAD")
+    tools_mod, _ = _wire_activation(monkeypatch, tmp_path, repo, "probe")
+    r = await tools_mod.plugin_add.handler({
+        "name": "probe", "repo": "o/r", "ref": "v1",
+        "targets": ["resident:assistant"]})
+    assert json.loads(r["content"][0]["text"])["ok"] is True
+
+    subjects = _git(repo, "log", "--format=%s", f"{base}..HEAD").splitlines()
+    assert subjects == ["casa: plugin probe registry change"]
+    assert _git(repo, "diff-tree", "--no-commit-id", "--name-only", "-r",
+                "HEAD").splitlines() == ["plugins/registry.json"]
+    assert _git(repo, "status", "--porcelain") == (
+        "M agents/assistant/notes.md")       # the unrelated edit is not swept
+    assert _state(engagement) == (0, 0)
+
+
+async def test_unactivated_plugin_mutation_commit_still_arms_the_reload(
+        monkeypatch, tmp_path, configurator_origin, engagement):
+    """#1436 keeps the defensive guard: when the activation did not fully
+    succeed, the commit the mutation makes arms the reload obligation for the
+    registry, as the configurator's persist commit used to."""
+    import config_git
+    import plugin_registry as preg
+    import reload as reload_mod
+
+    repo = _config_repo(tmp_path, ())
+    monkeypatch.setattr(config_git, "CONFIG_DIR", str(repo.root))
+    monkeypatch.setattr(preg, "REGISTRY_PATH", repo.registry)
+    tools_mod, _ = _wire_activation(monkeypatch, tmp_path, repo, "probe")
+
+    async def failing_dispatch(scope, *, runtime, role=None):
+        return {"status": "error", "kind": "boom"}
+
+    monkeypatch.setattr(reload_mod, "dispatch", failing_dispatch)
+    r = await tools_mod.plugin_add.handler({
+        "name": "probe", "repo": "o/r", "ref": "v1",
+        "targets": ["resident:assistant"]})
+    assert json.loads(r["content"][0]["text"])["ok"] is False
+    assert _git(repo, "status", "--porcelain") == ""
+    assert _state(engagement) == (1, 0)
+    assert tools_mod._ENGAGEMENTS_PENDING_RELOAD._owed[engagement.id].keys() \
+        == {"plugins/registry.json"}

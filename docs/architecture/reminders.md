@@ -57,6 +57,9 @@ default as "image wins" and would have deleted every pending reminder on such an
 That file is gone: `triggers.yaml` is now reconciled *per entry*, so an entry the image has
 never shipped is preserved rather than dying with the file
 ([`architecture/config-reconciliation.md`](config-reconciliation.md)).
+Because that file is tracked by the config repository and a resident cannot commit, the
+writer commits each add and each removal itself, scoped to that one file
+(`config_git.commit_casa_write`); a git failure is logged and never fails the write.
 
 **Ownership is data, and is never inferred from an entry's content.** The schema permits an
 operator to write a `reminder-`-prefixed dated one-shot of their own, so neither the
