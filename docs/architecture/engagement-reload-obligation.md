@@ -48,6 +48,14 @@ re-materialization writes nothing (INV-SPEC-019, in
 [`architecture/specialist-lifecycle.md`](specialist-lifecycle.md)): without that, boot and
 every specialist-tier reload left specialist operational files in the next commit.
 
+The mutation now makes that persist commit itself, right after its reload and verification:
+`_reload_and_verify_targets` commits `plugins/registry.json` alone, so `/config` is not left
+dirty when the configurator, having made no edit of its own, skips its commit. When that commit
+lands it is decided as the configurator's would be: a fully activated change arms nothing and
+earns no credit; one that did not fully succeed arms the registry path. The credit above is
+earned only when that commit does not land — no config repository, or a git failure — and the
+configurator's own commit then persists the change as before.
+
 What it does not cover: which reload discharges the obligation — that is INV-TOOL-012. A
 commit that mixes plugin and other paths arms, even when the other paths are derived files that
 a changed input rewrote once.

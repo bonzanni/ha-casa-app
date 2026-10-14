@@ -4,7 +4,7 @@
 
 Every completion path is the same three tool calls, in this order:
 
-1. **Commit.** Call `config_git_commit(message="<imperative sentence>")`. Skip only if you made zero file edits.
+1. **Commit.** Call `config_git_commit(message="<imperative sentence>")`. Skip only if nothing you did changed a file — a tool that writes one counts (`config_trigger_upsert`, `specialist_install_commit`, …), not just your own edits. When unsure, call it: a commit with nothing to record returns an empty SHA, which is harmless. (The `plugin_*` tools commit `plugins/registry.json` themselves.)
 2. **Reload (if needed).** Call `casa_reload()` (hard) or `casa_reload_triggers(role)` (soft). Skip ONLY for none-reload changes (prompts, doctrine). Consult `reload.md` to pick the right scope.
 3. **Emit completion.** Call `emit_completion(...)` with a structured summary.
 

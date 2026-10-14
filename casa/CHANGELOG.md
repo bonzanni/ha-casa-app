@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.344.92] - 2026-10-14
+
+### Fixed
+
+- Updating, adding or removing a plugin, and setting or cancelling a reminder, could leave the change uncommitted in the `/config` history until a later, unrelated change swept it in. Casa now commits these changes itself, each in its own commit. (#1436)
+
 ## [0.344.91] - 2026-10-11
 
 ### Fixed
