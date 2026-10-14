@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.344.94] - 2026-10-14
+
+### Fixed
+
+- After adding a scheduled trigger that starts a plugin's job, such as the daily bank sync, the configurator could report that the trigger "will not actually run" and suggest giving the assistant that plugin, destructive tools included. The trigger did run: a job of a specialist's plugin runs on that specialist, and the assistant needs no access to the plugin. The configurator now reports such a trigger as set and names who runs it, and neither it nor the assistant suggests giving the assistant a plugin you did not ask for. (#1437)
+
 ## [0.344.93] - 2026-10-14
 
 ### Fixed
