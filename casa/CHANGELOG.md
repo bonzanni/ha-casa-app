@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.344.93] - 2026-10-14
+
+### Fixed
+
+- An agent's reply or question in an engagement topic is sent as a reply to your message. If you deleted that message before the agent answered, the answer failed to send. It now posts without the reply link. (#1434)
+
 ## [0.344.92] - 2026-10-14
 
 ### Fixed

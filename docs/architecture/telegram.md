@@ -115,7 +115,8 @@ records a reply target that whichever output posts first this turn consumes — 
 deferred reply, or an ask keyboard. It is one-shot, so later output in the same turn is not a
 reply. Consumption is tied to success: a send that fails or is cancelled restores the target
 so the next successful output still threads, and restoring never overwrites a newer target
-set by a later envelope.
+set by a later envelope. A target the operator has deleted meanwhile does not fail the send:
+the output posts without the reply link.
 
 **Text leaves for the Bot API through one request seam, and a character the platform cannot
 carry is replaced there.** The client library sends every request as UTF-8 form data, so a

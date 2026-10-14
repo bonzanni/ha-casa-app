@@ -222,6 +222,15 @@ def _install_telegram_stubs() -> None:
 
     tg.ReactionTypeEmoji = _FakeReactionTypeEmoji
 
+    # #1434: reply threading — keeps the constructor kwargs for inspection.
+    class _FakeReplyParameters:
+        def __init__(self, message_id, *, allow_sending_without_reply=None,
+                     **kw):
+            self.message_id = message_id
+            self.allow_sending_without_reply = allow_sending_without_reply
+
+    tg.ReplyParameters = _FakeReplyParameters
+
     tg_ext = types.ModuleType("telegram.ext")
     tg_ext.Application = MagicMock()
     tg_ext.ContextTypes = MagicMock()

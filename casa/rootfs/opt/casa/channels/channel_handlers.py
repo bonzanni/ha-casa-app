@@ -432,8 +432,13 @@ def _make_send_to_topic(
             # #332: the turn's first output threads to the inbound operator
             # message — consume the one-shot target; a failed send restores it.
             reply_to = _consume_turn_reply_to(driver, engagement_id)
-            _kw = ({"reply_to_message_id": reply_to}
-                   if reply_to is not None else {})
+            _kw: dict = {}
+            if reply_to is not None:
+                # #1434: a deleted target posts the reply unthreaded instead
+                # of failing the send.
+                from telegram import ReplyParameters
+                _kw["reply_parameters"] = ReplyParameters(
+                    message_id=reply_to, allow_sending_without_reply=True)
             try:
                 mid = await telegram_channel.send_response_to_topic(
                     topic_id, text, **_kw)
