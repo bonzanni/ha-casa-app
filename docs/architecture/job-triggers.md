@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-10-06
+last_reviewed: 2026-10-14
 ---
 
 # Job triggers: a schedule that starts a plugin job
@@ -29,8 +29,11 @@ schema makes `job`, `prompt` and `prompt_file` mutually exclusive on every sched
 lets a `date` entry carry a job instead of a prompt, ties `task` and `context` to `job`,
 forbids `clearance` on a job entry and requires its channel to be `telegram`; a webhook entry
 may carry none of the three keys. The typed upsert refuses a job the resident cannot start now
-(`job_not_declared`) and a channel other than Telegram (`job_needs_text_channel`), before
-anything is written. Registration checks only the channel, never whether the job is
+(`job_not_declared`, listing the jobs it can start) and a channel other than Telegram
+(`job_needs_text_channel`), before anything is written; its `ok` names the host the job would
+start on now (`job_host`, `specialist:<role>` for a delegate's plugin) and says, for a delegate
+host, that the resident needs no assignment of the plugin, so a working entry is never reported
+as one that needs a wider grant to run. Registration checks only the channel, never whether the job is
 startable, so a job whose plugin was unassigned later can never stop Casa from booting.
 Instead each fire that cannot start the job tells the operator once.
 

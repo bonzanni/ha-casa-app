@@ -158,6 +158,35 @@ comes from, not against a list of tool names.
 
 Removing the trigger later deletes the file it names (see remove.md).
 
+## A trigger that starts a plugin job (`job`)
+
+An interval, cron or date trigger can start a plugin's background job instead of
+running a resident turn. It carries `job` and no prompt, its channel is
+`telegram`, and it may add a `task` and a `context` for the job:
+
+    config_trigger_upsert(role="assistant", name="bank-sync", type="cron",
+                          schedule="0 7 * * *", channel="telegram",
+                          job="bank-feed:daily-sync")
+
+- **The name is `<plugin manifest name>:<job name>`**: the plugin's own name,
+  without the prefix its registry entry may carry (`bank-feed`, not
+  `finance.bank-feed`). When the upsert refuses with `job_not_declared`, its
+  message lists every job this resident can start, spelled as the field wants
+  it: use one of those names.
+- **The upsert checks the job, so its `ok` means the job is startable now.** It
+  accepts only a job this resident can start now, from a plugin assigned to the
+  resident itself or to one of its delegates, and its result names where the job
+  would start (`job_host`). Each fire resolves the host again and starts the job
+  if it still can. When
+  `job_host` is a specialist, the job runs on that delegate: the resident needs no assignment of the plugin, and the plugin
+  missing from the resident's own assignments says nothing about the trigger.
+  Report the trigger as set and name who runs it.
+- **Never propose assigning the plugin to the resident to make a job trigger
+  run.** When the job is not startable, report the refusal and the startable
+  list. If the plugin belongs to a specialist that is not one of the resident's
+  delegates, the way is wiring that delegate (`recipes/delegate/wire.md`): say
+  so and let the operator decide.
+
 ## Reload — MANDATORY before emit_completion
 
 **Soft** - casa_reload_triggers(role). No restart needed. Canonical order:

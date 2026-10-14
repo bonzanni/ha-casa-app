@@ -31,3 +31,9 @@ manifest at small bank scale — re-run these when the `casa` bank grows 10–10
   call `emit_completion` on its launch turn but does once the person says they are done,
   and, in a long resumed session (`--history`), the resident does not relay a completion
   summary's "the topic will stay open" as fact. `--root` measures another tree.
+- `configurator_job_trigger.py` — live-model check (#1437): asked to add a cron trigger whose
+  `job` is a delegate's plugin job (`bank-feed:daily-sync`, the plugin registered as
+  `finance.bank-feed` on the finance specialist), the configurator writes it as given, completes,
+  and neither says it will not run nor proposes assigning the plugin to the assistant. Runs locally
+  with `--cli`; `--root` measures another tree (the real configurator prompt and doctrine, fake
+  tools with the tree's production descriptions).

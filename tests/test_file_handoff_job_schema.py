@@ -114,21 +114,71 @@ async def test_the_upsert_refuses_an_unstartable_job_and_a_non_telegram_channel_
     out = _payload(await tools_mod.config_trigger_upsert.handler({"role": "butler", **CRON_JOB}))
     assert out["status"] == "error" and out["kind"] == "job_not_declared"
     assert [t["name"] for t in _read(runtime)["triggers"]] == ["heartbeat"]           # nothing written
-    monkeypatch.setattr(background_jobs, "find_job_host", lambda job, caller, delegates: object())
+    monkeypatch.setattr(background_jobs, "find_job_host", lambda job, caller, delegates: _host("resident", "butler"))
     out = _payload(await tools_mod.config_trigger_upsert.handler({"role": "butler", **CRON_JOB, "channel": "voice"}))
     assert out["status"] == "error" and out["kind"] == "job_needs_text_channel"
     assert [t["name"] for t in _read(runtime)["triggers"]] == ["heartbeat"]
+
+
+def _host(kind, role):
+    from types import SimpleNamespace
+    return SimpleNamespace(kind=kind, role=role)
 
 
 async def test_the_upsert_writes_a_startable_telegram_job_entry(runtime, configurator_origin, monkeypatch):
     import background_jobs
     _write(runtime, [HEARTBEAT])
     monkeypatch.setattr(tools_mod, "_agent_role_map", {"butler": type("C", (), {"delegates": []})()}, raising=False)
-    monkeypatch.setattr(background_jobs, "find_job_host", lambda job, caller, delegates: object())
+    monkeypatch.setattr(background_jobs, "find_job_host", lambda job, caller, delegates: _host("resident", "butler"))
     out = _payload(await tools_mod.config_trigger_upsert.handler({"role": "butler", **CRON_JOB}))
     assert out["status"] == "ok"
     written = [t for t in _read(runtime)["triggers"] if t["name"] == "quarterly-check"][0]
     assert written["job"] == "quarterly-accounting:quarterly-check" and written["task"] == "Run the weekly check."
+
+
+async def test_the_upsert_ok_names_a_delegate_host_and_says_the_resident_needs_no_assignment(runtime, configurator_origin, monkeypatch):
+    """#1437: the configurator read a working delegate-hosted job trigger as one that
+    'will not run' and proposed assigning the plugin to the resident. The ok result
+    names where the job starts, and for a delegate host that the resident needs no
+    assignment of the plugin."""
+    import background_jobs
+    _write(runtime, [HEARTBEAT])
+    seen = {}
+
+    def find(job, caller, delegates):
+        seen["delegates"] = list(delegates)
+        return _host("specialist", "finance")
+    monkeypatch.setattr(tools_mod, "_agent_role_map",
+                        {"butler": type("C", (), {"delegates": [type("D", (), {"agent": "finance"})()]})()},
+                        raising=False)
+    monkeypatch.setattr(background_jobs, "find_job_host", find)
+    out = _payload(await tools_mod.config_trigger_upsert.handler({"role": "butler", **CRON_JOB}))
+    assert out["status"] == "ok" and out["job_host"] == "specialist:finance"
+    assert seen["delegates"] == ["finance"]
+    assert "startable now, on specialist:finance" in out["message"]
+    assert "Each fire resolves the host again" in out["message"]
+    assert "butler needs no assignment of that plugin" in out["message"]
+    assert "casa_reload_triggers(role='butler')" in out["message"]
+
+
+async def test_the_upsert_ok_names_a_resident_host_through_its_own_assignment(runtime, configurator_origin, monkeypatch):
+    import background_jobs
+    _write(runtime, [HEARTBEAT])
+    monkeypatch.setattr(tools_mod, "_agent_role_map", {"butler": type("C", (), {"delegates": []})()}, raising=False)
+    monkeypatch.setattr(background_jobs, "find_job_host", lambda job, caller, delegates: _host("resident", "butler"))
+    out = _payload(await tools_mod.config_trigger_upsert.handler({"role": "butler", **CRON_JOB}))
+    assert out["status"] == "ok" and out["job_host"] == "resident:butler"
+    assert "butler itself, through its own assignment of that plugin" in out["message"]
+    assert "needs no assignment" not in out["message"]
+
+
+async def test_a_prompt_entry_ok_carries_no_job_host(runtime, configurator_origin):
+    _write(runtime, [HEARTBEAT])
+    out = _payload(await tools_mod.config_trigger_upsert.handler(
+        {"role": "butler", "name": "p", "type": "cron", "schedule": "0 7 * * 1",
+         "channel": "telegram", "prompt": "hello"}))
+    assert out["status"] == "ok" and "job_host" not in out
+    assert "startable" not in out["message"]
 
 
 def test_the_loader_builds_a_job_entry_without_resolving_any_prose(tmp_path):

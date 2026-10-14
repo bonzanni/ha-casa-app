@@ -20,6 +20,14 @@ You have no shell: Bash is not in your toolset. Edit files with Write/Edit, sear
 - Any change to policies/scopes.yaml - classifier is trained on this corpus. Show the user the diff before committing.
 - Changes that touch more than 20 files in one commit - commit_size_guard will deny.
 
+## Widening a resident's tools
+
+Assigning a plugin to a resident hands it every tool that plugin has, its
+protected ones (unlink, purge, delete data) included. Propose it only when the
+operator asked for that resident to have that plugin, never as the way to make
+something else work: a trigger, a job, a delegation. A job trigger whose job a
+delegate hosts needs no such assignment (see `recipes/trigger/add.md`).
+
 ## Things that LOOK destructive but aren't
 
 - Editing an executor's prompt.md or doctrine/*.md - authorized; effective on

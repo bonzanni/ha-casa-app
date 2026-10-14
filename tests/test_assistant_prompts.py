@@ -1208,13 +1208,19 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # on. Measured with `difflib` over base-vs-new compiled text, word by word:
 # exactly ONE `insert` on `assistant:text`, that sentence; the eight other
 # carriers byte-identical. No retention claim.
+# MOVED 2026-10-14 (#1437), the three `assistant:*` carriers. The Core
+# doctrine's completion-relay paragraph gains one sentence: never offer or
+# propose to have a plugin assigned to you unless the person asked for that
+# plugin's tools. Measured with `difflib` over base-vs-new compiled text, word
+# by word: exactly ONE `insert` on each `assistant:*` carrier, that sentence;
+# the six other carriers byte-identical. No retention claim.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
-        "1a3816327f56d5364f1fb63a8a5ee0a317a64e1f5c279b633e92389743fcde52",
+        "fe02798ee4a6221d05e9b65d31ff11181bb4116faa688abb89b11ef2171a1a71",
     "assistant:text":
-        "c8fabf1a4d0c0ac35ebbb7eddf1eb271e2c7ad3b9271d0eda794b85a893f9de6",
+        "a1f01f62ad0a28c5c1a48ac46908b79d771ea93c77fef0e5092f50c8c4e4b1fc",
     "assistant:voice":
-        "75fafada7e181825c5a8b1fe51cce313f470cd9bfe360bfc7a04f42b5c3a12e7",
+        "3ec576745d3234f0c5b198afffcf4e067abe8eefacc3cd56078fa931bfd3c053",
     "butler:restricted_webhook":
         "e3aa4424b24b053a11a9c04d7b6428a8bc1fc90f4b58504ab34d70279037cacc",
     "butler:text":

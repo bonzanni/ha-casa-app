@@ -13830,7 +13830,11 @@ def _resident_triggers_path(role: str) -> "tuple[str | None, dict | None]":
     "against the triggers schema and leaves every other entry untouched — this "
     "is the ONLY way to write that file; hand-editing it is denied, because a "
     "resident's reminder tools write the same file from another writer and a "
-    "hand edit silently discards whatever landed since you read it. Does NOT "
+    "hand edit silently discards whatever landed since you read it. A `job` "
+    "entry (`<plugin manifest name>:<job name>`, no prompt) is checked here: "
+    "the call refuses a job the resident cannot start (`job_not_declared`, "
+    "listing the jobs it can), and its ok result names where each fire starts "
+    "the job (`job_host`). Does NOT "
     "commit or reload: follow with config_git_commit + casa_reload_triggers. "
     "Restricted to the configurator executor role.",
     {"type": "object",
@@ -13848,6 +13852,7 @@ async def config_trigger_upsert(args: dict) -> dict:
         return err
 
     entry = {k: args[k] for k in _TRIGGER_ENTRY_FIELDS if k in args}
+    host = None
     if entry.get("job"):
         # S6 §3.2: a job entry is judged here, at the write — the launcher's own
         # text-channel rule, then startability by THIS resident now (the fire
@@ -13858,7 +13863,8 @@ async def config_trigger_upsert(args: dict) -> dict:
         import background_jobs
         cfg = _agent_role_map.get(role)
         delegates = [d.agent for d in (getattr(cfg, "delegates", None) or [])]
-        if background_jobs.find_job_host(str(entry["job"]), role, delegates) is None:
+        host = background_jobs.find_job_host(str(entry["job"]), role, delegates)
+        if host is None:
             names = [h.decl.qualified_name for h in background_jobs.startable_jobs(role, delegates)]
             return _result({"status": "error", "kind": "job_not_declared",
                             "message": "Startable jobs: " + (", ".join(names) or "none")})
@@ -13875,12 +13881,32 @@ async def config_trigger_upsert(args: dict) -> dict:
     except (OSError, ValueError) as exc:
         return _result({"status": "error", "kind": "trigger_write_refused",
                         "message": str(exc)})
-    return _result({
-        "status": "ok", "outcome": outcome, "role": role, "name": entry["name"],
-        "message": (f"{entry['name']} {outcome} in {role}/triggers.yaml — now "
-                    f"commit and reload: config_git_commit then "
-                    f"casa_reload_triggers(role={role!r})"),
-    })
+    out = {"status": "ok", "outcome": outcome, "role": role, "name": entry["name"]}
+    host_ref = None
+    if host is not None:
+        host_ref = f"{host.kind}:{host.role}"
+        out["job_host"] = host_ref
+    out["message"] = _upsert_ok_message(entry["name"], outcome, role,
+                                        job=entry.get("job"), host=host_ref)
+    return _result(out)
+
+
+def _upsert_ok_message(name: str, outcome: str, role: str, *,
+                       job: "str | None" = None, host: "str | None" = None) -> str:
+    """The ok message of ``config_trigger_upsert``. #1437: for a job entry it
+    states where the job starts, so the configurator never reports a startable
+    job as one that will not run, nor a plugin grant to the resident as needed."""
+    msg = (f"{name} {outcome} in {role}/triggers.yaml — now commit and reload: "
+           f"config_git_commit then casa_reload_triggers(role={role!r})")
+    if job and host:
+        if host.startswith("specialist:"):
+            where = (f"{host}, one of {role}'s delegates, which holds the plugin; "
+                     f"{role} needs no assignment of that plugin for it")
+        else:
+            where = f"{role} itself, through its own assignment of that plugin"
+        msg += (f". Job {job} is startable now, on {where}. Each fire resolves "
+                f"the host again and starts the job if it still can.")
+    return msg
 
 
 @tool(
