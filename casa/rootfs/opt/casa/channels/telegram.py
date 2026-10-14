@@ -4802,7 +4802,10 @@ class TelegramChannel(Channel):
 
         _send_kwargs: dict = {}
         if reply_to is not None:
-            _send_kwargs["reply_to_message_id"] = reply_to
+            # #1434: a deleted target posts the ask unthreaded (still one send).
+            from telegram import ReplyParameters
+            _send_kwargs["reply_parameters"] = ReplyParameters(
+                message_id=reply_to, allow_sending_without_reply=True)
 
         if multi:
             kbd = _build_multi_keyboard(request_id, options, captions, selected=())

@@ -261,7 +261,10 @@ async def test_deferred_reply_first_output_threads_to_inbound(
         assert body["ok"] is True
 
     assert len(ch.calls) == 1
-    assert ch.calls[0]["kwargs"].get("reply_to_message_id") == 555
+    rp = ch.calls[0]["kwargs"]["reply_parameters"]
+    assert rp.message_id == 555
+    # #1434: a deleted inbound message must not fail the reply.
+    assert rp.allow_sending_without_reply is True
     assert driver.reply_target is None  # consumed by the successful post
 
 

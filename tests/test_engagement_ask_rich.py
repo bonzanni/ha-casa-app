@@ -148,7 +148,9 @@ async def test_post_options_keyboard_forwards_reply_to():
             options=["Yes", "No"], reply_to=555,
         )
     kw = bot.send_message.await_args.kwargs
-    assert kw["reply_to_message_id"] == 555
+    assert kw["reply_parameters"].message_id == 555
+    # #1434: a deleted inbound message must not fail the ask.
+    assert kw["reply_parameters"].allow_sending_without_reply is True
     # and omitting it adds nothing
     ch2, bot2 = _mk_channel_with_fake_bot()
     ch2._engagement_registry = _fake_registry_with_topic()
@@ -158,7 +160,7 @@ async def test_post_options_keyboard_forwards_reply_to():
             engagement_id="e1", request_id="r1",
             question="Q", options=["Yes", "No"],
         )
-    assert "reply_to_message_id" not in bot2.send_message.await_args.kwargs
+    assert "reply_parameters" not in bot2.send_message.await_args.kwargs
 
 
 async def test_post_options_keyboard_plain_body_sends_raw():
