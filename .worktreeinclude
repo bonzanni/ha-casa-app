@@ -1,4 +1,4 @@
 .claude/settings.local.json
-.claude/ha-prod-console.yml
+.claude/ha-console.yml
 .claude/skills/
 .claude/agents/
