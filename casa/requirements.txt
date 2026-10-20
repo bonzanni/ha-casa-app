@@ -32,7 +32,7 @@ python-telegram-bot==22.7
 # malformed chunked response, fixed 3.14.3), #13 (GHSA-mfx4-hv73-q22v, request
 # smuggling via WebSocket upgrade) and #12 (GHSA-mq44-7p77-q5h7, WS client
 # accepted compressed frames without negotiated permessage-deflate), both 3.14.2.
-aiohttp==3.14.3
+aiohttp==3.14.4
 apscheduler==3.11.2
 pyyaml==6.0.3
 jsonschema==4.23.0
