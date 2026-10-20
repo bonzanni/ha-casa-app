@@ -79,6 +79,16 @@
   doc: architecture/config-reconciliation.md
 - item: casa/rootfs/opt/casa/delegated_memory.py
   doc: architecture/memory.md
+- item: casa/rootfs/opt/casa/handoff.py
+  doc: architecture/specialist-handoff.md
+- item: casa/rootfs/opt/casa/operator_calls.py
+  doc: architecture/plugin-operator-calls.md
+- item: casa/rootfs/opt/casa/run_admission.py
+  doc: architecture/plugin-operator-calls.md
+- item: casa/rootfs/opt/casa/plugin_bindings.py
+  doc: architecture/plugin-operator-calls.md
+- item: casa/rootfs/opt/casa/plugin_continuations.py
+  doc: architecture/plugin-continuations.md
 - item: casa/rootfs/opt/casa/drivers/brief.py
   doc: architecture/engagements.md
 - item: casa/rootfs/opt/casa/drivers/claude_code_driver.py
@@ -401,6 +411,8 @@
   doc: architecture/background-jobs.md
 - item: tool:delegate_to_agent
   doc: architecture/tools-interface.md
+- item: tool:hand_off
+  doc: architecture/specialist-handoff.md
 - item: tool:delete_engagement_workspace
   doc: architecture/tools-interface.md
 - item: tool:emit_completion
@@ -513,6 +525,16 @@
   doc: architecture/plugin-result-contract.md
 - item: route:casa/rootfs/opt/casa/casa_core.py:POST:/internal/broker/redeem
   doc: architecture/plugin-result-contract.md
+- item: route:casa/rootfs/opt/casa/casa_core.py:POST:/internal/broker/requester
+  doc: architecture/plugin-operator-calls.md
+- item: route:casa/rootfs/opt/casa/casa_core.py:POST:/internal/broker/run-admission
+  doc: architecture/plugin-operator-calls.md
+- item: route:casa/rootfs/opt/casa/casa_core.py:POST:/internal/broker/run-admission-status
+  doc: architecture/plugin-operator-calls.md
+- item: route:casa/rootfs/opt/casa/casa_core.py:POST:/internal/broker/continue
+  doc: architecture/plugin-operator-calls.md
+- item: route:casa/rootfs/opt/casa/casa_core.py:POST:/internal/broker/delivery-status
+  doc: architecture/plugin-operator-calls.md
 - item: route:casa/rootfs/opt/casa/casa_core.py:POST:/internal/hooks/resolve
   doc: architecture/mcp-and-tools.md
 - item: route:casa/rootfs/opt/casa/casa_core.py:POST:/internal/tools/call
@@ -633,6 +655,10 @@
   doc: architecture/voice.md
 - item: casa/rootfs/opt/casa/yaml_safety.py
   doc: architecture/persistent-state.md
+- item: env:CLAUDE_CONFIG_DIR
+  doc: architecture/plugin-continuations.md
+- item: env:HOME
+  doc: architecture/plugin-continuations.md
 - item: env:CALLBACK_RATE_PER_MIN
   doc: architecture/callbacks.md
 - item: env:CASA_BINDINGS_DIR

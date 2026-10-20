@@ -105,6 +105,10 @@ RESERVED_CONTEXT_KEYS = frozenset({
     # an authenticated operator sender; synthesized/scheduled/webhook turns
     # never carry it.
     "_operator_turn",
+    # Browser executor §5.5: the operator's own typed words for the turn —
+    # run admission reads nothing else, so a caller who could set it would
+    # admit runs in his name.
+    "_operator_words",
     # #1015: the role a Casa-dispatched plugin-setup turn is FOR — the
     # resident that runs the setup tool, or the specialist a courier turn
     # must delegate it to. Stamped only by the setup dispatch worker, beside
@@ -270,6 +274,11 @@ def turn_provenance() -> Provenance:
             transport = "button"
         elif marker in CASA_PLUGIN_TURN_TARGETS:
             transport = "setup"
+        elif marker == "continuation":
+            # browser executor §5.4: Casa's continuation of a plugin's run,
+            # rebuilt from its binding (plugin_continuations) — the operator's
+            # grant identity, no operator words
+            transport = "continuation"
         # any other marker value falls through, leaving transport "other"
 
     if tools_mod.engagement_var.get(None) is not None:

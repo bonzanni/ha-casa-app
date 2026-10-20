@@ -289,6 +289,9 @@ returns the path to pass to a plugin tool, is described in
 `vault_drop_off`, the assistant's one vault write, which stores a sign-in link in the
 drop-off a plugin declares instead of a delegation brief, is described in
 [`vault-drop-off.md`](vault-drop-off.md).
+`hand_off`, which a specialist answering a request uses to hand part of it to another
+specialist and wait for the answer, is described in
+[`specialist-handoff.md`](specialist-handoff.md).
 
 ## Extension points
 

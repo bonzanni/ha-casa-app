@@ -2023,6 +2023,10 @@ class TelegramChannel(Channel):
         # synthesized/scheduled/delegated turns never carry it.
         if self._sender_is_operator(user):
             context["_operator_turn"] = True
+            # Browser executor §5.5: the operator's own words for this turn —
+            # the text he typed (or a file's caption), on a reserved key
+            # stamped only here, so run admission never reads anything else.
+            context["_operator_words"] = content
         # #1314: a reply the desk did not take still tells the resident what
         # it answered — Casa's note, on a reserved key; the text stays raw.
         reply_note = self._reply_note_for(update, chat_id)
@@ -4549,6 +4553,10 @@ class TelegramChannel(Channel):
                 or BROKER.get_meta(
                     namespace="resident_ask", scope=f"authz:{chat}", request_id=rid,
                 )
+                # browser executor §5.3/§5.5: a plugin's operator question
+                or BROKER.get_meta(
+                    namespace="resident_ask", scope=f"ask:{chat}", request_id=rid,
+                )
             )
             if meta is None:
                 return
@@ -6320,6 +6328,33 @@ class TelegramChannel(Channel):
         else:
             _landed(await self._app.bot.send_message(chat_id=chat_id, text=_plain(text)))
         return DeliveryOutcome.DELIVERED
+
+    async def deliver_operator_question(self, chat_id: int, text: str, labels: list,
+                                        rid: str) -> "int | None":
+        """Browser executor §5.3/§5.5: post a plugin's operator question
+        (``operator_calls.ask_operator`` composed *text*: Casa's label line and
+        the validated body — the delivered-slot class, not model text) with one
+        button per label, ``callback_data = v1|resident_ask|<rid>|<i>``, so the
+        tap settles the waiting request through the resident-ask handler.
+        Returns the message id, or ``None`` when nothing landed."""
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+        if self._app is None:
+            logger.warning("Telegram channel not started; cannot deliver operator question")
+            return None
+        kbd = InlineKeyboardMarkup([
+            [InlineKeyboardButton(text=str(label),
+                                  callback_data=f"v1|resident_ask|{rid}|{i}")]
+            for i, label in enumerate(labels)])
+        try:
+            msg = await self._app.bot.send_message(
+                chat_id=chat_id, text=text, reply_markup=kbd)
+        except Exception as exc:  # noqa: BLE001 — not proven
+            logger.warning("deliver_operator_question send failed (chat=%s): %s",
+                           chat_id, type(exc).__name__)
+            return None
+        mid = getattr(msg, "message_id", None)
+        return mid if isinstance(mid, int) else None
 
     async def deliver_operator_proposal(self, chat_id: int, text: str, labels: list,
                                         rid: str, *, post=None):

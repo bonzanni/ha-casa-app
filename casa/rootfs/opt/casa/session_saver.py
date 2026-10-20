@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 from atomic_io import PRIVATE, atomic_write_json
 from channel_policy import writes_to_bank
+from delegated_memory import notice_from_excluded_role
 from claude_agent_sdk import get_session_messages
 from hindsight_ids import bank_id
 from memory_provenance import build_retain_items
@@ -170,6 +171,11 @@ async def transcript_to_items(
             ts, text = split_time_envelope(text)
             last_ts = ts
             if not text.strip():
+                continue
+            if notice_from_excluded_role(text):
+                # Browser executor §5.4: the notice embeds a specialist's own
+                # answer, and that specialist writes no memory; the resident's
+                # reply after it is its own words and is kept.
                 continue
             marked = scheduled is True and not _is_unmarked_user_turn(text.strip())
             turns.append(RetainedTurn(text, user_provenance, timestamp=ts,

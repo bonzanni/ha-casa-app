@@ -164,6 +164,21 @@ async def start_internal_unix_runner(
     internal_app.router.add_post(
         "/internal/broker/redeem", build_broker_redeem_handler(),
     )
+    # Browser executor §5.3–§5.6: during one of its `callsCasa` calls a
+    # plugin's code learns whom it serves, requests run admission, queues a
+    # continuation and reads a delivery's outcome — the same socket, the same
+    # client-id binding.
+    import operator_calls as _ops
+    internal_app.router.add_post("/internal/broker/requester",
+                                 _ops.build_requester_handler())
+    internal_app.router.add_post("/internal/broker/run-admission",
+                                 _ops.build_run_admission_handler())
+    internal_app.router.add_post("/internal/broker/run-admission-status",
+                                 _ops.build_run_admission_status_handler())
+    internal_app.router.add_post("/internal/broker/continue",
+                                 _ops.build_continue_handler())
+    internal_app.router.add_post("/internal/broker/delivery-status",
+                                 _ops.build_delivery_status_handler())
     # Task E.1 (granular-reload plan): casactl operator CLI POSTs here
     # over the unix socket. Same dispatch path as the casa_reload MCP tool.
     internal_app.router.add_post(
@@ -4585,6 +4600,11 @@ async def main() -> None:
     import plugin_handoff
     await plugin_handoff.wire(scheduler, casa_handoff.root_dir())
 
+    # Browser executor §5.4 (Plan 3 C11): once a minute, ask every plugin that
+    # declares a driver sweep which of its runs nothing is driving.
+    import plugin_continuations
+    plugin_continuations.register_sweep(scheduler)
+
     # The Telegram channel's default agent. Hoisted above agent construction
     # (#1036) so ONE variable decides both who receives Telegram DMs and who may
     # read the files sent in them — they can never drift apart.
@@ -6137,6 +6157,10 @@ async def _shutdown_cleanup(
     # tail is killed by `asyncio.run`'s final sweep before its write and the
     # SUCCEEDED delegation boots as "lost on restart" — the opposite of what
     # INV-JOB-009 publishes. Nothing here waits on a delegated RUN.
+    # Browser executor (Plan 3 C8): continuations still waiting or running are
+    # cancelled first — the driver sweep re-finds their runs after the boot.
+    import plugin_continuations
+    await plugin_continuations.CONTINUATIONS.drain()
     await _tools_mod.drain_delegation_settlements()
 
     # 17. Cleanup

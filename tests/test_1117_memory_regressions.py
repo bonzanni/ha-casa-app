@@ -23,6 +23,17 @@ from test_pin_1117_dated_marked_recall import (
     _scheduled_transcript, _ts, amsterdam,  # noqa: F401 — fixture re-export
 )
 
+@pytest.fixture(autouse=True)
+def _finance_is_loaded(monkeypatch):
+    """The notices these tests save come from a loaded specialist that writes
+    memory (browser executor INV-MEM-024 keeps an unloaded role's notice out)."""
+    import types as _types
+    import tools as _tools
+    monkeypatch.setattr(_tools, "_agent_role_map", {"finance": _types.SimpleNamespace(
+        kind="specialist", memory=_types.SimpleNamespace(token_budget=4000))},
+        raising=False)
+
+
 
 async def _never_saved(_document_id):
     """#1123: the stored-tier reader for a bank that holds nothing yet."""

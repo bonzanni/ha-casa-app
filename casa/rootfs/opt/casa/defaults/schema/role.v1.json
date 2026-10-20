@@ -19,7 +19,7 @@
     "mcp_servers": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
     "channels": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
     "memory": {"type": "object", "additionalProperties": false, "required": ["token_budget", "read_strategy"], "properties": {"token_budget": {"type": "integer", "minimum": 0}, "read_strategy": {"enum": ["per_turn", "cached"]}}},
-    "session": {"type": "object", "additionalProperties": false, "required": ["strategy", "idle_timeout_seconds"], "properties": {"strategy": {"enum": ["persistent", "pooled", "ephemeral"]}, "idle_timeout_seconds": {"type": "integer", "minimum": 0}}},
+    "session": {"type": "object", "additionalProperties": false, "required": ["strategy", "idle_timeout_seconds"], "properties": {"strategy": {"enum": ["persistent", "pooled", "ephemeral"]}, "idle_timeout_seconds": {"type": "integer", "minimum": 0}, "desk_context": {"type": "boolean"}}},
     "disclosure": {"type": "object", "additionalProperties": false, "required": ["policy", "overrides"], "properties": {"policy": {"type": "string", "minLength": 1}, "overrides": {"type": "object"}}},
     "delegates": {"type": "array", "items": {"type": "object"}},
     "executors": {"type": "array", "items": {"type": "object"}},

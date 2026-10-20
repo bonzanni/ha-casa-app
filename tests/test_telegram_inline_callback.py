@@ -905,6 +905,30 @@ class TestResidentCommitContract:
         outcome = await asyncio.wait_for(_fresh_broker.await_result(req), 0.1)
         assert outcome["option_index"] == 1
 
+    async def test_plugin_question_scope_also_resolves(
+        self, fake_telegram_bot, _fresh_broker,
+    ):
+        """Browser executor §5.3/§5.5: ask:<chat> — a plugin's operator
+        question (``operator_calls.ask_operator``) — resolves through the
+        same single-owner handler, operator-only."""
+        ch = _mk_dm_channel(fake_telegram_bot)
+        req = _seed_resident(
+            _fresh_broker, kind="ask", chat_id=710, rid="rid-ask",
+            options=("Allow", "Not now"),
+        )
+        stranger = _mk_dm_update(
+            data="v1|resident_ask|rid-ask|0", chat_id=710, user_id=12345,
+        )
+        await ch._on_inline_callback(stranger, context=None)
+        stranger.callback_query.answer.assert_awaited_once_with("not for you")
+        update = _mk_dm_update(
+            data="v1|resident_ask|rid-ask|0", chat_id=710, user_id=999,
+        )
+        await ch._on_inline_callback(update, context=None)
+        update.callback_query.answer.assert_awaited_once_with("✔")
+        outcome = await asyncio.wait_for(_fresh_broker.await_result(req), 0.1)
+        assert outcome["option_index"] == 0
+
     async def test_sync_step_raising_is_logged_and_commit_still_wins(
         self, fake_telegram_bot, _fresh_broker, caplog,
     ):

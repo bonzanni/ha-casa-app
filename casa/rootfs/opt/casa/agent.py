@@ -196,6 +196,9 @@ COPIED_CONTEXT_MARKERS = (
     "_webhook_deliver",
     # #1277: read only by ``background_jobs.job_started_by``.
     ANSWERED_BY_OPERATOR,
+    # Browser executor §5.5: the operator's own typed words (Telegram ingress,
+    # or his reply on a specialist's desk); read only by handoff.operator_words.
+    "_operator_words",
 )
 
 # Personality Task 14 / GH #199: the per-turn explanation draft. ``_build_options``

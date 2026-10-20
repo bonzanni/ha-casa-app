@@ -96,6 +96,16 @@ INV-PLUG-038, in [`plugin-erase-episode.md`](plugin-erase-episode.md). Until the
 same callback refuses the erasing plugin's tools, its setup tool included, on every other
 turn (INV-PLUG-042).
 
+**The broker also records a tool that calls Casa.** An entry may declare
+`"callsCasa": true` (the literal true, never on the setup tool); the admission callback
+then records the admitted call with its grant identity — denying it when there is none —
+and the result and failure hooks forget it. During the call the plugin's code learns whom
+it serves, requests run admission, queues a continuation and reads a delivered slot's
+outcome over five more routes on the same socket
+([`plugin-operator-calls.md`](plugin-operator-calls.md), INV-PLUG-051). A plugin may also
+name, in `casa.driverSweep`, one `safe` tool Casa calls itself once a minute
+([`plugin-continuations.md`](plugin-continuations.md)).
+
 ## Contracts & invariants
 
 **INV-PLUG-017**: In a resident, delegated-specialist, specialist-engagement or plugin-job-worker session that loads a plugin, a call to a non-setup MCP tool of a plugin that has not adopted the result contract is refused before it runs by a code-registered PreToolUse hook whose reason quotes none of the call's arguments, and a result arriving for such a tool is replaced before the model sees it by a code-registered PostToolUse hook whose replacement quotes none of the result's bytes; the plugin's exact setup tool is exempt from both, and no hooks document can shed either hook.

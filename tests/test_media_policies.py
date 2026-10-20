@@ -154,7 +154,7 @@ def test_exact_caps_and_extensions():
     # #565: text is capped BELOW the other send_document kinds, deliberately.
     assert MEDIA_POLICIES["text"].size_cap == 5 * 1024 * 1024
     assert MEDIA_POLICIES["text"].extensions == frozenset(
-        {".txt", ".md", ".csv", ".log", ".json", ".yaml", ".yml"})
+        {".txt", ".md", ".csv", ".log", ".json", ".yaml", ".yml", ".sta", ".940"})
 
 
 def test_zip_extension_list_is_what_confines_the_kind():

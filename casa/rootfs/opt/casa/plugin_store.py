@@ -1639,7 +1639,8 @@ _RC_PARAM_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
 _RC_MAX_TOOLS = 64
 _RC_MAX_SLOTS = 16
 _RC_RESULT_KINDS = ("safe", "capability")
-_RC_ENTRY_KEYS = frozenset({"result", "provides", "consumes", "delivers", "filename"})
+_RC_ENTRY_KEYS = frozenset({"result", "provides", "consumes", "delivers", "filename",
+                            "callsCasa"})
 # #1015: the closed vocabulary of delivered-slot kinds. `operator_link` is a
 # URL Casa posts to the operator's chat as one labelled-link message;
 # `operator_message` (S3) a text Casa posts verbatim, as pages headed by the
@@ -1722,7 +1723,7 @@ def manifest_result_contract(manifest: dict) -> dict | None:
         if unknown:
             raise _rc_error(
                 f"tool {name!r}: unknown member(s) {unknown}; allowed: "
-                "result, provides, consumes, delivers, filename")
+                "result, provides, consumes, delivers, filename, callsCasa")
         kind = entry.get("result")
         if kind not in _RC_RESULT_KINDS:
             raise _rc_error(
@@ -1796,6 +1797,17 @@ def manifest_result_contract(manifest: dict) -> dict | None:
                     f"tool {name!r}: filename is allowed only on a tool delivering "
                     "an operator_file slot")
             filename = True
+        # Browser executor §5.3–§5.6: `"callsCasa": true` — this tool's code
+        # may use Casa's operator-call routes while it runs (who it serves,
+        # run admission, continuations, delivery outcomes — ``operator_calls``).
+        # The literal true only; never on the setup tool.
+        calls_casa = False
+        if "callsCasa" in entry:
+            if entry.get("callsCasa") is not True:
+                raise _rc_error(f"tool {name!r}: callsCasa must be true when present")
+            if setup_tool is not None and sanitized == sanitize_segment(setup_tool):
+                raise _rc_error(f"tool {name!r}: the casa.setupTool cannot call Casa")
+            calls_casa = True
         if setup_tool is not None and sanitized == sanitize_segment(setup_tool):
             # #1015: a setup tool is either exempt (safe, consumes nothing)
             # or a fully delivered capability (every provided slot delivered,
@@ -1814,7 +1826,8 @@ def manifest_result_contract(manifest: dict) -> dict | None:
                      "consumes": consumes, "delivers": delivers,
                      # present only when declared: an undeclared entry
                      # normalises exactly as before S7a
-                     **({"filename": True} if filename else {})}
+                     **({"filename": True} if filename else {}),
+                     **({"calls_casa": True} if calls_casa else {})}
     delivered_slots = {slot for entry in out.values() for slot in entry["delivers"]}
     for name, entry in out.items():
         for param, slot in entry["consumes"].items():
@@ -1828,6 +1841,32 @@ def manifest_result_contract(manifest: dict) -> dict | None:
                     "which is delivered to the operator; a delivered slot is "
                     "consumed by no tool")
     return {"version": _RESULT_CONTRACT_VERSION, "tools": out}
+
+
+def manifest_driver_sweep(manifest: dict) -> "str | None":
+    """Browser executor §5.4 (Plan 3 C11): ``casa.driverSweep`` — the name of
+    the tool Casa calls once a minute, with no model and no arguments, to learn
+    which of the plugin's runs need a driver (``plugin_continuations``).
+    ABSENT → ``None``. Present, it must name a tool the plugin's result
+    contract declares ``safe`` with no ``consumes`` and no ``callsCasa`` (a
+    call outside any turn has no broker client, so it can neither redeem nor
+    call Casa); anything else raises ``StoreError(reason_code=
+    "driver_sweep_invalid")``."""
+    casa = manifest.get("casa")
+    if not isinstance(casa, dict) or "driverSweep" not in casa:
+        return None
+    name = casa.get("driverSweep")
+    def _bad(msg: str) -> StoreError:
+        return StoreError(f"casa.driverSweep: {msg}", reason_code="driver_sweep_invalid")
+    if not isinstance(name, str) or not _RC_TOOL_NAME_RE.fullmatch(name):
+        raise _bad("must be a tool name")
+    contract = manifest_result_contract(manifest)
+    entry = (contract or {}).get("tools", {}).get(name)
+    if (entry is None or entry["result"] != "safe" or entry["consumes"]
+            or entry.get("calls_casa")):
+        raise _bad(f"{name!r} must be a safe tool of the result contract that "
+                   "consumes nothing and calls nothing")
+    return name
 
 
 def manifest_protected_tools(manifest: dict) -> list:

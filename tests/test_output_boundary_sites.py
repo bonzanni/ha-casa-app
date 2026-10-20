@@ -94,6 +94,7 @@ EDIT_DM_MESSAGE_CALLERS = {
     ("plugin_erase_consent.py", "_finish_inner"): {"status"},      # #1046: fixed Keep/Erase/Cancel/expired statuses
     ("specialist_install_consent.py", "_finish_inner"): {"plugin"},
     ("trigger_consent.py", "_finish"): {"plugin"},
+    ("operator_calls.py", "_finish"): {"plugin"},                  # browser executor: a plugin's question, ☑ label / retired
 }
 
 RAW_TRANSPORT_FUNCTIONS = {
@@ -117,6 +118,7 @@ RAW_TRANSPORT_FUNCTIONS = {
     ("channels/telegram.py", "deliver_operator_message"): "notice",  # S3: a plugin's delivered post, Casa-labelled
     ("channels/telegram.py", "deliver_operator_page"): "notice",  # #1377: a card's page, Casa-labelled
     ("channels/telegram.py", "deliver_operator_proposal"): "notice", # S5: a plugin's proposal, Casa-labelled, one page with its keyboard
+    ("channels/telegram.py", "deliver_operator_question"): "notice", # browser executor: a plugin's operator question, Casa-labelled, its keyboard
     ("channels/telegram.py", "replace_operator_proposal"): "notice", # #1339: that proposal edited in place, as a tap's next card
     ("channels/telegram.py", "deliver_desk_notice"): "notice",       # S4: a desk turn's outcome, Casa-composed
     ("channels/telegram.py", "send_handoff_line"): "notice",         # #1350: a hand-off record, Casa-composed
@@ -222,7 +224,8 @@ TOPIC_METHODS = {"send_to_topic", "send_to_topic_rich", "send_to_topic_paged",
                  "post_topic_message"}
 NOTICE_METHODS = {"deliver_operator_link", "deliver_operator_message", "deliver_operator_page",
                   "deliver_operator_file", "deliver_desk_notice", "send_handoff_line", "reply",
-                  "deliver_operator_proposal", "replace_operator_proposal"}
+                  "deliver_operator_proposal", "replace_operator_proposal",
+                  "deliver_operator_question"}
 # dispatch — the text becomes a TURN's input, not an emission (Astra r1 item 1)
 DISPATCH_METHODS = {"deliver_system_turn"}
 

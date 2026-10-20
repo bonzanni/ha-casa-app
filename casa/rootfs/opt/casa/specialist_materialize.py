@@ -493,6 +493,8 @@ def _map_session(session: dict) -> dict:
         out["idle_timeout"] = session["idle_timeout_seconds"]
     elif "idle_timeout" in session:
         out["idle_timeout"] = session["idle_timeout"]
+    if "desk_context" in session:
+        out["desk_context"] = session["desk_context"]
     return out
 
 

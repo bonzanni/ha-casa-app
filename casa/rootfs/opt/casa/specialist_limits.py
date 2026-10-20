@@ -109,12 +109,16 @@ class Permit:
     :meth:`SpecialistLimiter.try_acquire`.
     """
 
-    __slots__ = ("_limiter", "_scope", "_released")
+    __slots__ = ("_limiter", "_scope", "_released", "_counted")
 
-    def __init__(self, limiter: "SpecialistLimiter", scope: str) -> None:
+    def __init__(self, limiter: "SpecialistLimiter", scope: str,
+                 counted: bool = True) -> None:
         self._limiter = limiter
         self._scope = scope
         self._released = False
+        # Browser executor §5.4: a hand-off permit holds its scope only —
+        # the chain's root delegation already holds the global slot.
+        self._counted = counted
 
     def release(self) -> None:
         # No lock needed: Casa is single-threaded asyncio, and this method
@@ -125,7 +129,7 @@ class Permit:
         if self._released:
             return
         self._released = True
-        self._limiter._release(self._scope)
+        self._limiter._release(self._scope, counted=self._counted)
 
     @property
     def scope(self) -> str:
@@ -174,9 +178,20 @@ class SpecialistLimiter:
         self._global_count += 1
         return Permit(self, scope)
 
-    def _release(self, scope: str) -> None:
+    def try_acquire_scope_only(self, scope: str) -> "Permit | None":
+        """Browser executor §5.4: the permit of a hand-off inside a running
+        delegation — the per-scope slot only. The chain's root delegation
+        holds the global slot and waits on the hand-off for as long as it
+        runs, so a chain counts once against ``max_global``; a second count
+        would refuse a three-hand-off chain at the default cap of two."""
+        if scope in self._active_scopes:
+            return None
+        self._active_scopes.add(scope)
+        return Permit(self, scope, counted=False)
+
+    def _release(self, scope: str, *, counted: bool = True) -> None:
         self._active_scopes.discard(scope)
-        if self._global_count > 0:
+        if counted and self._global_count > 0:
             self._global_count -= 1
         event = self._free_events.pop(scope, None)
         if event is not None:

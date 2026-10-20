@@ -135,6 +135,27 @@ that answer is owed to its creator, and drops it on delivery (INV-JOB-015). One
 rule, two purposes — the bank keeps what is worth remembering, the row keeps
 what has not yet been said.
 
+**INV-MEM-024**: Output authored by a loaded specialist whose `memory.token_budget` is 0 is not retained to the shared bank — not its delegated answer, not a delegation or engagement notice carrying it in a resident's transcript, not its engagement summary — while the resident's own turns around it are retained as before.
+
+The switch is the specialist's own declaration: a role that reads no memory writes none,
+and a role Casa no longer has loaded — whose switch it cannot read — writes none either.
+The delegated answer has been gated on the budget since specialists first wrote to the
+bank; the other paths read `delegated_memory.role_writes_memory`. A resident's
+transcript save (`session_saver.transcript_to_items`, under every save path — the reaper,
+`/new`, a gap-superseded session) skips a user turn that is Casa's own notice header
+naming such a role (`delegated_memory.notice_from_excluded_role`), and keeps the resident's reply
+after it: relaying the result in its own words is the resident's turn. A delegated run's
+task is banked only as a resident's own words: a chain of at most the resident and one
+specialist (`len(_handoff_chain) <= 2`) on a turn Casa did not compose
+(`synthetic != "continuation"`).
+`_finalize_engagement` writes no engagement summary for such a specialist and still tells
+the requester.
+
+What it does not cover: what the resident chooses to say about the result, which is the
+resident's; a specialist that writes memory quoting the browsing specialist's answer in its
+own reply, which is that specialist's own output; and a Casa whose tools were never
+initialised (an empty role map), where nothing is gated.
+
 **INV-MEM-006**: A session save or removal keyed by channel acts only on the session id its caller snapshotted — a registration carrying a different id in that window is released, not retained or deleted; an explicit reset deliberately removes its snapshotted session even when re-registered.
 
 The registry key names a *conversation slot*, not a session — a new turn can
@@ -245,9 +266,9 @@ deletes every transcript older than `cleanupPeriodDays` (30 days unless
 set), a transcript INV-MEM-017 holds included. The pinned CLI enables it
 only when the user settings source is loaded or a loaded source sets
 `cleanupPeriodDays`. Residents, specialists, `in_casa` executors, plugin
-jobs and the restricted webhook pin their sources without the user source; the three
-utility one-shots (the observer, the tier classifier and `query_engager`'s
-synthesis) pin none, since they have no project of their own and a project
+jobs and the restricted webhook pin their sources without the user source; the four
+utility one-shots (the observer, the tier classifier, `query_engager`'s
+synthesis and run admission's reading) pin none, since they have no project of their own and a project
 file could carry the key. `cleanupPeriodDays` is never put in the shared
 settings flag: there it would enable the cleanup for every launch.
 
@@ -350,9 +371,13 @@ the wipe do — the claim is what keeps racing turns off the dying session.
 - `casa/rootfs/opt/casa/freshness_reaper.py::FreshnessReaper.sweep_once`
 - `casa/rootfs/opt/casa/delegated_memory.py::retain_delegated`
 - `casa/rootfs/opt/casa/session_sweeper.py::SessionSweeper._sweep_once`
+- `casa/rootfs/opt/casa/delegated_memory.py::role_writes_memory`
+- `casa/rootfs/opt/casa/delegated_memory.py::notice_from_excluded_role`
+- `casa/rootfs/opt/casa/session_saver.py::transcript_to_items`
 
 **Tests**
 - `tests/test_session_saver.py`
+- `tests/test_no_retain_specialist.py`
 - `tests/test_channel_policy.py`
 - `tests/test_freshness_reaper.py`
 - `tests/test_retirement_claims.py`

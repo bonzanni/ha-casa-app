@@ -456,6 +456,9 @@ class MemoryConfig:
 class SessionConfig:
     strategy: str = "ephemeral"
     idle_timeout: int = 300
+    # Browser executor §5.4 ("each run is a fresh specialist context"): False
+    # keeps the desk's earlier exchanges out of every desk use of this role.
+    desk_context: bool = True
 
 
 _VALID_TAG_DIALECTS = ("square_brackets", "parens", "none")

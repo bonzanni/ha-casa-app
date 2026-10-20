@@ -474,6 +474,7 @@ CONDITIONAL_DELIVERY_EXAMPLES = {
 # members make Casa post something of its own (a consent prompt, a rewrite
 # notice) — so membership here is not a claim that a tool writes nothing.
 NOT_A_DELIVERY = {
+    "tools.py::hand_off",          # a specialist-only sync run; it posts nothing
     "tools.py::ack_event",
     "tools.py::callback_ack_revoke",
     "tools.py::cancel_reminder",

@@ -1214,11 +1214,18 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # plugin's tools. Measured with `difflib` over base-vs-new compiled text, word
 # by word: exactly ONE `insert` on each `assistant:*` carrier, that sentence;
 # the six other carriers byte-identical. No retention claim.
+# MOVED 2026-10-18 (browser executor Plan 3), `assistant:text` only: the Text
+# projection gains one paragraph before the Telegram-retention paragraph — web
+# pages are read only by the browsing specialist, open-web delegations carry
+# only what the task needs and never contact details, runs start on the
+# person's words or Casa's question, specialists settle between themselves
+# first, say what was chosen. Exactly ONE `insert` on `assistant:text`; the
+# eight other carriers byte-identical. No retention claim.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
         "fe02798ee4a6221d05e9b65d31ff11181bb4116faa688abb89b11ef2171a1a71",
     "assistant:text":
-        "a1f01f62ad0a28c5c1a48ac46908b79d771ea93c77fef0e5092f50c8c4e4b1fc",
+        "15d029571748c7541cc34066f0d4f3ceb787f02b96c1bbc142a91d085180a6c3",
     "assistant:voice":
         "3ec576745d3234f0c5b198afffcf4e067abe8eefacc3cd56078fa931bfd3c053",
     "butler:restricted_webhook":

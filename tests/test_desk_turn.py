@@ -237,6 +237,21 @@ async def test_a_continuation_turn_has_no_quote_and_joins_the_same_desk(env):
     assert sd.turn_frame("Ellen") not in call.context
 
 
+async def test_only_a_typed_reply_carries_the_operators_words(env):
+    """Browser executor §5.5: the desk stamps ``_operator_words`` for a reply
+    the operator typed, never for an approval continuation's Casa text."""
+    import handoff
+    await _reply(env, text="get the March invoice")
+    await _reply(env, text="[authorization approved]: call it", quoted_text=None, record=None,
+                 continuation=True)
+    await _reply(env, text="[file Download my RunPod invoice.pdf at /x] please file this",
+                 file_name="Download my RunPod invoice.pdf", file_path="/tmp/x.pdf")
+    typed, cont, filed = env.calls
+    assert handoff.operator_words(typed.origin) == "get the March invoice"
+    assert handoff.operator_words(cont.origin) is None
+    assert handoff.operator_words(filed.origin) is None      # Casa's composition (p3r3b)
+
+
 # --- #1198: a reply starting with "/" is text, not a command --------------------------
 
 def _seed_prior_exchange(env):

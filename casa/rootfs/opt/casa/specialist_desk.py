@@ -461,6 +461,17 @@ def turn_frame(resident_name: str | None, continuation: bool = False, file: bool
             f"exchanges, if any are shown. {name} did not write or relay it.")
 
 
+def desk_log(cfg: Any, desk: "Desk") -> list:
+    """The exchanges a use of *desk* is shown: the desk's log, or none for a
+    role that declares ``session.desk_context: false`` (browser executor
+    §5.4 — each run is a fresh context, so an earlier run's text never enters
+    another's). The log itself is kept either way."""
+    session = getattr(cfg, "session", None)
+    if getattr(session, "desk_context", True) is False:
+        return []
+    return desk.log
+
+
 def fit_block_for_delegation(exchanges: list[Exchange], context_len: int,
                              resident_name: str | None = None) -> str:
     """§8: the block fitted into what remains of DESK_CONTEXT_CHARS after the
@@ -641,7 +652,7 @@ async def delegation_use(desk: Desk, *, reservation: "Reservation | None", run: 
                 raise DeskFaulted(f"{cfg.role!r}'s desk is faulted")
             now = DESKS.now()
             desk.begin_use(now)
-            block = fit_block_for_delegation(desk.log, len(context_text or ""),
+            block = fit_block_for_delegation(desk_log(cfg, desk), len(context_text or ""),
                                              resident_name=resident_name)
             if block and context_text:
                 context = f"{context_text}\n\n{block}"
@@ -680,7 +691,8 @@ async def delegation_use(desk: Desk, *, reservation: "Reservation | None", run: 
 # -- §5: the desk turn -------------------------------------------------------
 
 def _desk_origin(*, resident_role: str, desk_role: str, chat_id: int, user_id: int,
-                 user_name: str, message_id: Any, cid: str, text: str, turn_id: str) -> dict:
+                 user_name: str, message_id: Any, cid: str, text: str, turn_id: str,
+                 operator_typed: bool = False) -> dict:
     """The DM's own Casa-owned context plus the three fields the classifier
     needs, the resident's role, the specialist as the executing role, depth 1
     (as after any delegation: the specialist cannot delegate onward; the
@@ -703,6 +715,9 @@ def _desk_origin(*, resident_role: str, desk_role: str, chat_id: int, user_id: i
         "_origin_route": "telegram",
         "_operator_turn": True,
         "desk": {"role": desk_role, "chat_id": chat_id},
+        # browser executor §5.5: only a reply the operator typed carries his
+        # words; an approval continuation or a tap carries Casa's text
+        **({"_operator_words": text} if operator_typed else {}),
     }
 
 
@@ -813,7 +828,8 @@ async def handle_reply(
             now = DESKS.now()
             desk.begin_use(now)
             resident_name = tools_mod._display_name_for_role(resident_role)
-            block = render_block(desk.log, resident_name=resident_name)
+            block = render_block(desk_log(tools_mod._agent_role_map.get(desk_role), desk),
+                                 resident_name=resident_name)
             cfg = tools_mod._agent_role_map.get(desk_role)
             # S6 §2.2: loaded AND still declared a delegate (desk_target_ok), under the lock
             if cfg is None or not desk_target_ok(resident_role, desk_role):
@@ -824,7 +840,10 @@ async def handle_reply(
             origin = _desk_origin(
                 resident_role=resident_role, desk_role=desk_role, chat_id=chat_id,
                 user_id=user_id, user_name=user_name, message_id=message_id, cid=cid,
-                text=task_text, turn_id=turn_id)
+                text=task_text, turn_id=turn_id,
+                # a file-routed turn's task is Casa's composition (name, path,
+                # instructions), not what he typed (p3r3b)
+                operator_typed=not continuation and file_name is None)
             origin["turn_scope"] = TurnScope.for_desk(
                 origin, display_name=tools_mod._display_name_for_role(desk_role))
             if file_name is not None and file_path:
