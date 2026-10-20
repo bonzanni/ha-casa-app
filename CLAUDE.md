@@ -28,6 +28,8 @@ Then:
 make test-unit    # the whole opt-out selection, PARALLEL + memory-caged (a minute or two)
 make test-unit-serial  # same suite, one process — for debugging a failure
 make test-docker  # docker-backed unit tests
+make test-browser # the optional casa_browser/ app's suite (Python 3.13, venv_browser/ via
+                  # scripts/setup-browser-dev.sh); test-unit runs it after Casa's suite
 ```
 `test-unit` runs `-n auto --maxprocesses=12 --dist loadfile`; file-scoped
 distribution keeps a module's tests on one worker, which is what the suites that
@@ -83,7 +85,9 @@ The `tests/conftest.py` auto-adds the code root to `sys.path`.
 2. Bump `version:` in `casa/config.yaml` and prepend a `casa/CHANGELOG.md` entry.
 3. Commit `release: vX.Y.Z (<summary>)`, push, open a PR, **squash-merge** once CI is green.
 4. Merging to main auto-publishes the GHCR images and creates the `vX.Y.Z` tag +
-   GitHub Release from the changelog entry (`deploy.yml`) — no manual tagging.
+   GitHub Release from the changelog entry (`deploy.yml`) — no manual tagging. Each app
+   folder releases on its own: the optional `casa_browser/` app has an independent
+   version and `casa_browser-vX.Y.Z` tags (`docs/contributing/release-pipeline.md`).
 - **Removing an app option?** The stored value stays behind and draws a boot
   WARN from HA until the stored options are cleaned by hand (Casa ignores
   unknown keys). Pre-1.0 that is accepted; clean the one prod install manually.

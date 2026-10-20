@@ -179,6 +179,19 @@
     - tests/test_verify_docs.py
   related: [doctrine/publishing.md, contributing/doc-contract.md, architecture/persistent-state.md]
 
+- doc: contributing/release-pipeline.md
+  summary: How each app folder is selected, built, published and tagged, and which unit lane and make target test it.
+  when_changing: the release pipeline, which app a change builds or publishes, a release tag or its namespace, or an app's test lane
+  covers:
+    - scripts/browser-release-matrix.py::select_apps
+    - scripts/browser-release-matrix.py::release_settings
+    - .github/workflows/deploy.yml
+    - .github/workflows/deploy-app.yml
+    - scripts/setup-browser-dev.sh
+  tests:
+    - tests/test_browser_release_matrix.py
+  related: [contributing/doc-contract.md, doctrine/publishing.md]
+
 - doc: contributing/doc-contract.md
   summary: The shape a document takes, and which of its rules CI enforces versus a reviewer.
   when_changing: the documentation rules themselves, or adding a document to the corpus

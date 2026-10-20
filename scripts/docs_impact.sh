@@ -56,17 +56,22 @@ python_bin="python3"
 
 changed="$(git diff --name-only "$base"...HEAD)"
 
-# A version-only bump to the app manifest is not a schema change. BOTH added and
+# A version-only bump to an app manifest is not a schema change. BOTH added and
 # removed lines are inspected: deleting an option produces no added schema line,
 # and treating that as version-only would skip the check on an option removal —
-# the change most likely to invalidate a document.
-if printf '%s\n' "$changed" | grep -qx 'casa/config\.yaml'; then
-  substantive="$(git diff -U0 "$base"...HEAD -- casa/config.yaml \
+# the change most likely to invalidate a document. One manifest per app folder
+# (Casa, and the optional second app once it exists; the list matches
+# scripts/browser-release-matrix.py's APPS); each is judged on its own diff.
+# BEGIN version-only manifests
+for manifest in casa/config.yaml casa_browser/config.yaml; do
+  printf '%s\n' "$changed" | grep -qxF -- "$manifest" || continue
+  substantive="$(git diff -U0 "$base"...HEAD -- "$manifest" \
     | grep -E '^[+-]' | grep -vE '^(\+\+\+|---)' | grep -vE '^[+-]version:' || true)"
   if [ -z "$substantive" ]; then
-    changed="$(printf '%s\n' "$changed" | grep -vx 'casa/config\.yaml' || true)"
+    changed="$(printf '%s\n' "$changed" | grep -vxF -- "$manifest" || true)"
   fi
-fi
+done
+# END version-only manifests
 
 # The claim map is editable in the same change, so consult the BASE manifest too:
 # deleting a covers anchor must not delete the obligation.

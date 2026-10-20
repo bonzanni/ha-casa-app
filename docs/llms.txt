@@ -117,3 +117,4 @@ Code is the source of truth; these files are a map.
 ## Contributing
 
 - [contributing/doc-contract.md](contributing/doc-contract.md): The shape a document takes, and which of its rules CI enforces versus a reviewer.
+- [contributing/release-pipeline.md](contributing/release-pipeline.md): How each app folder is selected, built, published and tagged, and which unit lane and make target test it.

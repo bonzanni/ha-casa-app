@@ -16,6 +16,14 @@ mechanically:
   ``_env_*`` wrapper helpers, and names bound from ``os.environ``),
 * every s6 boot script, every ``defaults/schema/*.json`` file, and the Dockerfile.
 
+The same surfaces are enumerated for every app folder in ``APPS``: Casa (``casa/``) and the
+optional second app beside it (``casa_browser/``), which contributes nothing until its
+folder exists. Casa's keys are unprefixed, exactly as before a second app was configured;
+the second app's ``option:``/``s6:``/``script:``/``env:``/``schema:`` keys carry its folder
+as a namespace (``option:casa_browser:<key>``), because those names are not paths and
+would otherwise collide with Casa's. Module, route and Dockerfile items are paths, so they
+are already distinct. Only Casa has a tool surface (``CASA_TOOLS``).
+
 ``docs/coverage.yaml`` must map every enumerated item to the corpus document that covers
 it, or exclude it with a one-line reason. The check is bidirectional, like the manifest:
 an enumerated item absent from the ledger fails, a ledger item no longer enumerated
@@ -30,6 +38,7 @@ from __future__ import annotations
 import ast
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 import yaml
 
@@ -41,6 +50,62 @@ SCHEMA_ROOT = "casa/rootfs/opt/casa/defaults/schema"
 DOCKERFILE = "casa/Dockerfile"
 CONFIG_YAML = "casa/config.yaml"
 TOOLS_MODULE = "tools.py"
+
+
+class AppRoots(NamedTuple):
+    """Where one app's enumerated surfaces live, and how its non-path keys are named.
+
+    ``key_namespace`` is inserted after the kind prefix of every key that is a NAME
+    rather than a path (``option:``, ``s6:``, ``script:``, ``env:``, ``schema:``). Casa's
+    is empty, so its keys stay byte-for-byte what they were before a second app existed.
+    A NamedTuple, not a dataclass: the tests and ``verify_docs`` load this file by path
+    without registering it in ``sys.modules``, which a dataclass needs at class creation.
+    """
+
+    folder: str
+    key_namespace: str
+    code_root: str
+    s6_root: str
+    s6_bundles_root: str
+    scripts_root: str
+    schema_root: str
+    dockerfile: str
+    config_yaml: str
+    tools_module: str | None
+
+    def key(self, kind: str, name: str) -> str:
+        return f"{kind}:{self.key_namespace}{name}"
+
+
+CASA = AppRoots(
+    folder="casa",
+    key_namespace="",
+    code_root=CODE_ROOT,
+    s6_root=S6_ROOT,
+    s6_bundles_root=S6_BUNDLES_ROOT,
+    scripts_root=SCRIPTS_ROOT,
+    schema_root=SCHEMA_ROOT,
+    dockerfile=DOCKERFILE,
+    config_yaml=CONFIG_YAML,
+    tools_module=TOOLS_MODULE,
+)
+
+CASA_BROWSER = AppRoots(
+    folder="casa_browser",
+    key_namespace="casa_browser:",
+    code_root="casa_browser/rootfs/opt/casa_browser",
+    s6_root="casa_browser/rootfs/etc/s6-overlay/s6-rc.d",
+    s6_bundles_root="casa_browser/rootfs/etc/s6-overlay/user-bundles.d",
+    scripts_root="casa_browser/rootfs/etc/s6-overlay/scripts",
+    schema_root="casa_browser/rootfs/opt/casa_browser/defaults/schema",
+    dockerfile="casa_browser/Dockerfile",
+    config_yaml="casa_browser/config.yaml",
+    tools_module=None,
+)
+
+# Casa first: enumerate_items keeps Casa's items, in their old order, at the head.
+APPS: tuple[AppRoots, ...] = (CASA, CASA_BROWSER)
+
 # Every module counts — a size floor made ~40 small modules invisible to the
 # ledger, and small is not the same as uninteresting (webhook_auth.py is tiny).
 MIN_MODULE_LINES = 0
@@ -62,8 +127,8 @@ def _expr_text(node: ast.AST) -> str:
     return ast.unparse(node)
 
 
-def enumerate_modules(repo_root: Path) -> list[str]:
-    root = repo_root / CODE_ROOT
+def enumerate_modules(repo_root: Path, app: AppRoots = CASA) -> list[str]:
+    root = repo_root / app.code_root
     out = []
     for path in sorted(root.rglob("*.py")):
         try:
@@ -75,9 +140,9 @@ def enumerate_modules(repo_root: Path) -> list[str]:
     return out
 
 
-def enumerate_options(repo_root: Path) -> list[str]:
+def enumerate_options(repo_root: Path, app: AppRoots = CASA) -> list[str]:
     try:
-        data = yaml.safe_load((repo_root / CONFIG_YAML).read_text()) or {}
+        data = yaml.safe_load((repo_root / app.config_yaml).read_text()) or {}
     except (OSError, yaml.YAMLError):
         return []
     keys: set[str] = set()
@@ -85,24 +150,26 @@ def enumerate_options(repo_root: Path) -> list[str]:
         value = data.get(section)
         if isinstance(value, dict):
             keys.update(value)
-    return [f"option:{key}" for key in sorted(keys)]
+    return [app.key("option", key) for key in sorted(keys)]
 
 
-def enumerate_s6(repo_root: Path) -> list[str]:
+def enumerate_s6(repo_root: Path, app: AppRoots = CASA) -> list[str]:
     """Every s6 unit directory: the service definitions under ``s6-rc.d`` and
     the bundles Casa adds members to under ``user-bundles.d`` (#1357)."""
     names: set[str] = set()
-    for rel in (S6_ROOT, S6_BUNDLES_ROOT):
+    for rel in (app.s6_root, app.s6_bundles_root):
         root = repo_root / rel
         if root.is_dir():
             names.update(p.name for p in root.iterdir() if p.is_dir())
-    return [f"s6:{name}" for name in sorted(names)]
+    return [app.key("s6", name) for name in sorted(names)]
 
 
-def enumerate_tools(repo_root: Path) -> list[str]:
+def enumerate_tools(repo_root: Path, app: AppRoots = CASA) -> list[str]:
     """The identifiers in the CASA_TOOLS tuple. They are bare function names, not
     ``name=`` keywords — read from the AST, so a commented-out entry does not count."""
-    path = repo_root / CODE_ROOT / TOOLS_MODULE
+    if app.tools_module is None:
+        return []
+    path = repo_root / app.code_root / app.tools_module
     try:
         tree = ast.parse(path.read_text(errors="replace"))
     except (OSError, SyntaxError, ValueError):
@@ -130,8 +197,8 @@ def enumerate_tools(repo_root: Path) -> list[str]:
     return []
 
 
-def enumerate_routes(repo_root: Path) -> list[str]:
-    root = repo_root / CODE_ROOT
+def enumerate_routes(repo_root: Path, app: AppRoots = CASA) -> list[str]:
+    root = repo_root / app.code_root
     found: set[str] = set()
     for path in sorted(root.rglob("*.py")):
         rel = str(path.relative_to(repo_root))
@@ -193,13 +260,13 @@ def _is_os_environ(node: ast.AST) -> bool:
     )
 
 
-def enumerate_env_reads(repo_root: Path) -> list[str]:
+def enumerate_env_reads(repo_root: Path, app: AppRoots = CASA) -> list[str]:
     """Every environment variable the code reads by literal name, by AST —
     ``os.environ.get("X")``, ``os.environ["X"]``, ``os.getenv("X")``, and the
     project's ``_env_*`` wrapper helpers called with a literal first argument.
     Env vars are the classic undocumented surface: a tunable nobody wrote
     down."""
-    root = repo_root / CODE_ROOT
+    root = repo_root / app.code_root
     names: set[str] = set()
     for path in sorted(root.rglob("*.py")):
         try:
@@ -323,39 +390,46 @@ def enumerate_env_reads(repo_root: Path) -> list[str]:
                         name = _literal_or_const(node.slice)
                         if name:
                             names.add(name)
-    return [f"env:{name}" for name in sorted(names)]
+    return [app.key("env", name) for name in sorted(names)]
 
 
-def enumerate_scripts(repo_root: Path) -> list[str]:
-    root = repo_root / SCRIPTS_ROOT
+def enumerate_scripts(repo_root: Path, app: AppRoots = CASA) -> list[str]:
+    root = repo_root / app.scripts_root
     if not root.is_dir():
         return []
-    return [f"script:{p.name}" for p in sorted(root.iterdir()) if p.is_file()]
+    return [app.key("script", p.name) for p in sorted(root.iterdir()) if p.is_file()]
 
 
-def enumerate_schemas(repo_root: Path) -> list[str]:
-    root = repo_root / SCHEMA_ROOT
+def enumerate_schemas(repo_root: Path, app: AppRoots = CASA) -> list[str]:
+    root = repo_root / app.schema_root
     if not root.is_dir():
         return []
-    return [f"schema:{p.name}" for p in sorted(root.iterdir()) if p.is_file()]
+    return [app.key("schema", p.name) for p in sorted(root.iterdir()) if p.is_file()]
 
 
-def enumerate_dockerfile(repo_root: Path) -> list[str]:
-    return [DOCKERFILE] if (repo_root / DOCKERFILE).is_file() else []
+def enumerate_dockerfile(repo_root: Path, app: AppRoots = CASA) -> list[str]:
+    return [app.dockerfile] if (repo_root / app.dockerfile).is_file() else []
+
+
+def enumerate_app(repo_root: Path, app: AppRoots) -> list[str]:
+    """One app's items. An app whose folder does not exist contributes none."""
+    if not (repo_root / app.folder).is_dir():
+        return []
+    return (
+        enumerate_modules(repo_root, app)
+        + enumerate_options(repo_root, app)
+        + enumerate_s6(repo_root, app)
+        + enumerate_tools(repo_root, app)
+        + enumerate_routes(repo_root, app)
+        + enumerate_env_reads(repo_root, app)
+        + enumerate_scripts(repo_root, app)
+        + enumerate_schemas(repo_root, app)
+        + enumerate_dockerfile(repo_root, app)
+    )
 
 
 def enumerate_items(repo_root: Path) -> list[str]:
-    return (
-        enumerate_modules(repo_root)
-        + enumerate_options(repo_root)
-        + enumerate_s6(repo_root)
-        + enumerate_tools(repo_root)
-        + enumerate_routes(repo_root)
-        + enumerate_env_reads(repo_root)
-        + enumerate_scripts(repo_root)
-        + enumerate_schemas(repo_root)
-        + enumerate_dockerfile(repo_root)
-    )
+    return [item for app in APPS for item in enumerate_app(repo_root, app)]
 
 
 # --- the check ------------------------------------------------------------------------

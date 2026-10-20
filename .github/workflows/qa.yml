@@ -148,6 +148,43 @@ jobs:
       - name: Baseline runtime CI assertion
         run: python -m pytest tests/test_baseline_runtime_assert.py -v -m "docker and not slow" --tb=short
 
+  # The optional Casa Browser app (casa_browser/) runs its own unit lane: Python 3.13
+  # and venv_browser/ from scripts/setup-browser-dev.sh, never Casa's 3.11 environment,
+  # and the same opt-out selection as tier2. Until casa_browser/ exists in the tree the
+  # lane says so in a notice and runs nothing; once it exists, a lane that collects no
+  # test fails (pytest exit 5) rather than passing empty.
+  browser-unit:
+    name: Browser app unit tests (casa_browser)
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'push'
+      || github.event_name == 'pull_request'
+      || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v7
+      - name: Is the app in this tree?
+        id: present
+        run: |
+          if [ -f casa_browser/config.yaml ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::casa_browser/ is not in this tree — the browser lane has nothing to run"
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-python@v6
+        id: python
+        if: steps.present.outputs.present == 'true'
+        with:
+          python-version: "3.13"
+      - name: Install browser dependencies (prints the installed versions)
+        if: steps.present.outputs.present == 'true'
+        env:
+          BROWSER_PYTHON: ${{ steps.python.outputs.python-path }}
+        run: bash scripts/setup-browser-dev.sh
+      - name: Browser unit pytest (opt-out gate — everything except docker/slow)
+        if: steps.present.outputs.present == 'true'
+        run: venv_browser/bin/python -m pytest casa_browser/tests -m "not docker and not slow" -v --tb=short
+
   tier3-hardening:
     runs-on: ubuntu-latest
     if: >
