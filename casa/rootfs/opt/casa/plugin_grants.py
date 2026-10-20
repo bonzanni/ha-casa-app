@@ -647,6 +647,8 @@ class ToolContract:
     # S7a (INV-PLUG-047): the entry declares `"filename": true` — its
     # operator_file deposit may carry the name the operator sees.
     filename: bool = False
+    # Browser executor §5.3–§5.6: the entry declares `"callsCasa": true`.
+    calls_casa: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -757,7 +759,8 @@ def result_contract_map(resolution) -> ResultContractMap:
                     consumes=dict(entry["consumes"]),
                     delivers=dict(entry.get("delivers") or {}),
                     servers=tuple(origins), wire_name=str(name),
-                    transport=transport, filename=bool(entry.get("filename")))
+                    transport=transport, filename=bool(entry.get("filename")),
+                    calls_casa=bool(entry.get("calls_casa")))
     return ResultContractMap(tools=tools, plugins=plugins)
 
 

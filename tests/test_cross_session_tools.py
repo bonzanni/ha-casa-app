@@ -319,12 +319,34 @@ async def _classifier_launches(monkeypatch) -> list:
     return launches
 
 
+async def _admission_launches(monkeypatch) -> list:
+    """Browser executor §5.5: the clean-context run-admission reading."""
+    import claude_agent_sdk
+    import run_admission
+
+    launches = []
+    fake = types.ModuleType("claude_agent_sdk")
+    fake.ClaudeAgentOptions = claude_agent_sdk.ClaudeAgentOptions
+    fake.AssistantMessage = claude_agent_sdk.AssistantMessage
+
+    async def query(*, prompt, options):
+        launches.append(options)
+        if False:
+            yield None
+
+    fake.query = query
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake)
+    await run_admission._ask_model("download my RunPod invoice")
+    return launches
+
+
 # Every launch each one-shot makes for one call: the classifier re-asks an
 # empty reply once (#508), so it launches twice and both launches count.
 _ONE_SHOTS = {
     "synthesis": (_synthesis_launches, 1),
     "observer": (_observer_launches, 1),
     "classifier": (_classifier_launches, 2),
+    "admission": (_admission_launches, 1),
 }
 
 
@@ -348,6 +370,14 @@ async def test_tier_classifier_options(monkeypatch):
     for opts in launches:
         _assert_locked(opts)
         _assert_loads_no_settings_source(opts)
+
+
+async def test_run_admission_options(monkeypatch):
+    launches = await _admission_launches(monkeypatch)
+    assert len(launches) == 1
+    _assert_locked(launches[0])
+    _assert_loads_no_settings_source(launches[0])
+    assert launches[0].tools == [] and launches[0].allowed_tools == []
 
 
 @pytest.mark.parametrize("one_shot", sorted(_ONE_SHOTS))
@@ -423,6 +453,7 @@ EXPECTED_SITES = {
     ("observer.py", "Observer._decide_interjection"):
         "test_observer_decider_options",
     ("tier_classifier.py", "classify_tier"): "test_tier_classifier_options",
+    ("run_admission.py", "_ask_model"): "test_run_admission_options",
 }
 
 # The calls whose result carries the denial: the helper itself, and the

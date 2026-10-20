@@ -123,7 +123,8 @@ and is refused onward delegation exactly as an ephemeral delegate is.
 
 What it does not cover: the executor launch path neither reads nor stamps the depth — BY
 DESIGN, since launching executors is the purpose of that tool; its fan-out is bounded by
-INV-ENG-008 instead. The guarantee is "delegated work cannot chain the delegation tool",
+INV-ENG-008 instead. A specialist's `hand_off` is not this tool and has its own bounds
+(INV-ENG-025, [`specialist-handoff.md`](specialist-handoff.md)). The guarantee is "delegated work cannot chain the delegation tool",
 not "agent-created work cannot exist".
 
 **INV-ENG-008**: Engagements created from agent context never exceed a fixed global live count, and refusal is side-effect-free.
@@ -229,7 +230,7 @@ its record exists — answers `job_busy` (INV-BGJOB-006). A resident-hosted job 
 `<role>:engagement` slot, so running one never makes the resident unavailable
 ([`background-job-occupancy.md`](background-job-occupancy.md)).
 
-**INV-ENG-023**: An ephemeral delegation runs under a session id Casa chooses for that launch and, once its client has exited — on return, error or cancellation — deletes that one session's transcript (`<session>.jsonl` and `<session>/`) from its own project folder, best-effort, and nothing else; the utility one-shots (the observer, the tier classifier, `query_engager`'s synthesis) persist no transcript at all.
+**INV-ENG-023**: An ephemeral delegation runs under a session id Casa chooses for that launch and, once its client has exited — on return, error or cancellation — deletes that one session's transcript (`<session>.jsonl` and `<session>/`) from its own project folder, best-effort, and nothing else; the utility one-shots (the observer, the tier classifier, `query_engager`'s synthesis, run admission's reading) persist no transcript at all.
 
 Every delegation — synchronous, asynchronous and both voice paths — goes through one
 runner, which starts a fresh CLI session in the specialist's working directory; once the

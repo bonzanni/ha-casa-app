@@ -1,0 +1,52 @@
+# Manifest shard: the specialist hand-off and plugin operator-call documents (born
+# in their own shard: the S and plugin-M-R shards stand near the index ceiling).
+- doc: architecture/specialist-handoff.md
+  summary: A specialist answering a request hands part of it to another specialist and gets the answer back — the hand_off tool, the requester chain and the operator's words every delegated run carries, the mechanical bounds, the permit, and the requester's ceiling a hand-off pauses.
+  when_changing: the hand_off tool or its bounds, the requester chain or the operator's words on a delegated origin, the caller a delegated run names, or the ceiling clock a hand-off pauses
+  covers:
+    - casa/rootfs/opt/casa/handoff.py
+    - casa/rootfs/opt/casa/tools.py::hand_off
+    - casa/rootfs/opt/casa/tools.py::_handoff_grants
+    - casa/rootfs/opt/casa/tools.py::_CeilingClock
+    - casa/rootfs/opt/casa/tools.py::_wait_under_ceiling
+    - casa/rootfs/opt/casa/specialist_limits.py::SpecialistLimiter.try_acquire_scope_only
+  tests:
+    - tests/test_handoff.py
+  related: [architecture/delegation.md, architecture/memory-lifecycle.md, architecture/plugin-operator-calls.md, architecture/specialist-desk.md]
+  defines_invariants: [INV-ENG-025, INV-ENG-026]
+  invariant_tests:
+    INV-ENG-025: [tests/test_handoff.py::test_bounds_refuse_a_cycle_and_a_fourth_handoff, tests/test_handoff.py::test_handoff_refuses_a_cycle_and_does_not_run, tests/test_handoff.py::test_handoff_refuses_past_three_handoffs, tests/test_handoff.py::test_handoff_is_unavailable_outside_a_specialist_run, tests/test_handoff.py::test_handoff_display_name_must_be_unique, tests/test_handoff.py::test_handoff_to_a_resident_is_unknown, tests/test_handoff.py::test_handoff_returns_the_answer_to_the_requester]
+    INV-ENG-026: [tests/test_handoff.py::test_clock_leaves_paused_time_out, tests/test_handoff.py::test_requester_ceiling_does_not_run_while_its_handoff_runs]
+
+- doc: architecture/plugin-operator-calls.md
+  summary: What a plugin's own code asks Casa during one of its declared callsCasa calls — whom the call serves (its binding), run admission from the operator's own words and its confirmation, a continuation for a run, and a delivered slot's outcome.
+  when_changing: a plugin's callsCasa declaration or its call record, the requester, run-admission, run-admission-status, continue or delivery-status broker routes, the binding store, the admission confirmation card, or how run admission reads the operator's words and decides
+  covers:
+    - casa/rootfs/opt/casa/operator_calls.py
+    - casa/rootfs/opt/casa/run_admission.py
+    - casa/rootfs/opt/casa/plugin_bindings.py
+    - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.deliver_operator_question
+    - casa/rootfs/opt/casa/result_broker.py::DeliveryOutcomes
+  tests:
+    - tests/test_operator_calls.py
+    - tests/test_run_admission.py
+  related: [architecture/plugin-result-contract.md, architecture/plugin-continuations.md, architecture/specialist-handoff.md, architecture/telegram.md]
+  defines_invariants: [INV-PLUG-051, INV-PLUG-052]
+  invariant_tests:
+    INV-PLUG-051: [tests/test_operator_calls.py::test_admission_records_the_call_with_the_turns_facts, tests/test_operator_calls.py::test_a_turn_with_no_operator_to_ask_is_denied_and_records_nothing, tests/test_operator_calls.py::test_a_sender_who_is_not_the_configured_operator_is_denied, tests/test_operator_calls.py::test_a_still_escrowed_deposit_reads_pending_only_for_its_owner, tests/test_operator_calls.py::test_two_calls_in_flight_are_ambiguous, tests/test_operator_calls.py::test_requester_route_reads_the_call_never_the_body, tests/test_operator_calls.py::test_one_binding_per_plugin_and_turn_and_it_survives_a_restart, tests/test_operator_calls.py::test_continue_queues_once_per_run_for_the_bindings_own_plugin, tests/test_operator_calls.py::test_delivery_status_only_for_the_plugin_and_operator_it_was_posted_for, tests/test_run_admission.py::test_status_is_readable_only_by_its_plugin_and_operator, tests/test_telegram_inline_callback.py::TestResidentCommitContract::test_plugin_question_scope_also_resolves]
+    INV-PLUG-052: [tests/test_run_admission.py::test_the_operators_own_words_admit_with_no_prompt, tests/test_run_admission.py::test_a_context_reply_gets_one_card_for_the_whole_batch, tests/test_run_admission.py::test_a_turn_without_his_words_goes_to_the_card_without_a_reading, tests/test_run_admission.py::test_one_run_his_words_do_not_name_puts_the_batch_to_the_card, tests/test_run_admission.py::test_a_failing_reading_falls_back_to_the_card, tests/test_run_admission.py::test_not_now_declines_and_still_continues_the_run, tests/test_run_admission.py::test_comparison_is_mechanical, tests/test_run_admission.py::test_a_replayed_key_gets_the_same_answer_and_never_a_second_card, tests/test_run_admission.py::test_answers_survive_a_restart_and_a_dead_card_reads_expired, tests/test_run_admission.py::test_overlapping_requests_with_one_key_are_decided_once, tests/test_handoff.py::test_operator_words_only_from_a_live_operator_message, tests/test_desk_turn.py::test_only_a_typed_reply_carries_the_operators_words]
+
+- doc: architecture/plugin-continuations.md
+  summary: How a plugin's work that outlives one turn is carried on in fresh turns of its specialist — the continuation queue, the origin rebuilt from a binding, the relay of the answer up the requester chain, a role's desk-context switch, and the once-a-minute driver sweep.
+  when_changing: the continuation queue or turn, the origin a continuation runs under, how a continuation's answer reaches its requesters, a role's session.desk_context, the casa.driverSweep declaration, or the driver sweep's direct call
+  covers:
+    - casa/rootfs/opt/casa/plugin_continuations.py
+    - casa/rootfs/opt/casa/specialist_desk.py::desk_log
+    - casa/rootfs/opt/casa/plugin_store.py::manifest_driver_sweep
+  tests:
+    - tests/test_plugin_continuations.py
+  related: [architecture/plugin-operator-calls.md, architecture/specialist-desk.md, architecture/delegation-announcements.md, architecture/specialist-handoff.md]
+  defines_invariants: [INV-PLUG-053, INV-PLUG-054]
+  invariant_tests:
+    INV-PLUG-054: [tests/test_plugin_continuations.py::test_a_progress_only_answer_climbs_no_further, tests/test_plugin_continuations.py::test_a_quiet_record_completes_without_a_notice, tests/test_plugin_continuations.py::test_only_the_exact_sentinel_declares_progress, tests/test_plugin_continuations.py::test_a_requesters_own_silence_never_hides_the_result]
+    INV-PLUG-053: [tests/test_plugin_continuations.py::test_a_continuation_origin_is_rebuilt_from_the_binding_alone, tests/test_plugin_continuations.py::test_one_pending_continuation_per_run_until_it_starts, tests/test_plugin_continuations.py::test_the_answer_climbs_the_chain_one_requester_at_a_time, tests/test_plugin_continuations.py::test_a_continuation_waits_for_the_desk_and_lets_it_go_after_its_own_turn, tests/test_plugin_continuations.py::test_an_unloaded_requester_fails_the_relay_instead_of_passing_the_answer_on, tests/test_plugin_continuations.py::test_a_desk_that_faults_while_the_continuation_waits_runs_nothing, tests/test_plugin_continuations.py::test_a_binding_of_a_former_operator_is_never_continued, tests/test_plugin_continuations.py::test_shutdown_cancels_a_running_continuation_turn, tests/test_plugin_continuations.py::test_a_request_queued_while_a_worker_finishes_is_not_lost, tests/test_plugin_continuations.py::test_the_sweep_calls_only_a_tool_the_server_lists, tests/test_plugin_continuations.py::test_a_turn_still_unwinding_keeps_the_desk_refused, tests/test_plugin_continuations.py::test_a_stop_during_the_relay_tells_the_resident_instead_of_going_silent, tests/test_plugin_continuations.py::test_the_sweep_calls_the_declared_tool_and_queues_its_runs, tests/test_plugin_continuations.py::test_an_invalid_sweep_declaration_sweeps_nothing, tests/test_operator_calls.py::test_a_continuation_turn_has_the_operators_identity_and_no_words, tests/test_operator_calls.py::test_driver_sweep_names_a_safe_tool_that_calls_nothing]

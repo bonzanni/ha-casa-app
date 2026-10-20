@@ -879,6 +879,17 @@ class ReferenceStore:
             return len(victims)
 
     # -- counts (tests) ---------------------------------------------------
+    def is_escrowed(self, reference: str, *, operator_id: int, artifact_id: str) -> bool:
+        """Plan 3 C9: a deposited, unexpired, unused reference minted for this
+        operator and this plugin artifact."""
+        with self._lock:
+            self._sweep_locked()
+            r = self._refs.get(reference)
+            ident = getattr(r, "identity", None)
+            return (r is not None and not r.used
+                    and getattr(ident, "operator_id", None) == int(operator_id)
+                    and getattr(ident, "artifact_id", None) == artifact_id)
+
     def reference_count(self) -> int:
         with self._lock:
             self._sweep_locked()
@@ -984,6 +995,11 @@ _DENY_ERASE_BINDING = (
     "not executed: this erase turn may run only the eraser the operator "
     "approved, for the plugin version the approval named, while Casa is still "
     "waiting for its result — nothing was erased")
+# Browser executor (Plan 3): a callsCasa call on a turn whose sender is not the
+# configured operator.
+_DENY_NOT_OPERATOR_CALL = (
+    "Casa refused to run this tool: it acts for the operator, and this turn is "
+    "not the configured operator's.")
 
 
 _DENY_ERASING = (
@@ -1090,6 +1106,14 @@ def make_plugin_admission_hook(
         tool_name = (input_data or {}).get("tool_name", "")
         if not isinstance(tool_name, str) or not tool_name.startswith(PLUGIN_TOOL_PREFIX):
             return {}
+        recorded = False
+
+        def _forget_record() -> None:
+            # a denied call never runs and gets no terminal hook event: its
+            # callsCasa record goes with the denial (p3r4b)
+            if recorded:
+                from operator_calls import CALLS
+                CALLS.close(client_id, str(tool_use_id or ""))
         try:
             if owner is not None:
                 # S5 §5.3: the pin, before anything with a side effect
@@ -1155,7 +1179,9 @@ def make_plugin_admission_hook(
             tool_input = (input_data or {}).get("tool_input") or {}
             if not isinstance(tool_input, dict):
                 tool_input = {}
-            needs_identity = entry.kind == "capability" or bool(entry.consumes)
+            asks = bool(getattr(entry, "calls_casa", False))
+            needs_identity = (entry.kind == "capability" or bool(entry.consumes)
+                              or asks)
             identity = None
             if needs_identity:
                 from authz_grants import resolve_grant_identity
@@ -1163,6 +1189,19 @@ def make_plugin_admission_hook(
                     role, artifact_id=entry.artifact_id)
                 if identity is None:
                     return _deny(_DENY_NO_IDENTITY)
+            if asks:
+                # Browser executor §5.3–§5.6: recorded with the facts of this
+                # turn, for the plugin's own code to use during the call —
+                # only for the operator as configured NOW (a sender the
+                # accept-all mode lets in has an identity, not the operator's).
+                import agent as agent_mod
+                from operator_calls import CALLS, is_configured_operator
+                if not is_configured_operator(identity.chat_id, identity.operator_id):
+                    return _deny(_DENY_NOT_OPERATOR_CALL)
+                CALLS.open(client_id=client_id, tool_use_id=str(tool_use_id or ""),
+                           tool_name=tool_name, role=role, plugin=seg, identity=identity,
+                           origin=dict(agent_mod.origin_var.get(None) or {}))
+                recorded = True
             if entry.kind == "capability":
                 store.open_call(
                     client_id=client_id, artifact_id=entry.artifact_id,
@@ -1183,6 +1222,7 @@ def make_plugin_admission_hook(
                         reference=value, identity=identity, slot=slot,
                         client_id=client_id, tool_use_id=str(tool_use_id or ""))
                     if ticket is None:
+                        _forget_record()
                         return _deny(_DENY_STALE_REFERENCE)
                     updated[param] = f"{value}:{ticket}"
                     armed_any = True
@@ -1205,6 +1245,7 @@ def make_plugin_admission_hook(
             logger.exception(
                 "result broker admission error (tool=%s role=%s) — denying",
                 tool_name, role)
+            _forget_record()
             return _deny(_DENY_INTERNAL)
 
     _hook = owner.guard(_body) if owner is not None else _body
@@ -1741,6 +1782,12 @@ async def _deliver_and_replace(store: ReferenceStore, seg: str, call: _InFlight,
     finally:
         if not delivered:
             store.drop_call_deposits(call)
+        # Browser executor (Plan 3 C9): the outcome, for the plugin to read
+        # on a later call instead of trusting what its model reported
+        DELIVERY_OUTCOMES.record(call.deposits.get(slot, ""), plugin=seg,
+                                 operator_id=getattr(call.identity, "operator_id", None),
+                                 artifact_id=call.artifact_id,
+                                 delivered=delivered, repeat=bool(detail.get("repeat")))
     if not delivered:
         return _withheld(seg, withheld_reason
                          or _NOT_DELIVERED_REASONS.get(dkind, _REASON_LINK_NOT_DELIVERED))
@@ -1797,6 +1844,9 @@ def make_result_hook(
             if entry is None:
                 return _withheld(seg, _REASON_UNDECLARED)
             call = store.close_call(client_id, str(tool_use_id or ""))
+            if getattr(entry, "calls_casa", False):
+                from operator_calls import CALLS
+                CALLS.close(client_id, str(tool_use_id or ""))
             if entry.kind == "safe":
                 return {}
             text = _response_text((input_data or {}).get("tool_response"))
@@ -1945,6 +1995,8 @@ def make_failure_hook(
                 call = store.close_call(client_id, str(tool_use_id or ""))
                 if call is not None:
                     store.drop_call_deposits(call)
+                from operator_calls import CALLS
+                CALLS.close(client_id, str(tool_use_id or ""))
                 run_id = _erase_run_of(contract_map, tool_name)
                 if run_id is not None:
                     from plugin_erasure import WATCH
@@ -1971,6 +2023,55 @@ def make_failure_hook(
     _hook._casa_pinned = owner                        # type: ignore[attr-defined]
     _hook._casa_result_broker = "failure"            # type: ignore[attr-defined]
     return _hook
+
+
+class DeliveryOutcomes:
+    """Browser executor (Plan 3 C9): what became of a delivered slot's
+    deposit, by its reference — ``delivered`` or ``withheld`` once the result
+    hook decided, ``pending`` while the reference is still escrowed, else
+    ``unknown``. Readable only by the plugin and operator it was posted for;
+    memory-only, kept ``DELIVERY_OUTCOME_TTL_S``."""
+
+    def __init__(self, *, now: Callable[[], float] = time.monotonic) -> None:
+        self._lock = threading.Lock()
+        self._now = now
+        self._items: "collections.OrderedDict[str, tuple]" = collections.OrderedDict()
+
+    def record(self, reference: str, *, plugin: str, operator_id: Any,
+               delivered: bool, repeat: bool, artifact_id: str = "") -> None:
+        if not is_reference(reference) or operator_id is None:
+            return
+        with self._lock:
+            self._items[reference] = (plugin, int(operator_id),
+                                      "delivered" if delivered else "withheld",
+                                      repeat, self._now(), artifact_id)
+            self._items.move_to_end(reference)
+            while len(self._items) > DELIVERY_OUTCOME_MAX:
+                self._items.popitem(last=False)
+
+    def status(self, reference: Any, *, plugin: str, operator_id: int,
+               artifact_id: str = "", store: "ReferenceStore | None" = None) -> dict:
+        store = store or STORE
+        if not is_reference(reference):
+            return {"status": "unknown", "repeat": False}
+        with self._lock:
+            hit = self._items.get(reference)
+            if hit is not None and hit[4] + DELIVERY_OUTCOME_TTL_S <= self._now():
+                del self._items[reference]
+                hit = None
+        if hit is not None:
+            if (hit[0] != plugin or hit[1] != int(operator_id)
+                    or hit[5] != artifact_id):
+                return {"status": "unknown", "repeat": False}
+            return {"status": hit[2], "repeat": hit[3]}
+        if store.is_escrowed(reference, operator_id=operator_id, artifact_id=artifact_id):
+            return {"status": "pending", "repeat": False}
+        return {"status": "unknown", "repeat": False}
+
+
+DELIVERY_OUTCOME_TTL_S = 24 * 3600.0
+DELIVERY_OUTCOME_MAX = 4096
+DELIVERY_OUTCOMES = DeliveryOutcomes()
 
 
 def broker_matchers(

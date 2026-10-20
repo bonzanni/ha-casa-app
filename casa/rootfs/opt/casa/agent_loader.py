@@ -1240,6 +1240,7 @@ def _build_runtime_fields(
     cfg.session = SessionConfig(
         strategy=session.get("strategy", "ephemeral"),
         idle_timeout=int(session.get("idle_timeout", 300)),
+        desk_context=session.get("desk_context", True) is not False,
     )
 
     tts = runtime.get("tts") or {}

@@ -14,7 +14,7 @@ import shutil
 import subprocess
 import time
 import uuid
-from contextlib import asynccontextmanager, nullcontext
+from contextlib import asynccontextmanager, contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from collections import OrderedDict
@@ -50,6 +50,7 @@ from plugin_grants import (
 )
 from authz_grants import CHALLENGES, GRANTS, normalize_role
 from delegated_memory import delegated_recall, retain_delegated, topical_query
+from handoff import child_chain, requester_of
 from semantic_memory import RecallUnavailable
 
 from claude_agent_sdk import (
@@ -731,7 +732,7 @@ def _scheduled_operator_target(origin: dict) -> "tuple[int, int] | None":
     "send_media",
     "Deliver a media file from the plugin outbox to the user over the "
     "originating channel. Kinds: document (PDF only), photo, audio, voice, zip, "
-    "text (UTF-8 .txt/.md/.csv/.log/.json/.yaml/.yml, max 5 MB). Pass the "
+    "text (UTF-8 .txt/.md/.csv/.log/.json/.yaml/.yml/.sta/.940, max 5 MB). Pass the "
     "outbox path returned by a producer tool; the bytes never enter the model "
     "context — use this for any artifact you would otherwise paste.",
     {"type": "object",
@@ -2379,6 +2380,19 @@ STORED_CALL_CONTEXT = (
     "</stored_call_context>")
 
 
+_HANDOFF_GRANT = "mcp__casa-framework__hand_off"
+
+
+def _handoff_grants(cfg, *, engagement: bool) -> tuple[str, ...]:
+    """Browser executor §5.4: ``hand_off`` for every specialist's delegated
+    or desk build — granted in code, never declared by a bundle (#541 keeps
+    spawn tools off the bundle allowlist) — and for no engagement or job
+    build, the same condition as the inbox tools (``agent_inbox``)."""
+    if engagement or getattr(cfg, "kind", "") != "specialist":
+        return ()
+    return (_HANDOFF_GRANT,)
+
+
 def _build_specialist_options(
     cfg,
     *,
@@ -2557,6 +2571,10 @@ def _build_specialist_options(
     for grant in extra_casa_tools:
         if grant not in allowed_tools:
             allowed_tools.append(grant)
+    _handoff_tools = _handoff_grants(cfg, engagement=bool(extra_casa_tools))
+    for grant in _handoff_tools:
+        if grant not in allowed_tools:
+            allowed_tools.append(grant)
     for grant in _inbox_tools:                       # S6 §2.3, the same condition as the path
         if grant not in allowed_tools:
             allowed_tools.append(grant)
@@ -2598,10 +2616,13 @@ def _build_specialist_options(
             *resolved_hooks.get("PreToolUse", [])]
 
     if _mcp_registry is not None:
-        # S6 (diff round 1, Astra): a granted inbox tool needs the server that
-        # exposes it, whatever the config's own server list says
+        # S6 (diff round 1, Astra): a casa-framework tool granted in code — the
+        # inbox tools, start_job, hand_off (R2 acceptance F1: a role declaring
+        # no servers had hand_off granted and invisible) — needs the server
+        # that exposes it, whatever the config's own server list says
         _server_names = list(cfg.mcp_server_names)
-        if (_inbox_tools or _job_tools) and "casa-framework" not in _server_names:
+        if ((_inbox_tools or _job_tools or _handoff_tools)
+                and "casa-framework" not in _server_names):
             _server_names.append("casa-framework")
         mcp_servers = _mcp_registry.resolve(
             _server_names,
@@ -3960,6 +3981,10 @@ async def _run_delegated_agent(
         # provenance forward, not the caller's — so a NESTED delegation's
         # "parent" sees the immediately-enclosing agent's identity.
         "speaker_provenance": executing_provenance,
+        # Browser executor §5.4: the requesters this run serves, root first,
+        # ending with this run's own role — the hand-off bounds read it and a
+        # result returns to its element before the last.
+        "_handoff_chain": child_chain(parent, cfg.role),
     }
 
     # Resolve caller display name; fall back to role.
@@ -3970,7 +3995,11 @@ async def _run_delegated_agent(
     # one live source. (#439 now re-syncs `_agent_registry` on every reload too,
     # but the role map remains the one authority for names — a KnownAgent's
     # `name` is a copy taken at build time, and the map holds the config.)
-    caller_role = str(parent.get("role", "")) or "(unknown)"
+    # Browser executor §5.4: the caller is whoever asked THIS run — the
+    # chain's element before this role — which is the resident on every path
+    # but a hand-off, where it is the specialist that handed the work on.
+    _chain = child_origin["_handoff_chain"]
+    caller_role = requester_of(_chain) or "(unknown)"
     caller_name = _display_name_for_role(caller_role)
     originating_channel = str(parent.get("channel", "")) or "(unknown)"
     suggested_register = "voice" if originating_channel == "voice" else "text"
@@ -3979,7 +4008,9 @@ async def _run_delegated_agent(
         "<delegation_context>\n"
         f"caller_role: {caller_role}\n"
         f"caller_name: {caller_name}\n"
-        f"originating_channel: {originating_channel}\n"
+        + (f"requested_through: {' > '.join(_chain[:-1])}\n"
+           if len(_chain) > 2 else "")
+        + f"originating_channel: {originating_channel}\n"
         f"suggested_register: {suggested_register}\n"
         "</delegation_context>"
     )
@@ -4450,7 +4481,17 @@ async def _run_delegated_agent(
             # whose unfinished text must not be banked as a completed,
             # provenance-attributed document.
             turns = []
-            if task_text.strip():
+            # Browser executor §5.4 (INV-MEM-024): the task is banked as the
+            # caller's words only when the caller is the resident the chain
+            # started from, on a turn Casa did not compose. A specialist's
+            # hand-off task (perhaps the browsing specialist's own report) and
+            # a continuation's or relay's task (Casa's text around another
+            # role's answer) are never banked — decided by the chain's shape,
+            # not by markers a nested run could inherit (p3r2a, p3r3c, p3r4c).
+            _chain_now = child_origin["_handoff_chain"]
+            _resident_task = (len(_chain_now) <= 2
+                              and parent.get("synthetic") != "continuation")
+            if task_text.strip() and _resident_task:
                 turns.append(RetainedTurn(task_text, caller_provenance))
             if text and not output.answer_incomplete:
                 turns.append(RetainedTurn(text, executing_provenance))
@@ -4569,7 +4610,7 @@ async def _fail_delegation_durably(
 
 
 async def _complete_delegation_durably(
-    delegation_id: str, result: str = "",
+    delegation_id: str, result: str = "", *, announce_creator: bool = True,
 ) -> VoiceJob | None:
     """The ok arm's durable terminal, with the announcement obligation armed.
 
@@ -4587,7 +4628,7 @@ async def _complete_delegation_durably(
     """
     try:
         return await _specialist_registry.complete_delegation(
-            delegation_id, result, announce_creator=True)
+            delegation_id, result, announce_creator=announce_creator)
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -4598,7 +4639,7 @@ async def _complete_delegation_durably(
         try:
             (_specialist_registry.job_registry
              .schedule_completion_reconciliation(
-                 delegation_id, result, announce_creator=True))
+                 delegation_id, result, announce_creator=announce_creator))
         except Exception:  # noqa: BLE001 — restart recovery remains authoritative
             logger.error(
                 "Delegation %s completion reconciliation scheduling failed; "
@@ -4692,6 +4733,8 @@ def _failure_message(message: str, tool_calls: dict[str, int]) -> str:
 def _attach_completion_callback(
     task: asyncio.Task,
     record: DelegationRecord,
+    *,
+    quiet_if: "Callable[[DelegatedOutput], bool] | None" = None,
 ) -> None:
     """Wire the bus NOTIFICATION post on delegation completion.
 
@@ -4704,6 +4747,12 @@ def _attach_completion_callback(
     coroutine `finally`). This callback bounds the notified output via
     `truncate_output` and propagates the `output_truncated` flag onto the
     `DelegationComplete`.
+
+    ``quiet_if`` (a browsing continuation, Plan 3 C4a): the caller's own
+    record that the specialist declared progress only (its answer was
+    ``<silent/>``) — the row then completes with no announcement owed, through
+    the same reconciled terminal write, and the requester hears nothing. An
+    aborted or failed run is announced as always.
     """
     loop = asyncio.get_running_loop()
 
@@ -4742,6 +4791,11 @@ def _attach_completion_callback(
                 )
                 settle = _fail_delegation_durably(
                     record.id, failure, announce_creator=True)
+            elif quiet_if is not None and quiet_if(output):
+                logger.info("delegation %s declared progress only — not announced",
+                            record.id[:8])
+                settle = _complete_delegation_durably(record.id, "",
+                                                      announce_creator=False)
             else:
                 text = output.text
                 bounded, output_truncated = (
@@ -5129,6 +5183,76 @@ def _log_delegation_denial(caller_role: str, agent_name: str,
     )
 
 
+async def _requires_gate(agent_name: str, cfg) -> tuple[Any, "dict | None"]:
+    """The A5 requires gate, shared by ``_prelaunch`` and ``hand_off``:
+    ``(resolution, None)`` — ``resolution`` ``None`` when ``cfg`` declares no
+    requirements — or ``(None, error_result)``."""
+    # A5 requires gate: a delegated agent that declares `requires:` refuses
+    # to launch (typed `dependency_unavailable`) unless its required
+    # plugins/tools are ACTUALLY resolved for its own tier:role target —
+    # never "assume model memory has the tool". Skipped entirely (resolution
+    # stays None) when `cfg.requires` is empty, so a delegate with no
+    # requires: block behaves exactly as before Task 5. `grants_for_resolution`
+    # is SERVER-level (`mcp__plugin_mtg_mtg`), so a tool-level requirement is
+    # checked against `declared_tools_for_resolution` (manifest
+    # `casa.provides_tools`) AND, for the server prefix, the actual grant —
+    # both must hold for the tool to be genuinely usable.
+    resolution = None
+    req = getattr(cfg, "requires", None)
+    if req is not None and (req.plugins or req.tools):
+        tier = (_agent_registry.tier_for_role(agent_name)
+                if _agent_registry is not None else None) or "specialist"
+        resolution = await asyncio.to_thread(
+            plugin_registry.resolve_for, f"{tier}:{agent_name}")
+        # #424 r4 (Sol r4-1 / Terra r4-1): apply the env withhold BEFORE the
+        # missing checks — a required plugin whose secrets are unresolved
+        # would be withheld at the session build, so admitting it here
+        # launches a delegation without its declared dependency. Filtering
+        # first makes it land in missing_plugins/missing_tools (typed
+        # dependency_unavailable), and the filtered resolution flows to the
+        # record + options builder (A5/H7b: one resolve, one filter).
+        # #434: BIND the second element. It is the only structured home of
+        # WHY a plugin was withheld — `[(rp, missing_vars)]` — and discarding
+        # it into `_` is what left the caller able to say only "the plugin
+        # isn't available" while the cause sat spelled out in a WARNING the
+        # model cannot read. The resident could not learn that three
+        # environment variables needed wiring.
+        from plugin_grants import withhold_env_unresolved
+        resolution, withheld = await asyncio.to_thread(
+            withhold_env_unresolved, resolution,
+            context=f"delegated {agent_name} requires gate")
+        declared = declared_tools_for_resolution(resolution)
+        servers = set(grants_for_resolution(resolution))  # server actually attached
+        missing_plugins = _missing_required_plugins(
+            req.plugins, resolution.plugins)
+        missing_tools = [
+            t for t in req.tools
+            if t not in declared or t.rsplit("__", 1)[0] not in servers
+        ]
+        if missing_plugins or missing_tools or not resolution.registry_valid:
+            reasons = _withhold_reasons(withheld, missing_plugins, missing_tools)
+            # Safe here, unlike the ACL denial (#433): this gate runs AFTER
+            # the ACL, so `agent_name` is a target the caller demonstrably
+            # declares — not an unauthenticated caller-supplied string. Same
+            # stage as the `busy` denial recorded immediately below.
+            if _specialist_telemetry is not None:
+                _specialist_telemetry.record_denial(
+                    agent_name, kind="dependency_unavailable")
+            return None, _result({
+                "status": "error", "kind": "dependency_unavailable",
+                "agent": agent_name,
+                "missing_plugins": missing_plugins,
+                "missing_tools": missing_tools,
+                "registry_valid": resolution.registry_valid,
+                # Always present, empty when no cause is known, so a consumer
+                # never has to tell "no reasons" from "payload predates #434".
+                "unavailable_reasons": reasons,
+                "message": _dependency_unavailable_message(agent_name, reasons),
+            })
+
+    return resolution, None
+
+
 async def _prelaunch(
     agent_name: str, origin: dict, mode: str,
     task_text: str = "", context_text: str = "",
@@ -5417,68 +5541,9 @@ async def _prelaunch(
             ),
         })
 
-    # A5 requires gate: a delegated agent that declares `requires:` refuses
-    # to launch (typed `dependency_unavailable`) unless its required
-    # plugins/tools are ACTUALLY resolved for its own tier:role target —
-    # never "assume model memory has the tool". Skipped entirely (resolution
-    # stays None) when `cfg.requires` is empty, so a delegate with no
-    # requires: block behaves exactly as before Task 5. `grants_for_resolution`
-    # is SERVER-level (`mcp__plugin_mtg_mtg`), so a tool-level requirement is
-    # checked against `declared_tools_for_resolution` (manifest
-    # `casa.provides_tools`) AND, for the server prefix, the actual grant —
-    # both must hold for the tool to be genuinely usable.
-    resolution = None
-    req = getattr(cfg, "requires", None)
-    if req is not None and (req.plugins or req.tools):
-        tier = (_agent_registry.tier_for_role(agent_name)
-                if _agent_registry is not None else None) or "specialist"
-        resolution = await asyncio.to_thread(
-            plugin_registry.resolve_for, f"{tier}:{agent_name}")
-        # #424 r4 (Sol r4-1 / Terra r4-1): apply the env withhold BEFORE the
-        # missing checks — a required plugin whose secrets are unresolved
-        # would be withheld at the session build, so admitting it here
-        # launches a delegation without its declared dependency. Filtering
-        # first makes it land in missing_plugins/missing_tools (typed
-        # dependency_unavailable), and the filtered resolution flows to the
-        # record + options builder (A5/H7b: one resolve, one filter).
-        # #434: BIND the second element. It is the only structured home of
-        # WHY a plugin was withheld — `[(rp, missing_vars)]` — and discarding
-        # it into `_` is what left the caller able to say only "the plugin
-        # isn't available" while the cause sat spelled out in a WARNING the
-        # model cannot read. The resident could not learn that three
-        # environment variables needed wiring.
-        from plugin_grants import withhold_env_unresolved
-        resolution, withheld = await asyncio.to_thread(
-            withhold_env_unresolved, resolution,
-            context=f"delegated {agent_name} requires gate")
-        declared = declared_tools_for_resolution(resolution)
-        servers = set(grants_for_resolution(resolution))  # server actually attached
-        missing_plugins = _missing_required_plugins(
-            req.plugins, resolution.plugins)
-        missing_tools = [
-            t for t in req.tools
-            if t not in declared or t.rsplit("__", 1)[0] not in servers
-        ]
-        if missing_plugins or missing_tools or not resolution.registry_valid:
-            reasons = _withhold_reasons(withheld, missing_plugins, missing_tools)
-            # Safe here, unlike the ACL denial (#433): this gate runs AFTER
-            # the ACL, so `agent_name` is a target the caller demonstrably
-            # declares — not an unauthenticated caller-supplied string. Same
-            # stage as the `busy` denial recorded immediately below.
-            if _specialist_telemetry is not None:
-                _specialist_telemetry.record_denial(
-                    agent_name, kind="dependency_unavailable")
-            return None, None, None, None, _result({
-                "status": "error", "kind": "dependency_unavailable",
-                "agent": agent_name,
-                "missing_plugins": missing_plugins,
-                "missing_tools": missing_tools,
-                "registry_valid": resolution.registry_valid,
-                # Always present, empty when no cause is known, so a consumer
-                # never has to tell "no reasons" from "payload predates #434".
-                "unavailable_reasons": reasons,
-                "message": _dependency_unavailable_message(agent_name, reasons),
-            })
+    resolution, _requires_error = await _requires_gate(agent_name, cfg)
+    if _requires_error is not None:
+        return None, None, None, None, _requires_error
 
     # Task 6 concurrency gate (spec §4.6): AFTER requires, BEFORE progress —
     # a denied gate must never speak the "checking" line, and a delegation
@@ -5682,6 +5747,62 @@ _DELEGATION_CEILING_S: float = 10 * _SYNC_WAIT_TIMEOUT_S
 # bounded overshoot of the concurrency cap in the double-failure case only.
 _CEILING_TEARDOWN_BOUND_S: float = 30.0
 
+# How often a paused ceiling re-reads its clock while a hand-off it waits on runs.
+_CEILING_PAUSE_POLL_S: float = 5.0
+
+
+class _CeilingClock:
+    """One bounded run's ceiling, with the time it spends waiting on its own
+    hand-offs left out (browser executor §5.4): a requester waiting on the
+    specialist it handed work to is not running away. Pauses nest — parallel
+    hand-offs from one run each pause and resume it once."""
+
+    def __init__(self, ceiling: float, *, now=time.monotonic) -> None:
+        self.ceiling = ceiling
+        self._now = now
+        self._started = now()
+        self._paused_total = 0.0
+        self._depth = 0
+        self._paused_at = 0.0
+
+    def pause(self) -> None:
+        if self._depth == 0:
+            self._paused_at = self._now()
+        self._depth += 1
+
+    def resume(self) -> None:
+        if self._depth <= 0:
+            return
+        self._depth -= 1
+        if self._depth == 0:
+            self._paused_total += self._now() - self._paused_at
+
+    def left(self) -> "float | None":
+        """Seconds of running time left, or ``None`` while paused."""
+        if self._depth > 0:
+            return None
+        return self.ceiling - (self._now() - self._started - self._paused_total)
+
+
+# The ceiling clock of the bounded run a tool handler runs inside — set around
+# the inner task's creation, as ``_bounded_tree`` is, so ``hand_off`` pauses
+# its REQUESTER's clock and a run nested inside gets its own.
+_ceiling_clock: ContextVar["_CeilingClock | None"] = ContextVar(
+    "_ceiling_clock", default=None)
+
+
+@contextmanager
+def _ceiling_paused():
+    clock = _ceiling_clock.get()
+    if clock is None:
+        yield
+        return
+    clock.pause()
+    try:
+        yield
+    finally:
+        clock.resume()
+
 
 class DelegationCeilingExceeded(asyncio.TimeoutError):
     """A delegated turn exceeded the wall-clock ceiling and was cancelled.
@@ -5738,6 +5859,11 @@ async def _run_delegated_agent_bounded(
     # never reports into the desk's; #1212: and with this run's tree
     sink_tok = _desk_run_sink.set(None)
     tree_tok = _bounded_tree.set(tree)
+    ceiling = _DELEGATION_CEILING_S
+    if not math.isfinite(ceiling) or ceiling <= 0:
+        ceiling = 600.0  # fail closed to the shipped default, never hang
+    clock = _CeilingClock(ceiling)
+    clock_tok = _ceiling_clock.set(clock)
     try:
         inner = asyncio.create_task(
             _run_delegated_agent(cfg, task_text, context_text,
@@ -5745,25 +5871,39 @@ async def _run_delegated_agent_bounded(
                                  output_format=output_format,
                                  tool_counts=tool_counts))
     finally:
+        _ceiling_clock.reset(clock_tok)
         _bounded_tree.reset(tree_tok)
         _desk_run_sink.reset(sink_tok)
     if sink is not None:
         sink.append(inner)
-    ceiling = _DELEGATION_CEILING_S
-    if not math.isfinite(ceiling) or ceiling <= 0:
-        ceiling = 600.0  # fail closed to the shipped default, never hang
     try:
-        return await _bounded_wait(inner, tree, ceiling, tool_counts, role)
+        return await _bounded_wait(inner, tree, clock, tool_counts, role)
     finally:
         if not tree.reaping:
             tree.close_fds()
 
 
-async def _bounded_wait(inner: asyncio.Task, tree: Any, ceiling: float,
+async def _wait_under_ceiling(inner: asyncio.Task,
+                              clock: "_CeilingClock") -> "tuple[set, set]":
+    """Wait for *inner* until its clock runs out; time the clock spends paused
+    (a hand-off in flight) does not count. Returns ``asyncio.wait``'s pair."""
+    while True:
+        left = clock.left()
+        timeout = _CEILING_PAUSE_POLL_S if left is None else max(left, 0.0)
+        done, pending = await asyncio.wait({inner}, timeout=timeout)
+        if done:
+            return done, pending
+        left = clock.left()
+        if left is not None and left <= 0:
+            return done, pending
+
+
+async def _bounded_wait(inner: asyncio.Task, tree: Any, clock: "_CeilingClock",
                         tool_counts: dict[str, int], role: str) -> DelegatedOutput:
     """``_run_delegated_agent_bounded``'s wait, cancel and teardown."""
+    ceiling = clock.ceiling
     try:
-        done, pending = await asyncio.wait({inner}, timeout=ceiling)
+        done, pending = await _wait_under_ceiling(inner, clock)
     except asyncio.CancelledError:
         # The bounded runner may be abandoned by a voice deadline or caller
         # while the delegated coroutine turns cancellation into an exception.
@@ -7832,6 +7972,199 @@ async def delegate_to_agent(args: dict) -> dict:
         # transferred to a created task — a cancel during registration).
         if _desk_reservation is not None:
             _desk_reservation.release()
+
+
+# ---------------------------------------------------------------------------
+# Browser executor §5.4: the general hand-off — any specialist answering a
+# request hands part of it to any other specialist and waits for the answer.
+# ---------------------------------------------------------------------------
+
+_HANDOFF_EXPECTED_MAX_CHARS: int = 1_000
+
+
+def _handoff_unavailable(message: str) -> dict:
+    return _result({"status": "error", "kind": "handoff_unavailable",
+                    "message": message})
+
+
+def _handoff_target(agent_name: str) -> "tuple[str | None, dict | None]":
+    """The specialist role *agent_name* names — its role id, else its persona
+    display name when exactly one specialist carries it — or a refusal. The
+    candidate set is every loaded specialist: a hand-off needs no
+    declaration (design §5.4, "any specialist, present or future")."""
+    specialists = {r for r, c in _agent_role_map.items()
+                   if getattr(c, "kind", "") == "specialist"}
+    if agent_name in specialists:
+        return agent_name, None
+    candidates = _declared_name_candidates(agent_name, specialists)
+    if len(candidates) == 1:
+        return candidates[0], None
+    if len(candidates) > 1:
+        return None, _result({
+            "status": "error", "kind": "delegation_ambiguous_name",
+            "candidates": candidates,
+            "message": (f"{agent_name!r} is the display name of more than one "
+                        f"specialist ({', '.join(candidates)}) — pass the role id."),
+        })
+    return None, _result({
+        "status": "error", "kind": "unknown_agent",
+        "specialists": [{"role": r, "name": _display_name_for_role(r)}
+                        for r in sorted(specialists)],
+        "message": f"No specialist named {agent_name!r}.",
+    })
+
+
+@tool(
+    "hand_off",
+    "Hand part of the request you are answering to another specialist and wait "
+    "for its answer, which comes back to you (not to the person). Use it when "
+    "another specialist is the one who can do that part — say what a correct "
+    "result looks like in expected_result. The answer is yours to check and to "
+    "use in your own reply.",
+    {"type": "object",
+     "properties": {
+         "agent": {"type": "string"},
+         "task": {"type": "string"},
+         "context": {"type": "string"},
+         "expected_result": {"type": "string"},
+     },
+     "required": ["agent", "task"]},
+)
+async def hand_off(args: dict) -> dict:
+    """Run one hand-off synchronously and return the target's answer.
+
+    Available only inside a specialist's own delegated or desk run (never an
+    engagement, a job, a stored-call turn or a voice-originated run). The
+    bounds are mechanical (``handoff.handoff_refusal``): no agent twice in the
+    chain, at most ``MAX_HANDOFFS`` hand-offs after the resident. The run is
+    ephemeral like any delegation, holds only its per-scope permit (the
+    chain's root holds the global slot), writes no job row and posts no
+    hand-off line — the requester is waiting on it, and the requester's own
+    ceiling does not run while it waits (``_bounded_wait``)."""
+    from handoff import handoff_chain, handoff_refusal
+
+    origin = _snapshot_origin()
+    if engagement_var.get(None) is not None or origin.get("stored_call"):
+        return _handoff_unavailable(
+            "hand_off is not available in an engagement, a job or a tapped call.")
+    if int(origin.get("delegation_depth", 0) or 0) <= 0:
+        return _handoff_unavailable(
+            "hand_off is for a specialist answering a request; delegate instead.")
+    if str(origin.get("channel", "")) == "voice":
+        return _handoff_unavailable("hand_off is not available on voice.")
+    caller = str(origin.get("execution_role") or "")
+    caller_cfg = _agent_role_map.get(caller)
+    if caller_cfg is None or getattr(caller_cfg, "kind", "") != "specialist":
+        return _handoff_unavailable("hand_off is available to specialists only.")
+
+    fields = {k: args.get(k, "") if args.get(k) is not None else ""
+              for k in ("agent", "task", "context", "expected_result")}
+    for _field, _value in fields.items():
+        if not isinstance(_value, str):
+            return _result({"status": "error", "kind": "invalid_argument",
+                            "field": _field,
+                            "message": f"{_field} must be a string."})
+    task_text, context_text = fields["task"], fields["context"]
+    expected = fields["expected_result"].strip()
+    if not task_text.strip():
+        return _result({"status": "error", "kind": "invalid_argument",
+                        "field": "task", "message": "task must not be empty."})
+    for _field, _value, _limit in (
+            ("task", task_text, specialist_limits._MAX_TASK_CHARS),
+            ("context", context_text, specialist_limits._MAX_CONTEXT_CHARS),
+            ("expected_result", expected, _HANDOFF_EXPECTED_MAX_CHARS)):
+        if len(_value) > _limit:
+            return _result({"status": "error", "kind": "input_too_large",
+                            "field": _field, "length": len(_value),
+                            "limit": _limit,
+                            "message": f"{_field} exceeds the {_limit}-char limit."})
+
+    target, refusal = _handoff_target(fields["agent"])
+    if refusal is not None:
+        return refusal
+    chain = handoff_chain(origin)
+    bound = handoff_refusal(chain, target)
+    if bound is not None:
+        return _result(bound)
+    cfg = _agent_role_map[target]
+    resolution, requires_error = await _requires_gate(target, cfg)
+    if requires_error is not None:
+        return requires_error
+
+    permit = None
+    if _specialist_limiter is not None:
+        permit = _specialist_limiter.try_acquire_scope_only(
+            _delegation_scope(origin, target))
+        if permit is None:
+            return _result({
+                "status": "error", "kind": "busy", "agent": target,
+                "message": (f"{_display_name_for_role(target)} is already "
+                            "working on something for this chat — try again "
+                            "shortly."),
+            })
+    try:
+        if expected:
+            context_text = (
+                f"{context_text}\n\n" if context_text else ""
+            ) + (f"What {_display_name_for_role(caller)} will accept as a "
+                 f"correct result:\n{expected}")
+        handoff_id = str(uuid.uuid4())
+        _launch_scope = origin.get("turn_scope")
+        _, _note = _launch_note(origin, task_text)
+        import agent as _agent_mod
+        _child_origin = dict(origin)
+        if isinstance(_launch_scope, TurnScope):
+            _child_origin["turn_scope"] = TurnScope.for_child(
+                _launch_scope, _note, synchronous=True)
+        _qk_tok = _delegation_quota_key.set(handoff_id)
+        _ov_tok = _agent_mod.origin_var.set(_child_origin)
+        try:
+            task = asyncio.create_task(_run_delegated_agent_bounded(
+                cfg, task_text, context_text, resolution=resolution))
+        finally:
+            _agent_mod.origin_var.reset(_ov_tok)
+            _delegation_quota_key.reset(_qk_tok)
+        if permit is not None:
+            # released when the run ACTUALLY ends, as the sync arm's is
+            task.add_done_callback(_permit_release_callback(permit))
+            permit = None
+        _record_launch_safe(target)
+        started = time.monotonic()
+        logger.info("Hand-off %s %s → %s (chain length %d)",
+                    handoff_id[:8], _known_role(caller), _known_role(target),
+                    len(chain) + 1)
+        try:
+            with _ceiling_paused():
+                output = await task
+        except asyncio.CancelledError:
+            task.cancel()
+            raise
+        except Exception as exc:  # noqa: BLE001 — typed to the caller
+            kind = _classify_error(exc).value
+            logger.info("Hand-off %s → %s failed: %s", handoff_id[:8],
+                        _known_role(target), kind)
+            return _result(_with_post_echo_payload({
+                "status": "error", "agent": target, "kind": kind,
+                "message": str(exc),
+                "elapsed_s": time.monotonic() - started,
+            }, handoff_id))
+        if output.run_aborted:
+            failure = _run_abort_failure(output)
+            return _result(_with_post_echo_payload({
+                "status": "error", "agent": target, "kind": failure.kind,
+                "message": failure.message,
+                "elapsed_s": time.monotonic() - started,
+            }, handoff_id))
+        text, output_truncated = specialist_limits.truncate_output(output.text)
+        text = _with_post_echo(text, handoff_id)
+        return _result({
+            "status": "ok", "agent": target, "text": text,
+            "output_truncated": output_truncated,
+            "elapsed_s": time.monotonic() - started,
+        })
+    finally:
+        if permit is not None:
+            permit.release()
 
 
 # ---------------------------------------------------------------------------
@@ -12673,7 +13006,13 @@ async def _finalize_engagement_tail(
     # identity — NEVER a fabricated persona.
     _summary_prov = frozen["summary_prov"]
     sem = getattr(agent_mod, "active_semantic_memory", None)
-    if sem is not None:
+    # Browser executor §5.4: a specialist that writes no memory leaves no
+    # summary either — the summary is its own output. ``sem`` stays bound for
+    # the executor summary below, which no specialist reaches.
+    from delegated_memory import role_writes_memory
+    _summary_allowed = (frozen["kind"] != "specialist"
+                        or role_writes_memory(frozen["role_or_type"]))
+    if sem is not None and _summary_allowed:
         summary = json.dumps({
             "kind": "engagement_summary",
             "engagement_id": eng_id,
@@ -21619,6 +21958,8 @@ CASA_TOOLS: tuple = (
     react,
     ask_user,
     delegate_to_agent,
+    hand_off,                      # browser executor §5.4 — specialists only,
+                                   # granted in code (never by a bundle)
     start_job,
     voice_job_status,
     cancel_voice_job,

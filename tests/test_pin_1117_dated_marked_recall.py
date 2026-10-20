@@ -33,6 +33,17 @@ from speaker_provenance import encode_provenance_tag
 from timekeeping import compose_time_envelope, resolve_tz
 from trait_renderer import estimate_tokens_v1
 
+@pytest.fixture(autouse=True)
+def _finance_is_loaded(monkeypatch):
+    """The notices these tests save come from a loaded specialist that writes
+    memory (browser executor INV-MEM-024 keeps an unloaded role's notice out)."""
+    import types as _types
+    import tools as _tools
+    monkeypatch.setattr(_tools, "_agent_role_map", {"finance": _types.SimpleNamespace(
+        kind="specialist", memory=_types.SimpleNamespace(token_budget=4000))},
+        raising=False)
+
+
 MARK = "casa-scheduled"
 AMS = ZoneInfo("Europe/Amsterdam")
 SYSTEM = SpeakerProvenance(speaker_kind="system")

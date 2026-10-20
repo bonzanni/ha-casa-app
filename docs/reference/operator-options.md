@@ -65,7 +65,7 @@ container variable can survive an empty option elsewhere.
 | `casa_tz` | `CASA_TZ` | timekeeping — both scheduler wall-clock and the current-time block every agent turn sees | empty → `TZ` (Home Assistant's zone), then UTC | restart |
 | `engagement_reap_days` | `ENGAGEMENT_REAP_DAYS` | engagement reaper | 7 (0 disables) | restart |
 | `log_level` | `LOG_LEVEL` | main startup logging; the standalone MCP service's logging | info (runtime falls back to INFO when absent/empty) | restart |
-| `specialist_max_concurrency` | `SPECIALIST_MAX_CONCURRENCY` | specialist limiter (clamped 1–20) — the *fleet-wide* cap; a separate hard-coded rule allows exactly one active delegation per scope regardless | 2 | restart |
+| `specialist_max_concurrency` | `SPECIALIST_MAX_CONCURRENCY` | specialist limiter (clamped 1–20) — the *fleet-wide* cap; a separate hard-coded rule allows exactly one active delegation per scope regardless; a specialist's `hand_off` takes only the per-scope slot, so a hand-off chain counts once (`architecture/specialist-handoff.md`) | 2 | restart |
 | `specialist_cost_alert_threshold` | `SPECIALIST_COST_ALERT_THRESHOLD` | specialist telemetry (malformed → default) — a cumulative per-role USD threshold that only *logs* on every result once exceeded; it caps and cancels nothing | 5.0 | restart |
 
 ## Failure behavior

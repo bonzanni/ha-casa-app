@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.345.0] - 2026-10-20
+
+### Added
+
+- A specialist can hand part of a request to another specialist and use its answer — finance asking the browsing specialist for missing invoices, for example. The answer goes back to whoever asked; you hear the outcome from them. A request is never handed back to someone already working on it, and at most three hand-offs follow the assistant's own.
+- Browsing runs start only when you asked for them. Casa reads your own message on its own and starts the runs it names without asking; for anything else — "yes, do it", "collect them", or a run your message does not name — you get one message listing every run, with one tap to start them all.
+- Work that takes longer than one turn — a browsing run waiting for your OK, for example — carries on by itself once it can, and its answer reaches whoever asked for it. Casa checks every minute for such work that has stalled and picks it up again, including after a restart.
+- MT940 bank statements (`.sta`, `.940`) can be sent to you as text files.
+- A specialist waiting on another specialist's answer is no longer cut off by its own time limit while it waits.
+
+### Changed
+
+- A specialist that keeps no memory (its memory budget is zero) now keeps none on every path: what it reports back, the notice carrying it in the assistant's conversation, and its engagement summary are not saved. The assistant's own replies are saved as before.
+
 ## [0.344.94] - 2026-10-14
 
 ### Fixed

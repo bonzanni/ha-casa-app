@@ -1788,7 +1788,7 @@ _DECLARED_OWNERSHIP = [
     ("casa/rootfs/opt/casa/delegated_memory.py", "architecture/memory.md",
      ["delegated_recall", "topical_query"]),
     ("casa/rootfs/opt/casa/delegated_memory.py", "architecture/memory-lifecycle.md",
-     ["retain_delegated"]),
+     ["retain_delegated", "role_writes_memory", "notice_from_excluded_role"]),
     ("casa/rootfs/opt/casa/delegated_memory.py", "architecture/memory-scoping.md",
      ["delegated_recall"]),
     ("casa/rootfs/opt/casa/config.py", "architecture/configuration.md",

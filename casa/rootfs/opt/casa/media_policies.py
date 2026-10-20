@@ -177,5 +177,8 @@ MEDIA_POLICIES: dict[str, MediaPolicy] = {
     # artifact (~1200x a Telegram message).
     "text": MediaPolicy("send_document", _accepts_text,
                         frozenset({".txt", ".md", ".csv", ".log",
-                                   ".json", ".yaml", ".yml"}), 5 * _MB),
+                                   ".json", ".yaml", ".yml",
+                                   # browser executor §6 case 9: a bank
+                                   # statement in MT940, plain ASCII text
+                                   ".sta", ".940"}), 5 * _MB),
 }

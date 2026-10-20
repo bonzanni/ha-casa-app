@@ -1405,7 +1405,7 @@ def resolve_grant_identity(role: str, artifact_id: str = ""):
             engagement_id=str(rec.id),
             target_role=getattr(rec, "role_or_type", None),
         ), None
-    if (prov.transport not in ("dm", "button", "setup")
+    if (prov.transport not in ("dm", "button", "setup", "continuation")
             or prov.execution not in ("direct", "delegated")):
         return None, "unsupported_origin"
     if role != origin.get("execution_role"):

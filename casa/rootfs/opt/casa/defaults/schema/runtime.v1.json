@@ -40,7 +40,8 @@
       "additionalProperties": false,
       "properties": {
         "strategy":     {"type": "string", "enum": ["persistent", "pooled", "ephemeral"], "default": "ephemeral"},
-        "idle_timeout": {"type": "integer", "minimum": 0, "default": 300}
+        "idle_timeout": {"type": "integer", "minimum": 0, "default": 300},
+        "desk_context": {"type": "boolean"}
       }
     },
     "tts": {

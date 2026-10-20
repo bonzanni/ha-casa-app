@@ -718,7 +718,11 @@ two app options:
   is reached, further delegation attempts are denied as "busy" until a slot
   frees up. A given calling scope (one voice session or chat) may also only
   have one active delegation to the same specialist at a time — that
-  per-scope cap is fixed at 1 and is not configurable.
+  per-scope cap is fixed at 1 and is not configurable. When a specialist
+  hands part of its work to another specialist, the hand-off runs inside
+  the delegation that started it: a chain of hand-offs counts once against
+  the fleet-wide cap, while the per-scope rule still applies to each
+  specialist in it.
 - `specialist_cost_alert_threshold` (default `5.0`, in USD) — once a
   specialist's cumulative delegated spend passes this figure, every further
   delegation to it logs an operator-visible warning (spend is not blocked,
