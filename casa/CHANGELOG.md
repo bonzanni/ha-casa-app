@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.345.1] - 2026-10-20
+
+### Changed
+
+- Nothing changes in the app itself. Behind the scenes, the repository's release pipeline now builds and releases each app folder on its own, in preparation for an optional second app beside Casa. Casa keeps its image, its `vX.Y.Z` tags and its release notes; a version that is already released is no longer rebuilt over, and each release tag now points at the exact commit that was built.
+
 ## [0.345.0] - 2026-10-20
 
 ### Added

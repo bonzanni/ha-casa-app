@@ -317,6 +317,63 @@ else
   pass "docs.yml docs-impact step also runs on push"
 fi
 
+# --- test_browser_version_only_docs_impact ---------------------------------
+# A version-only bump to an app manifest is dropped from the changed set; any
+# other line — an added option, or an option DELETED, which adds no line at all
+# — keeps the manifest in it. Judged per app manifest, Casa's and the second
+# app's alike. The block is lifted from the script by its markers.
+version_block="$(sed -n '/^# BEGIN version-only manifests$/,/^# END version-only manifests$/p' \
+                   "$repo_root/scripts/docs_impact.sh")"
+if [ -z "$version_block" ]; then
+  fail "version-only block markers not found in scripts/docs_impact.sh"
+else
+  git init -q "$work/vrepo"
+  ( cd "$work/vrepo"
+    git config user.email harness; git config user.name harness
+    mkdir -p casa casa_browser
+    printf 'version: "1.0.0"\noptions:\n  a: 1\n  b: 2\nschema:\n  a: int\n  b: int\n' > casa/config.yaml
+    cp casa/config.yaml casa_browser/config.yaml
+    git add -A; git commit -q -m base; git branch -M main )
+  version_only_changed() {  # version_only_changed <manifest edit (sed expr)> <app>...
+    local expr="$1"; shift
+    ( set -euo pipefail
+      cd "$work/vrepo"
+      git checkout -q main; git checkout -q -B "v$RANDOM"
+      for app in "$@"; do sed -i "$expr" "$app/config.yaml"; done
+      git commit -q -am change
+      base=main
+      changed="$(git diff --name-only "$base"...HEAD)"
+      eval "$version_block"
+      printf '%s\n' "$changed" | sed '/^$/d' | sort | tr '\n' ' ' )
+  }
+  bump='s/^version: .*/version: "1.0.1"/'
+  drop_b='/^  b: /d'
+  add_c='s/^options:$/options:\n  c: 3/'
+  got="$(version_only_changed "$bump" casa_browser)"
+  [ "$got" = "" ] && pass "browser version-only bump is exempted" \
+    || fail "browser version-only bump is exempted" "changed: '$got'"
+  got="$(version_only_changed "$bump" casa)"
+  [ "$got" = "" ] && pass "casa version-only bump is exempted" \
+    || fail "casa version-only bump is exempted" "changed: '$got'"
+  got="$(version_only_changed "$drop_b" casa_browser)"
+  [ "$got" = "casa_browser/config.yaml " ] && pass "browser option deletion is still caught" \
+    || fail "browser option deletion is still caught" "changed: '$got'"
+  got="$(version_only_changed "$add_c" casa_browser)"
+  [ "$got" = "casa_browser/config.yaml " ] && pass "browser option addition is still caught" \
+    || fail "browser option addition is still caught" "changed: '$got'"
+  got="$(version_only_changed "$drop_b" casa)"
+  [ "$got" = "casa/config.yaml " ] && pass "casa option deletion is still caught" \
+    || fail "casa option deletion is still caught" "changed: '$got'"
+  # one app's version-only bump never hides the other app's real change
+  got="$( cd "$work/vrepo"; git checkout -q main; git checkout -q -B mixed
+          sed -i "$bump" casa/config.yaml; sed -i "$drop_b" casa_browser/config.yaml
+          git commit -q -am mixed
+          base=main; changed="$(git diff --name-only "$base"...HEAD)"
+          eval "$version_block"; printf '%s\n' "$changed" | sed '/^$/d' | tr '\n' ' ' )"
+  [ "$got" = "casa_browser/config.yaml " ] && pass "manifests are judged one by one" \
+    || fail "manifests are judged one by one" "changed: '$got'"
+fi
+
 echo
 [ "$fails" -eq 0 ] && { echo "docs-impact gate: all checks passed"; exit 0; }
 echo "docs-impact gate: $fails check(s) failed"; exit 1

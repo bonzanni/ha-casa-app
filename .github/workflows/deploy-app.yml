@@ -1,0 +1,207 @@
+name: Deploy app
+
+# Container image pipeline for ONE app folder, called by deploy.yml once per app it
+# selects (Casa in casa/, and the optional Casa Browser app in casa_browser/ once that
+# folder exists). Every output below belongs to this one invocation, so two apps never
+# mix their architectures, image names, versions or changelogs.
+#
+# Pull requests get a validation build (no push). A push to main builds per-arch images,
+# pushes them to GHCR (Cosign-signed via the builder actions), publishes the multi-arch
+# manifest — the generic name the app's config.yaml `image:` points at — and then cuts the
+# app's release tag + GitHub Release at the built commit, with the matching CHANGELOG
+# section as notes. A push whose version is already released (its tag exists) builds to
+# validate and publishes nothing, so a published version's image and tag are never
+# overwritten. Tags: Casa `vX.Y.Z`, Casa Browser `casa_browser-vX.Y.Z` (never marked
+# Latest) — scripts/browser-release-matrix.py owns both.
+
+on:
+  workflow_call:
+    inputs:
+      app:
+        description: The app folder to build and release (casa or casa_browser)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: Prepare
+    runs-on: ubuntu-latest
+    outputs:
+      architectures: ${{ steps.info.outputs.architectures }}
+      build_matrix: ${{ steps.matrix.outputs.matrix }}
+      image_name: ${{ steps.normalize.outputs.image_name }}
+      registry_prefix: ${{ steps.normalize.outputs.registry_prefix }}
+      name: ${{ steps.normalize.outputs.name }}
+      description: ${{ steps.normalize.outputs.description }}
+      url: ${{ steps.normalize.outputs.url }}
+      version: ${{ steps.normalize.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
+      latest_flag: ${{ steps.release.outputs.latest_flag }}
+      cache_scope: ${{ steps.release.outputs.cache_scope }}
+      publish: ${{ steps.release.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Get app information
+        id: info
+        uses: home-assistant/actions/helpers/info@master
+        with:
+          path: "./${{ inputs.app }}"
+
+      - name: Normalize app information
+        id: normalize
+        # The info helper returns scalars with their YAML quotes intact
+        # (version "0.58.0" would become an invalid image tag). Unquoted
+        # shell assignment strips them — same laundering the official
+        # apps-example build-app.yaml does.
+        run: |
+          image=${{ steps.info.outputs.image }}
+          echo "image_name=${image##*/}" >> "$GITHUB_OUTPUT"
+          echo "registry_prefix=${image%/*}" >> "$GITHUB_OUTPUT"
+          version=${{ steps.info.outputs.version }}
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          name=${{ steps.info.outputs.name }}
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
+          description=${{ steps.info.outputs.description }}
+          echo "description=${description}" >> "$GITHUB_OUTPUT"
+          url=${{ steps.info.outputs.url }}
+          if [[ -n "$url" && "$url" != "null" ]]; then
+            echo "url=${url}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Release settings and publish decision
+        id: release
+        # Publish only on a push, and only a version whose release tag does not exist
+        # yet. `ls-remote --exit-code` exits 2 when the tag is absent; any other failure
+        # stops the run rather than being read as "not published yet".
+        env:
+          APP: ${{ inputs.app }}
+          VERSION: ${{ steps.normalize.outputs.version }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          settings="$(python3 scripts/browser-release-matrix.py release --app "$APP" --version "$VERSION")"
+          printf '%s\n' "$settings" >> "$GITHUB_OUTPUT"
+          tag="$(printf '%s\n' "$settings" | sed -n 's/^tag=//p')"
+          publish=false
+          if [ "$EVENT_NAME" = push ]; then
+            rc=0
+            git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null || rc=$?
+            case "$rc" in
+              2) publish=true ;;
+              0) echo "::notice::${tag} is already released — building to validate, publishing nothing" ;;
+              *) echo "::error::cannot tell whether ${tag} exists (git ls-remote exited ${rc})"; exit 1 ;;
+            esac
+          fi
+          echo "publish=${publish}" >> "$GITHUB_OUTPUT"
+          echo "${APP} ${VERSION}: tag ${tag}, publish=${publish}"
+
+      - name: Prepare build matrix
+        id: matrix
+        uses: home-assistant/builder/actions/prepare-multi-arch-matrix@2026.06.0
+        with:
+          architectures: ${{ steps.info.outputs.architectures }}
+          image-name: ${{ steps.normalize.outputs.image_name }}
+          registry-prefix: ${{ steps.normalize.outputs.registry_prefix }}
+
+  build:
+    name: Build ${{ matrix.arch }} image
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write # Cosign keyless signing (OIDC)
+      packages: write # push images to GHCR
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.build_matrix) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Build image
+        uses: home-assistant/builder/actions/build-image@2026.06.0
+        with:
+          arch: ${{ matrix.arch }}
+          # Empty for Casa (the builder's per-arch default); the second app scopes its
+          # own, so the two images never read or overwrite each other's cache entries.
+          cache-gha-scope: ${{ needs.prepare.outputs.cache_scope }}
+          container-registry-password: ${{ secrets.GITHUB_TOKEN }}
+          context: "./${{ inputs.app }}"
+          image: ${{ matrix.image }}
+          image-tags: |
+            ${{ needs.prepare.outputs.version }}
+            latest
+          labels: |
+            io.hass.type=app
+            io.hass.name=${{ needs.prepare.outputs.name }}
+            io.hass.description=${{ needs.prepare.outputs.description }}
+            io.hass.url=${{ needs.prepare.outputs.url }}
+          push: ${{ needs.prepare.outputs.publish == 'true' }}
+          version: ${{ needs.prepare.outputs.version }}
+
+  manifest:
+    name: Publish multi-arch manifest
+    needs: [prepare, build]
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # Cosign keyless signing (OIDC)
+      packages: write # push the manifest to GHCR
+    steps:
+      - name: Publish multi-arch manifest
+        uses: home-assistant/builder/actions/publish-multi-arch-manifest@2026.06.0
+        with:
+          architectures: ${{ needs.prepare.outputs.architectures }}
+          container-registry-password: ${{ secrets.GITHUB_TOKEN }}
+          image-name: ${{ needs.prepare.outputs.image_name }}
+          image-tags: |
+            ${{ needs.prepare.outputs.version }}
+            latest
+          registry-prefix: ${{ needs.prepare.outputs.registry_prefix }}
+
+  release:
+    name: Tag + GitHub Release
+    needs: [prepare, manifest]
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the tag + release
+    env:
+      GH_TOKEN: ${{ github.token }}
+      APP: ${{ inputs.app }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+      LATEST_FLAG: ${{ needs.prepare.outputs.latest_flag }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Create release once per version
+        run: |
+          if [ -n "$(git ls-remote --tags origin "refs/tags/${TAG}")" ]; then
+            echo "tag ${TAG} already exists — skipping release"
+            exit 0
+          fi
+          # Notes = the CHANGELOG section for this version.
+          awk -v ver="${VERSION}" '
+            $0 ~ "^## \\[" ver "\\]" {found=1; print; next}
+            found && /^## \[/ {exit}
+            found {print}
+          ' "${APP}/CHANGELOG.md" > /tmp/notes.md
+          if [ ! -s /tmp/notes.md ]; then
+            echo "Release ${TAG}. See ${APP}/CHANGELOG.md." > /tmp/notes.md
+          fi
+          # The tag goes on the commit this run built, not on whatever main is by now.
+          # LATEST_FLAG is empty for Casa (GitHub decides Latest as before) and
+          # --latest=false for the second app.
+          latest=()
+          if [ -n "${LATEST_FLAG}" ]; then latest=("${LATEST_FLAG}"); fi
+          gh release create "${TAG}" \
+            --title "${TAG}" \
+            --target "${GITHUB_SHA}" \
+            --notes-file /tmp/notes.md \
+            "${latest[@]}"

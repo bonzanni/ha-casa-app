@@ -165,6 +165,15 @@ together with the root by the verifier and the coverage ledger, and each shard f
 carrying its own `kind: meta` entry in the allowlist. Documents never live under
 `manifest.d/`; the verifier refuses one there.
 
+The coverage ledger enumerates every app folder the release pipeline ships
+(`scripts/coverage_ledger.py`'s `APPS`; see
+[`release-pipeline.md`](release-pipeline.md)), and an app folder that does not exist
+contributes nothing. Casa's keys are unprefixed. Another app's keys that are names rather
+than paths carry its folder as a namespace — `option:casa_browser:<key>`, and likewise
+`s6:`, `script:`, `env:` and `schema:` — so a name the two apps share is two ledger rows,
+never one; its modules, routes and Dockerfile are paths and need no namespace. Only Casa
+has a tool surface.
+
 `when_changing` is phrased as the *task* an agent is about to do, not the subsystem name.
 An agent knows what it is about to change before it knows which subsystem owns it, and the
 routing table has to meet it where it is.

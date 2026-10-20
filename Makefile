@@ -1,6 +1,6 @@
 PY := venv_test/bin/python
 
-.PHONY: help setup test-unit test-unit-serial test-docker test-image lint
+.PHONY: help setup test-unit test-unit-serial test-browser test-browser-integration test-docker test-image lint
 .DEFAULT_GOAL := help
 
 help: ## Show this help
@@ -85,11 +85,43 @@ SUITE = $(CAGE_GUARD)$(LOCK) $(CAGE)
 suite-run: ## Protected entry point for any caller that needs the unit suite
 	$(SUITE) $(PY) -m pytest tests/ $(PYTEST_ARGS) --tb=short
 
-test-unit: ## Fast unit tests, parallel + memory-caged (except docker/slow)
+# Both suite targets run Casa's suite, then the browser app's (test-browser), as two
+# SEPARATE protected invocations: each takes and releases the suite lock and its own
+# cage, one after the other, so the lock is never acquired while it is already held.
+# A red Casa suite stops before the browser suite runs. PYTEST_ARGS= keeps a selector
+# meant for one suite from leaking into the other through the sub-make.
+test-unit: ## Fast unit tests, parallel + memory-caged (except docker/slow); then test-browser
 	$(SUITE) $(PY) -m pytest tests/ -m "not docker and not slow" -n auto --maxprocesses=12 --dist loadfile --tb=short
+	@$(MAKE) --no-print-directory test-browser PYTEST_ARGS=
 
-test-unit-serial: ## Same suite, one process (for debugging a failure)
+test-unit-serial: ## Same suite, one process (for debugging a failure); then test-browser
 	$(SUITE) $(PY) -m pytest tests/ -m "not docker and not slow" --tb=short
+	@$(MAKE) --no-print-directory test-browser PYTEST_ARGS=
+
+# The optional Casa Browser app (casa_browser/) has its own Python 3.13 venv, built by
+# scripts/setup-browser-dev.sh, and its own tests under casa_browser/tests. Its unit
+# selection is the same opt-out one as Casa's, run under the same $(SUITE) protections.
+# PYTEST_ARGS replaces the default selection with pytest selectors relative to the repo
+# (make test-browser PYTEST_ARGS='casa_browser/tests/test_x.py'). Until casa_browser/
+# exists in the tree both targets say so and succeed: there is nothing to run.
+BROWSER_APP := casa_browser
+BROWSER_PY := venv_browser/bin/python
+BROWSER_PRESENT := $(wildcard $(BROWSER_APP)/config.yaml)
+
+test-browser: ## Browser app unit tests in venv_browser/, memory-caged (except docker/slow)
+ifeq ($(BROWSER_PRESENT),)
+	@echo "test-browser: no $(BROWSER_APP)/ app in this tree — nothing to run"
+else
+	@test -x $(BROWSER_PY) || { echo "test-browser: $(BROWSER_PY) is missing — run scripts/setup-browser-dev.sh" >&2; exit 1; }
+	$(SUITE) $(BROWSER_PY) -m pytest $(or $(PYTEST_ARGS),$(BROWSER_APP)/tests) -m "not docker and not slow" --tb=short
+endif
+
+test-browser-integration: ## Browser app integration tests, in the app's built test image
+ifeq ($(BROWSER_PRESENT),)
+	@echo "test-browser-integration: no $(BROWSER_APP)/ app in this tree — nothing to run"
+else
+	bash $(BROWSER_APP)/test/run-integration.sh $(PYTEST_ARGS)
+endif
 
 # Deliberately NOT under $(SUITE): the docker tier is single-process and
 # docker-backed, so it neither competes for the 8G cage nor benefits from

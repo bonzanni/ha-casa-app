@@ -140,7 +140,7 @@ covers `amd64` only, while `casa/config.yaml` publishes `aarch64` as well
 changed is that a broken launch now shows up on the push that causes it instead
 of in a scheduled run weeks later.
 
-What IS checked per architecture, because `deploy.yml` builds each one natively
+What IS checked per architecture, because `deploy.yml` (through `deploy-app.yml`) builds each one natively
 and a failed build publishes nothing: `casa/Dockerfile` launches each program
 `drivers/s6_rc.py` runs (`s6-rc-compile`, `s6-rc-update`, `s6-rc`, `s6-svc`,
 `s6-svstat`) with the driver's own `subprocess.run`, and compiles the launch

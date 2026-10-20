@@ -390,7 +390,8 @@ Five demo packs that reskin an agent's character without touching its permission
 Run `make setup` once on a fresh checkout (Linux/WSL2), then `make test-unit` for
 the fast gate and `make test-docker` for the container-backed tiers. Changes land
 via squash-merged pull requests; every release bumps `casa/config.yaml` and
-adds a `casa/CHANGELOG.md` entry.
+adds a `casa/CHANGELOG.md` entry. The release pipeline builds and releases each app
+folder on its own — see [the release pipeline](docs/contributing/release-pipeline.md).
 
 ### AI-assisted development
 

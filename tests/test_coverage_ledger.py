@@ -366,3 +366,109 @@ def test_a_duplicate_covers_key_fails_closed_not_open(tmp_path):
     (root / "docs" / "coverage.yaml").write_text(_ledger_with(root, {}))
     problems = coverage_ledger.check(root)
     assert any("strict manifest parse" in p for p in problems), problems
+
+
+# --- a second app beside casa/ (casa_browser/) ------------------------------------------
+
+BROWSER_CONFIG_YAML = """
+options:
+  log_level: info
+schema:
+  log_level: str
+"""
+
+
+def _add_browser_app(root: Path) -> Path:
+    """A second app whose option, s6 unit, boot script, env read and schema file carry
+    the SAME names as Casa's — only the namespace may tell them apart."""
+    app = root / "casa_browser"
+    code = app / "rootfs" / "opt" / "casa_browser"
+    code.mkdir(parents=True)
+    (code / "__init__.py").write_text("")
+    (code / "api.py").write_text(
+        "import os\n"
+        'A = os.environ.get("CASA_PROBE_A")\n'
+        "def build(app):\n"
+        "    app.router.add_get('/healthz', h)\n"
+    )
+    # a tools.py in the second app is NOT a tool surface: only Casa has CASA_TOOLS
+    (code / "tools.py").write_text(TOOLS_PY)
+    (app / "config.yaml").write_text(BROWSER_CONFIG_YAML)
+    (app / "Dockerfile").write_text("FROM scratch\n")
+    s6 = app / "rootfs" / "etc" / "s6-overlay" / "s6-rc.d"
+    (s6 / "init-setup").mkdir(parents=True)
+    bundles = app / "rootfs" / "etc" / "s6-overlay" / "user-bundles.d"
+    (bundles / "user" / "contents.d").mkdir(parents=True)
+    scripts = app / "rootfs" / "etc" / "s6-overlay" / "scripts"
+    scripts.mkdir(parents=True)
+    (scripts / "setup-probe.sh").write_text("#!/bin/sh\n")
+    schema = code / "defaults" / "schema"
+    schema.mkdir(parents=True)
+    (schema / "probe.v1.json").write_text("{}")
+    return root
+
+
+def _casa_twins(root: Path) -> Path:
+    """Give Casa the same-named env read, boot script, schema file and Dockerfile."""
+    code = root / "casa" / "rootfs" / "opt" / "casa"
+    (code / "envuser.py").write_text('import os\nA = os.environ.get("CASA_PROBE_A")\n')
+    scripts = root / "casa" / "rootfs" / "etc" / "s6-overlay" / "scripts"
+    scripts.mkdir(parents=True)
+    (scripts / "setup-probe.sh").write_text("#!/bin/sh\n")
+    schema = code / "defaults" / "schema"
+    schema.mkdir(parents=True)
+    (schema / "probe.v1.json").write_text("{}")
+    (root / "casa" / "Dockerfile").write_text("FROM scratch\n")
+    return root
+
+
+def test_second_app_namespacing(tmp_path):
+    """Casa's keys are byte-for-byte what they were without a second app; the second
+    app's option/s6/script/env/schema keys carry its folder as a namespace, and its
+    module, route and Dockerfile items are disambiguated by their paths."""
+    casa_only = _casa_twins(_repo(tmp_path / "one"))
+    before = coverage_ledger.enumerate_items(casa_only)
+
+    both = _add_browser_app(_casa_twins(_repo(tmp_path / "two")))
+    after = coverage_ledger.enumerate_items(both)
+
+    # Casa's items come first, unchanged in content and in order.
+    assert after[: len(before)] == before
+    browser = after[len(before):]
+    assert browser == sorted(set(browser), key=browser.index)  # no duplicates
+    assert not set(browser) & set(before)
+    assert set(browser) == {
+        "casa_browser/rootfs/opt/casa_browser/__init__.py",
+        "casa_browser/rootfs/opt/casa_browser/api.py",
+        "casa_browser/rootfs/opt/casa_browser/tools.py",
+        "option:casa_browser:log_level",
+        "s6:casa_browser:init-setup",
+        "s6:casa_browser:user",
+        "route:casa_browser/rootfs/opt/casa_browser/api.py:GET:/healthz",
+        "env:casa_browser:CASA_PROBE_A",
+        "script:casa_browser:setup-probe.sh",
+        "schema:casa_browser:probe.v1.json",
+        "casa_browser/Dockerfile",
+    }
+    # the twin names on Casa's side keep their unprefixed keys
+    for key in ("option:log_level", "s6:init-setup", "s6:user", "env:CASA_PROBE_A",
+                "script:setup-probe.sh", "schema:probe.v1.json", "casa/Dockerfile"):
+        assert key in before
+    assert not any(i.startswith("tool:") for i in browser)
+
+
+def test_an_absent_second_app_enumerates_nothing(tmp_path):
+    """Until casa_browser/ exists, the second app contributes no item at all — so the
+    real ledger is unchanged by the second app's roots being configured."""
+    root = _casa_twins(_repo(tmp_path))
+    assert not any("casa_browser" in i for i in coverage_ledger.enumerate_items(root))
+
+
+def test_a_second_app_item_must_be_ledgered_like_any_other(tmp_path):
+    root = _add_browser_app(_repo(tmp_path))
+    ledger = _full_ledger_for(root).replace(
+        "- item: option:casa_browser:log_level\n  doc: architecture/thing.md\n", ""
+    )
+    (root / "docs" / "coverage.yaml").write_text(ledger)
+    problems = coverage_ledger.check(root)
+    assert any("option:casa_browser:log_level" in p for p in problems), problems

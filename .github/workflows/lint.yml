@@ -9,12 +9,31 @@ on:
 
 jobs:
   addon-linter:
-    name: App lint (casa)
+    name: App lint (${{ matrix.app }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Every app folder the release pipeline ships (scripts/browser-release-matrix.py).
+        # casa_browser/ is optional: until it exists, its leg says so and lints nothing.
+        app: [casa, casa_browser]
     steps:
       - uses: actions/checkout@v7
 
+      - name: Is the app in this tree?
+        id: present
+        env:
+          APP: ${{ matrix.app }}
+        run: |
+          if [ -f "${APP}/config.yaml" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::${APP}/ is not in this tree — nothing to lint"
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Run Home Assistant app lint
+        if: steps.present.outputs.present == 'true'
         uses: frenck/action-addon-linter@v2.21
         with:
-          path: "./casa"
+          path: "./${{ matrix.app }}"
