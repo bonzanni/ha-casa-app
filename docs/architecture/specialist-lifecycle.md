@@ -196,8 +196,24 @@ DM as before, then hands the requesting engagement a continuation through the sa
 having taken the same tap-commit reservation, so that the configurator can learn of the refusal
 and conclude instead of waiting for a turn that never comes. That hand-off is a request in
 exactly the sense above, and the Deny edit is not chosen from it: when the seam refuses the
-hand-off, nothing retries it and the engagement is not told. An expiry, a withdrawal or a
-cancellation still tells the engagement nothing.
+hand-off, nothing retries it and the engagement is not told.
+
+**An expiry tells the engagement too; a withdrawal or a cancellation does not.** A card nobody
+answers within its ten minutes is edited to say it expired and nothing changed, exactly as
+before, and then — whether or not that edit succeeded — the requesting engagement is handed a
+continuation through the same seam saying the consent expired, nothing changed, and that it
+should conclude as cancelled, telling the operator that asking again brings a fresh card (a new
+run re-inspects the same repository and ref). Without it the configurator stayed open waiting for
+a tap that could no longer come, so the assistant read the change as still running and a retry
+as a duplicate. No reservation rides on it — there was no tap, and a completion that lands first
+only makes the seam refuse the hand-off — and, as for a Deny, it is a request. Whether another
+card the same engagement posted is still waiting is left to the configurator. Each requesting
+engagement gets its own card: the coordinator keys a consent card by the approval identity AND
+the requester, so a second engagement asking for the same artifact no longer shares the first
+one's card and never hears how it settled; the approval identity, the recorded ack and the
+`pre_authorized` short-circuit do not see the requester. A card that already expired is not
+re-issued by any tool — `consent_reprompt` says so ([`plugin-mutation-tools.md`](plugin-mutation-tools.md)) — it comes back only by running the install
+or update again.
 
 **INV-SPEC-007**: A failed system-requirement replacement preserves the previously working installation — the replacement is built as a new generation in the plugin's own namespace and published by a single atomic retarget of the launcher link; the serving generation is never moved, and the superseded one is retained until the next install.
 

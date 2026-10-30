@@ -17466,6 +17466,33 @@ async def specialist_install_inspect(args: dict) -> dict:
             "specialist_install_commit for it. " + _conclude
             + " A later request from the operator to install it is a new "
             "request.")
+    # #1445: what an expiry tells the engagement. Nothing was applied; the
+    # engagement concludes so it no longer reads as running, and its text
+    # tells the operator how the card comes back. Whether another card it
+    # posted is still waiting is the configurator's judgement.
+    _retry = (f"{args['repo']} at {args['ref']}"
+              + (f" (subdir {args['subdir']})" if args.get("subdir") else ""))
+    _expire_tail = (
+        "If another consent card you posted is still waiting for an answer, "
+        "drop only this one and keep waiting for that. Otherwise conclude now "
+        "without waiting for further input: call emit_completion with status "
+        "\"cancelled\" and a short text saying the consent expired unanswered, "
+        "nothing changed, and the operator can ask again to get a fresh "
+        f"consent card (a new run re-inspects {_retry}) — no "
+        "config_git_commit or casa_reload.")
+    if mode == "upgrade":
+        expire_continuation = (
+            "The operator did not answer the consent for updating "
+            f"specialist:{result.slug} within its 10 minutes, so it expired. "
+            "Nothing was changed: the specialist keeps its current version and "
+            "settings. Do not call specialist_upgrade for this staged fetch. "
+            + _expire_tail)
+    else:
+        expire_continuation = (
+            "The operator did not answer the install consent for "
+            f"specialist:{result.slug} within its 10 minutes, so it expired. "
+            "Nothing was installed. Do not call specialist_install_commit for "
+            "this staged fetch. " + _expire_tail)
 
     async def _reconcile_cb() -> bool:
         # Post-Approve+ack: deliver a synthetic RESUME turn so the LLM finishes
@@ -17547,6 +17574,29 @@ async def specialist_install_inspect(args: dict) -> dict:
                 exc_info=True)
             return False
 
+    async def _expire_cb() -> bool:
+        # #1445: after an expiry, tell the requesting engagement — same guards
+        # and never-raise contract as _deny_cb. No reservation: there was no
+        # tap, so there is no commit instant to reserve at, and a completion
+        # that lands first only makes the seam refuse this hand-off.
+        if eng is None:
+            return False
+        try:
+            registry = getattr(channel, "_engagement_registry", None)
+            deliver = getattr(channel, "deliver_system_turn", None)
+            if registry is None or deliver is None:
+                return False
+            rec = registry.get(eng.id)
+            if rec is None:
+                return False
+            return bool(await deliver(rec, expire_continuation,
+                                      inbound_reservation=None))
+        except Exception:  # noqa: BLE001 — finish-hook path: never raise
+            logger.warning(
+                "post-expiry continuation failed (slug=%s)", result.slug,
+                exc_info=True)
+            return False
+
     try:
         # Round-3 fix (finding #3): register_challenge (authz_grants.py)
         # calls `asyncio.get_running_loop().create_task(...)` SYNCHRONOUSLY
@@ -17563,6 +17613,8 @@ async def specialist_install_inspect(args: dict) -> dict:
             inbound_reservation=inbound_reservation,
             # #1225: the keyboard and its edits name an upgrade as an update.
             mode=mode, deny_cb=_deny_cb,
+            # #1445: an expiry tells the engagement too, and the card is its own.
+            expire_cb=_expire_cb, requester=str(eng.id) if eng is not None else "",
         )
     except Exception as exc:  # noqa: BLE001 — round-5b: structured, never a silent ok:true
         logger.exception("specialist install consent prompt failed to post")
@@ -18650,6 +18702,41 @@ async def persona_install_inspect(args: dict) -> dict:
                 result.persona_id, exc_info=True)
             return False
 
+    _retry = (f"{args['repo']} at {args['ref']}"
+              + (f" (subdir {args['subdir']})" if args.get("subdir") else ""))
+
+    async def _expire_cb() -> bool:
+        # #1445: see the specialist sibling.
+        if eng is None:
+            return False
+        try:
+            registry = getattr(channel, "_engagement_registry", None)
+            deliver = getattr(channel, "deliver_system_turn", None)
+            if registry is None or deliver is None:
+                return False
+            rec = registry.get(eng.id)
+            if rec is None:
+                return False
+            return bool(await deliver(
+                rec,
+                "The operator did not answer the install consent for persona "
+                f"{result.persona_id} within its 10 minutes, so it expired. "
+                "Nothing was installed. Do not call persona_install_commit for "
+                "this staged fetch. If another consent card you posted is still "
+                "waiting for an answer, drop only this one and keep waiting for "
+                "that. Otherwise conclude now without waiting for further "
+                "input: call emit_completion with status \"cancelled\" and a "
+                "short text saying the consent expired unanswered, nothing "
+                "changed, and the operator can ask again to get a fresh consent "
+                f"card (a new run re-inspects {_retry}) — no config_git_commit "
+                "or casa_reload.",
+                inbound_reservation=None))
+        except Exception:  # noqa: BLE001 — finish-hook path: never raise
+            logger.warning(
+                "post-expiry persona continuation failed (persona_id=%s)",
+                result.persona_id, exc_info=True)
+            return False
+
     try:
         # Round-3 fix (finding #3): same event-loop requirement as
         # `specialist_install_inspect` above — `register_challenge`
@@ -18662,6 +18749,8 @@ async def persona_install_inspect(args: dict) -> dict:
             acks=acks, reconcile_cb=_reconcile_cb,
             # #663: see the specialist sibling.
             inbound_reservation=inbound_reservation, deny_cb=_deny_cb,
+            # #1445: see the specialist sibling.
+            expire_cb=_expire_cb, requester=str(eng.id) if eng is not None else "",
         )
     except Exception as exc:  # noqa: BLE001 — round-5b: structured, never a silent ok:true
         logger.exception("persona install consent prompt failed to post")
@@ -20381,7 +20470,10 @@ def _open_keyboard_label(kind: str) -> str:
     "mutation or casa_reload) and reports each pending consent's outcome. "
     "Any other keyboard still open in the operator DM (a specialist or "
     "persona install consent, an erase-data question, an authorization "
-    "request) is named by kind, never re-issued.",
+    "request) is named by kind, never re-issued. A specialist or persona "
+    "install/upgrade consent that already expired is not re-issued by any "
+    "tool: it comes back only by running that install or upgrade again (the "
+    "configurator re-inspects and posts a fresh card).",
     {"type": "object", "properties": {}},
 )
 async def consent_reprompt(args: dict) -> dict:

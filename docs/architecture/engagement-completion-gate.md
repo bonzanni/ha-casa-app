@@ -104,7 +104,9 @@ the erase-data question, it is the finish hook's task-scheduling gap, one event-
 and unremovable; after a denial there, and on the authorization arm, it is
 a whole message-edit round trip to Telegram, because the DM edit is awaited before the
 continuation is dispatched. An install-consent denial dispatches one only when its requester
-supplied it, and only then reserves. A successful
+supplied it, and only then reserves. An install consent that expires unanswered also dispatches one
+to its requester, and reserves nothing: there was no answer to commit, and a completion that
+lands first only makes the delivery seam refuse that continuation. A successful
 completion landing inside it used to read an empty inbox, commit, and take the engagement
 terminal, and the approved continuation was then dropped with only a log line to show for it.
 

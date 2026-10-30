@@ -3039,3 +3039,162 @@ async def test_inspect_approve_hands_off_same_reservation(
              call.kwargs.get("inbound_reservation") is lease, len(edits),
              edits[-1][2].startswith("✅ Approved — requested"))
     assert facts == (1, True, True, 1, True), f"approve hand-off facts: {facts!r}"
+
+
+# ---------------------------------------------------------------------------
+# #1445: an expired consent tells the requesting engagement, so it can conclude
+# instead of staying open (and reading as "still running") with nothing left to
+# wait for. Through the REAL inspect tool and the REAL consent prompt.
+# ---------------------------------------------------------------------------
+
+async def _c_retire(monkeypatch, tmp_path, mode, outcome):
+    from tools import specialist_install_inspect, engagement_var
+
+    rec = SimpleNamespace(id="eng-abc", driver="in_casa", status="active")
+    lease = _CLease()
+    chan, edits, _ = _c_channel(rec=rec, lease=lease)
+    _wire_inspect(monkeypatch, tmp_path, channel=chan)
+    cap = _capture_real_consent(monkeypatch)
+
+    token = engagement_var.set(SimpleNamespace(id="eng-abc"))
+    try:
+        payload = _payload(await specialist_install_inspect.handler(_c_args(mode)))
+    finally:
+        engagement_var.reset(token)
+    assert payload["consent"] == "keyboard_posted"
+
+    await cap["finish_factory"](88, SimpleNamespace(meta={}))(outcome)
+    return rec, lease, chan, edits
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", [None, "install", "upgrade"])
+async def test_inspect_expiry_tells_the_engagement(monkeypatch, tmp_path, mode) -> None:
+    """#1445: when the card expires unanswered, the requesting engagement gets
+    exactly one continuation through ``deliver_system_turn``, after the card's
+    unchanged expiry edit. It says the consent expired and nothing changed,
+    asks for a cancelled completion, and names the repository and ref a retry
+    re-inspects. No reservation rides on it (there was no tap), no ack is
+    recorded, and an update's text never says "install".
+
+    Pre-fix: the expiry edits the card and hands nothing to the engagement."""
+    rec, lease, chan, edits = await _c_retire(
+        monkeypatch, tmp_path, mode, {"outcome": "no_answer"})
+
+    deliver = chan.deliver_system_turn
+    expected_edit = _C_FINISH["upgrade" if mode == "upgrade" else "install"]["no_answer"]
+    counts = (deliver.await_count, lease.takes, _c_acks(tmp_path), edits)
+    assert counts == (1, 0, 0, [(701, 88, expected_edit)]), f"expiry facts: {counts!r}"
+
+    call = deliver.await_args
+    text = call.args[1]
+    facts = (call.args[0] is rec, call.kwargs.get("inbound_reservation"),
+             "expired" in text, "specialist:mtg" in text, "Nothing was" in text,
+             '"cancelled"' in text, "owner/repo" in text, "main" in text)
+    assert facts == (True, None, True, True, True, True, True, True), (
+        f"hand-off facts: {facts!r} {text!r}")
+    if mode == "upgrade":
+        assert text.lower().count("install") == 0, f"update text says install: {text!r}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", [
+    {"outcome": "cancelled", "reason": "challenge_cancelled"},
+    {"outcome": "cancelled", "reason": "engagement_ended"},
+    {"outcome": "cancelled", "reason": "new_session"},
+    {"outcome": "cancelled", "reason": "casa_shutdown"},
+])
+async def test_inspect_withdrawal_tells_the_engagement_nothing(
+    monkeypatch, tmp_path, outcome,
+) -> None:
+    """#1445 control: only an expiry is told. A withdrawal or cancellation
+    edits the card as before and hands the engagement nothing."""
+    _rec, _lease, chan, edits = await _c_retire(monkeypatch, tmp_path, "upgrade", outcome)
+    facts = (chan.deliver_system_turn.await_count, len(edits))
+    assert facts == (0, 1), f"withdrawal facts: {facts!r}"
+
+
+@pytest.mark.asyncio
+async def test_inspect_expiry_hand_off_failure_is_contained(monkeypatch, tmp_path) -> None:
+    """#1445: the expiry continuation keeps the tap-callback never-raise
+    contract — a seam that raises leaves the expiry edit made and the finish
+    hook returning normally."""
+    from tools import specialist_install_inspect, engagement_var
+
+    rec = SimpleNamespace(id="eng-abc", driver="in_casa", status="active")
+    chan, edits, _ = _c_channel(rec=rec, lease=_CLease())
+    chan.deliver_system_turn.side_effect = RuntimeError("seam down")
+    _wire_inspect(monkeypatch, tmp_path, channel=chan)
+    cap = _capture_real_consent(monkeypatch)
+    token = engagement_var.set(SimpleNamespace(id="eng-abc"))
+    try:
+        await specialist_install_inspect.handler(_c_args("upgrade"))
+    finally:
+        engagement_var.reset(token)
+
+    await cap["finish_factory"](88, SimpleNamespace(meta={}))({"outcome": "no_answer"})
+    facts = (chan.deliver_system_turn.await_count, len(edits))
+    assert facts == (1, 1), f"contained facts: {facts!r}"
+
+
+@pytest.mark.asyncio
+async def test_inspect_expiry_tells_the_engagement_even_if_the_edit_raises(
+    monkeypatch, tmp_path,
+) -> None:
+    """#1445 (design round d2): the expiry continuation does not depend on the
+    card's retirement edit returning."""
+    from tools import specialist_install_inspect, engagement_var
+
+    rec = SimpleNamespace(id="eng-abc", driver="in_casa", status="active")
+    chan, _edits, _ = _c_channel(rec=rec, lease=_CLease())
+
+    async def _raising_edit(chat_id, message_id, text):
+        raise RuntimeError("edit failed")
+
+    chan.edit_dm_message = _raising_edit
+    _wire_inspect(monkeypatch, tmp_path, channel=chan)
+    cap = _capture_real_consent(monkeypatch)
+    token = engagement_var.set(SimpleNamespace(id="eng-abc"))
+    try:
+        await specialist_install_inspect.handler(_c_args("upgrade"))
+    finally:
+        engagement_var.reset(token)
+
+    with pytest.raises(RuntimeError):
+        await cap["finish_factory"](88, SimpleNamespace(meta={}))({"outcome": "no_answer"})
+    assert chan.deliver_system_turn.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_each_requesting_engagement_gets_its_own_card(monkeypatch, tmp_path) -> None:
+    """#1445 (design round d1): the coordinator dedups by key, so a key without
+    the requester let a second engagement's inspect share the first one's card
+    and its callbacks — at expiry only the first was told. The key now names the
+    requester; the approval identity does not."""
+    from tools import specialist_install_inspect, engagement_var
+
+    chan, _edits, _ = _c_channel()
+    _wire_inspect(monkeypatch, tmp_path, channel=chan)
+    cap = _capture_real_consent(monkeypatch)
+
+    keys = []
+    for eid in ("eng-a", "eng-b", "eng-b"):
+        token = engagement_var.set(SimpleNamespace(id=eid))
+        try:
+            await specialist_install_inspect.handler(_c_args("upgrade"))
+        finally:
+            engagement_var.reset(token)
+        keys.append(cap["key"])
+
+    facts = (keys[0] == keys[1], keys[1] == keys[2],
+             len({k.identity for k in keys}), keys[0].requester, keys[1].requester)
+    assert facts == (False, True, 1, "eng-a", "eng-b"), f"key facts: {facts!r}"
+
+
+def test_consent_reprompt_names_the_retry_for_an_expired_install_consent() -> None:
+    """#1445: the tool the assistant reaches for on "ask me again" says how an
+    expired specialist or persona install/upgrade consent comes back."""
+    from tools import consent_reprompt
+
+    desc = consent_reprompt.description
+    assert "expired" in desc and "install or upgrade again" in desc, desc

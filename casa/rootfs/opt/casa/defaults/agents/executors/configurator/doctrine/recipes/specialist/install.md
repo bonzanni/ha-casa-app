@@ -50,6 +50,9 @@ call `plugin_add` for a specialist's declared plugin — see `recipes/plugin/add
    normally tells you the operator refused: nothing was installed, so do not call
    `specialist_install_commit`, commit or reload — conclude with
    `emit_completion(status="cancelled", text=...)` saying the operator refused the install.
+   If nobody answers within the card's 10 minutes it expires, and a resume turn tells you so:
+   nothing changed — conclude cancelled as that turn says, telling the operator they can ask again
+   for a fresh card (unless another card you posted is still waiting).
 4. Once approved: `specialist_install_commit(component_id=..., version=..., root_digest=...,
    slug=..., staged_dir=..., receipt_id=..., config={...}, secret_names_provided=[...])` using the
    EXACT values `specialist_install_inspect` returned, `receipt_id` included. Omitting it (or
