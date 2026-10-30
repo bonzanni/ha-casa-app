@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.345.4] - 2026-10-30
+
+### Changed
+
+- Nothing changes in the app itself. Maintenance: the test stand-in for the Telegram library keeps working after a test-tool update, so the automated checks pass again.
+
 ## [0.345.3] - 2026-10-30
 
 ### Changed

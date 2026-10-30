@@ -233,6 +233,20 @@ def _install_telegram_stubs() -> None:
 
     tg_ext = types.ModuleType("telegram.ext")
     tg_ext.Application = MagicMock()
+    # ``builder`` must be a REAL attribute of the stub (a plain function, so
+    # Mock stores it in the instance ``__dict__``), not an auto-created child.
+    # Tests swap it with ``monkeypatch.setattr(Application, "builder", ...)``;
+    # since pytest 9.2 monkeypatch reads the old value from ``__dict__``, and
+    # for an auto-created child it finds none and UNDOES the patch with
+    # ``delattr`` — which a Mock records as "deleted", so every later
+    # ``Application.builder`` in the process raises AttributeError. Calls
+    # still behave like the auto child did: one shared mock, same chain.
+    _default_builder = MagicMock(name="Application.builder")
+
+    def _application_builder(*args, **kwargs):
+        return _default_builder(*args, **kwargs)
+
+    tg_ext.Application.builder = _application_builder
     tg_ext.ContextTypes = MagicMock()
     tg_ext.MessageHandler = MagicMock()
     tg_ext.filters = MagicMock()
