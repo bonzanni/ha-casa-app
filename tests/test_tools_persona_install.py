@@ -912,3 +912,98 @@ async def test_inspect_approve_hands_off_same_reservation(monkeypatch, tmp_path)
              call.kwargs.get("inbound_reservation") is lease, len(edits),
              edits[-1].startswith("✅ Approved"))
     assert facts == (1, True, True, 1, True), f"approve hand-off facts: {facts!r}"
+
+
+async def _persona_expiry(monkeypatch, tmp_path, *, outcome, eid="eng-p"):
+    from unittest.mock import AsyncMock
+
+    import persona_install_consent
+    from tools import persona_install_inspect, engagement_var
+
+    # The REAL prompt, even when an earlier call in this test wrapped it.
+    real = getattr(persona_install_consent.prompt_persona_install_consent,
+                   "_real", persona_install_consent.prompt_persona_install_consent)
+    cap: dict = {}
+
+    class _Coordinator:
+        def register_challenge(self, key, **kwargs):
+            cap["key"] = key
+            cap["finish_factory"] = kwargs["finish_factory"]
+            return _Handle(settled="posted")
+
+    def _prompt(**kwargs):
+        kwargs["coordinator"] = _Coordinator()
+        return real(**kwargs)
+
+    _prompt._real = real
+    edits: list = []
+    rec = SimpleNamespace(id=eid, driver="in_casa", status="active")
+
+    async def _edit(chat_id, message_id, text):
+        edits.append(text)
+
+    channel = SimpleNamespace(
+        chat_id="123",
+        _engagement_registry=SimpleNamespace(get=lambda e: rec if e == eid else None),
+        deliver_system_turn=AsyncMock(return_value=True),
+        edit_dm_message=_edit)
+    _wire_persona_inspect(monkeypatch, tmp_path, channel=channel)
+    monkeypatch.setattr(
+        persona_install_consent, "prompt_persona_install_consent", _prompt)
+
+    token = engagement_var.set(SimpleNamespace(id=eid))
+    try:
+        payload = _payload(await persona_install_inspect.handler(
+            {"repo": "owner/repo", "ref": "main"}))
+    finally:
+        engagement_var.reset(token)
+    assert payload["consent"] == "keyboard_posted"
+    if outcome is not None:
+        await cap["finish_factory"](88, SimpleNamespace(meta={}))(outcome)
+    return rec, channel, edits, cap
+
+
+@pytest.mark.asyncio
+async def test_inspect_expiry_tells_the_engagement(monkeypatch, tmp_path) -> None:
+    """#1445, the persona sibling: an expired card hands the requesting
+    engagement exactly one continuation, after the card's unchanged expiry
+    edit, with no reservation; it says the consent expired, nothing changed,
+    asks for a cancelled completion and names what a retry re-inspects.
+
+    Pre-fix: the expiry hands nothing to the engagement."""
+    rec, channel, edits, _ = await _persona_expiry(
+        monkeypatch, tmp_path, outcome={"outcome": "no_answer"})
+
+    deliver = channel.deliver_system_turn
+    assert (deliver.await_count, edits) == (1, [
+        "⌛ Expired — persona install consent for 'warm-helper' was not answered; "
+        "nothing was installed"]), (deliver.await_count, edits)
+    call = deliver.await_args
+    text = call.args[1]
+    facts = (call.args[0] is rec, call.kwargs.get("inbound_reservation"),
+             "expired" in text, "warm-helper" in text, "Nothing was" in text,
+             '"cancelled"' in text, "owner/repo" in text)
+    assert facts == (True, None, True, True, True, True, True), (
+        f"hand-off facts: {facts!r} {text!r}")
+
+
+@pytest.mark.asyncio
+async def test_inspect_withdrawal_tells_the_engagement_nothing(monkeypatch, tmp_path) -> None:
+    """#1445 control: a withdrawal edits the card and hands nothing over."""
+    _rec, channel, edits, _ = await _persona_expiry(
+        monkeypatch, tmp_path,
+        outcome={"outcome": "cancelled", "reason": "challenge_cancelled"})
+    assert (channel.deliver_system_turn.await_count, len(edits)) == (0, 1)
+
+
+@pytest.mark.asyncio
+async def test_the_persona_card_key_names_its_requester(monkeypatch, tmp_path) -> None:
+    """#1445 (design round d1): one card per requesting engagement; the
+    approval identity is unchanged."""
+    _r, _c, _e, cap_a = await _persona_expiry(
+        monkeypatch, tmp_path, outcome=None, eid="eng-a")
+    _r, _c, _e, cap_b = await _persona_expiry(
+        monkeypatch, tmp_path, outcome=None, eid="eng-b")
+    ka, kb = cap_a["key"], cap_b["key"]
+    facts = (ka == kb, ka.identity == kb.identity, ka.requester, kb.requester)
+    assert facts == (False, True, "eng-a", "eng-b"), f"key facts: {facts!r}"
