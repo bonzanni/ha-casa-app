@@ -21,6 +21,8 @@ class PersonaInstallConsentKey:
     real pattern (no shared base class exists in the codebase)."""
     persona_id: str
     identity: str
+    # #1445: the requesting engagement — see the specialist sibling.
+    requester: str = ""
 
 
 def render_persona_install_consent_message(inspection: Any) -> str:
@@ -39,14 +41,18 @@ def prompt_persona_install_consent(
     reconcile_cb: "Callable[[], Awaitable[bool]] | None" = None,
     inbound_reservation: Any | None = None,
     deny_cb: "Callable[[], Awaitable[bool]] | None" = None,
+    expire_cb: "Callable[[], Awaitable[bool]] | None" = None,
+    requester: str = "",
 ) -> Any:
-    # #1251: ``deny_cb`` — see the specialist sibling.
+    # #1251: ``deny_cb`` — see the specialist sibling. #1445: so are
+    # ``expire_cb`` and ``requester``.
     # #663: sibling of specialist_install_consent — the requesting
     # engagement's SYNCHRONOUS ingress lease, duck-typed (``take`` /
     # ``release``) so this module stays ignorant of engagements.
     identity = persona_install_consent_identity(
         persona_id=inspection.persona_id, version=inspection.version, checksum=inspection.checksum)
-    key = PersonaInstallConsentKey(persona_id=inspection.persona_id, identity=identity)
+    key = PersonaInstallConsentKey(persona_id=inspection.persona_id, identity=identity,
+                                   requester=requester)
     text = render_persona_install_consent_message(inspection)
     # #543: capture the revocation generations AT PROMPT TIME. The Telegram
     # callback commits the broker answer and calls `_on_commit_sync` with no
@@ -91,16 +97,25 @@ def prompt_persona_install_consent(
             if o != "answered":
                 import ask_retirement
 
-                # #933: the reason the broker delivered names the cause;
-                # a withdrawal is not an expiry.
-                await channel.edit_dm_message(
-                    chat_id, message_id,
-                    ask_retirement.retirement_headline(
-                        f"persona install consent for {inspection.persona_id!r}",
-                        o, outcome.get("reason") if isinstance(outcome, dict)
-                        else None,
-                        consequence="nothing was installed"),
-                )
+                reason = outcome.get("reason") if isinstance(outcome, dict) else None
+                try:
+                    # #933: the reason the broker delivered names the cause;
+                    # a withdrawal is not an expiry.
+                    await channel.edit_dm_message(
+                        chat_id, message_id,
+                        ask_retirement.retirement_headline(
+                            f"persona install consent for {inspection.persona_id!r}",
+                            o, reason, consequence="nothing was installed"),
+                    )
+                finally:
+                    # #1445: see the specialist sibling.
+                    if expire_cb is not None and ask_retirement.is_expiry(o, reason):
+                        try:
+                            await expire_cb()
+                        except Exception:  # noqa: BLE001 — never-raise contract
+                            logger.exception(
+                                "post-expiry persona install continuation "
+                                "raised (persona_id=%s)", inspection.persona_id)
                 return
             if outcome.get("option_index") == 0:
                 if not req.meta.get("acked"):

@@ -26,6 +26,9 @@ does not apply it to anything by itself; see `recipes/persona/apply.md` for that
    tells you the operator refused: nothing was installed, so do not call `persona_install_commit`, commit or
    reload — conclude with `emit_completion(status="cancelled", text=...)` saying the operator
    refused the install.
+   If nobody answers within the card's 10 minutes it expires, and a resume turn tells you so:
+   nothing changed — conclude cancelled as that turn says, telling the operator they can ask again
+   for a fresh card (unless another card you posted is still waiting).
 4. Once approved: `persona_install_commit(persona_id=..., version=..., checksum=..., staged_dir=...)`
    using the EXACT values `persona_install_inspect` returned.
 5. Tell the operator the persona is installed but NOT applied to anything yet — installing and

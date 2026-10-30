@@ -251,7 +251,9 @@ consent no row already shows — is read from `ChallengeCoordinator.live_kinds` 
 request, never mere entry membership) and named by kind, never re-issued: an install
 consent or an erase-data question also names the tool that asks it again, an authorization
 request is named by its existence alone, and "no consent is pending" is said only when the
-coordinator holds no such challenge open.
+coordinator holds no such challenge open. A specialist or persona install consent that already
+expired is no longer open, so nothing names it here; the tool's description says such a card
+comes back only by running that install or update again.
 
 **A refusal of an OPERATION, as against a malformed input,** belongs in the synchronous
 core and ahead of every side effect, not in the tool's input schema. The schema has no way

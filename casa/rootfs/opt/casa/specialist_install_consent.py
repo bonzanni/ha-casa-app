@@ -74,6 +74,14 @@ class SpecialistInstallConsentKey:
     component_id: str
     slug: str
     identity: str
+    # #1445: the requesting engagement's id ("" when none). The coordinator
+    # dedups by key, so without it a second engagement asking for the same
+    # artifact shared the first one's card and callbacks and was never told
+    # how it settled. Not named ``engagement_id``: ``cancel_matching``
+    # (#1049) matches that attribute, and withdrawing these cards when their
+    # engagement ends is a different change. The approval identity above
+    # never sees it.
+    requester: str = ""
 
 
 class SpecialistInstallAckStore:
@@ -325,7 +333,12 @@ def prompt_specialist_install_consent(
     inbound_reservation: Any | None = None,
     mode: str = "install",
     deny_cb: "Callable[[], Awaitable[bool]] | None" = None,
+    expire_cb: "Callable[[], Awaitable[bool]] | None" = None,
+    requester: str = "",
 ) -> Any:
+    # #1445: ``expire_cb`` tells the requesting engagement that the card
+    # expired unanswered, as ``deny_cb`` does after a Deny; ``requester`` keys
+    # the card to that engagement (see SpecialistInstallConsentKey).
     # #1225: ``mode`` is the inspect's own ("install" | "upgrade") and changes
     # wording only — it never enters the identity or the key below.
     # #1251: ``deny_cb`` hands the requesting engagement a continuation after
@@ -345,7 +358,8 @@ def prompt_specialist_install_consent(
         receipt_digest=receipt_digest,
     )
     key = SpecialistInstallConsentKey(
-        component_id=inspection.component_id, slug=inspection.slug, identity=identity)
+        component_id=inspection.component_id, slug=inspection.slug, identity=identity,
+        requester=requester)
     text = render_install_consent_message(inspection, mode=mode)
     # #1225: the operation each finish edit names.
     noun, done = (("update", "updated") if mode == "upgrade"
@@ -393,16 +407,28 @@ def prompt_specialist_install_consent(
             if o != "answered":
                 import ask_retirement
 
-                # #933: the reason the broker delivered names the cause;
-                # a withdrawal is not an expiry.
-                await channel.edit_dm_message(
-                    chat_id, message_id,
-                    ask_retirement.retirement_headline(
-                        f"{noun} consent for {inspection.slug!r}",
-                        o, outcome.get("reason") if isinstance(outcome, dict)
-                        else None,
-                        consequence=f"nothing was {done}"),
-                )
+                reason = outcome.get("reason") if isinstance(outcome, dict) else None
+                try:
+                    # #933: the reason the broker delivered names the cause;
+                    # a withdrawal is not an expiry.
+                    await channel.edit_dm_message(
+                        chat_id, message_id,
+                        ask_retirement.retirement_headline(
+                            f"{noun} consent for {inspection.slug!r}",
+                            o, reason, consequence=f"nothing was {done}"),
+                    )
+                finally:
+                    # #1445: an expiry tells the requesting engagement, so it
+                    # concludes instead of waiting for a tap that can no
+                    # longer come. A withdrawal or cancellation does not.
+                    if expire_cb is not None and ask_retirement.is_expiry(o, reason):
+                        try:
+                            await expire_cb()
+                        except Exception:  # noqa: BLE001 — never-raise
+                            # contract, as for deny_cb.
+                            logger.exception(
+                                "post-expiry specialist install continuation "
+                                "raised (slug=%s)", inspection.slug)
                 return
             if outcome.get("option_index") == 0:
                 if not req.meta.get("acked"):

@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.345.2] - 2026-10-30
+
+### Fixed
+
+- When you did not answer a specialist or persona install or update consent within its 10 minutes, the configurator kept waiting for it, so the assistant said the change was "still running" and a new request for it was treated as a duplicate. Now the configurator finishes when the consent expires and the assistant tells you it expired and nothing changed; asking for it again runs a fresh check and brings a new consent card. (#1445)
+
 ## [0.345.1] - 2026-10-20
 
 ### Changed
