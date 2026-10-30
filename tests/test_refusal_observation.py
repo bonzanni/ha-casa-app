@@ -554,6 +554,27 @@ def test_staged_image_default_beside_failing_default_shows_null_facts(
 
 # --------------------------------------------- syscall injections (14k, 14l, 14f)
 
+class _OsProxy:
+    """``os`` as personality_binding sees it, with some functions replaced.
+
+    ``pb.os`` IS the process-wide ``os`` module, so patching an attribute on it
+    replaces that function for everything in the process — pytest's own output
+    capture included, which calls ``os.fstat`` (pytest 9.2). The injection is
+    meant for the observer's call sites, so only personality_binding's name
+    ``os`` is swapped; every other attribute is the real one."""
+
+    def __init__(self, **overrides):
+        self.__dict__.update(overrides)
+
+    def __getattr__(self, name):
+        return getattr(os, name)
+
+
+def _inject_pb_os(monkeypatch, name, fn):
+    import personality_binding as pb
+    monkeypatch.setattr(pb, "os", _OsProxy(**{name: fn}))
+
+
 def test_injected_fstat_error_is_unreadable_and_reraised(tmp_path, monkeypatch, caplog):
     """14k: an fstat OSError (EIO) = unreadable{errno}, original re-raised,
     inventory untouched."""
@@ -564,8 +585,7 @@ def test_injected_fstat_error_is_unreadable_and_reraised(tmp_path, monkeypatch, 
     real_fstat = os.fstat
     def failing_fstat(fd):
         raise OSError(errno.EIO, "injected fstat failure")
-    import personality_binding as pb
-    monkeypatch.setattr(pb.os, "fstat", failing_fstat)
+    _inject_pb_os(monkeypatch, "fstat", failing_fstat)
 
     excinfo, record = _fail_load(policies, bindings_root, caplog, OSError)
     active = record["active_tuple"]
@@ -584,10 +604,9 @@ def test_injected_close_error_never_changes_classification(
     _publish(personas_root, tmp_path,
              negative_space="Never patronises, ever.", tag="changed")
 
-    import personality_binding as pb
     def failing_close(fd):
         raise OSError(errno.EIO, "injected close failure")
-    monkeypatch.setattr(pb.os, "close", failing_close)
+    _inject_pb_os(monkeypatch, "close", failing_close)
 
     excinfo, record = _fail_load(policies, bindings_root, caplog)
     assert record["active_tuple"]["state"] == "read"
@@ -611,7 +630,7 @@ def test_interpreter_exit_propagates_from_every_site(
     if site == "parse":
         monkeypatch.setattr(pb, "_parse_instance_tuple", boom)
     else:
-        monkeypatch.setattr(pb.os, site, boom)
+        _inject_pb_os(monkeypatch, site, boom)
 
     from policies import load_policies  # noqa: F401  (already loaded)
     import logging as _logging
