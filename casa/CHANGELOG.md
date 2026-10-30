@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.345.3] - 2026-10-30
+
+### Changed
+
+- Nothing changes in the app itself. Maintenance: a test that simulates a failing file read no longer interferes with the test runner's own output capture, which had turned the automated checks red after a test-tool update.
+
 ## [0.345.2] - 2026-10-30
 
 ### Fixed
