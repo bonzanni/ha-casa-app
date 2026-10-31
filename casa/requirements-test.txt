@@ -1,0 +1,11 @@
+# Casa test-only dependencies, pinned (installed with requirements.txt into venv_test/ and by
+# CI). Unpinned, a new pytest release reached CI mid-week and turned main red twice (v0.345.3,
+# v0.345.4); bump these deliberately, in a change of their own. Versions = CI's last green run.
+anyio==4.15.1
+execnet==2.1.2
+iniconfig==2.3.1
+pluggy==1.7.0
+pyflakes==4.1.0
+pytest==9.2.0
+pytest-asyncio==1.4.1
+pytest-xdist==3.8.0

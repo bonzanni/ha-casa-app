@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.345.5] - 2026-10-31
+
+### Changed
+
+- Nothing changes in the app itself. Maintenance: the test tools are now pinned to fixed versions, so a new test-tool release can no longer turn the automated checks red by surprise.
+
 ## [0.345.4] - 2026-10-30
 
 ### Changed

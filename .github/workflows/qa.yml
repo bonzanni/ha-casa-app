@@ -25,7 +25,7 @@ jobs:
         run: bash test-local/e2e/test_voice_sse.sh
       - name: Voice WS
         run: |
-          pip install aiohttp
+          pip install "$(grep -i '^aiohttp==' casa/requirements.txt)"
           bash test-local/e2e/test_voice_ws.sh
 
   tier2-functional:
@@ -42,7 +42,7 @@ jobs:
       # pyflakes powers tests/test_no_undefined_names.py, which importorskips
       # without it — a skipped guard would not have caught the v0.125.0
       # boot-path NameError, so it must be installed here, not just locally.
-      - run: pip install -r casa/requirements.txt pytest pytest-asyncio pytest-xdist anyio pyflakes
+      - run: pip install -r casa/requirements.txt -r casa/requirements-test.txt
       - name: Unit pytest (opt-out gate — everything except docker/slow)
         run: python -m pytest tests/ -m "not docker and not slow" -v -n auto --maxprocesses=12 --dist loadfile --tb=short
       # GHSA-569r-7crq-xr43's guarantee is about what an unprivileged uid can
@@ -56,7 +56,7 @@ jobs:
       - name: Private-state inventory, verified as a dropped uid (root lane)
         run: |
           docker run --rm -v "$PWD":/w -w /w -u 0:0 python:3.11-slim sh -c '
-            pip install -q pytest pytest-asyncio &&
+            pip install -q -r casa/requirements-test.txt &&
             PYTHONPATH=casa/rootfs/opt/casa python -m pytest \
               tests/test_private_state_dropped_uid.py -v --tb=short -p no:cacheprovider'
       - name: Build image
@@ -81,7 +81,7 @@ jobs:
         run: bash test-local/e2e/test_scheduling.sh
       - name: Engagement E-block
         run: |
-          pip install aiohttp
+          pip install "$(grep -i '^aiohttp==' casa/requirements.txt)"
           bash test-local/e2e/test_engagement_E.sh
       - name: Delegation E-block
         run: bash test-local/e2e/test_delegation_E.sh
@@ -95,7 +95,7 @@ jobs:
         run: bash test-local/e2e/test_engagement_quiesce.sh
       - name: HA delegation
         run: |
-          pip install aiohttp
+          pip install "$(grep -i '^aiohttp==' casa/requirements.txt)"
           bash test-local/e2e/test_ha_delegation.sh
       # #937: the ONE enabled harness in this workflow that performs a real
       # ClaudeCodeDriver.start — compile the s6-rc database, start the service,
@@ -144,7 +144,7 @@ jobs:
       # pyflakes powers tests/test_no_undefined_names.py, which importorskips
       # without it — a skipped guard would not have caught the v0.125.0
       # boot-path NameError, so it must be installed here, not just locally.
-      - run: pip install -r casa/requirements.txt pytest pytest-asyncio pytest-xdist anyio pyflakes
+      - run: pip install -r casa/requirements.txt -r casa/requirements-test.txt
       - name: Baseline runtime CI assertion
         run: python -m pytest tests/test_baseline_runtime_assert.py -v -m "docker and not slow" --tb=short
 
@@ -198,7 +198,7 @@ jobs:
       # pyflakes powers tests/test_no_undefined_names.py, which importorskips
       # without it — a skipped guard would not have caught the v0.125.0
       # boot-path NameError, so it must be installed here, not just locally.
-      - run: pip install -r casa/requirements.txt pytest pytest-asyncio pytest-xdist anyio pyflakes
+      - run: pip install -r casa/requirements.txt -r casa/requirements-test.txt
       # The four `slow` tests: the two specialist-installer tests (the tier's
       # real cases — a failure of theirs is a red night), the live classifier
       # eval and the live Hindsight contract test, both of which skip when
