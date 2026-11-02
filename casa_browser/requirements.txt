@@ -39,7 +39,7 @@ onepassword-sdk==0.4.1
 patchright==1.64.1
 propcache==0.5.4
 publicsuffix2==2.20191221
-pyasn1==0.6.4
+pyasn1==0.6.5
 pycparser==3.11
 pydantic==2.14.1
 pydantic-core==2.50.1
