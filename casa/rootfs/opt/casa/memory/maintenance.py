@@ -393,27 +393,42 @@ ENGAGEMENTS_RECORD = "/data/engagements.json"
 
 def _reset_open_in_casa_sessions(root: str, counts: Counts) -> None:
     """Every open in_casa engagement's session transcript is gone with the
-    transcript roots, so a resume of it cannot start. Each one is marked for
-    a context rebuild through the registry's own write path: its next turn
-    opens a fresh session, and its record is kept. (A claude_code engagement
-    drops its session pointer at boot replay instead.)"""
+    transcript roots, so a resume of it cannot start. Each active or idle
+    in_casa record gets ``context_rebuild_pending``: its next turn opens a
+    fresh session, and its record is kept. (A claude_code engagement drops
+    its session pointer at boot replay instead.)
+
+    The file is read strictly and never repaired: one that cannot be read or
+    parsed, or that holds a malformed row, is left byte for byte as it is and
+    nothing is marked. The marks are written back as the same parsed rows
+    with only that field added, atomically, so no record can be dropped."""
     path = under(root, ENGAGEMENTS_RECORD)
-    if not os.path.exists(path):
+    try:
+        with open(path, "rb") as fh:
+            rows = json.loads(fh.read().decode("utf-8"))
+    except FileNotFoundError:
         return
-    from engagement_registry import EngagementRegistry
-
-    async def _mark() -> int:
-        reg = EngagementRegistry(tombstone_path=path, bus=None)
-        await reg.load()
-        marked = 0
-        for rec in reg.active_and_idle():
-            if (rec.driver != "claude_code" and rec.sdk_session_id
-                    and not rec.context_rebuild_pending):
-                await reg.mark_context_rebuild(rec.id)
-                marked += 1
-        return marked
-
-    counts.sessions_reset += asyncio.run(_mark())
+    except (OSError, ValueError) as exc:
+        logger.warning("memory maintenance: %s not readable (%s); open "
+                       "in_casa engagements are not marked for a fresh "
+                       "session", path, exc)
+        return
+    if not isinstance(rows, list) or not all(
+            isinstance(r, dict) and isinstance(r.get("status"), str)
+            and isinstance(r.get("driver"), str) for r in rows):
+        logger.warning("memory maintenance: %s holds a malformed record; "
+                       "open in_casa engagements are not marked for a fresh "
+                       "session", path)
+        return
+    marked = 0
+    for row in rows:
+        if (row["status"] in ("active", "idle") and row["driver"] != "claude_code"
+                and row.get("context_rebuild_pending") is not True):
+            row["context_rebuild_pending"] = True
+            marked += 1
+    if marked:
+        atomic_io.atomic_write_json(path, rows, indent=2, mode=0o600)
+    counts.sessions_reset += marked
 
 
 def _workspaces(root: str) -> Iterator[tuple[str, str]]:

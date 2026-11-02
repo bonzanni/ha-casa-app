@@ -16,6 +16,7 @@ reaper could bring back (INV-MEM-038)."""
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import time
 
@@ -332,13 +333,16 @@ async def _record_file(path):
     reg = EngagementRegistry(tombstone_path=str(path), bus=None)
     for eid, driver, status in (("e1" * 16, "in_casa", "active"),
                                 ("e2" * 16, "in_casa", "completed"),
-                                ("e3" * 16, "claude_code", "active")):
+                                ("e3" * 16, "claude_code", "active"),
+                                ("e4" * 16, "in_casa", "idle")):
         reg._records[eid] = EngagementRecord(
             id=eid, kind="executor", role_or_type="configurator",
             driver=driver, status=status, topic_id=7, started_at=0.0,
             last_user_turn_ts=0.0, last_idle_reminder_ts=0.0,
             completed_at=None if status == "active" else time.time(),
-            sdk_session_id=w.SID if driver == "in_casa" else None,
+            # e4 was persisted before its first session id was recorded
+            sdk_session_id=(w.SID if driver == "in_casa" and eid != "e4" * 16
+                            else None),
             origin={}, task="Tidy the garden notes")
     await reg._write_tombstone_locked(strict=True)
 
@@ -404,3 +408,57 @@ async def test_an_open_in_casa_engagement_continues_fresh_after_the_wipe(
     else:
         assert (ok, calls) == (False, ["resume"])
         assert notices[0].startswith("Could not resume this engagement")
+
+
+async def test_an_open_engagement_with_no_session_yet_also_continues(tmp_path):
+    """r4 Astra S2: a record persisted before its first session id. It is
+    marked like the others, so its next turn opens a fresh session rather
+    than being refused as an orphan."""
+    root, proc = tmp_path / "root", w.fake_proc(tmp_path)
+    record = w.under(root, "/data/engagements.json")
+    record.parent.mkdir(parents=True)
+    await _record_file(record)
+    assert maintenance.write_wipe_intent(str(root)) == "written"
+    assert w.run_oneshot(root, proc).stdout.strip() == "done"
+    ok, calls, notices, rec = await _next_turn(record, "e4" * 16)
+    assert (ok, calls, notices) == (True, ["invalidate", "open_fresh"], [])
+    assert rec.status == "idle" or rec.status == "active"
+
+
+async def test_a_valid_record_file_keeps_every_record_and_field(tmp_path):
+    root, proc = tmp_path / "root", w.fake_proc(tmp_path)
+    record = w.under(root, "/data/engagements.json")
+    record.parent.mkdir(parents=True)
+    await _record_file(record)
+    before = json.loads(record.read_text())
+    assert maintenance.write_wipe_intent(str(root)) == "written"
+    assert w.run_oneshot(root, proc).stdout.strip() == "done"
+    after = json.loads(record.read_text())
+    marked = {r["id"] for r in after if r.get("context_rebuild_pending")}
+    assert marked == {"e1" * 16, "e4" * 16}
+    for row in after:
+        row["context_rebuild_pending"] = next(
+            b for b in before if b["id"] == row["id"])["context_rebuild_pending"]
+    assert after == before
+    assert (record.stat().st_mode & 0o777) == 0o600
+
+
+@pytest.mark.parametrize("content", [
+    b'[{"id": "e1", "task": "KEEP-{canary}"',                 # not JSON
+    b'{"rows": "KEEP-{canary}"}',                              # not a list
+    b'[{"id": "e1", "status": "active", "task": "KEEP-{canary}"}]',  # no driver
+    b'[{"id": "e1", "status": "active", "driver": "in_casa"}, "KEEP-{canary}"]',
+    b'["\xff KEEP-{canary}"]',                                 # not UTF-8
+])
+def test_an_unreadable_record_file_is_left_byte_identical(tmp_path, content):
+    """r4 S1 (both reviewers): the step never repairs the engagement record
+    file. One it cannot read strictly is left exactly as it is, nothing is
+    marked, and the wipe still completes."""
+    root, proc = tmp_path / "root", w.fake_proc(tmp_path)
+    canary = os.urandom(8).hex()
+    data = content.replace(b"{canary}", canary.encode())
+    record = w.write(w.under(root, "/data/engagements.json"), data)
+    assert maintenance.write_wipe_intent(str(root)) == "written"
+    p = w.run_oneshot(root, proc)
+    assert p.stdout.strip() == "done", p.stderr
+    assert record.read_bytes() == data
