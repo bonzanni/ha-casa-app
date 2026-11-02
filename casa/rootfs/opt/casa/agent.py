@@ -59,18 +59,12 @@ import sdk_logging
 from mcp_registry import McpServerRegistry
 from channel_trust import channel_trust_display
 from timekeeping import compose_turn_preamble, resolve_tz
-from hindsight_ids import bank_id
-from sensitivity import clearance_for_origin, readable_tiers
+from sensitivity import clearance_for_origin
 from personality_types import SpeakerProvenance
-from recall_renderer import (
-    READABLE_SLICE_PROMPT_LINE,
-    provenance_view,
-    render_recall,
-)
 from speaker_provenance import UserProvenance, provenance_from_mapping
 from provenance import ANSWERED_BY_OPERATOR
 from session_saver import freshness_window, retain_cold_session, save_session
-from semantic_memory import NoOpSemanticMemory, RecallUnavailable, SemanticMemory
+from semantic_memory import NoOpSemanticMemory, SemanticMemory
 from session_gate import session_write_gate
 from session_registry import (
     SessionRegistry,
@@ -202,15 +196,16 @@ COPIED_CONTEXT_MARKERS = (
 )
 
 # Personality Task 14 / GH #199: the per-turn explanation draft. ``_build_options``
-# is the ONLY seam that observes the selected prompt projection + the auto-recall
-# hits, so it stashes those fields here; ``_process`` reads the draft at
+# is the ONLY seam that observes the selected prompt projection + the served
+# memory view, so it stashes those fields here; ``_process`` reads the draft at
 # end-of-turn and writes exactly one ``ExplanationStore.record()``. Same-task only
 # — ``_build_options`` is awaited directly inside the turn coroutine (both the
 # bypass path and via the pool's ``turn()``), so a mutable draft dict set here is
 # visible where the record is written, exactly like ``origin_var``. A warm-reuse
 # pool turn SKIPS ``_build_options`` and leaves the draft empty; ``_process`` then
 # records only the deterministic projection/identity fields it can derive itself
-# (honest partial record — no recall ran, the cached prompt was reused).
+# (honest partial record — no view was served, the cached prompt was reused).
+# The per-turn correction note stashes the session's ledger and base.
 _explain_draft_var: ContextVar[dict | None] = ContextVar(
     "casa_explain_draft", default=None,
 )
@@ -237,29 +232,6 @@ def _projection_name_for_turn(channel: str, origin_route: str | None) -> str:
     if channel == "voice":
         return "voice"
     return "text"
-
-
-def _attribution_label(hit, *, clearance: str | None) -> str:
-    """Derive an HONEST, operator-safe attribution label for one recall hit from
-    its clearance/surface-gated provenance view. Never emits the hit's raw
-    ``application_tags`` (which may carry reserved ``casa-source-`` tags the store
-    rejects) and never a person's display name — only speaker_kind + role/persona
-    IDS, so the label is safe to expose in the DEFAULT (non-sensitive) explain
-    output."""
-    view = provenance_view(
-        hit.provenance, clearance=clearance or "public", surface="text",
-    )
-    if view is None:
-        return "unattributed"
-    if view.speaker_kind == "user":
-        return "user"
-    parts = [view.speaker_kind]
-    if view.role_id:
-        parts.append(view.role_id)
-    label = ":".join(parts)
-    if view.persona_id and view.persona_version:
-        label += f"/{view.persona_id}@{view.persona_version}"
-    return label
 
 
 # Type alias for the streaming callback
@@ -414,10 +386,11 @@ class PromptSurface:
     instead of silently keeping a stale one.
 
     Holds only blocks derived from config, the agent registry and resolved
-    plugin state. ``<memory_context>``, ``<channel_context>`` and recall output
-    are deliberately NOT here: they change per turn and per sender, and
-    digesting them would retire the session on nearly every turn, costing both
-    the conversation and the cached prompt prefix.
+    plugin state. The ``<memory>`` view and ``<channel_context>`` are
+    deliberately NOT here: the view changes with every writer commit and the
+    channel context per sender, and digesting them would retire sessions over
+    and over, costing both the conversation and the cached prompt prefix. A
+    resumed session's view is checked on its own (``memory.view.serve``).
 
     The BLOCKS and the DIGEST travel together, and `_build_options` splices
     these exact strings rather than re-rendering. Design round 1 reproduced the
@@ -747,27 +720,6 @@ class PluginBindingSnapshot:
     generation: int
 
 
-@dataclass(frozen=True)
-class _LoadPlan:
-    push_overlay: bool   # GET mental-model overlay precedes the turn
-    auto_recall: bool    # auto-run a query-specific recall on the opening utterance
-
-
-def _plan_load(channel: str, *, is_fresh_session: bool) -> _LoadPlan:
-    """Spec §4.3 channel-aware load. Overlay is pushed only at fresh-session-start
-    (it rides along on resume). Voice never auto-recalls (the multi-strategy + rerank
-    recall must not sit on the first-utterance critical path); voice uses the
-    recall_memory pull tool instead. Note: even when push_overlay is True the overlay
-    is additionally gated by ``_overlay_allowed(channel)`` at the call site — a channel
-    without ``private`` clearance (e.g. voice = friends) never actually receives the
-    overlay regardless of this plan."""
-    if not is_fresh_session:
-        return _LoadPlan(push_overlay=False, auto_recall=False)
-    if channel == "voice":
-        return _LoadPlan(push_overlay=True, auto_recall=False)
-    return _LoadPlan(push_overlay=True, auto_recall=True)
-
-
 def _retain_fence():
     """The process-wide retain fence (#411). Imported lazily so tests that
     stub agent's collaborators need not know the fence exists."""
@@ -784,88 +736,6 @@ def _turn_admission():
     return session_gate.TURN_ADMISSION
 
 
-def _memory_bank() -> str:
-    """The single shared long-term bank (design §2.1). Role no longer partitions
-    memory — sensitivity tiers do."""
-    return bank_id("casa")
-
-
-# Auto-recall (pre-turn) bound: prompt construction must never sit on the full
-# HTTP client timeout (20s) waiting for an overloaded reranker — past this
-# deadline the recall is cancelled and the turn runs cold (v0.99.0).
-_AUTO_RECALL_TIMEOUT_S = 5.0
-# #1336: a session no person opened — a trigger prompt, a delegation notice,
-# an event — opens with Casa's own text: hundreds of tokens of instructions,
-# which the backend's CPU reranker scores against every candidate (12–20 s
-# measured) and which rank memories by likeness to the instructions, not to
-# the day. Such a session recalls with this fixed topical query instead, under
-# a longer deadline: mostly nobody is waiting on it, and where someone is (a
-# delegation's answer being relayed) a few seconds' delay is the accepted cost.
-_UNAUTHORED_RECALL_QUERY = "today's appointments, deadlines and open follow-ups"
-_UNAUTHORED_AUTO_RECALL_TIMEOUT_S = 15.0
-_RECALL_BREAKER_THRESHOLD = 3      # consecutive failures before opening
-_RECALL_BREAKER_COOLDOWN_S = 60.0  # open duration before a half-open probe
-
-
-class _RecallBreaker:
-    """Circuit breaker for the automatic pre-turn recall (v0.99.0).
-
-    After ``threshold`` CONSECUTIVE failures the breaker opens and auto-recall
-    runs cold (skipped entirely) instead of adding a doomed multi-second call —
-    and load — to every turn of an already-overloaded backend. After
-    ``cooldown_s`` the next turn's recall is allowed through as the recovery
-    probe: success closes the breaker, failure re-opens it for a full cooldown.
-    The recall_memory pull tool is intentionally NOT gated — an explicit pull
-    can still try (and surface status=unavailable to the model)."""
-
-    def __init__(
-        self, *, threshold: int = _RECALL_BREAKER_THRESHOLD,
-        cooldown_s: float = _RECALL_BREAKER_COOLDOWN_S,
-        clock: Callable[[], float] = time.monotonic,
-    ) -> None:
-        self._threshold = threshold
-        self._cooldown_s = cooldown_s
-        self._clock = clock
-        self._failures = 0
-        self._opened_at: float | None = None
-        self._probe_started_at: float | None = None  # half-open probe in flight
-
-    @property
-    def open(self) -> bool:
-        return self._opened_at is not None
-
-    def allow(self) -> bool:
-        """True when a recall attempt may proceed (closed, or THE half-open
-        probe). In half-open state exactly one probe is admitted at a time —
-        concurrent turns arriving after cooldown must not all hit the backend
-        at once. Calling this in half-open state RESERVES the probe; the
-        reservation is released by record_success/record_failure, and expires
-        after a cooldown so a turn that died without recording (cancelled
-        mid-probe) cannot wedge the breaker open forever. All calls run on
-        the one event loop, so no lock is needed."""
-        if self._opened_at is None:
-            return True
-        now = self._clock()
-        if now - self._opened_at < self._cooldown_s:
-            return False
-        if (self._probe_started_at is not None
-                and now - self._probe_started_at < self._cooldown_s):
-            return False
-        self._probe_started_at = now
-        return True
-
-    def record_success(self) -> None:
-        self._failures = 0
-        self._opened_at = None
-        self._probe_started_at = None
-
-    def record_failure(self) -> None:
-        self._probe_started_at = None
-        self._failures += 1
-        if self._failures >= self._threshold:
-            self._opened_at = self._clock()  # re-stamps on a failed half-open probe
-
-
 def _current_origin_clearance(channel: str) -> str:
     """Read-clearance for the CURRENT turn, keyed off the unspoofable origin
     marker in ``origin_var`` (Release A Layer 2) rather than the channel string,
@@ -876,19 +746,6 @@ def _current_origin_clearance(channel: str) -> str:
     return clearance_for_origin(
         origin.get("_origin_route"), origin.get("_origin_clearance"), channel,
     )
-
-
-def _recall_tier_tags(channel: str) -> list[str]:
-    """Tiers a turn may recall = readable_tiers(clearance). The sole read-side
-    access gate (design §2.3), origin-keyed (Layer 2)."""
-    return readable_tiers(_current_origin_clearance(channel))
-
-
-def _overlay_allowed(channel: str) -> bool:
-    """The bank-level mental-model overlay cannot be tier-filtered, so it is pushed
-    ONLY at ``private`` clearance — a context that may already see everything
-    (design §2.3). At any lower clearance it would leak across tiers."""
-    return _current_origin_clearance(channel) == "private"
 
 
 # Release A / Layer 1 — the two casa-framework tools an untrusted webhook turn
@@ -1315,10 +1172,6 @@ class Agent:
         # Per-instance so assistant (4000) and butler (800) budgets stay
         # isolated even when the same channel serves both roles.
         self._budget_tracker = BudgetTracker()
-        # Auto-recall circuit breaker (v0.99.0): per-instance — the backend is
-        # shared, but auto-recall fires only on this agent's fresh text turns,
-        # so per-instance state converges on backend health within one turn each.
-        self._recall_breaker = _RecallBreaker()
         # Unified plugin architecture (§3.3/§3.9): per-instance ONE-shot
         # snapshot of the registry resolution for this agent's tier:role
         # (resolution + {name: artifact_id} binding + resolver generation),
@@ -2277,7 +2130,7 @@ class Agent:
                 origin_snapshot["_voice_handoff_reservation"] = reservation
         origin_token = origin_var.set(origin_snapshot)
         # Task 14 / #199: per-turn explanation scaffolding. ``explain_draft`` is
-        # populated by ``_build_options`` (projection + recall attributions);
+        # populated by ``_build_options`` (projection + served memory view);
         # ``turn_state`` captures the on_message ``state`` dict of whichever
         # attempt produced the response (its ``tool_names_by_id`` are the turn's
         # tool calls). Both are read once at end-of-turn to record the
@@ -2351,6 +2204,11 @@ class Agent:
             # user_text stays raw.
             import specialist_desk
             notes: list[str] = []
+            # On every turn of a memory role, whatever its
+            # channel, every correction the session's frozen view does not
+            # reflect, read in this turn's own snapshot.
+            memory_note = await self._memory_note(
+                channel=msg.channel, channel_key=channel_key)
             if msg.channel == "telegram":
                 desk_lines = specialist_desk.prompt_lines(msg.context.get("chat_id"))
                 if desk_lines:
@@ -2361,6 +2219,8 @@ class Agent:
                 received = msg.context.get("_received_file")
                 if isinstance(received, dict) and isinstance(received.get("note"), str):
                     notes.append(received["note"])
+            if memory_note:
+                notes.append(memory_note)
             prompt_text = (
                 compose_turn_preamble(datetime.now(resolve_tz()), notes) + user_text
             )
@@ -2946,14 +2806,13 @@ class Agent:
             return name
 
     def _stash_explanation_draft(
-        self, *, projection: str, bundle, system_prompt: str,
-        facts: str, hits: tuple, clearance: str | None,
+        self, *, projection: str, bundle, system_prompt: str, memory_view,
     ) -> None:
-        """Populate this turn's ``_explain_draft_var`` with the projection +
-        prompt + recall attributions that only ``_build_options`` observes.
-        Reads/writes the per-turn draft dict in place; a no-op when no draft is
-        bound (e.g. ``_build_options`` called directly by a unit test). Never
-        raises into the options path."""
+        """Populate this turn's ``_explain_draft_var`` with the projection,
+        the prompt and the served memory view that only ``_build_options``
+        observes. Reads/writes the per-turn draft dict in place; a no-op when
+        no draft is bound (e.g. ``_build_options`` called directly by a unit
+        test). Never raises into the options path."""
         draft = _explain_draft_var.get(None)
         if draft is None:
             return
@@ -2966,18 +2825,75 @@ class Agent:
                 draft["static_prompt_digest"] = ""
                 draft["static_prompt_estimated_tokens"] = 0
             draft["projection"] = projection
-            # Distinct tiers touched, insertion-ordered; attributions are the
-            # clearance-gated, casa-source-free labels (never raw tags).
-            draft["memory_tiers"] = tuple(
-                dict.fromkeys(h.sensitivity for h in hits)
-            )
-            draft["memory_attributions"] = tuple(
-                _attribution_label(h, clearance=clearance) for h in hits
-            )
             draft["system_prompt"] = system_prompt
-            draft["memory_text"] = facts or None
+            if memory_view is not None:
+                # The view is one ledger, which is also its tier.
+                draft["memory_tiers"] = (memory_view.ledger,)
+                draft["memory_ledger"] = memory_view.ledger
+                draft["memory_base_commit_no"] = memory_view.commit_no
+                draft["memory_text"] = memory_view.text or None
+            else:
+                draft["memory_text"] = None
         except Exception:  # noqa: BLE001
             logger.debug("explanation draft stash skipped", exc_info=True)
+
+    async def _serve_memory_view(
+        self, *, channel: str, channel_key: str, resume_sid: str | None,
+    ):
+        """This session's frozen memory view and the resume sid to connect
+        with: ``(view or None, resume_sid)``. The view is read off the event
+        loop. A resumed session whose recorded view cannot be reproduced
+        comes back with ``resume_sid=None`` (it starts afresh). No store, a
+        store that fails, or a clearance that reads no ledger serves no view
+        and leaves the resume as it was."""
+        from memory import capture
+        from memory import view as memory_view
+        store = capture.active_store()
+        if store is None or not store.available:
+            return None, resume_sid
+        try:
+            served = await asyncio.to_thread(
+                memory_view.serve, store, channel_key,
+                clearance=_current_origin_clearance(channel),
+                budget=self.config.memory.token_budget,
+                resume=resume_sid is not None,
+            )
+        except Exception:  # noqa: BLE001 — the turn runs without memory
+            logger.warning("memory view not served role=%s",
+                           self.config.role, exc_info=True)
+            return None, resume_sid
+        if served.reset:
+            resume_sid = None
+        return served.view, resume_sid
+
+    async def _memory_note(self, *, channel: str, channel_key: str) -> str:
+        """This turn's correction note, read off the event loop
+        in the turn's own snapshot: every correction this session's frozen
+        view does not reflect. ``""`` for a role served no memory, a
+        clearance that reads no ledger, or no store. The session's ledger and
+        base go into the turn's explanation draft."""
+        if self.config.memory.token_budget <= 0:
+            return ""
+        from memory import capture
+        from memory import note as memory_note
+        store = capture.active_store()
+        if store is None or not store.available:
+            return ""
+        try:
+            note = await asyncio.to_thread(
+                memory_note.for_turn, store,
+                clearance=_current_origin_clearance(channel),
+                session_key=channel_key,
+            )
+        except Exception:  # noqa: BLE001 — the turn runs without the note
+            logger.warning("memory correction note not read role=%s",
+                           self.config.role, exc_info=True)
+            return ""
+        draft = _explain_draft_var.get(None)
+        if draft is not None and note.ledger is not None:
+            draft["memory_ledger"] = note.ledger
+            draft["memory_base_commit_no"] = note.base_commit_no
+        return note.text
 
     async def _record_turn_explanation(
         self, *, channel: str, turn_state: dict, explain_draft: dict,
@@ -3066,6 +2982,9 @@ class Agent:
                 denials=(),
                 system_prompt=explain_draft.get("system_prompt"),
                 memory_text=explain_draft.get("memory_text"),
+                memory_ledger=explain_draft.get("memory_ledger"),
+                memory_base_commit_no=explain_draft.get(
+                    "memory_base_commit_no"),
             )
             # F7: the blocking write+prune runs off the event loop. `record`
             # is a fully-built immutable dataclass; nothing task-local is read
@@ -3163,119 +3082,28 @@ class Agent:
                 # #1142: the turn scope's predicate, and nothing else.
                 delivers_to_operator=_delivers_to_operator(_origin),
             )
-            # #199: an untrusted webhook turn does no recall — record the
+            # #199: an untrusted webhook turn reads no memory — record the
             # restricted projection + its persona-stripped prompt, memory empty.
             self._stash_explanation_draft(
                 projection="restricted_webhook", bundle=_bundle,
-                system_prompt=restricted_prompt, facts="", hits=(), clearance=None,
+                system_prompt=restricted_prompt, memory_view=None,
             )
             return sdk_logging.with_stderr_callback(restricted, engagement_id=None)
 
-        # 2b. Memory context (spec §4.3) — channel-aware load on the
-        # SemanticMemory seam: a cheap mental-model overlay at fresh-session
-        # start, plus (text only) one recall filtered by channel clearance tier.
-        load_plan = _plan_load(channel, is_fresh_session=is_fresh)
-        bank = _memory_bank()
-        overlay_digest = ""
-        facts = ""
-        # #199: the recall hits (+ the clearance they were gated at) feed the
-        # explanation record's memory attributions; empty unless a recall
-        # actually succeeds below.
-        _recall_hits: tuple = ()
-        _recall_clearance_used: str | None = None
-        if load_plan.push_overlay and _overlay_allowed(channel):
-            try:
-                overlay_digest = await self._semantic_memory.profile(bank)
-            except Exception:  # noqa: BLE001
-                logger.warning(
-                    "profile overlay failed for role=%s", self.config.role,
-                    exc_info=True,
-                )
-        if load_plan.auto_recall and not self._recall_breaker.allow():
-            # Breaker open: run cold rather than hammer an unavailable backend
-            # on every turn. No memory block; the model is never told an empty
-            # recall happened (doctrine: "unavailable" ≠ "no memories").
-            logger.info(
-                "auto_recall role=%s outcome=skipped reason=breaker_open",
-                self.config.role,
+        # 2b. Memory: the session's frozen view of its ledger,
+        # built locally with no model call, on a fresh or cold connect only
+        # (a warm turn keeps the client this built). A resumed session's view
+        # is rendered again from its recorded base; one that cannot be
+        # reproduced starts the session afresh, once.
+        memory_view = None
+        if self.config.memory.token_budget > 0:
+            memory_view, resume_sid = await self._serve_memory_view(
+                channel=channel, channel_key=channel_key,
+                resume_sid=resume_sid,
             )
-        elif load_plan.auto_recall:
-            _recall_t0 = time.monotonic()
-            _recall_clearance = _current_origin_clearance(channel)
-            # #1336: no person typed this opening (``_process`` stamps it from
-            # the turn's trusted ingress); absent — a direct caller — keeps the
-            # turn's own text, the behaviour every operator turn has.
-            _unauthored = _origin.get("_unauthored_opening") is True
-            try:
-                # Bounded deadline: never the full HTTP timeout. No synchronous
-                # retry on failure here — a 504 means the reranker is overloaded
-                # and retrying makes it worse (the seam itself retries only
-                # connection-level drops and, #1117, one 503 inside this same
-                # deadline).
-                #
-                # Task 11: the awaited method is now the typed, attributed
-                # recall_items; the OWN _RecallBreaker/wait_for/record_* logic
-                # around it is UNCHANGED (this site is NOT wrapped in the new
-                # recall_health breaker). On success the hits are rendered with
-                # their recorded attribution before assignment to ``facts``.
-                _hits = await asyncio.wait_for(
-                    self._semantic_memory.recall_items(
-                        bank,
-                        _UNAUTHORED_RECALL_QUERY if _unauthored else user_text,
-                        tags=_recall_tier_tags(channel),
-                        max_tokens=self.config.memory.token_budget,
-                        clearance=_recall_clearance,
-                        budget="mid",  # auto_recall is always non-voice (see _plan_load); voice uses the recall_memory pull tool at budget=low
-                    ),
-                    timeout=(_UNAUTHORED_AUTO_RECALL_TIMEOUT_S if _unauthored
-                             else _AUTO_RECALL_TIMEOUT_S),
-                )
-                self._recall_breaker.record_success()
-                _recall_hits = _hits
-                _recall_clearance_used = _recall_clearance
-                facts = render_recall(
-                    _hits, current_speaker=speaker_provenance_for_role(self.config),
-                    surface="text", clearance=_recall_clearance,
-                    token_budget=self.config.memory.token_budget,
-                )
-            except (RecallUnavailable, asyncio.TimeoutError) as exc:
-                self._recall_breaker.record_failure()
-                logger.warning(
-                    "auto_recall role=%s outcome=unavailable reason=%s "
-                    "latency_ms=%d breaker_open=%s",
-                    self.config.role,
-                    getattr(exc, "reason", "deadline"),
-                    int((time.monotonic() - _recall_t0) * 1000),
-                    self._recall_breaker.open,
-                )
-            except Exception as exc:  # noqa: BLE001
-                self._recall_breaker.record_failure()
-                # Exception TYPE only — repr/traceback could embed the query
-                # text, which must never be logged.
-                logger.warning(
-                    "auto_recall role=%s outcome=unavailable reason=unexpected:%s "
-                    "latency_ms=%d breaker_open=%s",
-                    self.config.role, type(exc).__name__,
-                    int((time.monotonic() - _recall_t0) * 1000),
-                    self._recall_breaker.open,
-                )
-        parts: list[str] = []
-        if overlay_digest:
-            parts.append(f"<peer_overlay>\n{overlay_digest}\n</peer_overlay>")
-        if facts:
-            # #581: auto-recall reads at the turn's clearance — per SENDER on
-            # telegram — so the injected slice is bounded, and a model that
-            # treats it as all of memory answers "no record" for a fact it
-            # simply cannot read. One instruction line says so. The empty case
-            # injects no block at all, which stays deliberately silent:
-            # absence of a block is not a claim of absence.
-            parts.append(
-                f"<memory_context>\n{READABLE_SLICE_PROMPT_LINE}\n{facts}\n"
-                f"</memory_context>"
-            )
-        memory_blocks = "\n".join(parts)
+        memory_block = memory_view.text if memory_view is not None else ""
 
-        if memory_blocks:
+        if memory_block:
             # #349: recorded at end-of-turn, not here — `_build_options` runs
             # once per SDK ATTEMPT (retry_sdk_call), and recording per attempt
             # advanced the consecutive-overrun streak N times for one logical
@@ -3284,7 +3112,7 @@ class Agent:
             # bound (a unit test calling this method directly), record now.
             budget_record = (
                 f"{channel_key}-{self.config.role}",
-                estimate_tokens(memory_blocks),
+                estimate_tokens(memory_block),
                 self.config.memory.token_budget,
             )
             if _draft is not None:
@@ -3292,21 +3120,24 @@ class Agent:
             else:
                 self._budget_tracker.record(*budget_record)
 
-        # 3. System prompt = composed-prompt + runtime-injected blocks. For a
-        # resident, the base is the immutable compiled projection selected for
-        # this surface (text/voice); specialists/executors keep the legacy
-        # composed self.config.system_prompt (Plan 1 does not touch their
-        # prompt composition).
+        # 3. System prompt. For a resident, the base is the immutable compiled
+        # projection selected for this surface (text/voice), with the memory
+        # block in its one slot between the persona and the role doctrine
+        # (outside the projection's digest and ceilings); specialists and
+        # executors keep the legacy composed self.config.system_prompt, with
+        # the block at its head.
         if _bundle is not None:
             from prompt_compiler import projection_for
             base_system_prompt = projection_for(
                 _bundle, channel=channel, origin_route=_route,
+                memory=memory_block,
             ).system_prompt
+        elif memory_block:
+            base_system_prompt = (
+                f"{memory_block}\n\n{self.config.system_prompt}")
         else:
             base_system_prompt = self.config.system_prompt
         system_parts = [base_system_prompt]
-        if memory_blocks:
-            system_parts.append("\n" + memory_blocks)
         # #336: the static per-channel display claims "authenticated (operator)"
         # for telegram, which is a lie the model would act on when an
         # accept-all-mode stranger is the sender. Key the honesty off the same
@@ -3356,7 +3187,7 @@ class Agent:
         # rides on the per-turn query text (built in _process).
         system_prompt = "\n".join(system_parts)
 
-        # #199: stash the projection + assembled prompt + recall attributions for
+        # #199: stash the projection + assembled prompt + served view for
         # this turn's explanation record. A resident's projection name is derived
         # in lockstep with the projection_for selection above; a
         # specialist/executor (no bundle) records the honest "legacy" projection.
@@ -3366,7 +3197,7 @@ class Agent:
                 if _bundle is not None else "legacy"
             ),
             bundle=_bundle, system_prompt=system_prompt,
-            facts=facts, hits=_recall_hits, clearance=_recall_clearance_used,
+            memory_view=memory_view,
         )
 
         # 4. Hooks — resolved from hooks.yaml at load time by agent_loader.

@@ -173,7 +173,7 @@ block: one `<casa_notes>` block directly after the turn's `<current_time>` envel
 (`timekeeping.compose_turn_preamble`), which the transcript readback strips with the
 envelope, so no Casa line is retained as the operator's words (INV-MEM-022 in
 [`memory-labelling.md`](memory-labelling.md)). No narration turn is synthesised; the
-origin's `user_text` and the recall query stay raw; nothing is persisted.
+origin's `user_text` stays raw; nothing is persisted.
 
 **An approval raised inside a desk turn continues the desk.** The desk turn's grant identity
 carries an advisory `desk_role` beside its advisory `target_role` (which stays the resident,

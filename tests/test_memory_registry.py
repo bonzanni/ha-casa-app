@@ -215,6 +215,7 @@ _PERSIST_METHODS = {"write_text", "write_bytes", "write", "writelines"}
 #: For each named producer, the input that holds the memory-derived text it
 #: persists. A new producer joins the registry and this table together.
 CARRIES: dict[str, tuple[str, ...]] = {
+    "memory/view.py:serve": ("view",),
     "session_registry.py:SessionRegistry._write": ("data",),
     "explanation_store.py:ExplanationStore.record": ("record",),
     "drivers/workspace.py:provision_workspace": ("executor_memory",),
@@ -578,7 +579,7 @@ def launcher_transcript_roots() -> list[tuple[str, str]]:
 
 #: The modules that hold the named producers.
 PRODUCER_MODULES = ("session_registry.py", "explanation_store.py",
-                    "drivers/workspace.py")
+                    "drivers/workspace.py", "memory/view.py")
 
 #: Writes a producer makes that carry no memory: everything else the
 #: workspace provisioner creates beside the executor-memory block. A write
@@ -915,8 +916,29 @@ async def _run_refresh(sandbox, mods, mp, code_root):
                                  rec=_record(ws.name, defn.type))
 
 
+async def _run_view_serve(sandbox, mods, mp, code_root):
+    """A session served its view of a ledger holding one entry: a new
+    session, then the same session resumed."""
+    from memory import patches
+    module = mods["memory/view.py"]
+    store = MemoryStore(str(_sandboxed(sandbox, registry.MEMORY_DIR + "/x")
+                            .parent))
+    assert store.open(), store.unavailable_reason
+    with store.transaction(write=True) as conn:
+        patches.apply(conn, "private", [
+            {"op": "add", "kind": "entry", "entry_kind": "fact",
+             "topic": "Home", "subject": "sample", "body": MEMORY,
+             "line": "a sample need"}],
+            job_id="job", commit_no=1, committed_at="2026-01-01T00:00:00+00:00")
+    for resume in (False, True):
+        served = module.serve(store, "telegram-sample", clearance="private",
+                              budget=1000, resume=resume)
+        assert MEMORY in served.view.text and not served.reset
+
+
 #: One way to run each named producer.
 EXERCISERS = {
+    "memory/view.py:serve": _run_view_serve,
     "session_registry.py:SessionRegistry._write": _run_session_registry,
     "explanation_store.py:ExplanationStore.record": _run_explanation_store,
     "drivers/workspace.py:provision_workspace": _run_provision,
@@ -1150,7 +1172,18 @@ async def test_producer_pin_red_cases(tmp_path: Path) -> None:
         ".write_text(executor_memory)\n")
     assert _outside_names(problems) == {".claude/settings.json"}, problems
 
-    # 9. A launcher configuring a transcript root with no row.
+    # 9. The served-view renderer persisting the view outside its row.
+    problems = await _violations(
+        tmp_path / "9", "memory/view.py",
+        "    return Served(view, reset=reset)\n",
+        "    open(store.directory + '/../view.txt', 'w').write(view.text)\n"
+        "    return Served(view, reset=reset)\n")
+    assert any(re.fullmatch(
+        r"memory/view\.py:\d+ writes /data/view\.txt \(open\): memory text "
+        r"from serve .*, outside row 'memory\.db'", p) for p in problems), \
+        problems
+
+    # 10. A launcher configuring a transcript root with no row.
     roots = shell_transcript_roots(
         "etc/s6-overlay/scripts/new-service.sh",
         "#!/bin/bash\nexport HOME=/data/other-home\nexec claude\n")

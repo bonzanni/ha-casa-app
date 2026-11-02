@@ -113,8 +113,12 @@ def _with_sidecars(path: str) -> tuple[str, ...]:
 
 REGISTRY: tuple[Entry, ...] = (
     # --- memory.db and its tables ------------------------------------------
+    # The served-view renderer records each session's view here (its hash
+    # and base, in ``session_views``); the text itself is served into the
+    # prompt and copied only into the explanation records below.
     Entry("memory.db", Kind.FILE, _with_sidecars(MEMORY_DB),
-          Export.TABLES, Restore.INSTALL, Wipe.DELETE),
+          Export.TABLES, Restore.INSTALL, Wipe.DELETE,
+          producer=("memory/view.py:serve",)),
     Entry("events", Kind.TABLE, ("events", "correction_marks"),
           Export.YES, Restore.LOAD, Wipe.DELETE),
     Entry("ledgers", Kind.TABLE, ("objects", "revisions"),

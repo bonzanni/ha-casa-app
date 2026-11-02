@@ -65,8 +65,10 @@ list, so a store missing from it is one they would silently skip. The registry c
   and each engagement's executor-memory block (its control-directory cache and the
   `CLAUDE.md` it is rendered into).
 
-A row outside `/data/memory` also names the code that writes it and the staging-file
-pattern of the atomic-write helper that code uses. A crash between a staging file's write
+The `memory.db` row also names the served-view renderer as its producer: a session's view
+is recorded there (in `session_views`, its hash and base, no text), and the text itself is
+copied only into the explanation records. A row outside `/data/memory` also names the code
+that writes it and the staging-file pattern of the atomic-write helper that code uses. A crash between a staging file's write
 and its rename leaves that file behind, so the wipe needs its name. The session-pointer
 writer names its staging file after its target (`.sessions.json.<random>.tmp`) for this
 reason; the shared atomic writer's default name, `.<random>.tmp`, names nothing.

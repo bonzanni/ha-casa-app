@@ -1,14 +1,14 @@
 """Id-addressed patches (``memory/patches.py``): every operation writes the
 object's next revision and a history row; cues are add-only; an operation
 can touch only its own ledger; a malformed one is refused; reachability
-follows parents a level up to the top."""
+(``memory.view.unreachable``) follows parents a level up to the top."""
 from __future__ import annotations
 
 import json
 
 import pytest
 
-from memory import patches
+from memory import patches, view
 from memory_writer_support import new_store, rows
 
 
@@ -16,7 +16,7 @@ def _apply(store, ops, ledger="private", commit_no=1):
     with store.transaction(write=True) as conn:
         touched = patches.apply(conn, ledger, ops, job_id="j", commit_no=commit_no,
                                 committed_at="2026-11-02T10:00:00+00:00")
-        return touched, patches.unreachable(conn, ledger)
+        return touched, view.unreachable(conn, ledger)
 
 
 def _obj(store, object_id, ledger="private"):

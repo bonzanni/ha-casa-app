@@ -15,15 +15,17 @@ unrelated readable memories, the on-topic one dropped server-side — and the
 butler answered "No record of a wall safe combination hint." A well-formed,
 non-empty, entirely honest result, read as an inventory of Casa's memory.
 
-FOUR model-facing consumers render a slice; every one of them was unframed on
+FOUR model-facing consumers rendered a slice; every one of them was unframed on
 its non-empty path, and the suite that shipped with #472 actively pinned the
 defect (`test_nonempty_digest_stays_clean`, now replaced by
-`test_nonempty_digest_carries_the_note` below):
+`test_nonempty_digest_carries_the_note` below). Two remain slices:
 
   1. `recall_memory`'s ok-arm            → tool-result `message`
-  2. auto-recall's `<memory_context>`    → instruction line in the block
-  3. specialist `<memory_context agent>` → instruction line in the block
   4. `_fetch_executor_archive`'s block   → instruction line under the heading
+
+The resident's auto-recall (2) and the specialist's pre-delegation recall (3)
+were replaced by the served memory view, which is a whole ledger (or its
+index), not a slice of one.
 
 `query_engager` is deliberately absent: its synthesizer is constrained to the
 supplied context and must emit the literal `UNKNOWN` when that context does not
@@ -178,242 +180,41 @@ class TestRecallMemoryOkArm:
 
 
 # ---------------------------------------------------------------------------
-# Consumer 2 — auto-recall's <memory_context>
-# ---------------------------------------------------------------------------
-
-
-class _RecallingSem:
-    """Semantic-memory stand-in whose recall always returns one readable hit."""
-
-    def __init__(self, text: str = "Nicola keeps the thermostat at 20C."):
-        self._text = text
-
-    async def retain(self, bank, items, *, async_=True):
-        return None
-
-    async def recall_items(self, bank, query, *, tags, max_tokens, clearance,
-                           types=("world", "experience", "observation"),
-                           tags_match="any", budget="mid"):
-        return (_hit(self._text),)
-
-    async def profile(self, bank):
-        return ""
-
-
-class _CaptureClient:
-    captured_options = None
-
-    def __init__(self, options):
-        type(self).captured_options = options
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *a):
-        return None
-
-    async def query(self, text):
-        return None
-
-    async def receive_response(self):
-        from claude_agent_sdk import (
-            AssistantMessage as _AM, ResultMessage as _RM, TextBlock as _TB,
-        )
-        try:
-            block = _TB(text="ok")
-        except TypeError:
-            block = _TB("ok")  # type: ignore[call-arg]
-        try:
-            yield _AM(content=[block])
-        except TypeError:
-            m = _AM.__new__(_AM)
-            m.content = [block]  # type: ignore[attr-defined]
-            yield m
-        r = _RM.__new__(_RM)
-        r.session_id = "sid-581"  # type: ignore[attr-defined]
-        r.usage = {"input_tokens": 1, "output_tokens": 1}  # type: ignore[attr-defined]
-        yield r
-
-
-class TestAutoRecallBlock:
-    async def test_injected_memory_context_carries_the_note(self, tmp_path):
-        """The path where the model is MOST likely to overclaim: it never
-        called a tool, so the block simply reads as 'what Casa remembers'."""
-        import yaml
-        from agent import Agent
-        from bus import BusMessage, MessageType
-        from channels import ChannelManager
-        from config import AgentConfig, CharacterConfig, MemoryConfig, ToolsConfig
-        from mcp_registry import McpServerRegistry
-        from session_registry import SessionRegistry
-        try:
-            from tests.role_artifact_stub import STUB_ROLE_ARTIFACT
-        except ImportError:
-            from role_artifact_stub import STUB_ROLE_ARTIFACT
-
-        allowed = (yaml.safe_load(
-            (CASA_ROOT / "defaults" / "agents" / "assistant" / "runtime.yaml")
-            .read_text(encoding="utf-8"),
-        ).get("tools") or {}).get("allowed") or []
-        cfg = AgentConfig(
-            role_artifact=STUB_ROLE_ARTIFACT, role="assistant",
-            model="claude-sonnet-4-6", system_prompt="You are assistant.",
-            character=CharacterConfig(name="Assistant"),
-            tools=ToolsConfig(allowed=allowed, permission_mode="acceptEdits"),
-            memory=MemoryConfig(token_budget=1000, read_strategy="per_turn"),
-        )
-        agent = Agent(
-            config=cfg,
-            session_registry=SessionRegistry(str(tmp_path / "assistant.json")),
-            mcp_registry=McpServerRegistry(),
-            channel_manager=ChannelManager(),
-            semantic_memory=_RecallingSem(),
-        )
-        _CaptureClient.captured_options = None
-        with patch("sdk_client_pool._default_make_client", _CaptureClient):
-            await agent._process(BusMessage(
-                type=MessageType.CHANNEL_IN, source="telegram", target="x",
-                content="what do you remember?", channel="telegram",
-                context={"chat_id": "c-581"},
-            ))
-        prompt = _CaptureClient.captured_options.system_prompt or ""
-        assert "<memory_context>" in prompt
-        assert "thermostat at 20C" in prompt, "the digest must still be usable"
-        assert EXPECTED_PROMPT_LINE in prompt
-        # Inside the block, not floating in the prompt: it must read as part of
-        # the memory context it qualifies.
-        block = prompt.split("<memory_context>")[1].split("</memory_context>")[0]
-        assert EXPECTED_PROMPT_LINE in block
-
-
-# ---------------------------------------------------------------------------
-# Consumer 3 — the specialist delegation's <memory_context agent="...">
-# ---------------------------------------------------------------------------
-
-
-class _FakeSpecialistSem:
-    def __init__(self, text: str = "Q1 spend: EUR 1200"):
-        self._text = text
-
-    async def recall_items(self, bank, query, *, tags, max_tokens, clearance,
-                           types=("world", "experience", "observation"),
-                           tags_match="any", budget="mid"):
-        return (_hit(self._text),)
-
-    async def retain(self, bank, items, *, async_=True):
-        return None
-
-
-class _FakeSpecialistClient:
-    captured_prompt: str = ""
-
-    def __init__(self, options):
-        self.options = options
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *exc):
-        return None
-
-    async def query(self, text: str) -> None:
-        type(self).captured_prompt = text
-
-    async def receive_response(self):
-        from claude_agent_sdk import AssistantMessage, TextBlock
-        try:
-            block = TextBlock(text="specialist reply")
-        except TypeError:
-            block = TextBlock("specialist reply")  # type: ignore[call-arg]
-        try:
-            yield AssistantMessage(content=[block])
-        except TypeError:
-            m = AssistantMessage.__new__(AssistantMessage)
-            m.content = [block]  # type: ignore[attr-defined]
-            yield m
-
-
-class TestSpecialistBlock:
-    async def test_specialist_memory_context_carries_the_note(self, monkeypatch):
-        """A specialist reads at the DELEGATING turn's clearance, so its slice
-        is bounded by someone else's floor — and it reports back to the caller
-        in prose, where an absence claim travels straight to the user."""
-        import agent as agent_mod
-        from config import (
-            AgentConfig, CharacterConfig, MemoryConfig, SessionConfig, ToolsConfig,
-        )
-        try:
-            from tests.role_artifact_stub import STUB_ROLE_ARTIFACT
-        except ImportError:
-            from role_artifact_stub import STUB_ROLE_ARTIFACT
-
-        cfg = AgentConfig(
-            role_artifact=STUB_ROLE_ARTIFACT, role="finance",
-            model="claude-sonnet-4-6", system_prompt="You are finance",
-            character=CharacterConfig(name="Finance"), enabled=True,
-            tools=ToolsConfig(allowed=["Read"], permission_mode="acceptEdits"),
-            memory=MemoryConfig(token_budget=4000),
-            session=SessionConfig(strategy="ephemeral", idle_timeout=0),
-        )
-        monkeypatch.setattr(
-            agent_mod, "active_semantic_memory", _FakeSpecialistSem(), raising=False)
-        agent_mod.origin_var.set({
-            "role": "assistant", "channel": "telegram", "chat_id": "abc",
-            "cid": "cid581", "scope": "personal", "delegation_depth": 0,
-        })
-        _FakeSpecialistClient.captured_prompt = ""
-        with patch.object(tools, "ClaudeSDKClient", _FakeSpecialistClient):
-            await tools._run_delegated_agent(
-                cfg, task_text="how is Q1 cashflow?", context_text="")
-        prompt = _FakeSpecialistClient.captured_prompt
-        assert '<memory_context agent="finance">' in prompt
-        assert "Q1 spend" in prompt, "the digest must still be usable"
-        block = prompt.split('<memory_context agent="finance">')[1].split(
-            "</memory_context>")[0]
-        assert EXPECTED_PROMPT_LINE in block
-
-
-# ---------------------------------------------------------------------------
 # Consumer 4 — the executor archive's lessons block
 # ---------------------------------------------------------------------------
 
 
 class TestExecutorArchiveBlock:
-    async def test_lessons_block_carries_the_note(self, monkeypatch):
+    async def test_lessons_block_carries_the_note(self, monkeypatch, tmp_path):
         """Sol, design round 1: this block reaches BOTH executor drivers
         through this one helper, and it is filtered twice over — by the
         launching turn's clearance and by the doctrine epoch."""
-        import agent as agent_mod
-        monkeypatch.setattr(
-            agent_mod, "active_semantic_memory", object(), raising=False)
-
-        async def _fake_recall(*a, **kw):
-            return "- A prior source recorded: always run make setup first."
-        monkeypatch.setattr(tools, "delegated_recall", _fake_recall)
+        from memory import capture
+        from memory_serving_support import ledger_store, wire
+        store = ledger_store(tmp_path)
+        wire(monkeypatch, store)
+        await capture.record(capture.summary(
+            role="configurator", procedural_epoch="e1", tier="private",
+            text="always run make setup first", engagement_id="eng-1"))
 
         out = await tools._fetch_executor_archive(
-            task="set up the dev loop", origin_channel="telegram",
-            token_budget=2000,
+            role="configurator", procedural_epoch="e1",
+            origin_channel="telegram", token_budget=2000,
         )
         assert "Prior engagements" in out
-        assert "make setup" in out, "the digest must still be usable"
+        assert "make setup" in out, "the summary must still be usable"
         assert EXPECTED_PROMPT_LINE in out
 
-    async def test_empty_archive_stays_silent(self, monkeypatch):
+    async def test_empty_archive_stays_silent(self, monkeypatch, tmp_path):
         """The framing must not resurrect the empty case: "" renders as no
         block at all, and absence of a block is not a claim of absence (#201).
         A bare instruction line with no lessons under it would be exactly the
         fabricated header this helper's docstring forbids."""
-        import agent as agent_mod
-        monkeypatch.setattr(
-            agent_mod, "active_semantic_memory", object(), raising=False)
-
-        async def _empty(*a, **kw):
-            return ""
-        monkeypatch.setattr(tools, "delegated_recall", _empty)
-
+        from memory_serving_support import ledger_store, wire
+        wire(monkeypatch, ledger_store(tmp_path))
         assert await tools._fetch_executor_archive(
-            task="anything", origin_channel="telegram", token_budget=2000) == ""
+            role="configurator", procedural_epoch="e1",
+            origin_channel="telegram", token_budget=2000) == ""
 
 
 # ---------------------------------------------------------------------------
@@ -428,15 +229,9 @@ class TestExecutorArchiveBlock:
 DECLARED_SLICE_CALLERS: dict[tuple[str, str], tuple[int, str]] = {
     # render_recall — the typed renderer itself
     ("tools.py", "recall_memory"): (1, "frames: tool-result message"),
-    ("agent.py", "_build_options"): (
-        1, "frames: instruction line in <memory_context>"),
     ("delegated_memory.py", "delegated_recall"): (
-        1, "renders only; its four callers frame (or are exempt) individually"),
+        1, "renders only; its callers frame (or are exempt) individually"),
     # delegated_recall — the shared delegated read
-    ("tools.py", "_run_delegated_agent"): (
-        1, "frames: instruction line in <memory_context agent=...>"),
-    ("tools.py", "_fetch_executor_archive"): (
-        1, "frames: instruction line under the lessons heading"),
     ("tools.py", "query_engager"): (
         2,
         "exempt: both calls (initial + the post-clamp re-read) feed a "
@@ -532,7 +327,6 @@ def test_the_inventory_is_not_vacuous():
     sites = _all_call_sites()
     for expected in (
         ("tools.py", "recall_memory"),
-        ("agent.py", "_build_options"),
-        ("tools.py", "_fetch_executor_archive"),
+        ("tools.py", "query_engager"),
     ):
         assert expected in sites, f"caller scan missed {expected}"

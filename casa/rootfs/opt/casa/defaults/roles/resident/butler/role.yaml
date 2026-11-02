@@ -18,7 +18,7 @@ tools:
   voice_guard: ha_direct
 mcp_servers: [casa-framework, homeassistant]
 channels: [ha_voice]
-memory: {token_budget: 800, read_strategy: cached}
+memory: {token_budget: 10000, read_strategy: cached}
 session: {strategy: pooled, idle_timeout_seconds: 300}
 disclosure: {policy: standard, overrides: {}}
 delegates: []

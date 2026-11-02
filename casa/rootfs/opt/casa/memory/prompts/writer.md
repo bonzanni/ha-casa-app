@@ -25,6 +25,18 @@ The user message is one JSON object:
 - `context`: a few earlier events of the same conversations, already filed,
   so you can read the new ones in context. Never file them again.
 - `entries` (condense only): the entries to condense.
+- `ledger_mode`: present, as `index`, when the ledger is too large to give
+  whole. Then each object in `ledger` comes without its `body`, and `opened`
+  holds the objects given in full.
+
+# When the ledger is an index
+
+For `ordinary` and `correction`, first answer with only
+`{"open": ["<object_id>", ...]}`, naming at most 80 objects whose full text
+you need to file the events: the entries an event may change, repeat or
+contradict. You are then given them in `opened`, and you answer as below. If
+you need none, answer as below at once. Give a `replace` only for an object
+you have in full.
 
 # How to keep the ledger
 

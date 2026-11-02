@@ -31,7 +31,6 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-import mental_models
 from rw_barrier import RwBarrier
 
 logger = logging.getLogger(__name__)
@@ -222,12 +221,6 @@ async def wipe_long_term_memory(
             )
     except AdmissionTimeout as exc:
         raise WipeAborted(f"{exc}") from None
-    # #1126: the bank's mental models went with it. Recreate Casa's declared
-    # ones in a background pass, started only now that the wipe has completed
-    # and released turn admission — never on an aborted wipe. The report is
-    # already final: the pass cannot raise here, is not awaited, and never
-    # touches it.
-    mental_models.schedule_reconcile(semantic_memory, bank, reason="wipe")
     return report
 
 

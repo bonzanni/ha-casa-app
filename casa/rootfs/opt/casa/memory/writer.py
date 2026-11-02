@@ -31,6 +31,10 @@ background task, and every blocking SQLite call runs in a thread.
 2. In the ``private`` job, each provisional event is classified
    (:mod:`memory.classify`).
 3. The model is called (:mod:`memory.model_port`), outside any transaction.
+   A ledger over :data:`WHOLE_LEDGER_MAX_TOKENS` is given as its index (every
+   object without its body); a filing run's first answer may then name up to
+   :data:`MAX_OPENED` objects to open, and a second call gives them in full,
+   from the same snapshot, so nothing is read twice.
 4. :func:`_commit` writes everything in one ``BEGIN IMMEDIATE`` transaction:
    the patches and their revisions, a disposition for every input event,
    the classification verdicts and the job's ``committed`` state, all under
@@ -88,7 +92,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from memory import capture, classify, meter, patches, pending
+from memory import capture, classify, meter, patches, pending, view
 from memory.model_port import TIMEOUT_S, ModelPort, ModelReply
 from memory.store import MemoryStore
 
@@ -124,6 +128,11 @@ REOPEN_MAX_S = 900.0
 WINDOW = 6
 #: An entry over this many tokens is condensed at night.
 CONDENSE_OVER_TOKENS = 1024
+#: Ledger tokens up to which a run is given the whole ledger; past them it is
+#: given the ledger's index and opens the entries it needs.
+WHOLE_LEDGER_MAX_TOKENS = 40_000
+#: The most objects one run may open from the index.
+MAX_OPENED = 80
 
 FAILURE_NOTICE = ("Memory couldn't file what was said at {time}; it's kept "
                   "and I'll try again tonight.")
@@ -220,6 +229,9 @@ class Input:
     base_revisions: dict[str, int] = field(default_factory=dict)
     #: ``mark_no`` of every input event that carries a mark, by ``seq``.
     mark_seen: dict[int, int] = field(default_factory=dict)
+    #: The ledger is past :data:`WHOLE_LEDGER_MAX_TOKENS`: the run is given
+    #: its index, and opens what it needs from this same snapshot.
+    index: bool = False
 
     @property
     def input_seqs(self) -> list[int]:
@@ -278,6 +290,8 @@ def assemble_input(store: MemoryStore, job_id: str, ledger: str,
     if kind == CONDENSE:
         inp.entries = [o for o in inp.objects if o["kind"] == "entry"
                        and tokens(o["body"]) > CONDENSE_OVER_TOKENS]
+    inp.index = sum(tokens(o["body"]) for o in inp.objects) \
+        > WHOLE_LEDGER_MAX_TOKENS
     return inp
 
 
@@ -334,16 +348,55 @@ def _object_view(obj: dict) -> dict:
     return view
 
 
-def render_prompt(inp: Input) -> str:
-    """The user message of a job's model call."""
-    body: dict = {"job": inp.kind,
-                  "ledger": [_object_view(o) for o in inp.objects]}
+#: What an index gives of each object: everything but the body.
+_INDEX_FIELDS = tuple(f for f in _OBJECT_FIELDS if f != "body")
+
+
+def _index_view(obj: dict) -> dict:
+    view = {f: obj[f] for f in _INDEX_FIELDS if obj.get(f) is not None}
+    view["cues"] = json.loads(obj["cues"])
+    return view
+
+
+def render_prompt(inp: Input, opened: list[dict] | None = None) -> str:
+    """The user message of a job's model call. In index mode the ledger is
+    its index, plus the objects the run opened (and, for a condense, the
+    entries to condense)."""
+    if inp.index:
+        body: dict = {"job": inp.kind, "ledger_mode": "index",
+                      "ledger": [_index_view(o) for o in inp.objects]}
+        shown = list(opened or [])
+        if inp.kind == CONDENSE:
+            shown += [o for o in inp.entries if o not in shown]
+        if opened is not None or shown:
+            body["opened"] = [_object_view(o) for o in shown]
+    else:
+        body = {"job": inp.kind,
+                "ledger": [_object_view(o) for o in inp.objects]}
     if inp.kind in _FILING:
         body["events"] = [_event_view(e) for e in inp.events]
         body["context"] = [_event_view(e) for e in inp.context]
     elif inp.kind == CONDENSE:
         body["entries"] = [o["object_id"] for o in inp.entries]
     return json.dumps(body, ensure_ascii=False, indent=1)
+
+
+def opened_objects(reply: dict, inp: Input) -> list[dict] | None:
+    """The objects an index-mode reply asks to open, at most
+    :data:`MAX_OPENED`, from the run's own snapshot; ``None`` when the reply
+    is not an open request (it is the run's answer)."""
+    ids = reply.get("open")
+    if not isinstance(ids, list) or "ops" in reply:
+        return None
+    by_id = {o["object_id"]: o for o in inp.objects}
+    out: list[dict] = []
+    for object_id in ids:
+        obj = by_id.get(object_id) if isinstance(object_id, str) else None
+        if obj is not None and obj not in out:
+            out.append(obj)
+        if len(out) == MAX_OPENED:
+            break
+    return out
 
 
 def system_prompt() -> str:
@@ -370,6 +423,20 @@ def _json_object(text: str) -> dict:
     if not isinstance(value, dict):
         raise RunFailed("the reply is not a JSON object")
     return value
+
+
+def _combined(first: ModelReply, second: ModelReply) -> ModelReply:
+    """The second reply, carrying both calls' usage and cost."""
+    usage = None
+    if first.usage is not None or second.usage is not None:
+        usage = {}
+        for key in ("input_tokens", "output_tokens"):
+            values = [u.get(key) for u in (first.usage, second.usage)
+                      if u and isinstance(u.get(key), int)]
+            usage[key] = sum(values) if values else None
+    costs = [c for c in (first.cost_usd, second.cost_usd) if c is not None]
+    return ModelReply(text=second.text, usage=usage,
+                      cost_usd=sum(costs) if costs else None)
 
 
 def parse_reply(text: str, inp: Input) -> Plan:
@@ -459,7 +526,7 @@ def _commit(store: MemoryStore, inp: Input, plan: Plan, boot_id: str) -> int:
         committed_at = _now_iso()
         patches.apply(conn, inp.ledger, ops, job_id=inp.job_id,
                       commit_no=commit_no, committed_at=committed_at)
-        lost = patches.unreachable(conn, inp.ledger)
+        lost = view.unreachable(conn, inp.ledger)
         if lost:
             raise RunFailed(f"{len(lost)} object(s) left unreachable")
         for seq in still:
@@ -649,6 +716,18 @@ class Writer:
                     self.port.complete(system=system,
                                        prompt=render_prompt(inp)),
                     MODEL_TIMEOUT_S)
+                if inp.index and kind in _FILING:
+                    # Index mode: the first answer may ask to open entries;
+                    # the second call gives them, from the same snapshot.
+                    opened = opened_objects(_json_object(reply.text), inp)
+                    if opened is not None:
+                        first = reply
+                        reply = await asyncio.wait_for(
+                            self.port.complete(
+                                system=system,
+                                prompt=render_prompt(inp, opened)),
+                            MODEL_TIMEOUT_S)
+                        reply = _combined(first, reply)
                 _hooks["after_model"]()
                 parsed = parse_reply(reply.text, inp)
                 plan.ops, plan.outcomes = parsed.ops, parsed.outcomes

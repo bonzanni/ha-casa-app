@@ -169,7 +169,6 @@
     - casa/rootfs/opt/casa/retry.py::compute_backoff_ms
   tests:
     - tests/test_agent_process.py::test_session_id_is_channel_plus_role
-    - tests/test_agent_process.py::test_telegram_channel_autorecalls_on_fresh_session
     - tests/test_retry.py
     - tests/test_agent_api_error_message.py
   related: [architecture/overview.md, architecture/agent-taxonomy.md, architecture/sdk-client-pool.md, architecture/turn-limits.md]

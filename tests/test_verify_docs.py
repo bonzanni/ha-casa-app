@@ -1786,7 +1786,7 @@ def test_engagement_finalization_is_named_when_job_registry_changes():
 # (source file, owning document, the enforcement points that document claims IN it)
 _DECLARED_OWNERSHIP = [
     ("casa/rootfs/opt/casa/delegated_memory.py", "architecture/memory.md",
-     ["delegated_recall", "topical_query"]),
+     ["delegated_recall"]),
     ("casa/rootfs/opt/casa/delegated_memory.py", "architecture/memory-lifecycle.md",
      ["retain_delegated", "role_writes_memory", "notice_from_excluded_role"]),
     ("casa/rootfs/opt/casa/delegated_memory.py", "architecture/memory-scoping.md",
@@ -1803,7 +1803,8 @@ _DECLARED_OWNERSHIP = [
      ["remove_entry"]),
     ("casa/rootfs/opt/casa/tools.py", "architecture/memory-scoping.md",
      ["_origin_clearance_markers", "inherit_origin_markers",
-      "_engagement_rebuild_fence"]),
+      "_engagement_rebuild_fence", "_fetch_executor_archive",
+      "_read_executor_archive"]),
     ("casa/rootfs/opt/casa/engagement_registry.py", "architecture/memory-scoping.md",
      ["EngagementRegistry.lower_origin_clearance",
       "EngagementRegistry.clear_context_rebuild_pending"]),

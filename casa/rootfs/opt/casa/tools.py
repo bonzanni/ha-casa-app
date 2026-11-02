@@ -49,7 +49,7 @@ from plugin_grants import (
     sanitized_env_for_resolution,
 )
 from authz_grants import CHALLENGES, GRANTS, normalize_role
-from delegated_memory import delegated_recall, retain_delegated, topical_query
+from delegated_memory import delegated_recall, retain_delegated
 from handoff import child_chain, requester_of
 from memory.eligibility import Source as _CaptureSource
 from semantic_memory import RecallUnavailable
@@ -4299,6 +4299,47 @@ async def _await_mcp_servers_settled(client) -> None:
         await asyncio.sleep(_MCP_SETTLE_POLL_S)
 
 
+async def _delegated_memory_block(cfg, parent: dict) -> str:
+    """A delegated specialist's memory: its view of the ledger the
+    delegating turn's clearance reads (#336: never the channel's), within
+    the specialist's budget, then the correction note, read in one snapshot
+    off the event loop. ``""`` when that clearance reads no ledger, and for
+    an empty ledger with nothing owed: no block is not a claim that nothing
+    is known. When the store cannot be read the specialist is told so, so it
+    never reports that Casa lacks information."""
+    from memory import capture
+    from memory import note as memory_note
+    from memory import view as memory_view
+    from sensitivity import clearance_for_origin
+    route, clearance = _origin_clearance_markers(parent)
+    clearance = clearance_for_origin(
+        route, clearance, str(parent.get("channel", "")))
+    if memory_view.ledger_for(clearance) is None:
+        return ""
+    unavailable = (
+        f'<memory_context agent="{cfg.role}" status="unavailable">\n'
+        "Long-term memory could not be checked for this task. Do not "
+        "conclude Casa lacks information on any topic — if asked, say "
+        "memory could not be checked.\n"
+        "</memory_context>\n\n"
+    )
+    store = capture.active_store()
+    if store is None or not store.available:
+        return unavailable
+    try:
+        view, note = await asyncio.to_thread(
+            memory_note.with_view, store, clearance=clearance,
+            budget=cfg.memory.token_budget,
+        )
+    except Exception:  # noqa: BLE001 — the run proceeds without memory
+        logger.warning("memory view not served to %s", cfg.role,
+                       exc_info=True)
+        return unavailable
+    parts = [p for p in ((view.text if view is not None else ""), note.text)
+             if p]
+    return "\n\n".join(parts) + "\n\n" if parts else ""
+
+
 async def _run_delegated_agent(
     cfg, task_text: str, context_text: str, resolution=None,
     output_format=None, tool_counts: dict[str, int] | None = None,
@@ -4410,78 +4451,15 @@ async def _run_delegated_agent(
     else:
         body_tail = f"Task: {task_text}"
 
-    # Specialist memory read on the shared `casa` bank, at the PARENT context's
-    # read-clearance (design §3, plan 3). Opt-in via cfg.memory.token_budget > 0.
-    # #1282: a stored-call turn recalls NOTHING, keyed exactly as its retain
-    # skip below — the pinned turn's prompt is Casa's instruction only.
+    # A memory role's specialist gets its view of the
+    # ledger its PARENT turn's clearance reads, within its own budget, and
+    # the correction note, both read in one snapshot. Opt-in via
+    # cfg.memory.token_budget > 0. #1282: a stored-call turn reads NOTHING,
+    # keyed exactly as its capture skip — the pinned turn's prompt is Casa's
+    # instruction only.
     memory_block = ""
     if cfg.memory.token_budget > 0 and not parent.get("stored_call"):
-        unavailable_note = (
-            f'<memory_context agent="{cfg.role}" status="unavailable">\n'
-            "Long-term memory could not be checked for this task "
-            "(backend unavailable). Do not conclude Casa lacks "
-            "information on any topic — if asked, say memory could "
-            "not be checked.\n"
-            "</memory_context>\n\n"
-        )
-        sem = getattr(agent_mod, "active_semantic_memory", None)
-        _parent_route, _parent_clearance = _origin_clearance_markers(parent)
-        if not (task_text or "").strip():
-            # #201: nothing to search FOR, which is not the same as a memory
-            # that could not be checked. Stay silent — no note, no recall.
-            # Ordered BEFORE the `sem is None` test (Sol + Terra, Important):
-            # the other way round, a blank task with no backend wired claimed
-            # "memory could not be checked for this task", which is a statement
-            # about memory health that this turn has no basis to make.
-            digest = ""
-        elif sem is None:
-            # No backend wired: same unavailability as a failed check — a
-            # silent cold turn reads as "no memories exist".
-            memory_block = unavailable_note
-        else:
-            try:
-                digest = await delegated_recall(
-                    # #1351: a short topical query, not the whole brief — the
-                    # reranker's cost grows with the query's length.
-                    sem, query=topical_query(task_text),
-                    origin_channel=str(parent.get("channel", "")),
-                    max_tokens=cfg.memory.token_budget,
-                    # #205: name the path. Left unset this fell to the generic
-                    # "delegated" default, so a specialist's memory read was
-                    # indistinguishable in telemetry from any other delegated
-                    # recall and shared that path's breaker.
-                    path="specialist_archive",
-                    # #336 (Sol, review r3): a delegated specialist reads at
-                    # the DELEGATING turn's clearance, not the channel's — a
-                    # non-operator sender must not reach private memory by
-                    # having a specialist fetch it. Resolved through the
-                    # shared helper so a delegation issued from INSIDE an
-                    # engagement (no ambient origin) inherits that
-                    # engagement's clearance rather than the channel default.
-                    origin_route=_parent_route,
-                    origin_clearance=_parent_clearance,
-                )
-            except RecallUnavailable:
-                # Delegated turn proceeds cold, but the specialist is TOLD the
-                # check failed — a silent cold turn reads as "no memories
-                # exist" and the specialist would claim absence to the user.
-                digest = ""
-                memory_block = unavailable_note
-            if digest:
-                # #581: the slice a specialist is handed is filtered at the
-                # DELEGATING turn's clearance, so a topic missing from it may
-                # simply sit above that floor — the block says so rather than
-                # letting the specialist report absence to the caller. The
-                # EMPTY case stays silent (no block at all): absence of a
-                # block is not a claim of absence.
-                from recall_renderer import READABLE_SLICE_PROMPT_LINE
-                memory_block = (
-                    f'<memory_context agent="{cfg.role}">\n'
-                    f"{READABLE_SLICE_PROMPT_LINE}\n"
-                    f"{digest}\n"
-                    f"</memory_context>\n\n"
-                )
-
+        memory_block = await _delegated_memory_block(cfg, parent)
     prompt = (
         f"{delegation_context}\n\n{memory_block}"
         f"{_result_contract_block(output_format)}{body_tail}"
@@ -10271,83 +10249,84 @@ def _duplicate_task_refusal(origin: dict, task_text: str) -> dict | None:
 
 
 async def _fetch_executor_archive(
-    *, task: str, origin_channel: str, token_budget: int,
-    origin_route: str | None = None, origin_clearance: str | None = None,
-    epoch_tag: str | None = None,
+    *, role: str, procedural_epoch: str, origin_channel: str,
+    token_budget: int, origin_route: str | None = None,
+    origin_clearance: str | None = None,
 ) -> str:
-    """Read prior-engagement "lessons" as a SEMANTIC recall against the shared
-    ``casa`` bank, keyed on the current ``task`` and filtered to the originating
-    engagement's read-clearance (design §3, plan 3). Returns the digest under a
-    recognizable header, or "" when the recall is empty or memory could not
-    be checked (RecallUnavailable → run cold; never a fabricated header).
+    """Prior engagements' lessons for an executor launch: the
+    newest ``engagement_summaries`` of *role* stamped with this launch's own
+    *procedural_epoch* (#215, INV-MEM-015), at a tier the originating turn's
+    clearance can read (#336), within *token_budget*, read once, off the
+    event loop. Returns them under a recognizable header, or "" when there
+    are none or memory is unavailable.
 
-    #201 — why collapsing unavailable into empty is CORRECT here, and what
-    would make it wrong. Elsewhere the distinction is load-bearing: an agent
-    that says "I have no record of that" because the store timed out is lying
-    to the operator. This path never says anything. The return value lands in
-    the executor prompt's ``{executor_memory}`` slot, so "" produces no memory
-    block — silence, not a claim of absence. Adding a third state here would
-    thread a sentinel through two call sites to change nothing.
+    #201 — why collapsing unavailable into empty is CORRECT here: the return
+    value lands in the executor prompt's ``{executor_memory}`` slot, so ""
+    produces no memory block — silence, not a claim of absence. That depends
+    on the prompt template staying silent for the empty case; pinned for the
+    shipped default templates by tests/test_recall_absence_invariant.py.
 
-    That reasoning depends entirely on the prompt template staying silent for
-    the empty case. If an executor prompt ever gains text like "No prior
-    engagements found", running cold starts asserting absence and THIS function
-    needs a real third state. (A blank ``task`` is a separate matter and is
-    guarded below: it is an invalid call, not an unavailable backend, and
-    ``delegated_recall`` rejects it outright.) Pinned for the shipped default
-    templates by tests/test_recall_absence_invariant.py."""
-    import agent as agent_mod
-    sem = getattr(agent_mod, "active_semantic_memory", None)
-    if sem is None:
+    A record with no epoch (created before epochs were persisted) matches
+    nothing: a lesson that cannot prove it was learned under the current
+    doctrine is never injected."""
+    from memory import capture
+    from sensitivity import clearance_for_origin
+    store = capture.active_store()
+    if store is None or not store.available or not procedural_epoch:
         return ""
-    # #201: a blank task has nothing to search FOR. Skip the recall rather than
-    # asking for one — `delegated_recall` now rejects a blank query outright,
-    # because returning "" for it would claim a search that never ran. Here the
-    # empty result is safe (it renders as no memory block at all), but the
-    # helper cannot know that, so the caller states it.
-    if not (task or "").strip():
-        return ""
-    # #215: scope the injected block to THIS launch's doctrine epoch —
-    # lessons written under another (or no recorded) epoch are dropped
-    # client-side before rendering. Injected procedure must agree with the
-    # doctrine injected beside it; query_engager (Q&A, not injected
-    # procedure) is deliberately unfiltered.
-    hit_filter = None
-    if epoch_tag is not None:
-        from executor_epoch import make_archive_epoch_filter
-        hit_filter = make_archive_epoch_filter(epoch_tag)
+    clearance = clearance_for_origin(
+        origin_route, origin_clearance, origin_channel)
     try:
-        digest = await delegated_recall(
-            sem, query=task, origin_channel=origin_channel, max_tokens=token_budget,
-            path="executor_archive",
-            # #336 (Terra r2): the archive block is injected into the
-            # executor's prompt at launch, so it must be filtered at the
-            # ORIGINATING turn's clearance — a non-operator-launched executor
-            # must not be handed private lessons in its system prompt.
-            origin_route=origin_route, origin_clearance=origin_clearance,
-            hit_filter=hit_filter,
-        )
-    except RecallUnavailable:
+        texts = await asyncio.to_thread(
+            _read_executor_archive, store, role, procedural_epoch, clearance,
+            token_budget)
+    except Exception:  # noqa: BLE001 — the launch runs without lessons
+        logger.warning("executor archive not read for %s", role,
+                       exc_info=True)
         return ""
-    if not digest:
+    if not texts:
         return ""
     # #215: one subordination line — lessons are observations from prior
     # engagements; the versioned doctrine files prevail wherever they
     # disagree. Covers the same-epoch case where a lesson is merely wrong.
     #
-    # #581 (Sol, design round 1): the block is a clearance-filtered AND
-    # epoch-filtered slice, so an executor reading it must not conclude that a
-    # topic it does not mention is a topic Casa has nothing on. The empty case
-    # above still returns "" — that renders as no block at all, which is
-    # silence rather than a claim (see this function's docstring).
+    # #581: the block is a clearance-filtered AND epoch-filtered slice, so an
+    # executor reading it must not conclude that a topic it does not mention
+    # is a topic Casa has nothing on.
     from recall_renderer import READABLE_SLICE_PROMPT_LINE
     return (
         "## Prior engagements (lessons learned)\n"
         "These are observations from prior engagements. Where they disagree "
         "with your doctrine files, the doctrine prevails.\n"
         f"{READABLE_SLICE_PROMPT_LINE}\n"
-        f"{digest}"
+        + "\n".join(texts)
     )
+
+
+def _read_executor_archive(store, role: str, procedural_epoch: str,
+                           clearance: str, token_budget: int) -> list[str]:
+    """The summaries an executor launch is given, oldest first: the newest
+    of *role* at *procedural_epoch* readable at *clearance*, while they fit
+    *token_budget* (four characters a token). Blocking."""
+    from sensitivity import readable_tiers
+    tiers = tuple(readable_tiers(clearance))
+    if not tiers:
+        return []
+    with store.transaction(busy_timeout=1.0) as conn:
+        rows = conn.execute(
+            "SELECT at, text FROM engagement_summaries WHERE role = ? "
+            "AND procedural_epoch = ? AND tier IN "
+            f"({', '.join('?' for _ in tiers)}) ORDER BY at DESC, id DESC",
+            (role, procedural_epoch, *tiers)).fetchall()
+    kept: list[str] = []
+    used = 0
+    for at, text in rows:
+        line = f"- [{at[:10]}] {text}"
+        if used + len(line) // 4 > token_budget:
+            break
+        kept.append(line)
+        used += len(line) // 4
+    return list(reversed(kept))
 
 
 @tool(
@@ -10801,7 +10780,7 @@ async def _engage_executor_impl(args: dict, _spawn_holder: dict) -> dict:
         # archive fetch (whose filter needs it) and persisted on the record
         # so finalize stamps the summary with the epoch the engagement
         # actually ran under, not the finalize-time definition.
-        from executor_epoch import compute_procedural_epoch, epoch_application_tag
+        from executor_epoch import compute_procedural_epoch
         procedural_epoch = compute_procedural_epoch(
             defn, prompt_template=prompt_template,
         )
@@ -10815,9 +10794,9 @@ async def _engage_executor_impl(args: dict, _spawn_holder: dict) -> dict:
             # never the launch.
             logger.warning("set_procedural_epoch failed: %s", exc)
 
-        # Semantic-recall memory injection (design §3, plan 3): when the executor
-        # opts in (defn.memory.enabled=True, off by default), fetch prior-engagement
-        # lessons from the shared `casa` bank at the origin channel's read-clearance.
+        # Executor archive: when the executor opts in
+        # (defn.memory.enabled=True, off by default), read prior engagements'
+        # summaries for its type and epoch at the origin's read-clearance.
         #
         # #583: NOT for claude_code, which fetches its own copy in
         # ``ClaudeCodeDriver.start`` (drivers/claude_code_driver.py) for the
@@ -10834,12 +10813,11 @@ async def _engage_executor_impl(args: dict, _spawn_holder: dict) -> dict:
         executor_memory_block = ""
         if defn.memory.enabled and defn.driver != "claude_code":
             executor_memory_block = await _fetch_executor_archive(
-                task=task_text,
+                role=executor_type, procedural_epoch=procedural_epoch,
                 origin_channel=origin.get("channel", "telegram"),
                 token_budget=defn.memory.token_budget,
                 origin_route=origin.get("_origin_route"),
                 origin_clearance=origin.get("_origin_clearance"),
-                epoch_tag=epoch_application_tag(executor_type, procedural_epoch),
             )
 
         # W3/Sol r5-B8: the {task} value reaches BOTH driver paths through this ONE

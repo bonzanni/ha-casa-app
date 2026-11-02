@@ -68,6 +68,10 @@ class ExplanationRecord:
     denials: tuple[str, ...]
     system_prompt: str | None = None
     memory_text: str | None = None
+    #: The ledger the turn's session reads and the ``commit_no`` its frozen
+    #: view was rendered at; ``None`` when it reads none.
+    memory_ledger: str | None = None
+    memory_base_commit_no: int | None = None
 
 
 class ExplanationStore:

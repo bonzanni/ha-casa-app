@@ -8,7 +8,6 @@ from semantic_memory import (
     NoOpSemanticMemory,
     RecallUnavailable,
     SemanticMemory,
-    render_mental_models,
     render_recall,
 )
 
@@ -41,13 +40,6 @@ async def test_noop_recall_raises_unavailable() -> None:
     assert ei.value.reason == "not_configured"
 
 
-async def test_noop_profile_returns_empty_string() -> None:
-    # The overlay is optional enrichment (nothing claims absence from it),
-    # so the NoOp profile stays a silent ''.
-    mem = NoOpSemanticMemory()
-    assert await mem.profile("casa-assistant") == ""
-
-
 def test_recall_unavailable_is_a_typed_exception() -> None:
     """Three-outcome contract: UNAVAILABLE is a typed exception on the seam,
     never collapsed into the zero-hit '' return."""
@@ -55,33 +47,6 @@ def test_recall_unavailable_is_a_typed_exception() -> None:
     assert isinstance(exc, Exception)
     assert exc.reason == "timeout"
     assert "timeout" in str(exc)
-
-
-def test_render_mental_models_empty() -> None:
-    assert render_mental_models({"mental_models": []}) == ""
-    assert render_mental_models({}) == ""
-
-
-_REFRESHED = "2026-09-30T05:00:00Z"
-
-
-def test_render_mental_models_formats_entries() -> None:
-    resp = {"items": [
-        {"name": "Operator profile", "content": "Nicola: terse, prefers metric units.",
-         "last_refreshed_at": _REFRESHED},
-        {"name": "Open commitments", "content": "Guest mode disables personal data.",
-         "last_refreshed_at": _REFRESHED},
-    ]}
-    out = render_mental_models(resp)
-    assert "terse" in out
-    assert "Guest mode" in out
-    assert "None" not in out
-
-
-def test_render_mental_models_tolerates_alt_keys() -> None:
-    for key in ("items", "models", "mental_models"):
-        assert "terse" in render_mental_models(
-            {key: [{"content": "terse", "last_refreshed_at": _REFRESHED}]})
 
 
 def test_render_recall_empty() -> None:

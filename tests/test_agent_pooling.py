@@ -609,13 +609,18 @@ async def test_facade_schema_refresh_reconnects_only_butler_with_new_config(
         await asyncio.gather(butler.aclose(), assistant.aclose())
 
 
-async def test_options_fresh_vs_resumed_memory_blocks(agent_fixture,
-                                                     scripted_factory):
-    """Fresh connect carries <peer_overlay>; warm turns never rebuild options."""
-    agent, send_turn = agent_fixture          # FakeSemanticMemory(overlay="OV")
+async def test_options_fresh_vs_resumed_memory_blocks(
+        agent_fixture, scripted_factory, tmp_path, monkeypatch):
+    """A fresh connect carries the session's memory view; warm turns never
+    rebuild options, so a later commit does not reach the warm client."""
+    from memory_serving_support import add, fact, ledger_store, wire
+    store = ledger_store(tmp_path, [fact("thermostat", "OV-20C")])
+    wire(monkeypatch, store)
+    agent, send_turn = agent_fixture
     await send_turn("hello")
     opts0 = scripted_factory.clients[0].options
-    assert "OV" in opts0.system_prompt
+    assert "<memory>" in opts0.system_prompt and "OV-20C" in opts0.system_prompt
+    add(store, [fact("boiler", "OV-LATER")])
     await send_turn("again")
     assert scripted_factory.constructed == 1  # no second options build
 

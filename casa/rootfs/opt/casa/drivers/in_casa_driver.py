@@ -165,6 +165,37 @@ class _EngagementCapture:
             session_id=sid if isinstance(sid, str) and sid else None)
 
 
+async def _engagement_memory_note(engagement: EngagementRecord) -> str:
+    """The correction note for one engagement turn of a memory-role
+    specialist: every correction pending in the ledger the
+    engagement's read clearance reads, the operator's own words, read off
+    the event loop in this turn's snapshot. ``""`` for executors, plugin
+    jobs, a specialist served no memory, or no store. A failure is logged
+    and never fails the turn."""
+    from delegated_memory import role_writes_memory
+    from memory import capture
+    from memory import note as memory_note
+    from sensitivity import clearance_for_origin
+    if (getattr(engagement, "kind", "") != "specialist"
+            or not role_writes_memory(engagement.role_or_type)):
+        return ""
+    store = capture.active_store()
+    if store is None or not store.available:
+        return ""
+    origin = getattr(engagement, "origin", None) or {}
+    try:
+        note = await asyncio.to_thread(
+            memory_note.for_turn, store,
+            clearance=clearance_for_origin(
+                origin.get("_origin_route"), origin.get("_origin_clearance"),
+                str(origin.get("channel", ""))))
+    except Exception:  # noqa: BLE001 — the turn runs without the note
+        logger.warning("memory correction note not read in engagement %s",
+                       engagement.id[:8], exc_info=True)
+        return ""
+    return note.text
+
+
 def _session_id_from_message(sdk_msg: Any) -> str | None:
     """Extract the CLI session id from an SDK message (v0.69.11).
 
@@ -1320,6 +1351,10 @@ class InCasaDriver(DriverProtocol):
                     admitted = self._admitted_text(engagement.id, inbound_token)
                     if admitted is not None:
                         await eng_capture.operator(admitted, tg_message_id)
+                # The corrections this memory-role specialist
+                # may not reflect, read here for the same reason, and put on
+                # the prompt below without awaiting.
+                memory_note = await _engagement_memory_note(engagement)
                 # #690 — the in_casa half of INV-ENG-009, and the ONLY point
                 # at which it can be made. Everything from here to
                 # ``client.query`` below is synchronous, so no other coroutine
@@ -1407,6 +1442,8 @@ class InCasaDriver(DriverProtocol):
                 # and the client never accepted anything.
                 if inbound_token is not None:
                     self._accept_inbound(engagement.id, inbound_token)
+                if memory_note:
+                    prompt = f"{memory_note}\n\n{prompt}"
                 await client.query(prompt)
                 async for sdk_msg in client.receive_response():
                     await self._observe_session_id(engagement, sdk_msg)

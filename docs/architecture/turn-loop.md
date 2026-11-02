@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-10-07
+last_reviewed: 2026-11-02
 ---
 
 # The turn loop
@@ -51,14 +51,14 @@ is [`output-boundary.md`](output-boundary.md) (INV-OUT-006 in
 [`output-scope-properties.md`](output-scope-properties.md) for the three decisions that
 used to be inline checks here and in `send_message`).
 
-**The origin snapshot records the turn's question, which is usually its text.** The prompt,
-the options and the recall query are built from the message's own text, except that a fresh
-session no person opened (no trusted ingress identity) recalls with one fixed short query
-instead ([`memory.md`](memory.md)); the query sent
-puts `compose_turn_preamble` ahead of it — the `<current_time>` envelope, then, on a Telegram
-turn that has any, one `<casa_notes>` block of Casa's per-turn notes (the drained front-desk
-lines, then a reply's note: [`specialist-desk.md`](specialist-desk.md); then a captioned
-file's note: [`inbound-files.md`](inbound-files.md)), which retention
+**The origin snapshot records the turn's question, which is usually its text.** The prompt
+is built from the message's own text, and the options from the session's frozen memory view
+([`memory-serving.md`](memory-serving.md)); the query sent
+puts `compose_turn_preamble` ahead of it — the `<current_time>` envelope, then, on a turn
+that has any, one `<casa_notes>` block of Casa's per-turn notes (on Telegram the drained
+front-desk lines, then a reply's note: [`specialist-desk.md`](specialist-desk.md); then a
+captioned file's note: [`inbound-files.md`](inbound-files.md); on every turn of a memory
+role, the correction note), which retention
 strips with the envelope (INV-MEM-022 in [`memory-labelling.md`](memory-labelling.md)). The origin's
 `user_text` normally holds that same text, and it is what a delegation launched from the turn
 records and quotes back. The one exception is a turn `handle_message` synthesized from a
@@ -71,9 +71,9 @@ in [`delegation-announcements.md`](delegation-announcements.md)). No other calle
 **INV-TURN-004**: A memory read that raises does not fail the turn. It is logged and the turn proceeds with an empty memory block.
 
 What it does not cover: nothing downstream is told. The unavailable-versus-empty distinction
-is flattened to omission at this point — observable in logs and the recall breaker, not in
-the prompt — and a successfully-read profile overlay may still be present beside the missing
-recall block.
+is flattened to omission at this point — observable in logs, not in the prompt — and the
+memory view and the correction note fail independently, so either may be present beside the
+other's absence.
 
 **INV-TURN-005**: Cancellation is never retried and is re-raised after a bounded interrupt-and-drain cleanup; retry covers exactly the three classified transient kinds — timeout, rate limit, and SDK error — with exponential backoff, honouring a server-supplied retry hint when present.
 
@@ -318,7 +318,6 @@ listed in [`architecture/sdk-client-pool.md`](sdk-client-pool.md).
 
 **Tests**
 - `tests/test_agent_process.py::test_session_id_is_channel_plus_role`
-- `tests/test_agent_process.py::test_telegram_channel_autorecalls_on_fresh_session`
 - `tests/test_retry.py`
 - `tests/test_agent_api_error_message.py`
 

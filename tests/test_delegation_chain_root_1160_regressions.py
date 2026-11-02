@@ -147,11 +147,8 @@ async def test_narration_turn_still_sees_the_whole_notice(tmp_path):
     assert len(_CapturingClient.prompts) == 1
     assert _CapturingClient.prompts[0].endswith(body)
     assert built == [body]
-    # #1336: no person typed the notice (the synthesized turn carries no
-    # trusted origin), so its fresh-session recall searches with the fixed
-    # query, not the notice; the prompt and options still see it whole.
-    assert [c["query"] for c in sem.recall_calls] == [
-        agent_mod._UNAUTHORED_RECALL_QUERY]
+    # No turn recalls on its own: memory reaches a session as its view.
+    assert sem.recall_calls == []
 
 
 _SHARED_SIG_SEED = "invoke-1160-seed"

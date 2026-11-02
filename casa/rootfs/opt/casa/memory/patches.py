@@ -23,9 +23,9 @@ not an object of that ledger is refused, as is any malformed operation
 (:class:`PatchError`), which fails the job. Whether an operation is right is
 the model's judgement; this module checks only that it is well-formed.
 
-:func:`unreachable` is the commit's reachability check: every current object
-must hang from current parents of the same ledger, each a level above it
-(entry, then group, then topic), or sit at the top.
+The commit's reachability check is :func:`memory.view.unreachable`: every
+current object must hang from current parents of the same ledger, each a
+level above it (entry, then group, then topic), or sit at the top.
 """
 from __future__ import annotations
 
@@ -47,7 +47,6 @@ _REPLACE_FIELDS = ("entry_kind", "errand_state", "topic", "subject", "body",
                    "line")
 _COLUMNS = ("kind", "entry_kind", "errand_state", "topic", "subject", "body",
             "line", "cues", "parent", "origin", "source_seqs", "status")
-_LEVEL = {"entry": 0, "group": 1, "topic": 2}
 
 
 class PatchError(ValueError):
@@ -242,22 +241,3 @@ def apply(conn: sqlite3.Connection, ledger: str, ops: list, *, job_id: str,
             led.write(obj, name, reason)
     return led.touched
 
-
-def unreachable(conn: sqlite3.Connection, ledger: str) -> list[str]:
-    """Current objects of *ledger* that do not hang from current parents of
-    the same ledger, each a level above, up to the top."""
-    rows = {r[0]: (r[1], r[2], r[3]) for r in conn.execute(
-        "SELECT object_id, kind, parent, status FROM objects "
-        "WHERE ledger = ?", (ledger,))}
-    bad = []
-    for object_id, (kind, parent, status) in rows.items():
-        if status != "current":
-            continue
-        level = _LEVEL[kind]
-        while parent is not None:
-            up = rows.get(parent)
-            if up is None or up[2] != "current" or _LEVEL[up[0]] <= level:
-                bad.append(object_id)
-                break
-            level, parent = _LEVEL[up[0]], up[1]
-    return sorted(bad)

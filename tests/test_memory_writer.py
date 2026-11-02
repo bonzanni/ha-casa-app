@@ -78,6 +78,53 @@ async def test_the_prompt_carries_the_events_the_ledger_and_context(tmp_path):
     assert "Keep everything the operator states" in port.systems[0]
 
 
+async def test_past_the_whole_ledger_limit_a_run_opens_what_it_needs(
+        tmp_path, monkeypatch):
+    """A ledger over :data:`writer.WHOLE_LEDGER_MAX_TOKENS` is given as
+    its index, bodies left out; the run's first answer names what to open
+    (at most :data:`writer.MAX_OPENED`), and a second call gives those in
+    full from the same snapshot before the run answers."""
+    store = new_store(tmp_path)
+    for text in ("FIRST-BODY", "SECOND-BODY", "THIRD-BODY"):
+        seed(store, text)
+    await run_new(new_writer(store, ScriptedPort(add_each)))
+    ids = [r["object_id"] for r in rows(
+        store, "SELECT object_id FROM objects ORDER BY rowid")]
+    monkeypatch.setattr(writer, "WHOLE_LEDGER_MAX_TOKENS", 1)
+    monkeypatch.setattr(writer, "MAX_OPENED", 2)
+    e = seed(store, "the third one changed")
+
+    def opened(prompt):
+        assert [o["body"] for o in prompt["opened"]] == [
+            "FIRST-BODY", "SECOND-BODY"]
+        return reply({e: "patched"}, [{"op": "replace", "object_id": ids[1],
+                                       "body": "NEW-BODY",
+                                       "source_seqs": [e]}])
+
+    port = ScriptedPort([json.dumps({"open": [ids[0], "unknown", ids[1],
+                                              ids[2]]}), opened])
+    _, outcome = await run_new(new_writer(store, port))
+    assert outcome == writer.COMMITTED
+    first, second = port.prompts
+    assert first["ledger_mode"] == "index" and "opened" not in first
+    assert all("body" not in o for o in first["ledger"])
+    assert len(first["ledger"]) == 3 and first["events"] == second["events"]
+    assert dispositions(store, e) == [(e, "private", "patched", 2)]
+    assert rows(store, "SELECT body FROM objects WHERE object_id = ?",
+                ids[1])[0]["body"] == "NEW-BODY"
+
+
+async def test_an_index_run_may_answer_at_once(tmp_path, monkeypatch):
+    store = new_store(tmp_path)
+    seed(store, "kept")
+    await run_new(new_writer(store, ScriptedPort(add_each)))
+    monkeypatch.setattr(writer, "WHOLE_LEDGER_MAX_TOKENS", 1)
+    seed(store, "nothing new")
+    port = ScriptedPort([no_change_all])
+    assert (await run_new(new_writer(store, port)))[1] == writer.COMMITTED
+    assert len(port.prompts) == 1
+
+
 async def test_an_empty_run_commits_with_no_disposition(tmp_path):
     store = new_store(tmp_path)
     port = ScriptedPort([])

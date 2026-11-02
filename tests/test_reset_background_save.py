@@ -297,8 +297,6 @@ async def test_a_memory_clear_right_after_the_reset_leaves_nothing_behind(
     monkeypatch.setattr(session_gate, "TURN_ADMISSION", session_gate.TurnAdmission())
     fence = mw.RetainFence()
     monkeypatch.setattr(mw, "FENCE", fence)
-    monkeypatch.setattr(mw.mental_models, "schedule_reconcile",
-                        lambda *a, **k: None)
     clear_done = asyncio.Event()
     real_retain = session_saver.retain_cold_session
 
@@ -334,8 +332,6 @@ async def test_a_memory_clear_during_the_background_save_waits_for_it(
     monkeypatch.setattr(session_gate, "TURN_ADMISSION", session_gate.TurnAdmission())
     fence = mw.RetainFence()
     monkeypatch.setattr(mw, "FENCE", fence)
-    monkeypatch.setattr(mw.mental_models, "schedule_reconcile",
-                        lambda *a, **k: None)
 
     await _register(env.reg)
     sem = _Memory()

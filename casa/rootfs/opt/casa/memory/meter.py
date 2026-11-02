@@ -4,7 +4,9 @@
 writes the result to ``meta`` under ``meter`` after every writer commit and
 failure, for the status surfaces to read. Per maintained ledger it counts the
 current entries and their tokens, the objects left unreachable (which must be
-0), the twenty largest entries (ids and sizes only) and the week's growth,
+0), each role's view of it (whole or index, its size, and whether even the
+coarsest index level overflows the role's budget), the twenty largest entries
+(ids and sizes only) and the week's growth,
 and from the one pending view the pending events (count and the oldest), the
 pending corrections and the failed jobs. Across the store it counts the
 events left provisional, the spool, each open session's ``base_commit_no``
@@ -19,11 +21,40 @@ import json
 import os
 from datetime import datetime, timedelta, timezone
 
-from memory import capture, patches, pending
+from memory import capture, pending, view
 from memory.store import MemoryStore
 
 META_KEY = "meter"
 TOP = 20
+
+#: The served-view budget (``memory.token_budget``) of every role that is
+#: served a view, set by Casa at boot; the meter reports each role's mode
+#: and whether its view overflows, and the nightly pass regroups a ledger
+#: that overflows any of them.
+_role_budgets: dict[str, int] = {}
+
+
+def configure(role_budgets: dict[str, int]) -> None:
+    """Record the served-view budget of every role (those above 0 count)."""
+    _role_budgets.clear()
+    _role_budgets.update({role: int(b) for role, b in role_budgets.items()
+                          if isinstance(b, int) and b > 0})
+
+
+def role_budgets() -> dict[str, int]:
+    return dict(_role_budgets)
+
+
+def views(conn, ledger: str) -> dict[str, dict]:
+    """Per role, the mode its view of *ledger* is in now, its size, and
+    whether even the coarsest level overflows its budget."""
+    objs = view.objects_as_of(conn, ledger, pending.current_commit_no(conn))
+    out = {}
+    for role, budget in sorted(_role_budgets.items()):
+        comp = view.compose(objs, budget)
+        out[role] = {"budget": budget, "mode": comp.mode,
+                     "tokens": comp.chars // 4, "overflow": comp.overflow}
+    return out
 
 
 def _tokens(text: str | None) -> int:
@@ -54,10 +85,13 @@ def measure(store: MemoryStore) -> dict:
                 "FROM revisions WHERE ledger = ? AND op = 'add' "
                 "AND kind = 'entry' AND committed_at >= ?",
                 (ledger, week_ago)).fetchone()
+            roles = views(conn, ledger)
             ledgers[ledger] = {
                 "entries": len(entries),
                 "tokens": sum(t for _, t in entries),
-                "unreachable": len(patches.unreachable(conn, ledger)),
+                "unreachable": len(view.unreachable(conn, ledger)),
+                "roles": roles,
+                "overflow": any(r["overflow"] for r in roles.values()),
                 "largest": [{"object_id": o, "tokens": t} for o, t in sorted(
                     entries, key=lambda e: -e[1])[:TOP]],
                 "week_added": {"entries": added[0], "tokens": added[1]},

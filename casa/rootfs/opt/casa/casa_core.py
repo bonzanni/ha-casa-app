@@ -4187,17 +4187,6 @@ async def main() -> None:
     # 2. Long-term semantic memory (spec §5/§4.2): the only memory path —
     # Hindsight or noop (resolve_semantic_memory_choice).
     semantic_memory = build_semantic_memory(resolve_semantic_memory_choice(dict(os.environ)))
-    # #1126: reconcile Casa's declared mental models in the background. Boot
-    # never waits on it; if the memory server is not up yet the pass logs and
-    # the next boot (or wipe) runs another. Shutdown drains it before the
-    # memory client closes.
-    from semantic_memory import NoOpSemanticMemory as _NoOpSemanticMemory
-    if not isinstance(semantic_memory, _NoOpSemanticMemory):
-        import mental_models as _mental_models
-        from hindsight_ids import bank_id as _bank_id
-        _mental_models.schedule_reconcile(
-            semantic_memory, _bank_id("casa"), reason="boot",
-        )
 
     # 2a. The memory store: FTS5 check and schema migration. A failure leaves
     # the file untouched and memory unavailable; Casa boots either way. A
@@ -4528,6 +4517,12 @@ async def main() -> None:
     )
 
     specialist_configs = specialist_registry.all_configs()
+    # The memory meter reports each served role's view of the ledger, and
+    # the nightly pass regroups a ledger that overflows one of them.
+    from memory import meter as memory_meter
+    memory_meter.configure({
+        role: getattr(getattr(cfg, "memory", None), "token_budget", 0)
+        for role, cfg in {**role_configs, **specialist_configs}.items()})
     from agent_registry import AgentRegistry
     agent_registry = AgentRegistry.build(
         residents=role_configs, specialists=specialist_configs,
@@ -6325,12 +6320,6 @@ async def _shutdown_cleanup(
         await job_registry.close()
     except Exception:  # noqa: BLE001 — shutdown must complete
         logger.warning("job registry close failed", exc_info=True)
-
-    # #1126: cancel and await every mental-model reconcile pass (boot's, and
-    # any a wipe drained above started) so none is mid-request when the memory
-    # client closes; new passes are refused from here on.
-    import mental_models as _mental_models_shutdown
-    await _mental_models_shutdown.drain_reconcile_tasks()
 
     # Close the shared Hindsight client session (L32) so aiohttp does not
     # warn about an unclosed session; no-op for NoOp/other backends.

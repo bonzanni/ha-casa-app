@@ -198,13 +198,3 @@ async def test_options_allowed_tools_superset_of_config(tmp_path, role, channel,
     assert (set(_real_allowed(role)) - {"Skill"}) <= set(opts.allowed_tools)
     assert "Skill" not in opts.allowed_tools
     assert opts.skills == "all"
-
-
-async def test_fresh_telegram_recall_uses_full_private_clearance(tmp_path):
-    """Clearance-tag correctness on the captured recall: a fresh telegram turn
-    (private clearance) recalls across all four tiers."""
-    agent, sem = _agent(tmp_path, "assistant")
-    with patch("sdk_client_pool._default_make_client", _CaptureClient):
-        await agent._process(_msg("telegram", "clr"))
-    assert len(sem.recall_calls) == 1
-    assert set(sem.recall_calls[0]["tags"]) == {"private", "family", "friends", "public"}

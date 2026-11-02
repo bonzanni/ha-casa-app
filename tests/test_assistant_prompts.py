@@ -1234,13 +1234,20 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # ("Alex: …") only when relay_answer cannot post it. ONE `replace` on
 # `assistant:text`, that paragraph; the eight other carriers byte-identical. No
 # retention claim.
+# MOVED (memory serving), the three `assistant:*` carriers. The Core doctrine
+# gains three paragraphs, one block: his health, money and family are his to
+# bring up; a current value in memory is used without asking him to confirm
+# it; a day's saved conversation can be read with `browse_memory_day`.
+# Measured with `difflib` over base-vs-new compiled text, word by word:
+# exactly ONE `insert` on each `assistant:*` carrier, that block; the six
+# other carriers byte-identical. No retention claim.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
-        "fe02798ee4a6221d05e9b65d31ff11181bb4116faa688abb89b11ef2171a1a71",
+        "8dba7774800013792a6eaeba6fdbec283839f3d5d326d3b7ad07f73f27ff3973",
     "assistant:text":
-        "f760b6ba9d9b46ef14752028ebdb74e063c7cb38fa6b58ca5327c50e4c007d64",
+        "be273da3b6dba9ed8b32cc20612703b1e1b24141aa2562e629e22a0a881964eb",
     "assistant:voice":
-        "3ec576745d3234f0c5b198afffcf4e067abe8eefacc3cd56078fa931bfd3c053",
+        "d53786652253d8e0652d22f1add0b4af9b1bd66594b41c4d28a385ab09c25616",
     "butler:restricted_webhook":
         "e3aa4424b24b053a11a9c04d7b6428a8bc1fc90f4b58504ab34d70279037cacc",
     "butler:text":

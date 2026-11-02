@@ -48,7 +48,7 @@ mcp_server_names:
   - homeassistant
   - casa-framework
 memory:
-  token_budget: 800
+  token_budget: 10000
   read_strategy: cached
 channels:
   - ha_voice

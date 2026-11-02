@@ -347,16 +347,13 @@ async def test_resident_options_resolve_mcp_with_role_grants_and_skill_policy(
 
 
 async def test_session_id_is_channel_plus_role(tmp_path):
-    # §4.3: the read path no longer fans out per-scope Honcho sessions; it
-    # recalls once against the role's bank.
+    # A turn reads no memory backend: memory reaches it as its session's view.
     sem = FakeSemanticMemory(facts="recall digest")
     agent = _make_agent(tmp_path, role="assistant", semantic_memory=sem)
     with patch("sdk_client_pool._default_make_client", FakeClient):
         await agent._process(_msg("telegram", "123", "hi"))
 
-    # Fresh telegram session → one bank recall keyed to the shared casa bank.
-    assert len(sem.recall_calls) == 1
-    assert sem.recall_calls[0]["bank"] == "casa"
+    assert sem.recall_calls == []
     entry = agent._session_registry.get(
         build_scoped_session_key("telegram", "assistant", "123"),
     )
@@ -704,114 +701,6 @@ async def test_voice_channel_uses_voice_speaker_peer(tmp_path):
     assert entry is not None
 
 
-async def test_telegram_channel_autorecalls_on_fresh_session(tmp_path):
-    # §4.3: the user_peer (nicola) is a save-path concern now (carried into
-    # save_session), no longer threaded through the per-turn read. The
-    # read-path contract for a fresh TEXT channel is: push the overlay AND
-    # auto-recall the opening utterance against the role's bank.
-    sem = FakeSemanticMemory(overlay="O", facts="F")
-    agent = _make_agent(tmp_path, role="assistant", semantic_memory=sem)
-    # #1336: a person typed this opening — Telegram ingress stamps a trusted
-    # origin; a turn without one recalls with the fixed unauthored query.
-    msg = _msg("telegram", "123", "hi")
-    msg.trusted_user_origin = _person_typed()
-    with patch("sdk_client_pool._default_make_client", FakeClient):
-        await agent._process(msg)
-
-    assert len(sem.profile_calls) == 1          # overlay pushed
-    assert len(sem.recall_calls) == 1           # telegram auto-recalls
-    assert sem.recall_calls[0]["query"] == "hi"
-
-
-# ---------------------------------------------------------------------------
-# Phase 5 / E-14: peer-overlay assembly (spec § 2.7, § 2.9)
-# ---------------------------------------------------------------------------
-
-
-async def test_fresh_text_turn_pushes_overlay_and_recalls(tmp_path):
-    """Spec §4.3: a fresh TEXT turn pushes the mental-model overlay
-    (profile) AND runs one query-specific recall over the readable scopes.
-    Supersedes the old "1 overlay + N per-scope reads under gather" shape —
-    the per-scope fan-out is gone; recall is a single tagged call."""
-    sem = FakeSemanticMemory(overlay="overlay-content", facts="recall-content")
-    agent = _make_agent(tmp_path, role="assistant", semantic_memory=sem)
-    msg = _msg("telegram", "123", "hi")
-    msg.trusted_user_origin = _person_typed()  # #1336: a person's own words
-    with patch("sdk_client_pool._default_make_client", FakeClient):
-        await agent._process(msg)
-
-    # One overlay (profile) call per fresh turn, keyed to the shared casa bank.
-    assert sem.profile_calls == ["casa"]
-    # One recall call: query == utterance, tags == sensitivity tiers readable at
-    # telegram clearance (private → all four tiers), mid budget.
-    assert len(sem.recall_calls) == 1
-    call = sem.recall_calls[0]
-    assert call["bank"] == "casa"
-    assert call["query"] == "hi"
-    assert call["tags"] == ["public", "friends", "family", "private"]
-    assert call["budget"] == "mid"
-
-
-async def test_overlay_block_present_when_overlay_non_empty(tmp_path):
-    """Assembled memory_blocks contains <peer_overlay> when the profile
-    overlay digest is non-empty (spec §4.3)."""
-    sem = FakeSemanticMemory(overlay="OVERLAY_TEXT")
-    agent = _make_agent(tmp_path, role="assistant", semantic_memory=sem)
-
-    captured: dict[str, str] = {}
-
-    class _CapturingClient(FakeClient):
-        def __init__(self, options):
-            super().__init__(options)
-            captured["system"] = options.system_prompt
-
-    with patch("sdk_client_pool._default_make_client", _CapturingClient):
-        await agent._process(_msg("telegram", "123", "hi"))
-
-    assert "<peer_overlay>" in captured["system"]
-    assert "OVERLAY_TEXT" in captured["system"]
-
-
-async def test_overlay_failure_does_not_poison_recall(tmp_path, caplog):
-    """profile() raising → overlay omitted, but the recall still proceeds
-    and lands in the prompt (spec §4.3 — the two reads are independent)."""
-    import logging
-
-    class FailingProfileMemory(FakeSemanticMemory):
-        async def profile(self, bank):
-            self.profile_calls.append(bank)
-            raise RuntimeError("simulated failure")
-
-    sem = FailingProfileMemory(facts="recall-still-works")
-    agent = _make_agent(tmp_path, role="assistant", semantic_memory=sem)
-
-    captured: dict[str, str] = {}
-
-    class _CapturingClient(FakeClient):
-        def __init__(self, options):
-            super().__init__(options)
-            captured["system"] = options.system_prompt
-
-    with caplog.at_level(logging.WARNING, logger="agent"):
-        with patch("sdk_client_pool._default_make_client", _CapturingClient):
-            await agent._process(_msg("telegram", "123", "hi"))
-
-    assert "<peer_overlay>" not in captured["system"]   # overlay omitted
-    assert "<memory_context>" in captured["system"]     # recall present
-    assert "recall-still-works" in captured["system"]
-    assert any(
-        "profile overlay failed" in r.message for r in caplog.records
-    )
-
-
-# NOTE (§4.3 read-path rewire): test_peer_overlay_empty_logs_info_line was
-# dropped here. It asserted the legacy `peer_overlay_empty` INFO line emitted
-# by the old MemoryProvider.peer_overlay_context read path. The SemanticMemory
-# seam's `profile()` overlay has no empty-digest observability line (it would
-# need to be designed + added deliberately, not inferred), so this assertion
-# has no equivalent on the new contract. No replacement is invented.
-
-
 async def test_system_prompt_contains_channel_context(tmp_path):
     agent = _make_agent(tmp_path, role="assistant")
     with patch("sdk_client_pool._default_make_client", FakeClient):
@@ -824,83 +713,36 @@ async def test_system_prompt_contains_channel_context(tmp_path):
     assert "</channel_context>" in prompt
 
 
-async def test_system_prompt_memory_context_only_when_nonempty(tmp_path):
-    # §4.3: <memory_context> now wraps the single recall digest (no per-scope
-    # scope= attribute). Empty recall → no block; non-empty → block + content.
-    sem = FakeSemanticMemory(facts="")
-    agent = _make_agent(tmp_path, role="assistant", semantic_memory=sem)
-    with patch("sdk_client_pool._default_make_client", FakeClient):
-        await agent._process(_msg("telegram", "123", "hi"))
-    assert "<memory_context>" not in FakeClient.captured_options.system_prompt
-
-    # Force a FRESH session so recall fires (the first turn above persisted a
-    # registry entry into the shared sessions.json, which would otherwise
-    # resume and skip the recall under §4.3).
-    sem2 = FakeSemanticMemory(facts="## Recent\n[nicola] hi")
-    agent2 = _make_agent(tmp_path, role="assistant", semantic_memory=sem2)
-    # The pool captures ``decide=_resume_decision`` by reference at
-    # construction (Agent.__init__), so patching the module-level
-    # ``agent._resume_decision`` no longer reaches the pooled turn — patch the
-    # live pool decision hook instead to force a fresh session (assertions
-    # unchanged; §4.3 recall fires only on is_fresh).
-    with patch("sdk_client_pool._default_make_client", FakeClient), \
-         patch.object(agent2._pool, "_decide", return_value=ResumeDecision("new", None, False, None, "missing")):
-        await agent2._process(_msg("telegram", "123", "hi"))
-    prompt2 = FakeClient.captured_options.system_prompt
-    assert "<memory_context>" in prompt2
-    assert "scope=" not in prompt2          # per-scope attribute is gone
-    assert "[nicola] hi" in prompt2
-
-
-async def test_auto_recall_injects_attributed_memory_context(tmp_path):
-    """Task 11 (Step 9): the pre-turn auto-recall now injects an ATTRIBUTED
-    <memory_context> — each hit rendered with its recorded source — instead of
-    a bare digest string. A telegram turn reads at private clearance, so the
-    resident source (role + persona) is spoken; raw provenance/tier tags never
-    escape into the prompt."""
-    from personality_types import SpeakerProvenance
-
-    prov = SpeakerProvenance(
-        speaker_kind="resident", role_id="resident:butler",
-        persona_id="casa.personas/tina", persona_version="1.0.0",
-        display_name="Tina", binding_digest="sha256:" + "5" * 64,
-    )
-    sem = FakeSemanticMemory(facts="the thermostat is set to 20C", provenance=prov)
-    agent = _make_agent(tmp_path, role="assistant", semantic_memory=sem)
-    with patch("sdk_client_pool._default_make_client", FakeClient), \
-         patch.object(agent._pool, "_decide",
-                      return_value=ResumeDecision("new", None, False, None, "missing")):
-        await agent._process(_msg("telegram", "123", "hi"))
-    prompt = FakeClient.captured_options.system_prompt
-    assert "<memory_context>" in prompt
-    assert "Tina previously said: the thermostat is set to 20C" in prompt
-    assert "[source: resident:butler" in prompt
-    assert "casa-source-" not in prompt   # reserved tag never escapes
-    assert "sha256:" not in prompt        # binding digest never escapes
-
-
-async def test_memory_failure_does_not_break_response(tmp_path, caplog):
-    """Pins INV-TURN-004. Red case demonstrated: re-raising from _build_options' broad recall-failure handler fails this test."""
+async def test_memory_failure_does_not_break_response(
+        tmp_path, caplog, monkeypatch):
+    """Pins INV-TURN-004. A memory store that fails while the session's view
+    and the turn's correction note are read leaves the turn answered, with no
+    memory block. Red case: re-raising from ``_serve_memory_view``'s or
+    ``_memory_note``'s failure handler fails this test."""
     import logging
 
-    class BrokenSemanticMemory(FakeSemanticMemory):
-        async def recall_items(self, *a, **kw):
-            raise RuntimeError("hindsight down")
+    from memory import note as memory_note
+    from memory import view as memory_view
+    from memory_serving_support import fact, ledger_store, wire
 
-    sem = BrokenSemanticMemory()
-    agent = _make_agent(tmp_path, role="assistant", semantic_memory=sem)
+    store = ledger_store(tmp_path, [fact("thermostat", "set to 20C")])
+    wire(monkeypatch, store)
+
+    def broken(*a, **kw):
+        raise RuntimeError("store down")
+
+    monkeypatch.setattr(memory_view, "serve", broken)
+    monkeypatch.setattr(memory_note, "for_turn", broken)
+    agent = _make_agent(tmp_path, role="assistant")
     with patch("sdk_client_pool._default_make_client", FakeClient):
         with caplog.at_level(logging.WARNING):
             out = await agent._process(_msg("telegram", "123", "hi"))
     assert out == "pong"
-    # v0.99.0 three-outcome contract: the failure logs as a distinguishable
-    # "unavailable" outcome (not the old undifferentiated "recall failed").
-    assert any(
-        "auto_recall" in r.message and "outcome=unavailable" in r.message
-        for r in caplog.records
-    )
+    assert any("memory view not served" in r.message for r in caplog.records)
+    assert any("memory correction note not read" in r.message
+               for r in caplog.records)
     prompt = FakeClient.captured_options.system_prompt
-    assert "<memory_context>" not in prompt
+    assert "<memory>" not in prompt
     assert "<channel_context>" in prompt
 
 
@@ -1424,13 +1266,12 @@ class TestTokenBudgetMonitoring:
     call returns."""
 
     async def test_memory_recorder_called_on_each_successful_turn(
-        self, tmp_path,
+        self, tmp_path, monkeypatch,
     ):
-        """The recorder should see one call per turn with the digest
-        size estimated from the assembled memory_blocks (spec §4.3:
-        the recall facts wrapped in <memory_context>)."""
-        from personality_types import RecallHit, SpeakerProvenance
-        from recall_renderer import render_recall
+        """The recorder sees one call per turn with the size of the served
+        memory view."""
+        from memory import capture
+        from memory_serving_support import fact, ledger_store, wire
         from tokens import estimate_tokens
         FakeClient.reset()
         FakeClient.usage = {
@@ -1439,13 +1280,9 @@ class TestTokenBudgetMonitoring:
             "cache_read_input_tokens": 0,
             "cache_creation_input_tokens": 0,
         }
-        # Task 11: the recorded block is now the ATTRIBUTED render of the recall
-        # hits (bounded by token_budget), not the raw facts string. Keep the
-        # fact small enough to render fully so the expected size is exact.
-        facts = "x" * 100
-        # Overlay empty so the recorded block is exactly the recall context.
-        sem = FakeSemanticMemory(overlay="", facts=facts)
-        agent = _make_agent(tmp_path, role="assistant", semantic_memory=sem)
+        store = ledger_store(tmp_path, [fact("thermostat", "x" * 100)])
+        wire(monkeypatch, store)
+        agent = _make_agent(tmp_path, role="assistant")
 
         observed: list[tuple[str, int, int]] = []
         original_record = agent._budget_tracker.record
@@ -1457,46 +1294,34 @@ class TestTokenBudgetMonitoring:
         with patch("sdk_client_pool._default_make_client", FakeClient):
             await agent._process(_msg("telegram", "123", "hi"))
 
-        digest = render_recall(
-            (RecallHit(
-                text=facts, memory_type="world", sensitivity="friends",
-                application_tags=(), provenance=None, backend_id="b1",
-                document_id=None, chunk_id=None, source_fact_ids=None,
-                metadata=None, context=None, score=None,
-            ),),
-            current_speaker=SpeakerProvenance(speaker_kind="system"),
-            surface="text", clearance="private", token_budget=1000,
-        )
-        # #581: the block now opens with the memory-use instruction line, and
-        # that line is inside the budget accounting exactly as the digest is.
-        from recall_renderer import READABLE_SLICE_PROMPT_LINE
-        expected = estimate_tokens(
-            f"<memory_context>\n{READABLE_SLICE_PROMPT_LINE}\n{digest}\n"
-            f"</memory_context>"
-        )
+        from memory import view as memory_view
+        with capture.active_store().transaction() as conn:
+            block = memory_view.render(conn, "private", 1000).text
+        assert "x" * 100 in block
         expected_channel_key = build_scoped_session_key("telegram", "assistant", "123")
-        assert observed == [(f"{expected_channel_key}-assistant", expected, 1000)]
+        assert observed == [(f"{expected_channel_key}-assistant",
+                             estimate_tokens(block), 1000)]
 
     async def test_three_consecutive_overruns_emit_one_warning(
-        self, tmp_path, caplog,
+        self, tmp_path, caplog, monkeypatch,
     ):
         """Spec §5.2: warn after three consecutive overruns; suppress
-        thereafter for that session."""
+        thereafter for that session. A view that overflows its budget even at
+        its coarsest index level is served anyway, so it
+        overruns."""
         import logging as _logging
+        from memory_serving_support import fact, ledger_store, wire
         FakeClient.reset()
         FakeClient.usage = {
             "input_tokens": 0, "output_tokens": 0,
             "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0,
         }
-        # 5000-token estimate vs 1000 budget → overrun.
-        # §4.3: the oversized memory_block only fires on a FRESH session, so
-        # force every turn fresh — the budget streak is keyed on
-        # channel_key+role, stable across these five fresh turns. Task 11: the
-        # RECALL digest is now bounded by token_budget, so the oversized block
-        # is driven through the (un-capped) mental-model overlay instead — the
-        # budget-overrun machinery under test is identical either way.
-        sem = FakeSemanticMemory(overlay="x" * 20000, facts="")
-        agent = _make_agent(tmp_path, role="assistant", semantic_memory=sem)
+        store = ledger_store(tmp_path, [
+            fact(f"item {i}", "x" * 200,
+                 line=f"what the long-named item {i} " * 4)
+            for i in range(200)])
+        wire(monkeypatch, store)
+        agent = _make_agent(tmp_path, role="assistant")
 
         caplog.set_level(_logging.WARNING, logger="tokens")
         # Force every turn fresh via the live pool decision hook: the pool
@@ -1514,13 +1339,14 @@ class TestTokenBudgetMonitoring:
         ]
         assert len(rows) == 1, [r.getMessage() for r in rows]
 
-    async def test_retried_turn_records_budget_once(self, tmp_path):
+    async def test_retried_turn_records_budget_once(self, tmp_path, monkeypatch):
         """#349: retry_sdk_call re-invokes _build_options per SDK attempt; the
         budget streak must advance once per LOGICAL turn, not per attempt."""
+        from memory_serving_support import fact, ledger_store, wire
         FakeClient.reset()
         FakeClient.failure_schedule = [asyncio.TimeoutError(), None]
-        sem = FakeSemanticMemory(overlay="x" * 20000, facts="")
-        agent = _make_agent(tmp_path, role="assistant", semantic_memory=sem)
+        wire(monkeypatch, ledger_store(tmp_path, [fact("a", "b")]))
+        agent = _make_agent(tmp_path, role="assistant")
 
         observed: list[tuple[str, int, int]] = []
         agent._budget_tracker.record = (  # type: ignore[method-assign]

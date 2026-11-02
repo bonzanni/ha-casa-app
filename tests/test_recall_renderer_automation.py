@@ -71,16 +71,3 @@ class TestAutomationAttribution:
             clearance="public", surface="restricted_webhook",
         )
         assert "automation" in rendered.lower()
-
-
-class TestExplainLabel:
-    def test_attribution_label_reports_automation(self):
-        from agent import _attribution_label
-        from personality_types import SpeakerProvenance
-
-        label = _attribution_label(
-            _hit(SpeakerProvenance(
-                speaker_kind="automation", user_peer="webhook:nightly")),
-            clearance="private",
-        )
-        assert label == "automation"

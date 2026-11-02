@@ -1,9 +1,9 @@
-"""Specialist memory read+write on the shared casa bank (tiered, plan 3).
+"""Specialist memory read and write, at the PARENT context's clearance.
 
-_run_delegated_agent now inherits the PARENT context's channel clearance for
-both read (delegated_recall → casa bank) and write (retain_delegated →
-tier-classified, voice-gated).  The legacy MemoryProvider / add_turn / meta
-session helpers are gone.
+_run_delegated_agent reads the specialist's view of the ledger that clearance
+reads and writes through retain_delegated (tier-classified,
+voice-gated). The legacy MemoryProvider / add_turn / meta session helpers are
+gone.
 """
 from __future__ import annotations
 
@@ -243,32 +243,30 @@ async def _drain_bg() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_read_at_telegram_clearance(monkeypatch):
-    """parent channel=telegram → recall tags include private,family,friends,public."""
+async def test_read_at_telegram_clearance(monkeypatch, tmp_path):
+    """Parent channel=telegram (private) → the specialist's prompt carries
+    its view of the private ledger, between the delegation context and the
+    task; nothing is recalled."""
     import agent as agent_mod
+    from memory_serving_support import fact, ledger_store, wire
+    wire(monkeypatch, ledger_store(tmp_path, [fact("Q1 spend", "€1200")]))
     cfg = _specialist_cfg(role="finance", token_budget=4000)
-    task_text = "how is Q1 cashflow?"
-    digest = "## Summary\nQ1 spend: €1200\n"
-    fake_sem = _FakeSem(recall_ret=digest)
+    fake_sem = _FakeSem(recall_ret="unused")
     monkeypatch.setattr(agent_mod, "active_semantic_memory", fake_sem, raising=False)
     _set_origin(monkeypatch, channel="telegram")
     _FakeSDKClient.reset()
 
     with patch.object(tools, "ClaudeSDKClient", _FakeSDKClient):
-        await tools._run_delegated_agent(cfg, task_text=task_text, context_text="")
+        await tools._run_delegated_agent(
+            cfg, task_text="how is Q1 cashflow?", context_text="")
 
-    assert len(fake_sem.recall_calls) == 1
-    c = fake_sem.recall_calls[0]
-    assert c["bank"] == "casa"
-    assert c["query"] == task_text
-    assert c["tags"] == ["family", "friends", "private", "public"]
-
+    assert fake_sem.recall_calls == []
     prompt = _FakeSDKClient.captured_prompt
-    assert '<memory_context agent="finance">' in prompt
-    assert "Q1 spend" in prompt
-    assert "</memory_context>" in prompt
-    # Ordering: delegation_context → memory_context → Task:
-    assert prompt.index("<delegation_context>") < prompt.index('<memory_context') < prompt.index("Task:")
+    assert "<memory>" in prompt and "Q1 spend: €1200" in prompt
+    assert "</memory>" in prompt
+    # Ordering: delegation_context → memory → Task:
+    assert prompt.index("<delegation_context>") < prompt.index("<memory>") \
+        < prompt.index("Task:")
 
 
 # ---------------------------------------------------------------------------
@@ -349,8 +347,8 @@ async def test_write_retain_telegram(monkeypatch):
 
 
 async def test_voice_writes_nothing(monkeypatch):
-    """Voice parent → write-trust gate fires; zero retain calls.
-    Recall still fires (voice read-clearance = friends+public)."""
+    """Voice parent → write-trust gate fires; zero retain calls. Voice reads
+    at friends+public, where no ledger is maintained."""
     import agent as agent_mod
     cfg = _specialist_cfg(role="finance", token_budget=4000)
     fake_sem = _FakeSem(recall_ret="some prior fact")
@@ -371,9 +369,9 @@ async def test_voice_writes_nothing(monkeypatch):
         run_subtype="success", result_message_seen=True, reply_messages=("voice answer",),
     )
     assert fake_sem.retain_calls == []
-    # Recall did fire, with voice clearance tags
-    assert len(fake_sem.recall_calls) == 1
-    assert fake_sem.recall_calls[0]["tags"] == ["friends", "public"]
+    # Voice reads at ``friends``, where no ledger is maintained: no memory.
+    assert fake_sem.recall_calls == []
+    assert "<memory" not in _FakeSDKClient.captured_prompt
 
 
 # ---------------------------------------------------------------------------
@@ -407,22 +405,18 @@ async def test_empty_reply_retains_caller_turn_only(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Test 5b: Recall unavailable → explicit status note, never a fake digest
+# Test 5b: Memory unreadable → explicit status note, never a fake digest
 # ---------------------------------------------------------------------------
 
 
-async def test_recall_unavailable_injects_status_note(monkeypatch):
-    """When memory could not be checked, the specialist is told so explicitly
+async def test_recall_unavailable_injects_status_note(monkeypatch, tmp_path):
+    """When memory could not be read, the specialist is told so explicitly
     — a silent cold turn would let it claim Casa lacks information."""
-    import agent as agent_mod
-    from semantic_memory import RecallUnavailable
-
-    class _DownSem(_FakeSem):
-        async def recall_items(self, *a, **k):
-            raise RecallUnavailable("http_504")
-
+    from memory_serving_support import ledger_store, wire
+    store = ledger_store(tmp_path)
+    store._unavailable_reason = "a simulated outage"
+    wire(monkeypatch, store)
     cfg = _specialist_cfg(role="finance", token_budget=4000)
-    monkeypatch.setattr(agent_mod, "active_semantic_memory", _DownSem(), raising=False)
     _set_origin(monkeypatch, channel="telegram")
     _FakeSDKClient.reset(response="ok")
 
@@ -433,7 +427,7 @@ async def test_recall_unavailable_injects_status_note(monkeypatch):
     prompt = _FakeSDKClient.captured_prompt
     assert '<memory_context agent="finance" status="unavailable">' in prompt
     assert "could not be checked" in prompt
-    # No fabricated digest content beyond the status note.
+    assert "<memory>" not in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -457,10 +451,10 @@ def test_legacy_helpers_removed():
 
 
 async def test_sem_none_no_crash(monkeypatch):
-    """active_semantic_memory unset (boot-degraded) → specialist runs, gets the
-    unavailability note (memory can't be checked ≠ no memories), no crash."""
-    import agent as agent_mod
-    monkeypatch.setattr(agent_mod, "active_semantic_memory", None, raising=False)
+    """No memory store wired (boot-degraded) → the specialist runs, gets the
+    unavailability note (memory can't be read ≠ no memories), no crash."""
+    from memory_serving_support import wire
+    wire(monkeypatch, None)
     cfg = _specialist_cfg(role="finance", token_budget=4000)
     _set_origin(monkeypatch, channel="telegram")
     _FakeSDKClient.reset(response="ok")
@@ -475,68 +469,23 @@ async def test_sem_none_no_crash(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Test 8 (#205): the specialist read is labelled specialist_archive
-# ---------------------------------------------------------------------------
-
-
-async def test_specialist_recall_records_specialist_archive_path(monkeypatch):
-    """The specialist memory read must name its own recall path.
-
-    Before #205 this call site passed no ``path=``, so it fell to
-    ``delegated_recall``'s generic ``"delegated"`` default: its telemetry was
-    indistinguishable from any other delegated recall, and it shared that
-    path's circuit breaker. Guard both halves — the recorded label AND the
-    breaker registry key, since ``recall_health._breaker_for`` caches one
-    breaker per path.
-    """
-    import agent as agent_mod
-    from recall_health import (
-        _PATH_BREAKERS, default_telemetry, reset_recall_breakers,
-    )
-
-    reset_recall_breakers()
-    before = len(default_telemetry().snapshot())
-
-    cfg = _specialist_cfg(role="finance", token_budget=4000)
-    fake_sem = _FakeSem(recall_ret="## Summary\nQ1 spend: EUR 1200\n")
-    monkeypatch.setattr(agent_mod, "active_semantic_memory", fake_sem, raising=False)
-    _set_origin(monkeypatch, channel="telegram")
-    _FakeSDKClient.reset()
-
-    with patch.object(tools, "ClaudeSDKClient", _FakeSDKClient):
-        await tools._run_delegated_agent(
-            cfg, task_text="how is Q1 cashflow?", context_text="")
-
-    new_events = default_telemetry().snapshot()[before:]
-    assert [e.path for e in new_events] == ["specialist_archive"], (
-        "the specialist memory read must record path=specialist_archive, not "
-        "the generic 'delegated' default"
-    )
-    assert "specialist_archive" in _PATH_BREAKERS
-    assert "delegated" not in _PATH_BREAKERS, (
-        "the specialist read must no longer open/consume the generic "
-        "'delegated' breaker"
-    )
-    reset_recall_breakers()
-
-
-# ---------------------------------------------------------------------------
 # #336 — a delegated specialist reads at the DELEGATING TURN's clearance
 # ---------------------------------------------------------------------------
 
 
-async def test_non_operator_delegation_reads_public_only(monkeypatch):
+async def test_non_operator_delegation_reads_public_only(monkeypatch, tmp_path):
     """Sol r3/r4: a non-operator Telegram sender must not reach private memory
     by having a specialist fetch it. End-to-end through _run_delegated_agent,
-    asserting what the recall actually received.
+    asserting what the specialist's prompt actually carries: a ``public``
+    reader is served no view of the private ledger.
 
-    Red case demonstrated: dropping origin_route/origin_clearance from the
-    specialist's delegated_recall call restores channel-keyed private
-    clearance and this test fails."""
+    Red case: reading the clearance from the channel (``telegram`` →
+    ``private``) instead of the delegating turn's stamped markers serves the
+    private ledger and this test fails."""
     import agent as agent_mod
+    from memory_serving_support import fact, ledger_store, wire
+    wire(monkeypatch, ledger_store(tmp_path, [fact("alarm", "code 4417")]))
     cfg = _specialist_cfg(role="finance", token_budget=4000)
-    fake_sem = _FakeSem(recall_ret="## Summary\nnothing sensitive\n")
-    monkeypatch.setattr(agent_mod, "active_semantic_memory", fake_sem, raising=False)
     agent_mod.origin_var.set({
         "role": "assistant", "channel": "telegram", "chat_id": "abc",
         "cid": "cid42", "scope": "personal", "delegation_depth": 0,
@@ -549,16 +498,15 @@ async def test_non_operator_delegation_reads_public_only(monkeypatch):
         await tools._run_delegated_agent(
             cfg, task_text="what is the alarm code?", context_text="")
 
-    c = fake_sem.recall_calls[0]
-    assert c["clearance"] == "public"
-    assert c["tags"] == ["public"]
+    prompt = _FakeSDKClient.captured_prompt
+    assert "4417" not in prompt and "<memory" not in prompt
 
 
-async def test_operator_delegation_still_reads_every_tier(monkeypatch):
+async def test_operator_delegation_still_reads_every_tier(monkeypatch, tmp_path):
     import agent as agent_mod
+    from memory_serving_support import fact, ledger_store, wire
+    wire(monkeypatch, ledger_store(tmp_path, [fact("Q1 spend", "1200")]))
     cfg = _specialist_cfg(role="finance", token_budget=4000)
-    fake_sem = _FakeSem(recall_ret="## Summary\nQ1 spend: 1200\n")
-    monkeypatch.setattr(agent_mod, "active_semantic_memory", fake_sem, raising=False)
     agent_mod.origin_var.set({
         "role": "assistant", "channel": "telegram", "chat_id": "abc",
         "cid": "cid42", "scope": "personal", "delegation_depth": 0,
@@ -570,9 +518,7 @@ async def test_operator_delegation_still_reads_every_tier(monkeypatch):
         await tools._run_delegated_agent(
             cfg, task_text="how is Q1 cashflow?", context_text="")
 
-    c = fake_sem.recall_calls[0]
-    assert c["clearance"] == "private"
-    assert c["tags"] == ["family", "friends", "private", "public"]
+    assert "Q1 spend: 1200" in _FakeSDKClient.captured_prompt
 
 
 # ---------------------------------------------------------------------------
@@ -1073,89 +1019,3 @@ async def test_whitespace_only_task_submits_nothing(
     assert retain_invocations == []
     assert fake_sem.retain_calls == []
 
-
-# ---------------------------------------------------------------------------
-# #1351: a delegation recalls with a short topical query, not the whole brief
-# ---------------------------------------------------------------------------
-
-
-async def test_long_brief_recalls_with_its_opening_words_only(monkeypatch):
-    """The memory service's reranker cost grows with the query's length
-    (#1336 measured 1.5 s at ~20 tokens against 12–20 s at 350–450), and a
-    delegation brief runs to hundreds of tokens. The specialist's recall uses
-    the brief's opening words instead."""
-    import agent as agent_mod
-    cfg = _specialist_cfg(role="finance", token_budget=4000)
-    task_text = (
-        "Find what we paid Vodafone for the September mobile bill. "
-        "The operator asked in the chat a minute ago and wants the amount and "
-        "the date it left the account. Check the bank feed first; if it is "
-        "not there, search the mailbox for the invoice and read its total. "
-        "Answer in one or two sentences, and say which source you used."
-    )
-    fake_sem = _FakeSem(recall_ret="")
-    monkeypatch.setattr(agent_mod, "active_semantic_memory", fake_sem, raising=False)
-    _set_origin(monkeypatch, channel="telegram")
-    _FakeSDKClient.reset()
-
-    with patch.object(tools, "ClaudeSDKClient", _FakeSDKClient):
-        await tools._run_delegated_agent(cfg, task_text=task_text, context_text="")
-
-    assert len(fake_sem.recall_calls) == 1
-    assert fake_sem.recall_calls[0]["query"] == (
-        "Find what we paid Vodafone for the September mobile bill. "
-        "The operator asked in the chat"
-    )
-    # the specialist itself still reads the whole brief
-    assert task_text in _FakeSDKClient.captured_prompt
-
-
-async def test_a_run_on_brief_is_capped_in_words(monkeypatch):
-    import agent as agent_mod
-    from delegated_memory import TOPICAL_QUERY_MAX_WORDS
-    cfg = _specialist_cfg(role="finance", token_budget=4000)
-    words = [f"w{i}" for i in range(TOPICAL_QUERY_MAX_WORDS + 25)]
-    task_text = " ".join(words)
-    fake_sem = _FakeSem(recall_ret="")
-    monkeypatch.setattr(agent_mod, "active_semantic_memory", fake_sem, raising=False)
-    _set_origin(monkeypatch, channel="telegram")
-    _FakeSDKClient.reset()
-
-    with patch.object(tools, "ClaudeSDKClient", _FakeSDKClient):
-        await tools._run_delegated_agent(cfg, task_text=task_text, context_text="")
-
-    assert len(fake_sem.recall_calls) == 1
-    assert fake_sem.recall_calls[0]["query"] == " ".join(
-        words[:TOPICAL_QUERY_MAX_WORDS])
-
-
-@pytest.mark.parametrize("task_text, query", [
-    # #1351 x1 (Astra, Terra): a sentence split lost the subject after a
-    # heading, a framing label or an abbreviation
-    ("Task:\nFind the September Vodafone payment.",
-     "Task: Find the September Vodafone payment."),
-    ("# Task\nFind the September Vodafone payment.",
-     "Task Find the September Vodafone payment."),
-    ("# Bank reconciliation\n- Match the €120 payment of 3 September.",
-     "Bank reconciliation Match the €120 payment of 3 September."),
-    ("E.g. find the €1.200,50 transfer to Esselunga in August.",
-     "E.g. find the €1.200,50 transfer to Esselunga in August."),
-    ("Check e.g. Vodafone invoices against September bank payments.",
-     "Check e.g. Vodafone invoices against September bank payments."),
-    # #1351 x2 (Astra): a reply of symbols only still searches, as before
-    ("???", "???"),
-    ("  💡? ", "💡?"),
-])
-async def test_brief_formatting_keeps_the_subject_in_the_query(
-        monkeypatch, task_text, query):
-    import agent as agent_mod
-    cfg = _specialist_cfg(role="finance", token_budget=4000)
-    fake_sem = _FakeSem(recall_ret="")
-    monkeypatch.setattr(agent_mod, "active_semantic_memory", fake_sem, raising=False)
-    _set_origin(monkeypatch, channel="telegram")
-    _FakeSDKClient.reset()
-
-    with patch.object(tools, "ClaudeSDKClient", _FakeSDKClient):
-        await tools._run_delegated_agent(cfg, task_text=task_text, context_text="")
-
-    assert [c["query"] for c in fake_sem.recall_calls] == [query]

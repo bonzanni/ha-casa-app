@@ -179,6 +179,8 @@
   doc: architecture/memory-writer.md
 - item: casa/rootfs/opt/casa/memory/nightly.py
   doc: architecture/memory-writer.md
+- item: casa/rootfs/opt/casa/memory/note.py
+  doc: architecture/memory-serving.md
 - item: casa/rootfs/opt/casa/memory/occurrence.py
   doc: architecture/memory-labelling.md
 - item: casa/rootfs/opt/casa/memory/patches.py
@@ -189,12 +191,14 @@
   doc: architecture/memory-store.md
 - item: casa/rootfs/opt/casa/memory/schema.py
   doc: architecture/memory-store.md
+- item: casa/rootfs/opt/casa/memory/sessions.py
+  doc: architecture/memory-serving.md
 - item: casa/rootfs/opt/casa/memory/store.py
   doc: architecture/memory-store.md
+- item: casa/rootfs/opt/casa/memory/view.py
+  doc: architecture/memory-serving.md
 - item: casa/rootfs/opt/casa/memory/writer.py
   doc: architecture/memory-writer.md
-- item: casa/rootfs/opt/casa/mental_models.py
-  doc: architecture/memory-mental-models.md
 - item: casa/rootfs/opt/casa/observer.py
   doc: architecture/engagements.md
 - item: casa/rootfs/opt/casa/output_boundary.py

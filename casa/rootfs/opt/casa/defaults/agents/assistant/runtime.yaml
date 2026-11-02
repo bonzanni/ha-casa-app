@@ -74,7 +74,7 @@ tools:
 mcp_server_names:
   - casa-framework
 memory:
-  token_budget: 5000                     # Phase 5 — honest envelope for 40/60 overlay/scope split
+  token_budget: 50000                    # tokens of served memory view: whole ledger while it fits
   read_strategy: per_turn
 channels:
   - telegram

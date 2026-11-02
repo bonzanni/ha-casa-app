@@ -384,7 +384,9 @@ def _recall_items_calls(path: Path) -> list[ast.Call]:
 
 
 def test_auto_recall_and_delegated_recall_send_no_period():
-    for name in ("agent.py", "delegated_memory.py"):
+    # The resident turn no longer recalls at all: no call.
+    assert _recall_items_calls(CODE / "agent.py") == []
+    for name in ("delegated_memory.py",):
         calls = _recall_items_calls(CODE / name)
         assert len(calls) == 1, name
         assert [k.arg for k in calls[0].keywords if k.arg == "window"] == [], name

@@ -156,7 +156,9 @@ async def test_an_event_the_reply_does_not_name_stays_pending(tmp_path):
 
 # --- the nightly pass and the meter ------------------------------------------
 
-async def test_nightly_queues_condense_and_regroup_only_when_due(tmp_path):
+async def test_nightly_queues_condense_and_regroup_only_when_due(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(meter, "_role_budgets", {})
     store = new_store(tmp_path)
     seed(store, "short")
     await run_new(new_writer(store, ScriptedPort(add_each)))
@@ -164,16 +166,26 @@ async def test_nightly_queues_condense_and_regroup_only_when_due(tmp_path):
         "condense": [], "regroup": [], "retried": 0}
     seed(store, "long " * 1000)
     await run_new(new_writer(store, ScriptedPort(add_each)))
-    assert nightly.enqueue_nightly(store, regroup_over_tokens=100) == {
-        "condense": ["private"], "regroup": ["private"], "retried": 0}
+    # A large ledger whose entry lines still fit every role's budget is not
+    # regrouped: groups are added only when the level below no longer fits.
+    assert nightly.enqueue_nightly(store, role_budgets={"assistant": 1000}) \
+        == {"condense": ["private"], "regroup": [], "retried": 0}
+    # A budget even the coarsest level overflows queues the regroup, and the
+    # meter's configured budgets are the default.
+    meter.configure({"assistant": 1000, "tiny": 5, "off": 0})
+    assert meter.role_budgets() == {"assistant": 1000, "tiny": 5}
+    assert nightly.enqueue_nightly(store) == {
+        "condense": [], "regroup": ["private"], "retried": 0}
     # Already queued: not queued twice.
-    assert nightly.enqueue_nightly(store, regroup_over_tokens=100) == {
+    assert nightly.enqueue_nightly(store) == {
         "condense": [], "regroup": [], "retried": 0}
     assert [j["kind"] for j in job_rows(store)
             if j["state"] == "queued"] == ["condense", "regroup"]
 
 
-async def test_the_meter_counts_what_memory_owes(tmp_path):
+async def test_the_meter_counts_what_memory_owes(tmp_path, monkeypatch):
+    monkeypatch.setattr(meter, "_role_budgets", {})
+    meter.configure({"assistant": 50_000, "tiny": 5})
     store = new_store(tmp_path)
     a = seed(store, "one")
     seed(store, "two")
@@ -187,6 +199,11 @@ async def test_the_meter_counts_what_memory_owes(tmp_path):
     assert led["pending"]["events"] == 2
     assert led["pending_corrections"] == 1
     assert len(led["largest"]) == 2 and led["week_added"]["entries"] == 2
+    # Each served role's view of the ledger: whole within a large budget;
+    # past a tiny one, the index, overflowing even at its coarsest level.
+    assert {r: (v["mode"], v["overflow"]) for r, v in led["roles"].items()} \
+        == {"assistant": ("whole", False), "tiny": ("index", True)}
+    assert led["overflow"] is True
     assert got["commit_no"] == 1 and got["provisional_events"] == 3
     assert got["maintenance_intent"] is False
     assert meter.read(store) == got

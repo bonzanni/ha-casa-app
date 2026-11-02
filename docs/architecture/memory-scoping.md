@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-10-02
+last_reviewed: 2026-11-02
 ---
 
 # Memory scoping
@@ -92,12 +92,12 @@ finishes.
 Enforced by the channel-clearance lookup's default. The direction matters: an unknown surface
 sees less, not more.
 
-What it does not cover: origin-aware resolution is narrower than it sounds. Resident
-auto-recall and the recall tool resolve clearance from the stamped origin
-(`clearance_for_origin()`), so a webhook turn's clearance there depends on its declared
-origin. Delegated recall honours a route its caller passes, but falls back to channel-keyed
-clearance for every caller that passes none — check the call site before assuming a
-delegated read is origin-filtered.
+What it does not cover: origin-aware resolution is narrower than it sounds. The served
+memory view, the correction note and the recall tool resolve clearance from the stamped
+origin (`clearance_for_origin()`), so a webhook turn's clearance there depends on its
+declared origin. Delegated recall honours a route its caller passes, but falls back to
+channel-keyed clearance for every caller that passes none — check the call site before
+assuming a delegated read is origin-filtered.
 
 **INV-MEM-008**: An engagement's reads resolve clearance from the origin markers its own record carries, and a steering turn from a lower-clearance sender clamps those markers down permanently.
 
@@ -135,13 +135,15 @@ checksum, the resolved prompt template's path and just-read bytes, every doctrin
 and (for workspace-driven executors) the *source* workspace instruction file,
 pre-interpolation, whichever of the template or plain-copy forms will be consumed.
 Launch-specific substitutions are never inputs: rendered bytes embed the task and the
-recalled memory itself, which would make every epoch unique and the filter circular.
+served memory itself, which would make every epoch unique and the filter circular.
 Workspace provisioning re-reads those sources, so after provisioning the driver recomputes
 the digest and aborts the launch on a mismatch rather than stamp an engagement with an
-epoch it did not run under. Filtering is client-side between recall and render (the tag
-filter cannot narrow), drops foreign-epoch *and* unstamped hits alike — a lesson that
-cannot prove it was learned under the current doctrine is exactly what the filter exists
-for — and the injected block subordinates itself to the doctrine files in as many words.
+epoch it did not run under. The archive is read from the memory store's
+`engagement_summaries`: the newest summaries of the executor's own type whose stored epoch
+equals the launch's, at a tier the originating turn's clearance can read, within the
+executor's budget. A record with no epoch matches nothing — a lesson that cannot prove it
+was learned under the current doctrine is exactly what the filter exists for — and the
+injected block subordinates itself to the doctrine files in as many words.
 
 What it does not cover: `query_engager` is deliberately unfiltered (an answer to "what
 happened last time" is not injected procedure); a same-epoch lesson that is merely wrong
@@ -170,16 +172,14 @@ by default. Write access is a separate, deliberate addition
 ([`architecture/memory-lifecycle.md`](memory-lifecycle.md)).
 
 **Scoping what a recall surfaces** is a caller-side decision: the backend's only content
-filter is the sensitivity tags, so a caller that must narrow further (the executor archive
-drops lessons from another doctrine epoch — INV-MEM-015) filters the typed hits between
-recall and render, never by adding tags to the request (an added tag *broadens* an
+filter is the sensitivity tags, so a caller that must narrow further filters the typed hits
+between recall and render, never by adding tags to the request (an added tag *broadens* an
 any-match filter).
 
-**One archive recall per launch.** A recall is relevance-ranked and bounded, so two are not
-two copies of one answer: an executor handed both is handed two accounts of what happened
-last time. A memory-enabled launch recalls once — into the first turn for an in-process
-executor, into the workspace instructions for one with a workspace, never both. Nothing
-after the launch recalls again ([`engagements.md`](engagements.md)).
+**One archive read per launch.** A memory-enabled launch reads the archive once — into the
+first turn for an in-process executor, into the workspace instructions for one with a
+workspace, never both, so an executor is never handed two accounts of what happened last
+time. Nothing after the launch reads it again ([`engagements.md`](engagements.md)).
 
 ## Source & test map
 
@@ -191,7 +191,8 @@ after the launch recalls again ([`engagements.md`](engagements.md)).
 - `casa/rootfs/opt/casa/sensitivity.py::clearance_for_origin`
 - `casa/rootfs/opt/casa/executor_epoch.py::compute_procedural_epoch`
 - `casa/rootfs/opt/casa/executor_epoch.py::epoch_application_tag`
-- `casa/rootfs/opt/casa/executor_epoch.py::make_archive_epoch_filter`
+- `casa/rootfs/opt/casa/tools.py::_fetch_executor_archive`
+- `casa/rootfs/opt/casa/tools.py::_read_executor_archive`
 - `casa/rootfs/opt/casa/delegated_memory.py::delegated_recall`
 - `casa/rootfs/opt/casa/tools.py::_origin_clearance_markers`
 - `casa/rootfs/opt/casa/tools.py::inherit_origin_markers`

@@ -18,7 +18,7 @@ tools:
   voice_guard: none
 mcp_servers: [casa-framework]
 channels: [telegram, webhook]
-memory: {token_budget: 5000, read_strategy: per_turn}
+memory: {token_budget: 50000, read_strategy: per_turn}
 session: {strategy: persistent, idle_timeout_seconds: 86400}
 disclosure: {policy: standard, overrides: {}}
 delegates: []

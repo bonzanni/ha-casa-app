@@ -68,7 +68,7 @@ bank, and only they capture. A channel that can recall is not thereby able to st
 store; it does not decide whether what is being stored actually happened. A delegated
 specialist run that the CLI ends without completing the turn has produced text, but not an
 answer — and the bank has no way to say "partial", because an additive tag broadens a
-recall rather than narrowing it and the bank-wide profile overlay is not filterable at all.
+recall rather than narrowing it.
 The exclusion is therefore made by the writer, at the point where the terminal verdict is
 known: the incomplete answer is never built into an item, and never captured.
 
@@ -95,8 +95,8 @@ that skips the builder and the policy check would bypass both.
 Capture follows the same rule: the request is captured before the run, whatever the answer
 turns out to be, and the answer only when the output's own `answer_incomplete` is false.
 
-A stored-call pinned turn ([`stored-call-buttons.md`](stored-call-buttons.md)) recalls
-nothing — its prompt carries no `<memory_context>` block — and submits nothing at all —
+A stored-call pinned turn ([`stored-call-buttons.md`](stored-call-buttons.md)) reads
+nothing — its prompt carries no memory block — and submits nothing at all —
 neither the Casa-composed task nor the model's text — since its only operator-visible
 outcome is the plugin's receipt; the read and the write are skipped on the same
 `stored_call` marker. The runner records the whole terminal shape once, beside the returned

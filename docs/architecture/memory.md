@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-08-10
+last_reviewed: 2026-11-02
 ---
 
 # Memory and recall
@@ -10,9 +10,9 @@ last_reviewed: 2026-08-10
 
 Long-term memory on the way *out*: how a recalled fact is rendered, what a caller is told
 when the store cannot answer, and what a caller may claim from what comes back. It covers
-the memory seam and the provenance carried on a recalled fact. The mental-model overlay,
-together with the mental models Casa declares for it, is
-[`architecture/memory-mental-models.md`](memory-mental-models.md). *Who* may read a stored
+the memory seam and the provenance carried on a recalled fact. The view of a ledger a
+session is served at its start, and the correction note on every turn, are
+[`architecture/memory-serving.md`](memory-serving.md). *Who* may read a stored
 fact back — read clearance per channel and sender, the engagement clearance clamp, and
 the executor-archive epoch scoping — is
 [`architecture/memory-scoping.md`](memory-scoping.md). How a fact is labelled — tier
@@ -108,34 +108,13 @@ like the others: not proof of absence. A period that cannot be read, or ends bef
 is refused before anything is searched — sent to the backend, an inverted window would come
 back as an error the tool would report as "memory could not be checked". The seam's typed
 recall takes the window only as that hint and never filters by it, so its three outcomes are
-unchanged; auto-recall and delegated recall never send one.
+unchanged; the engager query never sends one.
 
-**Auto-recall is not "every turn".** It happens when a turn's options are built, which is a
-fresh non-voice session only — a warm reused client skips that path entirely, and voice never
-auto-recalls. Both can still recall explicitly through the tool. "The agent remembers
-automatically" is true of a narrower set of turns than it sounds.
-
-**What auto-recall searches for.** A session a person opened — the operator or anyone else
-Telegram admits, typing or tapping — searches with that person's own opening text and waits
-at most 5 s. Other sessions open with Casa's own text, not a topic: a trigger's instruction
-prompt, a reminder, a delegation's completion notice, an event. "No person" means the turn
-arrived without a trusted ingress identity. Searching with that text is slow, because the
-backend reranks every candidate against the whole query, and it ranks memories by how much
-they resemble the instructions. So such a session searches with one fixed short query about
-today's appointments, deadlines and open follow-ups, and waits at most 15 s. Mostly nobody
-is waiting on such a turn. Where someone is, as with a delegation's answer being relayed on a
-fresh session, that answer can arrive up to 15 s later. The query is the same for every such turn and is not derived
-from its text, so memories about one reminder's or notice's own subject are found only if
-they match it.
-
-**What a delegated specialist's recall searches for.** A specialist with memory recalls once,
-before it starts, and the delegation waits for it. The brief the delegating agent writes
-runs to hundreds of words, and searching with all of it would cost the same rerank time as
-an instruction prompt. So the search uses the brief's first 16 words, skipping markers
-such as `#` or `-` that carry no letter or digit, while the specialist itself still reads
-the whole brief; text with no such word at all, such as a reply of `???`, is searched as
-written. A brief that does not name its subject in its first 16 words finds memories about
-those words instead.
+**No turn recalls on its own.** What a session knows from memory at its start is its view
+of a ledger, served with no search
+([`architecture/memory-serving.md`](memory-serving.md)), and a delegated specialist is served
+its view with the brief. A recall happens only when an agent calls the recall tool, or
+when the engager query reads for an engagement.
 
 **Writing is narrower than reading, and it has its own document.** Only write-trusted
 channels retain to the shared bank; *when* a conversation is retained, reset, or wiped is
@@ -186,8 +165,8 @@ care about rather than assuming it propagates.
 Enforced in the backend implementation's typed recall path, which decodes each hit's tier and
 drops what it cannot read, then raises when nothing readable survives.
 
-What it does not cover: the legacy string recall path, mental-model overlays, and the SDK
-transcript are not tier-filtered by this check. Filtering is also applied locally to what the
+What it does not cover: the legacy string recall path and the SDK transcript are not
+tier-filtered by this check. Filtering is also applied locally to what the
 backend returned — the request's own tag filter is not treated as the access control.
 
 **INV-MEM-005** — write trust — is declared in
@@ -209,16 +188,17 @@ the read path has not independently established.
 
 Enforced in the recall tool's empty-digest arms and the engager-query tool's unknown arm,
 which attach explicit guidance in place of a bare empty result; and, on the non-empty side, by
-one shared note (`recall_renderer.READABLE_SLICE_NOTE`) attached by all four consumers of a
-rendered slice — the recall tool's ok-arm as a result `message`, and auto-recall, the
-specialist delegation and the executor lessons block as an instruction line inside the
-injected block. The engager-query synthesizer is the exception described above.
+one shared note (`recall_renderer.READABLE_SLICE_NOTE`) attached by both consumers of a
+bounded slice — the recall tool's ok-arm as a result `message`, and the executor lessons
+block as an instruction line under its heading. The engager-query synthesizer is the
+exception described above. The served view of a ledger is not a slice: it is the whole
+ledger, or its index, at the session's clearance.
 
 What it does not cover: it is a statement about what the result *says*, not what a model does
 with it — prompt-level honesty remains the model's job. Prompt-assembly consumers that render
 emptiness as *silence* stay outside it, deliberately: absence of a block is not a claim of
 absence, and a framing line with no memories under it would be a header for a search that
-found nothing. The consumer inventory that guards against a fifth, unframed consumer resolves
+found nothing. The consumer inventory that guards against a new, unframed consumer resolves
 direct calls only; an alias or other indirection escapes it.
 
 **INV-MEM-019**: A `recall_memory` call given a period returns only readable hits whose recorded date lies inside the period Casa resolved in the operator's timezone — hits without a recorded date are left out — the period filter runs after the clearance gate, an empty in-period result is framed as bounded and never as absence, an invalid or inverted period is refused before any request, and a call without a period sends no window.
@@ -245,15 +225,9 @@ failure does. No other status is retried, and a write never is.
 text/tags/metadata, or nothing readable at the caller's clearance. The seam raises `RecallProtocolError`.
 This is deliberately not an empty result.
 
-**No backend is configured.** Recall raises with a reason naming it, the overlay
-comes back empty, no mental model is reconciled, and **writes silently succeed without
-persisting anything**. The write side fails quietly here while the read side does not.
-
-**Auto-recall fails.** The turn absorbs it: no memory block is injected and the turn proceeds
-without memory. Repeated failures open a per-agent breaker that skips the attempt.
-The model is not told that recall was skipped, so an agent cannot distinguish "no memory
-matched" from "memory was not consulted" — so an agent should not assert absence from
-silence.
+**No backend is configured.** Recall raises with a reason naming it, and **writes silently
+succeed without persisting anything**. The write side fails quietly here while the read
+side does not.
 
 **A recall path fails repeatedly.** A circuit breaker fast-fails subsequent calls with a
 dedicated reason rather than calling the backend. Genuine zero-hit results count as successes
@@ -277,8 +251,7 @@ invisible below the highest clearance however it is later re-said.
 in particular it must raise, not return empty, when it cannot answer or when nothing readable
 survives filtering. Its stored-tag read must likewise answer "never saved" only when the backend
 positively says so, and raise on everything else; the seam declares it abstract so a backend
-cannot inherit a lenient one. If it holds resources, implement the close hook. Its mental-model
-reconcile has a do-nothing default: a backend without mental models has nothing to reconcile.
+cannot inherit a lenient one. If it holds resources, implement the close hook.
 
 **A new recall caller** should decide whether it wants its own telemetry and breaker, which
 means choosing a distinct recall path rather than inheriting another's. It must also decide,
@@ -306,25 +279,21 @@ since what may be disclosed is decided per surface.
 - `casa/rootfs/opt/casa/recall_renderer.py::render_recall`
 - `casa/rootfs/opt/casa/recall_health.py::observed_recall`
 - `casa/rootfs/opt/casa/delegated_memory.py::delegated_recall`
-- `casa/rootfs/opt/casa/delegated_memory.py::topical_query`
 - `casa/rootfs/opt/casa/timekeeping.py::resolve_period`
 
 **Tests**
 - `tests/test_recall_absence_invariant.py`
 - `tests/test_recall_health.py::test_breaker_opens_after_threshold_failures`
-- `tests/test_agent_auto_recall_unavailable.py`
 - `tests/test_recall_empty_verdict.py`
 - `tests/test_recall_readable_slice_framing.py`
 - `tests/test_1123_tier_floor_regressions.py`
 - `tests/test_pin_1120_recall_period.py`
-- `tests/test_1336_unauthored_recall_query.py`
-- `tests/test_specialist_memory_tiers.py::test_long_brief_recalls_with_its_opening_words_only`
 
 **Related**
 - [`architecture/overview.md`](../architecture/overview.md)
 - [`architecture/turn-loop.md`](../architecture/turn-loop.md)
 - [`architecture/memory-lifecycle.md`](../architecture/memory-lifecycle.md)
-- [`architecture/memory-mental-models.md`](../architecture/memory-mental-models.md)
+- [`architecture/memory-serving.md`](../architecture/memory-serving.md)
 - [`architecture/memory-scoping.md`](../architecture/memory-scoping.md)
 - [`architecture/memory-wipe.md`](../architecture/memory-wipe.md)
 <!-- END SOURCEMAP -->

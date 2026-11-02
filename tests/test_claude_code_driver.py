@@ -144,8 +144,8 @@ class TestArchiveFetchedByTheDriver:
         assert len(calls) == 1, calls
         # Filtered at the RECORD's own markers and epoch — that is why this is
         # the copy kept, rather than the engager's.
-        assert calls[0]["task"] == rec.task
-        assert "epoch-1" in str(calls[0]["epoch_tag"])
+        assert calls[0]["role"] == rec.role_or_type
+        assert calls[0]["procedural_epoch"] == "epoch-1"
 
     @pytest.mark.skipif(
         sys.platform == "win32",

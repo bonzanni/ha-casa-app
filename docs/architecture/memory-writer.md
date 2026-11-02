@@ -13,8 +13,8 @@ writer job, the one pending predicate that says what is still owed, the commit t
 batch with its three checks, correction marking, crash recovery, tier classification of
 captured events, failures, the nightly pass and the size meter. What is captured and when is
 [`architecture/memory-capture.md`](memory-capture.md); the store, its tables and the registry
-are [`architecture/memory-store.md`](memory-store.md). The ledger is not yet served to any
-agent: the recall path in service today is [`architecture/memory.md`](memory.md).
+are [`architecture/memory-store.md`](memory-store.md); how a ledger is served to a session
+is [`architecture/memory-serving.md`](memory-serving.md).
 
 ## Mental model
 
@@ -42,7 +42,9 @@ at the end of a session (an explicit reset); and right after a correction mark. 
 measured by `seq`, which the store assigns inside its single write transaction, so an event a
 run's read snapshot missed always counts as not given, whenever it was stamped. Nightly, at 03:30 in
 the operator's zone, a pass queues `condense` (an entry over 1 024 tokens), `regroup` (a
-ledger over 50 000 tokens) and a retry of every failed job. The nightly pass writes no
+ledger whose view overflows a served role's budget even at its coarsest index level, so
+groups and topics are added only when the level below no longer fits) and a retry of every
+failed job. The nightly pass writes no
 ledger row itself.
 
 **A run assembles, asks, then commits once.** Every run of a job — first run, requeue,
@@ -54,7 +56,9 @@ record that run only. In the `private` job each provisional event is classified 
 tier classifier, each call bounded to a minute. The model is then called through the model
 port (Opus 5.5, effort medium, no tools), outside any transaction; the worker bounds that
 call to 600 seconds itself, whatever port it is given, so no model call can hold the one
-worker indefinitely. Its answer is a list of id-addressed
+worker indefinitely. A ledger over 40 000 tokens is given as its index instead — every
+object without its body — and a filing run's first answer may name up to 80 objects to open,
+which a second call gives in full from the same snapshot. Its answer is a list of id-addressed
 operations — `add`, `replace`, `retire`, `split`, `merge`, `add_cue`, `set_line`, `move` —
 and an outcome per event. What the conversation means, and how the ledger should change, is
 the model's judgement; code checks only that each operation is well formed and stays in the
@@ -64,7 +68,8 @@ job's ledger. Cues are add-only.
 each input event's mark: if the ledger changed or an input event's mark is not the one the
 run read, nothing is written and the job goes back to the queue. Otherwise it applies the
 operations (each object's next revision plus a history row), checks that every current
-object still hangs from current parents a level up (entry, group, topic), writes the
+object still hangs from current parents a level up (entry, group, topic) — the view's own
+reachability rule, so no entry is ever beyond a view's reach — writes the
 classification verdicts, one disposition for every input event, and the job's `committed`
 state, all under one `commit_no`. Its input must still be exactly what is owed: the commit
 re-reads the pending view, and if another commit filed some of the run's events since the read
@@ -153,8 +158,9 @@ failure count and possibly a notice) describes the store, not the job, and a req
 no state beyond the job's id.
 
 **The meter.** After every commit and every failure, `memory.meter.persist` stores in
-`meta` the per-ledger entry count and tokens, unreachable objects, the twenty largest entries
-(ids and sizes), the week's growth, pending events with the oldest, pending corrections and
+`meta` the per-ledger entry count and tokens, unreachable objects, each served role's view of
+the ledger (whole or index, its size, and whether it overflows the role's budget at the
+coarsest level), the twenty largest entries (ids and sizes), the week's growth, pending events with the oldest, pending corrections and
 failed jobs, plus provisional events, the spool's size, each open session's
 `base_commit_no` and whether a maintenance intent is pending. A meter that cannot be stored
 never fails a job.
