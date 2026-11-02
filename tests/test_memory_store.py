@@ -114,41 +114,70 @@ def test_connection_per_transaction_no_handle_survives(
         check.close()
 
 
-def test_failed_migration_keeps_the_old_file_and_reports_unavailable(
-    opened: MemoryStore, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    canary = secrets.token_hex(8)
-    with opened.transaction(write=True) as conn:
+_FAILING_V2 = {
+    1: schema.V1,
+    # Version 2 creates a table, then fails part-way through.
+    2: ("CREATE TABLE added_in_v2 (x TEXT) STRICT", "THIS IS NOT A STATEMENT"),
+}
+
+
+def _v1_store(directory: Path, journal_mode: str, canary: str) -> str:
+    """A version-1 store in *journal_mode*, holding *canary*, closed."""
+    store = MemoryStore(str(directory))
+    assert store.open() is True, store.unavailable_reason
+    conn = _raw(store.path)
+    try:
+        assert conn.execute(
+            f"PRAGMA journal_mode={journal_mode}").fetchone()[0] == journal_mode
         conn.execute("INSERT INTO meta (key, value) VALUES (?, ?)",
                      ("canary", json.dumps(canary)))
-    before = _sha256(opened.path)
-
-    # Version 2 creates a table, then fails part-way through.
-    monkeypatch.setattr(store_mod, "MIGRATIONS", {
-        1: schema.V1,
-        2: ("CREATE TABLE added_in_v2 (x TEXT) STRICT",
-            "THIS IS NOT A STATEMENT"),
-    })
-    later = MemoryStore(opened.directory)
-    assert later.open() is False
-    assert later.available is False
-    assert later.unavailable_reason
-    with pytest.raises(MemoryUnavailable):
-        with later.transaction():
-            pass
-
-    assert _sha256(opened.path) == before
-    conn = _raw(opened.path)
-    try:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
-        assert conn.execute(
-            "SELECT count(*) FROM sqlite_master WHERE name = 'added_in_v2'"
-        ).fetchone()[0] == 0
-        row = conn.execute(
-            "SELECT value FROM meta WHERE key = 'canary'").fetchone()
-        assert json.loads(row[0]) == canary
     finally:
         conn.close()
+    return store.path
+
+
+def test_failed_migration_keeps_the_old_file_and_reports_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    canary = secrets.token_hex(8)
+    # A store in WAL (what Casa writes) and one in a rollback journal (a
+    # restored single-file store): the failure must not touch either.
+    paths = {mode: _v1_store(tmp_path / mode, mode, canary)
+             for mode in ("wal", "delete")}
+    before = {mode: (_sha256(p), sorted(os.listdir(os.path.dirname(p))))
+              for mode, p in paths.items()}
+
+    monkeypatch.setattr(store_mod, "MIGRATIONS", _FAILING_V2)
+    for mode, path in paths.items():
+        later = MemoryStore(os.path.dirname(path))
+        assert later.open() is False, mode
+        assert later.available is False
+        assert later.unavailable_reason
+        with pytest.raises(MemoryUnavailable):
+            with later.transaction():
+                pass
+
+        assert (_sha256(path), sorted(os.listdir(os.path.dirname(path)))) \
+            == before[mode], mode
+        conn = _raw(path)
+        try:
+            assert conn.execute("PRAGMA journal_mode").fetchone()[0] == mode
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+            assert conn.execute(
+                "SELECT count(*) FROM sqlite_master WHERE name = 'added_in_v2'"
+            ).fetchone()[0] == 0
+            row = conn.execute(
+                "SELECT value FROM meta WHERE key = 'canary'").fetchone()
+            assert json.loads(row[0]) == canary
+        finally:
+            conn.close()
+
+    # Where there was no store, a failed creation leaves nothing behind.
+    fresh = tmp_path / "fresh" / "memory"
+    monkeypatch.setattr(store_mod, "MIGRATIONS", {
+        1: (*schema.V1, "THIS IS NOT A STATEMENT")})
+    assert MemoryStore(str(fresh)).open() is False
+    assert not fresh.exists()
 
 
 def test_unopenable_files_report_unavailable_and_stay_unchanged(

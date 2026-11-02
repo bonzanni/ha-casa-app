@@ -13,8 +13,11 @@ every transaction is begun explicitly.
 :meth:`MemoryStore.open` is the boot step. It creates the store directory
 (0700), checks that SQLite has FTS5, and brings the file to the current schema
 version in one transaction: a fresh file is migrated from version 0, an older
-one forward. Any failure leaves the file as it was and the store
-*unavailable*: :attr:`MemoryStore.available` is false, the reason is kept, and
+one forward. Only after that succeeds is the file switched to WAL, since a
+journal-mode change cannot sit inside the transaction. Any failure leaves an
+existing file byte for byte as it was, removes a file (and directory) this
+call created, and makes the store *unavailable*:
+:attr:`MemoryStore.available` is false, the reason is kept, and
 :meth:`MemoryStore.transaction` raises :class:`MemoryUnavailable`. ``open``
 never raises, so Casa boots without memory rather than not at all.
 
@@ -99,15 +102,32 @@ class MemoryStore:
         if not fts5_available():
             raise MemoryUnavailable(
                 f"SQLite {sqlite3.sqlite_version} has no FTS5")
+        created_dir = not os.path.isdir(self.directory)
         os.makedirs(self.directory, mode=0o700, exist_ok=True)
+        created_file = not os.path.lexists(self.path)
+        try:
+            self._migrate()
+            self._enable_wal()
+        except BaseException:
+            if created_file:
+                for name in (self.path, *(self.path + s for s in
+                                          registry.SQLITE_SIDECARS)):
+                    try:
+                        os.unlink(name)
+                    except FileNotFoundError:
+                        pass
+            if created_dir:
+                try:
+                    os.rmdir(self.directory)
+                except OSError:
+                    pass
+            raise
+
+    def _migrate(self) -> None:
+        """Bring the file to :func:`schema_version` in one transaction."""
         target = schema_version()
         conn = self._connect()
         try:
-            # WAL is a property of the file; it cannot change inside a
-            # transaction, so it is set before the migration begins.
-            mode = conn.execute("PRAGMA journal_mode=WAL").fetchone()[0]
-            if str(mode).lower() != "wal":
-                raise MemoryUnavailable(f"journal mode {mode!r}, not WAL")
             conn.execute("BEGIN IMMEDIATE")
             try:
                 current = conn.execute("PRAGMA user_version").fetchone()[0]
@@ -136,6 +156,17 @@ class MemoryStore:
                     "memory store migrated v%d -> v%d", current, target)
         finally:
             conn.close()
+
+    def _enable_wal(self) -> None:
+        """WAL is a property of the file and cannot change inside a
+        transaction, so it is set once the schema is current."""
+        conn = self._connect()
+        try:
+            mode = conn.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+        finally:
+            conn.close()
+        if str(mode).lower() != "wal":
+            raise MemoryUnavailable(f"journal mode {mode!r}, not WAL")
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(

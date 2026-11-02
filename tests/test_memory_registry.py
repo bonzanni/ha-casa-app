@@ -7,11 +7,14 @@ would notice. Two pins keep the list complete:
 * **The store pin** reads a fresh store: every ``sqlite_master`` table and
   every path under ``/data/memory`` must belong to a row, and every row must
   carry all three rules.
-* **The producer pin** reads the code: every persisting call site of a named
-  producer of memory-derived text, every place a named producer is pointed at
-  a path, and every transcript root a launcher configures must land on a row;
-  and every producer that writes through an atomic-write helper must declare
-  the staging-file pattern that helper really uses, measured by running it.
+* **The producer pin** runs each named producer of memory-derived text with a
+  canary, in a sandbox standing in for the root, configured the way the code
+  configures it. Every file that holds the canary afterwards, and every
+  staging file that holds it when it is renamed into place, is judged by its
+  observed full path: the first against the producer's row, the second
+  against the row's staging patterns. A read of the producer's code finds its
+  persisting call sites, and each must be reached by a run. Every transcript
+  root a launcher configures must land on a row.
 
 Each pin's checker is a function, and the red cases feed it a violation it
 must report, so a checker that reports nothing is caught too.
@@ -24,6 +27,8 @@ import os
 import re
 import secrets
 import sqlite3
+import stat
+import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -172,6 +177,7 @@ class Site:
     target: str        # the persisted path, as written in the source
     helper: str        # atomic_io | safe_fs | hand_rolled | direct
     line: int
+    end_line: int
 
 
 def _parse(code_root: Path, module: str) -> ast.Module:
@@ -264,7 +270,8 @@ def producer_sites(code_root: Path, ref: str) -> list[Site]:
             helper = _helper_of(call, fn)
             if helper is not None:
                 sites.append(Site(ref, module, name, _target_of(call),
-                                  helper, call.lineno))
+                                  helper, call.lineno,
+                                  call.end_lineno or call.lineno))
                 continue
             callee = _callee(call, name, funcs)
             if callee is None:
@@ -300,7 +307,7 @@ def _all_producer_sites(code_root: Path, entries=REGISTRY) -> list[Site]:
             for s in producer_sites(code_root, ref)]
 
 
-# --- where each site's path comes from, built with the runtime's own code ---
+# --- production roots, read from the runtime's own code ---------------------
 
 def _module_constant(code_root: Path, module: str, name: str) -> str:
     for node in _parse(code_root, module).body:
@@ -312,44 +319,12 @@ def _module_constant(code_root: Path, module: str, name: str) -> str:
     raise AssertionError(f"{module} has no constant {name}")
 
 
-def _workspace_dir() -> str:
+def _workspace_dir(engagement_id: str = EID) -> str:
     """The engagement workspace, from the launch template that ``cd``s there."""
     template = (CODE_ROOT / "scripts" / "engagement_run_template.sh").read_text()
     found = re.findall(r'^cd "([^"]+)"$', template, re.M)
     assert len(found) == 1, found
-    return found[0].replace("{ID}", EID)
-
-
-def _executor_memory_cache() -> str:
-    # conftest points CONTROL_ROOT at a temporary directory for every test,
-    # so the production root is read from the module's source.
-    import drivers.workspace as ws
-    root = _module_constant(CODE_ROOT, "drivers/workspace.py", "CONTROL_ROOT")
-    return ws.executor_memory_path(EID, root=root)
-
-
-#: The path's owner is the instance: the construction-site scan below checks
-#: every place the producer's class is pointed at a path.
-CONSTRUCTED = "constructed"
-
-#: Every persisting site the scan finds, mapped to the production path it
-#: writes. A new site fails the pin until it is mapped here, and a mapped path
-#: must land on a path of the row that names the producer.
-SITE_PATHS = {
-    ("session_registry.py", "SessionRegistry._write", "self._path"):
-        CONSTRUCTED,
-    ("explanation_store.py", "ExplanationStore.record", "temporary"):
-        CONSTRUCTED,
-    ("drivers/workspace.py", "provision_workspace", "ws / 'CLAUDE.md'"):
-        lambda: f"{_workspace_dir()}/CLAUDE.md",
-    ("drivers/workspace.py", "provision_workspace",
-     "Path(executor_memory_path(engagement_id))"):
-        _executor_memory_cache,
-    ("drivers/workspace.py", "render_workspace_template", "dest / 'CLAUDE.md'"):
-        lambda: f"{_workspace_dir()}/CLAUDE.md",
-    ("drivers/workspace.py", "refresh_claude_md", "str(ws), 'CLAUDE.md'"):
-        lambda: f"{_workspace_dir()}/CLAUDE.md",
-}
+    return found[0].replace("{ID}", engagement_id)
 
 
 # --- constructor call sites, evaluated statically -----------------------------
@@ -536,48 +511,292 @@ def launcher_transcript_roots() -> list[tuple[str, str]]:
     return found + python_transcript_roots(CODE_ROOT)
 
 
-# --- the pin itself ------------------------------------------------------------
+# --- running the producers and watching where their text lands ---------------
+#
+# Each producer is run in a sandbox that stands in for the filesystem root,
+# with a random canary as its memory text and the paths its own configuration
+# gives it (the construction sites above, the launch template, the module's
+# own constants). The pins then judge what was observed: every file that holds
+# the canary afterwards, and every file holding it at the instant it is renamed
+# into place (the staging file a crash at that instant leaves behind), each by
+# its full path. Nothing here names where a producer is expected to write.
 
-def producer_pin_violations(code_root: Path, roots, entries=REGISTRY,
-                            site_paths=None) -> list[str]:
-    site_paths = SITE_PATHS if site_paths is None else site_paths
+#: The modules that hold the named producers.
+PRODUCER_MODULES = ("session_registry.py", "explanation_store.py",
+                    "drivers/workspace.py")
+
+
+def _load_modules(code_root: Path) -> dict:
+    """The producer modules, imported from *code_root*: the real ones for the
+    code root, private copies for a red case's altered tree."""
+    import importlib
+    import importlib.util
+    mods = {}
+    for i, rel in enumerate(PRODUCER_MODULES):
+        if code_root == CODE_ROOT:
+            mods[rel] = importlib.import_module(rel[:-3].replace("/", "."))
+        else:
+            spec = importlib.util.spec_from_file_location(
+                f"_altered_{i}_{Path(rel).stem}", code_root / rel)
+            module = importlib.util.module_from_spec(spec)
+            # dataclasses resolve string annotations through sys.modules.
+            sys.modules[spec.name] = module
+            try:
+                spec.loader.exec_module(module)
+            finally:
+                del sys.modules[spec.name]
+            mods[rel] = module
+    return mods
+
+
+@dataclass
+class Observed:
+    persisted: set[str]        # production paths of files holding the canary
+    staged: set[str]           # ... of staging files holding it when renamed
+    lines: set[tuple[str, int]]
+    error: str | None = None
+
+
+class _Watch:
+    """``os.replace`` stand-in and line tracer for one producer run."""
+
+    def __init__(self, canary: bytes, files: set[str]) -> None:
+        self.canary = canary
+        self.files = files
+        self.real = os.replace
+        self.staged: set[str] = set()
+        self.lines: set[tuple[str, int]] = set()
+
+    def __call__(self, src, dst, *, src_dir_fd=None, dst_dir_fd=None):
+        src_path = os.fspath(src)
+        if src_dir_fd is not None and not os.path.isabs(src_path):
+            src_path = os.path.join(
+                os.readlink(f"/proc/self/fd/{src_dir_fd}"), src_path)
+        try:
+            if self.canary in Path(src_path).read_bytes():
+                self.staged.add(os.path.abspath(src_path))
+        except OSError:
+            pass
+        return self.real(src, dst, src_dir_fd=src_dir_fd,
+                         dst_dir_fd=dst_dir_fd)
+
+    def trace(self, frame, event, arg):
+        if frame.f_code.co_filename not in self.files:
+            return None
+
+        def local(frame, event, arg):
+            if event == "line":
+                self.lines.add((frame.f_code.co_filename, frame.f_lineno))
+            return local
+        return local
+
+
+def _production(path: str, sandbox: Path) -> str:
+    """The production path a sandbox path stands for; a path outside the
+    sandbox is returned as is, and no row covers ``/tmp``."""
+    rel = os.path.relpath(path, sandbox)
+    return path if rel.startswith("..") else "/" + rel
+
+
+async def _observe(exercise, sandbox: Path, mods: dict) -> Observed:
+    canary = secrets.token_hex(16)
+    files = {os.path.abspath(m.__file__) for m in mods.values()}
+    watch = _Watch(canary.encode(), files)
+    previous = sys.gettrace()
+    error = None
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(os, "replace", watch)
+        sys.settrace(watch.trace)
+        try:
+            await exercise(sandbox, canary, mods, mp)
+        except Exception as exc:  # noqa: BLE001 — reported as a violation
+            error = f"{type(exc).__name__}: {exc}"
+        finally:
+            sys.settrace(previous)
+    persisted = set()
+    for dirpath, _, filenames in os.walk(sandbox):
+        for name in filenames:
+            full = os.path.join(dirpath, name)
+            if not stat.S_ISREG(os.lstat(full).st_mode):
+                continue        # a workspace holds a FIFO; never open one
+            try:
+                if canary.encode() in Path(full).read_bytes():
+                    persisted.add(_production(full, sandbox))
+            except OSError:
+                pass
+    return Observed(persisted, {_production(p, sandbox) for p in watch.staged},
+                    watch.lines, error)
+
+
+def _sandboxed(sandbox: Path, production: str) -> Path:
+    path = Path(registry.under(str(sandbox), production))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _constructed(code_root: Path, module: str, cls: str) -> list[str]:
+    paths = []
+    for where, path in construction_paths(code_root, module, cls):
+        if path is None:
+            raise AssertionError(f"{where}: {cls} is given a path this "
+                                 "scan cannot resolve")
+        paths.append(path)
+    if not paths:
+        raise AssertionError(f"nothing constructs {cls}")
+    return paths
+
+
+async def _run_session_registry(sandbox, canary, mods, mp, code_root):
+    module = mods["session_registry.py"]
+    for path in _constructed(code_root, "session_registry.py",
+                             "SessionRegistry"):
+        reg = module.SessionRegistry(str(_sandboxed(sandbox, path)))
+        reg._write({"telegram-sample": {"sdk_session_id": canary}})
+
+
+async def _run_explanation_store(sandbox, canary, mods, mp, code_root):
+    module = mods["explanation_store.py"]
+    for path in _constructed(code_root, "explanation_store.py",
+                             "ExplanationStore"):
+        module.ExplanationStore(_sandboxed(sandbox, path)).record(
+            module.ExplanationRecord(
+                correlation_id="a1b2c3d4", role_id="resident:assistant",
+                kind="resident", resolved_model="model", persona_ref=None,
+                role_checksum="0" * 8, binding_digest=None,
+                dependency_digests=(), effective_config_digest=None,
+                lifecycle_state=None, projection="telegram",
+                static_prompt_digest="0" * 8,
+                static_prompt_estimated_tokens=1, memory_tiers=(),
+                memory_attributions=(), tool_calls=(), denials=(),
+                memory_text=canary))
+
+
+def _executor(tmp: Path, name: str, *, template: bool):
+    from config import ExecutorDefinition
+    try:
+        from tests.role_artifact_stub import STUB_ROLE_ARTIFACT
+    except ImportError:
+        from role_artifact_stub import STUB_ROLE_ARTIFACT
+    exec_dir = tmp / name
+    exec_dir.mkdir(parents=True)
+    (exec_dir / "prompt.md").write_text("TASK:{task}\nMEM:{executor_memory}\n")
+    if template:
+        (exec_dir / "workspace-template").mkdir()
+        (exec_dir / "workspace-template" / "CLAUDE.md.tmpl").write_text(
+            "TASK:{task}\nMEM:{executor_memory}\n")
+    return ExecutorDefinition(
+        role_artifact=STUB_ROLE_ARTIFACT, type=name,
+        description="a sample executor for the producer pin",
+        model="sonnet", driver="claude_code",
+        prompt_template_path=str(exec_dir / "prompt.md"),
+        mcp_server_names=["casa-framework"],
+    )
+
+
+def _record(engagement_id: str, executor_type: str):
+    from engagement_registry import EngagementRecord
+    return EngagementRecord(
+        id=engagement_id, kind="executor", role_or_type=executor_type,
+        driver="claude_code", status="active", topic_id=1, started_at=0.0,
+        last_user_turn_ts=0.0, last_idle_reminder_ts=0.0, completed_at=None,
+        sdk_session_id=None, origin={}, task="sample task",
+    )
+
+
+async def _provision(sandbox, canary, mods, mp, *, template: bool) -> Path:
+    """One workspace, legacy or template branch, at the workspace path the
+    launch template uses and with the module's own control root."""
+    module = mods["drivers/workspace.py"]
+    control = _module_constant(CODE_ROOT, "drivers/workspace.py",
+                               "CONTROL_ROOT")
+    mp.setattr(module, "CONTROL_ROOT", str(_sandboxed(sandbox, control + "/x")
+                                           .parent))
+    eid = secrets.token_hex(16)
+    ws = Path(registry.under(str(sandbox), _workspace_dir(eid)))
+    ws.parent.mkdir(parents=True, exist_ok=True)
+    defn = _executor(sandbox.parent / f"defs-{eid}", "sample-executor",
+                     template=template)
+    path = await module.provision_workspace(
+        engagements_root=str(ws.parent), engagement_id=eid,
+        engagement_auth_token="token-sample", defn=defn, task="sample task",
+        context="", casa_framework_mcp_url="http://127.0.0.1:1/mcp",
+        workspace_template_root=(Path(defn.prompt_template_path).parent
+                                 / "workspace-template") if template else None,
+        executor_memory=canary,
+    )
+    return Path(path), defn
+
+
+async def _run_provision(sandbox, canary, mods, mp, code_root):
+    for template in (False, True):
+        await _provision(sandbox, canary, mods, mp, template=template)
+
+
+async def _run_refresh(sandbox, canary, mods, mp, code_root):
+    module = mods["drivers/workspace.py"]
+    for template in (False, True):
+        ws, defn = await _provision(sandbox, canary, mods, mp,
+                                    template=template)
+        (ws / "CLAUDE.md").write_text("")
+        module.refresh_claude_md(str(ws), defn=defn,
+                                 rec=_record(ws.name, defn.type))
+
+
+#: One way to run each named producer.
+EXERCISERS = {
+    "session_registry.py:SessionRegistry._write": _run_session_registry,
+    "explanation_store.py:ExplanationStore.record": _run_explanation_store,
+    "drivers/workspace.py:provision_workspace": _run_provision,
+    "drivers/workspace.py:refresh_claude_md": _run_refresh,
+}
+
+
+async def observe_producers(code_root: Path, tmp: Path, entries=REGISTRY):
+    """``[(entry, ref, Observed)]`` for every producer every row names."""
+    mods = _load_modules(code_root)
+    out = []
+    for i, (entry, ref) in enumerate(
+            (e, r) for e in entries for r in e.producer):
+        sandbox = tmp / f"run-{i}" / "root"
+        sandbox.mkdir(parents=True)
+        run = EXERCISERS.get(ref)
+        if run is None:
+            out.append((entry, ref, Observed(set(), set(), set(),
+                                             "no exerciser for this producer")))
+            continue
+
+        async def exercise(sb, canary, m, mp, _run=run):
+            await _run(sb, canary, m, mp, code_root)
+        out.append((entry, ref, await _observe(exercise, sandbox, mods)))
+    return out
+
+
+# --- the pins --------------------------------------------------------------
+
+def producer_pin_violations(code_root: Path, observations, roots,
+                            entries=REGISTRY) -> list[str]:
     problems: list[str] = []
-    used = set()
-    for e in entries:
-        for ref in e.producer:
-            if ref not in CARRIES:
-                problems.append(f"{ref}: say which input carries its text")
-                continue
-            module, qualname = ref.split(":")
-            for site in producer_sites(code_root, ref):
-                key = (site.module, site.function, site.target)
-                where = f"{site.module}:{site.line} ({site.function})"
-                if key not in site_paths:
-                    problems.append(
-                        f"{where} persists memory text to {site.target!r}, "
-                        "which no registry row is known to cover")
-                    continue
-                used.add(key)
-                if site_paths[key] == CONSTRUCTED:
-                    cls = qualname.split(".")[0]
-                    for at, path in construction_paths(code_root, module, cls):
-                        if path is None:
-                            problems.append(f"{at}: {cls} is given a path "
-                                            "this scan cannot resolve")
-                        elif not _row_matches(e, path):
-                            problems.append(f"{at}: {cls} writes {path}, "
-                                            f"outside row {e.name!r}")
-                    continue
-                path = site_paths[key]()
-                if not _row_matches(e, path):
-                    problems.append(f"{where} writes {path}, outside row "
-                                    f"{e.name!r}")
-            if any(s.helper != "direct" for s in
-                   producer_sites(code_root, ref)) and not e.staging_patterns:
-                problems.append(f"row {e.name!r}: {ref} writes through an "
-                                "atomic helper but declares no staging pattern")
-    for key in sorted(set(site_paths) - used):
-        problems.append(f"stale mapping, no such site: {key}")
+    named = {ref for e in entries for ref in e.producer}
+    for ref in sorted(set(EXERCISERS) - named):
+        problems.append(f"stale exerciser, no row names {ref}")
+    for entry, ref, seen in observations:
+        if seen.error:
+            problems.append(f"{ref}: {seen.error}")
+            continue
+        if not seen.persisted:
+            problems.append(f"{ref}: its run persisted no memory text")
+        for path in sorted(seen.persisted):
+            if not _row_matches(entry, path):
+                problems.append(f"{ref} persisted memory text to {path}, "
+                                f"outside row {entry.name!r}")
+        module = os.path.abspath(code_root / ref.split(":")[0])
+        for site in producer_sites(code_root, ref):
+            span = range(site.line, site.end_line + 1)
+            if not any((module, n) in seen.lines for n in span):
+                problems.append(
+                    f"{site.module}:{site.line} ({site.function}) persists "
+                    f"memory text to {site.target!r}, and no run of {ref} "
+                    "reached it")
 
     transcript_rows = [e for e in entries if e.kind is Kind.TRANSCRIPTS]
     for where, root in roots:
@@ -590,198 +809,132 @@ def producer_pin_violations(code_root: Path, roots, entries=REGISTRY,
     return problems
 
 
-def test_producer_pin_every_persisting_call_site_has_a_row() -> None:
+def staging_violations(observations) -> list[str]:
+    problems = []
+    for entry, ref, seen in observations:
+        for path in sorted(seen.staged):
+            if not any(fnmatch.fnmatchcase(path, p)
+                       for p in entry.staging_patterns):
+                problems.append(f"{ref} staged memory text at {path}, which "
+                                f"row {entry.name!r} does not declare")
+    return problems
+
+
+async def test_producer_pin_every_persisting_call_site_has_a_row(
+    tmp_path: Path,
+) -> None:
     roots = launcher_transcript_roots()
     # The scan must see the launchers it exists for, or it pins nothing.
     seen = {root for _, root in roots}
     assert "/config/cc-home/.claude/projects" in seen, roots
     assert f"/data/engagements/{EID}/.home/.claude/projects" in seen, roots
     assert "/root/.claude/projects" in seen, roots
-    refs = {ref for e in REGISTRY for ref in e.producer}
-    assert {s.producer for s in _all_producer_sites(CODE_ROOT)} == refs
-    assert producer_pin_violations(CODE_ROOT, roots) == []
+    observations = await observe_producers(CODE_ROOT, tmp_path)
+    assert {ref for _, ref, _ in observations} == set(EXERCISERS)
+    assert producer_pin_violations(CODE_ROOT, observations, roots) == []
 
 
-def test_producer_pin_red_cases(tmp_path: Path) -> None:
-    # 1. A named producer persisting its text to a path no row covers.
-    shadow = tmp_path / "code"
-    (shadow / "drivers").mkdir(parents=True)
-    for rel in ("session_registry.py", "explanation_store.py",
-                "drivers/workspace.py", "casa_core.py"):
-        (shadow / rel).write_text((CODE_ROOT / rel).read_text())
-    src = (shadow / "drivers/workspace.py").read_text()
-    anchor = "    provision_control_dir(engagement_id)\n"
-    assert src.count(anchor) == 1
-    (shadow / "drivers/workspace.py").write_text(src.replace(
-        anchor, anchor + "    (ws / 'MEMORY.md').write_text(executor_memory)\n"))
-    problems = producer_pin_violations(shadow, [])
-    assert any("persists memory text to \"ws / 'MEMORY.md'\"" in p
+async def test_every_producer_declares_its_staging_pattern(
+    tmp_path: Path,
+) -> None:
+    observations = await observe_producers(CODE_ROOT, tmp_path)
+    staged = {ref for _, ref, seen in observations if seen.staged}
+    # Every producer that writes through an atomic helper was seen staging.
+    assert staged == {
+        "session_registry.py:SessionRegistry._write",
+        "explanation_store.py:ExplanationStore.record",
+        "drivers/workspace.py:refresh_claude_md",
+    }, observations
+    assert staging_violations(observations) == []
+
+
+# --- red cases ---------------------------------------------------------------
+
+def _altered_tree(tmp_path: Path, module: str, old: str, new: str) -> Path:
+    """A copy of the code the pins read, with one producer changed."""
+    root = tmp_path / "altered"
+    for rel in (*PRODUCER_MODULES, "casa_core.py"):
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text((CODE_ROOT / rel).read_text())
+    text = (root / module).read_text()
+    assert text.count(old) == 1, old
+    (root / module).write_text(text.replace(old, new))
+    return root
+
+
+async def _violations(tmp_path: Path, module: str, old: str, new: str,
+                      check=producer_pin_violations) -> list[str]:
+    root = _altered_tree(tmp_path, module, old, new)
+    observations = await observe_producers(root, tmp_path / "runs")
+    if check is producer_pin_violations:
+        return check(root, observations, [])
+    return check(observations)
+
+
+_PROVISION_ANCHOR = "    provision_control_dir(engagement_id)\n"
+
+
+async def test_producer_pin_red_cases(tmp_path: Path) -> None:
+    # 1. A producer persisting its text to a path no row covers.
+    problems = await _violations(
+        tmp_path / "1", "drivers/workspace.py", _PROVISION_ANCHOR,
+        _PROVISION_ANCHOR
+        + "    (ws / 'MEMORY.md').write_text(executor_memory)\n")
+    assert any(re.search(r"provision_workspace persisted memory text to "
+                         rf"/data/engagements/[0-9a-f]{{32}}/MEMORY\.md, "
+                         "outside row 'executor memory'", p)
                for p in problems), problems
 
-    # 2. A mapped site whose path the row no longer covers.
-    lost = [e for e in REGISTRY if e.name == "executor memory"][0]
-    moved = replace(lost, paths=(lost.paths[0],))   # CLAUDE.md dropped
-    problems = producer_pin_violations(
-        CODE_ROOT, [], tuple(moved if e is lost else e for e in REGISTRY))
-    # ... and a class producer pointed at a path outside its row.
-    pointers = [e for e in REGISTRY if e.name == "session pointers"][0]
-    elsewhere = replace(pointers, paths=("/data/elsewhere.json",))
-    problems += producer_pin_violations(
-        CODE_ROOT, [], tuple(elsewhere if e is pointers else e
-                             for e in REGISTRY))
-    assert any("SessionRegistry writes /data/sessions.json, outside row "
-               "'session pointers'" in p for p in problems), problems
-    assert any("CLAUDE.md, outside row 'executor memory'" in p
+    # 2. The same producer and constructor, but the file it writes moved:
+    #    only the observed destination shows it.
+    problems = await _violations(
+        tmp_path / "2", "explanation_store.py",
+        'return self._root / f"{correlation_id}.json"',
+        'return self._root.parent / f"{correlation_id}.json"')
+    assert ("explanation_store.py:ExplanationStore.record persisted memory "
+            "text to /data/a1b2c3d4.json, outside row 'explanations'"
+            ) in problems, problems
+
+    # 3. A persisting site no run reaches.
+    problems = await _violations(
+        tmp_path / "3", "drivers/workspace.py", _PROVISION_ANCHOR,
+        _PROVISION_ANCHOR + "    if task == 'never-run':\n"
+        "        (ws / 'NEVER.md').write_text(executor_memory)\n")
+    assert any("persists memory text to \"ws / 'NEVER.md'\", and no run of "
+               "drivers/workspace.py:provision_workspace reached it" in p
                for p in problems), problems
 
-    # 3. A launcher configuring a transcript root with no row.
+    # 4. A launcher configuring a transcript root with no row.
     roots = shell_transcript_roots(
         "etc/s6-overlay/scripts/new-service.sh",
         "#!/bin/bash\nexport HOME=/data/other-home\nexec claude\n")
     assert roots == [("etc/s6-overlay/scripts/new-service.sh: "
                       "export HOME=/data/other-home",
                       "/data/other-home/.claude/projects")]
-    problems = producer_pin_violations(CODE_ROOT, roots)
-    assert problems == [
+    assert producer_pin_violations(CODE_ROOT, [], roots) == [
         "etc/s6-overlay/scripts/new-service.sh: export HOME=/data/other-home: "
         "transcript root /data/other-home/.claude/projects has no registry row"]
 
 
-# ---------------------------------------------------------------------------
-# Staging patterns, measured by running each producer
-# ---------------------------------------------------------------------------
+async def test_staging_pin_red_case(tmp_path: Path) -> None:
+    # 1. The shared writer's generic name: what sessions.json staged as before
+    #    its writer named the target.
+    problems = await _violations(
+        tmp_path / "1", "session_registry.py",
+        "mode=PRIVATE, prefix=_STAGING_PREFIX)", "mode=PRIVATE)",
+        check=staging_violations)
+    assert len(problems) == 1 and re.fullmatch(
+        r"session_registry\.py:SessionRegistry\._write staged memory text at "
+        r"/data/\.[^/]+\.tmp, which row 'session pointers' does not declare",
+        problems[0]), problems
 
-class _ReplaceSpy:
-    """Records the source name of every ``os.replace``: for an atomic write,
-    that is the staging file, observed at the instant before it is renamed —
-    the name a crash at that instant leaves behind."""
-
-    def __init__(self) -> None:
-        self.real = os.replace
-        self.staged: list[str] = []
-
-    def __call__(self, src, dst, *args, **kwargs):
-        self.staged.append(os.path.basename(os.fspath(src)))
-        return self.real(src, dst, *args, **kwargs)
-
-
-def staging_violations(entry: Entry, directory: str, staged: list[str]
-                       ) -> list[str]:
-    """*staged* names, as they would sit in production *directory*, that none
-    of the row's staging patterns declares."""
-    if not staged:
-        return [f"{entry.name}: the producer staged nothing"]
-    return [f"{entry.name}: staging file {directory}/{name} is undeclared"
-            for name in staged
-            if not any(fnmatch.fnmatchcase(f"{directory}/{name}", p)
-                       for p in entry.staging_patterns)]
-
-
-def _row(name: str) -> Entry:
-    return next(e for e in REGISTRY if e.name == name)
-
-
-async def _stage_session_pointers(tmp_path: Path) -> tuple[str, list[str]]:
-    from session_registry import SessionRegistry
-    spy = _ReplaceSpy()
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(os, "replace", spy)
-        reg = SessionRegistry(str(tmp_path / "sessions.json"))
-        await reg.save()
-    return "/data", spy.staged
-
-
-async def _stage_explanations(tmp_path: Path) -> tuple[str, list[str]]:
-    from explanation_store import ExplanationRecord, ExplanationStore
-    record = ExplanationRecord(
-        correlation_id="a1b2c3d4", role_id="resident:assistant",
-        kind="resident", resolved_model="model", persona_ref=None,
-        role_checksum="0" * 8, binding_digest=None, dependency_digests=(),
-        effective_config_digest=None, lifecycle_state=None,
-        projection="telegram", static_prompt_digest="0" * 8,
-        static_prompt_estimated_tokens=1, memory_tiers=(),
-        memory_attributions=(), tool_calls=(), denials=(),
-        memory_text=secrets.token_hex(8),
-    )
-    spy = _ReplaceSpy()
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(os, "replace", spy)
-        ExplanationStore(tmp_path / "explanations").record(record)
-    return "/data/explanations", spy.staged
-
-
-async def _stage_executor_memory(tmp_path: Path) -> tuple[str, list[str]]:
-    from config import ExecutorDefinition
-    from drivers.workspace import executor_memory_path, refresh_claude_md
-    from engagement_registry import EngagementRecord
-    try:
-        from tests.role_artifact_stub import STUB_ROLE_ARTIFACT
-    except ImportError:
-        from role_artifact_stub import STUB_ROLE_ARTIFACT
-
-    exec_dir = tmp_path / "executor"
-    exec_dir.mkdir()
-    (exec_dir / "prompt.md").write_text("TASK:{task}\nMEM:{executor_memory}\n")
-    defn = ExecutorDefinition(
-        role_artifact=STUB_ROLE_ARTIFACT, type="sample-executor",
-        description="a sample executor for the staging pin",
-        model="sonnet", driver="claude_code",
-        prompt_template_path=str(exec_dir / "prompt.md"),
-        mcp_server_names=["casa-framework"],
-    )
-    rec = EngagementRecord(
-        id=EID, kind="executor", role_or_type="sample-executor",
-        driver="claude_code", status="active", topic_id=1, started_at=0.0,
-        last_user_turn_ts=0.0, last_idle_reminder_ts=0.0, completed_at=None,
-        sdk_session_id=None, origin={}, task="sample task",
-    )
-    ws = tmp_path / "engagements" / EID
-    ws.mkdir(parents=True)
-    cache = Path(executor_memory_path(EID))
-    cache.parent.mkdir(parents=True, exist_ok=True)
-    cache.write_text(secrets.token_hex(8))
-    spy = _ReplaceSpy()
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(os, "replace", spy)
-        refresh_claude_md(str(ws), defn=defn, rec=rec)
-    assert cache.read_text() in (ws / "CLAUDE.md").read_text()
-    return _workspace_dir(), spy.staged
-
-
-#: One way to run each producer that stages, keyed by row name.
-STAGERS = {
-    "session pointers": _stage_session_pointers,
-    "explanations": _stage_explanations,
-    "executor memory": _stage_executor_memory,
-}
-
-
-async def test_every_producer_declares_its_staging_pattern(
-    tmp_path: Path,
-) -> None:
-    staging_rows = {
-        e.name for e in REGISTRY for ref in e.producer
-        if any(s.helper != "direct" for s in producer_sites(CODE_ROOT, ref))}
-    assert staging_rows == set(STAGERS), (
-        "every producer that writes through an atomic helper needs a stager "
-        "here, and a stager for a row whose producer stages nothing is stale")
-    problems = []
-    for name, stage in STAGERS.items():
-        work = tmp_path / name.replace(" ", "-")
-        work.mkdir()
-        directory, staged = await stage(work)
-        problems += staging_violations(_row(name), directory, staged)
-    assert problems == []
-
-
-def test_staging_pin_red_case(tmp_path: Path) -> None:
-    """The generic ``atomic_io`` name: what ``sessions.json`` staged as before
-    its writer named the target. It must not pass as declared."""
-    from atomic_io import atomic_write_json
-    spy = _ReplaceSpy()
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(os, "replace", spy)
-        atomic_write_json(tmp_path / "sessions.json", {})
-    problems = staging_violations(_row("session pointers"), "/data",
-                                  spy.staged)
-    assert len(problems) == 1 and "is undeclared" in problems[0], problems
+    # 2. A staging file with its declared name, in another directory.
+    problems = await _violations(
+        tmp_path / "2", "explanation_store.py",
+        'temporary = path.with_name(f"{path.stem}.{uuid.uuid4().hex}.tmp")',
+        'temporary = self._root.parent / f"{path.stem}.{uuid.uuid4().hex}.tmp"',
+        check=staging_violations)
+    assert len(problems) == 1 and re.fullmatch(
+        r"explanation_store\.py:ExplanationStore\.record staged memory text "
+        r"at /data/a1b2c3d4\.[0-9a-f]{32}\.tmp, which row 'explanations' "
+        r"does not declare", problems[0]), problems

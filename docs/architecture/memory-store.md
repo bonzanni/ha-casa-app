@@ -29,10 +29,11 @@ the long-term memory backend is built. It checks that SQLite can create and quer
 table, creates the directory, and brings the file to the current schema version in a single
 transaction. A fresh file counts as version 0, so creating a store and migrating one are
 the same loop over `memory/schema.py`'s `MIGRATIONS`. The schema version is SQLite's
-`user_version`.
+`user_version`. Only then is the file switched to WAL, because a journal-mode change cannot
+sit inside the transaction.
 
-**Unavailable, never empty.** If any step fails, the transaction rolls back and the file is
-left as it was. The store is then *unavailable*: `available` is false, the reason is kept,
+**Unavailable, never empty.** If any step fails, the transaction rolls back and an existing
+file is left byte for byte as it was; a file this boot was creating is removed. The store is then *unavailable*: `available` is false, the reason is kept,
 and every `transaction()` raises `MemoryUnavailable`. `open()` never raises, so Casa boots
 without memory rather than not at all. A file written by a newer Casa is not downgraded; it
 is reported unavailable too.
@@ -65,32 +66,39 @@ the `memory` package, so it can be used while that process is not running.
 
 ## Contracts & invariants
 
-**INV-MEM-025**: Every store that holds memory is a registry row with an export, a restore and a wipe rule; a test fails when a fresh store has a table or a `/data/memory` path no row declares, when a named producer of memory-derived text persists through a call site or is configured with a path no row covers, when a launcher configures a transcript root no row covers, or when a producer's atomic-write helper stages under a name its row does not declare.
+**INV-MEM-025**: Every store that holds memory is a registry row with an export, a restore and a wipe rule; a test fails when a fresh store has a table or a `/data/memory` path no row declares, when a named producer of memory-derived text, run as the code configures it, leaves that text in a file its row does not cover or in a staging file its row does not declare, when a persisting call site of a named producer is reached by no run, or when a launcher configures a transcript root no row covers.
 
 The store pin opens a real store and reads `sqlite_master` and the directory, once with a
-transaction open so the WAL sidecars are present. The producer pin reads code:
+transaction open so the WAL sidecars are present. The producer pin judges what it
+observes, never a path it is told:
 
-- **Persisting call sites.** It starts from each producer a row names and follows the input
-  that carries the memory text, through assignments and into functions of the same module
-  it is passed to, to every call that writes it. Each site it finds must be mapped to the
-  production path it writes, and that path must lie in the producer's own row. A new site
-  fails the pin until it is mapped.
-- **Configured paths.** Every call that constructs a class producer is evaluated statically
-  for the path it is given, or its default.
+- **Where the text lands.** Each named producer is run in a sandbox that stands in for the
+  filesystem root, with a random canary as its memory text and the configuration the code
+  gives it: the paths its class is constructed with (each construction call evaluated
+  statically, or its default), the workspace path from the engagement launch template, and
+  the module's own constants. Every file that holds the canary afterwards must lie in the
+  producer's own row, judged by its full observed path.
+- **Staging files.** Every rename during the run is watched. A staging file that holds the
+  canary at the instant it is renamed into place — the file a crash at that instant leaves
+  behind — must match one of the row's staging patterns, by its full path, including one
+  addressed relative to a directory descriptor.
+- **Reach.** A read of the producer's code follows the input that carries the memory text,
+  through assignments and into functions of the same module it is passed to, to every call
+  that writes it. Each such call site must execute during a run, so a branch the runs never
+  take fails the pin until a run takes it.
 - **Transcript roots.** Every launcher is scanned: each `HOME` or `CLAUDE_CONFIG_DIR` a
   shell script sets or publishes to the container environment, each literal
   `.claude/projects` path, and each one Python code sets for a launch. A value the scan
   cannot resolve fails the pin rather than passing.
-- **Staging names.** These are measured, not read: the test runs each staging producer and
-  records the name of the file it renames into place, which is the name a crash at that
-  instant would leave behind.
 
-What it does not cover: the scan follows memory text only within a producer's own module,
-so a producer that hands its text to another module's writer needs that writer named as a
-producer too. The producer list is named by hand; a new producer of memory-derived text
-joins it in the change that adds it. Copies of `sessions.json` that the corrupt-file
-quarantine sets aside, and staging files the shared writer left before its name carried a
-target, are not attributed to the row: they hold session ids, not conversation text.
+What it does not cover: the reach check follows memory text only within a producer's own
+module, so a producer that hands its text to another module's writer needs that writer named
+as a producer too. A write to an absolute path that bypasses the producer's configuration
+lands outside the sandbox and is not observed. The producer list is named by hand; a new
+producer of memory-derived text joins it, with a way to run it, in the change that adds it.
+Copies of `sessions.json` that the corrupt-file quarantine sets aside, and staging files the
+shared writer left before its name carried a target, are not attributed to the row: they
+hold session ids, not conversation text.
 
 ## Failure behavior
 
@@ -98,9 +106,10 @@ target, are not attributed to the row: they hold session ids, not conversation t
 and queries an FTS5 table). On a running system the boot check reports the store
 unavailable before creating anything.
 
-**A migration fails part-way.** The transaction rolls back, the file keeps its old schema
-and content byte for byte, and the store is unavailable. The error is logged with the
-reason.
+**A migration fails part-way.** The transaction rolls back, the file keeps its old schema,
+content and journal mode byte for byte, and the store is unavailable; a store this boot was
+creating is removed rather than left empty. The file is switched to WAL only after the
+schema is current. The error is logged with the reason.
 
 **The file is not a database, or is from a newer schema.** Unavailable; the file is not
 touched.
