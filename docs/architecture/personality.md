@@ -87,7 +87,10 @@ instructions under the shared core heading, and a Markdown section's body would 
 through its subsections — so selecting the core would drag every other surface's directives
 into every projection, and repeat the chosen one. Section selection therefore excludes the
 sibling projection subtrees explicitly; the surface's own section is always selected in its
-own right, never inherited.
+own right, never inherited. Because only those headings are selected, a doctrine with neither
+a `# Core doctrine` body nor a projection section would compile to an empty doctrine block on
+every surface; loading the role artifact refuses one, judged with the compiler's own selection,
+rather than let a role run without its doctrine.
 
 **A persona can misdescribe its role, but cannot expand it.** Persona validation checks
 structure, required markers, sections and size against the manifest. It does not check that

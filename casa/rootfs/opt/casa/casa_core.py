@@ -179,6 +179,10 @@ async def start_internal_unix_runner(
                                  _ops.build_continue_handler())
     internal_app.router.add_post("/internal/broker/delivery-status",
                                  _ops.build_delivery_status_handler())
+    # Casa Browser action model: the check of one browsing action, asked by
+    # the plugin's code during the same kind of call.
+    internal_app.router.add_post("/internal/broker/action-judgement",
+                                 _ops.build_action_judgement_handler())
     # Task E.1 (granular-reload plan): casactl operator CLI POSTs here
     # over the unix socket. Same dispatch path as the casa_reload MCP tool.
     internal_app.router.add_post(
@@ -6160,6 +6164,7 @@ async def _shutdown_cleanup(
     # Browser executor (Plan 3 C8): continuations still waiting or running are
     # cancelled first — the driver sweep re-finds their runs after the boot.
     import plugin_continuations
+    plugin_continuations.stop_sweep()              # slice 5k: no sweep pass after the stop
     await plugin_continuations.CONTINUATIONS.drain()
     await _tools_mod.drain_delegation_settlements()
 

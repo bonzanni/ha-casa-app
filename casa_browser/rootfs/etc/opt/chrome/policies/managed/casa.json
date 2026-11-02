@@ -1,0 +1,21 @@
+{
+  "ExtensionSettings": {
+    "aeblfdkhhhdcdjpifhhbdiojplfjncoa": {
+      "installation_mode": "force_installed",
+      "update_url": "https://clients2.google.com/service/update2/crx"
+    }
+  },
+  "BrowserSignin": 0,
+  "SyncDisabled": true,
+  "PasswordManagerEnabled": false,
+  "PasswordLeakDetectionEnabled": false,
+  "AutofillAddressEnabled": false,
+  "AutofillCreditCardEnabled": false,
+  "MetricsReportingEnabled": false,
+  "DnsOverHttpsMode": "off",
+  "BuiltInDnsClientEnabled": false,
+  "QuicAllowed": false,
+  "WebRtcIPHandling": "disable_non_proxied_udp",
+  "CommandLineFlagSecurityWarningsEnabled": false,
+  "DeveloperToolsAvailability": 1
+}

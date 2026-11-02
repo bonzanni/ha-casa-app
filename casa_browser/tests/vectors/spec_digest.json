@@ -1,0 +1,156 @@
+[
+  {
+    "name": "plain",
+    "members": {
+      "request_id": "6f1c2a9e-0d4b-4f2a-9a51-3c7e8d2b1f00",
+      "requester_id": "assistant",
+      "mode": "account",
+      "task_text": "Download the March invoice.",
+      "task_kind": "invoice",
+      "sites": [
+        {
+          "site_id": "s1",
+          "access": "account"
+        }
+      ],
+      "result_expectation": "One PDF for March."
+    },
+    "canonical": "{\"mode\":\"account\",\"request_id\":\"6f1c2a9e-0d4b-4f2a-9a51-3c7e8d2b1f00\",\"requester_id\":\"assistant\",\"result_expectation\":\"One PDF for March.\",\"sites\":[{\"access\":\"account\",\"site_id\":\"s1\"}],\"task_kind\":\"invoice\",\"task_text\":\"Download the March invoice.\"}",
+    "digest": "sha256:11109eced1295b47a9967c2136a6dea0653ab61e822cec0d2830fcc504301aa5"
+  },
+  {
+    "name": "non_ascii_task_text",
+    "members": {
+      "request_id": "6f1c2a9e-0d4b-4f2a-9a51-3c7e8d2b1f00",
+      "requester_id": "assistant",
+      "mode": "account",
+      "task_text": "Scarica la fattura di marzo — €42, 日本語, emoji 🧾",
+      "task_kind": "invoice",
+      "sites": [
+        {
+          "site_id": "s1",
+          "access": "account"
+        }
+      ],
+      "result_expectation": "One PDF for March."
+    },
+    "canonical": "{\"mode\":\"account\",\"request_id\":\"6f1c2a9e-0d4b-4f2a-9a51-3c7e8d2b1f00\",\"requester_id\":\"assistant\",\"result_expectation\":\"One PDF for March.\",\"sites\":[{\"access\":\"account\",\"site_id\":\"s1\"}],\"task_kind\":\"invoice\",\"task_text\":\"Scarica la fattura di marzo — €42, 日本語, emoji 🧾\"}",
+    "digest": "sha256:4055dc7ac6e42a3a2fd3b42bf64325702f7eea820a1e7b5ef302372058f03a1a"
+  },
+  {
+    "name": "nested_sites",
+    "members": {
+      "request_id": "6f1c2a9e-0d4b-4f2a-9a51-3c7e8d2b1f00",
+      "requester_id": "assistant",
+      "mode": "account",
+      "task_text": "Download the March invoice.",
+      "task_kind": "invoice",
+      "sites": [
+        {
+          "site_id": "s1",
+          "access": "account"
+        },
+        {
+          "site_id": "pub",
+          "access": "public"
+        }
+      ],
+      "result_expectation": "One PDF for March."
+    },
+    "canonical": "{\"mode\":\"account\",\"request_id\":\"6f1c2a9e-0d4b-4f2a-9a51-3c7e8d2b1f00\",\"requester_id\":\"assistant\",\"result_expectation\":\"One PDF for March.\",\"sites\":[{\"access\":\"account\",\"site_id\":\"s1\"},{\"access\":\"public\",\"site_id\":\"pub\"}],\"task_kind\":\"invoice\",\"task_text\":\"Download the March invoice.\"}",
+    "digest": "sha256:703e5ae0303be6de06bfec947249bd54879579f505209d8ea101efb654756391"
+  },
+  {
+    "name": "empty_expectation",
+    "members": {
+      "request_id": "6f1c2a9e-0d4b-4f2a-9a51-3c7e8d2b1f00",
+      "requester_id": "assistant",
+      "mode": "account",
+      "task_text": "Download the March invoice.",
+      "task_kind": "invoice",
+      "sites": [
+        {
+          "site_id": "s1",
+          "access": "account"
+        }
+      ],
+      "result_expectation": ""
+    },
+    "canonical": "{\"mode\":\"account\",\"request_id\":\"6f1c2a9e-0d4b-4f2a-9a51-3c7e8d2b1f00\",\"requester_id\":\"assistant\",\"result_expectation\":\"\",\"sites\":[{\"access\":\"account\",\"site_id\":\"s1\"}],\"task_kind\":\"invoice\",\"task_text\":\"Download the March invoice.\"}",
+    "digest": "sha256:a0117119fa547202f483b95e9471cd75b744123d9c00c0d35b3772109b2fa3b7"
+  },
+  {
+    "name": "integer_and_boolean_members",
+    "members": {
+      "request_id": "6f1c2a9e-0d4b-4f2a-9a51-3c7e8d2b1f00",
+      "requester_id": "assistant",
+      "mode": "account",
+      "task_text": "Download the March invoice.",
+      "task_kind": "invoice",
+      "sites": [
+        {
+          "site_id": "s1",
+          "access": "account"
+        }
+      ],
+      "result_expectation": "One PDF for March.",
+      "priority": 3,
+      "urgent": true,
+      "note": null
+    },
+    "canonical": "{\"mode\":\"account\",\"note\":null,\"priority\":3,\"request_id\":\"6f1c2a9e-0d4b-4f2a-9a51-3c7e8d2b1f00\",\"requester_id\":\"assistant\",\"result_expectation\":\"One PDF for March.\",\"sites\":[{\"access\":\"account\",\"site_id\":\"s1\"}],\"task_kind\":\"invoice\",\"task_text\":\"Download the March invoice.\",\"urgent\":true}",
+    "digest": "sha256:f56bb474fb2c229058dde3162ab9fe944618935723044854441414f4b7a606ac"
+  },
+  {
+    "name": "key_ordering",
+    "members": {
+      "result_expectation": "One PDF for March.",
+      "sites": [
+        {
+          "site_id": "s1",
+          "access": "account"
+        }
+      ],
+      "task_kind": "invoice",
+      "task_text": "Download the March invoice.",
+      "mode": "account",
+      "requester_id": "assistant",
+      "request_id": "6f1c2a9e-0d4b-4f2a-9a51-3c7e8d2b1f00"
+    },
+    "canonical": "{\"mode\":\"account\",\"request_id\":\"6f1c2a9e-0d4b-4f2a-9a51-3c7e8d2b1f00\",\"requester_id\":\"assistant\",\"result_expectation\":\"One PDF for March.\",\"sites\":[{\"access\":\"account\",\"site_id\":\"s1\"}],\"task_kind\":\"invoice\",\"task_text\":\"Download the March invoice.\"}",
+    "digest": "sha256:11109eced1295b47a9967c2136a6dea0653ab61e822cec0d2830fcc504301aa5"
+  },
+  {
+    "name": "open_web_no_sites",
+    "members": {
+      "request_id": "6f1c2a9e-0d4b-4f2a-9a51-3c7e8d2b1f00",
+      "requester_id": "assistant",
+      "mode": "open_web",
+      "task_text": "Compare three kettles under 50 EUR.",
+      "task_kind": "invoice",
+      "sites": [],
+      "result_expectation": "One PDF for March."
+    },
+    "canonical": "{\"mode\":\"open_web\",\"request_id\":\"6f1c2a9e-0d4b-4f2a-9a51-3c7e8d2b1f00\",\"requester_id\":\"assistant\",\"result_expectation\":\"One PDF for March.\",\"sites\":[],\"task_kind\":\"invoice\",\"task_text\":\"Compare three kettles under 50 EUR.\"}",
+    "digest": "sha256:1e373cf1175e849c6d6b7e94f5f9c7501c79e1a5378b15c96d3325f9770780e2"
+  },
+  {
+    "name": "escapes",
+    "members": {
+      "request_id": "6f1c2a9e-0d4b-4f2a-9a51-3c7e8d2b1f00",
+      "requester_id": "assistant",
+      "mode": "account",
+      "task_text": "Quote \"this\"\\ and a tab\there\nnewline",
+      "task_kind": "invoice",
+      "sites": [
+        {
+          "site_id": "s1",
+          "access": "account"
+        }
+      ],
+      "result_expectation": "One PDF for March."
+    },
+    "canonical": "{\"mode\":\"account\",\"request_id\":\"6f1c2a9e-0d4b-4f2a-9a51-3c7e8d2b1f00\",\"requester_id\":\"assistant\",\"result_expectation\":\"One PDF for March.\",\"sites\":[{\"access\":\"account\",\"site_id\":\"s1\"}],\"task_kind\":\"invoice\",\"task_text\":\"Quote \\\"this\\\"\\\\ and a tab\\there\\nnewline\"}",
+    "digest": "sha256:9bbc2d982dbc81014abe6da62644a4705edb5be68b1dac203363b82be04a8605"
+  }
+]

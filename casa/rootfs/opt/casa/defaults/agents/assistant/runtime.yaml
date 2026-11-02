@@ -41,6 +41,8 @@ tools:
     - mcp__casa-framework__consent_reprompt
     - mcp__casa-framework__recall_memory
     - mcp__casa-framework__send_message
+    # slice 5l — a delegate's answer, posted by Casa under its header
+    - mcp__casa-framework__relay_answer
     - mcp__casa-framework__send_media
   disallowed:
     # #460: the assistant is a router—all concrete work is delegated.

@@ -135,6 +135,12 @@ PROPOSAL_MAX_PAGES = 6           # #1377: plain pages a card may bring before it
 # UTF-16 units); `\n✖ <reason>`, `\n⌛ expired` and `\n↻ replaced` are shorter —
 # else a maximal proposal could never be settled
 PROPOSAL_SETTLE_RESERVE = 1 + 2 + 2 * PROPOSAL_LABEL_CHARS
+# Slice 5b: a proposal may carry a photo from the plugin's outbox, posted as ONE
+# message — the photo, the composed text as its caption, the keyboard. Telegram
+# takes 0–1024 caption characters after entities parsing (sendPhoto,
+# editMessageCaption); the settle reserve stays free as for a text card.
+PROPOSAL_CAPTION_CHARS = 1024
+PROPOSAL_PHOTO_PATH_CHARS = 1024
 MAX_MESSAGE_CHARS = 12_000
 MAX_MESSAGE_PAGES = 6
 # The COMPOSED file caption — Casa's label line, a newline, the plugin's
@@ -322,6 +328,13 @@ def proposal_ok(value: Any, call: Any) -> tuple[dict | None, str | None]:
         revision = ""
     if not isinstance(revision, str) or len(revision) > PROPOSAL_REVISION_CHARS:
         return None, "bad_proposal"
+    # slice 5b: an optional photo (a path in the plugin's outbox, judged at
+    # delivery like a file's); a photo card brings no pages
+    photo = obj.get("photo")
+    if photo is not None and (not isinstance(photo, str) or not photo.strip()
+                              or len(photo) > PROPOSAL_PHOTO_PATH_CHARS
+                              or not photo.isprintable() or pages is not None):
+        return None, "bad_proposal"
     entry = getattr(call, "entry", None)
     servers = tuple(getattr(entry, "servers", ()) or ())
     if (call.identity is None or entry is None or len(servers) != 1
@@ -329,7 +342,7 @@ def proposal_ok(value: Any, call: Any) -> tuple[dict | None, str | None]:
         return None, "bad_proposal"
     seg, server = entry.plugin_seg, servers[0]
     resolved = []
-    arm_buttons = close_buttons = 0
+    arm_buttons = close_buttons = url_buttons = 0
     for button in buttons:
         if not isinstance(button, dict):
             return None, "bad_proposal"
@@ -337,6 +350,18 @@ def proposal_ok(value: Any, call: Any) -> tuple[dict | None, str | None]:
         if (not isinstance(label, str) or not label.strip()
                 or len(label) > PROPOSAL_LABEL_CHARS or not _text_ok(label, PROPOSAL_LABEL_CHARS)):
             return None, "bad_proposal"
+        # slice 5f: a link button opens its https link and stores no call; at most one per
+        # proposal, only from a plugin that declares an operator_link slot (so it can post
+        # nothing it could not already post as a link), under the same link rule
+        if "url" in button:
+            if (set(button) != {"label", "url"} or not _link_ok(button["url"])
+                    or not _plugin_delivers_link(call.contract_map, seg)):
+                return None, "bad_proposal"
+            url_buttons += 1
+            if url_buttons > 1:
+                return None, "bad_proposal"
+            resolved.append({"label": label, "url": button["url"]})
+            continue
         # #1375: a Close button stores no call — Casa removes the card's keyboard itself;
         # at most one per proposal, never beside another kind (it counts toward the six)
         if "close" in button:
@@ -389,10 +414,32 @@ def proposal_ok(value: Any, call: Any) -> tuple[dict | None, str | None]:
         if (len(render_paged(composed)) != 1
                 or utf16_len(composed) > 4096 - PROPOSAL_SETTLE_RESERVE):
             return None, "bad_proposal"
+    if photo is not None and not caption_fits(compose_operator_message(text, head)):
+        return None, "bad_proposal"
     out = {"text": text, "buttons": resolved, "revision": revision}
     if pages is not None:
         out["pages"] = list(pages)
+    if photo is not None:
+        out["photo"] = photo
     return out, None
+
+
+def _plugin_delivers_link(contract_map: Any, seg: str) -> bool:
+    """Slice 5f: some tool of the plugin *seg* declares a slot delivering ``operator_link``."""
+    tools = getattr(contract_map, "tools", None) or {}
+    return any(getattr(e, "plugin_seg", None) == seg
+               and OPERATOR_LINK in dict(getattr(e, "delivers", None) or {}).values()
+               for e in tools.values())
+
+
+def caption_fits(composed: str) -> bool:
+    """Slice 5b: *composed* as a photo's caption leaves the settle reserve free:
+    its rendered display (what both the rich send and its entity-free fallback
+    show) within Telegram's caption characters."""
+    from channels.tg_richtext import render
+    from text_util import utf16_len
+    display, _entities = render(composed)
+    return utf16_len(display) <= PROPOSAL_CAPTION_CHARS - PROPOSAL_SETTLE_RESERVE
 
 
 def post_label(role: str) -> str:
@@ -1260,25 +1307,29 @@ def make_plugin_admission_hook(
     return _hook
 
 
-def compose_operator_link(value: str, *, caption: str = "", label: str = ""):
+def compose_operator_link(value: str, *, caption: str = "", label: str = "",
+                          head: str = ""):
     """#1015: the ONE message Casa posts for a delivered link — ``(text,
     entities, plain)`` for ``TelegramChannel.deliver_operator_link``. The
     link text is ``"<label> (<host>)"`` with the host printed by Casa from
     the URL (lower-cased ``urlsplit().hostname``), never supplied by the
-    plugin; one ``text_link`` entity spans it, its length in UTF-16 code
-    units (Telegram's unit); the caption follows on its own line as the
-    bytes it is (this never goes through the markdown renderer). ``plain``
-    is the fallback the channel sends when the entity is refused: the same
-    text with the URL spelled out."""
+    plugin; one ``text_link`` entity spans it, its offset and length in
+    UTF-16 code units (Telegram's unit); the caption follows on its own line
+    as the bytes it is (this never goes through the markdown renderer).
+    ``head`` (slice 5r) is the specialist's label line (``post_label``),
+    above the link as on its messages, files and proposals. ``plain`` is the
+    fallback the channel sends when the entity is refused: the same text
+    with the URL spelled out."""
     from telegram import MessageEntity
     from text_util import utf16_len
     host = (urlsplit(value).hostname or "").lower()
     label = label or DEFAULT_LINK_LABEL
     link_text = f"{label} ({host})"
+    lead = f"{head}\n" if head else ""
     tail = f"\n{caption}" if caption else ""
-    entities = [MessageEntity(type=MessageEntity.TEXT_LINK, offset=0,
+    entities = [MessageEntity(type=MessageEntity.TEXT_LINK, offset=utf16_len(lead),
                               length=utf16_len(link_text), url=value)]
-    return link_text + tail, entities, f"{link_text}: {value}{tail}"
+    return lead + link_text + tail, entities, f"{lead}{link_text}: {value}{tail}"
 
 
 async def _post_operator_link(chat_id: int, text: str, entities, plain: str,
@@ -1323,18 +1374,26 @@ async def _post_operator_page(chat_id: int, text: str, post: "PostRecord | None"
 
 
 async def _post_operator_proposal(chat_id: int, text: str, labels: list, rid: str,
-                                  post: "PostRecord | None" = None):
+                                  post: "PostRecord | None" = None,
+                                  photo: "tuple[bytes, str] | None" = None,
+                                  urls: "list | None" = None):
     """S5: the channel posts the labelled text with one button per label
     (``v1|proposal|<rid>|<i>``) and files the sent message under *post*;
-    returns the message id, or ``None`` when nothing landed."""
+    returns the message id, or ``None`` when nothing landed. Slice 5b: with
+    *photo* (its bytes and file name) the card is that photo with the text as
+    its caption — one message."""
     channel = _telegram_channel()
     if channel is None:
         return None
-    return await channel.deliver_operator_proposal(chat_id, text, labels, rid, post=post)
+    extra = {**({"photo": photo} if photo is not None else {}),
+             **({"urls": urls} if urls else {})}
+    return await channel.deliver_operator_proposal(chat_id, text, labels, rid, post=post,
+                                                   **extra)
 
 
 async def _edit_operator_proposal(chat_id: int, message_id: int, text: str, labels: list,
-                                  rid: str, post: "PostRecord | None" = None):
+                                  rid: str, post: "PostRecord | None" = None,
+                                  urls: "list | None" = None):
     """#1339: the channel edits *message_id* to the labelled text with one
     button per label (``v1|proposal|<rid>|<i>``); returns the message id, or
     ``None`` when the edit did not land."""
@@ -1342,7 +1401,7 @@ async def _edit_operator_proposal(chat_id: int, message_id: int, text: str, labe
     if channel is None:
         return None
     return await channel.replace_operator_proposal(chat_id, message_id, text, labels, rid,
-                                                   post=post)
+                                                   post=post, **({"urls": urls} if urls else {}))
 
 
 def _claim_and_capture(outbox, path: str, kind: str, delivered_name: str = ""):
@@ -1445,11 +1504,18 @@ async def _post_proposal(identity, seg: str, slot: str, call: _InFlight, proposa
     scope = f"proposal:{chat_id}"
     revision = str(proposal.get("revision") or "")
     labels = [b["label"] for b in proposal["buttons"]]
+    urls = [b.get("url") for b in proposal["buttons"]]
     text = compose_operator_message(proposal["text"], head)
     tell_after = False
     if warning:
         with_tell = f"{warning}\n{text}"
-        if len(render_paged(with_tell)) == 1 and utf16_len(with_tell) <= 4096 - PROPOSAL_SETTLE_RESERVE:
+        if proposal.get("photo"):
+            # slice 5b: the tell joins a photo card's caption only within its budget
+            fits = caption_fits(with_tell)
+        else:
+            fits = (len(render_paged(with_tell)) == 1
+                    and utf16_len(with_tell) <= 4096 - PROPOSAL_SETTLE_RESERVE)
+        if fits:
             text = with_tell
         else:
             tell_after = True
@@ -1476,9 +1542,14 @@ async def _post_proposal(identity, seg: str, slot: str, call: _InFlight, proposa
         # #1362: a `keep_card` button's tap settles nothing (INV-PROP-010); #1375: a
         # `close` button's tap only removes the keyboard (INV-PROP-011)
         "kinds": ["arm_file" if b.get("arm_file") else "keep_card" if b.get("keep_card")
-                  else "close" if b.get("close") else "call" for b in proposal["buttons"]],
+                  else "close" if b.get("close") else "url" if b.get("url") else "call"
+                  for b in proposal["buttons"]],
+        # slice 5f: a link button's address, None at every other index
+        "urls": urls,
         "revision": revision, "label": head, "text": text, "options": list(labels),
         "message_id": None, "owner": _post_owner(identity), "_scope": scope,
+        # slice 5b: a photo card's text is its caption — every later edit is a caption edit
+        "photo": bool(proposal.get("photo")),
     }
     req, _created = BROKER.register(
         namespace="proposal", scope=scope, request_id=rid,
@@ -1517,11 +1588,21 @@ async def _post_proposal(identity, seg: str, slot: str, call: _InFlight, proposa
             if not pages_ok:
                 logger.warning("proposal withheld: %d of %d pages landed", landed, len(pages))
                 return False, {}, None, _pages_reason(landed, len(pages))
+        photo = None
+        if proposal.get("photo") and edit_message_id is None:
+            # slice 5b: the photo is claimed from the plugin's outbox exactly as a
+            # file is (consumed on every outcome); no photo, no card
+            photo = await _claim_photo(proposal["photo"])
+            if photo is None:
+                return False, {}, None, None
         try:
-            send = (_post_operator_proposal(chat_id, text, labels, rid, post=post)
+            links = {"urls": urls} if any(urls) else {}
+            send = (_post_operator_proposal(chat_id, text, labels, rid, post=post,
+                                            **({"photo": photo} if photo is not None else {}),
+                                            **links)
                     if edit_message_id is None else
                     _edit_operator_proposal(chat_id, edit_message_id, text, labels, rid,
-                                            post=post))
+                                            post=post, **links))
             mid = await asyncio.wait_for(send, DELIVERY_TIMEOUT_S)
         except (asyncio.TimeoutError, UnconfirmedDelivery) as exc:
             # #1305: the card may be on screen. It stays registered until its
@@ -1567,6 +1648,22 @@ async def _post_proposal(identity, seg: str, slot: str, call: _InFlight, proposa
     n = len(labels)
     event = PostEvent(call.tool_use_id, seg, slot, head, len(pages) or None, None, buttons=n)
     return True, _proposal_detail(rid, n, len(pages)), event, None
+
+
+async def _claim_photo(path: str) -> "tuple[bytes, str] | None":
+    """Slice 5b: a proposal's photo, claimed from the outbox of the current call
+    and passed through the ``photo`` media policy (``_claim_and_capture``: the
+    claim consumed on every outcome); ``None`` when there is none to send."""
+    import tools as tools_mod
+    outbox = tools_mod.outbox_for_current_context()
+    if outbox is None:
+        logger.warning("proposal photo not sent: no outbox")
+        return None
+    captured, why = await asyncio.to_thread(_claim_and_capture, outbox, path, "photo")
+    if captured is None:
+        logger.warning("proposal photo not sent: %s", why)
+        return None
+    return captured
 
 
 def _proposal_detail(rid: str, buttons: int, pages: int) -> dict:
@@ -1618,24 +1715,36 @@ def _repeat_of(seg: str, identity: Any, key: str, dkind: str) -> dict | None:
     return hit
 
 
+def _proposal_photo(value: str) -> str:
+    """Slice 5b: the outbox path a proposal deposit's photo names, or ``""``."""
+    try:
+        obj = json.loads(value)
+    except (TypeError, ValueError):
+        return ""
+    photo = obj.get("photo") if isinstance(obj, dict) else None
+    return photo if isinstance(photo, str) else ""
+
+
 async def _settle_repeat(seg: str, identity: Any, dkind: str, value: str,
                          warning: str | None) -> None:
     """#1312: what a repeat still owes, nothing of it sent as the post again.
     A file deposit's staged file is consumed (best-effort: the original
     delivery stands either way); a ``More`` call's rewritten-input tell goes
     out as one labelled desk notice, since no card carries it this time."""
-    if dkind == OPERATOR_FILE:
+    staged = value if dkind == OPERATOR_FILE else _proposal_photo(value) \
+        if dkind == OPERATOR_PROPOSAL else None
+    if staged:
         try:
             import tools as tools_mod
             outbox = tools_mod.outbox_for_current_context()
             if outbox is not None:
                 def _consume() -> None:
-                    claim = outbox.claim(value)
+                    claim = outbox.claim(staged)
                     outbox.remove_claim(claim)
                 await asyncio.to_thread(_consume)
         except Exception as exc:  # noqa: BLE001 — the original delivery stands
             logger.warning("repeat file not consumed: %s", type(exc).__name__)
-    elif dkind == OPERATOR_PROPOSAL and warning:
+    if dkind == OPERATOR_PROPOSAL and warning:
         channel = _telegram_channel()
         notice = getattr(channel, "deliver_desk_notice", None)
         if notice is not None:
@@ -1761,7 +1870,8 @@ async def _deliver_and_replace(store: ReferenceStore, seg: str, call: _InFlight,
                         on_proven=_remember)
                 else:
                     text, entities, plain = compose_operator_link(
-                        value, caption=caption, label=label)
+                        value, caption=caption, label=label,
+                        head=post_label(identity.enforcement_role))
                     outcome = await asyncio.wait_for(
                         _post_operator_link(identity.chat_id, text, entities, plain,
                                             post=post),
@@ -1912,7 +2022,7 @@ def _compare_reported(owner, input_data, tool_name: str) -> None:
             owner.run_id, tool_name, owner.canonical, reported)
 
 
-def _receipt_of(text: str) -> tuple[str, str]:
+def _receipt_of(text: str) -> tuple[str, str, bool, bool]:
     """#1200: the operator-readable receipt of a stored call's passed-through
     response — the top-level ``receipt`` string of a JSON-object response when
     it has a non-whitespace character, otherwise the text verbatim. A ``safe``
@@ -1922,18 +2032,20 @@ def _receipt_of(text: str) -> tuple[str, str]:
     #1302: returns ``(receipt, next, in_place)`` — ``next`` is the response's
     ``next`` object, JSON-encoded, only beside a usable ``receipt`` string;
     ``""`` otherwise (nothing is judged here). #1339: ``in_place`` is True only
-    when ``next`` is an object and the response's ``in_place`` is JSON ``true``."""
+    when ``next`` is an object and the response's ``in_place`` is JSON ``true``.
+    ``on_card``: the response's ``on_card`` is JSON ``true`` beside a usable
+    ``receipt`` and no ``next`` — the receipt becomes the tapped card's last line."""
     try:
         parsed = _parse_object(text)
     except RecursionError:
         parsed = None
     receipt = parsed.get("receipt") if parsed is not None else None
     if not (isinstance(receipt, str) and receipt.strip()):
-        return text, "", False
+        return text, "", False, False
     nxt = parsed.get("next")
     if not isinstance(nxt, dict):
-        return receipt, "", False
-    return receipt, json.dumps(nxt, ensure_ascii=False), parsed.get("in_place") is True
+        return receipt, "", False, parsed.get("on_card") is True
+    return receipt, json.dumps(nxt, ensure_ascii=False), parsed.get("in_place") is True, False
 
 
 def _capture_of(contract_map, tool_name: str, input_data, out, rewritten: bool):
@@ -1946,12 +2058,12 @@ def _capture_of(contract_map, tool_name: str, input_data, out, rewritten: bool):
     if not out:
         kind = "receipt" if entry is None or entry.kind == "safe" else "no_post"
         text = _response_text((input_data or {}).get("tool_response")) or ""
-        receipt, nxt, in_place = _receipt_of(text)
-        # #1302: only a ``safe`` tool's receipt carries a next card; the
-        # ``More`` exception's no-post shape keeps its own path
+        receipt, nxt, in_place, on_card = _receipt_of(text)
+        # #1302: only a ``safe`` tool's receipt carries a next card (or goes on
+        # the card); the ``More`` exception's no-post shape keeps its own path
         if kind != "receipt":
-            nxt, in_place = "", False
-        return Capture(kind, receipt, rewritten, next=nxt, in_place=in_place)
+            nxt, in_place, on_card = "", False, False
+        return Capture(kind, receipt, rewritten, next=nxt, in_place=in_place, on_card=on_card)
     body = (out.get("hookSpecificOutput") or {}).get("updatedToolOutput") if isinstance(out, dict) else None
     parsed = None
     if isinstance(body, str):

@@ -113,6 +113,10 @@ fallback posts the receipt, the pages and the card. The whole deposit still fits
 value cap. An older Casa ignores `pages` and posts the card alone, so a plugin that relies on
 them requires this version.
 
+A card with a photo ([`plugin-delivered-slots.md`](plugin-delivered-slots.md)) is never placed
+in place either, nor is a tapped photo card replaced by a text one: `_post_next_card` refuses
+both the same way, and the fallback posts the receipt and the card.
+
 ## Contracts & invariants
 
 **INV-PROP-006**: A `safe` stored call's `next` card that is not shown in place (INV-PROP-008) is posted only beside its receipt, after that receipt's send is proven, within the tap's own desk use, and only if it passes the proposal deposit predicate against the stored tool's own plugin and server on the maps the tap was re-checked against; it is registered before it is sent and carries the tapped proposal's own chat, operator, role and artifact, so its buttons execute only from a tap; a card that does not land is one notice and the receipt stands; a response without `next` is today's tap.

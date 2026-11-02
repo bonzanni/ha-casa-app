@@ -178,6 +178,13 @@ def load_role_artifact(role_dir: Path) -> RoleArtifactSource:
         validate_markdown(doctrine)
     except ValueError as exc:
         raise ValueError(f"role doctrine failed Markdown validation: {exc}") from exc
+    # The prompt compiler carries only a doctrine's "# Core doctrine" section and
+    # each surface's own projection section: a doctrine with neither (one titled
+    # "# Fido doctrine") compiled to an empty <role_doctrine> on every surface and
+    # reached no model, silently. Judged with the compiler's own selection.
+    from prompt_compiler import _SURFACE_SECTIONS, doctrine_for_surface
+    if not any(doctrine_for_surface(doctrine, s).strip() for s in _SURFACE_SECTIONS):
+        raise ValueError("role doctrine has no '# Core doctrine' or projection section")
     if raw["doctrine_file"] != doctrine_path.name:
         raise ValueError("doctrine_file must resolve to doctrine.md")
     return RoleArtifactSource(

@@ -231,6 +231,13 @@ def _install_telegram_stubs() -> None:
 
     tg.ReplyParameters = _FakeReplyParameters
 
+    # Slice 5g: an operator link is posted without a link preview.
+    class _FakeLinkPreviewOptions:
+        def __init__(self, is_disabled=None, **kw):
+            self.is_disabled = is_disabled
+
+    tg.LinkPreviewOptions = _FakeLinkPreviewOptions
+
     tg_ext = types.ModuleType("telegram.ext")
     tg_ext.Application = MagicMock()
     # ``builder`` must be a REAL attribute of the stub (a plain function, so

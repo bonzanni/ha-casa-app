@@ -1207,6 +1207,11 @@ declaration for its sign-in link, provided it delivers every slot it
 provides. A plugin declaring `delivers` needs Casa 0.318.0 or later; an
 older Casa refuses its manifest at install.
 
+Since v0.346.0 the link message starts with a label line — `📊` and the name
+of the agent whose plugin sent it, as on a specialist's other posts — and
+Telegram shows no link preview under it: the link text already names the
+host.
+
 A tool that delivers a link may find it has no link to make this time — the
 account is already connected, or an earlier link is still outstanding. It
 says so by returning every slot it provides as `null` and depositing
@@ -1245,6 +1250,20 @@ after posting but before it noted the post), Casa sends nothing and hands the
 plugin the first delivery's receipt, so you do not get the message twice. A
 card with buttons counts as already delivered only while its buttons still
 work; otherwise you get a fresh card.
+
+#### A specialist's answer, in its own words (v0.346.0)
+
+When a specialist the assistant asked answers you, the assistant passes the
+answer on with its `relay_answer` tool instead of retelling it: Casa posts the
+message the specialist ended its turn with — not what it wrote while it
+worked — headed by `📊` and the specialist's name, once, and a swipe-reply to
+it reaches that specialist like a reply to its other posts. The assistant
+still decides whether an answer is meant for you. When Casa cannot post it (for
+example an answer cut off before its end, or after a restart), the assistant passes it on
+itself, as "Alex: …". An answer whose work still waits on your approval is not
+posted: you see the approval request instead.
+A specialist that ends its turn silently has nothing for you: Casa tells the
+assistant so, and she does not say it is still working.
 
 #### Reply to a specialist's post and the specialist answers (v0.341.0)
 
@@ -1328,6 +1347,18 @@ as its own labelled message and then the card with its buttons, as one delivery.
 swipe-reply to any page and the specialist knows which page you meant. If a page cannot be
 posted, the card is not posted either, and the specialist is told how many pages arrived.
 A plugin that sends pages needs Casa 0.344.67 or later: an older Casa posts the card alone.
+A card can also be one message with a picture (v0.346.0): with a `"photo"` naming a picture
+in the plugin's outbox (and no `pages`), Casa posts the picture with the card's text as its
+caption and the buttons under it — a caption has less room than a message — and every later
+edit of the card is an edit of that caption. If the picture cannot be sent, the card is not
+posted either. One button may be a link, `{"label", "url"}` with
+an `https` address, when the plugin also declares an `operator_link` slot: tapping it opens
+the address, and nothing runs. And beside a `safe` tool's `receipt` (with no `next`),
+`"on_card": true` writes the receipt as the tapped card's last line instead of a new message
+— unless an installed hook changed the call's arguments (the receipt then comes as a message,
+with the warning above it) or the card's line cannot be written (then it comes as a message
+too).
+These need Casa 0.346.0 or later.
 
 #### A file for a specialist (v0.343.0)
 

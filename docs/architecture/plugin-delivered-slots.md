@@ -77,9 +77,11 @@ the resident, its words unchanged, with Casa's note of what it replied to (INV-D
 
 **The channel's part for a link.**
 When a plugin tool's result carries a slot declared `operator_link`, the result broker
-composes a single labelled-link message — the label and the destination host as the link
-text, one `text_link` entity, the caption beneath — and asks the channel to post it to the
-chat of the call's grant identity. The channel sends it through the same one-retry
+composes a single labelled-link message — the specialist's label line first, as on its
+messages, then the label and the destination host as the link text, one
+`text_link` entity, the caption beneath — and asks the channel to post it to the
+chat of the call's grant identity, without a link preview (the link text already names the
+host). The channel sends it through the same one-retry
 primitive a rendered response uses (an entity the platform refuses is resent as the plain
 text, which spells the URL out), reports it delivered on any normal return, and lets an
 exception propagate: the broker reads anything but a normal return as not proven
@@ -104,11 +106,22 @@ Both are Casa-composed notices under the output boundary, like the delivered lin
 
 **A fourth kind, `operator_proposal`, is a decision offered as buttons.** The deposit is a
 one-page text with one to six buttons, each a stored call of the same plugin (or a button
-that stores none: `📎`, or Close), optionally preceded by up to six plain pages
+that stores none: `📎`, Close, or a link), optionally preceded by up to six plain pages
 ([`stored-call-next-card.md`](stored-call-next-card.md), INV-PROP-012); the post is
 registered with the verdict broker before it is sent, and a tap executes exactly the stored
 call through one pinned specialist turn — [`stored-call-buttons.md`](stored-call-buttons.md)
 (INV-PROP-001, -002, -003).
+
+**A proposal may carry a photo.** A `photo` member — a path in the plugin outbox, never with
+`pages` — makes the card ONE message: the photo, the composed text as its caption, the
+keyboard. The deposit is judged as any proposal plus the caption: its rendered display within
+Telegram's 1,024 caption characters less the settle reserve (`result_broker.caption_fits`).
+At the post the photo is claimed through the `photo` media policy exactly as a delivered file
+is, consumed on every outcome; no photo, no card. A rewritten-call tell joins the caption only
+within that budget, else it follows as its own notice. Every later edit of such a card is a
+caption edit (`TelegramChannel._edit_proposal_message`); a refused one still removes the
+keyboard, so a settled photo card keeps no live button. A photo card is never replaced in
+place, and a repeated keyed deposit consumes its staged photo.
 
 ## Contracts & invariants
 

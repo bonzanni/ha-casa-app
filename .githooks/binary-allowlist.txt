@@ -1,3 +1,5 @@
 assets/casa-banner.png
 casa/icon.png
 casa/logo.png
+casa_browser/icon.png
+casa_browser/logo.png

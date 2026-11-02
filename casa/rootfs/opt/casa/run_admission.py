@@ -22,9 +22,13 @@ for them:
    continuation turn (``admission:<id>``) whose plugin call reads it
    (``POST /internal/broker/run-admission-status``).
 
-The kind of task is shown on the card but not compared: in part 1 every run only
-reads, and what a run may do on a logged-in site is bounded by that site's own
-approvals, so a kind compare would add taps without adding a guard. Site names
+The kind of task is shown on the card but not compared: admission stays
+site-based because every change a run would make is asked per action (the
+action check, ``action_judgement``), so a kind compare would add taps without
+adding a guard. The operator's words, when the call has them, are kept for each
+requested run's spec digest (``action_judgement.WORDS``, memory-only) whether
+the runs are admitted by them or put to the tap, so the check of that run's
+actions reads them too. Site names
 come from the plugin's own code (the app's registered display names); checking
 that a run opens the sites it was admitted for is the plugin's and the app's.
 Meaning is judged by the model; the clean context is the guard, because no web
@@ -386,6 +390,10 @@ async def _decide(call, runs: list[dict], request_key: str) -> dict:
     binding = binding_for(call)
     cid = "conf-" + uuid.uuid4().hex
     if call.operator_words is not None:
+        from action_judgement import WORDS
+        for r in runs:      # his words for the task, admitted by them or not
+            WORDS.record(plugin=call.plugin, operator_id=call.identity.operator_id,
+                         spec_digest=r["spec_digest"], words=call.operator_words)
         t0 = time.monotonic()
         said = await sites_named(call.operator_words)
         extract_ms = int((time.monotonic() - t0) * 1000)

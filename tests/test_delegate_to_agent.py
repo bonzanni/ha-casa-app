@@ -2748,7 +2748,7 @@ class _HandoffChannel:
 
 
 class TestHandoffLine:
-    async def _run(self, tmp_path, monkeypatch, *, mode, origin):
+    async def _run(self, tmp_path, monkeypatch, *, mode, origin, delay=0.0):
         from tools import delegate_to_agent, init_tools
         import tools as tools_mod
 
@@ -2768,7 +2768,9 @@ class TestHandoffLine:
         fin.character = CharacterConfig(name="Alex")
         init_tools(cm, bus, reg, agent_role_map={
             "assistant": _caller_cfg(delegates=("finance",)), "finance": fin})
-        _FakeSpecialistClient.reset(response="Alex's answer")
+        _FakeSpecialistClient.reset(response="Alex's answer", delay=delay)
+        if delay:
+            monkeypatch.setattr(tools_mod, "_SYNC_WAIT_TIMEOUT_S", delay / 4)
         with patch("tools.ClaudeSDKClient", _FakeSpecialistClient), \
              patch("plugin_registry.resolve_for",
                    return_value=ResolutionResult(registry_valid=True)):
@@ -2786,6 +2788,42 @@ class TestHandoffLine:
             origin={**_origin(chat_id=7), "_operator_turn": True})
         assert lines == [(7, "📊 Passed to Alex.")]
         assert payload["status"] == "ok" and "note" not in payload
+
+    async def test_a_sync_delegation_gone_pending_tells_the_resident(
+            self, tmp_path, monkeypatch):
+        """Slice 5f: past the 60 s wait the person has the hand-off line (and maybe a card the
+        specialist posted meanwhile); the pending result says so, as an async one does, so the
+        assistant does not add "Alex is still on it." under them."""
+        payload, lines = await self._run(
+            tmp_path, monkeypatch, mode="sync",
+            origin={**_origin(chat_id=7), "_operator_turn": True}, delay=0.2)
+        assert lines == [(7, "📊 Passed to Alex.")]
+        assert payload["status"] == "pending"
+        assert "NOTIFICATION when complete." in payload["note"]
+        assert "(Casa: the person is shown a line saying this was passed to Alex, so they " \
+            "are not waiting in silence: do not say that it is still running" in payload["note"]
+        assert payload["note"].endswith("reply with exactly <silent/>.)")
+
+    async def test_a_sync_delegation_gone_pending_after_a_failed_line_has_no_such_note(
+            self, tmp_path, monkeypatch):
+        """Astra/Terra r1: the note says the person saw the line, so a send that did not post
+        it (Telegram refused, timed out) leaves the note out."""
+        async def refused(self, chat_id, text):
+            self.lines.append((chat_id, text))
+            return False
+        monkeypatch.setattr(_HandoffChannel, "send_handoff_line", refused)
+        payload, lines = await self._run(
+            tmp_path, monkeypatch, mode="sync",
+            origin={**_origin(chat_id=7), "_operator_turn": True}, delay=0.2)
+        assert lines == [(7, "📊 Passed to Alex.")] and payload["status"] == "pending"
+        assert "<silent/>" not in payload["note"]
+
+    async def test_a_sync_delegation_gone_pending_without_the_line_has_no_such_note(
+            self, tmp_path, monkeypatch):
+        payload, lines = await self._run(tmp_path, monkeypatch, mode="sync",
+                                         origin=_origin(chat_id=7), delay=0.2)
+        assert lines == [] and payload["status"] == "pending"
+        assert "<silent/>" not in payload["note"]
 
     async def test_an_async_delegation_shows_it_and_tells_the_resident(
             self, tmp_path, monkeypatch):
@@ -2824,3 +2862,94 @@ class TestHandoffLine:
                                          origin=origin)
         assert lines == []
         assert "note" not in payload
+
+
+# ---------------------------------------------------------------------------
+# A specialist whose plugin's work is continued in its own turns is never
+# engaged in a topic (phone round 7)
+# ---------------------------------------------------------------------------
+
+def _sweep_plugin(*, sweep: bool):
+    from plugin_registry import ResolvedPlugin
+    tools_decl = {"runs_needing_driver": {"result": "safe"}}
+    casa = {"resultContract": {"version": 1, "tools": tools_decl}}
+    if sweep:
+        casa["driverSweep"] = "runs_needing_driver"
+    return ResolvedPlugin(name="courier-plugin", artifact_id="2" * 64, path="/nonexistent",
+                          version="0.1.0", manifest={"name": "courier-plugin", "casa": casa})
+
+
+class TestContinuedWorkIsNeverInteractive:
+    """A plugin that declares ``casa.driverSweep`` has its runs carried on by
+    continuation turns of the specialist, whose answers reach the resident's
+    DM — never a topic. Round 7: an interactive engagement of the browsing
+    specialist left a waiting run that the sweep continued every minute. The
+    refusal is read from the plugin's declaration, never from a role name."""
+
+    def _init(self, tmp_path, monkeypatch, *, sweep: bool):
+        import tools
+        spec_reg = SpecialistRegistry(
+            specialists_dir=str(tmp_path / "specs"),
+            tombstone_path=str(tmp_path / "tombs.json"),
+        )
+        courier = _specialist_cfg(role="courier")
+        courier.character.name = "Rex"
+        tools.init_tools(
+            channel_manager=None, bus=None, specialist_registry=spec_reg,
+            mcp_registry=None,
+            agent_role_map={"courier": courier,
+                            "assistant": _caller_cfg(delegates=("courier",))},
+        )
+        rp = _sweep_plugin(sweep=sweep)
+        monkeypatch.setattr(
+            tools, "_delegated_resolution",
+            lambda cfg: ResolutionResult(registry_valid=True,
+                                         plugins=[rp] if cfg.role == "courier" else []))
+        monkeypatch.setattr(tools, "_specialist_limiter", None, raising=False)
+
+    _ORIGIN = {"role": "assistant", "channel": "telegram", "chat_id": "1",
+               "user_id": 1, "cid": "abc", "user_text": "x"}
+
+    async def test_interactive_delegation_is_refused_and_names_sync(
+            self, tmp_path, monkeypatch):
+        import tools, agent as agent_mod
+        self._init(tmp_path, monkeypatch, sweep=True)
+        token = agent_mod.origin_var.set(dict(self._ORIGIN))
+        try:
+            result = await tools.delegate_to_agent.handler({
+                "agent": "courier", "task": "order the pizza", "context": "",
+                "mode": "interactive"})
+        finally:
+            agent_mod.origin_var.reset(token)
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["status"] == "error"
+        assert payload["kind"] == "interactive_not_supported"
+        assert "mode='sync'" in payload["message"] and "Rex" in payload["message"]
+
+    async def test_sync_delegation_to_the_same_specialist_passes_the_gates(
+            self, tmp_path, monkeypatch):
+        import tools
+        self._init(tmp_path, monkeypatch, sweep=True)
+        name, cfg, _res, _permit, error = await tools._prelaunch(
+            "courier", dict(self._ORIGIN), "sync", "order the pizza", "")
+        assert error is None and cfg.role == "courier"
+
+    async def test_a_specialist_without_continued_work_is_not_refused(
+            self, tmp_path, monkeypatch):
+        import tools
+        self._init(tmp_path, monkeypatch, sweep=False)
+        name, cfg, _res, _permit, error = await tools._prelaunch(
+            "courier", dict(self._ORIGIN), "interactive", "order the pizza", "")
+        assert error is None and cfg.role == "courier"
+
+    async def test_a_job_launch_of_the_same_specialist_is_not_refused(
+            self, tmp_path, monkeypatch):
+        """A job is not a delegation: its start stamps ``plugin_job`` before
+        the one prelaunch, and INV-BGJOB-008 keeps the resident's and the
+        specialist's own start under the same gates."""
+        import tools
+        self._init(tmp_path, monkeypatch, sweep=True)
+        origin = {**self._ORIGIN, "plugin_job": {"plugin": "courier-plugin"}}
+        name, cfg, _res, _permit, error = await tools._prelaunch(
+            "courier", origin, "interactive", "the weekly run", "")
+        assert error is None and cfg.role == "courier"

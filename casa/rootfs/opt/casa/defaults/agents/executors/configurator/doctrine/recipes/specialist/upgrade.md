@@ -96,8 +96,8 @@ apply unchanged, step 3's open-conversation warning included.
    six from `casactl specialist status <slug>`, and acts on `pending_commit_check` exactly as
    `recipes/specialist/install.md` step 5 describes — including that `not_verified` is never a
    finding that the candidate is unrecoverable, and never grounds to propose an uninstall.
-5. If `state == "error"`: report the validation failure; the OLD version, and its owned plugin set,
-   are still live, unchanged.
+5. If `state == "error"`: report the validation failure the result's `last_activation_error`
+   names, in plain words; the OLD version, and its owned plugin set, are still live, unchanged.
 6. If `state == "active"`: `config_git_commit`, `casa_reload(scope="agents")`, `emit_completion`
    (canonical commit -> reload -> emit order — see `completion.md`). The new version's owned plugin
    set REPLACES the old one atomically as part of `specialist_upgrade` itself (a plugin the old

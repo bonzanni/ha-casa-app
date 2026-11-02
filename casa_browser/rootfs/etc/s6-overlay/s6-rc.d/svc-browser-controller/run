@@ -1,0 +1,15 @@
+#!/command/with-contenv bash
+# The run controller (casa-controller, uid 1103): the /v1 API on port 8098, the ingress UI on
+# its Unix socket (behind nginx; it also injects the live view's input on display :99), the
+# login driver's socket (peer uid 1102 only) and the launcher's one client. See
+# /opt/casa_browser/controller.py. The environment is an allowlist; it starts once the
+# network floor, the proxy (its exported CA), the broker and the launcher are up.
+set -euo pipefail
+install -d -o casa-controller -g casa-controller -m 0700 /run/casa-browser/controller
+install -d -o casa-controller -g casa-controller -m 0711 /run/casa-browser/driver
+# The ingress UI's socket (Task 13): nginx's group may connect, nobody else.
+install -d -o casa-controller -g casa-ingress -m 0750 /run/casa-browser/ui
+while [ ! -s /run/casa-browser/ca/ca.pem ]; do sleep 0.1; done
+exec env -i PATH=/command:/usr/bin:/bin LANG=C.UTF-8 TZ="${TZ:-UTC}" PYTHONPATH=/opt \
+  HOME=/run/casa-browser/controller DISPLAY=:99 XAUTHORITY=/run/casa-browser/x-ctl/Xauthority \
+  s6-setuidgid casa-controller /opt/venv/bin/python -m casa_browser.controller

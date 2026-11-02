@@ -5,7 +5,7 @@ The decision, per call path under the shipped option defaults: the assistant
 on Opus 5.5 at medium; the butler, the concierge, the tier classifier, the
 observer and query_engager's synthesis on Haiku 5.5 at low; the finance
 specialist on Sonnet 5.5 at medium; the configurator and the plugin-developer on
-Sonnet 5 at high. The CLI's own defaults (model and effort) move with every
+Sonnet 5 at high; the Casa Browser action check on Opus 5.5 at high, fixed. The CLI's own defaults (model and effort) move with every
 CLI release, so a call that leaves either out silently changes behaviour on
 the next bump — which is what these tests pin.
 """
@@ -19,13 +19,13 @@ import pytest
 
 try:
     from tests.test_cross_session_tools import (
-        APP_ROOT, _admission_launches, _call_name, _classifier_launches, _sites,
-        _synthesis_launches,
+        APP_ROOT, _admission_launches, _call_name, _classifier_launches,
+        _judgement_launches, _sites, _synthesis_launches,
     )
 except ImportError:
     from test_cross_session_tools import (
-        APP_ROOT, _admission_launches, _call_name, _classifier_launches, _sites,
-        _synthesis_launches,
+        APP_ROOT, _admission_launches, _call_name, _classifier_launches,
+        _judgement_launches, _sites, _synthesis_launches,
     )
 
 pytestmark = [pytest.mark.unit]
@@ -53,12 +53,22 @@ def test_the_decided_model_and_effort_per_shortname():
     assert effort_for(None) is None
 
 
+# The sites whose model and effort are fixed by a ruling, not by
+# ``effort_for``: (file, enclosing function) -> (model name, effort name). The
+# action check's judge is Opus 5.5 at high whatever MODEL_MAP later says
+# (the action-model design's ruling 5).
+FIXED_EFFORT = {("action_judgement.py", "_ask_check"): ("JUDGE_MODEL", "JUDGE_EFFORT")}
+
+
 def test_every_options_site_passes_effort_for_its_own_model():
     """Every ``ClaudeAgentOptions`` construction passes ``model=`` and
     ``effort=effort_for(<that same expression>)`` — a site that drops either,
-    or derives the effort from another value, fails here."""
+    or derives the effort from another value, fails here. A site in
+    ``FIXED_EFFORT`` passes exactly its two named constants instead, and every
+    listed site must exist."""
     problems: list[str] = []
     count = 0
+    fixed_seen: set = set()
     for path in sorted(APP_ROOT.rglob("*.py")):
         rel = str(path.relative_to(APP_ROOT))
         tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -70,11 +80,20 @@ def test_every_options_site_passes_effort_for_its_own_model():
             if model is None:
                 problems.append(f"{where}: no model")
                 continue
+            if (rel, scope) in FIXED_EFFORT:
+                fixed_seen.add((rel, scope))
+                names = FIXED_EFFORT[(rel, scope)]
+                if (effort is None or not isinstance(model, ast.Name)
+                        or not isinstance(effort, ast.Name)
+                        or (model.id, effort.id) != names):
+                    problems.append(f"{where}: model/effort are not {names}")
+                continue
             if (effort is None or _call_name(effort) != "effort_for"
                     or len(effort.args) != 1
                     or ast.unparse(effort.args[0]) != ast.unparse(model)):
                 problems.append(f"{where}: effort is not effort_for(<model>)")
-    assert count == 9, count
+    assert count == 10, count
+    assert fixed_seen == set(FIXED_EFFORT), fixed_seen
     assert not problems, problems
 
 
@@ -88,6 +107,11 @@ async def test_tier_classifier_runs_haiku_at_low(monkeypatch):
 async def test_run_admission_runs_haiku_at_low(monkeypatch):
     launches = await _admission_launches(monkeypatch)
     assert [(o.model, o.effort) for o in launches] == [("claude-haiku-5-5", "low")]
+
+
+async def test_action_judgement_runs_opus_at_high(monkeypatch):
+    launches = await _judgement_launches(monkeypatch)
+    assert [(o.model, o.effort) for o in launches] == [("claude-opus-5-5", "high")]
 
 
 async def test_query_engager_synthesis_runs_haiku_at_low(monkeypatch):

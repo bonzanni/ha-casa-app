@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-10-18
+last_reviewed: 2026-10-31
 ---
 
 # Plugin continuations and the driver sweep
@@ -28,7 +28,9 @@ for the run queues the next one, so a tap that arrives while a turn still drives
 is applied after that turn.
 
 **A continuation turn is rebuilt from the binding alone** (`continuation_origin`), and only
-for a binding of the operator as configured now. The worker takes the specialist's desk in
+for a binding of the operator as configured now, whose chain ends with a loaded specialist:
+a binding that ends with any other role — a resident has no plugin run to continue — is
+dropped with one warning, as is one whose role is not loaded. The worker takes the specialist's desk in
 the binding's chat and a concurrency slot (`_desk_turn`: the queue, the lock, a fault
 recheck under the lock, the permit after it, and on the way out the desk's own guard for a
 run still unwinding past its teardown bound, `Desk.hold_unwinding`), then runs one delegated turn of the
@@ -74,12 +76,42 @@ no arguments, and queues a continuation
 plugin. The plugin's own predicate decides which runs need a driver; a turn cut at its
 ceiling, a crash or a Casa restart leaves the run to the next sweep.
 
+**A hand-over Casa delivered holds the run** (`_held_by_delivery`). Only a call during a
+`callsCasa` tool call can ask Casa what became of a deposit, and the sweep runs outside any
+turn, so a plugin that has not yet asked would wake its run just to learn that the operator has
+its card or link. An entry may therefore name those deposits (`unless_delivered`, one to four
+references): Casa skips the entry when every one of them reads `delivered` in
+`result_broker.DELIVERY_OUTCOMES` for the called plugin, the binding's operator and the plugin's
+artifact. Anything else — one still being delivered, withheld, forgotten by a Casa restart, a
+malformed field — queues the continuation as before. Casa never writes the plugin's state: its
+next call settles the outcome itself.
+
+**A plugin may ask to be looked at again soon** (`sweep_again_s`). The operator's Done in a live
+view reaches no one — the browser app answers only the plugin — so while a view is open the
+plugin asks for one more pass a few seconds later. `call_sweep_tool` accepts a whole number of
+seconds below the minute and raises it to at least `SWEEP_AGAIN_MIN_S` (five); `sweep_job` arms
+at most one pending extra pass (`_arm_extra_pass`, for the soonest any plugin asked; a sooner
+request replaces a later one), and each pass, the minute's or an extra one, arms the next only
+if a plugin asks again. A pass never overlaps another (`_passing`): one that starts while another
+runs returns at once, and the running one arms whatever is still asked. Casa's stop cancels the
+armed pass and a running one, and latches so that no pass starts or arms another (`stop_sweep`), before the continuations drain.
+
+**Such a specialist is never engaged in a topic.** A continuation's answer reaches the
+resident's DM, never a topic, and the specialist asks the person itself, with its own cards,
+whenever it needs them. So `delegate_to_agent` with `mode='interactive'` to a specialist one
+of whose resolved plugins declares `casa.driverSweep` is refused before any record or topic
+(`interactive_not_supported`, `tools._continues_its_own_work`), with a message that names one
+`sync` delegation of the whole task, also when the person asked to be asked first. The
+refusal reads the declaration, never a role name; a `sync` or `async` delegation to the
+same specialist passes, as does any job launch (the job start stamps `plugin_job` first).
+
 ## Contracts & invariants
 
 **INV-PLUG-053**: A continuation turn runs only for a binding of the configured operator and of the plugin that asked for it or that the sweep called, under an origin rebuilt from that binding with no operator words, as one use of its specialist's desk, and its answer reaches the binding's resident through a durably announced delegation after each specialist requester in the chain has had its turn with it under that requester's desk — or the climb fails with Casa's message.
 
 Enforced by `Continuations.request` (one pending per plugin, operator and run), by
-`run_continuation` checking the operator and taking the desk and a slot (`_desk_turn`)
+`run_continuation` checking the operator and that the chain ends with a loaded specialist,
+and taking the desk and a slot (`_desk_turn`)
 before it registers the delegation record and attaches the completion callback, by
 `continuation_origin` (the marker, an empty `user_text`, no `_operator_words`), by
 `sweep_once` comparing each returned binding's plugin with the plugin it called and its
@@ -108,7 +140,8 @@ record in the browser app is untouched).
 ## Failure behavior
 
 **The sweep tool fails, times out (thirty seconds) or returns garbage.** That plugin's
-pass is skipped and logged; the next minute tries again. **Casa restarts.** The queue is
+pass is skipped and logged; the next minute tries again. An unusable `sweep_again_s` arms
+nothing, and an unusable `unless_delivered` holds nothing. **Casa restarts.** The queue is
 empty; bindings survive, so the first sweep re-finds every run still needing a driver.
 **Casa stops.** Pending and running continuations are cancelled before delegation
 settlements drain; a running turn is cancelled and given its bounded teardown before its

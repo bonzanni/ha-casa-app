@@ -73,12 +73,17 @@ class Capture:
 
     ``in_place`` (#1339): that response also carried ``"in_place": true`` — the
     tap asks to show ``next`` in place of the tapped card; ``False`` whenever
-    ``next`` is ``""``."""
+    ``next`` is ``""``.
+
+    ``on_card``: a ``receipt`` capture whose response also carried
+    ``"on_card": true`` — the receipt is written as the tapped card's last line
+    instead of a message (``False`` beside a ``next`` card)."""
     kind: str
     text: str = ""
     rewritten: bool = False
     next: str = ""
     in_place: bool = False
+    on_card: bool = False
 
 
 # ---------------------------------------------------------------------------

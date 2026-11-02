@@ -85,6 +85,8 @@
   doc: architecture/plugin-operator-calls.md
 - item: casa/rootfs/opt/casa/run_admission.py
   doc: architecture/plugin-operator-calls.md
+- item: casa/rootfs/opt/casa/action_judgement.py
+  doc: architecture/plugin-operator-calls.md
 - item: casa/rootfs/opt/casa/plugin_bindings.py
   doc: architecture/plugin-operator-calls.md
 - item: casa/rootfs/opt/casa/plugin_continuations.py
@@ -471,6 +473,8 @@
   doc: architecture/tools-interface.md
 - item: tool:react
   doc: architecture/tools-interface.md
+- item: tool:relay_answer
+  doc: architecture/delegate-answer-relay.md
 - item: tool:recall_memory
   doc: architecture/tools-interface.md
 - item: tool:remove_plugin_env_reference
@@ -534,6 +538,8 @@
 - item: route:casa/rootfs/opt/casa/casa_core.py:POST:/internal/broker/continue
   doc: architecture/plugin-operator-calls.md
 - item: route:casa/rootfs/opt/casa/casa_core.py:POST:/internal/broker/delivery-status
+  doc: architecture/plugin-operator-calls.md
+- item: route:casa/rootfs/opt/casa/casa_core.py:POST:/internal/broker/action-judgement
   doc: architecture/plugin-operator-calls.md
 - item: route:casa/rootfs/opt/casa/casa_core.py:POST:/internal/hooks/resolve
   doc: architecture/mcp-and-tools.md
@@ -821,3 +827,4 @@
   doc: architecture/mcp-bridge.md
 - item: env:N8N_URL
   doc: architecture/mcp-bridge.md
+

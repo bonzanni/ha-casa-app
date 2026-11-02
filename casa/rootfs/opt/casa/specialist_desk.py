@@ -1046,14 +1046,15 @@ async def handle_tap(
         except Exception as exc:  # noqa: BLE001 — nothing more is attempted
             logger.warning("desk notice failed: %s", type(exc).__name__)
 
-    async def _mark(line: str) -> None:
+    async def _mark(line: str) -> bool:
         mark = getattr(channel, "mark_proposal", None)
         if mark is None or keep:          # #1362: a keep_card tap leaves its card live
-            return
+            return False
         try:
-            await mark(meta, line)
+            return await mark(meta, line) is not False
         except Exception as exc:  # noqa: BLE001 — the keyboard line is cosmetic
             logger.warning("proposal mark failed: %s", type(exc).__name__)
+            return False
 
     async def _refuse(reason: str) -> None:
         """§10: the keyboard line, one notice, the refused echo line; not a use."""
@@ -1246,10 +1247,20 @@ async def handle_tap(
                         # an edit that may have landed leaves the message to the
                         # new card's record; the tapped card is not marked over it
                         in_place_unknown = why == UNCONFIRMED
-                if not replaced and not in_place_unknown and capture.kind in (
-                        "receipt", "no_post", "delivered"):
+                on_card = False
+                if (not replaced and not in_place_unknown and capture.kind == "receipt"
+                        and capture.on_card and not capture.next and not tell):
+                    # the plugin asked for its receipt as the card's last line: no
+                    # message; a card line that did not land falls back to one
+                    line = clip(str(capture.text or ""), STORED_CALL_RECEIPT_CHARS).split("\n", 1)[0]
+                    on_card = await _mark(f"☑ {line}")
+                    if on_card:
+                        specialist_side = line
+                        record_echo(chat_id, applied)
+                if (not replaced and not in_place_unknown and not on_card
+                        and capture.kind in ("receipt", "no_post", "delivered")):
                     await _mark(f"☑ {button}")          # #1341: the tap is applied
-                if replaced:
+                if replaced or on_card:
                     pass
                 elif capture.kind in ("receipt", "no_post"):
                     receipt = clip(str(capture.text or ""), STORED_CALL_RECEIPT_CHARS)
@@ -1357,6 +1368,8 @@ async def _post_next_card(value: str, *, meta: dict, build: Any, runtime: str, s
         return "invalid"
     if edit_message_id is not None and parsed.get("pages"):
         return "pages"          # #1377: a card with pages is never an edit; the fallback posts it
+    if edit_message_id is not None and (parsed.get("photo") or meta.get("photo")):
+        return "photo"          # slice 5b: a photo card is neither edited into nor out of text
     post = rb.PostRecord(role=identity.enforcement_role, operator_id=identity.operator_id,
                          plugin=seg, slot=rb.OPERATOR_PROPOSAL, tool_use_id=run_id,
                          owner=run_id, posted_at=DESKS.now(), kind=rb.OPERATOR_PROPOSAL)

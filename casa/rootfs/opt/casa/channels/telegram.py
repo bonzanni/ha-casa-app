@@ -106,6 +106,18 @@ def _unadmitted(method: str, text: Any) -> bool:
     return True
 
 
+def _proposal_keyboard(labels: list, rid: str, urls: "list | None" = None):
+    """A proposal's keyboard: one button per label, ``callback_data = v1|proposal|<rid>|<i>``,
+    or (slice 5f) the link button's https address where *urls* has one at that index."""
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    urls = list(urls or [])
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(text=str(label), url=urls[i])
+         if i < len(urls) and urls[i] else
+         InlineKeyboardButton(text=str(label), callback_data=f"v1|proposal|{rid}|{i}")]
+        for i, label in enumerate(labels)])
+
+
 def _plain(text):
     """#1330: ``plain_text`` for a send without entities, keeping the
     admission of model text — the plain transports refuse a bare string, and
@@ -2273,6 +2285,8 @@ class TelegramChannel(Channel):
                 meta["message_id"] = tapped
                 logger.info("proposal %s bound to its tapped message", rid[:8])
             kinds = meta.get("kinds") or []
+            if idx < len(kinds) and kinds[idx] == "url":
+                return          # slice 5f: a link button sends no callback; one naming it is void
             if idx < len(kinds) and kinds[idx] == "keep_card":
                 # #1362: a keep_card tap claims and commits nothing — the card keeps its
                 # text and every button; the file goes out through the same desk use
@@ -2336,7 +2350,7 @@ class TelegramChannel(Channel):
                     return
                 if not isinstance(chat_id, int):
                     return
-                await self.edit_dm_message(chat_id, message_id, f"{text}\n{line}")
+                await self._edit_proposal_message(meta, f"{text}\n{line}")
                 return
             if not isinstance(chat_id, int) or not isinstance(message_id, int):
                 return
@@ -2355,7 +2369,7 @@ class TelegramChannel(Channel):
                 # failed edit is told with past facts only — never "applying your tap",
                 # never where the next file goes; nothing is dispatched
                 import specialist_desk
-                edited = await self.edit_dm_message(chat_id, message_id, f"{text}\n☑ {label}")
+                edited = await self._edit_proposal_message(meta, f"{text}\n☑ {label}")
                 if not edited:
                     logger.warning("arm_file keyboard edit failed (rid=%s); telling by notice", rid[:8])
                     await self.deliver_desk_notice(chat_id, specialist_desk.bounded_line(
@@ -2366,7 +2380,7 @@ class TelegramChannel(Channel):
             # #1341: a call tap's card says it is working, not settled — the
             # call's answer decides what it becomes (☑, ✖, or the next card in
             # place); handle_tap writes that line
-            edited = await self.edit_dm_message(chat_id, message_id, f"{text}\n⏳ {label}")
+            edited = await self._edit_proposal_message(meta, f"{text}\n⏳ {label}")
             if not edited:
                 # the keyboard could not be edited away (Terra, diff round 5):
                 # the operator still sees which button won BEFORE any effect —
@@ -2381,7 +2395,7 @@ class TelegramChannel(Channel):
                 await self._dispatch_proposal_tap(meta=meta, idx=idx, request_id=rid)
             except Exception:  # noqa: BLE001 — never raise into the hook drain
                 logger.exception("proposal tap dispatch failed (rid=%s)", rid[:8])
-                await self.edit_dm_message(chat_id, message_id, f"{text}\n✖ failed")
+                await self._edit_proposal_message(meta, f"{text}\n✖ failed")
 
         def _settle(outcome: dict) -> Any:
             # #1201: the broker calls this synchronously inside its own
@@ -2476,14 +2490,29 @@ class TelegramChannel(Channel):
         task.add_done_callback(reservation.release)
         return True
 
-    async def mark_proposal(self, meta: dict, line: str) -> None:
+    async def mark_proposal(self, meta: dict, line: str) -> bool:
         """S5 §10: the proposal message's last line — ``⏳ <label>`` replaced
         by ``☑ <label>``, ``✖ <reason>`` or ``⌛ expired`` — edited in place from the live
-        meta's text; the keyboard stays gone."""
+        meta's text; the keyboard stays gone. True when the edit landed."""
         chat_id, message_id = meta.get("chat_id"), meta.get("message_id")
         if not isinstance(chat_id, int) or not isinstance(message_id, int):
-            return
-        await self.edit_dm_message(chat_id, message_id, f"{meta.get('text', '')}\n{line}")
+            return False
+        return await self._edit_proposal_message(meta, f"{meta.get('text', '')}\n{line}")
+
+    async def _edit_proposal_message(self, meta: dict, text: str) -> bool:
+        """A proposal message's settle or mark edit, its keyboard removed. A photo
+        card (slice 5b) is edited through its caption; when Telegram refuses that
+        edit, its keyboard is still removed by a markup-only edit, so a settled
+        photo card never keeps live buttons. True only when the text landed."""
+        chat_id, message_id = meta.get("chat_id"), meta.get("message_id")
+        if not isinstance(chat_id, int) or not isinstance(message_id, int):
+            return False
+        if not meta.get("photo"):
+            return await self.edit_dm_message(chat_id, message_id, text)
+        if await self.edit_dm_message(chat_id, message_id, text, caption=True):
+            return True
+        await self.clear_dm_keyboard(chat_id, message_id)
+        return False
 
     async def deliver_desk_notice(self, chat_id: int, text: str) -> bool:
         """§9: ONE Casa-composed, labelled, body-free notice to the operator's
@@ -5257,7 +5286,7 @@ class TelegramChannel(Channel):
         return False
 
     async def edit_dm_message(
-        self, chat_id: int, message_id: int, text: str,
+        self, chat_id: int, message_id: int, text: str, *, caption: bool = False,
     ) -> bool:
         """Plain (no parse_mode, no reply_markup) text edit of a posted DM
         message — resident_ask finish-hook target.
@@ -5284,6 +5313,10 @@ class TelegramChannel(Channel):
         every caller in the tree is a broker FINISH hook — a terminal outcome,
         never a mid-question repaint — and an opt-in flag is a thing the next
         call site forgets.
+
+        ``caption`` (slice 5b): the message is a photo whose caption is the text
+        (a proposal with a photo), so the same edit goes through
+        ``editMessageCaption`` — Telegram refuses ``editMessageText`` on a photo.
         """
         from telegram import InlineKeyboardMarkup
 
@@ -5293,10 +5326,16 @@ class TelegramChannel(Channel):
             try:
                 if entities is not None:
                     try:
-                        await self.bot.edit_message_text(
-                            chat_id=chat_id, message_id=message_id, text=display,
-                            entities=entities, reply_markup=cleared,
-                        )
+                        if caption:
+                            await self.bot.edit_message_caption(
+                                chat_id=chat_id, message_id=message_id, caption=display,
+                                caption_entities=entities, reply_markup=cleared,
+                            )
+                        else:
+                            await self.bot.edit_message_text(
+                                chat_id=chat_id, message_id=message_id, text=display,
+                                entities=entities, reply_markup=cleared,
+                            )
                         return True
                     except BadRequest as exc:
                         if "not modified" in str(exc).lower():
@@ -5306,11 +5345,19 @@ class TelegramChannel(Channel):
                             "(chat=%s message_id=%s): %s",
                             chat_id, message_id, exc,
                         )
-                await self.bot.edit_message_text(
-                    chat_id=chat_id, message_id=message_id,
-                    text=text if entities is not None else _plain(text),
-                    reply_markup=cleared,
-                )
+                if caption:
+                    # a caption's fallback is its display without entities: the
+                    # authored markers could push it past the caption limit
+                    await self.bot.edit_message_caption(
+                        chat_id=chat_id, message_id=message_id, caption=display,
+                        reply_markup=cleared,
+                    )
+                else:
+                    await self.bot.edit_message_text(
+                        chat_id=chat_id, message_id=message_id,
+                        text=text if entities is not None else _plain(text),
+                        reply_markup=cleared,
+                    )
                 return True
             except BadRequest as exc:
                 if "not modified" in str(exc).lower():
@@ -6212,8 +6259,12 @@ class TelegramChannel(Channel):
             logger.warning(
                 "Telegram channel not started; cannot deliver operator link")
             return DeliveryOutcome.NOT_DELIVERED
+        from telegram import LinkPreviewOptions
+        # Slice 5g: no preview card — the label and the host already say where it goes, and a
+        # preview of the redirect page doubled the message's height on the phone.
         await self._send_one(chat_id, plain, text, entities,
-                             record=lambda sent: self._record_post(chat_id, sent, post))
+                             record=lambda sent: self._record_post(chat_id, sent, post),
+                             link_preview_options=LinkPreviewOptions(is_disabled=True))
         return DeliveryOutcome.DELIVERED
 
     # ------------------------------------------------------------------
@@ -6357,14 +6408,20 @@ class TelegramChannel(Channel):
         return mid if isinstance(mid, int) else None
 
     async def deliver_operator_proposal(self, chat_id: int, text: str, labels: list,
-                                        rid: str, *, post=None):
+                                        rid: str, *, post=None, photo=None, urls=None):
         """S5 §3.3: post *text* (Casa's label line and the proposal body, as the
         result broker composed it — ONE page by the deposit's rule) with one
         button per label, ``callback_data = v1|proposal|<rid>|<i>``, rendered
         rich with the plain fallback ``post_dm_keyboard`` uses, and file the
         sent message under *post* (so a swipe-reply on the proposal routes to
         the specialist's desk). Returns the message id, or ``None`` when
-        nothing landed."""
+        nothing landed.
+
+        Slice 5b: with *photo* — ``(bytes, file name)`` the result broker claimed
+        from the plugin outbox through the photo policy — the card is ONE photo
+        message: the rendered text as its caption, the same keyboard; when
+        Telegram refuses the caption's entities, the caption's display text is
+        sent without them."""
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
         if self._app is None:
@@ -6372,12 +6429,24 @@ class TelegramChannel(Channel):
             return None
         # the text is the broker's composition of a validated deposit (the S3
         # delivered-slot class, as ``deliver_operator_message``): not model text
-        kbd = InlineKeyboardMarkup([
-            [InlineKeyboardButton(text=str(label), callback_data=f"v1|proposal|{rid}|{i}")]
-            for i, label in enumerate(labels)])
+        kbd = _proposal_keyboard(labels, rid, urls)
         display, entities = render(text)
         try:
-            if entities is not None:
+            if photo is not None:
+                content, filename = photo
+                try:
+                    msg = await self._app.bot.send_photo(
+                        chat_id, InputFile(BytesIO(content), filename=filename),
+                        caption=display, caption_entities=entities, reply_markup=kbd)
+                except BadRequest as exc:
+                    if entities is None:
+                        raise
+                    logger.warning("deliver_operator_proposal photo caption fell back to plain "
+                                   "(chat=%s): %s", chat_id, exc)
+                    msg = await self._app.bot.send_photo(
+                        chat_id, InputFile(BytesIO(content), filename=filename),
+                        caption=display, reply_markup=kbd)
+            elif entities is not None:
                 try:
                     msg = await self._app.bot.send_message(
                         chat_id=chat_id, text=display, entities=entities, reply_markup=kbd)
@@ -6404,7 +6473,7 @@ class TelegramChannel(Channel):
         return mid if isinstance(mid, int) else None
 
     async def replace_operator_proposal(self, chat_id: int, message_id: int, text: str,
-                                        labels: list, rid: str, *, post=None):
+                                        labels: list, rid: str, *, post=None, urls=None):
         """#1339: edit the tapped proposal *message_id* in place to *text* (the
         result broker's composition of a validated next card, as
         ``deliver_operator_proposal``) with one button per label,
@@ -6419,9 +6488,7 @@ class TelegramChannel(Channel):
         if self._app is None:
             logger.warning("Telegram channel not started; cannot replace operator proposal")
             return None
-        kbd = InlineKeyboardMarkup([
-            [InlineKeyboardButton(text=str(label), callback_data=f"v1|proposal|{rid}|{i}")]
-            for i, label in enumerate(labels)])
+        kbd = _proposal_keyboard(labels, rid, urls)
         display, entities = render(text)
         try:
             try:

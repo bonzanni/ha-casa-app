@@ -425,6 +425,11 @@ WRITES_TO_A_CHAT_ELSEWHERE = {
     "tools.py::consent_reprompt":
         "re-posts Casa's own consent keyboards to the operator's DM; none of "
         "them is the calling turn's message",
+    "tools.py::relay_answer":
+        "posts a delegate's held answer, under the delegate's name, to the "
+        "conversation that delegated it; it is the delegate's message, governed "
+        "by the resident's relay doctrine and its own silence note, not the "
+        "trigger prompt's ending",
     "tools.py::react":
         "sets a reaction on an active engagement's current inbound message and "
         "does nothing without one; a reaction is not a message",

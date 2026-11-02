@@ -1,6 +1,6 @@
 PY := venv_test/bin/python
 
-.PHONY: help setup test-unit test-unit-serial test-browser test-browser-integration test-docker test-image lint
+.PHONY: help setup test-unit test-unit-serial test-browser test-browser-integration test-browser-viewer-engines test-docker test-image lint
 .DEFAULT_GOAL := help
 
 help: ## Show this help
@@ -121,6 +121,13 @@ ifeq ($(BROWSER_PRESENT),)
 	@echo "test-browser-integration: no $(BROWSER_APP)/ app in this tree — nothing to run"
 else
 	bash $(BROWSER_APP)/test/run-integration.sh $(PYTEST_ARGS)
+endif
+
+test-browser-viewer-engines: ## The live view's viewer in WebKit and Chromium with touch (Playwright's image)
+ifeq ($(BROWSER_PRESENT),)
+	@echo "test-browser-viewer-engines: no $(BROWSER_APP)/ app in this tree — nothing to run"
+else
+	bash $(BROWSER_APP)/test/run-viewer-engines.sh
 endif
 
 # Deliberately NOT under $(SUITE): the docker tier is single-process and

@@ -1,0 +1,54 @@
+configuration:
+  onepassword_service_account_token:
+    name: Token dell'account di servizio 1Password
+    description: >-
+      Token di un account di servizio 1Password che vede solo il vault di navigazione.
+      Il broker delle credenziali dell'app lo usa per leggere e salvare gli accessi ai siti;
+      nessun'altra parte dell'app può leggerlo. Necessario prima di qualsiasi accesso a un sito.
+  onepassword_vault:
+    name: Vault di navigazione
+    description: >-
+      Nome del vault 1Password che contiene gli accessi dei siti che il browser può usare.
+      Il broker non legge mai un altro vault e non elimina mai un elemento.
+  guest_sign_in_address:
+    name: Indirizzo di accesso dell'ospite 1Password
+    description: >-
+      L'indirizzo di accesso proprio dell'account 1Password, come 1Password lo mostra nelle
+      impostazioni dell'account (per esempio yourteam.1password.eu; il generico
+      my.1password.eu non è accettato). L'estensione 1Password del browser vi accede come
+      ospite con accesso in sola lettura al vault di navigazione, e il proxy dell'app
+      ammette questo solo indirizzo per l'estensione e per il broker.
+  guest_email:
+    name: Email dell'ospite 1Password
+    description: >-
+      Indirizzo email di quell'ospite 1Password.
+  guest_password:
+    name: Password dell'ospite 1Password
+    description: >-
+      Password di quell'ospite 1Password.
+  guest_secret_key:
+    name: Secret Key dell'ospite 1Password
+    description: >-
+      Secret Key di quell'ospite 1Password.
+  language:
+    name: Lingua del browser
+    description: >-
+      Facoltativa. Sostituisce la lingua del browser, che altrimenti segue la lingua
+      configurata in Home Assistant (letta all'avvio dell'app) e decide anche la lingua
+      delle pagine dell'app. Un codice di lingua come en-GB o it.
+  timezone:
+    name: Fuso orario del browser
+    description: >-
+      Facoltativo. Sostituisce il fuso orario del browser, che altrimenti segue quello di
+      Home Assistant (un nome IANA come Europe/Rome).
+  retention_days:
+    name: Conservazione (giorni)
+    description: >-
+      Per quanto tempo registri dei passi, schermate, file scaricati e resoconti delle
+      attività vengono conservati dopo la fine di un'attività. Siti registrati, approvazioni
+      e accessi salvati non sono interessati.
+  log_level:
+    name: Livello di log
+    description: >-
+      Dettaglio del log dell'app. I log non contengono mai password, codici, cookie o
+      indirizzi di pagine.

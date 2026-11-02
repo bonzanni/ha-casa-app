@@ -1,0 +1,65 @@
+html,body{margin:0;height:100%;overflow:hidden;background:#111;overscroll-behavior:none;-webkit-text-size-adjust:100%}
+#app{position:fixed;left:0;top:0;width:100vw;height:var(--vh,100dvh);overflow:hidden}
+#screen,#touch{position:absolute;inset:0}
+#screen{background:#111}
+#screen>.rfb{position:absolute;inset:0}
+/* every gesture on the picture is the viewer's own (tap, scroll, hold-drag; one finger):
+   the browser never zooms or scrolls the page (casa-test F19) */
+#touch{touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+#pill{position:absolute;top:0;left:0;right:0;display:flex;gap:4px;align-items:center;box-sizing:border-box;
+  height:calc(36px + var(--sa-top, env(safe-area-inset-top)));padding:calc(3px + var(--sa-top, env(safe-area-inset-top))) 4px 3px;
+  background:#202124;z-index:5;font:14px system-ui,sans-serif;color:#e8eaed}
+#pill form{margin:0}
+#pill button{border:0;border-radius:15px;height:30px;min-width:34px;padding:0 10px;font:600 14px system-ui,sans-serif;background:transparent;color:#fff}
+#pill #done{background:#1a73e8}
+#host{flex:1;padding:0 6px 0 8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
+#app.bar #screen,#app.bar #touch{top:calc(36px + var(--sa-top, env(safe-area-inset-top)))}
+/* the toast's own place: in the bar, beside the site's name (which keeps a third of it and still
+   toggles Chrome's toolbar), so it never covers the picture — Chrome's toolbar included — or a
+   button (casa-test F18) */
+#pill.toasting #host{flex:0 1 auto;max-width:34%}
+#toast{flex:1;min-width:0;height:30px;padding:0 12px;border-radius:15px;background:#3c4043;color:#fff;
+  font:14px/30px system-ui,sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;box-sizing:border-box}
+/* a reason line longer than the pill wraps to two smaller lines (casa-test F37) */
+#toast.two{white-space:normal;font:12px/14px system-ui,sans-serif;padding:1px 10px;display:flex;align-items:center}
+#status{position:absolute;left:50%;transform:translateX(-50%);top:calc(44px + var(--sa-top, env(safe-area-inset-top)));
+  background:rgba(32,33,36,.9);color:#fff;border-radius:16px;padding:6px 14px;font:14px system-ui,sans-serif;z-index:8;pointer-events:none}
+#status:empty{display:none}
+#cover{position:absolute;inset:0;background:rgba(0,0,0,.88);color:#fff;display:flex;align-items:center;justify-content:center;
+  text-align:center;font:20px system-ui,sans-serif;z-index:9;padding:24px}
+#cover a{color:#8ab4f8}
+/* live view K: the phone's keyboard lives in a hidden input at the top of the bar — focusable,
+   never over the picture, nothing for iOS to scroll into view; 16px so iOS does not zoom */
+#kb{position:absolute;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;margin:0;font-size:16px;
+  caret-color:transparent;color:transparent;background:transparent;pointer-events:none}
+/* the strip above the phone's keyboard (Paste · ← · →) and the picture's zoom controls
+   (− · Fit · +), styled after iOS's own form bar: a translucent capsule, the system font, line
+   icons, light or dark with the phone. No touch on the page pans or zooms it, but the trace's. */
+html,body{touch-action:none}
+#dbg{touch-action:pan-y}
+#kbstrip,#zoomctl{display:flex;align-items:center;box-sizing:border-box;height:47px;padding:0 4px;border-radius:23.5px;
+  /* Liquid Glass: translucent, blurred and saturated backdrop, a thin light rim, a soft shadow */
+  background:rgba(255,255,255,.38);-webkit-backdrop-filter:blur(18px) saturate(190%);backdrop-filter:blur(18px) saturate(190%);
+  border:.5px solid rgba(255,255,255,.6);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.55),inset 0 -1px 0 rgba(0,0,0,.04),0 6px 22px rgba(0,0,0,.16),0 0 0 .5px rgba(0,0,0,.06);
+  color:#1c1c1e;font:17px -apple-system,system-ui,sans-serif;z-index:7}
+/* the same inset as iOS's own form bar right below it (16 pt each side, measured on a 402-pt phone) */
+#kbstrip{position:absolute;left:16px;right:16px}
+#zoomctl{position:absolute;right:16px;top:calc(46px + var(--sa-top, env(safe-area-inset-top)))}
+#kbstrip button,#zoomctl button{min-width:44px;height:44px;border:0;border-radius:22px;background:transparent;color:inherit;
+  font:inherit;display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:0 12px;
+  -webkit-tap-highlight-color:transparent;-webkit-user-select:none;user-select:none}
+#zoomctl button{font-size:22px;font-weight:300;padding:0 10px}
+#zoomctl #zoomfit{font-size:15px;font-weight:600}
+#kbstrip button:active,#zoomctl button:active{background:rgba(0,0,0,.08)}
+#zoomctl button:disabled{opacity:.35}
+#kbstrip .sp{flex:1}
+#kbstrip svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+@media (prefers-color-scheme: dark){
+  #kbstrip,#zoomctl{background:rgba(58,58,62,.42);border-color:rgba(255,255,255,.2);color:#fff;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.18),inset 0 -1px 0 rgba(0,0,0,.2),0 6px 22px rgba(0,0,0,.35),0 0 0 .5px rgba(0,0,0,.3)}
+  #kbstrip button:active,#zoomctl button:active{background:rgba(255,255,255,.14)}
+}
+#dbg{position:absolute;left:4px;right:4px;top:calc(40px + var(--sa-top, env(safe-area-inset-top)));max-height:60%;overflow:auto;
+  margin:0;padding:6px;background:rgba(0,0,0,.85);color:#9f9;font:10px/1.3 ui-monospace,monospace;z-index:9;white-space:pre-wrap}
+[hidden]{display:none!important}

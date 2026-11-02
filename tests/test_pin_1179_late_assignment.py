@@ -166,5 +166,8 @@ class TestLateAssignmentDuringTopicAwait:
         assert len(obs["built"]) == 1
         assert _recorded_names(obs) == [rp.name for rp in obs["built"][0].plugins] == [
             "mtg", "late"]
-        # One resolve, taken after the topic exists.
-        assert obs["resolves"] == [("after", "specialist:finance")]
+        # The session is built from a resolve taken after the topic exists; the
+        # one read before it only decides whether the target's work is continued
+        # in its own turns (``_continues_its_own_work``) and builds nothing.
+        assert obs["resolves"] == [("before", "specialist:finance"),
+                                   ("after", "specialist:finance")]

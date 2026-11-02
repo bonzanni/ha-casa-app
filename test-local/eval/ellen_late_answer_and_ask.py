@@ -19,6 +19,10 @@ case runs TWO turns in one session, as production does: the person's ask
 (answered ``pending``), then the notice body the installed
 ``_synthesize_delegation_turn`` builds. Nothing is started, asked or posted.
 
+``--handoff-shown`` (slice 5f) serves the pending result an operator turn gets
+once Casa showed its hand-off line: ``tools.PENDING_HANDOFF_SHOWN_NOTE`` after
+the note, and the reply to it must then be silence (no holding line).
+
 ``--variant baseline`` serves the projection as compiled. ``--variant
 doctrine`` inserts ``DOCTRINE_PARAGRAPH`` after the #1332 paragraph, where the
 change puts it, so a deployed image need not carry the change to measure it.
@@ -204,10 +208,15 @@ def _silent(text: str) -> bool:
     return strips_to_silence(text)
 
 
+HANDOFF_SHOWN = False   # --handoff-shown: only silence passes
+
+
 def judge_holding(reply: str) -> tuple[bool, str]:
     """The reply to a ``pending`` result: silence, or the one holding line."""
     if _silent(reply):
         return True, "silent"
+    if HANDOFF_SHOWN:
+        return False, "a line under the hand-off line"
     if HOLDING_LINE.fullmatch(_norm(reply)):
         return True, "one short line"
     return False, "not the holding line"
@@ -265,6 +274,19 @@ def judge_late_turn(case: dict, late: str, asked: bool) -> tuple[bool, str]:
     return judge_late(case, late)
 
 
+def judge_relayed_late(late: str, asked: bool, relays: list) -> tuple[bool, str]:
+    """Slice 5l: the late answer relayed once, by the notice's full id, and
+    the resident's own text beside it silence."""
+    if asked:
+        return False, "asked instead of passing the answer on"
+    if len(relays) != 1:
+        return False, f"relayed {len(relays)} times"
+    if str(relays[0].get("delegation_id", "")).strip() != "0f3c9a2e-eval":
+        return False, "relayed another id"
+    ok = _silent(late)
+    return ok, "relayed" if ok else "relayed and spoke"
+
+
 def judge_after_ask(after: str) -> tuple[bool, str]:
     """What the resident wrote after its ask_user call must be silence."""
     ok = _silent(after)
@@ -294,7 +316,8 @@ def _notice_body(case: dict) -> str:
                  + casa_tools.POST_ECHO_SILENCE_NOTE)
     complete = DelegationComplete(
         delegation_id="0f3c9a2e-eval", agent="finance", status="ok",
-        text=text, origin={"user_text": case["user"]}, elapsed_s=74.0)
+        text=text, origin={"user_text": case["user"]}, elapsed_s=74.0,
+        relayable=True)
     msg = BusMessage(type=MessageType.NOTIFICATION, source="finance",
                      target="assistant", content=complete, channel="telegram",
                      context={"chat_id": 1})
@@ -333,11 +356,16 @@ async def _one(case: dict, system_prompt: str, model: str) -> tuple[bool, str, l
     from config import effort_for
     import tools as casa_tools
     captured: list = []
+    note = PENDING_NOTE + (" " + casa_tools.PENDING_HANDOFF_SHOWN_NOTE.format(name="Alex")
+                           if HANDOFF_SHOWN else "")
     pending = json.dumps({"status": "pending", "delegation_id": "0f3c9a2e-eval",
-                          "agent": "finance", "timeout_s": 60, "note": PENDING_NOTE})
+                          "agent": "finance", "timeout_s": 60, "note": note})
+    relayed = ("Posted Alex's answer. "
+               + casa_tools.RELAY_SILENCE_NOTE.format(name="Alex"))
     fakes = [
         _fake(casa_tools.delegate_to_agent, captured, lambda _a: pending),
         _fake(casa_tools.ask_user, captured, lambda _a: json.dumps(AWAITING)),
+        _fake(casa_tools.relay_answer, captured, lambda _a: relayed),
     ]
     server = create_sdk_mcp_server(name="casa-framework", tools=fakes)
     opts = ClaudeAgentOptions(
@@ -366,8 +394,10 @@ async def _one(case: dict, system_prompt: str, model: str) -> tuple[bool, str, l
             held_why += " (+lead-in)"
         late, _after, _held = await _turn(client, _notice_body(case))
         transcript = f"{first!r} || {late!r}"
-        ok, why = judge_late_turn(
-            case, late, "ask_user" in [n for n, _ in captured[len(names):]])
+        later = captured[len(names):]
+        ok, why = judge_relayed_late(
+            late, "ask_user" in [n for n, _ in later],
+            [a for n, a in later if n == "relay_answer"])
         return (held and ok, f"holding: {held_why}; late: {why}",
                 captured, transcript)
 
@@ -393,7 +423,10 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--variant", choices=("baseline", "doctrine"), required=True)
     parser.add_argument("--runs", type=int, default=3)
+    parser.add_argument("--handoff-shown", action="store_true")
     args = parser.parse_args()
+    global HANDOFF_SHOWN
+    HANDOFF_SHOWN = args.handoff_shown
     try:
         ok = asyncio.run(_run(args.variant, args.runs))
     except Exception:  # noqa: BLE001

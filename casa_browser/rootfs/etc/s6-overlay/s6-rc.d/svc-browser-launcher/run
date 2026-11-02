@@ -1,0 +1,9 @@
+#!/command/with-contenv bash
+# The browser user's launcher: starts Chrome for the controller's Patchright with the
+# descriptors it is handed, the real profile and an allowlisted environment, and only when
+# the network floor is installed. See /opt/casa_browser/launcher.py.
+set -euo pipefail
+install -d -o casa-browser -g casa-browser -m 0755 /run/casa-browser/launcher
+install -d -o casa-browser -g casa-browser -m 0700 /run/casa-browser/browser-home
+exec env -i PATH=/command:/usr/bin:/bin LANG=C.UTF-8 PYTHONPATH=/opt HOME=/run/casa-browser/browser-home \
+  s6-setuidgid casa-browser /opt/venv/bin/python -m casa_browser.launcher

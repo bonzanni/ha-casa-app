@@ -1,0 +1,54 @@
+configuration:
+  onepassword_service_account_token:
+    name: Token des 1Password-Dienstkontos
+    description: >-
+      Token eines 1Password-Dienstkontos, das nur den Browser-Tresor sieht. Der
+      Zugangsdaten-Broker der App liest und speichert damit die Anmeldungen der Websites;
+      kein anderer Teil der App kann es lesen. Vor jeder Anmeldung auf einer Website nötig.
+  onepassword_vault:
+    name: Browser-Tresor
+    description: >-
+      Name des 1Password-Tresors mit den Anmeldungen der Websites, die der Browser
+      verwenden darf. Der Broker liest nie einen anderen Tresor und löscht nie einen Eintrag.
+  guest_sign_in_address:
+    name: Anmeldeadresse des 1Password-Gasts
+    description: >-
+      Die eigene Anmeldeadresse des 1Password-Kontos, wie 1Password sie in den
+      Kontoeinstellungen zeigt (zum Beispiel yourteam.1password.eu; das allgemeine
+      my.1password.eu wird nicht akzeptiert). Die 1Password-Erweiterung des Browsers
+      meldet sich dort als Gast mit Lesezugriff auf den Browser-Tresor an, und der Proxy der
+      App lässt für die Erweiterung und den Broker nur diese Adresse zu.
+  guest_email:
+    name: E-Mail des 1Password-Gasts
+    description: >-
+      E-Mail-Adresse dieses 1Password-Gasts.
+  guest_password:
+    name: Passwort des 1Password-Gasts
+    description: >-
+      Passwort dieses 1Password-Gasts.
+  guest_secret_key:
+    name: Secret Key des 1Password-Gasts
+    description: >-
+      Secret Key dieses 1Password-Gasts.
+  language:
+    name: Browsersprache
+    description: >-
+      Optional. Ersetzt die Browsersprache, die sonst der in Home Assistant eingestellten
+      Sprache folgt (beim Start der App gelesen) und auch die Sprache der Seiten der App
+      bestimmt. Ein Sprachcode wie en-GB oder de.
+  timezone:
+    name: Zeitzone des Browsers
+    description: >-
+      Optional. Ersetzt die Zeitzone des Browsers, die sonst der von Home Assistant folgt
+      (ein IANA-Name wie Europe/Berlin).
+  retention_days:
+    name: Aufbewahrung (Tage)
+    description: >-
+      Wie lange Schrittprotokolle, Bildschirmfotos, heruntergeladene Dateien und
+      Auftragsberichte nach dem Ende eines Auftrags aufbewahrt werden. Registrierte
+      Websites, Freigaben und gespeicherte Anmeldungen sind nicht betroffen.
+  log_level:
+    name: Protokollstufe
+    description: >-
+      Ausführlichkeit des eigenen Protokolls der App. Protokolle enthalten nie Passwörter,
+      Codes, Cookies oder Seitenadressen.

@@ -180,6 +180,50 @@ async def test_the_answer_climbs_the_chain_one_requester_at_a_time(roles, desks,
 
 
 @pytest.mark.asyncio
+async def test_a_run_started_in_an_engagement_is_continued_as_its_specialist(
+        roles, desks, announce, monkeypatch):
+    """Phone round 7: the call made inside an interactive engagement runs under
+    the launching resident's turn origin; the sweep's continuation of its run
+    must be a turn of the specialist that runs it, never of the resident."""
+    import operator_calls
+    monkeypatch.setattr(operator_calls, "CALLS", operator_calls.OperatorCalls())
+    engagement_turn = {**ORIGIN, "cid": "ellen-turn", "delegation_depth": 1,
+                       "_operator_words": "order the pizza"}
+    ident = GrantIdentity(operator_id=100, chat_id=42, enforcement_role="browser",
+                          artifact_id="1" * 64, engagement_id="")
+    call = operator_calls.CALLS.open(
+        client_id="c1", tool_use_id="tu", tool_name="mcp__plugin_browser_api__start_runs",
+        role="browser", plugin="browser", identity=ident, origin=engagement_turn)
+    ref = operator_calls.requester_facts(call)["binding_ref"]
+    binding = plugin_bindings.BINDINGS.peek(ref)
+    seen: list = []
+    _recording_runner(monkeypatch, seen)
+    reg, announced = announce
+    await pc.run_continuation(pc.Pending(binding, "r-1", "sweep", 0.0), on_start=lambda: None)
+    task, record = announced[0]
+    await task
+    assert [x[0] for x in seen] == ["browser"]
+    assert seen[0][1] == "Continue browsing run r-1." and record.agent == "browser"
+
+
+@pytest.mark.asyncio
+async def test_a_continuation_addressed_to_a_resident_runs_nothing(roles, desks, announce,
+                                                                  monkeypatch, caplog):
+    """A binding whose chain ends with a resident (one minted before the chain
+    fix, still on disk) is dropped with one warning: a resident has no plugin
+    run to continue, and its answer would reach the operator every sweep."""
+    seen: list = []
+    _recording_runner(monkeypatch, seen)
+    reg, announced = announce
+    b = _binding(("assistant",))
+    with caplog.at_level("WARNING", logger="plugin_continuations"):
+        await pc.run_continuation(pc.Pending(b, "r-1", "sweep", 0.0), on_start=lambda: None)
+    assert seen == [] and announced == [] and reg.records == []
+    assert [r.message for r in caplog.records if r.levelname == "WARNING"] == [
+        "continuation: role assistant is not a specialist — dropped"]
+
+
+@pytest.mark.asyncio
 async def test_an_unloaded_requester_fails_the_relay_instead_of_passing_the_answer_on(
         roles, desks, announce, monkeypatch):
     seen: list = []
@@ -333,7 +377,10 @@ for line in sys.stdin:
     elif msg.get("method") == "tools/list":
         res = {"tools": [{"name": "runs_needing_driver", "inputSchema": {"type": "object"}}]}
     elif msg.get("method") == "tools/call":
-        res = {"content": [{"type": "text", "text": json.dumps({"runs": json.loads(os.environ["RUNS"])})}]}
+        with open(os.environ["PROBE_OUT"] + ".calls", "a") as fh:
+            fh.write("call\n")
+        answer = {"runs": json.loads(os.environ["RUNS"]), **json.loads(os.environ.get("EXTRA", "{}"))}
+        res = {"content": [{"type": "text", "text": json.dumps(answer)}]}
     elif mid is not None:
         res = {}
     else:
@@ -342,14 +389,15 @@ for line in sys.stdin:
 '''
 
 
-def _plugin(tmp_path, runs, *, sweep="runs_needing_driver"):
+def _plugin(tmp_path, runs, *, sweep="runs_needing_driver", extra=None):
     root = tmp_path / "browser"
     root.mkdir()
     (root / "srv.py").write_text(SERVER)
     (root / ".mcp.json").write_text(json.dumps({"mcpServers": {"browser": {
         "command": sys.executable, "args": ["${CLAUDE_PLUGIN_ROOT}/srv.py"],
         "env": {"X_TOKEN": "${CASA_PLUGIN_BROWSER_TOKEN:-none}",
-                "RUNS": json.dumps(runs), "PROBE_OUT": str(tmp_path / "probe.json")}}}}))
+                "RUNS": json.dumps(runs), "EXTRA": json.dumps(extra or {}),
+                "PROBE_OUT": str(tmp_path / "probe.json")}}}}))
     manifest = {"name": "browser", "casa": {
         "driverSweep": sweep,
         "resultContract": {"version": 1, "tools": {"runs_needing_driver": {"result": "safe"}}}}}
@@ -416,6 +464,170 @@ async def test_the_sweep_calls_only_a_tool_the_server_lists(roles, monkeypatch, 
     monkeypatch.setattr(pc, "CONTINUATIONS", SimpleNamespace(
         request=lambda *a: queued.append(a) or "queued"))
     assert await pc.sweep_once() == 0 and queued == []
+
+
+# -- slice 5k: a hand-over Casa delivered holds the run; a live view is looked at again soon ----
+
+def _sweep_setup(monkeypatch, tmp_path, runs, extra=None):
+    import authz_grants
+    monkeypatch.setattr(authz_grants, "_live_operator_identity", lambda: (42, 100))
+    rp = _plugin(tmp_path, runs, extra=extra)
+    monkeypatch.setattr(tools_mod, "_delegated_resolution",
+                        lambda cfg: ResolutionResult(registry_valid=True,
+                                                     plugins=[rp] if cfg.role == "browser" else []))
+    queued: list = []
+    monkeypatch.setattr(pc, "CONTINUATIONS", SimpleNamespace(
+        request=lambda binding, run_ref, reason: queued.append(run_ref) or "queued"))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "cfg"))
+    return rp, queued
+
+
+def _outcome(monkeypatch, ref, delivered=True, *, plugin="browser", operator_id=100,
+             artifact_id="1" * 64):
+    import result_broker
+    outcomes = result_broker.DeliveryOutcomes()
+    monkeypatch.setattr(result_broker, "DELIVERY_OUTCOMES", outcomes)
+    outcomes.record(ref, plugin=plugin, operator_id=operator_id, delivered=delivered,
+                    repeat=False, artifact_id=artifact_id)
+    return outcomes
+
+
+REF_A = "casa-cap-" + "a" * 32
+REF_B = "casa-cap-" + "b" * 32
+
+
+@pytest.mark.asyncio
+async def test_a_run_held_by_a_delivered_hand_over_is_not_continued(roles, monkeypatch, tmp_path):
+    """Slice 5k: the plugin names the deposits whose delivery it has not confirmed yet; Casa,
+    which delivered them, skips the run when every one of them reached the operator."""
+    b = _binding()
+    _rp, queued = _sweep_setup(monkeypatch, tmp_path, [
+        {"run_ref": "r-held", "binding_ref": b.ref, "unless_delivered": [REF_A]},
+        {"run_ref": "r-free", "binding_ref": b.ref}])
+    _outcome(monkeypatch, REF_A)
+    assert await pc.sweep_once() == 1
+    assert queued == ["r-free"]
+
+
+@pytest.mark.parametrize("entry_refs, recorded", [
+    ([REF_A, REF_B], {REF_A: True}),                 # one of them not known delivered
+    ([REF_A], {REF_A: False}),                       # withheld
+    ([REF_A], {}),                                   # Casa forgot it (a restart): unknown
+    ("casa-cap-" + "a" * 32, {REF_A: True}),         # not a list
+    ([], {}),                                        # empty
+    ([REF_A] * 5, {REF_A: True}),                    # too many
+    (["not-a-reference"], {}),
+])
+@pytest.mark.asyncio
+async def test_a_hand_over_not_known_delivered_still_continues_the_run(
+        roles, monkeypatch, tmp_path, entry_refs, recorded):
+    b = _binding()
+    _rp, queued = _sweep_setup(monkeypatch, tmp_path, [
+        {"run_ref": "r-1", "binding_ref": b.ref, "unless_delivered": entry_refs}])
+    import result_broker
+    outcomes = result_broker.DeliveryOutcomes()
+    monkeypatch.setattr(result_broker, "DELIVERY_OUTCOMES", outcomes)
+    for ref, delivered in recorded.items():
+        outcomes.record(ref, plugin="browser", operator_id=100, delivered=delivered,
+                        repeat=False, artifact_id="1" * 64)
+    assert await pc.sweep_once() == 1 and queued == ["r-1"]
+
+
+@pytest.mark.parametrize("who", [{"plugin": "bank-feed"}, {"operator_id": 7},
+                                 {"artifact_id": "2" * 64}])
+@pytest.mark.asyncio
+async def test_only_the_plugins_own_delivery_to_this_operator_holds_a_run(
+        roles, monkeypatch, tmp_path, who):
+    b = _binding()
+    _rp, queued = _sweep_setup(monkeypatch, tmp_path, [
+        {"run_ref": "r-1", "binding_ref": b.ref, "unless_delivered": [REF_A]}])
+    _outcome(monkeypatch, REF_A, **who)
+    assert await pc.sweep_once() == 1 and queued == ["r-1"]
+
+
+@pytest.fixture
+def extra_pass(monkeypatch):
+    monkeypatch.setattr(pc, "SWEEP_AGAIN_MIN_S", 0.05)
+    monkeypatch.setattr(pc, "_stopping", False)
+    pc.cancel_extra_pass()
+    yield
+    pc.cancel_extra_pass()
+
+
+def _calls(tmp_path) -> int:
+    path = tmp_path / "probe.json.calls"
+    return len(path.read_text().splitlines()) if path.exists() else 0
+
+
+async def _settle(seconds: float) -> None:
+    deadline = asyncio.get_running_loop().time() + seconds
+    while asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.02)
+
+
+@pytest.mark.asyncio
+async def test_a_plugin_that_asks_is_swept_again_soon(roles, monkeypatch, tmp_path, extra_pass):
+    """Slice 5k: the operator's Done in a live view reaches no one, so while a view is open the
+    plugin asks to be swept again in a few seconds; each pass arms at most one more."""
+    _rp, queued = _sweep_setup(monkeypatch, tmp_path, [], extra={"sweep_again_s": 1})
+    await pc.sweep_job()
+    assert _calls(tmp_path) == 1
+    await _settle(1.4)
+    assert _calls(tmp_path) == 2                 # looked at again after its second
+    pc.cancel_extra_pass()                       # Casa's stop
+    await _settle(1.4)
+    assert _calls(tmp_path) == 2                 # nothing more runs
+    assert queued == []
+
+
+@pytest.mark.asyncio
+async def test_an_extra_pass_comes_no_sooner_than_five_seconds(roles, monkeypatch, tmp_path):
+    rp = _plugin(tmp_path, [], extra={"sweep_again_s": 1})
+    from plugin_continuations import sweep_server
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "cfg"))
+    runs, again = await pc.call_sweep_tool(sweep_server(rp), "runs_needing_driver")
+    assert runs == [] and again == 5.0
+
+
+@pytest.mark.asyncio
+async def test_no_extra_pass_unless_asked(roles, monkeypatch, tmp_path, extra_pass):
+    _sweep_setup(monkeypatch, tmp_path, [])
+    await pc.sweep_job()
+    await _settle(0.4)
+    assert _calls(tmp_path) == 1
+
+
+@pytest.mark.parametrize("value", [True, "5", None, 0, -3, 60, 600, 5.5])
+@pytest.mark.asyncio
+async def test_a_bad_or_minute_long_request_arms_nothing(roles, monkeypatch, tmp_path, extra_pass,
+                                                        value):
+    _sweep_setup(monkeypatch, tmp_path, [], extra={"sweep_again_s": value})
+    await pc.sweep_job()
+    assert pc._extra["handle"] is None            # nothing armed
+    await _settle(0.3)
+    assert _calls(tmp_path) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_pass_never_overlaps_another(roles, monkeypatch, tmp_path, extra_pass):
+    """The minute pass and an extra pass never run at once: the later one returns."""
+    gate = asyncio.Event()
+    started: list = []
+
+    async def _slow_pass():
+        started.append(1)
+        await gate.wait()
+        return 0, None
+
+    monkeypatch.setattr(pc, "_sweep_pass", _slow_pass)
+    first = asyncio.ensure_future(pc.sweep_job())
+    await asyncio.sleep(0)
+    await asyncio.wait_for(pc.sweep_job(), 2)    # returns at once
+    assert started == [1]
+    gate.set()
+    await first
+    await pc.sweep_job()
+    assert started == [1, 1]
 
 
 @pytest.mark.asyncio
@@ -627,3 +839,27 @@ async def test_a_quiet_record_completes_without_a_notice(monkeypatch, quiet, abo
     if not aborted:
         assert reg.completed == [(rec.id, reg.completed[0][1], told)]
     assert retried == ([False] if fail_write else [])
+
+
+@pytest.mark.asyncio
+async def test_a_pass_in_flight_at_casas_stop_arms_nothing(roles, monkeypatch, tmp_path,
+                                                          extra_pass):
+    """r1 Astra S2: the minute pass still running when Casa stops must not arm another; no
+    pass starts after the stop."""
+    gate = asyncio.Event()
+    passes: list = []
+
+    async def _pass():
+        passes.append(1)
+        await gate.wait()
+        return 0, 1.0
+
+    monkeypatch.setattr(pc, "_sweep_pass", _pass)
+    first = asyncio.ensure_future(pc.sweep_job())
+    await asyncio.sleep(0)
+    pc.stop_sweep()                               # Casa stops while that pass runs
+    gate.set()
+    await first
+    assert pc._extra["handle"] is None
+    await pc.sweep_job()                          # the scheduler's next tick
+    assert passes == [1]

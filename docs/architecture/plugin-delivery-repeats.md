@@ -35,7 +35,8 @@ are kept thirty days, and at most five hundred per plugin and operator.
 
 **INV-PLUG-050**: A delivered slot's deposit may carry a `key` matching `^[A-Za-z0-9._:-]{1,128}$` (anything else is refused `bad_key` before a reference is minted); after a proven delivery of a keyed deposit the key is remembered for that plugin and operator, recorded synchronously at the point the send is proven; a later keyed deposit of the same kind whose key is remembered sends nothing and its result is replaced by the original delivery's receipt with `repeat` set — for a proposal only while the original keyboard is live, unclaimed, not past its deadline and registered under the same artifact as the new call, otherwise a fresh card is posted and remembered; deliveries of one key are serialised; a deposit without a key behaves as before.
 
-A repeat still owes what is not the post: a file deposit's staged file is consumed, and a
+A repeat still owes what is not the post: a file deposit's staged file is consumed (and a
+proposal's staged photo), and a
 `More` call's rewritten-input tell goes out as one labelled desk notice, because no card
 carries it this time. Both await. A proposal's repeat is therefore decided again afterwards, with no await before
 its receipt: one whose original was superseded, claimed or expired meanwhile is posted fresh,

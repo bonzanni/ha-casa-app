@@ -18,6 +18,8 @@ must be the client's only recorded one (the deposit route's rule):
 * ``POST /internal/broker/run-admission-status`` (C3) — a confirmation's state.
 * ``POST /internal/broker/continue``             (C8) — queue a continuation turn.
 * ``POST /internal/broker/delivery-status``      (C9) — a delivered slot's outcome.
+* ``POST /internal/broker/action-judgement``     — the check of one browsing
+  action (``action_judgement``).
 
 The record is forgotten at the call's PostToolUse / PostToolUseFailure, or
 after ``OPERATOR_CALL_CAP_S``. The operator question Casa itself posts for run
@@ -76,8 +78,13 @@ class OperatorCalls:
 
     def open(self, *, client_id: str, tool_use_id: str, tool_name: str, role: str,
              plugin: str, identity: Any, origin: dict) -> OperatorCall:
-        from handoff import handoff_chain, operator_words, requester_of
-        chain = handoff_chain(origin)
+        from handoff import child_chain, operator_words, requester_of
+        # The chain ends with the agent making the call (``role``). A delegated
+        # run's origin already carries it; an engagement turn's ambient origin
+        # is the launching resident's turn, which does not — and a binding
+        # whose chain ends with the resident would continue the run as a turn
+        # of the resident instead of the agent that runs it.
+        chain = child_chain(origin, role)
         binding = origin.get("_binding_ref")
         call = OperatorCall(
             client_id=client_id, tool_use_id=tool_use_id, tool_name=tool_name,
@@ -300,3 +307,18 @@ def build_delivery_status_handler():
             artifact_id=call.identity.artifact_id))
     return handler
 
+
+def build_action_judgement_handler():
+    """``{"client", "kind", "packet", "spec_digest"}`` ⇒ ``{"verdict",
+    "packet_sha256", "latency_ms"}`` | ``{"error"}`` (``bad_kind``,
+    ``bad_packet``, ``bad_digest``, ``check_unavailable``). The packet is the
+    app's JSON text as a string; the words come from the call's plugin and
+    operator, never the body."""
+    async def handler(request):
+        call, body, bad = await _call_and_body(request)
+        if call is None:
+            return bad
+        import action_judgement
+        return _reply(await action_judgement.judge(
+            call, body.get("kind"), body.get("packet"), body.get("spec_digest")))
+    return handler

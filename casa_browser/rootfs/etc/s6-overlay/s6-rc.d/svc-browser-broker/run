@@ -1,0 +1,10 @@
+#!/command/with-contenv bash
+# The broker reads credentials only from its private runtime config.
+set -euo pipefail
+chmod 0711 /run/casa-browser/broker
+while [ ! -s /run/casa-browser/ca/ca.pem ]; do sleep 0.1; done
+exec env -i PATH=/command:/usr/bin:/bin LANG=C.UTF-8 TZ="${TZ:-UTC}" \
+  HOME=/run/casa-browser/broker PYTHONPATH=/opt \
+  HTTPS_PROXY=http://127.0.0.1:3129 https_proxy=http://127.0.0.1:3129 \
+  SSL_CERT_FILE=/run/casa-browser/ca/ca.pem \
+  s6-setuidgid casa-broker /opt/venv/bin/python -m casa_browser.broker.main

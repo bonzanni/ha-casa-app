@@ -214,7 +214,7 @@ async def test_commit_sequencer_failure_compensates_with_new_artifact_ids(
         rollback_disk=lambda: rolled_back.append(True))
 
     def _fake_commit(*a, **k):
-        return SimpleNamespace(slug="mtg", state="active"), txn
+        return SimpleNamespace(slug="mtg", state="active", last_activation_error=None), txn
 
     monkeypatch.setattr(specialist_install, "commit_specialist_install", _fake_commit)
     monkeypatch.setattr(specialist_bundle_journal, "complete",
@@ -273,7 +273,7 @@ async def test_commit_seq_not_ready_compensates_and_reports_ok_false(
         journal_path="/tmp/j.json",
         rollback_disk=lambda: rolled_back.append(True))
     monkeypatch.setattr(specialist_install, "commit_specialist_install",
-                        lambda *a, **k: (SimpleNamespace(slug="mtg", state="active"), txn))
+                        lambda *a, **k: (SimpleNamespace(slug="mtg", state="active", last_activation_error=None), txn))
     monkeypatch.setattr(specialist_bundle_journal, "complete",
                         lambda p: completed.append(p))
 
@@ -399,7 +399,7 @@ async def test_seq_failure_with_failed_rollback_tags_compensation_failed(
         journal_path="/tmp/j.json", before_tuple_files={"active.yaml": None},
         rollback_disk=_boom_rollback)
     monkeypatch.setattr(specialist_install, "commit_specialist_install",
-                        lambda *a, **k: (SimpleNamespace(slug="mtg", state="active"), txn))
+                        lambda *a, **k: (SimpleNamespace(slug="mtg", state="active", last_activation_error=None), txn))
     monkeypatch.setattr(specialist_bundle_journal, "complete",
                         lambda p: completed.append(p))
 
@@ -1022,7 +1022,7 @@ async def test_inspect_receipt_id_round_trips_into_commit(monkeypatch, tmp_path)
 
     monkeypatch.setattr(specialist_receipt, "load", _load)
 
-    instance = SimpleNamespace(slug="mtg", state="active")
+    instance = SimpleNamespace(slug="mtg", state="active", last_activation_error=None)
     txn = SimpleNamespace(
         slug="mtg", removed_artifact_ids=(), new_artifact_ids=("AID1",),
         journal_path=str(tmp_path / "journal.json"))
@@ -1084,7 +1084,7 @@ async def test_commit_prunes_receipt_only_on_active(
     pruned: list[str] = []
     monkeypatch.setattr(tools_mod, "_prune_bundle_receipt", pruned.append)
 
-    instance = SimpleNamespace(slug="mtg", state=state)
+    instance = SimpleNamespace(slug="mtg", state=state, last_activation_error=None)
     txn = SimpleNamespace(
         slug="mtg", removed_artifact_ids=(), new_artifact_ids=(),
         journal_path=str(tmp_path / "journal.json"))
@@ -1752,7 +1752,7 @@ async def test_commit_success_surfaces_bundled_plugins_required_env_vars(
                           rollback_disk=lambda: None)
     monkeypatch.setattr(
         specialist_install, "commit_specialist_install",
-        lambda *a, **k: (SimpleNamespace(slug="mtg", state="active"), txn))
+        lambda *a, **k: (SimpleNamespace(slug="mtg", state="active", last_activation_error=None), txn))
     monkeypatch.setattr(tools_mod, "_prune_bundle_receipt", lambda rid: None)
     monkeypatch.setattr(specialist_install, "reclaim_staging_tree",
                         lambda p: None)
@@ -2341,7 +2341,7 @@ async def _run_upgrade(monkeypatch, tmp_path, txn):
     digest = compute_install_root_digest(
         component, deps, manifest_bytes=(staged / "manifest.json").read_bytes())
 
-    instance = SimpleNamespace(slug="mtg", state="active")
+    instance = SimpleNamespace(slug="mtg", state="active", last_activation_error=None)
     monkeypatch.setattr(specialist_install, "upgrade_specialist",
                         lambda **kw: (instance, txn))
     monkeypatch.setattr(tools_mod, "_prune_bundle_receipt", lambda rid: None)
@@ -2360,7 +2360,7 @@ async def _run_rollback(monkeypatch, txn):
     from tools import specialist_rollback
     from types import SimpleNamespace
 
-    instance = SimpleNamespace(slug="mtg", state="active")
+    instance = SimpleNamespace(slug="mtg", state="active", last_activation_error=None)
     monkeypatch.setattr(specialist_install, "rollback_specialist",
                         lambda **kw: (instance, txn))
     _stub_bundle_sequencer(monkeypatch)
@@ -2453,7 +2453,7 @@ async def test_a_successful_install_commit_discloses_a_stale_entry_its_swap_drop
 
     txn = _swap_txn(["mtg.stale"], op="install")
     monkeypatch.setattr(specialist_install, "commit_specialist_install",
-                        lambda *a, **k: (SimpleNamespace(slug="mtg", state="active"), txn))
+                        lambda *a, **k: (SimpleNamespace(slug="mtg", state="active", last_activation_error=None), txn))
     monkeypatch.setattr(tools_mod, "_prune_bundle_receipt", lambda rid: None)
     monkeypatch.setattr(specialist_install, "reclaim_staging_tree", lambda d: None)
     _inject_fake_receipt(monkeypatch)
@@ -2566,7 +2566,7 @@ async def test_a_pending_install_commit_names_its_resume_inputs(
         specialist_receipt, "load",
         lambda rid, *a, **k: SimpleNamespace(receipt_id=rid, receipt_digest="", plugins=()))
 
-    instance = SimpleNamespace(slug="mtg", state=state)
+    instance = SimpleNamespace(slug="mtg", state=state, last_activation_error=None)
     txn = SimpleNamespace(slug="mtg", removed_artifact_ids=(), new_artifact_ids=(),
                           journal_path=str(tmp_path / "journal.json"))
     core = _Counter((instance, txn))
@@ -2628,7 +2628,7 @@ async def test_a_pending_upgrade_names_its_resume_inputs(
         specialist_receipt, "load",
         lambda rid, *a, **k: SimpleNamespace(receipt_id=rid, receipt_digest="", plugins=()))
 
-    instance = SimpleNamespace(slug="mtg", state=state)
+    instance = SimpleNamespace(slug="mtg", state=state, last_activation_error=None)
     txn = SimpleNamespace(slug="mtg", removed_artifact_ids=(), new_artifact_ids=(),
                           journal_path=str(tmp_path / "journal.json"))
     core = _Counter((instance, txn))
@@ -3198,3 +3198,51 @@ def test_consent_reprompt_names_the_retry_for_an_expired_install_consent() -> No
 
     desc = consent_reprompt.description
     assert "expired" in desc and "install or upgrade again" in desc, desc
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool_name,core_name", [
+    ("specialist_upgrade", "upgrade_specialist"),
+    ("specialist_install_commit", "commit_specialist_install"),
+])
+@pytest.mark.parametrize("state,error", [
+    # 2026-11-01: an upgrade whose prompt compile failed came back as state
+    # "error" and nothing else, so the configurator had no reason to tell.
+    ("error", "restricted_webhook prompt exceeds admission ceiling for role specialist:mtg"),
+    ("pending-configuration", "missing required config/secret: ['token']"),
+    ("active", "operational files pending reconcile: disk full"),
+    ("active", None),
+])
+async def test_the_librarys_activation_error_reaches_the_payload(
+        monkeypatch, tmp_path, tool_name, core_name, state, error) -> None:
+    """The library's `last_activation_error` is passed through verbatim on the
+    install and the upgrade payload, and is absent when the library set none."""
+    import specialist_install
+    import specialist_receipt
+    import tools as tools_mod
+    from specialist_lifecycle import SpecialistInstance
+
+    staged, component, root_digest = _stage_real_component(tmp_path, name="err")
+    monkeypatch.setattr(
+        specialist_receipt, "load",
+        lambda rid, *a, **k: SimpleNamespace(receipt_id=rid, receipt_digest="", plugins=()))
+    instance = SpecialistInstance(slug="mtg", stable_agent_id="specialist:mtg", state=state,
+                                  active=None, desired=None, last_activation_error=error)
+    txn = SimpleNamespace(slug="mtg", removed_artifact_ids=(), new_artifact_ids=(),
+                          journal_path=str(tmp_path / "journal.json"))
+    monkeypatch.setattr(specialist_install, core_name, _Counter((instance, txn)))
+    monkeypatch.setattr(tools_mod, "_prune_bundle_receipt", _Counter())
+    monkeypatch.setattr(specialist_install, "reclaim_staging_tree", _Counter())
+    _stub_bundle_sequencer(monkeypatch)
+
+    payload = _payload(await getattr(tools_mod, tool_name).handler({
+        "slug": component.slug, "component_id": component.component_id,
+        "version": component.version, "staged_dir": str(staged),
+        "root_digest": root_digest, "receipt_id": "5" * 32,
+    }))
+
+    assert payload["state"] == state
+    if error is None:
+        assert "last_activation_error" not in payload
+    else:
+        assert payload["last_activation_error"] == error

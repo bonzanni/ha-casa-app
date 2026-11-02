@@ -34,7 +34,9 @@ the tap looks like, and whose hooks allow exactly that call — the stored tool 
 and deny every other call and any second call. The plugin's own response is the receipt,
 posted labelled — its `receipt` sentence when the response's text is a JSON object carrying
 a non-blank string `receipt`, otherwise the text verbatim; a plugin refusal (its revision
-guard) is a receipt too. Nothing the model
+guard) is a receipt too. A `safe` call's response that also carries `"on_card": true` (and no
+`next`) asks for its receipt as the tapped card's last line (`☑ <receipt>`) instead of a
+message; when that edit does not land, the receipt is posted as a message. Nothing the model
 writes reaches the operator or the resident; the pinned turn retains nothing into memory.
 
 **Which calls a button may store.** At deposit, every button's tool must be a declared tool
@@ -62,7 +64,12 @@ A later arming replaces it, a text message leaves it, the first file consumes it
 swipe-reply file too, which still goes where the reply points — and a restart forgets it. The finish hook only edits the keyboard to `☑ <label>`: no turn runs, nothing is
 dispatched, and by the operator's ruling no message about the arming is ever sent. A Close
 button (`{"label", "close": true}`, #1375) stores no call either; its tap only removes the
-card's buttons — [`stored-call-next-card.md`](stored-call-next-card.md).
+card's buttons — [`stored-call-next-card.md`](stored-call-next-card.md). A link button
+(`{"label", "url"}`) stores no call and sends no tap: Telegram opens its address. It
+is accepted only under the `operator_link` rule (`https`, a host, printable, no whitespace),
+only from a plugin that declares an `operator_link` slot — so it posts nothing that plugin
+could not already post as a link — and at most one per card; a callback naming its index is
+void.
 
 **Register, then post; bound; supersede.** The composed post — label line and text — must
 render to one page with room left for the longest line Casa appends when the keyboard
