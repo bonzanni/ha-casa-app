@@ -40,7 +40,9 @@ are kept, and `premigration-v<n>-<time>` before a schema migration. A wipe delet
 **A forward schema migration runs only after an automatic export.** `casa-main` opens the
 store with the export as its pre-migration step (`MemoryStore.open(before_migration=…)`):
 an existing file older than the code is exported as it is, then migrated in one
-transaction. That export does not drain the spool, because the spool holds rows in the
+transaction. That export copies the registered exported tables its own schema has (the
+migration may be about to add one) and records that schema's version; every other export
+fails on a registered exported table the store lacks. It does not drain the spool, because the spool holds rows in the
 code's newer shape, which the older schema may not take; the spool is drained after the
 migration, as at every boot. If the export fails, nothing is migrated and memory is
 unavailable ([`memory-store.md`](memory-store.md), INV-MEM-033).

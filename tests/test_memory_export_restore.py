@@ -422,3 +422,65 @@ def test_casa_core_schedules_the_nightly_export():
             if isinstance(n, ast.Call) and getattr(n.func, "attr", "") ==
             "add_job" and "run_nightly" in ast.unparse(n)]
     assert len(jobs) == 1 and "memory_export.HOUR" in jobs[0]
+
+
+# --- a migration that adds an exported table (S7 round 1, Terra S2) ----------------------
+
+def _v2_adds_an_exported_table(monkeypatch):
+    """A simulated v2 that creates a new table registered as exported."""
+    from memory import schema, store as store_mod
+    row = Entry("future rows", Kind.TABLE, ("future_rows",), Export.YES,
+                Restore.LOAD, Wipe.DELETE)
+    monkeypatch.setattr(registry, "REGISTRY", (*registry.REGISTRY, row))
+    monkeypatch.setattr(store_mod, "MIGRATIONS", {
+        1: schema.V1,
+        2: ("CREATE TABLE future_rows (id INTEGER PRIMARY KEY, note TEXT) "
+            "STRICT",)})
+    monkeypatch.setattr(restore, "MIGRATIONS", store_mod.MIGRATIONS)
+
+
+def test_a_migration_that_adds_an_exported_table_is_not_blocked(
+        tmp_path, monkeypatch):
+    """The pre-migration export copies the exported tables the file has,
+    and records its schema version; the store then migrates."""
+    root, proc, store, _ = _setup(tmp_path)          # a populated v1 store
+    _v2_adds_an_exported_table(monkeypatch)
+    later = MemoryStore(store.directory)
+    assert later.open(before_migration=export.before_migration) is True, (
+        later.unavailable_reason)
+    with later.transaction() as conn:
+        assert conn.execute("PRAGMA user_version").fetchone() == (2,)
+    [name] = os.listdir(export.exports_dir(later))
+    path = os.path.join(export.exports_dir(later), name)
+    manifest = export.read_manifest(path)
+    assert manifest["schema_version"] == 1
+    assert "future_rows" not in manifest["counts"]["tables"]
+    assert manifest["counts"]["tables"]["events"] == 4
+
+    # Admin and nightly exports stay strict: every exported table is there.
+    with later.transaction(write=True) as conn:
+        conn.execute("INSERT INTO future_rows (note) VALUES ('kept')")
+    current = export.read_manifest(export.export(later))
+    assert current["schema_version"] == 2
+    assert current["counts"]["tables"]["future_rows"] == 1
+
+    # And the v1 export restores: built at v1, loaded, migrated to v2.
+    saved = _saved(path, tmp_path)
+    assert r.stage(root, saved) == "staged"
+    assert maintenance.run(root=str(root), proc_root=str(proc)) == "done"
+    with r.store_at(root).transaction() as conn:
+        assert conn.execute("PRAGMA user_version").fetchone() == (2,)
+        assert conn.execute("SELECT count(*) FROM future_rows").fetchone() == (0,)
+    r.assert_store_equals_export(store.path, saved)
+
+
+def test_an_admin_export_missing_an_exported_table_fails(tmp_path, monkeypatch):
+    """Strict outside a migration: a current store without a registered
+    exported table is not exported as if it were complete."""
+    _, _, store, _ = _setup(tmp_path)
+    row = Entry("future rows", Kind.TABLE, ("future_rows",), Export.YES,
+                Restore.LOAD, Wipe.DELETE)
+    monkeypatch.setattr(registry, "REGISTRY", (*registry.REGISTRY, row))
+    with pytest.raises(export.ExportFailed, match="future_rows"):
+        export.export(store)
+    assert os.listdir(export.exports_dir(store)) == []

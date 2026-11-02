@@ -21,9 +21,12 @@ One export runs at a time (:func:`export`). In order:
 Exports land in ``/data/memory/exports/``: ``export-<time>`` from the admin
 route, ``nightly-<time>`` from the nightly job (the last
 :data:`NIGHTLY_KEEP` are kept), and ``premigration-v<n>-<time>`` before a
-schema migration. That one is taken of the file as it is and does not drain
-the spool: the spool holds this code's rows, which an older schema may not
-accept, so it is drained after the migration as at every boot.
+schema migration. That one is taken of the file as it is: it copies the
+exported tables the file's schema has (a migration may be about to add one)
+and records that schema's version, and it does not drain the spool, since the
+spool holds this code's rows, which an older schema may not accept; the spool
+is drained after the migration, as at every boot. Every other export is
+strict: a registered exported table the store lacks fails it.
 
 The restore (:mod:`memory.restore`) loads exactly these files, and checks what
 it loaded against the manifest with the functions here (:func:`dump_table`,
@@ -256,19 +259,36 @@ def _write(directory: str, name: str, chunks) -> str:
 
 
 def export(store: MemoryStore, *, kind: str = ADMIN, drain: bool = True,
-           now: float | None = None) -> str:
+           as_found: bool = False, now: float | None = None) -> str:
     """Make one export of *store* and publish it; returns its directory.
+    *as_found* (the pre-migration export) copies only the registered
+    exported tables the file's schema has; otherwise each must exist.
     Raises :class:`ExportBusy` while another runs and :class:`ExportFailed`
     when it cannot be made (nothing is then published)."""
     if not _one_at_a_time.acquire(blocking=False):
         raise ExportBusy("an export is already running")
     try:
-        return _export(store, kind=kind, drain=drain, now=now)
+        return _export(store, kind=kind, drain=drain, as_found=as_found,
+                       now=now)
     finally:
         _one_at_a_time.release()
 
 
-def _export(store: MemoryStore, *, kind: str, drain: bool,
+def _tables_in(conn: sqlite3.Connection, *, as_found: bool) -> list[str]:
+    """The registered exported tables this export copies, read inside its
+    transaction."""
+    have = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table'")}
+    tables = exported_tables()
+    if as_found:
+        return [t for t in tables if t in have]
+    missing = [t for t in tables if t not in have]
+    if missing:
+        raise ExportFailed(f"the store has no {', '.join(missing)} table")
+    return tables
+
+
+def _export(store: MemoryStore, *, kind: str, drain: bool, as_found: bool,
             now: float | None) -> str:
     rules = {e.export for e in registry.REGISTRY}
     unknown = rules - set(Export)
@@ -288,10 +308,10 @@ def _export(store: MemoryStore, *, kind: str, drain: bool,
     shutil.rmtree(part, ignore_errors=True)
     os.makedirs(part, mode=0o700)
     try:
-        tables = exported_tables()
         files: dict[str, str] = {}
         with store.transaction() as conn:   # one read snapshot
             version = conn.execute("PRAGMA user_version").fetchone()[0]
+            tables = _tables_in(conn, as_found=as_found)
             for table in tables:
                 files[f"{table}.jsonl"] = _write(
                     part, f"{table}.jsonl", dump_table(conn, table))
@@ -351,7 +371,8 @@ def prune(parent: str, keep: int = NIGHTLY_KEEP) -> list[str]:
 def before_migration(store: MemoryStore, version: int) -> str:
     """The automatic export taken before a schema migration, of the file as
     it is; raising stops the migration (memory is then unavailable)."""
-    path = export(store, kind=f"{PREMIGRATION}-v{version}", drain=False)
+    path = export(store, kind=f"{PREMIGRATION}-v{version}", drain=False,
+                  as_found=True)
     logger.info("memory export before migrating from v%d: %s", version, path)
     return path
 
