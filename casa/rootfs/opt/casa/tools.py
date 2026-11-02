@@ -13428,11 +13428,11 @@ def _told_nowhere(origin: Any, outcome: str) -> bool:
 async def _register_summary_run(engagement: EngagementRecord):
     """The ``summary`` run of a finalize that will write a summary
     (``memory/transcript_runs.py``): registered before the terminal flip,
-    one row per SDK session the engagement ran under, so an unconfirmed one
-    keeps that engagement's own transcripts and never a sibling's in a
-    shared folder; an engagement that names none (a claude_code workspace)
-    gets one row naming its directory. A finalize that writes no summary
-    holds a run with no row. The switches are the summaries' own: the
+    a row naming only the engagement's directory — which, unconfirmed,
+    holds every transcript there, a session published after this point
+    included — plus one row per session the record already names, all
+    confirmed together. A finalize that writes no summary holds a run with
+    no row. The switches are the summaries' own: the
     engagement summary of any kind but a specialist that writes no memory,
     the executor summary, each under the origin channel's write-trust."""
     from channel_policy import writes_to_bank
@@ -13451,7 +13451,7 @@ async def _register_summary_run(engagement: EngagementRecord):
         directory = None
     return await transcript_runs.Run.start(
         transcript_runs.SUMMARY, role=role, directory=directory,
-        sessions=named_sids(engagement))
+        sessions=(None, *named_sids(engagement)))
 
 
 async def _capture_summary(frozen: dict[str, Any], text: str, *,

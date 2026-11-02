@@ -23,14 +23,19 @@ otherwise. A run whose role captures nothing registers already confirmed. A
 row left unconfirmed by an earlier process is *unresolved*: the meter counts
 it, its transcript is kept until a wipe, and nothing resolves it.
 
-**The gate.** Every deleter asks :func:`blocks_deletion` (through
-:func:`blocked`) at the delete and removes the rows that named what it deleted
-afterwards (:func:`forget`). A transcript is blocked while an unconfirmed row
-names its session; a whole-directory removal is blocked by any unconfirmed row
-naming that directory. An engagement's ``summary`` run registers one row per
-session the engagement ran under (or one naming only its directory when it
-names none), so it keeps that engagement's own transcripts and never a
-sibling's in a shared folder.
+**The gate fails closed on uncertainty.** Every deleter asks
+:func:`blocks_deletion` (through :func:`blocked`) at the delete and removes
+the rows that named what it deleted afterwards (:func:`forget`). An
+unconfirmed row that names a session blocks that session's transcript. An
+unconfirmed row that names no session — not named yet, a naming write that
+failed, a run that never learned its session — cannot prove which session it
+covers, so it blocks every deletion in its directory, a single session's and
+the whole folder's alike. Naming therefore only narrows a hold: a run names
+its session as early as it is known (a resumed session before the query) and
+retries a failed naming at its next stream message and at its close. An
+engagement's ``summary`` run registers a row naming only its directory plus
+one row per session the engagement is known to have run under, all confirmed
+together.
 
 Registration and naming are awaited by the run (bounded like a capture, so a
 busy store never holds a turn: a failure is logged and the run continues,
@@ -126,6 +131,13 @@ def name_session(store: MemoryStore, run_id: str, session_id: str, *,
                      "WHERE run_id = ?", (session_id, run_id))
 
 
+def _name_late(store: MemoryStore, run_id: str, session_id: str) -> None:
+    """A naming retried off the run's path, waiting on the store as any
+    detached write does."""
+    from memory.store import BUSY_TIMEOUT_S as STORE_BUSY_S
+    name_session(store, run_id, session_id, busy_timeout=STORE_BUSY_S)
+
+
 def confirm(store: MemoryStore, *run_ids: str) -> None:
     now = _now()
     with store.transaction(write=True) as conn:
@@ -147,7 +159,8 @@ def end(store: MemoryStore, *run_ids: str) -> None:
 def blocks_deletion(store: MemoryStore, *, directory: str | None,
                     session_id: str | None = None) -> bool:
     """Whether an unconfirmed run forbids deleting *session_id*'s transcript
-    in *directory* (or, with no session, the whole *directory*)."""
+    in *directory* (or, with no session, the whole *directory*): a row naming
+    that session, or a row in that directory that names no session."""
     directory = directory_key(directory)
     with store.transaction() as conn:
         if session_id is None:
@@ -157,7 +170,8 @@ def blocks_deletion(store: MemoryStore, *, directory: str | None,
         else:
             row = conn.execute(
                 "SELECT 1 FROM transcript_runs WHERE confirmed_at IS NULL "
-                "AND session_id = ? LIMIT 1", (session_id,)).fetchone()
+                "AND (session_id = ? OR (session_id IS NULL AND directory = ?)) "
+                "LIMIT 1", (session_id, directory)).fetchone()
     return row is not None
 
 
@@ -310,6 +324,7 @@ class Run:
         self._open = 0
         self._failed = False
         self._closed = False
+        self._unnamed: str | None = None
 
     @property
     def run_id(self) -> str | None:
@@ -318,7 +333,7 @@ class Run:
     @classmethod
     async def start(cls, kind: str, *, role: str, directory: str | None,
                     session_id: str | None = None,
-                    sessions: tuple[str, ...] = (),
+                    sessions: tuple[str | None, ...] = (),
                     confirmed: bool = False) -> "Run":
         """Register a run before its first capture. A run whose role
         captures nothing (*confirmed*) registers confirmed. A run that
@@ -346,19 +361,26 @@ class Run:
 
     async def name(self, session_id: str | None) -> None:
         """Name (or move to) the session the run's next captures come from.
-        Awaited before that capture."""
+        Awaited before that capture. The name is taken as the row's only once
+        its write committed; a failed write is retried at the next call and
+        at :meth:`close` (until then the row, unnamed or naming an earlier
+        session, still holds its directory or that session)."""
         if (not session_id or session_id == self.session_id):
             return
-        self.session_id = session_id
         if self.run_id is None or self._store is None:
+            self.session_id = session_id
             return
         try:
             await asyncio.to_thread(name_session, self._store, self.run_id,
                                     session_id)
         except Exception as exc:  # noqa: BLE001 — never blocks the run
-            logger.warning("%s run %s not named %s (%s: %s)", self.kind,
-                           self.run_id[:8], session_id, type(exc).__name__,
-                           exc)
+            self._unnamed = session_id
+            logger.warning("%s run %s not named %s (%s: %s); retried later",
+                           self.kind, self.run_id[:8], session_id,
+                           type(exc).__name__, exc)
+            return
+        self.session_id = session_id
+        self._unnamed = None
 
     async def kept(self, capture: Awaitable[bool]) -> bool:
         """Await one capture the run owes. It is kept when it returned a
@@ -379,6 +401,10 @@ class Run:
         self._closed = True
         if self.run_id is None or self._store is None:
             return
+        if self._unnamed is not None:
+            # a naming that failed earlier: retried first, so even a run
+            # left unconfirmed holds only its session once this lands
+            _detach(_name_late, self._store, self.run_id, self._unnamed)
         if self._open or self._failed:
             logger.warning(
                 "%s run %s of %s left unconfirmed: a capture %s; its "

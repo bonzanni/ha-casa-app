@@ -505,6 +505,7 @@ class SdkClientPool:
                    on_success: Callable[[str], Awaitable[None]] | None = None,
                    on_decision: Callable[[str | None, bool, int | None], None] | None = None,
                    binding_digest: str = "",
+                   on_resume: Callable[[str], Awaitable[None]] | None = None,
                    ) -> PoolTurnResult:
         """Run one serialized turn and publish its returned session id.
 
@@ -515,6 +516,10 @@ class SdkClientPool:
         non-reentrant into this pool (a same-key turn would deadlock).
         Callback exceptions and cancellation propagate and drop the
         unpublished client generation.
+
+        ``on_resume``, when provided, is awaited with the session id the
+        decision resumes (warm reuse included), before the client is
+        connected or queried: the caller's memory run names it there.
         """
         self._ensure_sweeper()
         for _attempt in (1, 2):                      # AR-7: one silent retry
@@ -564,6 +569,8 @@ class SdkClientPool:
                 # fallback which sid was in play.
                 if on_decision is not None:
                     on_decision(resume_sid, is_fresh, reg_generation)
+                if on_resume is not None and resume_sid is not None:
+                    await on_resume(resume_sid)
                 # Task 9: a warm client is reusable only when the incoming
                 # turn's binding_digest matches the identity it was built for —
                 # defense-in-depth on top of the registry-level resume gate.
