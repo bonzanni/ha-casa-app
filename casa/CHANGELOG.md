@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.346.1] - 2026-11-02
+
+### Changed
+
+- Nothing changes in the app itself. Maintenance: the Casa Browser app's long image tests (about 40 minutes) now run every night and on demand instead of on every change, and tests that could fail by chance on a busy machine now wait for what they check.
+
 ## [0.346.0] - 2026-11-02
 
 ### Added

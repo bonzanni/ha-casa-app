@@ -10,6 +10,7 @@ import signal
 import socket
 import stat
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -602,7 +603,7 @@ def chrome_process(proc, pid=4242, state="D", group=4200):
 @pytest.mark.parametrize("state", ["D", "S"])
 def test_exited_leader_does_not_confirm_surviving_group(tmp_path, monkeypatch, state):
     proc = tmp_path / "proc"
-    chrome_process(proc, state=state)
+    member = chrome_process(proc, state=state)
     leader_exited = threading.Event()
 
     def waitpid(pid, flags):
@@ -615,11 +616,20 @@ def test_exited_leader_does_not_confirm_surviving_group(tmp_path, monkeypatch, s
     monkeypatch.setattr(launcher.os, "waitpid", waitpid)
     monkeypatch.setattr(launcher.os, "killpg", lambda pid, sig: None)
     clock = iter([0, 2])
-    monkeypatch.setattr(launcher, "time", SimpleNamespace(monotonic=lambda: next(clock)))
+    # The real sleep stays: the re-check thread the Launcher starts here sleeps between scans.
+    monkeypatch.setattr(launcher, "time", SimpleNamespace(monotonic=lambda: next(clock),
+                                                          sleep=time.sleep))
     control = launcher.Launcher(controller_uid=os.getuid(), proc=proc)
-    assert control._supervise(conn, 4200) is False
-    assert leader_exited.is_set()
-    assert json.loads(replies[0]) == {"ok": False, "exit": 0}
+    try:
+        assert control._supervise(conn, 4200) is False
+        assert leader_exited.is_set()
+        assert json.loads(replies[0]) == {"ok": False, "exit": 0}
+    finally:
+        # The surviving member exits, so the re-check thread proves the stop and ends here.
+        # Left running it outlives the test and reads ``launcher.chrome_alive`` while a later
+        # test has it patched (test_a_fork_during_the_first_empty_scan_is_seen_by_the_second).
+        member.unlink()
+        assert control._stopped.wait(2)
 
 
 def test_unconfirmed_group_retains_lock_pid_and_profile_until_exit(tmp_path, monkeypatch):

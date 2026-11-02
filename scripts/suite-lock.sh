@@ -25,8 +25,14 @@ holder() {
     echo "  holder unknown (lslocks unavailable)" >&2
     return
   fi
-  local pids
-  pids=$(lslocks -n -o PID,PATH 2>/dev/null | awk -v p="$lock" '$2 == p {print $1}' | sort -u)
+  # Under load lslocks was measured to omit a held lock (2 reads in 300), so an
+  # empty read is retried a few times, 0.1 s apart, before naming nobody.
+  local pids try
+  for try in 1 2 3 4 5; do
+    pids=$(lslocks -n -o PID,PATH 2>/dev/null | awk -v p="$lock" '$2 == p {print $1}' | sort -u)
+    [ -n "$pids" ] && break
+    [ "$try" -lt 5 ] && sleep 0.1
+  done
   if [ -z "$pids" ]; then
     echo "  holder unknown (lslocks names no process on $lock)" >&2
     return
