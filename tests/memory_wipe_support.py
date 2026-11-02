@@ -22,7 +22,7 @@ REPO = Path(__file__).resolve().parents[1]
 CODE_ROOT = REPO / "casa" / "rootfs" / "opt" / "casa"
 
 EID_OPEN = "0a" * 16          # an open, release-provisioned engagement
-EID_DONE = "0b" * 16          # completed, retained, written before the release
+EID_DONE = "0b" * 16          # completed, still retained
 EID_EXPIRED = "0c" * 16       # completed, its retention passed
 SID = "11111111-2222-4333-8444-555555555555"
 
@@ -110,8 +110,8 @@ TEMPLATE = ("# Task\n{task}\n\n## Context\n{context}\n\n{executor_memory}\n\n"
             "## Rules\nKeep going.\n")
 
 
-def legacy_block(canary: str) -> str:
-    """A block as the pre-release producer rendered it."""
+def memory_block(canary: str) -> str:
+    """An executor-memory block holding *canary*."""
     return (f"## Prior engagements (lessons learned)\n- remembered {canary}\n")
 
 
@@ -131,34 +131,24 @@ async def provision(root: Path, eid: str, *, memory: str, monkeypatch,
     return Path(path)
 
 
-def legacy_workspace(root: Path, eid: str, block: str, *, cache: str | None,
+def marked_workspace(root: Path, eid: str, block: str, *,
                      status: str = "COMPLETED",
-                     retention_until: str = "2999-01-01T00:00:00Z") -> Path:
-    """A workspace as the pre-release ``provision_workspace`` left it: the
-    block interpolated raw, its cache beside it (``None``: no cache)."""
+                     retention_until: str = "2999-01-01T00:00:00Z",
+                     text: str | None = None) -> Path:
+    """A workspace as this release's writer leaves it: ``CLAUDE.md`` with the
+    block between its markers (or *text* as given), the cache beside it, and
+    the sweep's facts in the control directory."""
+    from memory import executor_block
     ws = under(root, f"/data/engagements/{eid}")
-    write(ws / "CLAUDE.md", TEMPLATE.replace("{task}", "Old task")
-          .replace("{context}", "(none)").replace("{executor_memory}", block))
+    write(ws / "CLAUDE.md", text if text is not None else executor_block.render(
+        TEMPLATE, {"{task}": "Old task", "{context}": "(none)"}, block))
     ctl = under(root, f"/data/engagement-ctl/{eid}")
-    ctl.mkdir(parents=True, exist_ok=True)
-    if cache is not None:
-        write(ctl / ".executor_memory", cache)
+    write(ctl / ".executor_memory", block)
     write(ctl / ".casa-meta.json", json.dumps({
-        "engagement_id": eid, "executor_type": EXECUTOR_TYPE, "status": status,
+        "engagement_id": eid, "status": status,
         "retention_until": retention_until if status != "UNDERGOING" else None,
     }))
-    install_template(root)
     return ws
-
-
-#: The executor type the stand-in workspaces were provisioned for, and where
-#: its template sits on the stand-in install.
-EXECUTOR_TYPE = "garden-notes"
-
-
-def install_template(root: Path, text: str = TEMPLATE) -> Path:
-    return write(under(root, f"/config/agents/executors/{EXECUTOR_TYPE}/prompt.md"),
-                 text)
 
 
 # --- a real process, killable at a chosen point -------------------------------
@@ -213,54 +203,11 @@ def sha(data: bytes) -> str:
 
 # --- provisioning in a child process ----------------------------------------
 
-#: The pre-release writer's order (``drivers/workspace.py:740-772`` before
-#: this release, legacy branch): ``CLAUDE.md`` with the block interpolated
-#: raw, then the control directory, then the cache, each a plain
-#: ``Path.write_text``. Kept here rather than read from history, so the suite
-#: needs no git history to run.
-_FROZEN_WRITER = """
-import os
-from pathlib import Path
-from drivers import workspace as _current
-
-CONTROL_ROOT = _current.CONTROL_ROOT
-
-
-async def provision_workspace(*, engagements_root, engagement_id, defn, task,
-                              context, executor_memory="", **_ignored):
-    _current.CONTROL_ROOT = CONTROL_ROOT
-    ws = Path(engagements_root) / engagement_id
-    ws.mkdir(parents=True, exist_ok=False)
-    prompt_text = Path(defn.prompt_template_path).read_text(encoding="utf-8")
-    prompt_interpolated = (
-        prompt_text
-        .replace("{task}", task or "")
-        .replace("{context}", context or "(none)")
-        .replace("{executor_type}", defn.type)
-        .replace("{executor_memory}", executor_memory or "")
-    )
-    (ws / "CLAUDE.md").write_text(prompt_interpolated, encoding="utf-8")
-    _current.provision_control_dir(engagement_id)
-    Path(_current.executor_memory_path(engagement_id)).write_text(
-        executor_memory or "", encoding="utf-8")
-    return str(ws)
-"""
-
-
-def frozen_workspace_module(dest: Path) -> Path:
-    """The pre-release writer, as a loadable file."""
-    return write(dest / "frozen_workspace.py", _FROZEN_WRITER)
-
-
-def provision_in_child(root: Path, eid: str, *, memory: str, hook: str = "",
-                       frozen: Path | None = None
+def provision_in_child(root: Path, eid: str, *, memory: str, hook: str = ""
                        ) -> subprocess.CompletedProcess:
-    """``provision_workspace`` (this release's, or the frozen one) in its own
-    process on the stand-in root. *hook* runs first and may arrange a kill."""
-    load = ("from drivers import workspace as ws" if frozen is None else
-            "import importlib.util as u\n"
-            f"spec = u.spec_from_file_location('frozen_workspace', {str(frozen)!r})\n"
-            "ws = u.module_from_spec(spec); spec.loader.exec_module(ws)")
+    """``provision_workspace`` in its own process on the stand-in root.
+    *hook* runs first and may arrange a kill."""
+    load = "from drivers import workspace as ws"
     defs = root / "defs" / eid
     body = "\n".join([
         "import asyncio, types, pathlib",
@@ -282,27 +229,6 @@ def provision_in_child(root: Path, eid: str, *, memory: str, hook: str = "",
     ])
     (under(root, "/data/engagements")).mkdir(parents=True, exist_ok=True)
     return run_child(body)
-
-
-#: Kill hooks for :func:`provision_in_child`.
-KILL_BEFORE_CACHE = """
-_real_wt = pathlib.Path.write_text
-def _wt(self, *a, **k):
-    if self.name == '.executor_memory':
-        _die()
-    return _real_wt(self, *a, **k)
-pathlib.Path.write_text = _wt
-"""
-
-KILL_INSIDE_CACHE_WRITE = """
-_real_wt = pathlib.Path.write_text
-def _wt(self, *a, **k):
-    if self.name == '.executor_memory':
-        open(self, 'w').close()      # the file is opened and truncated ...
-        _die()                       # ... and the process dies before the text
-    return _real_wt(self, *a, **k)
-pathlib.Path.write_text = _wt
-"""
 
 
 def kill_at_write(k: int) -> str:

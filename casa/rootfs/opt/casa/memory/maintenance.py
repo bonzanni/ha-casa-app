@@ -45,7 +45,6 @@ import hashlib
 import json
 import logging
 import os
-import re
 import shutil
 import signal
 import stat
@@ -376,7 +375,7 @@ def wipe_loop(*, root: str, now: float | None = None) -> Counts:
     _sweep_expired_workspaces(root, now, counts)          # A
     for engagement_id, ws in _workspaces(root):           # B
         if os.path.lexists(os.path.join(ws, "CLAUDE.md")):
-            if _locate(root, engagement_id, ws).case == 4:
+            if _locate(ws).case == 4:
                 raise Unlocatable(engagement_id)
     for entry in registry.REGISTRY:                       # C
         handler = _HANDLERS.get((entry.kind, entry.wipe))
@@ -455,20 +454,20 @@ def _load_meta(ctl_dir: str, ws: str) -> dict | None:
 
 OPEN = executor_block.OPEN.encode()
 CLOSE = executor_block.CLOSE.encode()
-LEGACY_HEADER = executor_block.LEGACY_HEADER.encode()
 
 
 @dataclass(frozen=True)
 class _Section:
-    #: 1 markers, 2 a legacy block found through its cache, 3 an empty
-    #: legacy block, 4 not locatable.
+    #: 1 one marker pair, 0 no marker pair (no executor memory), 4 not
+    #: locatable.
     case: int
     #: The file's bytes with the section blanked, when they differ.
     blanked: bytes | None = None
 
 
-def _locate(root: str, engagement_id: str, ws: str) -> _Section:
-    cache_path = _cache_path(root, engagement_id)
+def _locate(ws: str) -> _Section:
+    """Case 1: exactly one marker pair, its content emptied. A file with no
+    marker pair holds no executor memory (case 0). Anything else is case 4."""
     try:
         text = _read_beneath(ws, "CLAUDE.md")
     except OSError:
@@ -476,34 +475,11 @@ def _locate(root: str, engagement_id: str, ws: str) -> _Section:
     spans = _marker_spans(text)
     if spans is None:
         return _Section(4)
-    if spans:
-        out, pos = [], 0
-        for start, end in spans:
-            out.append(text[pos:start])
-            pos = end
-        out.append(text[pos:])
-        blanked = b"".join(out)
-        return _Section(1, blanked if blanked != text else None)
-    try:
-        with open(cache_path, "rb") as fh:
-            cache = fh.read()
-    except FileNotFoundError:
-        return _Section(4)
-    except OSError:
-        return _Section(4)
-    if cache:
-        # The cache says what the block was, but not that it is whole: a
-        # cache cut off mid-write still occurs once, as a prefix. The block
-        # is accepted only where its template's own text closes in on it.
-        if text.count(cache) != 1 or not _between_anchors(
-                text, cache, _legacy_anchors(root, engagement_id, ws)):
-            return _Section(4)
-        return _Section(2, text.replace(cache, OPEN + CLOSE, 1))
-    if LEGACY_HEADER in text:
-        # A cache cut off while it was written, beside a block that holds
-        # memory: it cannot tell where the block ends.
-        return _Section(4)
-    return _Section(3)
+    if not spans:
+        return _Section(0)
+    (start, end), = spans
+    blanked = text[:start] + text[end:]
+    return _Section(1, blanked if blanked != text else None)
 
 
 def _marker_spans(text: bytes) -> list[tuple[int, int]] | None:
@@ -523,72 +499,6 @@ def _marker_spans(text: bytes) -> list[tuple[int, int]] | None:
     # This release writes one pair (templates carry one slot, and every
     # other input is neutralised); more than one is not ours to choose from.
     return spans if len(spans) <= 1 else None
-
-
-#: The executor definitions on the install, by type (each holds its
-#: ``prompt.md``, or a ``workspace-template/CLAUDE.md.tmpl`` that takes its
-#: place, as the provisioning chose).
-EXECUTORS_ROOT = "/config/agents/executors"
-_TOKENS = re.compile(
-    rb"\{(?:executor_type|task|context|world_state_summary|executor_memory)\}")
-
-
-@dataclass(frozen=True)
-class _Anchors:
-    """The template's literal text on each side of its one memory slot, up
-    to the neighbouring placeholder; ``at_start``/``at_end`` when the slot's
-    side reaches the template's edge instead."""
-    before: bytes
-    at_start: bool
-    after: bytes
-    at_end: bool
-
-
-def _legacy_anchors(root: str, engagement_id: str, ws: str) -> _Anchors | None:
-    """The anchors of the template a markerless file was rendered from, read
-    from the engagement's recorded executor type, or ``None``."""
-    meta = _load_meta(os.path.join(
-        under(root, registry.ENGAGEMENT_CONTROL_ROOT), engagement_id), ws)
-    kind = meta.get("executor_type") if meta else None
-    if not isinstance(kind, str) or not kind or "/" in kind or kind[0] == ".":
-        return None
-    base = os.path.join(under(root, EXECUTORS_ROOT), kind)
-    tmpl_dir = os.path.join(base, "workspace-template")
-    path = (os.path.join(tmpl_dir, "CLAUDE.md.tmpl") if os.path.isdir(tmpl_dir)
-            else os.path.join(base, "prompt.md"))
-    try:
-        with open(path, "rb") as fh:
-            template = fh.read()
-    except OSError:
-        return None
-    tokens = list(_TOKENS.finditer(template))
-    slots = [k for k, t in enumerate(tokens)
-             if t.group(0) == b"{executor_memory}"]
-    if len(slots) != 1:
-        return None
-    k = slots[0]
-    start = tokens[k - 1].end() if k else 0
-    end = tokens[k + 1].start() if k + 1 < len(tokens) else len(template)
-    return _Anchors(template[start:tokens[k].start()], k == 0,
-                    template[tokens[k].end():end], k + 1 == len(tokens))
-
-
-def _between_anchors(text: bytes, cache: bytes, a: _Anchors | None) -> bool:
-    """Whether the one occurrence of *cache* in *text* sits exactly between
-    its template's anchors. An empty side that is not the template's edge
-    cannot be checked, and fails."""
-    if a is None:
-        return False
-    i, j = text.index(cache), text.index(cache) + len(cache)
-    if a.at_start:
-        ok_before = text[:i] == a.before
-    else:
-        ok_before = bool(a.before) and text[:i].endswith(a.before)
-    if a.at_end:
-        ok_after = text[j:] == a.after
-    else:
-        ok_after = bool(a.after) and text[j:].startswith(a.after)
-    return ok_before and ok_after
 
 
 def _find_all(text: bytes, needle: bytes) -> Iterator[int]:
@@ -616,7 +526,7 @@ def _blank_sections(root: str, entry, counts: Counts) -> None:
         if not os.path.lexists(os.path.join(ws, "CLAUDE.md")):
             continue
         cache = _cache_path(root, engagement_id)
-        section = _locate(root, engagement_id, ws)
+        section = _locate(ws)
         if section.case == 4:
             raise Unlocatable(engagement_id)
         if section.blanked is not None:

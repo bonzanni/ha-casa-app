@@ -95,31 +95,21 @@ container from starting. Once the channels are up, `casa-main` sends "Done. I've
 everything. Your reminders, triggers, files and settings are still here." once, claimed in
 the same transaction that marks it sent.
 
-**The executor-memory section keeps every other byte.** From this release
-`provision_workspace` writes the cache before any `CLAUDE.md`, writes `CLAUDE.md`
-atomically, and both it and `refresh_claude_md` wrap the block between two fixed markers
-with every marker string removed from the block first, so memory text cannot forge one.
-The template is filled in one pass with the task, context and other values — a value is
-never scanned for placeholders again — with a unique sentinel in the slot; the whole joined
-text then has every marker string neutralised (its `<` written as `&lt;`), and only then does
-the sentinel become the marked block. However a marker might be assembled from template text
-and values, the one pair in the file comes only from the slot. A
-template with no slot caches nothing. The step classifies each file:
+**The executor-memory section keeps every other byte.** `provision_workspace` writes the
+cache before any `CLAUDE.md`, writes `CLAUDE.md` atomically, and both it and
+`refresh_claude_md` wrap the block between two fixed markers with every marker string
+removed from the block first, so memory text cannot forge one. The template is filled in
+one pass with the task, context and other values — a value is never scanned for
+placeholders again — with a unique sentinel in the slot; the whole joined text then has
+every marker string neutralised (its `<` written as `&lt;`), and only then does the
+sentinel become the marked block. However a marker might be assembled from template text
+and values, the one pair in the file comes only from the slot. A template with no slot
+caches nothing. The step classifies each file:
 
-1. **Markers** — exactly one pair, in order: the content between them is emptied.
-2. **A legacy block found through its cache** — no markers, the non-empty cached text
-   occurs exactly once, and it sits exactly between the template's own text on each side
-   of its slot (up to the neighbouring placeholder, or the template's edge), read from the
-   executor type the engagement recorded. A cache cut off mid-write still occurs once, as a
-   prefix, but the template's text does not follow it. The block is replaced by an empty
-   marked section, so a re-run after a crash finds case 1.
-3. **An empty legacy block** — no markers, an empty cache, and no
-   `## Prior engagements (lessons learned)` line, which opens every non-empty block the
-   pre-release producer wrote: nothing to blank.
-4. **Not locatable** — anything else: more than one marker pair, a cached text whose
-   boundaries the template does not confirm (a truncated cache, a template edited since, an
-   executor type or template that is gone), or an empty cache beside a file that holds
-   that line. The attempt fails and names the engagement.
+1. **One marker pair**, in order: the content between them is emptied.
+2. **No marker pair**: the file holds no executor memory and is left as it is.
+3. **Anything else** — more than one pair, or markers out of order — is not locatable: the
+   attempt fails and names the engagement.
 
 A cache is emptied only after its file is blank. Every cache is also enumerated on its
 own: one with no `CLAUDE.md` beside it is an orphan, left by a sweep or a provisioning cut

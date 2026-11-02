@@ -107,17 +107,17 @@ async def build(tree: w.Tree, monkeypatch) -> dict:
                {"explanation_store": explanation_store})
     explanation_store.ExplanationStore(u("/data/explanations")).record(rec)
 
-    # executor memory: an open engagement this release provisioned, and a
-    # completed one written before it, still inside its retention
+    # executor memory: an open engagement, provisioned, and a completed one
+    # still inside its retention
     open_ws = await w.provision(root, w.EID_OPEN,
-                                memory=w.legacy_block(tree.canary()),
+                                memory=w.memory_block(tree.canary()),
                                 monkeypatch=monkeypatch)
     w.write(u(f"/data/engagement-ctl/{w.EID_OPEN}/.casa-meta.json"),
             json.dumps({"status": "UNDERGOING", "retention_until": None}))
     w.write(open_ws / f".home/.claude/projects/-data-engagements-"
             f"{w.EID_OPEN}/{w.SID}.jsonl", tree.canary())
-    block = w.legacy_block(tree.canary())
-    done_ws = w.legacy_workspace(root, w.EID_DONE, block, cache=block)
+    block = w.memory_block(tree.canary())
+    done_ws = w.marked_workspace(root, w.EID_DONE, block)
     w.write(done_ws / f".home/.claude/projects/-data-engagements-"
             f"{w.EID_DONE}/{w.SID}.jsonl", tree.canary())
 
@@ -127,7 +127,7 @@ async def build(tree: w.Tree, monkeypatch) -> dict:
         "from drivers import workspace as ws",
         f"ws.CONTROL_ROOT = {str(u('/data/engagement-ctl'))!r}",
         f"open({str(u(f'/data/engagement-ctl/{w.EID_OPEN}/.executor_memory'))!r},"
-        f" 'w').write({w.legacy_block(tree.canary())!r})",
+        f" 'w').write({w.memory_block(tree.canary())!r})",
         "defn = types.SimpleNamespace(type='x', prompt_template_path="
         f"{str(root / 'defs' / w.EID_OPEN / 'prompt.md')!r})",
         "rec = types.SimpleNamespace(allocated_uid=-1, origin={}, task='t')",
@@ -151,13 +151,10 @@ async def build(tree: w.Tree, monkeypatch) -> dict:
     assert w.killed(child), child.stderr
     assert len(list(u("/data/explanations").glob("*.tmp"))) == 1
     # what each CLAUDE.md must read afterwards: every byte outside the
-    # section kept, the section empty (a legacy block becomes an empty marked
-    # section)
-    o, c = executor_block.OPEN, executor_block.CLOSE
+    # section kept, the section empty
     facts["claude_md"] = {
-        open_ws: _outside_markers((open_ws / "CLAUDE.md").read_text()),
-        done_ws: (done_ws / "CLAUDE.md").read_text().replace(block, o + c, 1),
-    }
+        ws: _outside_markers((ws / "CLAUDE.md").read_text())
+        for ws in (open_ws, done_ws)}
 
     # what the wipe keeps
     tree.keep(u("/data/reminders.json"), json.dumps(

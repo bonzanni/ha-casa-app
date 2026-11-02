@@ -33,8 +33,8 @@ def _tree(root) -> w.Tree:
     w.write(u("/data/sessions.json"), json.dumps({"k": tree.canary()}))
     w.write(u("/data/explanations/abcd1234.json"), tree.canary())
     for eid in (w.EID_OPEN, w.EID_DONE):
-        block = w.legacy_block(tree.canary())
-        w.legacy_workspace(root, eid, block, cache=block)
+        block = w.memory_block(tree.canary())
+        w.marked_workspace(root, eid, block)
     tree.keep(u("/data/reminders.json"), '[{"id": "r1"}]')
     tree.keep(u("/data/agent-inbox/letter.txt"), "kept")
     return tree
