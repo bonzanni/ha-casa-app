@@ -338,6 +338,21 @@ def test_an_unreadable_intent_is_an_attempt_that_deletes_nothing(tmp_path):
     assert w.under(root, "/data/memory/memory.db").exists()
     intent = maintenance.read_intent(str(root))
     assert intent["attempts"][-1]["error"] == maintenance.UNREADABLE_REASON
+    # A restart cannot fix it, so the line names the one action that does.
+    expected = ("Memory maintenance could not read its record, so nothing was "
+                "deleted. Remove /data/memory/maintenance.json, then restart "
+                "the app.")
+    assert maintenance.notification_line(intent) == expected
+    # the next container start deletes nothing either, and says the same
+    assert w.run_oneshot(root, proc).stdout.strip() == "failed"
+    assert w.under(root, "/data/memory/memory.db").exists()
+    intent = maintenance.read_intent(str(root))
+    assert [a["error"] for a in intent["attempts"]] == [
+        maintenance.UNREADABLE_REASON] * 2
+    assert maintenance.notification_line(intent) == expected
+    # casa-main finding the file unreadable itself sends the same line
+    assert maintenance.notification_line(maintenance.unreadable_intent()) == (
+        expected)
 
 
 # --- 9g: the services that start without casa-main --------------------------------

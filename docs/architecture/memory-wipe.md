@@ -189,8 +189,11 @@ next attempt succeed.
 and no error; Casa reports the interrupted line, and the next container start runs the
 step again to the same result.
 
-**The intent file cannot be read.** The step deletes nothing, rewrites it as an attempt
-whose error says the request could not be read, and Casa reports it.
+**The intent file cannot be read.** The step deletes nothing and rewrites it as an attempt
+whose error says the request could not be read; every later start does the same. A
+restart cannot fix that, so Casa's one line says so and names the action that does:
+"Memory maintenance could not read its record, so nothing was deleted. Remove
+/data/memory/maintenance.json, then restart the app."
 
 **The restart request fails or never happens.** One line to the operator, Casa keeps
 running normally with no courtesy line, and the intent waits for the next container start.

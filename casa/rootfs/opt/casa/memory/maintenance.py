@@ -114,6 +114,12 @@ INTERRUPTED_LINES = {
                "app to retry.",
 }
 UNREADABLE_REASON = "the maintenance request could not be read"
+#: A restart cannot fix an unreadable record, so the line names the one
+#: action that does.
+UNREADABLE_LINE = (
+    "Memory maintenance could not read its record, so nothing was deleted. "
+    f"Remove {INTENT_PATH}, then restart the app."
+)
 
 
 def failed_line(kind: str, error: str) -> str:
@@ -127,6 +133,8 @@ def notification_line(intent: dict) -> str:
     attempt's error, or the fixed line for an attempt cut off before it
     could record one."""
     kind = intent.get("kind")
+    if kind == "unreadable":
+        return UNREADABLE_LINE
     error = intent["attempts"][-1].get("error")
     if error:
         return failed_line(kind, error)
@@ -276,6 +284,8 @@ def run(*, root: str = "/", proc_root: str = "/proc",
     write_intent(intent, root)
     try:
         _test_sleep()
+        if intent.get("kind") == "unreadable":
+            raise MaintenanceError(UNREADABLE_REASON)
         if intent.get("kind") != "wipe":
             raise MaintenanceError(
                 f"{intent.get('kind')!r} is not a request this version can "
