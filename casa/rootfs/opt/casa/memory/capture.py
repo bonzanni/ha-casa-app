@@ -285,6 +285,14 @@ def _oldest(fd: int) -> float | None:
     return float(value) if isinstance(value, (int, float)) else None
 
 
+def _write_all(fd: int, data: bytes) -> None:
+    """Write *data* whole to *fd* (named so a test can pause between a spool
+    write's open and its write)."""
+    view = memoryview(data)
+    while view:
+        view = view[os.write(fd, view):]
+
+
 def _spool(directory: str, item: Event | Summary) -> Receipt | None:
     try:
         return _spool_write(directory, _spool_line(item), item.source_key)
@@ -307,9 +315,7 @@ def _spool_write(directory: str, line: bytes, key: str) -> Receipt:
             # this item is never glued to it.
             if size and os.pread(fd, 1, size - 1) != b"\n":
                 line = b"\n" + line
-            view = memoryview(line)
-            while view:
-                view = view[os.write(fd, view):]
+            _write_all(fd, line)
             _fsync(fd)
             since = _oldest(fd)
         finally:

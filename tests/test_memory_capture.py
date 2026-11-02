@@ -394,6 +394,105 @@ async def test_a_healthy_append_finishes_a_leftover_snapshot(mem, monkeypatch):
     assert not os.path.exists(capture.snapshot_path(mem.directory))
 
 
+def _run(target, *args, name: str, errors: list):
+    """A thread whose exception is recorded instead of escaping."""
+    def _body():
+        try:
+            target(*args)
+        except BaseException as exc:  # noqa: BLE001 — reported by the test
+            errors.append((name, exc))
+    thread = threading.Thread(target=_body, name=name)
+    thread.start()
+    return thread
+
+
+async def test_the_drain_renames_only_under_the_spool_lock(mem, monkeypatch):
+    """A spool write that has opened the spool and not yet written its line
+    holds the spool lock, so a drain cannot take the spool from under it:
+    the line lands in the file the drain reads, never in a renamed file
+    after the drain has read it."""
+    _down(mem)
+    capture.append(mem, _item("already spooled"))
+    _up(mem)
+    opened, drain_read = threading.Event(), threading.Event()
+    real_write_all, real_read = capture._write_all, capture._read
+
+    def _write_all(fd, data):
+        if threading.current_thread().name == "appender":
+            opened.set()
+            # The drain has read its snapshot (a drain that renamed without
+            # the lock), or a bounded wait passes (one that waits for it).
+            drain_read.wait(1.0)
+        return real_write_all(fd, data)
+
+    def _read(path):
+        data = real_read(path)
+        drain_read.set()
+        return data
+
+    monkeypatch.setattr(capture, "_write_all", _write_all)
+    monkeypatch.setattr(capture, "_read", _read)
+    late = _item("written between open and write")
+    errors: list = []
+    appender = _run(capture._spool, mem.directory, late, name="appender",
+                    errors=errors)
+    assert opened.wait(10)
+    drain = _run(capture.drain_spool, mem, name="drain", errors=errors)
+    appender.join(10)
+    drain.join(10)
+    assert errors == []
+    capture.drain_spool(mem)
+    assert sorted(e["text"] for e in events(mem)) == [
+        "already spooled", "written between open and write"]
+    assert not os.path.exists(capture.snapshot_path(mem.directory))
+    assert not os.path.exists(capture.spool_path(mem.directory))
+
+
+async def test_two_drains_never_overlap(mem, monkeypatch):
+    """The background drain and a direct (export-style) drain run at once:
+    the second waits for the first, so neither removes a snapshot the other
+    has not stored, and every line is stored exactly once."""
+    _down(mem)
+    capture.append(mem, _item("first spool"))
+    _up(mem)
+    a_read, a_go = threading.Event(), threading.Event()
+    b_second_read, b_go = threading.Event(), threading.Event()
+    b_reads: list[str] = []
+    real_read = capture._read
+
+    def _read(path):
+        name = threading.current_thread().name
+        if name == "B":
+            b_reads.append(path)
+            if len(b_reads) == 2:              # B's own snapshot, not A's
+                b_second_read.set()
+                assert b_go.wait(10)
+        data = real_read(path)
+        if name == "A":
+            a_read.set()
+            assert a_go.wait(10)
+        return data
+
+    monkeypatch.setattr(capture, "_read", _read)
+    errors: list = []
+    drain_a = _run(capture.drain_spool, mem, name="A", errors=errors)
+    assert a_read.wait(10)                     # A has taken and read the spool
+    _down(mem)
+    capture.append(mem, _item("second spool"))  # a fresh spool beside A's
+    _up(mem)
+    drain_b = _run(capture.drain_spool, mem, name="B", errors=errors)
+    b_second_read.wait(1.0)                    # only if B overlaps A
+    a_go.set()
+    drain_a.join(10)
+    b_go.set()
+    drain_b.join(10)
+    assert errors == []
+    assert sorted(e["text"] for e in events(mem)) == ["first spool",
+                                                      "second spool"]
+    assert not os.path.exists(capture.snapshot_path(mem.directory))
+    assert not os.path.exists(capture.spool_path(mem.directory))
+
+
 def _observe_spool_fsyncs(monkeypatch) -> list[int]:
     """Link counts of every spool file at the moment it is fsynced."""
     links: list[int] = []
