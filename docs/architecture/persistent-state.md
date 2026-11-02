@@ -169,7 +169,8 @@ record names are not touched by either pass.
 An entry also records the digest of the structural prompt surface the session was
 created with — the delegates, background jobs and executors the agent could reach at
 that moment, and for the butler the names of the Home Assistant tools the facade had
-published. It is what lets the next turn tell that a resumed conversation's pinned
+published, and the read clearance the session was created for when it is not `private`. It
+is what lets the next turn tell that a resumed conversation's pinned
 system prompt no longer describes the agent's capabilities and start a fresh session
 instead (INV-TURN-012, `architecture/turn-loop.md`). An entry written before that field
 existed carries none, and is treated as a mismatch rather than as agreement: a prompt

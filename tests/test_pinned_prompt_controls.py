@@ -62,12 +62,13 @@ async def test_a_turn_without_a_stored_call_reads_memory_and_keeps_its_prompt(
         tools_mod._run_delegated_agent(cfg, "the second one is wrong", "CTX-SENTINEL"), origin)
     assert out.text == "answer"
     assert MEMORY in served
-    # A desk origin carries the telegram route with no sender clearance, so
-    # it reads at ``public``, where no ledger is maintained: no view.
+    # The desk is the operator's own, so a desk reply reads the private view
+    # as a delegation from his private chat does. Red case: a desk origin
+    # with no sender clearance reads at ``public``, where no ledger is
+    # maintained, and gets no view.
     assert _FakeSpecialistClient.captured_prompt == _expected(
         "assistant", tools_mod._display_name_for_role("assistant"),
-        "the second one is wrong", "CTX-SENTINEL",
-        served if caller == "delegation" else None)
+        "the second one is wrong", "CTX-SENTINEL", served)
 
 
 def test_the_desk_context_composer_is_unchanged_for_the_reply_and_the_file_turn():

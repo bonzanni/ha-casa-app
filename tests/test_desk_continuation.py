@@ -123,6 +123,7 @@ async def test_the_hook_threads_the_identitys_desk_role_into_the_challenge(monke
     hook = _mk_hook(role="finance", deps=AuthzDeps(channel=_HookChannel(), grants=GrantStore(),
                                                    challenges=_Coord()))
     desk_origin = _origin(role="assistant", execution_role="finance", _delegation_id="d-1",
+                          _origin_route="telegram", _origin_clearance="private",
                           desk={"role": "finance", "chat_id": 42})
     with _OriginCtx(desk_origin):
         await _call(hook, tool_name=TOOL, tool_input={"amount": 10})

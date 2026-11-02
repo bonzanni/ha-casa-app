@@ -207,3 +207,43 @@ async def test_an_in_casa_engagement_turn_carries_the_note(
     assert prompt.startswith("<pending_corrections>")
     assert 'his words: "the code is 4417"' in prompt
     assert prompt.endswith("topic message")
+
+
+async def test_an_engagement_sees_corrections_filed_between_its_turns(
+        tmp_path, monkeypatch):
+    """An engagement session has a recorded base from its first turn, so a
+    correction the writer files between two of its turns is still owed to
+    every later turn. Red case: an engagement note of pending corrections
+    only loses it once filed."""
+    from drivers.in_casa_driver import InCasaDriver
+    from engagement_registry import EngagementRecord
+    from test_memory_capture import _TopicStream
+    store = ledger_store(tmp_path)
+    wire(monkeypatch, store)
+    monkeypatch.setattr(tools, "_agent_role_map", {}, raising=False)
+    drv = InCasaDriver(topic_stream_factory=lambda tid: _TopicStream())
+    rec = EngagementRecord(
+        id="f" * 32, kind="specialist", role_or_type="finance",
+        driver="in_casa", status="active", topic_id=99, started_at=0.0,
+        last_user_turn_ts=0.0, last_idle_reminder_ts=0.0, completed_at=None,
+        sdk_session_id=None, task="t",
+        origin={"channel": "telegram", "_origin_route": "telegram",
+                "_origin_clearance": "private"})
+    _EngagementClient.prompts = []
+    drv._clients[rec.id] = _EngagementClient()
+    drv._locks[rec.id] = asyncio.Lock()
+
+    async def turn(text, message_id):
+        ticket = drv.admit_inbound(rec.id, text)
+        await drv.send_user_turn(rec, text, tg_message_id=message_id,
+                                 inbound_token=ticket)
+
+    await turn("first", 1)
+    _correction(store, "the code is 4417")
+    await _run_jobs(store, no_change_all)          # filed, no longer pending
+    await turn("second", 2)
+    await turn("third", 3)
+    first, second, third = _EngagementClient.prompts
+    assert "4417" not in first
+    for prompt in (second, third):
+        assert 'his words: "the code is 4417"' in prompt

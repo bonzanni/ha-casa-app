@@ -1175,9 +1175,10 @@ async def test_producer_pin_red_cases(tmp_path: Path) -> None:
     # 9. The served-view renderer persisting the view outside its row.
     problems = await _violations(
         tmp_path / "9", "memory/view.py",
-        "    return Served(view, reset=reset)\n",
+        "            block_hash=view.block_hash))\n    return Served(view)\n",
+        "            block_hash=view.block_hash))\n"
         "    open(store.directory + '/../view.txt', 'w').write(view.text)\n"
-        "    return Served(view, reset=reset)\n")
+        "    return Served(view)\n")
     assert any(re.fullmatch(
         r"memory/view\.py:\d+ writes /data/view\.txt \(open\): memory text "
         r"from serve .*, outside row 'memory\.db'", p) for p in problems), \

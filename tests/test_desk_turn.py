@@ -177,6 +177,7 @@ async def test_the_desk_origin_classifies_as_a_delegated_dm_turn_with_a_desk_ide
     assert (o["role"], o["execution_role"], o["delegation_depth"]) == ("assistant", "finance", 1)
     assert o["user_text"] == "  more detail please " and o["_operator_turn"] is True
     assert o["desk"] == {"role": "finance", "chat_id": OPERATOR}
+    assert (o["_origin_route"], o["_origin_clearance"]) == ("telegram", "private")
     assert o["turn_scope"].display_name == "Finance" and o["turn_scope"].role == "assistant"
     assert env.limiter.scopes == [f"{OPERATOR}:finance"]
 

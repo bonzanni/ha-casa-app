@@ -17,8 +17,11 @@ one snapshot (:func:`with_view`), so (b) is empty by construction.
 Each is the operator's own words, verbatim, with the local time he said
 them. The note is the same one rule on every turn, not a one-off: so
 compaction, a reconnect or a resume cannot drop it, and nothing records that
-a correction was "shown". A session with no recorded view (an engagement,
-or a session started while the store was unavailable) gets (a) only.
+a correction was "shown". An in-casa engagement is served no view, but its
+session is recorded at its first turn with that turn's ``commit_no`` as its
+base (:func:`for_session_without_view`), so it is owed (a) and (b) like any
+other. A resident session whose view could not be recorded (the store was
+unavailable) gets (a) only; its next reconnect starts it afresh.
 
 Blocking; async callers use ``asyncio.to_thread``.
 """
@@ -89,6 +92,13 @@ def render(items: list[tuple[str, str]]) -> str:
             + "\n</pending_corrections>")
 
 
+def _base(row, ledger: str, clearance: str) -> int | None:
+    """The session's base, when its record is for this ledger and reader."""
+    if row is not None and row.ledger == ledger and row.clearance == clearance:
+        return row.base_commit_no
+    return None
+
+
 def for_turn(store: MemoryStore, *, clearance: str,
              session_key: str | None = None) -> Note:
     """The note for one turn of a session at *clearance*, read in one
@@ -100,9 +110,39 @@ def for_turn(store: MemoryStore, *, clearance: str,
         return Note("")
     with store.transaction(busy_timeout=BUSY_TIMEOUT_S) as conn:
         row = sessions.get(conn, session_key) if session_key else None
-        base = None
-        if row is not None and row.ledger == ledger:
-            base = row.base_commit_no
+        base = _base(row, ledger, clearance)
+        items = corrections(conn, ledger=ledger, clearance=clearance,
+                            base_commit_no=base)
+    return Note(render(items), ledger=ledger, base_commit_no=base)
+
+
+def for_session_without_view(store: MemoryStore, *, session_key: str,
+                             clearance: str, budget: int) -> Note:
+    """The note for one turn of a session served no view (an in-casa
+    engagement). Its first turn records the session with the current
+    ``commit_no`` as its base, in the same write transaction the note is
+    read in; every later turn is owed what is pending plus what was
+    committed after that base, like any session. A record for another
+    ledger or reader is replaced, so a clearance change starts a new base.
+    Raises when the store is unavailable or fails."""
+    ledger = ledger_for(clearance)
+    if ledger is None:
+        return Note("")
+    with store.transaction(busy_timeout=BUSY_TIMEOUT_S) as conn:
+        base = _base(sessions.get(conn, session_key), ledger, clearance)
+        if base is not None:
+            items = corrections(conn, ledger=ledger, clearance=clearance,
+                                base_commit_no=base)
+            return Note(render(items), ledger=ledger, base_commit_no=base)
+    with store.transaction(write=True, busy_timeout=BUSY_TIMEOUT_S) as conn:
+        base = _base(sessions.get(conn, session_key), ledger, clearance)
+        if base is None:
+            base = pending.current_commit_no(conn)
+            sessions.put(conn, sessions.SessionView(
+                session_key=session_key, ledger=ledger, base_commit_no=base,
+                clearance=clearance, budget=max(budget, 0),
+                renderer_version=view_mod.RENDERER_VERSION,
+                block_hash=view_mod.block_hash("")))
         items = corrections(conn, ledger=ledger, clearance=clearance,
                             base_commit_no=base)
     return Note(render(items), ledger=ledger, base_commit_no=base)

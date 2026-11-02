@@ -201,9 +201,9 @@ resident message carrying Casa's note (INV-DESK-004), by design.
 
 The desk turn's origin is the DM's own context with the three fields the provenance
 classifier needs, the resident's role, the specialist as the executing role, depth one, a
-fresh turn id as `send_media`'s quota key and the delivered-slot echo owner, and the reserved
-`desk` marker; it classifies `dm`/`delegated`, so plugin capabilities, approvals and
-delivered posts inside the turn work exactly as inside a sync delegation. The scope is
+fresh turn id as `send_media`'s quota key and the delivered-slot echo owner, the operator's
+clearance (`private`), and the reserved `desk` marker; it classifies `dm`/`delegated`, so
+capabilities, approvals, memory and posts in the turn work as in a sync delegation. The scope is
 minted for the desk (no inherited obligations) and carried as `origin["turn_scope"]`.
 
 **INV-DESK-003**: A desk's log holds at most twelve bounded exchanges, in arrival order, shared by swipe-replies and the resident's delegations to that specialist from that chat from the first of them — every completed desk turn an exchange — and is empty on the first use after the idle bound or a restart; every use of a desk — a swipe-reply, a continuation, a sync, degraded or async delegation — runs alone under its lock from the log read to the exchange's commit, in arrival order, and no later use starts a run while an earlier use's run, cut off at the ceiling or by a cancellation, is still unwinding — the desk refuses it until that run has ended.

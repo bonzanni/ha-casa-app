@@ -475,7 +475,8 @@ def render(conn: sqlite3.Connection, ledger: str, budget: int) -> View:
 @dataclass(frozen=True)
 class Served:
     """A session's view. ``reset`` is true when a resumed session's frozen
-    view could not be reproduced, so the session must start afresh."""
+    view could not be reproduced: nothing was rendered or recorded, and the
+    caller must drop the session's resume pointer before serving it afresh."""
 
     view: View | None
     reset: bool = False
@@ -488,30 +489,31 @@ def serve(store: MemoryStore, session_key: str, *, clearance: str,
     For a new session (``resume`` false) the view is rendered from the
     current ledger and recorded with its base. For a resumed session the
     recorded view is rendered again as of its base and checked against the
-    recorded hash; when there is no record, or it was made for another
-    ledger, budget or renderer, or the hash differs, a fresh view is
-    rendered and recorded and ``reset`` says the session must start afresh.
+    recorded hash. When there is no record, or it was made for another
+    ledger, clearance, budget or renderer, or the hash differs, nothing is
+    rendered or recorded and ``Served(None, reset=True)`` comes back: the
+    caller drops the resume pointer first, so no later attempt can resume
+    that session, and only then serves a new session.
 
     ``Served(None)`` when the session reads no ledger. Raises when the store
     is unavailable or fails."""
     ledger = ledger_for(clearance)
     if ledger is None or budget <= 0:
         return Served(None)
-    reset = False
     if resume:
         with store.transaction(busy_timeout=BUSY_TIMEOUT_S) as conn:
             row = sessions.get(conn, session_key)
             if (row is not None and row.ledger == ledger
-                    and row.budget == budget
+                    and row.clearance == clearance and row.budget == budget
                     and row.renderer_version == RENDERER_VERSION):
                 view = render_as_of(conn, ledger, row.base_commit_no, budget)
                 if view.block_hash == row.block_hash:
                     return Served(view)
-        reset = True
         logger.warning(
             "memory view of session %s could not be reproduced (%s); the "
             "session starts afresh", session_key,
             "no record" if row is None else "changed")
+        return Served(None, reset=True)
     with store.transaction(busy_timeout=BUSY_TIMEOUT_S) as conn:
         view = render(conn, ledger, budget)
     with store.transaction(write=True, busy_timeout=BUSY_TIMEOUT_S) as conn:
@@ -520,7 +522,7 @@ def serve(store: MemoryStore, session_key: str, *, clearance: str,
             base_commit_no=view.commit_no, clearance=clearance,
             budget=budget, renderer_version=view.renderer_version,
             block_hash=view.block_hash))
-    return Served(view, reset=reset)
+    return Served(view)
 
 
 # --- reachability --------------------------------------------------------------

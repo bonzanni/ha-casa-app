@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import functools
 import hashlib
 import json
 import logging
@@ -408,17 +409,24 @@ class PromptSurface:
     digest, and ``_build_options`` connects with exactly these configs, so a
     publication landing mid-turn never pairs new tools with an old identity.
     Empty for every role with no published surface, whose digest is then
-    byte-identical to one computed without this field."""
+    byte-identical to one computed without this field.
+
+    ``reader`` is the turn's read clearance, and it joins the digest too: a
+    session's prompt (its memory view, its channel context) is written for
+    one reader, so a turn read at another clearance never reuses or resumes
+    it — it starts a session at its own clearance. ``private`` adds nothing,
+    so the operator's sessions keep the digest computed without it."""
     delegates: str
     jobs: str
     executors: str
     digest: str
     tool_servers: tuple = ()
+    reader: str | None = None
 
 
 def _render_prompt_surface(caller_role, delegates, registry, *, live_names=None,
                            allowed_tools=None, executors=(),
-                           tool_servers=()) -> PromptSurface:
+                           tool_servers=(), reader=None) -> PromptSurface:
     """Render the structural blocks and digest them as one immutable unit."""
     delegates_block = _render_delegates_block(
         delegates, registry, live_names=live_names,
@@ -434,13 +442,15 @@ def _render_prompt_surface(caller_role, delegates, registry, *, live_names=None,
         parts.append("\x1e".join(
             f"{name}={surface}" for name, _config, surface in tool_servers
         ))
+    if reader is not None and reader != "private":
+        parts.append(f"reader={reader}")
     digest = "sha256:" + hashlib.sha256(
         "\x1f".join(parts).encode("utf-8")
     ).hexdigest()
     return PromptSurface(
         delegates=delegates_block, jobs=jobs_block,
         executors=executors_block, digest=digest,
-        tool_servers=tool_servers,
+        tool_servers=tool_servers, reader=reader,
     )
 
 
@@ -2532,7 +2542,7 @@ class Agent:
             # starts fresh.
             async with _turn_admission().admitted(), \
                     session_write_gate(channel_key), \
-                    self._armed_prompt_surface():
+                    self._armed_prompt_surface(msg.channel):
                 # #1003: a Casa-dispatched setup turn re-checks its obligation
                 # HERE — holding the per-session gate, before any client or
                 # prompt — because an ordinary turn ahead of it on the same
@@ -2843,27 +2853,33 @@ class Agent:
         """This session's frozen memory view and the resume sid to connect
         with: ``(view or None, resume_sid)``. The view is read off the event
         loop. A resumed session whose recorded view cannot be reproduced
-        comes back with ``resume_sid=None`` (it starts afresh). No store, a
-        store that fails, or a clearance that reads no ledger serves no view
-        and leaves the resume as it was."""
+        starts afresh: its resume pointer is dropped durably FIRST, so a
+        retry of this turn or any later turn sees a session to start, never
+        one to resume, and only then is the new view rendered and recorded;
+        it comes back with ``resume_sid=None``. No store, a store or registry
+        that fails, or a clearance that reads no ledger serves no view and
+        leaves the resume as it was."""
         from memory import capture
         from memory import view as memory_view
         store = capture.active_store()
         if store is None or not store.available:
             return None, resume_sid
+        serve = functools.partial(
+            memory_view.serve, store, channel_key,
+            clearance=_current_origin_clearance(channel),
+            budget=self.config.memory.token_budget)
         try:
             served = await asyncio.to_thread(
-                memory_view.serve, store, channel_key,
-                clearance=_current_origin_clearance(channel),
-                budget=self.config.memory.token_budget,
-                resume=resume_sid is not None,
-            )
+                serve, resume=resume_sid is not None)
+            if served.reset:
+                await self._session_registry.clear_sdk_session(
+                    channel_key, expected_sid=resume_sid)
+                resume_sid = None
+                served = await asyncio.to_thread(serve, resume=False)
         except Exception:  # noqa: BLE001 — the turn runs without memory
             logger.warning("memory view not served role=%s",
                            self.config.role, exc_info=True)
             return None, resume_sid
-        if served.reset:
-            resume_sid = None
         return served.view, resume_sid
 
     async def _memory_note(self, *, channel: str, channel_key: str) -> str:
@@ -2996,9 +3012,9 @@ class Agent:
             )
 
     @contextlib.asynccontextmanager
-    async def _armed_prompt_surface(self):
+    async def _armed_prompt_surface(self, channel: str | None = None):
         """Render this turn's structural surface ONCE and arm it for the whole
-        turn (#1029).
+        turn (#1029), with the turn's read clearance as its reader.
 
         Entered inside the same gate the resume decisions run under, so the
         decision, the options build and the registration all read one object.
@@ -3018,6 +3034,8 @@ class Agent:
                 tool_servers=self._mcp_registry.role_surfaces(
                     self.config.mcp_server_names, role=self.config.role,
                 ),
+                reader=(_current_origin_clearance(channel)
+                        if channel is not None else None),
             )
         )
         try:

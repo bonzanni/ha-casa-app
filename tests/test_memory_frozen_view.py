@@ -68,28 +68,33 @@ def test_a_new_session_records_its_base_and_a_commit_leaves_it_frozen(
     assert _row(store) == row
 
 
-@pytest.mark.parametrize("change", ["no_record", "budget", "renderer", "hash"])
+@pytest.mark.parametrize("change", ["no_record", "budget", "renderer",
+                                    "clearance", "hash"])
 def test_a_view_that_cannot_be_reproduced_starts_afresh_once(
         tmp_path, change, caplog):
     """Red case: trusting the record without re-rendering resumes the
-    session on a view nobody can show it was served."""
+    session on a view nobody can show it was served. A reset renders and
+    records nothing: the caller drops the resume pointer first, then serves
+    a new session."""
     store = ledger_store(tmp_path, [fact("city", "Rome")])
     if change != "no_record":
         view.serve(store, KEY, clearance="private", budget=1000)
         with store.transaction(write=True) as conn:
-            if change == "budget":
-                conn.execute("UPDATE session_views SET budget = 999")
-            elif change == "renderer":
-                conn.execute("UPDATE session_views SET renderer_version = '0'")
-            else:
-                conn.execute("UPDATE session_views SET block_hash = 'x'")
+            conn.execute({
+                "budget": "UPDATE session_views SET budget = 999",
+                "renderer": "UPDATE session_views SET renderer_version = '0'",
+                "clearance": "UPDATE session_views SET clearance = 'family'",
+                "hash": "UPDATE session_views SET block_hash = 'x'",
+            }[change])
+    before = _row(store)
     add(store, [fact("pet", "a cat")])
     served = view.serve(store, KEY, clearance="private", budget=1000,
                         resume=True)
-    assert served.reset is True
-    assert "a cat" in served.view.text            # a fresh view, recorded
-    assert _row(store).base_commit_no == 2
+    assert (served.view, served.reset) == (None, True)
+    assert _row(store) == before                  # nothing recorded yet
     assert any("starts afresh" in r.message for r in caplog.records)
+    fresh = view.serve(store, KEY, clearance="private", budget=1000)
+    assert "a cat" in fresh.view.text and _row(store).base_commit_no == 2
     # Once: the next reconnect reproduces the new record.
     assert view.serve(store, KEY, clearance="private", budget=1000,
                       resume=True).reset is False
@@ -215,3 +220,75 @@ async def test_a_cold_reconnect_without_a_recorded_view_starts_afresh(
     assert "Rome" in options.system_prompt
     key = build_scoped_session_key("telegram", "assistant", "42")
     assert _row(store, key).base_commit_no == 1
+
+
+class _FlakyClient(_Client):
+    """Times out on the first query of the test, then answers."""
+
+    failures: list = []
+
+    async def query(self, text):
+        if type(self).failures:
+            raise type(self).failures.pop(0)
+
+
+async def test_a_retry_never_resumes_the_session_a_reset_replaced(
+        tmp_path, monkeypatch):
+    """A cold reconnect whose view cannot be reproduced starts afresh, and a
+    retry of that same turn (a connect timeout) must not then resume the old
+    session on the new view. Red case: replacing the view record while the
+    session pointer still names the old session lets the retry resume it."""
+    import asyncio
+    from test_agent_process import patch_retry_sleep
+    store = ledger_store(tmp_path, [fact("city", "Rome")])
+    wire(monkeypatch, store)
+    key = build_scoped_session_key("telegram", "assistant", "42")
+    reg = SessionRegistry(str(tmp_path / "s.json"))
+    reg._data[key] = {
+        "agent": resident_role_id("assistant"), "sdk_session_id": "old-sid",
+        "binding_digest": RESIDENT_DIGEST,
+        "last_active": (datetime.now(timezone.utc)
+                        - timedelta(minutes=5)).isoformat(),
+    }
+    reg._write(reg._data)
+    _FlakyClient.options = []
+    _FlakyClient.failures = [asyncio.TimeoutError()]
+    with patch("sdk_client_pool._default_make_client", _FlakyClient), \
+            patch_retry_sleep():
+        agent = _agent(tmp_path)
+        align_prompt_surface(agent._session_registry, agent, "telegram", "42")
+        await agent._process(_msg())
+        await agent.aclose()
+    assert [o.resume for o in _FlakyClient.options] == [None, None]
+    assert all("Rome" in o.system_prompt for o in _FlakyClient.options)
+    assert _row(store, key).base_commit_no == 1
+
+
+def _sender(clearance: str) -> BusMessage:
+    msg = _msg()
+    msg.context.update(_origin_route="telegram", _origin_clearance=clearance)
+    return msg
+
+
+@pytest.mark.parametrize("order", [("private", "public"),
+                                   ("public", "private")])
+async def test_a_turn_never_runs_on_a_session_of_another_clearance(
+        tmp_path, monkeypatch, order):
+    """The reader's clearance is part of the session's identity: a turn
+    whose clearance differs from its chat's session starts a session at its
+    own clearance, never reusing or resuming a client built for another.
+    Red case: reuse keyed without the clearance hands the public sender a
+    client whose prompt holds the private ledger."""
+    store = ledger_store(tmp_path, [fact("city", "PRIVATE-ROME")])
+    wire(monkeypatch, store)
+    _Client.options = []
+    with patch("sdk_client_pool._default_make_client", _Client):
+        agent = _agent(tmp_path)
+        for clearance in order:
+            await agent._process(_sender(clearance))
+        await agent.aclose()
+    assert len(_Client.options) == 2
+    for clearance, options in zip(order, _Client.options):
+        assert options.resume is None
+        assert ("PRIVATE-ROME" in options.system_prompt) == (
+            clearance == "private")

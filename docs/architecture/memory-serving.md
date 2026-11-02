@@ -24,8 +24,15 @@ which also owns the executor archive.
 is above 0 is a *memory role*; its budget is the size of the view it is served, in tokens
 (the assistant's is 50 000, the butler's 10 000; 0 serves nothing). A session reads the
 ledger of the highest maintained clearance at or below its own. Only `private` is
-maintained, so a session at a lower clearance — voice, a stranger on Telegram, a desk turn
-whose origin carries no sender clearance — is served no view and no note.
+maintained, so a session at a lower clearance — voice, a stranger on Telegram — is served no
+view and no note. A desk turn is the operator's own and reads at `private`.
+
+**The reader is part of the session.** A session's prompt is written for one reader: its
+view, its channel context. So the turn's read clearance joins the structural surface digest a
+session is resumed on, and a turn read at another clearance than its chat's session never
+reuses or resumes that client: it starts a session at its own clearance. `private` adds
+nothing to the digest, so the operator's sessions are unaffected; in a chat whose turns
+alternate between the operator and another sender, each switch starts a new session.
 
 **The view is built locally, at session start, with no model call.** On a fresh connect, and
 on a cold reconnect of a resumed session, the view is rendered in one read transaction, and
@@ -52,7 +59,10 @@ session was served. Every rendering goes through one function that rebuilds the 
 of* a commit from `revisions` (each revision row holds an object's whole state), so a
 reconnecting session renders its view again from its base and checks the hash. A session
 whose view cannot be reproduced — no record, a record for another ledger, budget or
-renderer, or a hash that differs — starts afresh, once, and the reason is logged. The
+renderer or clearance, or a hash that differs — starts afresh, once, and the reason is
+logged. The session's resume pointer is dropped durably before the new view is rendered and
+recorded, so a retry of that turn (a connect that times out) starts a session too and never
+resumes the old one on the new view. The
 turn's explanation record names the ledger and the base.
 
 **The view has one slot in the prompt.** For a resident the compiled projection is fixed;
@@ -74,9 +84,11 @@ own words, verbatim, with the local time he said them. It rides in the turn's Ca
 block, which is stripped from what is captured, on every turn — fresh, warm, after a
 reconnect or a resume, on any channel — so neither compaction nor a reconnect can drop it,
 and nothing records that a correction was "shown". A delegated specialist's note is in its
-prompt with its view; an in-casa engagement turn of a memory-role specialist carries the
-pending corrections ahead of its message. A session with no recorded view is owed the
-pending corrections only. On the first turn of a new session the note can name a
+prompt with its view. An in-casa engagement of a memory-role specialist is served no view,
+but its session is recorded at its first turn, keyed by the engagement, with that turn's
+`commit_no` as its base, so every engagement turn carries the corrections pending and those
+committed since, ahead of its message. A resident session whose view could not be recorded
+is owed the pending corrections only, until its next reconnect starts it afresh. On the first turn of a new session the note can name a
 correction that its view does reflect, read just before the view was built; that is
 redundant, never wrong.
 
@@ -94,13 +106,14 @@ saved conversation can be read in order with `browse_memory_day`.
 **INV-MEM-030**: Every turn of a memory role whose clearance reads a ledger carries, read in that turn's own snapshot, every correction pending in that ledger and readable at that clearance, and every correction committed there after its session's recorded base, as the operator's own dated words — on a fresh, warm, reconnected or resumed turn, on any channel, in a delegated specialist's prompt and on an in-casa engagement turn of a memory-role specialist.
 
 Enforced by `memory.note`, which reads the session's row and both kinds of correction in one
-read transaction through the pending view, and by the four places that put the note on a
+transaction through the pending view (recording an engagement's row at its first turn), and
+by the four places that put the note on a
 turn: the resident turn's notes block, built for every channel before the session's client
 is chosen; the delegated specialist's prompt, read with its view in one snapshot; and the
 in-casa engagement turn, read before the delivery fence and put on the prompt without
 awaiting.
 
-What it does not cover: a session served no view (no record of one) gets the pending
+What it does not cover: a resident session whose view could not be recorded gets the pending
 corrections only, since no base says which committed ones it lacks; a turn whose store is
 unavailable carries no note, and logs that it could not read one.
 

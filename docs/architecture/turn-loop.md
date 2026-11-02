@@ -198,7 +198,7 @@ hold unchanged. The winning attempt's `turn_report["approval_cut"]` — how many
 before a call still waiting on an approval — is read with them on any turn, for the #1252 rule
 there, which also stops the stream at the cut (INV-TURN-009).
 
-**INV-TURN-012**: A conversation is resumed only while the structural surface of its system prompt — the delegates, background jobs and executors the agent can reach, and, for a role whose Home Assistant tools the facade publishes, the names of the tools last published — still digests to what the session was registered with. A surface that differs, or a session that never recorded one, starts a fresh session with the old one retained. The surface is rendered once per turn and the same render is what the resume decision gates on, what the prompt carries, the published tool servers the session connects with, and what the registration stores.
+**INV-TURN-012**: A conversation is resumed only while the structural surface of its system prompt — the delegates, background jobs and executors the agent can reach; for a role whose Home Assistant tools the facade publishes, the names of the tools last published; and the clearance the turn reads at — still digests to what the session was registered with. A surface that differs, or a session that never recorded one, starts a fresh session with the old one retained. The surface is rendered once per turn and the same render is what the resume decision gates on, what the prompt carries, the published tool servers the session connects with, and what the registration stores.
 
 The CLI pins a session's system prompt when the session is created. Rebuilding options on a
 cold connect therefore does not reach a conversation that is being resumed: the prompt is
@@ -237,6 +237,12 @@ connects with exactly the captured servers, so a publication landing mid-turn ne
 new tools with the old identity; the next turn picks it up. A role with no published tool
 surface digests exactly as before, so its conversations are not retired by this. The butler's
 conversations restart once, retained, on the upgrade that introduces it.
+
+The turn's read clearance joins the surface the same way, because the session's prompt — its
+memory view, its channel context — was written for one reader. A turn read at another
+clearance than its chat's session starts a session at its own, retained like any surface
+change; `private` adds nothing, so the operator's sessions keep their digest. In a chat whose
+turns alternate between the operator and another sender, each switch starts a new session.
 
 **INV-TURN-013**: Every in-process SDK client Casa builds raises the SDK's per-message stream limit to one shared value, `SDK_MAX_BUFFER_SIZE` in `claude_runtime.py`, sized so that a built-in `Read` of the largest PDF the pinned CLI inlines whole still arrives as one message instead of ending the turn.
 

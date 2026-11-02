@@ -697,7 +697,7 @@ def _desk_origin(*, resident_role: str, desk_role: str, chat_id: int, user_id: i
     needs, the resident's role, the specialist as the executing role, depth 1
     (as after any delegation: the specialist cannot delegate onward; the
     runner's own increment only deepens it), the turn id as the quota key and echo owner, the
-    operator's words raw, and the reserved desk marker."""
+    operator's words raw, the operator's read clearance, and the reserved desk marker."""
     return {
         "role": resident_role,
         "execution_role": desk_role,
@@ -713,6 +713,10 @@ def _desk_origin(*, resident_role: str, desk_role: str, chat_id: int, user_id: i
         "delegation_depth": 1,
         "_delegation_id": turn_id,
         "_origin_route": "telegram",
+        # The desk is the operator's own: the operator writing to a specialist
+        # in its topic reads at his clearance, as a delegation from his
+        # private chat does.
+        "_origin_clearance": "private",
         "_operator_turn": True,
         "desk": {"role": desk_role, "chat_id": chat_id},
         # browser executor §5.5: only a reply the operator typed carries his
