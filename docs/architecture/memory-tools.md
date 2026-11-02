@@ -37,7 +37,14 @@ never moves because of an event the reader cannot read. `open_memory` reads only
 the reader's clearance is served (the highest maintained ledger at or below it): an id of
 another ledger gets exactly the answer an id that exists nowhere gets, `unknown`. A
 clearance lowered while a read runs — an engagement's clamp — is noticed when it returns,
-and the read runs again at the new clearance before anything is returned.
+and the read runs again at the new clearance before anything is returned; for a call bound
+to an engagement, that engagement's own record, read live, is the authority, not the
+origin its call inherited.
+
+**Which specialist's output is kept is decided when it is captured.** Output a specialist
+produces while it writes no memory is never stored (INV-MEM-032), so no tool can return it;
+what it said while it was a memory-writing specialist was stored then, and stays readable
+until a wipe.
 
 **The search index is derived, and only ranks.** `search.db` sits beside the store. It holds
 one FTS5 table with each event's text under its `seq`, its frozen local day, and the highest

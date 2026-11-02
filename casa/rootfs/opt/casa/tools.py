@@ -1888,8 +1888,15 @@ OPEN_MEMORY_SCHEMA = {
 
 def _memory_reader(origin: dict) -> str:
     """The clearance a memory read runs at: the same gate the turn path
-    uses, keyed off the origin's markers or a bound engagement's (#336)."""
+    uses. A bound engagement's own record is the authority, read live (its
+    markers and its channel): an in_casa engagement's call inherits the
+    launching turn's ambient origin, but the clamp lowers only the record
+    (#336, #369). Otherwise the origin's markers."""
     from sensitivity import clearance_for_origin
+    eng = engagement_var.get(None)
+    eng_origin = getattr(eng, "origin", None) if eng is not None else None
+    if isinstance(eng_origin, dict):
+        origin = eng_origin
     route, stamped = _origin_clearance_markers(origin)
     return clearance_for_origin(route, stamped, origin.get("channel", "telegram"))
 
@@ -2123,6 +2130,16 @@ async def open_memory(args: dict) -> dict:
     return _result({"status": "ok", "entries": opened})
 
 
+#: Every arm in which the mark was not written: the store unavailable, busy
+#: past the turn-path bound, or his message not stored yet. Worded like the
+#: read tools' unavailable message: what happened, and what not to claim.
+_CORRECTION_UNAVAILABLE = (
+    "Memory could not mark the correction right now. Do NOT say memory was "
+    "updated. Use his new value in this conversation; if he asks, tell him "
+    "memory couldn't be updated just now."
+)
+
+
 @tool(
     "correct_memory",
     "Use when his message in this turn says something stored in memory is "
@@ -2146,22 +2163,19 @@ async def correct_memory(args: dict) -> dict:
                             "Nothing was marked.")})
     store = _memory_store()
     if store is None:
-        return _result({"status": "unavailable", "message": (
-            "Memory could not mark the correction right now. Use what he "
-            "said; nothing else to do.")})
+        return _result({"status": "unavailable",
+                        "message": _CORRECTION_UNAVAILABLE})
     try:
         marked = await asyncio.to_thread(
             corrections.mark_operator_event, store, key)
     except Exception:  # noqa: BLE001 — reported, never a fake "queued"
         logger.warning("correct_memory: the mark could not be written",
                        exc_info=True)
-        return _result({"status": "unavailable", "message": (
-            "Memory could not mark the correction right now. Use what he "
-            "said; nothing else to do.")})
+        return _result({"status": "unavailable",
+                        "message": _CORRECTION_UNAVAILABLE})
     if not marked.found:
-        return _result({"status": "unavailable", "message": (
-            "His message is not stored yet, so it could not be marked. Use "
-            "what he said; nothing else to do.")})
+        return _result({"status": "unavailable",
+                        "message": _CORRECTION_UNAVAILABLE})
     return _result({"status": "queued", "message": (
         "His message is marked as a correction; memory will be updated from "
         "it. Nothing to tell him.")})

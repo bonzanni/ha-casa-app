@@ -142,3 +142,31 @@ async def test_a_resident_turn_hands_the_tool_its_opening(mem, tmp_path):
             "SELECT e.text FROM correction_marks AS m JOIN events AS e "
             "ON e.seq = m.seq").fetchall()
     assert rows == [("no, she is called Anna",)]
+
+
+async def test_a_busy_store_answers_at_once_and_marks_nothing(mem, turn):
+    """Another connection holds the store's write lock (a writer commit, a
+    drain): the tool waits no longer than the turn-path bound, answers
+    `unavailable` without claiming an update, and marks nothing."""
+    import sqlite3
+    import time
+
+    from memory import corrections
+    key = occurrence.provider_key("telegram", CHAT, "705")
+    _operator_event(mem, "no, it is Anna", key)
+    turn("private", **{agent_mod.MEMORY_OPENING_KEY: key})
+    holder = sqlite3.connect(mem.path, isolation_level=None)
+    holder.execute("BEGIN IMMEDIATE")
+    try:
+        started = time.monotonic()
+        out = await _correct()
+        elapsed = time.monotonic() - started
+    finally:
+        holder.execute("ROLLBACK")
+        holder.close()
+    assert elapsed < 2.0, elapsed
+    assert corrections.TOOL_BUSY_TIMEOUT_S <= 0.05
+    assert out["status"] == "unavailable"
+    assert "Do NOT say memory was updated" in out["message"]
+    assert _marks(mem) == [] and _jobs(mem) == []
+    assert (await _correct())["status"] == "queued"

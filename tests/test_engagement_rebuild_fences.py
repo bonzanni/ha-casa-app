@@ -408,3 +408,65 @@ class TestInCasaLaunchGate:
         assert "text" not in delivered
         # The fresh floor client the rebuild registered is untouched.
         assert driver._clients[rec.id] is fresh
+
+
+class TestInCasaClampMidRead:
+    """An in_casa engagement's tool call inherits the launching turn's
+    ambient origin (private), while the clamp lowers the engagement's own
+    record. The record is the authority: a clamp landing mid-read makes
+    every memory tool read again at the record's new clearance."""
+
+    @pytest.mark.parametrize("tool_name,seam,args", [
+        ("search_memory", ("memory.search", "search"), {"query": "alarm"}),
+        ("browse_memory_day", ("memory.browse", "browse"),
+         {"date": "2026-10-05"}),
+        ("open_memory", ("memory.view", "open_objects"), None),
+    ])
+    async def test_every_memory_tool_rereads_at_the_clamped_record(
+        self, tmp_path, monkeypatch, tool_name, seam, args,
+    ):
+        import importlib
+        import json
+
+        import agent as agent_mod
+        import tools
+        from engagement_registry import EngagementRegistry
+        from memory import capture
+        from memory_serving_support import add, fact
+        from memory_tools_support import canary, new_store, store_event
+
+        secret = canary()
+        store = new_store(tmp_path / "mem")
+        monkeypatch.setitem(capture._wiring, "store", store)
+        store_event(store, f"the alarm code is {secret}", tier="private",
+                    day="2026-10-05")
+        store_event(store, "the alarm is tested on mondays", tier="public",
+                    day="2026-10-05")
+        _, (entry,) = add(store, [fact("alarm", f"code {secret}")])
+        if args is None:
+            args = {"ids": [entry]}
+        reg = EngagementRegistry(
+            tombstone_path=str(tmp_path / "e.json"), bus=None)
+        parent = {"role": "assistant", "channel": "telegram", "chat_id": "1",
+                  "_origin_route": "telegram", "_origin_clearance": "private"}
+        rec = await reg.create(
+            kind="specialist", role_or_type="finance", driver="in_casa",
+            task="t", topic_id=7, origin=dict(parent))
+        module = importlib.import_module(seam[0])
+        real = getattr(module, seam[1])
+        reads = []
+
+        def clamped_mid_read(*a, **k):
+            reads.append(k["clearance"])
+            rec.origin["_origin_clearance"] = "public"
+            return real(*a, **k)
+        monkeypatch.setattr(module, seam[1], clamped_mid_read)
+        agent_mod.origin_var.set(dict(parent))      # the inherited ambient
+        token = tools.engagement_var.set(rec)
+        try:
+            res = await getattr(tools, tool_name).handler(args)
+        finally:
+            tools.engagement_var.reset(token)
+        out = json.loads(_text(res))
+        assert reads == ["private", "public"]
+        assert secret not in json.dumps(out)

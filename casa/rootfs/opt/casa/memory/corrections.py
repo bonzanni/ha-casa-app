@@ -45,9 +45,14 @@ class MarkResult:
     found: bool = True
 
 
-def mark(store: MemoryStore, seq: int) -> MarkResult:
-    """Mark event *seq* as corrected and queue its correction jobs."""
-    with store.transaction(write=True) as conn:
+def mark(store: MemoryStore, seq: int, *,
+         busy_timeout: float | None = None) -> MarkResult:
+    """Mark event *seq* as corrected and queue its correction jobs.
+    *busy_timeout* bounds the wait for the store's write lock (the store's
+    default when ``None``); past it, ``sqlite3.OperationalError`` is
+    raised and nothing is written."""
+    bound = {} if busy_timeout is None else {"busy_timeout": busy_timeout}
+    with store.transaction(write=True, **bound) as conn:
         if conn.execute("SELECT 1 FROM events WHERE seq = ?",
                         (seq,)).fetchone() is None:
             return MarkResult(marked=False, found=False)
@@ -72,8 +77,14 @@ def mark(store: MemoryStore, seq: int) -> MarkResult:
     return MarkResult(marked=True, queued=ledgers)
 
 
+#: Seconds ``correct_memory`` waits for the store's lock: the turn-path bound
+#: serving uses (``memory.view.BUSY_TIMEOUT_S``), so a tool call never holds
+#: a turn behind a writer; a busy store answers "could not mark" instead.
+TOOL_BUSY_TIMEOUT_S = 0.05
+
+
 def _operator_seq(store: MemoryStore, source_key: str) -> int | None:
-    with store.transaction() as conn:
+    with store.transaction(busy_timeout=TOOL_BUSY_TIMEOUT_S) as conn:
         row = conn.execute(
             "SELECT seq FROM events WHERE source_key = ? "
             "AND speaker_kind = 'operator'", (source_key,)).fetchone()
@@ -83,10 +94,12 @@ def _operator_seq(store: MemoryStore, source_key: str) -> int | None:
 def mark_operator_event(store: MemoryStore, source_key: str) -> MarkResult:
     """Mark the operator message stored under *source_key*, draining a
     waiting spool first when it is not stored yet. ``found`` is false when
-    no operator message is stored under that key."""
+    no operator message is stored under that key. Every store wait is
+    bounded by :data:`TOOL_BUSY_TIMEOUT_S`; a store busy past it raises
+    ``sqlite3.OperationalError`` and nothing is marked."""
     seq = _operator_seq(store, source_key)
     if seq is None and capture.drain_waiting(store):
         seq = _operator_seq(store, source_key)
     if seq is None:
         return MarkResult(marked=False, found=False)
-    return mark(store, seq)
+    return mark(store, seq, busy_timeout=TOOL_BUSY_TIMEOUT_S)
