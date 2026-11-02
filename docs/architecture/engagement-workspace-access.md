@@ -30,7 +30,8 @@ all.
 control directory's `.executor_memory` cache before any `CLAUDE.md`, and writes
 `CLAUDE.md` with `atomic_write_beneath`; it and `refresh_claude_md` wrap the block between
 two fixed markers, with every marker string removed from the block itself and
-neutralised in every other input, so the one pair comes only from the slot. The memory
+neutralised in the rest of the rendered file before the block goes in, so the one pair
+comes only from the slot. The memory
 wipe blanks that section through the markers and keeps every other byte of the file
 ([`memory-wipe.md`](memory-wipe.md), INV-MEM-038).
 

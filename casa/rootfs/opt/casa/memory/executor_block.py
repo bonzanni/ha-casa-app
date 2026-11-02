@@ -6,11 +6,11 @@ fixed markers, so the wipe can find the section again and empty it while
 keeping every other byte of the file. Memory text can never forge a marker:
 both marker strings are removed from the block before it is wrapped.
 
-Every other input — the template text and the task, context and world-state
-values — has any marker string neutralised (its ``<`` written as ``&lt;``,
-which reads the same), and the template is filled in one pass, so a value is
-never scanned for placeholders again. A marker pair in a file this release
-writes therefore comes only from the memory slot.
+The rest of the file — the template with the task, context and world-state
+values filled in, in one pass — is neutralised as a whole (a marker string's
+``<`` written as ``&lt;``, which reads the same) before the marked block goes
+in, so a marker pair in a file this release writes comes only from the
+memory slot, however its pieces were assembled.
 
 Files written before this release carry the block with no markers. The wipe
 then locates it through the control directory's cached copy, and uses
@@ -20,6 +20,7 @@ while it was being written (``memory.maintenance``).
 from __future__ import annotations
 
 import re
+import uuid
 
 OPEN = "<!-- casa:executor-memory -->"
 CLOSE = "<!-- /casa:executor-memory -->"
@@ -60,12 +61,19 @@ def neutralise(text: str) -> str:
 
 
 def render(template_text: str, values: dict[str, str], block: str) -> str:
-    """*template_text* filled in one pass: the slot becomes the marked
-    *block*, each placeholder in *values* its neutralised value, and any other
-    placeholder is left as written. Values are never scanned again."""
+    """*template_text* filled in one pass: each placeholder in *values* gets
+    its value and any other placeholder is left as written; values are never
+    scanned again. The whole text is then neutralised — so a marker cannot
+    be assembled from a template piece and a value either — and only then
+    does the slot become the marked *block*. A marker can therefore come
+    only from the block's own wrapper."""
+    sentinel = f"\x00casa-memory-slot-{uuid.uuid4().hex}\x00"
+
     def _one(match: re.Match) -> str:
         token = match.group(0)
         if token == SLOT:
-            return marked(block)
-        return neutralise(values[token]) if token in values else token
-    return _PLACEHOLDER.sub(_one, neutralise(template_text))
+            return sentinel
+        return values[token] if token in values else token
+
+    text = neutralise(_PLACEHOLDER.sub(_one, template_text))
+    return text.replace(sentinel, marked(block))

@@ -99,9 +99,11 @@ the same transaction that marks it sent.
 `provision_workspace` writes the cache before any `CLAUDE.md`, writes `CLAUDE.md`
 atomically, and both it and `refresh_claude_md` wrap the block between two fixed markers
 with every marker string removed from the block first, so memory text cannot forge one.
-Every other input — the template text, the task, the context — has any marker string
-neutralised (its `<` written as `&lt;`), and the template is filled in one pass, so a value
-is never scanned for placeholders again: the one marker pair comes only from the slot. A
+The template is filled in one pass with the task, context and other values — a value is
+never scanned for placeholders again — with a unique sentinel in the slot; the whole joined
+text then has every marker string neutralised (its `<` written as `&lt;`), and only then does
+the sentinel become the marked block. However a marker might be assembled from template text
+and values, the one pair in the file comes only from the slot. A
 template with no slot caches nothing. The step classifies each file:
 
 1. **Markers** — exactly one pair, in order: the content between them is emptied.

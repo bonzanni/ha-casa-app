@@ -116,16 +116,17 @@ def legacy_block(canary: str) -> str:
 
 
 async def provision(root: Path, eid: str, *, memory: str, monkeypatch,
-                    task: str = "Tidy the garden notes") -> Path:
+                    task: str = "Tidy the garden notes",
+                    template: str = TEMPLATE, context: str = "ctx") -> Path:
     """This release's ``provision_workspace`` on the stand-in root."""
     from drivers import workspace
     monkeypatch.setattr(workspace, "CONTROL_ROOT",
                         str(under(root, "/data/engagement-ctl")))
-    defn = _defn(root / "defs" / eid, TEMPLATE)
+    defn = _defn(root / "defs" / eid, template)
     path = await workspace.provision_workspace(
         engagements_root=str(under(root, "/data/engagements")),
         engagement_id=eid, engagement_auth_token="tok-" + eid[:6],
-        defn=defn, task=task, context="ctx", executor_memory=memory,
+        defn=defn, task=task, context=context, executor_memory=memory,
         casa_framework_mcp_url="http://127.0.0.1:8100/mcp/casa-framework")
     return Path(path)
 

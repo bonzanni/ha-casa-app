@@ -238,6 +238,44 @@ def test_a_block_whose_text_before_it_changed_is_case_4(tmp_path):
     assert (ws / "CLAUDE.md").read_text() == rendered
 
 
+@pytest.mark.parametrize("memory", ["", "lessons"])
+async def test_a_marker_assembled_across_placeholders_is_kept(
+        tmp_path, monkeypatch, memory):
+    """r2 Astra S1: the template supplies ``<!-- `` and `` -->`` around two
+    placeholders whose values supply the marker's name, with a kept canary
+    between them. The joined text is neutralised, so no marker forms."""
+    root, proc = tmp_path, w.fake_proc(tmp_path)
+    kept = "f8" + os.urandom(8).hex()
+    template = ("# Notes\n<!-- {task} -->\n" + kept + "\n<!-- /{context} -->\n"
+                + ("{executor_memory}\n" if memory else ""))
+    ws = await w.provision(root, w.EID_OPEN, memory=memory,
+                           monkeypatch=monkeypatch, template=template,
+                           task="casa:executor-memory",
+                           context="casa:executor-memory")
+    text = (ws / "CLAUDE.md").read_text()
+    assert text.count(OPEN) == text.count(CLOSE) == (1 if memory else 0)
+    p = _wipe(root, proc)
+    assert p.stdout.strip() == "done", p.stderr
+    assert kept in (ws / "CLAUDE.md").read_text()
+
+
+async def test_a_marker_written_in_the_template_itself_is_kept(
+        tmp_path, monkeypatch):
+    root, proc = tmp_path, w.fake_proc(tmp_path)
+    kept = "f9" + os.urandom(8).hex()
+    memory_canary = "fa" + os.urandom(8).hex()
+    template = (f"# Notes\n{OPEN}{kept}{CLOSE}\n{{task}}\n"
+                "{executor_memory}\n")
+    ws = await w.provision(root, w.EID_OPEN, memory=memory_canary,
+                           monkeypatch=monkeypatch, template=template)
+    text = (ws / "CLAUDE.md").read_text()
+    assert text.count(OPEN) == 1 and f"&lt;{OPEN[1:]}{kept}" in text
+    p = _wipe(root, proc)
+    assert p.stdout.strip() == "done", p.stderr
+    assert kept in (ws / "CLAUDE.md").read_text()
+    assert w.hits(root, [memory_canary]) == []
+
+
 def test_a_file_with_two_marker_pairs_is_case_4(tmp_path):
     root, proc = tmp_path, w.fake_proc(tmp_path)
     canary = "f5" + os.urandom(8).hex()
