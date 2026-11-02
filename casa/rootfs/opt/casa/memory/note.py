@@ -17,10 +17,9 @@ one snapshot (:func:`with_view`), so (b) is empty by construction.
 Each is the operator's own words, verbatim, with the local time he said
 them. The note is the same one rule on every turn, not a one-off: so
 compaction, a reconnect or a resume cannot drop it, and nothing records that
-a correction was "shown". An in-casa engagement is served no view, but its
-session is recorded at its first turn with that turn's ``commit_no`` as its
-base (:func:`for_session_without_view`), so it is owed (a) and (b) like any
-other. A resident session whose view could not be recorded (the store was
+a correction was "shown". An in-casa engagement is served no view; its base
+is derived from its own start time, never recorded (:func:`for_engagement`),
+so it is owed (a) and (b) like any other. A resident session whose view could not be recorded (the store was
 unavailable) gets (a) only; its next reconnect starts it afresh.
 
 A resident session's base is read only from a record bound to the SDK
@@ -36,7 +35,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from memory import pending, sessions
@@ -134,33 +133,22 @@ def for_turn(store: MemoryStore, *, clearance: str,
                 snapshot_commit_no=snapshot)
 
 
-def for_session_without_view(store: MemoryStore, *, session_key: str,
-                             clearance: str, budget: int) -> Note:
-    """The note for one turn of a session served no view (an in-casa
-    engagement). Its first turn records the session with the current
-    ``commit_no`` as its base, in the same write transaction the note is
-    read in; every later turn is owed what is pending plus what was
-    committed after that base, like any session. A record for another
-    ledger or reader is replaced, so a clearance change starts a new base.
-    Raises when the store is unavailable or fails."""
+def for_engagement(store: MemoryStore, *, clearance: str,
+                   started_at: float) -> Note:
+    """The note for one turn of an in-casa engagement, which is served no
+    view. Its base is derived, never recorded: the newest commit at or
+    before the engagement's own start (*started_at*, the epoch time its
+    record was created with, durable before any turn), so no store failure
+    at any turn can move it. Read in one snapshot with the corrections:
+    every one pending, and every one committed after that base. Raises when
+    the store is unavailable or fails."""
     ledger = ledger_for(clearance)
     if ledger is None:
         return Note("")
+    at = datetime.fromtimestamp(started_at, timezone.utc).isoformat(
+        timespec="microseconds")
     with store.transaction(busy_timeout=BUSY_TIMEOUT_S) as conn:
-        base = _base(sessions.get(conn, session_key), ledger, clearance)
-        if base is not None:
-            items = corrections(conn, ledger=ledger, clearance=clearance,
-                                base_commit_no=base)
-            return Note(render(items), ledger=ledger, base_commit_no=base)
-    with store.transaction(write=True, busy_timeout=BUSY_TIMEOUT_S) as conn:
-        base = _base(sessions.get(conn, session_key), ledger, clearance)
-        if base is None:
-            base = pending.current_commit_no(conn)
-            sessions.put(conn, sessions.SessionView(
-                session_key=session_key, ledger=ledger, base_commit_no=base,
-                clearance=clearance, budget=max(budget, 0),
-                renderer_version=view_mod.RENDERER_VERSION,
-                block_hash=view_mod.block_hash("")))
+        base = pending.commit_no_at(conn, at)
         items = corrections(conn, ledger=ledger, clearance=clearance,
                             base_commit_no=base)
     return Note(render(items), ledger=ledger, base_commit_no=base)

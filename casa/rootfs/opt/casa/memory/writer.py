@@ -537,9 +537,9 @@ def _commit(store: MemoryStore, inp: Input, plan: Plan, boot_id: str) -> int:
                     (plan.verdicts[seq], seq))
         conn.executemany(
             "INSERT INTO dispositions (seq, ledger, job_id, outcome, "
-            "commit_no) VALUES (?, ?, ?, ?, ?)",
-            [(seq, inp.ledger, inp.job_id, plan.outcomes[seq], commit_no)
-             for seq in still])
+            "commit_no, committed_at) VALUES (?, ?, ?, ?, ?, ?)",
+            [(seq, inp.ledger, inp.job_id, plan.outcomes[seq], commit_no,
+              committed_at) for seq in still])
         _hooks["in_commit"]()
         if conn.execute(_SET_COMMITTED, (inp.job_id, boot_id)).rowcount != 1:
             raise Stale("the job is no longer running in this process")

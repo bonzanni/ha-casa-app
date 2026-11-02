@@ -117,7 +117,8 @@ V1: tuple[str, ...] = (
         job_id TEXT NOT NULL,
         outcome TEXT NOT NULL CHECK (outcome IN
             ('patched', 'no_change', 'deferred')),
-        commit_no INTEGER NOT NULL
+        commit_no INTEGER NOT NULL,
+        committed_at TEXT
     ) STRICT
     """,
     "CREATE INDEX dispositions_seq_ledger ON dispositions (seq, ledger)",

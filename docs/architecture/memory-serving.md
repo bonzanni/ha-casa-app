@@ -92,9 +92,11 @@ block, which is stripped from what is captured, on every turn — fresh, warm, a
 reconnect or a resume, on any channel — so neither compaction nor a reconnect can drop it,
 and nothing records that a correction was "shown". A delegated specialist's note is in its
 prompt with its view. An in-casa engagement of a memory-role specialist is served no view,
-but its session is recorded at its first turn, keyed by the engagement, with that turn's
-`commit_no` as its base, so every engagement turn carries the corrections pending and those
-committed since, ahead of its message. A resident session with no record bound to it is
+and its base is derived, never recorded: the newest commit at or before the engagement's own
+start, found by comparing its record's creation time with the times the writer stamps on
+every commit's revisions and dispositions (one wall clock, in one process). No failure at any
+turn can move it, so every engagement turn carries the corrections pending and those
+committed since the engagement started, ahead of its message. A resident session with no record bound to it is
 owed the pending corrections only, until its next reconnect starts it afresh. A turn that starts a session reads its note first, and its view is rendered as of that
 note's own snapshot, so the two describe one state of the store: a correction filed while
 the session starts is after its base, and owed to its next turn. On that first turn the note
@@ -111,10 +113,10 @@ saved conversation can be read in order with `browse_memory_day`.
 
 ## Contracts & invariants
 
-**INV-MEM-030**: Every turn of a memory role whose clearance reads a ledger carries, read in that turn's own snapshot, every correction pending in that ledger and readable at that clearance, and every correction committed there after its session's recorded base, as the operator's own dated words — on a fresh, warm, reconnected or resumed turn, on any channel, in a delegated specialist's prompt and on an in-casa engagement turn of a memory-role specialist.
+**INV-MEM-030**: Every turn of a memory role whose clearance reads a ledger carries, read in that turn's own snapshot, every correction pending in that ledger and readable at that clearance, and every correction committed there after its session's base, as the operator's own dated words — on a fresh, warm, reconnected or resumed turn, on any channel, in a delegated specialist's prompt and on an in-casa engagement turn of a memory-role specialist.
 
 Enforced by `memory.note`, which reads the session's row and both kinds of correction in one
-transaction through the pending view (recording an engagement's row at its first turn), and
+transaction through the pending view (an engagement's base derived from its start), and
 by the four places that put the note on a
 turn: the resident turn's notes block, built for every channel before the session's client
 is chosen; the delegated specialist's prompt, read with its view in one snapshot; and the

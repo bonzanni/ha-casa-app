@@ -20,7 +20,7 @@ from bus import BusMessage, MessageType
 from channels import ChannelManager
 from config import AgentConfig, CharacterConfig, MemoryConfig, ToolsConfig
 from mcp_registry import McpServerRegistry
-from memory import sessions, view
+from memory import capture, sessions, view
 from memory_serving_support import add, fact, ledger_store, wire
 from session_reg_helpers import (
     RESIDENT_DIGEST, align_prompt_surface, resident_prov, resident_role_id,
@@ -353,6 +353,7 @@ async def test_a_session_whose_view_was_never_recorded_never_resumes_another(
         finally:
             lock.execute("ROLLBACK")
             lock.close()
+        capture.drain_spool(store)  # what the lock spooled, stored now
         await first.aclose()
         assert first._session_registry.get(key)["sdk_session_id"] == "sid-2"
         second = _agent(tmp_path)

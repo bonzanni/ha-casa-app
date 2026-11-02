@@ -7,8 +7,8 @@ budget it was rendered for, the renderer's version, the hash of the block,
 and the SDK session the view belongs to. A new session for the same key
 replaces the row, unbound; once the SDK names the session the row is bound
 to that session id (:func:`bind`), and only a session whose id the row is
-bound to may resume on it. An in-casa engagement's row (``engagement:<id>``)
-records only a base and is never bound.
+bound to may resume on it. An in-casa engagement has no row: its base is
+derived from its start time (:func:`memory.note.for_engagement`).
 
 The correction note (:mod:`memory.note`) reads ``base_commit_no`` to tell
 which committed corrections the session's frozen view does not reflect; a

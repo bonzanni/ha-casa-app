@@ -168,10 +168,9 @@ class _EngagementCapture:
 async def _engagement_memory_note(engagement: EngagementRecord) -> str:
     """The correction note for one engagement turn of a memory-role
     specialist: every correction pending in the ledger the engagement's
-    read clearance reads, and every one committed after the engagement
-    session's base (recorded at its first turn, keyed by the engagement),
-    the operator's own words, read off the event loop in this turn's
-    snapshot. ``""`` for executors, plugin jobs, a specialist served no
+    read clearance reads, and every one committed after the engagement's
+    start (its base, derived from its record's start time), the operator's
+    own words, read off the event loop in this turn's snapshot. ``""`` for executors, plugin jobs, a specialist served no
     memory, or no store. A failure is logged and never fails the turn."""
     from delegated_memory import role_writes_memory
     from memory import capture
@@ -184,18 +183,13 @@ async def _engagement_memory_note(engagement: EngagementRecord) -> str:
     if store is None or not store.available:
         return ""
     origin = getattr(engagement, "origin", None) or {}
-    import tools as tools_mod
-    cfg = (getattr(tools_mod, "_agent_role_map", None) or {}).get(
-        engagement.role_or_type)
-    budget = getattr(getattr(cfg, "memory", None), "token_budget", 0)
     try:
         note = await asyncio.to_thread(
-            memory_note.for_session_without_view, store,
-            session_key=f"engagement:{engagement.id}",
+            memory_note.for_engagement, store,
             clearance=clearance_for_origin(
                 origin.get("_origin_route"), origin.get("_origin_clearance"),
                 str(origin.get("channel", ""))),
-            budget=budget if isinstance(budget, int) else 0)
+            started_at=float(engagement.started_at))
     except Exception:  # noqa: BLE001 — the turn runs without the note
         logger.warning("memory correction note not read in engagement %s",
                        engagement.id[:8], exc_info=True)

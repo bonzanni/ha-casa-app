@@ -20,7 +20,7 @@ import pytest
 import agent as agent_mod
 import tools
 from bus import BusMessage, MessageType
-from memory import corrections, note, view, writer
+from memory import capture, corrections, note, view, writer
 from memory_serving_support import fact, ledger_store, wire
 from memory_writer_support import (
     ScriptedPort, new_writer, no_change_all, reply, seed,
@@ -350,6 +350,7 @@ async def test_a_session_whose_view_could_not_be_recorded_is_not_kept_warm(
         finally:
             lock.execute("ROLLBACK")
             lock.close()
+        capture.drain_spool(store)  # what the lock spooled, stored now
         seq = _correction(store, "no, the city is Milan")
         await _run_jobs(store, lambda p: reply(
             {e["seq"]: "patched" for e in p["events"]},
@@ -377,3 +378,55 @@ async def test_a_session_kept_while_the_store_cannot_be_read(
         await agent._process(_msg())
         await agent.aclose()
     assert len(_QueryClient.options) == 1
+
+
+async def test_an_engagement_owes_every_correction_filed_since_it_started(
+        tmp_path, monkeypatch):
+    """An engagement's base is the newest commit at or before its own start,
+    derived, never recorded, so no store failure at its launch can move it:
+    a correction filed after the engagement started is owed to every later
+    turn, and one filed before it is not. Red case: a base recorded at the
+    first turn whose write succeeds (here the launch's write is locked out)
+    lands after the correction, and no turn ever notes it."""
+    import sqlite3
+    import time as _time
+    from drivers.in_casa_driver import InCasaDriver
+    from engagement_registry import EngagementRecord
+    from test_memory_capture import _TopicStream
+    store = ledger_store(tmp_path)
+    wire(monkeypatch, store)
+    monkeypatch.setattr(tools, "_agent_role_map", {}, raising=False)
+    _correction(store, "the code is 4417")
+    await _run_jobs(store, no_change_all)          # filed before the start
+    drv = InCasaDriver(topic_stream_factory=lambda tid: _TopicStream())
+    rec = EngagementRecord(
+        id="a" * 32, kind="specialist", role_or_type="finance",
+        driver="in_casa", status="active", topic_id=99,
+        started_at=_time.time(), last_user_turn_ts=0.0,
+        last_idle_reminder_ts=0.0, completed_at=None, sdk_session_id=None,
+        task="t", origin={"channel": "telegram", "_origin_route": "telegram",
+                          "_origin_clearance": "private"})
+    _EngagementClient.prompts = []
+    drv._clients[rec.id] = _EngagementClient()
+    drv._locks[rec.id] = asyncio.Lock()
+
+    async def turn(text, message_id):
+        ticket = drv.admit_inbound(rec.id, text)
+        await drv.send_user_turn(rec, text, tg_message_id=message_id,
+                                 inbound_token=ticket)
+
+    lock = sqlite3.connect(store.path, isolation_level=None)
+    lock.execute("BEGIN IMMEDIATE")
+    try:
+        await turn("launch", 1)
+    finally:
+        lock.execute("ROLLBACK")
+        lock.close()
+    capture.drain_spool(store)  # what the lock spooled, stored now
+    _correction(store, "the city is Milan")
+    await _run_jobs(store, no_change_all)          # filed after the start
+    await turn("second", 2)
+    await turn("third", 3)
+    for prompt in _EngagementClient.prompts[1:]:
+        assert 'his words: "the city is Milan"' in prompt
+        assert "4417" not in prompt

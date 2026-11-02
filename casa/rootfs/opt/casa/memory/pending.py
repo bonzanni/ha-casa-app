@@ -47,6 +47,19 @@ def current_commit_no(conn: sqlite3.Connection) -> int:
     ).fetchone()[0]
 
 
+def commit_no_at(conn: sqlite3.Connection, at: str) -> int:
+    """The newest ``commit_no`` committed at or before *at* (an ISO-8601 UTC
+    time in the form the writer stamps), 0 when none: the state of the
+    ledgers at that moment. Every commit stamps its time on its revisions
+    and its dispositions."""
+    return conn.execute(
+        "SELECT max("
+        " coalesce((SELECT max(commit_no) FROM revisions"
+        "           WHERE committed_at <= ?), 0),"
+        " coalesce((SELECT max(commit_no) FROM dispositions"
+        "           WHERE committed_at <= ?), 0))", (at, at)).fetchone()[0]
+
+
 def next_commit_no(conn: sqlite3.Connection) -> int:
     """The ``commit_no`` a commit in this write transaction takes."""
     return current_commit_no(conn) + 1
