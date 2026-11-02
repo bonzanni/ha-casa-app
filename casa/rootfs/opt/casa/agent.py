@@ -1182,7 +1182,7 @@ class Agent:
         self._channel_manager = channel_manager
         self._agent_registry = agent_registry
         # Per-(session_id) over-budget streak tracker (spec 5.2 §5.2).
-        # Per-instance so assistant (4000) and butler (800) budgets stay
+        # Per-instance so the assistant's and the butler's budgets stay
         # isolated even when the same channel serves both roles.
         self._budget_tracker = BudgetTracker()
         # Unified plugin architecture (§3.3/§3.9): per-instance ONE-shot

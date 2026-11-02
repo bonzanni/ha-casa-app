@@ -3104,9 +3104,8 @@ def _build_specialist_options(
     profile name given to each withheld one — instead of re-reading a
     snapshot a mutation could move.
 
-    Specialist memory is injected via prompt in :func:`_run_delegated_agent`
-    (shared ``casa`` bank); SDK-level session resume stays disabled
-    (``resume=None``) — memory enters via prompt injection, not SDK
+    SDK-level session resume stays disabled (``resume=None``) — what a
+    specialist knows enters via its prompt and its memory tools, not SDK
     continuity. Hooks are
     resolved from the specialist's own ``cfg.hooks``. MCP servers are
     resolved via the shared registry — same pattern as
@@ -4065,7 +4064,7 @@ class DelegatedOutput:
         as complete, even if a future caller stops raising. The last clause is
         memory-only: an output-token-truncated answer (``max_tokens``, or any
         stop reason outside the allow-list) stays a caller-visible success
-        while the unfinished text is withheld from the bank (#710)."""
+        while the unfinished text is withheld from memory (#710)."""
         if self.run_aborted or self.run_is_error:
             return True
         if (self.run_terminal_reason is not None
@@ -11466,10 +11465,9 @@ async def _report_launch_death(
 
     Deliberately NOT ``_finalize_engagement``: that funnel would double-notify
     the engager over the bus, overwrite ``error_kind`` with
-    ``emit_completion_error``, and — the outcome that matters — retain a
-    tier-classified summary onto the shared ``casa`` bank, which has no other
-    copy. Nothing here constructs ``completed`` and nothing here reaches
-    semantic memory.
+    ``emit_completion_error``, and — the outcome that matters — capture a
+    finalize summary into memory, which has no other copy. Nothing here
+    constructs ``completed`` and nothing here captures a summary.
 
     Never raises. Returns a :class:`LaunchDeathResult`.
     """
@@ -12542,7 +12540,7 @@ async def _finalize_engagement(
     detach_teardown_tail: bool = False,  # #632: in_casa self-emit only
 ) -> "FinalizeResult":
     """End an engagement: update registry, close topic, NOTIFY the assistant,
-    retain a tier-classified engagement summary on the shared ``casa`` bank.
+    capture the engagement's summary into memory.
 
     Never raises on channel/memory side-effects — logs warnings and continues
     so the registry always reaches a terminal state.
@@ -13057,7 +13055,7 @@ async def _finalize_engagement_funnel(
                 # before the engagement ended (``consumed`` requires exactly
                 # that evidence) — so that is what it says.
                 # TOPIC-ONLY (never in `text`, which flows to the bus
-                # notification and semantic memory) and BOUNDED to one
+                # notification and the summary capture) and BOUNDED to one
                 # message: excerpts + count, full texts stay in the durable
                 # spool file.
                 # #848: a reservation text that was read is evidence of a
@@ -13929,8 +13927,8 @@ async def emit_completion(args: dict) -> dict:
 
     # Bug 9 (v0.14.6): idempotency. Re-emitting completion (e.g. SDK
     # retry, hook misfire) used to re-run _finalize_engagement, which
-    # double-closes the topic, double-NOTIFYs the assistant, and double-retains
-    # the engagement summary on the shared `casa` bank. Re-read the live registry
+    # double-closes the topic, double-NOTIFYs the assistant, and double-captures
+    # the engagement summary. Re-read the live registry
     # state so we catch transitions that happened on another in-flight
     # turn since this engagement_var snapshot was taken.
     if _engagement_registry is not None:
