@@ -35,12 +35,16 @@ visibility only (:meth:`Run.name`); no deletion depends on it.
 Registration and naming are awaited by the run (bounded like a capture, so a
 busy store never holds a turn: a failure is logged and the run continues,
 unprotected). Confirmation and the end time are written off the run's path, in
-detached tasks (:func:`settle` awaits them). Blocking store work runs in a
-worker thread.
+detached tasks (:func:`settle` awaits them), on one dedicated thread of this
+module's own, in order — never on the event loop's default executor, which
+the turns' bounded writes use. Other blocking store work runs in a worker
+thread.
 """
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
+import functools
 import logging
 import os
 import uuid
@@ -271,10 +275,19 @@ def session_of(sdk_msg: Any) -> str | None:
 _background: set[asyncio.Task] = set()
 
 
+#: The one thread every detached run write (confirmation, end) runs on, in
+#: order. Never the event loop's default executor: a store held by another
+#: writer makes these writes wait out their busy timeout, and many of them
+#: there would leave no thread for a turn's own bounded registration.
+_writer = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="transcript-runs")
+
+
 def _detach(fn, *args) -> None:
     async def write() -> None:
         try:
-            await asyncio.to_thread(fn, *args)
+            await asyncio.get_running_loop().run_in_executor(
+                _writer, functools.partial(fn, *args))
         except Exception:  # noqa: BLE001 — the run then stays unconfirmed
             logger.warning("transcript run write %s failed", fn.__name__,
                            exc_info=True)

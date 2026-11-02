@@ -280,8 +280,8 @@ async def main():
                            driver="in_casa", task="t",
                            origin=json.loads(sys.argv[8]), topic_id=None)
 
-    async def register(engagement):
-        run = await real_register(engagement)
+    async def register(engagement, **kw):
+        run = await real_register(engagement, **kw)
         # the driver publishes its first session after the row's snapshot
         await reg.persist_session_id(rec.id, sid)
         return run

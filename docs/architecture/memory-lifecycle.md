@@ -162,7 +162,7 @@ goes on unprotected. **The gate is one rule:** while a row is unconfirmed, nothi
 directory is deleted — no single session's transcript and not the folder — because which
 session a row names is no evidence of which sessions the run touched (a resumed run names
 its session late, a naming write can fail, a run can move from one session to another). A
-row whose directory is unknown holds the session it names. Confirmation is written off the run's path. A row left unconfirmed by an
+row whose directory is unknown holds the session it names. Confirmation and a delegated run's end are written off the run's path, in order, on one thread of their own, never on the thread pool the turns' bounded writes use. An engagement's finalize decides once, before its terminal flip, whether its summaries are written; the summary run's registration and the captures both read that decision. A row left unconfirmed by an
 earlier process is *unresolved*: the size meter counts it (`unresolved_runs`), its
 transcript is kept until a wipe, and nothing resolves or reads it. A crash between a reply
 and its capture therefore loses that reply from memory, by design.

@@ -12882,7 +12882,16 @@ async def _finalize_engagement(
     # The finalize summaries are captures: their run's row exists before the
     # terminal flip that makes the engagement's transcripts deletable, and a
     # lost flip confirms it at once (INV-ENG-027).
-    summary_run = await _register_summary_run(engagement)
+    # Browser executor §5.4: a specialist that writes no memory leaves no
+    # summary either — the summary is its own output. Decided ONCE, here,
+    # and frozen: the summary run's registration and the tail's captures
+    # both read this decision, never the setting again (a reload during the
+    # teardown must not make a summary capture that no run covers).
+    from delegated_memory import role_writes_memory
+    summary_allowed = (engagement.kind != "specialist"
+                       or role_writes_memory(engagement.role_or_type))
+    summary_run = await _register_summary_run(engagement,
+                                              allowed=summary_allowed)
     if _engagement_registry is not None:
         try:
             won = await _engagement_registry.try_transition_terminal(
@@ -12962,6 +12971,7 @@ async def _finalize_engagement(
         "origin": dict(engagement.origin),
         "task": engagement.task,
         "summary_prov": _prov,
+        "summary_allowed": summary_allowed,
     }
 
     # #599: the instant THIS call won the terminal flip, WAIT for the uid
@@ -13425,23 +13435,22 @@ def _told_nowhere(origin: Any, outcome: str) -> bool:
     return outcome == "completed" and background_jobs.is_quiet_origin(origin)
 
 
-async def _register_summary_run(engagement: EngagementRecord):
+async def _register_summary_run(engagement: EngagementRecord, *,
+                                allowed: bool):
     """The ``summary`` run of a finalize that will write a summary
     (``memory/transcript_runs.py``): one row, registered before the terminal
     flip, naming the engagement's directory — which, unconfirmed, holds
     every transcript there. A finalize that writes no summary holds a run
-    with no row. The switches are the summaries' own: the
-    engagement summary of any kind but a specialist that writes no memory,
-    the executor summary, each under the origin channel's write-trust."""
+    with no row. *allowed* is the summaries' own switch, decided once by the
+    finalize (the engagement summary of any kind but a specialist that
+    writes no memory; the executor summary, whose kind always passes), under
+    the origin channel's write-trust."""
     from channel_policy import writes_to_bank
-    from delegated_memory import role_writes_memory
     from engagement_transcript_reaper import transcript_cwd
     from memory import transcript_runs
     role = engagement.role_or_type
     origin = getattr(engagement, "origin", None) or {}
-    writes = (engagement.kind == "executor"
-              or engagement.kind != "specialist" or role_writes_memory(role))
-    if not (writes and writes_to_bank(str(origin.get("channel", "")))):
+    if not (allowed and writes_to_bank(str(origin.get("channel", "")))):
         return transcript_runs.unregistered(transcript_runs.SUMMARY, role=role)
     try:
         directory = transcript_cwd(engagement)
@@ -13608,11 +13617,10 @@ async def _finalize_engagement_tail(
     _summary_prov = frozen["summary_prov"]
     sem = getattr(agent_mod, "active_semantic_memory", None)
     # Browser executor §5.4: a specialist that writes no memory leaves no
-    # summary either — the summary is its own output. ``sem`` stays bound for
+    # summary either — decided once before the terminal flip (the summary
+    # run's registration read the same decision). ``sem`` stays bound for
     # the executor summary below, which no specialist reaches.
-    from delegated_memory import role_writes_memory
-    _summary_allowed = (frozen["kind"] != "specialist"
-                        or role_writes_memory(frozen["role_or_type"]))
+    _summary_allowed = frozen["summary_allowed"]
     summary = json.dumps({
         "kind": "engagement_summary",
         "engagement_id": eng_id,

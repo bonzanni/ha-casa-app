@@ -210,3 +210,49 @@ async def test_the_workspace_sweep_never_holds_the_event_loop(env, tmp_path):
         holder.close()
     assert took < 1.0, took
     assert not ws.exists()
+
+
+async def test_detached_run_writes_never_take_a_turns_thread(env, tmp_path):
+    """Eight delegated runs end and confirm while another connection holds
+    the store's write lock for 1.5 s, on a loop whose default executor has
+    eight threads: their sixteen detached writes queue on transcript_runs'
+    own thread, and a resident turn's bounded registration and captures
+    still finish inside a second. Once the lock goes, every run is
+    confirmed and ended."""
+    import concurrent.futures
+    import sqlite3
+    import threading
+    from unittest.mock import patch
+
+    from test_agent_process import FakeClient, _make_agent
+    from test_memory_capture import _operator_msg
+
+    loop = asyncio.get_running_loop()
+    loop.set_default_executor(concurrent.futures.ThreadPoolExecutor(8))
+    runs = [await transcript_runs.Run.start(
+        transcript_runs.DELEGATION, role="finance", directory="/d/finance",
+        session_id=str(uuid.uuid4())) for _ in range(8)]
+    holder = sqlite3.connect(env.path, isolation_level=None,
+                             check_same_thread=False)
+    holder.execute("BEGIN IMMEDIATE")
+    release = threading.Timer(1.5, lambda: holder.execute("ROLLBACK"))
+    release.start()
+    try:
+        for run in runs:
+            run.end()
+            run.close()
+        await asyncio.sleep(0.05)
+        agent = _make_agent(tmp_path)
+        FakeClient.reset()
+        started = loop.time()
+        with patch("sdk_client_pool._default_make_client", FakeClient):
+            await agent._process(_operator_msg("ping", "778"))
+        took = loop.time() - started
+    finally:
+        release.join()
+        holder.close()
+    await transcript_runs.settle()
+    assert took < 1.0, took
+    delegated = [r for r in rows(env) if r["kind"] == "delegation"]
+    assert len(delegated) == 8
+    assert all(r["confirmed_at"] and r["ended_at"] for r in delegated)

@@ -650,7 +650,7 @@ async def test_a_summary_run_is_one_row_holding_its_folder(home):
         kind="executor", role_or_type="configurator", driver="in_casa", task="t",
         origin=dict(ORIGIN, job={JOB_SIDS_KEY: [a, b]}), topic_id=None)
     await reg.persist_session_id(rec.id, b)
-    run = await tools._register_summary_run(rec)
+    run = await tools._register_summary_run(rec, allowed=True)
     (row,) = rows(home.store)
     assert (row["kind"], row["directory"], row["session_id"]) == (
         "summary", tools.EXECUTOR_CWD, None)
@@ -662,3 +662,42 @@ async def test_a_summary_run_is_one_row_holding_its_folder(home):
     assert rows(home.store)[0]["confirmed_at"] is not None
     assert not transcript_runs.blocks_deletion(
         home.store, directory=tools.EXECUTOR_CWD, session_id=sibling)
+
+
+@pytest.mark.parametrize("before,during", [(False, True), (True, False)])
+async def test_a_reload_during_finalize_never_captures_an_uncovered_summary(
+        home, monkeypatch, before, during):
+    """Whether the summary is written is decided once, before the terminal
+    flip, and both the summary run's registration and the capture read that
+    decision: a memory setting changed during the teardown (a reload) never
+    yields a summary no run covers, nor a registered run with nothing
+    owed. Red case: the tail reading the setting again."""
+    import delegated_memory
+    from engagement_registry import EngagementRegistry
+    from tools import _finalize_engagement, init_tools
+
+    setting = {"writes": before}
+    monkeypatch.setattr(delegated_memory, "role_writes_memory",
+                        lambda role: setting["writes"])
+    monkeypatch.setattr(agent_mod, "active_semantic_memory", None, raising=False)
+
+    async def cancel(engagement):
+        setting["writes"] = during           # the reload lands in the teardown
+    reg = EngagementRegistry(tombstone_path=str(home.tmp / "e.json"), bus=None)
+    rec = await reg.create(kind="specialist", role_or_type="finance",
+                           driver="in_casa", task="t", origin=dict(ORIGIN),
+                           topic_id=None)
+    init_tools(channel_manager=MagicMock(), bus=MagicMock(notify=AsyncMock()),
+               specialist_registry=MagicMock(), mcp_registry=MagicMock(),
+               trigger_registry=MagicMock(), engagement_registry=reg)
+    await _finalize_engagement(
+        rec, outcome="completed", text="done", artifacts=[], next_steps=[],
+        driver=MagicMock(cancel=cancel))
+    await transcript_runs.settle()
+    assert setting["writes"] is during
+    if before:
+        (row,) = rows(home.store)
+        assert row["kind"] == "summary" and row["confirmed_at"] is not None
+        assert len(summaries(home.store)) == 1
+    else:
+        assert rows(home.store) == [] and summaries(home.store) == []
