@@ -133,3 +133,19 @@ async def test_inflight_old_turn_republish_refused_then_reset_completes(
 
     assert reg.get("telegram-42") is None
     assert not reg.retirement_pending("telegram-42")
+
+
+async def test_a_reset_tells_the_memory_writer_the_session_ended(tmp_path,
+                                                                 monkeypatch):
+    """The end of a session is one of the writer's cadence points: the reset
+    signals it once, and does not wait for it."""
+    from memory import writer as memory_writer
+
+    ended: list[None] = []
+    monkeypatch.setattr(memory_writer, "session_ended",
+                        lambda: ended.append(None))
+    reg = _reg(tmp_path)
+    await _register(reg, "telegram-42", "sid-old")
+    await reset_channel("telegram-42", reg)
+    assert len(ended) == 1
+    assert reg.get("telegram-42") is None

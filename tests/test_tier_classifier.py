@@ -469,3 +469,45 @@ def test_an_item_cannot_close_its_own_quotation(closer):
 def test_the_marker_tag_is_drawn_per_prompt():
     tags = {classification_prompt("x")[-200:] for _ in range(20)}
     assert len(tags) == 20
+
+
+# --- #1123: the fallback signal the memory writer reads ----------------------
+#
+# ``memory/classify.py`` leaves an event provisional exactly when the real
+# classifier returns a ``FallbackTier`` (an ``isinstance`` check), so every
+# failure arm must return one and every real verdict a plain ``str``.
+
+
+async def test_failure_arms_return_a_fallback_and_verdicts_stay_plain(monkeypatch):
+    monkeypatch.setattr(tier_classifier, "_RETRY_BACKOFF_S", 0)
+    blank = await tier_classifier.classify_tier("   ")
+    assert blank == DEFAULT_TIER
+    assert isinstance(blank, tier_classifier.FallbackTier)
+
+    _install_fake_sdk(monkeypatch, raise_exc=RuntimeError("classifier backend down"))
+    failed = await tier_classifier.classify_tier("the garage code")
+    assert failed == "private"
+    assert isinstance(failed, tier_classifier.FallbackTier)
+
+    _install_sequenced_sdk(monkeypatch, replies=["I am not sure"])
+    unparseable = await tier_classifier.classify_tier("the garage code")
+    assert unparseable == "private"
+    assert isinstance(unparseable, tier_classifier.FallbackTier)
+
+    _install_fake_sdk(monkeypatch, reply="private")
+    real = await tier_classifier.classify_tier("the garage code")
+    assert real == "private"
+    assert not isinstance(real, tier_classifier.FallbackTier)
+
+
+async def test_the_conflict_arm_is_a_plain_verdict_and_still_counts_as_defaulted(monkeypatch):
+    """A re-ask that comes back less sensitive than the first reply's own
+    ``private`` evidence is a real verdict (it sets a floor), not a fallback —
+    and it still counts as defaulted."""
+    _install_sequenced_sdk(monkeypatch, replies=[
+        "This must stay confidential.\nprivate", "public"])
+    with tier_classifier.classify_stats() as stats:
+        tier = await tier_classifier.classify_tier("the garage code")
+    assert tier == "private"
+    assert not isinstance(tier, tier_classifier.FallbackTier)
+    assert (stats.total, stats.defaulted) == (1, 1)

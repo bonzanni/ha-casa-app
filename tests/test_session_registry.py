@@ -432,3 +432,37 @@ class TestRegistrationGeneration:
         await reg.remove("telegram-g1")
         assert reg.generation("telegram-g1") is None
 
+
+
+# --- the freshness windows (spec §3.3) ---------------------------------------
+
+
+async def test_freshness_voice_is_short(monkeypatch):
+    from datetime import timedelta
+    from session_registry import freshness_window
+    monkeypatch.delenv("FRESHNESS_VOICE_MINUTES", raising=False)
+    assert freshness_window("voice") == timedelta(minutes=30)
+
+
+async def test_freshness_telegram_is_long(monkeypatch):
+    from datetime import timedelta
+    from session_registry import freshness_window
+    monkeypatch.delenv("FRESHNESS_TELEGRAM_HOURS", raising=False)
+    assert freshness_window("telegram") == timedelta(hours=12)
+
+
+async def test_freshness_unknown_channel_falls_back_to_telegram_default(monkeypatch):
+    from datetime import timedelta
+    from session_registry import freshness_window
+    monkeypatch.delenv("FRESHNESS_TELEGRAM_HOURS", raising=False)
+    assert freshness_window("something-else") == timedelta(hours=12)
+
+
+async def test_freshness_env_override(monkeypatch):
+    from datetime import timedelta
+    from session_registry import freshness_window
+    monkeypatch.setenv("FRESHNESS_VOICE_MINUTES", "10")
+    monkeypatch.setenv("FRESHNESS_TELEGRAM_HOURS", "3")
+    assert freshness_window("voice") == timedelta(minutes=10)
+    assert freshness_window("telegram") == timedelta(hours=3)
+    assert freshness_window("something-else") == timedelta(hours=3)
