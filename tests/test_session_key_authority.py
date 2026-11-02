@@ -1,4 +1,4 @@
-"""#578/#579: the session key, not the pool, is the serialization authority.
+"""#579: the session key, not the pool, is the serialization authority.
 
 v0.66.0 made the SDK client pool own "who may run a turn on session key K".
 The key outlives any pool instance, so every path that does not go through
@@ -12,7 +12,7 @@ The key outlives any pool instance, so every path that does not go through
   for SCHEDULED turns only and left ordinary turns to the pool entry lock.
   It is now unconditional, which is what makes the above reachable; the
   deleted ``_needs_session_gate`` classifier's test is replaced by
-  ``test_an_ordinary_dm_turn_holds_the_gate_and_admission`` here.
+  ``test_an_ordinary_dm_turn_holds_the_gate`` here.
 
 All of these drive ``Agent.handle_message`` through the same
 ``sdk_client_pool._default_make_client`` seam the pooled and bypass paths
@@ -135,18 +135,18 @@ def _msg(text, chat_id="42"):
 
 
 class TestUnconditionalGate:
-    async def test_an_ordinary_dm_turn_holds_the_gate_and_admission(
-        self, tmp_path, monkeypatch, fresh_admission,
+    async def test_an_ordinary_dm_turn_holds_the_gate(
+        self, tmp_path, monkeypatch,
     ):
         """Replacement binding for INV-CONC-004 (#573's classifier is gone).
 
-        Asserted directly on the two authorities rather than through observable
-        serialization, deliberately: within ONE pool the entry lock already
-        orders same-key turns, so a "second turn cannot start" assertion passes
-        just as well on the scheduled-only gate and pins nothing. What is new
-        is that an ordinary DM REQUEST — the case #573 excluded — is itself a
-        participant in both module-level authorities, which is what makes the
-        cross-reload (#579) and wipe-drain (#578) guarantees reachable.
+        Asserted directly on the module-level gate rather than through
+        observable serialization, deliberately: within ONE pool the entry lock
+        already orders same-key turns, so a "second turn cannot start"
+        assertion passes just as well on the scheduled-only gate and pins
+        nothing. What is new is that an ordinary DM REQUEST — the case #573
+        excluded — takes the module-level gate, which is what makes the
+        cross-reload (#579) guarantee reachable.
         """
         import session_gate
 
@@ -172,35 +172,14 @@ class TestUnconditionalGate:
             assert key in session_gate._SESSION_GATES, (
                 "an ordinary DM turn did not take the per-key write gate"
             )
-            assert fresh_admission._barrier._active_shared > 0, (
-                "an ordinary DM turn was not admitted, so a wipe would not "
-                "drain it"
-            )
 
             release.set()
             await asyncio.wait_for(turn, timeout=5)
-            # Refcounted: both are released once the turn ends.
+            # Refcounted: released once the turn ends.
             assert key not in session_gate._SESSION_GATES
-            assert fresh_admission._barrier._active_shared == 0
         finally:
             release.set()
             await agent.aclose()
-
-
-@pytest.fixture
-def fresh_admission(monkeypatch):
-    """A per-test TurnAdmission, substituted for the process singleton.
-
-    The turn side (``agent._turn_admission()``) reads the module attribute at
-    call time, so it uses whatever this installs. Needed because the
-    singleton's ``asyncio.Event`` binds to the first loop that awaits it and
-    pytest-asyncio gives each test a fresh loop.
-    """
-    import session_gate
-
-    adm = session_gate.TurnAdmission()
-    monkeypatch.setattr(session_gate, "TURN_ADMISSION", adm)
-    return adm
 
 
 class TestReloadTwoPools:

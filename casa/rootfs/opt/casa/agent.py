@@ -710,15 +710,6 @@ class PluginBindingSnapshot:
     generation: int
 
 
-def _turn_admission():
-    """The process-wide turn-admission barrier (#578), read at call time for
-    the same reason as the fence above: a module-level ``from … import`` binds
-    the instance once, and a test that needs the wipe and the turn to share a
-    barrier must be able to substitute one."""
-    import session_gate
-    return session_gate.TURN_ADMISSION
-
-
 def _current_origin_clearance(channel: str) -> str:
     """Read-clearance for the CURRENT turn, keyed off the unspoofable origin
     marker in ``origin_var`` (Release A Layer 2) rather than the channel string,
@@ -2522,20 +2513,9 @@ class Agent:
             # scheduled turns only, leaving ordinary turns to the pool entry
             # lock; that lock serializes within ONE pool, and a reload builds a
             # second pool over the same key, so two clients could resume one
-            # session (#579).
-            #
-            # #578: admission is held across the same window, OUTSIDE the gate
-            # (the order is TurnAdmission -> session_write_gate -> pool entry
-            # lock, and inverting it deadlocks). It is what lets
-            # a retirement drain an in-flight turn on ANY path, including one
-            # the client pool never owned and one whose key has no registry
-            # entry yet to enumerate. Deliberately NOT the whole of _process:
-            # both resume decisions live inside this block (the pooled one
-            # under the entry lock, the bypass one at the registry read above),
-            # so a turn that waits out a wipe re-reads an emptied registry and
-            # starts fresh.
-            async with _turn_admission().admitted(), \
-                    session_write_gate(channel_key), \
+            # session (#579). The order is session_write_gate -> pool entry
+            # lock; inverting it deadlocks.
+            async with session_write_gate(channel_key), \
                     self._armed_prompt_surface(msg.channel):
                 # #1003: a Casa-dispatched setup turn re-checks its obligation
                 # HERE — holding the per-session gate, before any client or

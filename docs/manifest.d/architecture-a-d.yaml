@@ -102,8 +102,6 @@
     - casa/rootfs/opt/casa/sdk_client_pool.py::SdkClientPool.turn
     - casa/rootfs/opt/casa/reload.py::_RWLock
     - casa/rootfs/opt/casa/session_gate.py::session_write_gate
-    - casa/rootfs/opt/casa/session_gate.py::TurnAdmission
-    - casa/rootfs/opt/casa/rw_barrier.py::RwBarrier
   tests:
     - tests/test_bus.py
     - tests/test_shutdown_pool_and_refusal.py
@@ -112,14 +110,13 @@
     - tests/test_session_gate.py
     - tests/test_session_key_authority.py
   related: [architecture/turn-loop.md, architecture/sdk-client-pool.md, architecture/configuration.md, architecture/engagements.md, architecture/jobs-and-delivery.md]
-  defines_invariants: [INV-CONC-001, INV-CONC-002, INV-CONC-003, INV-CONC-004, INV-CONC-005, INV-CONC-006]
+  defines_invariants: [INV-CONC-001, INV-CONC-002, INV-CONC-003, INV-CONC-004, INV-CONC-006]
   invariant_tests:
     INV-CONC-001: [tests/test_bus.py::test_handlers_dispatch_concurrently, tests/test_bus.py::test_priority_ordering]
     INV-CONC-002: [tests/test_bus.py::test_reregister_preserves_queue_and_rebinds_handler, tests/test_bus.py::test_start_agent_loop_spawns_tracked_consumer]
     INV-CONC-003: [tests/test_sdk_client_pool_pool.py::test_invalidation_serializes_same_key_until_active_turn_releases, tests/test_sdk_client_pool_pool.py::test_concurrent_first_turns_single_connect]
-    INV-CONC-004: [tests/test_scheduled_ask_user.py::TestSessionWriteGate::test_two_scheduled_turns_never_run_concurrently, tests/test_session_key_authority.py::TestUnconditionalGate::test_an_ordinary_dm_turn_holds_the_gate_and_admission, tests/test_session_key_authority.py::TestReloadTwoPools::test_a_second_pool_cannot_resume_a_live_session]
+    INV-CONC-004: [tests/test_scheduled_ask_user.py::TestSessionWriteGate::test_two_scheduled_turns_never_run_concurrently, tests/test_session_key_authority.py::TestUnconditionalGate::test_an_ordinary_dm_turn_holds_the_gate, tests/test_session_key_authority.py::TestReloadTwoPools::test_a_second_pool_cannot_resume_a_live_session]
     INV-CONC-006: [tests/test_shutdown_pool_and_refusal.py::test_the_completion_record_counts_the_turns_the_stop_leaves_running, tests/test_shutdown_pool_and_refusal.py::test_the_completion_record_says_zero_when_no_turn_was_dispatched]
-    INV-CONC-005: [tests/test_session_gate.py::TestTurnAdmission::test_exclusive_waits_for_an_admitted_turn, tests/test_session_gate.py::TestTurnAdmission::test_admission_is_refused_while_exclusive_is_held, tests/test_session_gate.py::TestTurnAdmission::test_drain_timeout_raises_and_releases, tests/test_session_gate.py::TestTurnAdmission::test_cancel_during_drain_releases_exclusive]
 
 - doc: architecture/config-reconciliation.md
   summary: How the config tree is reconciled against image defaults — ownership rules, the per-entry merge, `${VAR}` placeholder semantics, and the declaration carried across a rewrite.

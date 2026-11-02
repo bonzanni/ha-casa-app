@@ -352,11 +352,9 @@ async def test_reask_cannot_downgrade_below_discarded_evidence(monkeypatch):
         "This must be kept confidential.\nprivate",
         "public",
     ])
-    with tier_classifier.classify_stats() as stats:
-        assert await tier_classifier.classify_tier(
-            "salary is 5000 EUR") == DEFAULT_TIER
+    assert await tier_classifier.classify_tier(
+        "salary is 5000 EUR") == DEFAULT_TIER
     assert state["calls"] == 2
-    assert stats.defaulted == 1
 
 
 async def test_reask_at_or_above_evidence_floor_is_accepted(monkeypatch):
@@ -383,34 +381,6 @@ async def test_prose_tier_words_create_no_evidence_floor(monkeypatch):
     ])
     assert await tier_classifier.classify_tier("bin day is Tuesday") == "public"
     assert state["calls"] == 2
-
-
-async def test_classify_stats_counts_failure_defaults_only(monkeypatch):
-    """#508: a counting scope sees N-defaulted-of-M across a batch. A genuine
-    ``private`` classification is NOT a default — only failure paths count."""
-    with tier_classifier.classify_stats() as stats:
-        _install_fake_sdk(monkeypatch, reply="private")
-        assert await tier_classifier.classify_tier("salary is 5000") == "private"
-        _install_fake_sdk(monkeypatch, reply="chatty non-answer")
-        assert await tier_classifier.classify_tier("ambiguous") == DEFAULT_TIER
-    assert stats.total == 2
-    assert stats.defaulted == 1
-
-
-async def test_classify_stats_counts_exception_defaults(monkeypatch):
-    monkeypatch.setattr(tier_classifier, "_RETRY_BACKOFF_S", 0)
-    _install_fake_sdk(monkeypatch, raise_exc=RuntimeError("sdk boom"))
-    with tier_classifier.classify_stats() as stats:
-        assert await tier_classifier.classify_tier("anything") == DEFAULT_TIER
-    assert stats.total == 1
-    assert stats.defaulted == 1
-
-
-async def test_classify_without_a_stats_scope_still_works(monkeypatch):
-    """No scope open (e.g. a direct caller outside the save path): counting
-    is simply inert."""
-    _install_fake_sdk(monkeypatch, reply="family")
-    assert await tier_classifier.classify_tier("dinner at seven") == "family"
 
 
 async def test_unparseable_warn_reports_absent_label(monkeypatch, caplog):
@@ -500,14 +470,11 @@ async def test_failure_arms_return_a_fallback_and_verdicts_stay_plain(monkeypatc
     assert not isinstance(real, tier_classifier.FallbackTier)
 
 
-async def test_the_conflict_arm_is_a_plain_verdict_and_still_counts_as_defaulted(monkeypatch):
+async def test_the_conflict_arm_is_a_plain_verdict(monkeypatch):
     """A re-ask that comes back less sensitive than the first reply's own
-    ``private`` evidence is a real verdict (it sets a floor), not a fallback —
-    and it still counts as defaulted."""
+    ``private`` evidence is a real verdict (it sets a floor), not a fallback."""
     _install_sequenced_sdk(monkeypatch, replies=[
         "This must stay confidential.\nprivate", "public"])
-    with tier_classifier.classify_stats() as stats:
-        tier = await tier_classifier.classify_tier("the garage code")
+    tier = await tier_classifier.classify_tier("the garage code")
     assert tier == "private"
     assert not isinstance(tier, tier_classifier.FallbackTier)
-    assert (stats.total, stats.defaulted) == (1, 1)

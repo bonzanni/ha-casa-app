@@ -31,7 +31,7 @@ stops being resumable are environment-tunable (`FRESHNESS_VOICE_MINUTES`, defaul
 the window starts a new session.
 
 **A reset is announced before it runs.** `/new` (`session_registry.reset_channel`) holds
-turn admission (shared) and the key's write gate, places an in-memory *retirement claim* on
+the key's write gate, places an in-memory *retirement claim* on
 the key, closes the pool's warm client for it, and drops the pointer by the session id it
 snapshotted: while the claim is live, both resume-decision sites (the pool's and the
 per-turn bypass) steer a racing turn to a fresh session instead of the dying one, and the

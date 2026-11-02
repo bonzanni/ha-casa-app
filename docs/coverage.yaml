@@ -277,8 +277,6 @@
   doc: architecture/personality.md
 - item: casa/rootfs/opt/casa/runtime.py
   doc: architecture/overview.md
-- item: casa/rootfs/opt/casa/rw_barrier.py
-  doc: architecture/concurrency-model.md
 - item: casa/rootfs/opt/casa/sdk_client_pool.py
   doc: architecture/sdk-client-pool.md
 - item: casa/rootfs/opt/casa/sdk_logging.py

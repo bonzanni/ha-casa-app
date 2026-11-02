@@ -278,8 +278,6 @@ class SessionRegistry:
                 "user_provenance": provenance_mapping(user_provenance),
                 "scheduled": bool(scheduled) or was_scheduled,
             })
-            # A fresh registration supersedes any in-flight save claim.
-            entry.pop("consolidated_at", None)
             # #650: the advisory resume-fault fields are deliberately NOT
             # touched here. A resumed turn can publish a SUCCESSOR sid (the
             # CLI may assign a new session id on --resume), so "sid changed"
@@ -549,8 +547,7 @@ class SessionRegistry:
         # Per-entry copy, not a shallow dict() of the outer map: the write runs
         # in a thread (the lock is released while we await it), so a concurrent
         # mutator that acquires the lock could otherwise mutate an inner entry
-        # dict mid-serialize. The save model relies on sdk_session_id/consolidated_at
-        # persisting atomically (crash-safety, spec §4.2 / C3). Entries are flat
+        # dict mid-serialize. Entries are flat
         # str→str|None maps, so a one-level copy is sufficient and cheap.
         data = {k: dict(v) for k, v in self._data.items()}
         await asyncio.to_thread(self._write, data)
@@ -597,16 +594,13 @@ async def reset_channel(channel_key: str, registry: SessionRegistry) -> None:
     turn starts fresh. Nothing is saved: Casa's live capture already holds
     what the conversation said.
 
-    #578: a reset holds turn admission (shared) and the per-key write gate for
-    its whole body, in that order — the mandated global order is
-    ``TurnAdmission -> session_write_gate -> pool entry lock``, and this
+    A reset holds the per-key write gate for its whole body — the mandated
+    global order is ``session_write_gate -> pool entry lock``, and this
     function goes on to enter a pool entry lock through ``notify_reset``.
     """
     from session_gate import session_write_gate
-    import agent as _agent
 
-    async with _agent._turn_admission().admitted(), \
-            session_write_gate(channel_key):
+    async with session_write_gate(channel_key):
         await _reset_locked(channel_key, registry)
     # The session ended: the memory writer files what is pending at its next
     # pass. A signal only — the reset never waits for the writer.

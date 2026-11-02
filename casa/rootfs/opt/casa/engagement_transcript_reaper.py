@@ -45,9 +45,6 @@ imported per pass and never at module scope: if an SDK version no longer
 provides them, the pass logs one WARNING and deletes no transcript, while
 Casa boots and the job keeps its schedule (an import at module load would crash boot —
 ``casa_core.main`` imports this module before scheduling it).
-
-Does not take ``TURN_ADMISSION``: it deletes local files and writes no
-memory.
 """
 
 from __future__ import annotations

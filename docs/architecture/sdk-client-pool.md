@@ -89,8 +89,8 @@ finishing old turn could otherwise re-register the session the reset just remove
 
 What it does not cover: it joins *invalidation* generations only, and only for clients this
 pool owns — a turn on a path the pool never saw has no entry lock to join. Ordering against
-turns in general is not this hook's job: a reset takes the per-key write gate and turn
-admission (shared) for its whole body (INV-CONC-004), which is what orders it against
+turns in general is not this hook's job: a reset takes the per-key write gate for its
+whole body (INV-CONC-004), which is what orders it against
 turns dispatched before or after it on the same key, on any path.
 
 **INV-TURN-010**: The pool's drain timeout bounds every generation, invalidated ones included: an entry whose lock an invalidation closer still cannot acquire when the drain window ends is force-closed — its transport disconnected — and the closer is neither cancelled nor waited on further. The bound is on the lock wait, not on transport I/O.
