@@ -21,7 +21,9 @@ import plugin_continuations as pc
 import tools
 from bus import BusMessage, MessageType
 from test_agent_process import FakeClient, _make_agent
-from test_memory_capture import events, mem, summaries  # noqa: F401 — fixture
+from memory import capture
+from test_memory_capture import events as _stored_events
+from test_memory_capture import mem, summaries  # noqa: F401 — fixture
 from test_no_retain_specialist import _cfg, _notice
 from test_plugin_continuations import _binding
 
@@ -39,6 +41,15 @@ def roles(monkeypatch):
          "assistant": _cfg("assistant", "resident", 5000)}
     monkeypatch.setattr(tools, "_agent_role_map", m, raising=False)
     return m
+
+
+def events(store) -> list[dict]:
+    """The captured events. A capture that met a busy store (a loaded machine
+    holds the write lock past capture's 50 ms bound) waits durably in the
+    spool; it is drained first, since every question here is what was
+    captured, not where it waited — and a canary waiting in the spool counts."""
+    capture.drain_waiting(store)
+    return _stored_events(store)
 
 
 def _stored_text(store) -> list[str]:
