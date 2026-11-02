@@ -1115,7 +1115,8 @@ async def main():
             await scr.inject(bs, {"t": "tap", "x": int(f["x"] + f["w"] - 10), "y": int(f["y"] + 8)})
             await asyncio.sleep(0.3)
             await prepare(label, "", None)
-            await scr.inject(bs, {"t": "text", "s": typed, "to": key})
+            for piece in ([typed] if isinstance(typed, str) else typed):   # one message each
+                await scr.inject(bs, {"t": "text", "s": piece, "to": key})
             await asyncio.sleep(0.3)
             if caret is not None:
                 await prepare(label, await value(label), caret)
@@ -1124,7 +1125,7 @@ async def main():
                 await asyncio.sleep(0.2)
             return await value(label)
         async def reference(label, typed, keys, caret=None):
-            await prepare(label, typed, caret)
+            await prepare(label, "".join(typed), caret)
             for k in keys:
                 await page.keyboard.press(CDP[k])
             await asyncio.sleep(0.2)
@@ -1140,11 +1141,21 @@ async def main():
             "emoji_accent": ("T", "x\U0001F600́", ["Backspace"], None),
             "decomposed": ("T", "xé", ["Backspace"], None),
             "password": ("P", "pw\U0001F600́", ["Backspace"], None),
+            # accents typed between plain letters, in one message and in several
+            "italian": ("T", "perché è già così", [], None),
+            "pieces": ("P", ["Pässw", "ö", "rd!9", "é"], [], None),
         }
+        await page.evaluate("() => { window.__keyups = [];"
+                            " document.addEventListener('keyup', e => __keyups.push(e.key), true); }",
+                            isolated_context=False)
         for name, (label, typed, keys, caret) in cases.items():
             mine = await ours(label, typed, keys, caret)
             ref = await reference("R" if label == "T" else "RP", typed, keys, caret)
             out[name] = [mine, ref]
+        # the same text again and again: xdotool's spare-keycode binding lost or changed a
+        # character in 78 of 360 texts on 1 busy CPU, and on a CI runner (ö and the emoji)
+        out["again"] = [await ours("T", "perché è già così 😀", [], None) for _ in range(8)]
+        out["keyups"] = await page.evaluate("() => __keyups", isolated_context=False)
     finally:
         print("PLAIN", json.dumps(out), flush=True)
         await mgr.shutdown()
@@ -1160,15 +1171,23 @@ PLAIN_PAGE = (b"<title>Plain</title><input aria-label='T' style='width:300px'><b
 def test_plain_keys_do_in_chrome_what_the_key_does(tmp_path):
     """Live view K, plain keyboard: text, Backspace, Ctrl+Backspace (delete word), Delete and the
     strip's Left / Right,
-    sent the live view's way (a click, then keys bound to the field, typed by xdotool), leave the
+    sent the live view's way (a click, then keys bound to the field: xdotool for plain ASCII and
+    the keys, Chrome's own key events for text with a character the keymap lacks), leave the
     field exactly as the same keys through Chrome's own input do — a family emoji, an emoji with
-    a combining accent, a decomposed accent, a password field: whatever Chrome does."""
+    a combining accent, a decomposed accent, accents between plain letters in one message and in
+    several, a password field: whatever Chrome does. Accented text typed again and again keeps
+    every character, and the page sees a key event for an accent too."""
     out = _run_as_controller(tmp_path, PLAIN, {"/plain": PLAIN_PAGE}, "PLAIN")
     print("plain:", json.dumps(out, ensure_ascii=False))
     assert set(out) == {"text", "backspace", "word", "delete", "left", "right", "family",
-                        "emoji_accent", "decomposed", "password"}, out
+                        "emoji_accent", "decomposed", "password", "italian", "pieces", "again",
+                        "keyups"}, out
+    again, keyups = out.pop("again"), out.pop("keyups")
+    assert {"é", "è", "à", "ì", "ö", "\U0001F600"} <= set(keyups), keyups   # a key event for each
     for case, (mine, ref) in out.items():
         assert mine == ref, (case, out)
+    assert again == ["perché è già così \U0001F600"] * 8, again
+    assert out["italian"][0] == "perché è già così" and out["pieces"][0] == "Pässwörd!9é", out
     # positive controls: the keys did something
     assert out["text"][0] == "héllo wörld \U0001F600", out
     assert out["backspace"][0] == "ab" and out["word"][0] == "one " and out["delete"][0] == "ac", out

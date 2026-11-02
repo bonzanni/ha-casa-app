@@ -76,6 +76,12 @@ KEYS = {"Enter": "Return", "Tab": "Tab", "ShiftTab": "shift+Tab", "Backspace": "
         "SelectAll": "ctrl+a"}
 
 
+def x_typable(s: str) -> bool:
+    """Whether xdotool can type ``s`` with the display's own keymap (US: printable ASCII), never
+    binding a spare keycode for a character the keymap lacks."""
+    return all(" " <= ch <= "~" for ch in s)
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -390,7 +396,8 @@ class ChromeScreen:
             entry = self._docs.get((key["fi"], key["doc"]))
             if entry is None:
                 return
-            await entry[0].page.bring_to_front()
+            page = entry[0].page
+            await page.bring_to_front()
         if t == "scroll":
             n = op["n"]
             await self.xdo("mousemove", x, y, "click", "--repeat", abs(n), "--delay", 8,
@@ -402,12 +409,39 @@ class ChromeScreen:
         elif t == "up":
             await self.xdo("mousemove", x, y, "mouseup", 1)
         elif t == "text":
-            await self.xdo("type", "--delay", 12, "--", op["s"])
+            if key is not None and not x_typable(op["s"]):
+                # A character the X keymap lacks: xdotool would bind it to a spare keycode
+                # for the one key press and unbind it, and a busy Chrome reads that mapping
+                # after it changed — the character is lost or comes out as another one.
+                # Chrome's own input types the whole text instead, in order.
+                await self._chrome_type(bs, page, op["s"])
+            else:
+                await self.xdo("type", "--delay", 12, "--", op["s"])
         elif t == "key":
             await self.xdo("key", KEYS[op["k"]])
         elif t == "reveal":
             if page is not None:
                 await reveal(page)
+
+    async def _chrome_type(self, bs, page, text: str) -> None:
+        """``text`` through Chrome's own input on ``page``, each character awaited in order:
+        ASCII as Patchright's US-keyboard keys, any other character (one code point at a time,
+        so an emoji's parts stay whole) as a key down carrying it and a key up — a page still
+        sees a key event for an accent, as it did from xdotool."""
+        run = ""
+        for ch in text:
+            if ch < "\x80":
+                run += ch
+                continue
+            if run:
+                await page.keyboard.type(run)
+                run = ""
+            cdp, _ = await self._window(bs, page)
+            await cdp.send("Input.dispatchKeyEvent", {"type": "keyDown", "key": ch, "text": ch,
+                                                      "unmodifiedText": ch})
+            await cdp.send("Input.dispatchKeyEvent", {"type": "keyUp", "key": ch})
+        if run:
+            await page.keyboard.type(run)
 
     async def selection(self) -> str:
         out = await self._run(self.xclip, "-o", "-selection", "primary")

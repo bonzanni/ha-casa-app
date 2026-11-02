@@ -1,6 +1,12 @@
 # Changelog
 
-## [0.1.0] - Unreleased
+## [0.1.1] - 2026-11-02
+
+### Fixed
+
+- Typing in the live view no longer loses or changes accented letters and emoji when the machine is busy: text with such a character goes through Chrome's own input, so `perché`, `wörd` or a password with an accent arrives exactly as typed. Plain letters, digits and the keys (Backspace, the arrows) are typed as before. The address bar still types the old way, so an accent there can still be lost on a busy machine.
+
+## [0.1.0] - 2026-11-02
 
 ### Added
 
