@@ -9,7 +9,9 @@ last_reviewed: 2026-11-02
 ## Scope
 
 Which stored facts a given reader gets back: the read-clearance model — per channel, per
-Telegram sender via the stamped origin, failing closed — the clearance an engagement
+Telegram sender via the stamped origin, failing closed — the ledgers Casa maintains, one per
+clearance it serves, each written only from what that clearance can read, the check every
+read path makes on each object it returns, the clearance an engagement
 inherits from its creating turn and the monotonic clamp steering applies to it, and the
 procedural-epoch scoping on the executor archive. How a recalled fact is rendered, what a
 caller is told when the store cannot answer, and what a caller may claim from what comes
@@ -29,6 +31,31 @@ whose id matches the configured operator chat id, public for anyone else the acc
 mode lets in — and origin-aware resolution honors that stamp, failing closed to public
 when a telegram-marked turn carries a missing or malformed one. Both ways into a Telegram
 turn stamp it: a message and a button tap.
+
+**Each served clearance has a ledger of its own, written only from what it can read.** Memory
+text served at a tier is generated from inputs readable at that tier; it is never a higher
+ledger filtered on the way out, because a filter over entries cannot recover a restriction
+the entry's writer never saw. So Casa maintains one ledger per clearance it serves:
+`private` always, and `friends` while a role that reads at `friends` has a served-view
+budget above 0 — the butler, since voice reads at `friends`. Which clearances have such a
+reader is worked out once at boot from each role's declared ingresses and budget, so a
+budget a reload changes counts from the next start. A session reads the ledger of the
+highest maintained clearance at or below its own: `family` reads `friends`, `public` reads
+none. The writer files each ledger as its own job, `private` first: that job classifies
+each event, and a lower ledger is given only events classified at or below it, so its cost
+scales with lower-tier content alone ([`architecture/memory-writer.md`](memory-writer.md)).
+Ellen's own replies carry the clearance of the session that wrote them as their floor
+([`architecture/memory-labelling.md`](memory-labelling.md)), so what reaches the butler's
+ledger is what people said at `friends` and below, never Ellen's private replies.
+
+**Every read path checks each object it returns.** The served view and `open_memory` read
+the reader's ledger and nothing else; an object there is dated only from source events that
+ledger can read. The correction note reads that ledger and re-checks each correction's own
+tier. Search hits, each hit's window neighbours and date browse check every event's tier
+before anything is paged or counted, so a count never reveals an unreadable event. The
+executor archive checks each summary's tier. An id the reader's ledger does not hold gets
+the same answer as an id that does not exist, whether it names an object of another ledger
+or nothing at all.
 
 **An engagement reads at the clearance of the turn that created it.** This needs stating
 because the mechanism is not the obvious one: an engagement's own tool calls arrive over the
@@ -99,6 +126,29 @@ declared origin. Delegated recall honours a route its caller passes, but falls b
 channel-keyed clearance for every caller that passes none — check the call site before
 assuming a delegated read is origin-filtered.
 
+**INV-MEM-029**: A writer job for ledger L is given only what is readable at L — the events pending in L, which below `private` are only events classified at or below it, a window of earlier events readable at L, and L's own objects, all built by `assemble_input`, the only builder of a job's input — and its patches change objects of L only.
+
+Enforced by the pending view's eligibility rule, by input assembly reading the events, the
+window and the objects through L in one read transaction, and by the patch loader refusing
+an id that is no object of L. The `private` job runs before any lower one, so an event
+reaches a lower ledger only once classified. Pinned by a `private` canary in an event, in
+the `private` ledger and in its history, and a provisional event, none of which may appear
+in any `friends` prompt, object or revision, with every prompt the model port is given
+checked against the input that function built for the running job.
+
+What it does not cover: the source ids a model writes into a patch are not checked against
+its input — an id naming an event the ledger cannot read dates nothing (INV-MEM-034); and a
+tier raised after a lower ledger filed the event, since nothing reclassifies an event.
+
+**INV-MEM-034**: Every memory read path checks each object it returns against the reader's clearance — the served view and `open_memory` by ledger, the correction note by ledger and each correction's own tier, search hits, their window neighbours and date browse by event tier before paging and counts, the executor archive by summary tier — and an id the reader's ledger does not hold gets the same answer as an id that does not exist.
+
+Enforced in each read function rather than by its callers, so a tool, the engager query, a
+delegated run and a resident turn all inherit it. Pinned by a matrix of every path against
+every reader clearance over one store holding a canary at every tier.
+
+What it does not cover: the meter, which reports counts per ledger to the operator, and the
+whole-store export, which is the operator's own copy.
+
 **INV-MEM-008**: An engagement's reads resolve clearance from the origin markers its own record carries, and a steering turn from a lower-clearance sender clamps those markers down permanently.
 
 Enforced in two places that have to agree: where the markers are resolved for an
@@ -166,6 +216,9 @@ Recall failures — an unavailable backend, a malformed envelope, a tripped brea
 
 ## Extension points
 
+**Another maintained ledger** (a reader served at `family`, say) joins `memory.ledgers`'
+on-demand clearances; the writer, the view, the note and the tools need no change.
+
 **A new channel** needs an explicit clearance entry, or it reads at the least-sensitive tier
 by default. Write access is a separate, deliberate addition
 ([`architecture/memory-capture.md`](memory-capture.md)), and the retention list is a third
@@ -187,6 +240,8 @@ time. Nothing after the launch reads it again ([`engagements.md`](engagements.md
 <!-- generated by scripts/verify_docs.py --write-nav; do not hand-edit -->
 
 **Source**
+- `casa/rootfs/opt/casa/memory/ledgers.py`
+- `casa/rootfs/opt/casa/sensitivity.py::clearances_served`
 - `casa/rootfs/opt/casa/sensitivity.py::clearance_for_channel`
 - `casa/rootfs/opt/casa/sensitivity.py::clearance_for_origin`
 - `casa/rootfs/opt/casa/executor_epoch.py::compute_procedural_epoch`
@@ -210,9 +265,13 @@ time. Nothing after the launch reads it again ([`engagements.md`](engagements.md
 - `tests/test_sensitivity.py::test_readable_tiers_is_clearance_and_below`
 - `tests/test_sensitivity.py::test_clearance_docstring_states_the_fail_closed_direction`
 - `tests/test_executor_epoch.py`
+- `tests/test_butler_friends_view.py`
 
 **Related**
 - [`architecture/memory.md`](../architecture/memory.md)
 - [`architecture/memory-lifecycle.md`](../architecture/memory-lifecycle.md)
 - [`architecture/engagements.md`](../architecture/engagements.md)
+- [`architecture/memory-writer.md`](../architecture/memory-writer.md)
+- [`architecture/memory-serving.md`](../architecture/memory-serving.md)
+- [`architecture/memory-tools.md`](../architecture/memory-tools.md)
 <!-- END SOURCEMAP -->

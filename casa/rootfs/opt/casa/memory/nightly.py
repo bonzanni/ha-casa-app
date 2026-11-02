@@ -17,6 +17,7 @@ import asyncio
 import logging
 
 from memory import meter, pending, view, writer
+from memory.ledgers import maintained
 from memory.store import MemoryStore
 
 logger = logging.getLogger(__name__)
@@ -33,7 +34,7 @@ def enqueue_nightly(store: MemoryStore, *,
         role_budgets = meter.role_budgets()
     out: dict[str, object] = {"condense": [], "regroup": [], "retried": 0}
     with store.transaction(write=True) as conn:
-        for ledger in pending.MAINTAINED_LEDGERS:
+        for ledger in maintained():
             bodies = [r[0] for r in conn.execute(
                 "SELECT body FROM objects WHERE ledger = ? AND kind = 'entry' "
                 "AND status = 'current'", (ledger,))]

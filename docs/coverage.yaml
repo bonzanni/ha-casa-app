@@ -179,6 +179,8 @@
   doc: architecture/memory-wipe.md
 - item: casa/rootfs/opt/casa/memory/export.py
   doc: architecture/memory-export-restore.md
+- item: casa/rootfs/opt/casa/memory/ledgers.py
+  doc: architecture/memory-scoping.md
 - item: casa/rootfs/opt/casa/memory/maintenance.py
   doc: architecture/memory-wipe.md
 - item: casa/rootfs/opt/casa/memory/meter.py

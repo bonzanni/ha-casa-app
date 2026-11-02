@@ -4581,6 +4581,15 @@ async def main() -> None:
     memory_meter.configure({
         role: getattr(getattr(cfg, "memory", None), "token_budget", 0)
         for role, cfg in {**role_configs, **specialist_configs}.items()})
+    # One ledger per clearance a role is served at (M6): ``private``
+    # always, a lower one while a reader at it has a budget (the butler on
+    # voice reads ``friends``).
+    from memory import ledgers as memory_ledgers
+    from sensitivity import clearances_served
+    logger.info("memory ledgers maintained: %s", ", ".join(
+        memory_ledgers.configure_roles(
+            [*role_configs.values(), *specialist_configs.values()],
+            clearances_served)))
     from agent_registry import AgentRegistry
     agent_registry = AgentRegistry.build(
         residents=role_configs, specialists=specialist_configs,

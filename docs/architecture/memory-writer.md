@@ -24,8 +24,10 @@ for that ledger (its tier at or below the ledger's, and classified unless the le
 `private`) and has no terminal disposition there committed after its latest correction mark.
 `patched` and `no_change` are terminal; `deferred` is not. The predicate is the `pending`
 view in `memory.db`, and every consumer reads it — writer scheduling and input assembly,
-correction marking, the meter. No other record of whether an event was handled exists. Only
-the `private` ledger is maintained for now.
+correction marking, the meter. No other record of whether an event was handled exists. The
+writer files each maintained ledger — `private`, and `friends` while the butler is served a
+view — as its own job, from what that ledger can read (INV-MEM-029,
+[`architecture/memory-scoping.md`](memory-scoping.md)).
 
 **Two counters order everything, and neither is stored.** Each writer commit takes the next
 `commit_no`: one more than the highest number any disposition, revision or correction mark
@@ -36,8 +38,8 @@ its transaction. A store that holds the rows holds its counters.
 **One worker, one job at a time.** Every change to a ledger is a job — `ordinary` and
 `correction` file pending events, `condense` shortens entries over 1 024 tokens, `regroup`
 arranges entries into groups and topics — and only the writer task in the Casa process runs
-them, a correction job first. It never runs on a turn's path: it is a background task, and
-its SQLite work runs in threads. Cadence: once a ledger's pending events that no run of this
+them, a correction job first, and `private` before any lower ledger. It never runs on a
+turn's path: it is a background task, and its SQLite work runs in threads. Cadence: once a ledger's pending events that no run of this
 process was given have been quiet for 10 minutes, or the oldest of them has waited 60 minutes;
 at the end of a session (an explicit reset); and right after a correction mark. "Given" is
 measured by `seq`, which the store assigns inside its single write transaction, so an event a
@@ -103,9 +105,9 @@ the mark carries that same number at most, and so no longer counts. A pinning sc
 package's code and a fresh store's tables, views and columns for any other such state.
 
 What it does not cover: the meaning of an outcome. A model that answers `no_change` for an
-event it should have filed files it; that is the model's judgement, not this rule's. Lower
-ledgers are not maintained yet, so an event classified below `private` is pending in them
-and nothing files it there.
+event it should have filed files it; that is the model's judgement, not this rule's. The
+view covers every ledger of the ladder, maintained or not: an event classified below
+`private` is pending in a ledger Casa does not maintain, and nothing files it there.
 
 **INV-MEM-028**: Only the writer's commit marks a job `committed`, in the same transaction that writes its patches, revisions, classification verdicts and a disposition for every event of the run's input, and only after checking that the ledger's revisions and every input event's correction mark are those the run's one read transaction saw and that the pending view still shows every input event pending; a stale base, a new mark or an input event filed meanwhile writes nothing and requeues the job, a run whose every input event was filed meanwhile writes nothing and ends committed, every run assembles its input afresh, and nothing but that commit writes `objects`, `revisions` or `dispositions`.
 

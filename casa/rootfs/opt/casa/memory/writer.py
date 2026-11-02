@@ -7,6 +7,16 @@ groups and topics. Only the worker runs any of them, one at a time, a
 ``correction`` job first. :func:`enqueue` adds a job unless one of the same
 kind and ledger is already queued.
 
+**Ledgers (M6).** A job belongs to one maintained ledger *L*
+(:mod:`memory.ledgers`). Its model call is given only what is readable at
+*L* — the events pending in *L*, a window of earlier events readable at *L*,
+and *L*'s own objects — all built by :func:`assemble_input`, the only
+builder of a job's input; its patches change objects of *L* only
+(:mod:`memory.patches`). A lower ledger's pending events are only those the
+``private`` job has classified at or below it, and the ``private`` job runs
+first (:meth:`Writer.next_job`), so a batch reaches each lower ledger after
+it is classified.
+
 **Cadence.** Each tick, a ledger with pending events this process's runs have
 not yet been given (a ``seq`` above the highest any filing run's input held)
 gets an ``ordinary`` job once those events have been quiet for
@@ -93,6 +103,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from memory import capture, classify, meter, patches, pending, view
+from memory.ledgers import maintained as _maintained
 from memory.model_port import TIMEOUT_S, ModelPort, ModelReply
 from memory.store import MemoryStore
 
@@ -152,6 +163,10 @@ _hooks: dict[str, Callable[[], None]] = {
     "after_model": lambda: None,
     "in_commit": lambda: None,
 }
+
+#: A job's ledger's rank on the clearance ladder, as SQL.
+_LEDGER_RANK = ("(CASE ledger WHEN 'public' THEN 0 WHEN 'friends' THEN 1 "
+                "WHEN 'family' THEN 2 ELSE 3 END)")
 
 _SET_COMMITTED = ("UPDATE jobs SET state = 'committed', last_error = NULL "
                   "WHERE job_id = ? AND state = 'running' AND boot_id = ?")
@@ -263,7 +278,8 @@ def assemble_input(store: MemoryStore, job_id: str, ledger: str,
     transaction on one connection and closed before the model is called:
     the events pending in *ledger* now, their correction marks, a short
     preceding window readable at *ledger*, the ledger's objects and the base
-    revisions."""
+    revisions. Nothing outside *ledger*'s clearance enters it (M6,
+    INV-MEM-029)."""
     inp = Input(job_id=job_id, ledger=ledger, kind=kind)
     with store.transaction() as conn:
         if kind in _FILING:
@@ -591,14 +607,16 @@ class Writer:
                  notify: Callable[[str], Awaitable[None]] | None = None,
                  clock: Callable[[], float] = time.time,
                  boot_id: str = BOOT_ID,
-                 ledgers: tuple[str, ...] = pending.MAINTAINED_LEDGERS) -> None:
+                 ledgers: tuple[str, ...] | None = None) -> None:
         self.store = store
         self.port = port
         self.classifier = classifier or classify.default_classifier
         self.notify = notify
         self.clock = clock
         self.boot_id = boot_id
-        self.ledgers = ledgers
+        #: The ledgers this worker files; ``None``: the maintained ledgers
+        #: (:mod:`memory.ledgers`), read at each pass.
+        self._ledgers = ledgers
         #: Per ledger, the highest ``seq`` a filing run of this process was
         #: given: pending events above it are ones the writer has not been
         #: shown.
@@ -616,6 +634,10 @@ class Writer:
         self._session_end = False
         self._loop: asyncio.AbstractEventLoop | None = None
         self._wakeup: asyncio.Event | None = None
+
+    @property
+    def ledgers(self) -> tuple[str, ...]:
+        return self._ledgers if self._ledgers is not None else _maintained()
 
     # -- signals (thread-safe) --
 
@@ -659,12 +681,16 @@ class Writer:
 
     def next_job(self) -> dict | None:
         """The next queued job whose backoff has passed: corrections first,
-        then in queue order."""
+        then by ledger, ``private`` first and each lower ledger after it,
+        then in queue order. A lower ledger is given only events the
+        ``private`` job has classified, so filing ``private`` first lets a
+        batch reach every ledger it is readable in at the next jobs."""
         now = self.clock()
         with self.store.transaction() as conn:
             rows = _rows(conn, "SELECT job_id, ledger, kind FROM jobs "
                                "WHERE state = 'queued' ORDER BY "
-                               "(kind = 'correction') DESC, rowid")
+                               "(kind = 'correction') DESC, "
+                               f"{_LEDGER_RANK} DESC, rowid")
         for row in rows:
             if self._not_before.get(row["job_id"], 0.0) <= now:
                 return row

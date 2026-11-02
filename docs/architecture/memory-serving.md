@@ -23,9 +23,12 @@ which also owns the executor archive.
 **A session reads one ledger, chosen by its clearance.** A role whose `memory.token_budget`
 is above 0 is a *memory role*; its budget is the size of the view it is served, in tokens
 (the assistant's is 50 000, the butler's 10 000; 0 serves nothing). A session reads the
-ledger of the highest maintained clearance at or below its own. Only `private` is
-maintained, so a session at a lower clearance — voice, a stranger on Telegram — is served no
-view and no note. A desk turn is the operator's own and reads at `private`.
+ledger of the highest maintained clearance at or below its own: `private` always, `friends`
+while a reader at `friends` is served a view — the butler, on voice — so a voice session is
+served the `friends` ledger and its note, and a stranger on Telegram (`public`) is served no
+view and no note. Which ledgers are maintained is
+[`architecture/memory-scoping.md`](memory-scoping.md)'s. A desk turn is the operator's own and
+reads at `private`.
 
 **The reader is part of the session.** A session's prompt is written for one reader: its
 view, its channel context. So the turn's read clearance joins the structural surface digest a
@@ -163,9 +166,9 @@ can show it was given.
 **A new served role** sets `memory.token_budget` above 0, which makes it a memory role on every
 path above. Its sessions read the ledger their clearance reads.
 
-**A lower maintained ledger** (a `friends` ledger for the butler) is one more entry in the
-maintained ledgers: sessions at that clearance are then served its view and its note, with
-no change here.
+**Another maintained ledger** (a `family` one, say) is one more entry in the maintained
+ledgers ([`architecture/memory-scoping.md`](memory-scoping.md)): sessions at that clearance
+are then served its view and its note, with no change here.
 
 **A change to the rendering** bumps the renderer version, so recorded sessions start afresh
 instead of failing their hash check one by one.

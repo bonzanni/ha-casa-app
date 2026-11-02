@@ -47,7 +47,7 @@ import logging
 import sqlite3
 from dataclasses import dataclass, field
 
-from memory import pending, sessions
+from memory import ledgers, pending, sessions
 from memory.store import MemoryStore
 
 logger = logging.getLogger(__name__)
@@ -94,11 +94,12 @@ def tokens(text: str | None) -> int:
 
 def ledger_for(clearance: str | None) -> str | None:
     """The ledger a session at *clearance* reads: the highest maintained
-    ledger at or below it, or ``None`` when there is none."""
+    ledger at or below it (:mod:`memory.ledgers`), or ``None`` when there is
+    none. An unknown clearance reads none."""
     if clearance not in pending.TIERS:
         return None
     best = None
-    for ledger in pending.MAINTAINED_LEDGERS:
+    for ledger in ledgers.maintained():
         if pending.rank(ledger) <= pending.rank(clearance) and (
                 best is None or pending.rank(ledger) > pending.rank(best)):
             best = ledger
@@ -154,7 +155,7 @@ def objects_as_of(conn: sqlite3.Connection, ledger: str,
         values["source_seqs"] = _json_list(values["source_seqs"])
         objs.append(Obj(**values, order=(first, values["object_id"])))
     objs.sort(key=lambda o: o.order)
-    _date(conn, objs)
+    _date(conn, objs, ledger)
     return objs
 
 
@@ -166,7 +167,16 @@ def _json_list(text: str | None) -> list:
     return value if isinstance(value, list) else []
 
 
-def _date(conn: sqlite3.Connection, objs: list[Obj]) -> None:
+#: An event's tier rank, as SQL.
+_TIER_RANK = ("(CASE tier WHEN 'public' THEN 0 WHEN 'friends' THEN 1 "
+              "WHEN 'family' THEN 2 ELSE 3 END)")
+
+
+def _date(conn: sqlite3.Connection, objs: list[Obj], ledger: str) -> None:
+    """Date each object by the latest local day among its source events
+    that are readable at *ledger* (classified at or below it, or any for
+    ``private``): a source id naming an event *ledger* cannot read dates
+    nothing."""
     seqs: set[int] = set()
     for o in objs:
         for s in o.source_seqs:
@@ -182,7 +192,9 @@ def _date(conn: sqlite3.Connection, objs: list[Obj]) -> None:
         chunk = ordered[i:i + 500]
         days.update(conn.execute(
             f"SELECT seq, local_day FROM events WHERE seq IN "
-            f"({', '.join('?' for _ in chunk)})", chunk).fetchall())
+            f"({', '.join('?' for _ in chunk)}) AND {_TIER_RANK} <= ? "
+            "AND (tier_status = 'classified' OR ? = 'private')",
+            (*chunk, pending.rank(ledger), ledger)).fetchall())
     for o in objs:
         found = []
         for s in o.source_seqs:

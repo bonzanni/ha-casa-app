@@ -25,9 +25,7 @@ from __future__ import annotations
 
 import sqlite3
 
-#: The ledgers Casa maintains. ``private`` always; a lower ledger joins when
-#: a reader of its clearance is served one.
-MAINTAINED_LEDGERS: tuple[str, ...] = ("private",)
+from memory import ledgers
 
 #: The clearance ladder, lowest first.
 TIERS: tuple[str, ...] = ("public", "friends", "family", "private")
@@ -85,10 +83,11 @@ def is_pending(conn: sqlite3.Connection, seq: int, ledger: str) -> bool:
 
 
 def pending_in(conn: sqlite3.Connection, seq: int) -> list[str]:
-    """The maintained ledgers *seq* is pending in."""
+    """The maintained ledgers *seq* is pending in (:mod:`memory.ledgers`),
+    ``private`` first."""
     have = {r[0] for r in conn.execute(
         "SELECT ledger FROM pending WHERE seq = ?", (seq,))}
-    return [ledger for ledger in MAINTAINED_LEDGERS if ledger in have]
+    return [ledger for ledger in ledgers.maintained() if ledger in have]
 
 
 def pending_corrections(conn: sqlite3.Connection, ledger: str) -> list[int]:

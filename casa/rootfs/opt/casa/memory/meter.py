@@ -24,6 +24,7 @@ import os
 from datetime import datetime, timedelta, timezone
 
 from memory import capture, pending, transcript_runs, view
+from memory.ledgers import maintained
 from memory.store import MemoryStore
 
 META_KEY = "meter"
@@ -76,7 +77,7 @@ def measure(store: MemoryStore) -> dict:
     week_ago = (now - timedelta(days=7)).isoformat(timespec="microseconds")
     ledgers: dict[str, dict] = {}
     with store.transaction() as conn:
-        for ledger in pending.MAINTAINED_LEDGERS:
+        for ledger in maintained():
             entries = [(r[0], _tokens(r[1])) for r in conn.execute(
                 "SELECT object_id, body FROM objects WHERE ledger = ? "
                 "AND kind = 'entry' AND status = 'current'", (ledger,))]
