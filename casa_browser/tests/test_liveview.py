@@ -947,6 +947,57 @@ async def test_guard_follows_the_focus_chain():
         assert newer.fronted == 0
 
 
+async def test_text_xdotool_cannot_type_goes_through_chromes_input():
+    """A character the display's keymap lacks (an accent, an emoji) is never typed by xdotool:
+    its spare-keycode binding races a busy Chrome (the image lane, 1 CPU: 78 of 360 texts lost
+    or changed a character). Text for a field that holds one goes whole, in order, through
+    Chrome's own input on that field's page — ASCII as Patchright's keys, every other code point
+    as a key down carrying it and a key up (a page's key handlers still run, r1 Terra/Astra);
+    plain ASCII and the address bar stay on xdotool. Positive control: ASCII for the same field
+    is xdotool's."""
+    log: list = []
+
+    class Keyboard:
+        def __init__(self, log):
+            self.log = log
+
+        async def type(self, text):
+            self.log.append(("keys", text))
+
+    class CDP:
+        async def send(self, method, params=None):
+            assert method == "Input.dispatchKeyEvent"
+            log.append((params["type"], params["key"], params.get("text")))
+    page = _Page(MAIN, [])
+    page.keyboard = Keyboard(log)
+    newer = _Page(MAIN, [])                              # shown, but not the field's page
+    newer.keyboard = Keyboard([("wrong page",)])
+    bs = type("BS", (), {"context": type("C", (), {"pages": [page, newer]})()})()
+    screen = lv.ChromeScreen()
+    screen._docs = {(0, 7): (page.main_frame, 0, 0)}
+    screen._cdp = {id(page): (page, CDP(), 1), id(newer): (newer, None, 2)}
+
+    async def xdo(*args):
+        log.append(("xdotool", *args))
+    screen.xdo = xdo
+
+    def accent(ch):
+        return [("keyDown", ch, ch), ("keyUp", ch, None)]
+    await screen.inject(bs, {"t": "text", "s": "perché è", "to": TO})
+    assert log == [("keys", "perch"), *accent("é"), ("keys", " "), *accent("è")]
+    log.clear()
+    await screen.inject(bs, {"t": "text", "s": "x\U0001F468\u200d\U0001F469e\u0301", "to": TO})
+    assert log == [("keys", "x"), *accent("\U0001F468"), *accent("\u200d"), *accent("\U0001F469"),
+                   ("keys", "e"), *accent("\u0301")]                # one code point at a time
+    log.clear()
+    await screen.inject(bs, {"t": "text", "s": "plain ASCII 1~", "to": TO})
+    await screen.inject(bs, {"t": "text", "s": "città"})                 # the address bar
+    assert log == [("xdotool", "type", "--delay", 12, "--", "plain ASCII 1~"),
+                   ("xdotool", "type", "--delay", 12, "--", "città")]
+    assert newer.keyboard.log == [("wrong page",)] and page.fronted == 3
+    assert lv.x_typable(" ~") and not lv.x_typable("\t") and not lv.x_typable("\x7f")
+
+
 def test_reveal_message_is_accepted_and_carries_nothing():
     """casa-test F6: the viewer asks the controller to bring the focused remote field into
     sight; the message carries no coordinates or text, and the page reads nothing back."""

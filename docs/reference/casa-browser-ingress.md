@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-10-22
+last_reviewed: 2026-11-02
 ---
 
 # Casa Browser — ingress UI and the live view
@@ -135,7 +135,12 @@ element into view, following the focus into frames, open shadow roots included �
 `liveview.reveal`; it carries nothing and reads nothing back) — clamped to
 Chrome's window as last probed (nothing before the first probe), and is injected at the X level
 with `xdotool` (an injection that outlives its 10 s bound is stopped, so nothing types on
-after it). Anything else is dropped.
+after it). The one exception is text for a field that holds a character the display's US keymap
+lacks (an accent, an emoji; `liveview.x_typable`): it goes whole, in order, through Chrome's own
+input on that field's page — ASCII as US-keyboard keys, every other code point as a key down
+carrying it and a key up, so a page's key handlers still run — because `xdotool` binds such a
+character to a spare keycode for one press and a busy Chrome can read that binding after it
+changed, losing the character or typing another. Anything else is dropped.
 
 **Typing** (live view K). Nothing lies over the picture; a tap is
 a click in Chrome. On a field of the last state (the smallest holding the point) or on Chrome's
@@ -232,6 +237,8 @@ once Done was pressed here or on another device, is the same closing page (`ui.p
   Pasting is the strip's Paste.
 - A key does in Chrome what Chrome does with it (a cluster, a length limit, a formatter, a caret
   the page moved), seen live. A CJK composition goes only as its text at its end.
+- Text for Chrome's address bar is always `xdotool`'s (the page's input cannot reach the
+  toolbar), so an accent or an emoji typed there can still be lost on a busy machine.
 - What the real phone does (the keyboard and its geometry, whether it opens for the address-bar
   tap, iOS's own scrolling, an inert pinch, the strip keeping the keyboard up, Paste, AutoFill noise, the header in the
   Companion app, reconnect through Home Assistant's own proxy) is checked on a phone, not by
