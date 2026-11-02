@@ -192,8 +192,9 @@ Without that, each hop's notice quoted the whole previous notice, result text in
 prompt grew with every hop of the chain, and a job row that takes its request from that origin
 stored the nested text as its request.
 The narration turn's own prompt and its options are still the full notice; only the recorded
-question differs. Its recall, when it opens a fresh session, searches with Casa's fixed query
-for turns no person opened, not with the notice ([`memory.md`](memory.md)). A completion that carried no question passes on an empty
+question differs. When it opens a fresh session, that session is served its view of a ledger
+with no search, so the notice is never used as a memory query
+([`memory-serving.md`](memory-serving.md)). A completion that carried no question passes on an empty
 one, never the notice. The question reaches `Agent._process` as an argument that
 `Agent.handle_message` passes on the narration branch alone, never as a context key, so no
 ingress can set it and no later turn can inherit it. Rows written before this rule keep the text

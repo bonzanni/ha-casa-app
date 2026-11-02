@@ -291,9 +291,9 @@ upgrading the CLI without moving the pin prevents Casa from starting rather than
 degrading turns.
 
 **Memory is unavailable.** The turn proceeds without it, with a warning. An unavailable
-memory is not an empty memory — but at this point the distinction lives only in the logs and
-the recall breaker. The model and the turn's caller see the same thing either way: no recall
-block (see INV-TURN-004).
+memory is not an empty memory — but at this point the distinction lives only in the logs.
+The model and the turn's caller see the same thing either way: no memory view and no
+correction note (see INV-TURN-004).
 
 What the loop does *not* do: it does not save long-term memory per turn. Saving happens at
 session granularity, in the background, elsewhere.
