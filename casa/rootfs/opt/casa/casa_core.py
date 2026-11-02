@@ -4199,6 +4199,14 @@ async def main() -> None:
             semantic_memory, _bank_id("casa"), reason="boot",
         )
 
+    # 2a. The memory store: FTS5 check and schema migration. A failure leaves
+    # the file untouched and memory unavailable; Casa boots either way. A
+    # pending container-start maintenance (wipe or restore) must be settled
+    # before this point: this open is the store's first consumer at boot.
+    from memory.store import MemoryStore
+    memory_store = MemoryStore()
+    await asyncio.to_thread(memory_store.open)
+
     def _agent_home_dir(role: str) -> str:
         """Resident transcript cwd (encoded-cwd dir for get_session_messages /
         delete_session). Matches agent.py's agent_home WHEN ``config.cwd`` is

@@ -44,6 +44,7 @@ Code is the source of truth; these files are a map.
 - [architecture/memory-lifecycle.md](architecture/memory-lifecycle.md): Retention lifecycle — how a conversation becomes long-term memory, how a reset retires it, and how a failed retain is retried durably.
 - [architecture/memory-mental-models.md](architecture/memory-mental-models.md): The mental-model overlay and the models Casa declares for it.
 - [architecture/memory-scoping.md](architecture/memory-scoping.md): Which stored facts a given reader gets back — read clearance per channel and sender, the engagement clearance clamp, and the executor-archive epoch scoping.
+- [architecture/memory-store.md](architecture/memory-store.md): The SQLite memory store and its one connection owner, the boot check that leaves memory unavailable rather than empty, and the registry of every place memory lives with its export, restore and wipe rules.
 - [architecture/memory-wipe.md](architecture/memory-wipe.md): The operator-consented wipe — its two doors and the consent each demands, the order the orchestrator works in, the fence every bank writer passes through, and what a wipe deliberately does not cover.
 - [architecture/memory.md](architecture/memory.md): Recall — how a stored fact is rendered on the way back out, and what a caller may claim from what comes back.
 - [architecture/observability.md](architecture/observability.md): How work is traced across components, what reaches a log, and what the health surfaces actually assert.

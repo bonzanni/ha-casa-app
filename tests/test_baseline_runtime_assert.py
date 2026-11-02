@@ -190,3 +190,41 @@ def test_compile_smoke_refuses_a_database_that_does_not_compile(
         return
     assert r.returncode != 0, (r.stdout, r.stderr)
     assert "does not compile" in r.stderr, r.stderr
+
+
+# --------------------------------------------------------------------------
+# The memory store on the image's own SQLite.
+# --------------------------------------------------------------------------
+
+_MEMORY_PROBE = """
+import sqlite3
+from memory.registry import REGISTRY, Kind
+from memory.store import MemoryStore, schema_version
+store = MemoryStore("/tmp/memory-probe")
+assert store.open(), store.unavailable_reason
+with store.transaction() as conn:
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    tables = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' "
+        "AND name NOT LIKE 'sqlite_%'")}
+registered = {t for e in REGISTRY if e.kind is Kind.TABLE for t in e.paths}
+assert version == schema_version(), version
+assert tables == registered, sorted(tables ^ registered)
+print("ok", sqlite3.sqlite_version, version, len(tables))
+"""
+
+
+def test_fresh_memory_store_on_the_image_sqlite(image_tag: str) -> None:
+    """The store the image ships, opened on the SQLite its interpreter links:
+    the FTS5 check passes and the schema is created, every table registered.
+    The dev venv's SQLite is newer than the image's, so only this run speaks
+    for the image."""
+    r = subprocess.run(
+        ["docker", "run", "--rm", "--network", "none",
+         "-e", "PYTHONPATH=/opt/casa",
+         "--entrypoint", "/opt/casa/venv/bin/python3", image_tag,
+         "-c", _MEMORY_PROBE],
+        capture_output=True, text=True,
+    )
+    assert r.returncode == 0, (r.stdout, r.stderr)
+    assert r.stdout.startswith("ok "), r.stdout

@@ -173,6 +173,24 @@
   invariant_tests:
     INV-MEM-014: [tests/test_wipe_memory_tool.py::TestConsentFlow::test_approve_runs_orchestrator_once_and_reports, tests/test_wipe_memory_tool.py::TestConsentFlow::test_cancel_tap_deletes_nothing, tests/test_wipe_memory_tool.py::TestConsentFlow::test_non_operator_tap_cannot_claim, tests/test_wipe_memory_tool.py::TestGates::test_refused_without_configured_operator, tests/test_memory_wipe.py::TestWipeOrchestrator::test_removes_without_any_retain, tests/test_memory_wipe.py::TestWipeOrchestrator::test_steered_fresh_session_survives, tests/test_memory_wipe.py::TestWipeOrchestrator::test_spool_dropped_before_bank_delete, tests/test_retain_fence_writers.py::test_cold_retain_failure_after_wipe_does_not_respool, tests/test_retain_fence_writers.py::test_spool_replay_discards_and_drops_record, tests/test_admin_memory_wipe_route.py::test_requires_explicit_confirm]
 
+- doc: architecture/memory-store.md
+  summary: The SQLite memory store and its one connection owner, the boot check that leaves memory unavailable rather than empty, and the registry of every place memory lives with its export, restore and wipe rules.
+  when_changing: the memory store's schema or connection handling, its boot check, or where memory is stored or copied
+  covers:
+    - casa/rootfs/opt/casa/memory/__init__.py
+    - casa/rootfs/opt/casa/memory/store.py::MemoryStore
+    - casa/rootfs/opt/casa/memory/store.py::MemoryUnavailable
+    - casa/rootfs/opt/casa/memory/store.py::fts5_available
+    - casa/rootfs/opt/casa/memory/schema.py
+    - casa/rootfs/opt/casa/memory/registry.py
+  tests:
+    - tests/test_memory_store.py
+    - tests/test_memory_registry.py
+  related: [architecture/persistent-state.md, architecture/memory.md, architecture/memory-wipe.md]
+  defines_invariants: [INV-MEM-025]
+  invariant_tests:
+    INV-MEM-025: [tests/test_memory_registry.py::test_store_pin_every_table_and_path_is_registered, tests/test_memory_registry.py::test_producer_pin_every_persisting_call_site_has_a_row, tests/test_memory_registry.py::test_every_producer_declares_its_staging_pattern, tests/test_memory_registry.py::test_store_pin_red_cases, tests/test_memory_registry.py::test_producer_pin_red_cases, tests/test_memory_registry.py::test_staging_pin_red_case]
+
 - doc: architecture/observability.md
   summary: How work is traced across components, what reaches a log, and what the health surfaces actually assert.
   when_changing: logging, correlation ids, redaction, or a health surface

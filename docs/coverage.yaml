@@ -163,6 +163,14 @@
   doc: architecture/memory-lifecycle.md
 - item: casa/rootfs/opt/casa/memory_wipe.py
   doc: architecture/memory-wipe.md
+- item: casa/rootfs/opt/casa/memory/__init__.py
+  doc: architecture/memory-store.md
+- item: casa/rootfs/opt/casa/memory/registry.py
+  doc: architecture/memory-store.md
+- item: casa/rootfs/opt/casa/memory/schema.py
+  doc: architecture/memory-store.md
+- item: casa/rootfs/opt/casa/memory/store.py
+  doc: architecture/memory-store.md
 - item: casa/rootfs/opt/casa/mental_models.py
   doc: architecture/memory-mental-models.md
 - item: casa/rootfs/opt/casa/observer.py

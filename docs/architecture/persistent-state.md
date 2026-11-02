@@ -64,6 +64,17 @@ removes anything that does not follow the layout, and reclaims a publication a c
 half-done after an hour; it never deletes for space, so a full folder refuses the next
 publication instead. Its contract is [`plugin-handoff.md`](plugin-handoff.md).
 
+**Memory has a directory of its own, and a registry of everywhere else it lives.**
+`/data/memory/` (0700, in the private-state inventory) holds `memory.db`, a SQLite store in
+WAL mode reached only through one connection owner, one transaction per connection. Boot
+checks and migrates it; a failure leaves the file untouched and memory unavailable, never
+an empty store reported as healthy. Memory that lives outside the directory — SDK
+transcripts, `sessions.json`, explanation records, an engagement's executor-memory block —
+is listed with the directory's own contents in one registry, together with the staging-file
+names their atomic writers leave on a crash. For that reason `sessions.json`'s writer names
+its staging file after its target, while the shared writer's default name stays generic.
+Its contract is [`memory-store.md`](memory-store.md) (INV-MEM-025).
+
 **Two stored fields carry a disclosure a payload owes.** A reminder entry in a role's
 `triggers.yaml` may carry `output_note`, and a durable job row carries `output_note` — the
 resolved Casa line the payload's authoring turn owed, stored beside the payload rather than
@@ -235,4 +246,5 @@ the code writes.
 - [`architecture/configuration.md`](../architecture/configuration.md)
 - [`architecture/engagements.md`](../architecture/engagements.md)
 - [`architecture/memory.md`](../architecture/memory.md)
+- [`architecture/memory-store.md`](../architecture/memory-store.md)
 <!-- END SOURCEMAP -->

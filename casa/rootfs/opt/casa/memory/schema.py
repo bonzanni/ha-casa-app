@@ -1,0 +1,188 @@
+"""DDL of ``memory.db``, by schema version.
+
+``MIGRATIONS[n]`` is the ordered list of statements that take a store from
+version ``n - 1`` to version ``n``; a fresh file is version 0, so creating a
+store and migrating one are the same loop (:mod:`memory.store`). A released
+version's statements never change: a schema change appends a new version.
+
+Every table here is registered in :mod:`memory.registry` with its export,
+restore and wipe rule; the store pin in ``tests/test_memory_registry.py``
+fails on a table that is not (INV-MEM-025).
+
+Tables are ``STRICT`` (SQLite 3.37+). Tiers are the clearance ladder
+``public < friends < family < private``. JSON-valued columns hold arrays or
+objects as text. Times are ISO-8601 text.
+"""
+from __future__ import annotations
+
+_TIERS = "('public', 'friends', 'family', 'private')"
+
+V1: tuple[str, ...] = (
+    # The verbatim store. ``seq`` is assigned by the store and never reused
+    # (AUTOINCREMENT); ``source_key`` is the occurrence identity.
+    f"""
+    CREATE TABLE events (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_key TEXT NOT NULL UNIQUE,
+        occurred_at TEXT NOT NULL,
+        tz TEXT NOT NULL,
+        local_day TEXT NOT NULL,
+        recorded_at TEXT NOT NULL,
+        session_id TEXT,
+        role TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        speaker_kind TEXT NOT NULL CHECK (speaker_kind IN
+            ('operator', 'resident', 'specialist', 'casa', 'third_party')),
+        speaker_id TEXT,
+        speaker_name TEXT,
+        origin_kind TEXT NOT NULL CHECK (origin_kind IN
+            ('operator', 'scheduled', 'callback', 'notification',
+             'delegated_result', 'system')),
+        scheduled INTEGER NOT NULL DEFAULT 0 CHECK (scheduled IN (0, 1)),
+        reply_to TEXT,
+        provider_message_id TEXT,
+        text TEXT NOT NULL,
+        tier TEXT NOT NULL CHECK (tier IN {_TIERS}),
+        tier_status TEXT NOT NULL CHECK (tier_status IN
+            ('provisional', 'classified')),
+        origin_tier TEXT CHECK (origin_tier IN {_TIERS}),
+        provenance TEXT NOT NULL CHECK (provenance IN
+            ('told', 'backfill', 'captured')),
+        eligibility TEXT NOT NULL
+    ) STRICT
+    """,
+    "CREATE INDEX events_local_day ON events (local_day)",
+    # One row per object per ledger: its current state. ``ledger`` is the
+    # maintained clearance the object belongs to, and so its tier.
+    f"""
+    CREATE TABLE objects (
+        ledger TEXT NOT NULL CHECK (ledger IN {_TIERS}),
+        object_id TEXT NOT NULL,
+        revision INTEGER NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('entry', 'group', 'topic')),
+        entry_kind TEXT CHECK (entry_kind IN ('fact', 'errand', 'episode')),
+        errand_state TEXT CHECK (errand_state IN ('open', 'done', 'dropped')),
+        topic TEXT,
+        subject TEXT,
+        body TEXT,
+        line TEXT,
+        cues TEXT NOT NULL DEFAULT '[]',
+        parent TEXT,
+        origin TEXT,
+        source_seqs TEXT NOT NULL DEFAULT '[]',
+        status TEXT NOT NULL CHECK (status IN ('current', 'retired')),
+        PRIMARY KEY (ledger, object_id)
+    ) STRICT
+    """,
+    # Every state an object has had, with the commit that produced it.
+    # ``commit_no`` is derived from these rows, never stored elsewhere.
+    f"""
+    CREATE TABLE revisions (
+        ledger TEXT NOT NULL CHECK (ledger IN {_TIERS}),
+        object_id TEXT NOT NULL,
+        revision INTEGER NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('entry', 'group', 'topic')),
+        entry_kind TEXT CHECK (entry_kind IN ('fact', 'errand', 'episode')),
+        errand_state TEXT CHECK (errand_state IN ('open', 'done', 'dropped')),
+        topic TEXT,
+        subject TEXT,
+        body TEXT,
+        line TEXT,
+        cues TEXT NOT NULL DEFAULT '[]',
+        parent TEXT,
+        origin TEXT,
+        source_seqs TEXT NOT NULL DEFAULT '[]',
+        status TEXT NOT NULL CHECK (status IN ('current', 'retired')),
+        op TEXT NOT NULL,
+        reason TEXT,
+        job_id TEXT,
+        committed_at TEXT NOT NULL,
+        commit_no INTEGER NOT NULL,
+        PRIMARY KEY (ledger, object_id, revision)
+    ) STRICT
+    """,
+    "CREATE INDEX revisions_commit_no ON revisions (commit_no)",
+    # Per event and ledger, every outcome a writer commit recorded; an older
+    # terminal one stays as history.
+    f"""
+    CREATE TABLE dispositions (
+        id INTEGER PRIMARY KEY,
+        seq INTEGER NOT NULL,
+        ledger TEXT NOT NULL CHECK (ledger IN {_TIERS}),
+        job_id TEXT NOT NULL,
+        outcome TEXT NOT NULL CHECK (outcome IN
+            ('patched', 'no_change', 'deferred')),
+        commit_no INTEGER NOT NULL
+    ) STRICT
+    """,
+    "CREATE INDEX dispositions_seq_ledger ON dispositions (seq, ledger)",
+    f"""
+    CREATE TABLE jobs (
+        job_id TEXT PRIMARY KEY,
+        ledger TEXT NOT NULL CHECK (ledger IN {_TIERS}),
+        kind TEXT NOT NULL,
+        input_seqs TEXT NOT NULL DEFAULT '[]',
+        base_revisions TEXT NOT NULL DEFAULT '{{}}',
+        mark_seen TEXT NOT NULL DEFAULT '{{}}',
+        state TEXT NOT NULL CHECK (state IN
+            ('queued', 'running', 'committed', 'failed')),
+        boot_id TEXT,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT
+    ) STRICT
+    """,
+    # ``mark_no`` is derived from these rows, never stored elsewhere.
+    """
+    CREATE TABLE correction_marks (
+        seq INTEGER PRIMARY KEY,
+        mark_no INTEGER NOT NULL,
+        marked_at TEXT NOT NULL,
+        mark_commit_no INTEGER NOT NULL
+    ) STRICT
+    """,
+    f"""
+    CREATE TABLE session_views (
+        session_key TEXT PRIMARY KEY,
+        ledger TEXT CHECK (ledger IN {_TIERS}),
+        base_commit_no INTEGER NOT NULL,
+        clearance TEXT NOT NULL CHECK (clearance IN {_TIERS}),
+        budget INTEGER NOT NULL,
+        renderer_version TEXT NOT NULL,
+        block_hash TEXT NOT NULL
+    ) STRICT
+    """,
+    f"""
+    CREATE TABLE engagement_summaries (
+        id INTEGER PRIMARY KEY,
+        role TEXT NOT NULL,
+        procedural_epoch INTEGER NOT NULL,
+        tier TEXT NOT NULL CHECK (tier IN {_TIERS}),
+        text TEXT NOT NULL,
+        engagement_id TEXT NOT NULL,
+        at TEXT NOT NULL
+    ) STRICT
+    """,
+    # The one-off transcript backfill's own record: its cutoff, the legacy
+    # source with its file manifest, and how far it got. At most one row.
+    """
+    CREATE TABLE backfill_run (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        cutoff TEXT NOT NULL,
+        source TEXT NOT NULL,
+        manifest TEXT NOT NULL,
+        phase TEXT NOT NULL
+    ) STRICT
+    """,
+    # Content-free operational markers (first-boot done, the last
+    # maintenance outcome). Values are JSON.
+    """
+    CREATE TABLE meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    ) STRICT
+    """,
+)
+
+MIGRATIONS: dict[int, tuple[str, ...]] = {
+    1: V1,
+}

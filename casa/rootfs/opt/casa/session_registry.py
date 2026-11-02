@@ -21,6 +21,9 @@ from speaker_provenance import provenance_mapping, validate_speaker_provenance
 logger = logging.getLogger(__name__)
 
 _SESSION_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+# The atomic write's staging file is named after the target, so one a crash
+# orphans can be found and deleted by name; memory.registry declares it.
+_STAGING_PREFIX = ".sessions.json."
 _SESSION_KEY_MAX = 100  # mirrors the server-side max_length from the former upstream dependency
 
 # Sentinel distinguishing "remove unconditionally" (argument omitted) from
@@ -624,7 +627,8 @@ class SessionRegistry:
         crash mid-write can never leave a truncated sessions.json — a corrupt
         file used to crash-stop the add-on on boot (H12).
         """
-        atomic_write_json(self._path, data, indent=2, mode=PRIVATE)
+        atomic_write_json(
+            self._path, data, indent=2, mode=PRIVATE, prefix=_STAGING_PREFIX)
 
     def all_entries(self) -> dict[str, dict[str, Any]]:
         """Return a shallow copy of all entries."""

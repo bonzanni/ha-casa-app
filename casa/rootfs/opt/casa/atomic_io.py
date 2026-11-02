@@ -69,6 +69,7 @@ def atomic_write_text(
     *,
     encoding: str = "utf-8",
     mode: int | None = None,
+    prefix: str = ".",
 ) -> None:
     """Atomically write *text* to *path*.
 
@@ -83,6 +84,11 @@ def atomic_write_text(
     :func:`tempfile.mkstemp` creates the sidecar at ``0o600`` and
     :func:`os.replace` adopts the temp inode — without this the atomic write
     would silently downgrade every replaced file to ``0o600``.
+
+    The sidecar is named ``<prefix><random>.tmp``. The default ``"."`` names
+    no target; a caller whose crash-orphaned sidecar must be attributable to
+    its file (so it can be found and deleted by name) passes a prefix that
+    names it, e.g. ``".sessions.json."``.
     """
     target = os.fspath(path)
     directory = os.path.dirname(target) or "."
@@ -91,7 +97,7 @@ def atomic_write_text(
             mode = os.stat(target).st_mode & 0o777
         except OSError:
             mode = 0o644
-    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".", suffix=".tmp")
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=prefix, suffix=".tmp")
     try:
         os.chmod(tmp, mode)
         with os.fdopen(fd, "w", encoding=encoding) as fh:
@@ -118,6 +124,7 @@ def atomic_write_json(
     sort_keys: bool = False,
     encoding: str = "utf-8",
     mode: int | None = None,
+    prefix: str = ".",
 ) -> None:
     """Atomically write *data* as JSON to *path* (see :func:`atomic_write_text`)."""
     atomic_write_text(
@@ -125,4 +132,5 @@ def atomic_write_json(
         json.dumps(data, indent=indent, sort_keys=sort_keys),
         encoding=encoding,
         mode=mode,
+        prefix=prefix,
     )

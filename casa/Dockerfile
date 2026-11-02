@@ -96,6 +96,12 @@ RUN set -eux; \
 RUN python3 -m venv /opt/casa/venv
 ENV PATH="/opt/casa/venv/bin:${PATH}"
 
+# The memory store's search runs on SQLite FTS5 (memory/store.py checks it
+# again at every boot). The interpreter Casa runs must be able to create and
+# query an FTS5 table, or the image does not build.
+RUN /opt/casa/venv/bin/python3 -c 'import sqlite3; c = sqlite3.connect(":memory:"); c.execute("CREATE VIRTUAL TABLE t USING fts5(body)"); c.execute("INSERT INTO t (body) VALUES (?)", ("probe",)); n = c.execute("SELECT count(*) FROM t WHERE t MATCH ?", ("probe",)).fetchone()[0]; assert n == 1, n; print("SQLite", sqlite3.sqlite_version, "has FTS5")' \
+    || { echo "this image's SQLite cannot create an FTS5 table; the memory store needs it" >&2; exit 1; }
+
 # #957: the released image must be able to execute every program an engagement
 # launch runs, on the architecture it is published for. deploy.yml builds each
 # architecture natively, so an image in which one of them cannot be launched
