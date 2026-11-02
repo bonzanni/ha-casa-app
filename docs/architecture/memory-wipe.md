@@ -139,9 +139,13 @@ so a real directory stays where it is for the next step to delete. No other ones
 any program one runs, touches a registry path's content.
 
 **After the restart.** Session pointers are empty, so every conversation starts fresh.
-An open claude_code engagement keeps its record and workspace; boot replay finds that its
-session has no transcript left and drops the control-directory session pointer, so its run
-script starts a fresh session (`drivers.workspace.drop_session_without_transcript`).
+An open engagement keeps its record and workspace and continues in a fresh session. For a
+claude_code engagement, boot replay finds that its session has no transcript left and drops
+the control-directory session pointer, so its run script starts a fresh session
+(`drivers.workspace.drop_session_without_transcript`). For an in_casa engagement, whose
+session the CLI could no longer resume, the step itself marks the record for a context
+rebuild through the registry's own write (`EngagementRegistry.mark_context_rebuild`): its
+next turn opens a fresh session with the context-reset note instead of failing to resume.
 
 `memory_wipe.py` keeps the retain fence that long-term bank writers pass until the bank is
 removed. Its former live orchestrator is no longer called by any door, and the bank itself
@@ -224,6 +228,7 @@ content does so inside the `maintenance.json` guard, or the scan fails.
 - `casa/rootfs/opt/casa/internal_handlers.py::build_admin_memory_wipe_handler`
 - `casa/rootfs/opt/casa/drivers/workspace.py::drop_session_without_transcript`
 - `casa/rootfs/opt/casa/drivers/workspace.py::write_claude_md`
+- `casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.mark_context_rebuild`
 - `casa/rootfs/etc/s6-overlay/scripts/memory-maintenance.sh`
 
 **Tests**

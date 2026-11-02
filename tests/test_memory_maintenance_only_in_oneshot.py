@@ -38,10 +38,13 @@ def callers(code: Path) -> dict[str, set[tuple[str, str]]]:
                     name = node.attr
                 elif isinstance(node, ast.Name) and rel == "memory/maintenance.py":
                     name = node.id
-                if name == "wipe_loop" or (
-                        name == "run" and (rel == "memory/maintenance.py" or
-                                           "maintenance" in ast.unparse(
-                                               getattr(node, "value", node)))):
+                # ``run`` is the step's own name in its module, or an
+                # attribute of the maintenance module elsewhere (never, say,
+                # ``asyncio.run``).
+                is_step = name == "run" and (
+                    isinstance(node, ast.Name)
+                    or "maintenance" in ast.unparse(node.value))
+                if name == "wipe_loop" or is_step:
                     found[name].add((rel, fn.name))
     return found
 

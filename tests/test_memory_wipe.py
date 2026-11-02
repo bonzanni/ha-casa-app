@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 
 import pytest
 
@@ -299,3 +300,107 @@ def test_a_killed_intent_write_leaves_staging_the_wipe_deletes(tmp_path):
     assert maintenance.write_wipe_intent(str(root)) == "written"
     assert w.run_oneshot(root, proc).stdout.strip() == "done"
     assert list(memdir.glob(".maintenance.json*")) == []
+
+
+# --- an open in_casa engagement after the wipe --------------------------------------
+
+class _InCasaDriver:
+    """The in_casa driver as the resume path sees it, with the CLI's measured
+    answer to a resume of a session whose transcript is gone."""
+
+    def __init__(self):
+        self.alive: set[str] = set()
+        self.calls: list[str] = []
+
+    def is_alive(self, rec):
+        return rec.id in self.alive
+
+    async def resume(self, rec, sid):
+        self.calls.append("resume")
+        raise RuntimeError(f"No conversation found with session ID: {sid}")
+
+    async def invalidate_session(self, rec):
+        self.calls.append("invalidate")
+
+    async def open_fresh(self, rec):
+        self.calls.append("open_fresh")
+        self.alive.add(rec.id)
+
+
+async def _record_file(path):
+    from engagement_registry import EngagementRecord, EngagementRegistry
+    reg = EngagementRegistry(tombstone_path=str(path), bus=None)
+    for eid, driver, status in (("e1" * 16, "in_casa", "active"),
+                                ("e2" * 16, "in_casa", "completed"),
+                                ("e3" * 16, "claude_code", "active")):
+        reg._records[eid] = EngagementRecord(
+            id=eid, kind="executor", role_or_type="configurator",
+            driver=driver, status=status, topic_id=7, started_at=0.0,
+            last_user_turn_ts=0.0, last_idle_reminder_ts=0.0,
+            completed_at=None if status == "active" else time.time(),
+            sdk_session_id=w.SID if driver == "in_casa" else None,
+            origin={}, task="Tidy the garden notes")
+    await reg._write_tombstone_locked(strict=True)
+
+
+async def _next_turn(path, eid):
+    """The engagement's next operator turn, through the real resume gate."""
+    from channels.telegram import TelegramChannel
+    from engagement_registry import EngagementRegistry
+    reg = EngagementRegistry(tombstone_path=str(path), bus=None)
+    await reg.load()
+    driver, notices = _InCasaDriver(), []
+    channel = TelegramChannel(bot_token="T", chat_id="42",
+                              default_agent="assistant", bus=None)
+    channel._engagement_registry = reg
+    channel._engagement_driver = driver
+
+    async def rebuild(rec):
+        await driver.invalidate_session(rec)
+        await driver.open_fresh(rec)
+        return "[Context reset]"
+
+    async def to_topic(topic_id, text, *a, **k):
+        notices.append(text)
+
+    async def cleanup(rec):
+        notices.append("cleanup")
+
+    channel._engagement_context_rebuilder = rebuild
+    channel.send_to_topic = to_topic
+    channel._cleanup_error_topic = cleanup
+    ok = await channel._resume_and_ready(reg.get(eid))
+    return ok, driver.calls, notices, reg.get(eid)
+
+
+@pytest.mark.parametrize("wiped", [True, False])
+async def test_an_open_in_casa_engagement_continues_fresh_after_the_wipe(
+        tmp_path, wiped):
+    """The CLI cannot resume a session whose transcript the wipe deleted
+    (measured: "No conversation found", exit 1). The step marks every open
+    in_casa engagement for a context rebuild, so its next turn opens a fresh
+    session and the record stays open. Without the mark (the red case) the
+    turn tries the resume and is refused."""
+    root, proc = tmp_path / "root", w.fake_proc(tmp_path)
+    record = w.under(root, "/data/engagements.json")
+    record.parent.mkdir(parents=True)
+    await _record_file(record)
+    w.write(w.under(root, f"/config/cc-home/.claude/projects/-cwd/{w.SID}.jsonl"),
+            "turns")
+    if wiped:
+        assert maintenance.write_wipe_intent(str(root)) == "written"
+        assert w.run_oneshot(root, proc).stdout.strip() == "done"
+    else:
+        (w.under(root, f"/config/cc-home/.claude/projects/-cwd/{w.SID}.jsonl")
+         ).unlink()                       # the transcript is gone either way
+    ok, calls, notices, rec = await _next_turn(record, "e1" * 16)
+    if wiped:
+        assert (ok, calls, notices) == (True, ["invalidate", "open_fresh"], [])
+        assert (rec.status, rec.sdk_session_id, rec.context_rebuild_pending) == (
+            "active", None, False)
+        rows = {r["id"]: r for r in json.loads(record.read_text())}
+        assert rows["e2" * 16]["context_rebuild_pending"] is False
+        assert rows["e3" * 16]["context_rebuild_pending"] is False
+    else:
+        assert (ok, calls) == (False, ["resume"])
+        assert notices[0].startswith("Could not resume this engagement")

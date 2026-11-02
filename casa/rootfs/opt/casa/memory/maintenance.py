@@ -250,6 +250,7 @@ class Counts:
     transcript_entries_deleted: int = 0
     staging_files_deleted: int = 0
     pointers_reset: int = 0
+    sessions_reset: int = 0
     sections_blanked: int = 0
     caches_emptied: int = 0
 
@@ -382,7 +383,37 @@ def wipe_loop(*, root: str, now: float | None = None) -> Counts:
         if handler is None:
             raise MaintenanceError(f"no wipe rule for {entry.name!r}")
         handler(root, entry, counts)
+    _reset_open_in_casa_sessions(root, counts)
     return counts
+
+
+#: The engagement registry's record file.
+ENGAGEMENTS_RECORD = "/data/engagements.json"
+
+
+def _reset_open_in_casa_sessions(root: str, counts: Counts) -> None:
+    """Every open in_casa engagement's session transcript is gone with the
+    transcript roots, so a resume of it cannot start. Each one is marked for
+    a context rebuild through the registry's own write path: its next turn
+    opens a fresh session, and its record is kept. (A claude_code engagement
+    drops its session pointer at boot replay instead.)"""
+    path = under(root, ENGAGEMENTS_RECORD)
+    if not os.path.exists(path):
+        return
+    from engagement_registry import EngagementRegistry
+
+    async def _mark() -> int:
+        reg = EngagementRegistry(tombstone_path=path, bus=None)
+        await reg.load()
+        marked = 0
+        for rec in reg.active_and_idle():
+            if (rec.driver != "claude_code" and rec.sdk_session_id
+                    and not rec.context_rebuild_pending):
+                await reg.mark_context_rebuild(rec.id)
+                marked += 1
+        return marked
+
+    counts.sessions_reset += asyncio.run(_mark())
 
 
 def _workspaces(root: str) -> Iterator[tuple[str, str]]:

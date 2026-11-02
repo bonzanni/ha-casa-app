@@ -2001,6 +2001,27 @@ class EngagementRegistry:
                     "a restart resume", engagement_id[:8], exc,
                 )
 
+    async def mark_context_rebuild(self, engagement_id: str) -> bool:
+        """Durably mark an engagement's context for rebuild, so its next turn
+        opens a fresh session (with the context-reset note) instead of
+        resuming the recorded one. The memory wipe calls this for every
+        in_casa engagement still open, whose transcripts it deletes. STRICT:
+        a failed write is restored in memory and raised. Returns whether the
+        record was found."""
+        async with self._lock:
+            rec = self._records.get(engagement_id)
+            if rec is None:
+                return False
+            before = rec.context_rebuild_pending
+            rec.context_rebuild_pending = True
+            try:
+                await self._write_tombstone_locked(strict=True)
+            except BaseException:
+                if not self._last_tombstone_ok:
+                    rec.context_rebuild_pending = before
+                raise
+            return True
+
     async def clear_context_rebuild_pending(self, engagement_id: str) -> None:
         """#369: mark the context rebuild COMPLETE — called only once a fresh
         session at the clamped floor is established. STRICT: if this cannot be
