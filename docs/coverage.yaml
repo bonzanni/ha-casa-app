@@ -167,16 +167,32 @@
   doc: architecture/memory-store.md
 - item: casa/rootfs/opt/casa/memory/capture.py
   doc: architecture/memory-capture.md
+- item: casa/rootfs/opt/casa/memory/classify.py
+  doc: architecture/memory-writer.md
+- item: casa/rootfs/opt/casa/memory/corrections.py
+  doc: architecture/memory-writer.md
 - item: casa/rootfs/opt/casa/memory/eligibility.py
   doc: architecture/memory-capture.md
+- item: casa/rootfs/opt/casa/memory/meter.py
+  doc: architecture/memory-writer.md
+- item: casa/rootfs/opt/casa/memory/model_port.py
+  doc: architecture/memory-writer.md
+- item: casa/rootfs/opt/casa/memory/nightly.py
+  doc: architecture/memory-writer.md
 - item: casa/rootfs/opt/casa/memory/occurrence.py
   doc: architecture/memory-labelling.md
+- item: casa/rootfs/opt/casa/memory/patches.py
+  doc: architecture/memory-writer.md
+- item: casa/rootfs/opt/casa/memory/pending.py
+  doc: architecture/memory-writer.md
 - item: casa/rootfs/opt/casa/memory/registry.py
   doc: architecture/memory-store.md
 - item: casa/rootfs/opt/casa/memory/schema.py
   doc: architecture/memory-store.md
 - item: casa/rootfs/opt/casa/memory/store.py
   doc: architecture/memory-store.md
+- item: casa/rootfs/opt/casa/memory/writer.py
+  doc: architecture/memory-writer.md
 - item: casa/rootfs/opt/casa/mental_models.py
   doc: architecture/memory-mental-models.md
 - item: casa/rootfs/opt/casa/observer.py

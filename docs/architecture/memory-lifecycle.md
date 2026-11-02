@@ -14,7 +14,9 @@ protocol that retains it exactly once, the explicit reset, and the durable
 retry spool. Which text may be stored at all — write-trust, the completeness
 of a delegated answer, the specialists whose output is kept out — and Casa's
 per-turn capture into the memory store are
-[`architecture/memory-capture.md`](memory-capture.md). How each item is labelled on the way in — its sensitivity tier,
+[`architecture/memory-capture.md`](memory-capture.md); how the memory store's
+writer then files captured events into its ledgers is
+[`architecture/memory-writer.md`](memory-writer.md). How each item is labelled on the way in — its sensitivity tier,
 its speaker provenance, and the content addressing that deduplicates it — is
 [`architecture/memory-labelling.md`](memory-labelling.md). The
 operator-consented wipe that removes long-term memory and leaves conversation
@@ -178,9 +180,9 @@ deletes every transcript older than `cleanupPeriodDays` (30 days unless
 set), a transcript INV-MEM-017 holds included. The pinned CLI enables it
 only when the user settings source is loaded or a loaded source sets
 `cleanupPeriodDays`. Residents, specialists, `in_casa` executors, plugin
-jobs and the restricted webhook pin their sources without the user source; the five
+jobs and the restricted webhook pin their sources without the user source; the six
 utility one-shots (the observer, the tier classifier, `query_engager`'s
-synthesis, run admission's reading and the browsing step check's `_ask_check`) pin none, since they have no project of their own and a project
+synthesis, run admission's reading, the browsing step check's `_ask_check` and the memory writer's model call) pin none, since they have no project of their own and a project
 file could carry the key. `cleanupPeriodDays` is never put in the shared
 settings flag: there it would enable the cleanup for every launch.
 

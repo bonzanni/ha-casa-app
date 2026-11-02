@@ -363,6 +363,28 @@ async def _judgement_launches(monkeypatch) -> list:
     return launches
 
 
+async def _memory_writer_launches(monkeypatch) -> list:
+    """The memory writer's model call, through its production port."""
+    import claude_agent_sdk
+    from memory import model_port
+
+    launches = []
+    fake = types.ModuleType("claude_agent_sdk")
+    fake.ClaudeAgentOptions = claude_agent_sdk.ClaudeAgentOptions
+    fake.AssistantMessage = claude_agent_sdk.AssistantMessage
+    fake.ResultMessage = claude_agent_sdk.ResultMessage
+
+    async def query(*, prompt, options):
+        launches.append(options)
+        if False:
+            yield None
+
+    fake.query = query
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake)
+    await model_port.SdkModelPort().complete(system="rules", prompt="{}")
+    return launches
+
+
 # Every launch each one-shot makes for one call: the classifier re-asks an
 # empty reply once (#508), so it launches twice and both launches count.
 _ONE_SHOTS = {
@@ -371,6 +393,7 @@ _ONE_SHOTS = {
     "classifier": (_classifier_launches, 2),
     "admission": (_admission_launches, 1),
     "action_judgement": (_judgement_launches, 1),
+    "memory_writer": (_memory_writer_launches, 1),
 }
 
 
@@ -401,6 +424,14 @@ async def test_run_admission_options(monkeypatch):
     assert len(launches) == 1
     _assert_locked(launches[0])
     _assert_loads_no_settings_source(launches[0])
+
+
+async def test_memory_writer_options(monkeypatch):
+    launches = await _memory_writer_launches(monkeypatch)
+    assert len(launches) == 1
+    _assert_locked(launches[0])
+    _assert_loads_no_settings_source(launches[0])
+    assert launches[0].tools == [] and launches[0].allowed_tools == []
     assert launches[0].tools == [] and launches[0].allowed_tools == []
 
 
@@ -491,6 +522,7 @@ EXPECTED_SITES = {
     ("tier_classifier.py", "classify_tier"): "test_tier_classifier_options",
     ("run_admission.py", "_ask_model"): "test_run_admission_options",
     ("action_judgement.py", "_ask_check"): "test_action_judgement_options",
+    ("memory/model_port.py", "writer_options"): "test_memory_writer_options",
 }
 
 # The calls whose result carries the denial: the helper itself, and the

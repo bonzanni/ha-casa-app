@@ -357,3 +357,19 @@ async def test_a_memory_clear_during_the_background_save_waits_for_it(
     await _settle()
     assert sem.events == ["retain", "delete_bank"]
     assert _records(env.retry_dir) == []
+
+
+async def test_a_reset_tells_the_memory_writer_the_session_ended(env,
+                                                                 monkeypatch):
+    """The end of a session is one of the writer's cadence points: the reset
+    signals it once, and does not wait for it."""
+    from memory import writer as memory_writer
+
+    ended: list[None] = []
+    monkeypatch.setattr(memory_writer, "session_ended",
+                        lambda: ended.append(None))
+    await _register(env.reg)
+    await asyncio.wait_for(reset_channel(_KEY, env.reg, _Memory(),
+                                         channel="telegram"), timeout=2)
+    assert len(ended) == 1
+    await _settle()

@@ -7,7 +7,9 @@ version's statements never change: a schema change appends a new version.
 
 Every table here is registered in :mod:`memory.registry` with its export,
 restore and wipe rule; the store pin in ``tests/test_memory_registry.py``
-fails on a table that is not (INV-MEM-025).
+fails on a table that is not (INV-MEM-025). The one view, ``pending``, stores
+nothing: it is the pending predicate over ``events``, ``dispositions`` and
+``correction_marks`` (:mod:`memory.pending`).
 
 Tables are ``STRICT`` (SQLite 3.37+). Tiers are the clearance ladder
 ``public < friends < family < private``. JSON-valued columns hold arrays or
@@ -16,6 +18,9 @@ objects as text. Times are ISO-8601 text.
 from __future__ import annotations
 
 _TIERS = "('public', 'friends', 'family', 'private')"
+#: A tier column's rank on the ladder, as SQL.
+_RANK = ("(CASE {col} WHEN 'public' THEN 0 WHEN 'friends' THEN 1 "
+         "WHEN 'family' THEN 2 ELSE 3 END)")
 
 V1: tuple[str, ...] = (
     # The verbatim store. ``seq`` is assigned by the store and never reused
@@ -116,6 +121,7 @@ V1: tuple[str, ...] = (
     ) STRICT
     """,
     "CREATE INDEX dispositions_seq_ledger ON dispositions (seq, ledger)",
+    "CREATE INDEX dispositions_commit_no ON dispositions (commit_no)",
     f"""
     CREATE TABLE jobs (
         job_id TEXT PRIMARY KEY,
@@ -139,6 +145,33 @@ V1: tuple[str, ...] = (
         marked_at TEXT NOT NULL,
         mark_commit_no INTEGER NOT NULL
     ) STRICT
+    """,
+    "CREATE INDEX correction_marks_mark_no ON correction_marks (mark_no)",
+    "CREATE INDEX correction_marks_mark_commit_no "
+    "ON correction_marks (mark_commit_no)",
+    # The one pending predicate (INV-MEM-027), for every ledger: an event is
+    # pending in L while it is eligible for L (its tier at or below L, and
+    # classified unless L is ``private``) and has no terminal disposition in
+    # L committed after its latest correction mark. ``deferred`` is not
+    # terminal. Nothing else records whether an event was handled.
+    f"""
+    CREATE VIEW pending (seq, ledger) AS
+    WITH ledgers (ledger, rank) AS (
+        VALUES ('public', 0), ('friends', 1), ('family', 2), ('private', 3)
+    )
+    SELECT e.seq, l.ledger
+    FROM events AS e
+    JOIN ledgers AS l
+      ON {_RANK.format(col="e.tier")} <= l.rank
+     AND (e.tier_status = 'classified' OR l.ledger = 'private')
+    WHERE NOT EXISTS (
+        SELECT 1 FROM dispositions AS d
+        WHERE d.seq = e.seq AND d.ledger = l.ledger
+          AND d.outcome IN ('patched', 'no_change')
+          AND d.commit_no > coalesce(
+              (SELECT m.mark_commit_no FROM correction_marks AS m
+               WHERE m.seq = e.seq), 0)
+    )
     """,
     f"""
     CREATE TABLE session_views (

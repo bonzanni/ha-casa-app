@@ -659,6 +659,10 @@ async def reset_channel(
         await _reset_locked(
             channel_key, registry, semantic_memory, channel=channel,
         )
+    # The session ended: the memory writer files what is pending at its next
+    # pass. A signal only — the reset never waits for the writer.
+    from memory import writer as memory_writer
+    memory_writer.session_ended()
 
 
 async def _reset_locked(

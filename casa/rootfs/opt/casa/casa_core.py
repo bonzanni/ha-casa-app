@@ -4210,6 +4210,12 @@ async def main() -> None:
     # Live capture writes here, or to the spool while the store is
     # unavailable or busy.
     memory_capture.configure(store=memory_store)
+    # The writer files captured events into the ledgers in the background;
+    # its task starts with the timers (step 14).
+    from memory import nightly as memory_nightly
+    from memory import writer as memory_writer
+    from memory.model_port import SdkModelPort
+    memory_writer.configure(memory_store, SdkModelPort())
 
     def _agent_home_dir(role: str) -> str:
         """Resident transcript cwd (encoded-cwd dir for get_session_messages /
@@ -4949,6 +4955,7 @@ async def main() -> None:
     async def _memory_spool_notice(text: str) -> None:
         await operator_notify(channel_manager, text)
     memory_capture.configure(notify=_memory_spool_notice)
+    memory_writer.active().notify = _memory_spool_notice
     agent_mod.active_session_registry = session_registry  # #411 — wipe orchestrator input
     agent_mod.active_executor_registry = executor_registry
     runtime.engagement_driver = engagement_driver
@@ -6071,6 +6078,18 @@ async def main() -> None:
     # rather than up to five minutes from now. Runs before start() so it
     # cannot race the interval job's first pass.
     await _reminder_sweep()
+
+    # The memory writer's nightly pass only queues writer jobs (condense,
+    # regroup, failed-job retries); the writer task runs them.
+    scheduler.add_job(
+        memory_nightly.run,
+        trigger="cron",
+        id="memory_nightly",
+        hour=memory_nightly.HOUR, minute=memory_nightly.MINUTE,
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+    memory_writer.start()
 
     scheduler.start()
 

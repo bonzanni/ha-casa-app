@@ -10,6 +10,7 @@ seam is the real one, against a real store.
 from __future__ import annotations
 
 import asyncio
+import json
 import secrets
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -231,3 +232,44 @@ async def test_an_excluded_specialists_engagement_turn_captures_nothing(
     await drv.send_user_turn(rec, "find the invoice", tg_message_id=9,
                              inbound_token=ticket)
     assert events(mem) == []
+
+
+async def test_the_ledger_never_holds_excluded_output(roles, mem, tmp_path):
+    """INV-MEM-032, the ledger half. Through the real notice producer, an
+    excluded delegation and a hand-off from the excluded specialist, the
+    store gets the resident's and finance's words only; the writer then
+    files every pending event and neither its model prompt nor any object
+    or revision of the ledger holds the excluded output."""
+    from memory import writer
+    from memory_writer_support import ScriptedPort, add_each, new_writer, rows
+
+    FakeClient.reset()
+    FakeClient.response_text = "Your invoice is saved."
+    agent = _make_agent(tmp_path)
+    notice = _notice("browser", status="ok", text=EXCLUDED_ANSWER)
+    msg = BusMessage(type=MessageType.REQUEST, source="browser",
+                     target="assistant", content=notice, channel="telegram",
+                     context={"chat_id": "1"})
+    with patch("sdk_client_pool._default_make_client", FakeClient):
+        await agent._process(msg, origin_question="get my invoice")
+    FakeClient.reset()
+    await _delegate(roles["browser"], "fetch my invoice", ORIGIN,
+                    EXCLUDED_ANSWER)
+    await _delegate(roles["finance"], EXCLUDED_ANSWER,
+                    {**ORIGIN, "execution_role": "browser",
+                     "delegation_depth": 1,
+                     "_handoff_chain": ("assistant", "browser")},
+                    "finance answer")
+    stored = events(mem)
+    assert len(stored) == 2
+
+    port = ScriptedPort(add_each)
+    job = writer.enqueue(mem, "private", writer.ORDINARY)
+    assert await new_writer(mem, port).run_job(job) == writer.COMMITTED
+    assert [e["seq"] for e in port.prompts[0]["events"]] == [
+        e["seq"] for e in stored]
+    assert CANARY not in json.dumps(port.prompts)
+    ledger = rows(mem, "SELECT * FROM objects") + rows(
+        mem, "SELECT * FROM revisions")
+    assert len(ledger) == 4
+    assert [r for r in ledger if CANARY in json.dumps(r)] == []

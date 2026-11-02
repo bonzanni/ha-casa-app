@@ -32,7 +32,9 @@ the long-term memory backend is built. It checks that SQLite can create and quer
 table, creates the directory, and brings the file to the current schema version in a single
 transaction. A fresh file counts as version 0, so creating a store and migrating one are
 the same loop over `memory/schema.py`'s `MIGRATIONS`. The schema version is SQLite's
-`user_version`. Only then is the file switched to WAL, because a journal-mode change cannot
+`user_version`. Besides its tables the schema holds one view, `pending`, which stores
+nothing: it is the writer's pending predicate over events, dispositions and correction marks
+([`memory-writer.md`](memory-writer.md)). Only then is the file switched to WAL, because a journal-mode change cannot
 sit inside the transaction. WAL is a performance setting: if the switch fails, the store
 stays available in its current journal mode and a warning is logged.
 
