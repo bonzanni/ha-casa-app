@@ -190,15 +190,15 @@ jobs:
   # as Supervisor starts it — NET_ADMIN only and seccomp unconfined (Chrome's namespace
   # sandbox needs user namespaces) — on a user-defined network, with synthetic fixtures only
   # (casa_browser/test/run-integration.sh, the same script as `make test-browser-integration`).
-  # It is not a scheduled-only lane: every push and pull request runs it. The script exits
-  # nonzero on any failure and pytest prints the counts; a run that collects no test fails.
+  # It takes about 40 minutes, so it runs only on the nightly schedule and on a manual
+  # dispatch, never on a push or a pull request; a red night wakes `nightly-alarm`. The script
+  # exits nonzero on any failure and pytest prints the counts; a run that collects no test fails.
   browser-integration:
     name: Browser app integration tests (casa_browser image)
     runs-on: ubuntu-latest
     timeout-minutes: 60
     if: >
-      github.event_name == 'push'
-      || github.event_name == 'pull_request'
+      github.event_name == 'schedule'
       || github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v7
@@ -271,9 +271,10 @@ jobs:
   # builds either, so every PR and every release run stayed green while the
   # nightly failed seven times running (#585) — the failure was found by hand.
   # This job is the missing signal: one tracking issue, a comment per red
-  # night, nothing at all while the nightly is green.
+  # night, nothing at all while the nightly is green. The browser image lane is
+  # scheduled-only for the same reason, so its red night wakes this job too.
   nightly-alarm:
-    needs: [tier1-smoke, tier3-hardening]
+    needs: [tier1-smoke, tier3-hardening, browser-integration]
     if: failure() && github.event_name == 'schedule'
     runs-on: ubuntu-latest
     permissions:

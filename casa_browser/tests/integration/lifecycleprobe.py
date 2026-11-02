@@ -20,6 +20,22 @@ import time
 from pathlib import Path
 
 
+# A frame's own address and every request it completed (a resource timing entry appears once
+# the response is in), each as path and query: a fetch's request, or a form's navigation.
+_ARRIVED = ("() => [location.pathname + location.search, ...performance.getEntriesByType('resource')"
+            ".map(e => { const u = new URL(e.name); return u.pathname + u.search; })]")
+
+
+async def _landed(page, path: str) -> bool:
+    for frame in page.frames:
+        try:
+            if path in await asyncio.wait_for(frame.evaluate(_ARRIVED), 2):
+                return True
+        except Exception:       # a frame navigating or gone: the next poll reads it again
+            continue
+    return False
+
+
 async def _scenario(steps: list[dict], broker: dict | None) -> list:
     sys.path.insert(0, "/opt")
     from casa_browser.broker_client import BrokerClient
@@ -241,6 +257,15 @@ async def _scenario(steps: list[dict], broker: dict | None) -> list:
                 # the page, as a site's script would.
                 page = browser.session.page
                 out.append(await page.evaluate(arg["code"], isolated_context=False))
+            elif op == "landed":
+                # Test instrumentation: wait, bounded, until a request to ``path`` (path and
+                # query) has completed in any frame of the page, cross-site frames included. A
+                # wait proves nothing by itself: the test still counts what the fixture received.
+                page = browser.session.page
+                deadline = time.monotonic() + arg.get("timeout", 10)
+                while not await _landed(page, arg["path"]) and time.monotonic() < deadline:
+                    await asyncio.sleep(0.05)
+                out.append(None)
             elif op == "search":
                 obs = await attempt(ctl.search(run_id(arg["name"]), arg["query"]))
                 if isinstance(obs, dict):

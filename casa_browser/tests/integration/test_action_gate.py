@@ -107,18 +107,20 @@ def tap(choice="confirm"):
     return {"tap": {"name": R, "choice": choice}}
 
 
-def landed(path, timeout_ms=10_000):
-    """Wait, in the page and bounded, until the page's own request to ``path`` has completed
-    (its resource timing entry appears once the response is in). A press's request leaves the
-    page after the action reports ``done``; the scenario's end withdraws the browser's
-    connections, so a request still in transit then never reaches the fixture. It returns on the
-    first such request, so a caller that pins exactly one keeps the file's observation margin
-    after it for a duplicate to land in. The count is still asserted on what the fixture
-    received: a press that sends nothing waits out the bound and counts zero."""
-    return js("() => new Promise(done => { const end = Date.now() + %d; (function poll() {"
-              "if (Date.now() > end || performance.getEntriesByType('resource').some(e => {"
-              "const u = new URL(e.name); return u.pathname + u.search === %s; })) done(null);"
-              "else setTimeout(poll, 50); })(); })" % (timeout_ms, json.dumps(path)))
+def landed(path, timeout=10):
+    """Wait, bounded, until a request to ``path`` (path and query) has completed in any frame of
+    the page: a fetch's resource timing entry, in the main frame or a child frame (cross-site
+    ones included), or a frame now at that address (a form's navigation). A press's request
+    leaves the page after the action reports ``done``; the scenario's end withdraws the
+    browser's connections, so a request still in transit then never reaches the fixture. It
+    returns on the first such request, so a caller that pins exactly one keeps the file's
+    observation margin (``MARGIN``) after it for a duplicate to land in. The count is still
+    asserted on what the fixture received: a press that sends nothing waits out the bound and
+    counts zero."""
+    return {"landed": {"path": path, "timeout": timeout}}
+
+
+MARGIN = {"sleep": 0.5}
 
 
 OBS = {"observe": {"name": R}}
@@ -148,7 +150,7 @@ def test_2_lost_reply_then_duplicate_tap(tmp_path):
     out, req = gate_run(tmp_path, page(PAY_FORM), [
         act("click", "Pay now"), verdict(ASK), tap(), tap(),
         {"verdict": {"name": R, "verdict": SAME, "keep": True}},
-        {"verdict": {"name": R, "verdict": SAME}}, landed("/submit?pay"), {"sleep": 0.5}])
+        {"verdict": {"name": R, "verdict": SAME}}, landed("/submit?pay"), MARGIN])
     _, _, first, again, done, replay, _, _ = out
     assert again == {**first, "repeat": True}
     assert done["outcome"] == "done" and replay == {**done, "repeat": True}
@@ -166,7 +168,7 @@ def test_3_generation_change_while_waiting(tmp_path, matches):
     out, req = gate_run(tmp_path, page(FRAMED), [
         act("click", "Pay now"), verdict(ASK),
         js("() => { " + extra + "document.getElementById('fr').src = '/frame2'; }"),
-        {"sleep": 1}, tap(), *([verdict(SAME), landed("/submit?pay"), {"sleep": 0.5}] if matches == 1
+        {"sleep": 1}, tap(), *([verdict(SAME), landed("/submit?pay"), MARGIN] if matches == 1
                              else [])])
     if matches == 1:
         assert out[-4]["outcome"] == "rejudgement_required" and out[-3]["outcome"] == "done"
@@ -368,8 +370,8 @@ def test_17_type_enter_question_whose_total_changes_while_typing(tmp_path):
 def test_16b_tapped_type_enter_runs_once(tmp_path):
     out, req = gate_run(tmp_path, page(MSG), [
         act("type", "Bericht", text="Klopt dit?", enter=True), verdict(ASK_CHANGE), tap(),
-        verdict(SAME), verdict(SAME), {"sleep": 1}])
-    assert out[-2]["outcome"] == "done" and len(hits(req, "/msg")) == 1
+        verdict(SAME), verdict(SAME), landed("/msg"), MARGIN])
+    assert out[-3]["outcome"] == "done" and len(hits(req, "/msg")) == 1
 
 
 @pytest.mark.parametrize("when", ["while typing a space", "between typing and Enter"])
@@ -496,7 +498,7 @@ PERIOD = ('<main><p>Orders</p><label>Period <select id="p" onchange="fetch(\'/sa
 
 def test_28_collapsed_period_select_selects_once(tmp_path):
     out, req = gate_run(tmp_path, page(PERIOD), [
-        act("select", "Period", choice="2025"), verdict(GO), {"sleep": 1},
+        act("select", "Period", choice="2025"), verdict(GO), landed("/save?2025"), MARGIN,
         js("() => document.getElementById('p').value")])
     assert out[1]["outcome"] == "done" and out[-1] == "2025"
     assert [r[2] for r in hits(req, "/save")] == ["/save?2025"]
@@ -621,10 +623,10 @@ def test_r2_hit_test_through_a_transformed_frame(tmp_path, transform):
     html = page(f'<main><p>Invoices</p><iframe id="fr" src="/frame1" style="width:500px;height:300px;'
                 f'transform:{transform};transform-origin:0 0;border:0"></iframe></main>')
     out, req = gate_run(tmp_path, html, [
-        {"sleep": 1}, OBS, act("click", "Read invoices"), verdict(GO), {"sleep": 0.5}],
-        pages={"/frame1": page(SCALED)})
+        {"sleep": 1}, OBS, act("click", "Read invoices"), verdict(GO), landed("/submit?read"),
+        MARGIN], pages={"/frame1": page(SCALED)})
     assert hits(req, "/submit?del") == []
-    assert len(hits(req, "/submit?read")) == (1 if out[-2]["outcome"] == "done" else 0)
+    assert len(hits(req, "/submit?read")) == (1 if out[-3]["outcome"] == "done" else 0)
 
 
 def test_r2_a_change_past_a_values_first_200_characters_is_shown(tmp_path):
@@ -688,12 +690,12 @@ def test_hit_through_a_cross_site_frame(tmp_path, style):
                 f'left:700px;top:120px;width:500px;height:300px;border:0;transform-origin:0 0;{style}">'
                 '</iframe></main>')
     out, req = gate_run(tmp_path, html, [
-        {"sleep": 1.5}, OBS, act("click", "Read invoices"), verdict(GO), {"sleep": 0.5}],
-        pages={"/frame1": page(XFRAME % (0, 40))})
+        {"sleep": 1.5}, OBS, act("click", "Read invoices"), verdict(GO), landed("/submit?read"),
+        MARGIN], pages={"/frame1": page(XFRAME % (0, 40))})
     assert hits(req, "/submit?del") == []
-    assert len(hits(req, "/submit?read")) == (1 if out[-2]["outcome"] == "done" else 0)
-    if out[-2]["outcome"] != "done":
-        assert out[-2]["reason"] == "moved"
+    assert len(hits(req, "/submit?read")) == (1 if out[-3]["outcome"] == "done" else 0)
+    if out[-3]["outcome"] != "done":
+        assert out[-3]["reason"] == "moved"
 
 
 def test_hit_in_a_scrolled_cross_site_frame_of_a_scrolled_page(tmp_path):
@@ -705,10 +707,10 @@ def test_hit_in_a_scrolled_cross_site_frame_of_a_scrolled_page(tmp_path):
     out, req = gate_run(tmp_path, html, [
         {"sleep": 1.5}, js("() => window.scrollTo(0, 700)"),
         js("() => { document.getElementById('fr').contentWindow.postMessage('scroll', '*'); }"),
-        {"sleep": 0.5}, OBS, act("click", "Read invoices"), verdict(GO), {"sleep": 0.5}],
-        pages={"/frame1": page(XFRAME % (1000, 2000),
-                               "addEventListener('message', () => scrollTo(0, 960));")})
-    assert out[-2]["outcome"] == "done"
+        {"sleep": 0.5}, OBS, act("click", "Read invoices"), verdict(GO), landed("/submit?read"),
+        MARGIN], pages={"/frame1": page(XFRAME % (1000, 2000),
+                                        "addEventListener('message', () => scrollTo(0, 960));")})
+    assert out[-3]["outcome"] == "done"
     assert len(hits(req, "/submit?read")) == 1 and hits(req, "/submit?del") == []
 
 
@@ -742,7 +744,8 @@ def test_hit_accepts_slotted_and_pseudo_element_content(tmp_path):
     html = page('<style>#pb::before{content:"Invoice PDF";display:block;height:40px}</style><main>'
                 f'<button id="pb" data-k="pdf" onclick="{SUBMIT}" style="width:300px;height:90px">Download</button>'
                 '</main>')
-    out, req = gate_run(tmp_path, html, [act("click", "Download"), verdict(GO), {"sleep": 0.5}])
+    out, req = gate_run(tmp_path, html, [act("click", "Download"), verdict(GO),
+                                         landed("/submit?pdf"), MARGIN])
     assert out[1]["outcome"] == "done" and len(hits(req, "/submit?pdf")) == 1
 
 
@@ -758,10 +761,11 @@ def test_r4_re_resolution_stays_in_the_targets_frame(tmp_path):
         {"sleep": 1}, OBS,
         {"act": {"name": R, "kind": "click", "label": "Open", "hold": True, "nth": 1}},
         js("() => { document.getElementById('fr').src = '/frame2'; }"), {"sleep": 1},
-        verdict(GO), {"sleep": 0.5}], pages={"/frame1": child, "/frame2": child})
+        verdict(GO), landed("/submit?read-child"), MARGIN],
+        pages={"/frame1": child, "/frame2": child})
     assert hits(req, "/submit?delete-main") == []
-    assert out[-2]["outcome"] in ("not_run", "judgement_required", "done")
-    if out[-2]["outcome"] == "done":
+    assert out[-3]["outcome"] in ("not_run", "judgement_required", "done")
+    if out[-3]["outcome"] == "done":
         assert len(hits(req, "/submit?read-child")) == 1
 
 
@@ -823,7 +827,8 @@ def test_ab_a_buttonless_form_is_judged_and_its_enter_sent_once(tmp_path):
     the Enter is judged as that submission, not refused, and sent once after a go."""
     html = page('<main><form action="/zoek" method="get"><label>Zoek <input name="q"></label></form></main>')
     out, req = gate_run(tmp_path, html, [
-        act("type", "Zoek", text="factuur", enter=True), verdict(GO), {"sleep": 1}])
+        act("type", "Zoek", text="factuur", enter=True), verdict(GO), landed("/zoek?q=factuur"),
+        MARGIN])
     assert packet(out[0])["target"]["enter_submission"]["entries"] == [["q", "[the typed field]"]]
     assert out[1]["outcome"] == "done" and len(hits(req, "/zoek")) == 1
 
@@ -835,14 +840,14 @@ def test_s4_a_signed_in_sites_buttonless_search_loads_its_result_page(tmp_path):
     account = (b'<title>A</title><main><form action="/zoek" method="get">'
                b'<label>Zoek <input name="q"></label></form></main>')
     out, req = gate_run(tmp_path, b"", [
-        act("type", "Zoek", text="factuur", enter=True), verdict(GO), {"sleep": 1.5}, OBS],
-        account_html=account,
+        act("type", "Zoek", text="factuur", enter=True), verdict(GO), landed("/zoek?q=factuur"),
+        MARGIN, OBS], account_html=account,
         pages={"/zoek": b"<title>Results</title><p>Zoekresultaten voor de factuur</p>"})
     assert packet(out[0])["where"]["session"] == "signed_in"
     assert out[1]["outcome"] == "done", out[1]
     zoek = hits(req, "/zoek")
     assert [(m, host.split(":")[0]) for m, host, _p in zoek] == [("GET", A)], zoek
-    assert "Zoekresultaten" in out[3].get("text", ""), out[3]
+    assert "Zoekresultaten" in out[4].get("text", ""), out[4]
 
 
 def test_ab_secrets_never_reach_a_packet(tmp_path):
@@ -1083,7 +1088,7 @@ def test_s5g_a_time_field_takes_the_judged_value_and_the_form_submits_it(tmp_pat
                 "document.getElementById('seen').textContent = 'seen ' + e.target.value);")
     out, req = gate_run(tmp_path, html, [
         act("type", "Pickup time", text="19:30"), verdict(GO), {"sleep": 0.5}, OBS,
-        act("click", "Order"), verdict(GO), {"sleep": 1}])
+        act("click", "Order"), verdict(GO), landed("/submit?t=19%3A30"), MARGIN])
     pkt = packet(out[0])
     assert pkt["action"] == {"kind": "type", "text": "19:30", "then_enter": False}
     assert pkt["target"]["input_type"] == "time"
@@ -1344,7 +1349,7 @@ def test_s5m_a_time_field_in_a_written_frame_is_seen_set_and_read_back(tmp_path)
         {"observe": {"name": R, "values": True}},
         act("type", "Pickup time", text="19:30"), verdict(GO), {"sleep": 0.5},
         {"observe": {"name": R, "values": True}},
-        act("click", "Order"), verdict(GO), {"sleep": 1}])
+        act("click", "Order"), verdict(GO), landed("/submit?t=19%3A30"), MARGIN])
     seen, judged, typed, _, after = out[:5]
     assert "Pickup time" in seen["labels"] and seen["values"]["Pickup time"] == "", seen
     assert "[a frame on this page is not shown]" not in seen["text"], seen["text"]
