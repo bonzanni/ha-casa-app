@@ -130,7 +130,9 @@ REGISTRY: tuple[Entry, ...] = (
     Entry("backfill run", Kind.TABLE, ("backfill_run",),
           Export.NO, Restore.NONE, Wipe.DELETE),
     # --- the rest of /data/memory -------------------------------------------
-    Entry("spool", Kind.FILE, (f"{MEMORY_DIR}/spool.jsonl",),
+    # The capture spool, and the snapshot a drain renames it to and stores.
+    Entry("spool", Kind.FILE, (f"{MEMORY_DIR}/spool.jsonl",
+                               f"{MEMORY_DIR}/spool.draining.jsonl"),
           Export.DRAIN, Restore.NONE, Wipe.DELETE),
     Entry("search index", Kind.FILE, _with_sidecars(f"{MEMORY_DIR}/search.db"),
           Export.NO, Restore.REBUILD, Wipe.DELETE_REBUILD),

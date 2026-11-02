@@ -306,22 +306,30 @@ async def test_no_model_call_on_capture(mem, tmp_path, monkeypatch):
         "ping", "pong", "drains the spool", "again", "pong"]
 
 
+def _snapshot_lines(store: MemoryStore) -> list[dict]:
+    try:
+        raw = Path(capture.snapshot_path(store.directory)).read_bytes()
+    except FileNotFoundError:
+        return []
+    return [json.loads(line) for line in raw.splitlines() if line.strip()]
+
+
+class Killed(BaseException):
+    """A process killed at a chosen point (never caught as an Exception)."""
+
+
 async def test_spool_drain_rerun_adds_each_item_once(mem, monkeypatch):
-    """A drain killed after its commit, before it removed the spool, and run
-    again leaves exactly one event per spooled item."""
+    """A drain killed after its commits, before it removed its snapshot, and
+    run again leaves exactly one event per spooled item."""
     _down(mem)
     for i in range(3):
         capture.append(mem, _item(f"spooled {i}"))
     _up(mem)
-
-    class Killed(BaseException):
-        pass
-
-    spool = capture.spool_path(mem.directory)
+    snapshot = capture.snapshot_path(mem.directory)
     real_unlink = os.unlink
 
     def _unlink(path, *a, **k):
-        if os.fspath(path) == spool:
+        if os.fspath(path) == snapshot:
             raise Killed
         return real_unlink(path, *a, **k)
 
@@ -329,45 +337,175 @@ async def test_spool_drain_rerun_adds_each_item_once(mem, monkeypatch):
     with pytest.raises(Killed):
         capture.drain_spool(mem)
     monkeypatch.setattr(os, "unlink", real_unlink)
-    assert len(events(mem)) == 3 and len(spool_lines(mem)) == 3
+    assert len(events(mem)) == 3 and len(_snapshot_lines(mem)) == 3
     assert capture.drain_spool(mem) == 0
     assert sorted(e["text"] for e in events(mem)) == [
         "spooled 0", "spooled 1", "spooled 2"]
-    assert not os.path.exists(spool)
+    assert not os.path.exists(snapshot)
+    assert not os.path.exists(capture.spool_path(mem.directory))
 
 
-def _pause_drain(monkeypatch, drain_thread_name: str):
-    """Pause the drain inside its write transaction, after its snapshot read,
-    on its first insert; returns (paused, release)."""
+async def test_a_leftover_snapshot_is_drained_exactly_once(mem, monkeypatch):
+    """A drain killed right after it renamed the spool leaves the snapshot;
+    items spooled afterwards go to a fresh spool; the next drain stores the
+    leftover snapshot first and then the new spool, each item exactly once,
+    and leaves neither file."""
+    _down(mem)
+    for i in range(3):
+        capture.append(mem, _item(f"before {i}"))
+    real_rename = capture._rename
+
+    def _rename_then_die(src, dst):
+        real_rename(src, dst)
+        raise Killed
+
+    monkeypatch.setattr(capture, "_rename", _rename_then_die)
+    with pytest.raises(Killed):
+        capture.drain_spool(mem)
+    monkeypatch.setattr(capture, "_rename", real_rename)
+    assert [ln["item"]["text"] for ln in _snapshot_lines(mem)] == [
+        "before 0", "before 1", "before 2"]
+    assert spool_lines(mem) == []
+    capture.append(mem, _item("after"))            # still down: a fresh spool
+    assert [ln["item"]["text"] for ln in spool_lines(mem)] == ["after"]
+    _up(mem)
+    assert capture.drain_spool(mem) == 4
+    assert sorted(e["text"] for e in events(mem)) == [
+        "after", "before 0", "before 1", "before 2"]
+    assert capture.drain_spool(mem) == 0
+    assert not os.path.exists(capture.snapshot_path(mem.directory))
+    assert not os.path.exists(capture.spool_path(mem.directory))
+
+
+async def test_a_healthy_append_finishes_a_leftover_snapshot(mem, monkeypatch):
+    """A snapshot left with no spool beside it is still drained: the next
+    healthy capture starts the drain, and every line is stored once."""
+    _down(mem)
+    for i in range(2):
+        capture.append(mem, _item(f"left {i}"))
+    with pytest.raises(Exception):
+        capture.drain_spool(mem)                  # cut off by the store
+    _up(mem)
+    assert len(_snapshot_lines(mem)) == 2 and spool_lines(mem) == []
+    await capture.record(_item("healthy"))
+    await capture.settle()
+    assert sorted(e["text"] for e in events(mem)) == [
+        "healthy", "left 0", "left 1"]
+    assert not os.path.exists(capture.snapshot_path(mem.directory))
+
+
+def _observe_spool_fsyncs(monkeypatch) -> list[int]:
+    """Link counts of every spool file at the moment it is fsynced."""
+    links: list[int] = []
+    real_fsync = capture._fsync
+
+    def _fsync(fd):
+        if not os.path.isdir(f"/proc/self/fd/{fd}"):
+            links.append(os.fstat(fd).st_nlink)
+        return real_fsync(fd)
+
+    monkeypatch.setattr(capture, "_fsync", _fsync)
+    return links
+
+
+def _kept_once(store: MemoryStore, key: str) -> None:
+    """*key* is stored or in a spool file, exactly once overall."""
+    places = ([e["source_key"] for e in events(store)]
+              + [ln["item"]["source_key"] for ln in spool_lines(store)]
+              + [ln["item"]["source_key"] for ln in _snapshot_lines(store)])
+    assert places.count(key) == 1, places
+
+
+async def test_append_during_a_drain_is_kept(mem, monkeypatch):
+    """A capture that must spool while a drain runs keeps its item and never
+    waits for the drain.
+
+    (a) The drain is storing its snapshot, holding the store's write lock: the
+    capture times out on the store, spools to a fresh spool, fsyncs and has
+    its receipt while the drain is still paused; the next drain stores it.
+    (b) The capture reaches its spool write while the drain holds the spool
+    lock to rename the spool: its line lands in the snapshot (written before
+    the rename) or in the fresh spool (after it), never in a renamed file the
+    drain has already read."""
+    monkeypatch.setattr(capture, "CAPTURE_BUSY_TIMEOUT_S", 0.1)
+    links = _observe_spool_fsyncs(monkeypatch)
+
+    # (a) the drain is storing.
+    _down(mem)
+    capture.append(mem, _item("already spooled"))
+    _up(mem)
     paused, release = threading.Event(), threading.Event()
     real_insert = capture._insert
 
     def _insert(conn, item):
-        if threading.current_thread().name == drain_thread_name \
-                and not paused.is_set():
+        if threading.current_thread().name == "drain" and not paused.is_set():
             paused.set()
             assert release.wait(10)
         return real_insert(conn, item)
 
     monkeypatch.setattr(capture, "_insert", _insert)
-    return paused, release
+    drain = threading.Thread(target=capture.drain_spool, args=(mem,),
+                             name="drain")
+    drain.start()
+    assert paused.wait(10)
+    links.clear()
+    late = _item("arrived while the drain stored")
+    result: list = []
+    appender = threading.Thread(
+        target=lambda: result.append(capture.append(mem, late)))
+    appender.start()
+    appender.join(5)
+    still_paused = not release.is_set()
+    release.set()
+    drain.join(10)
+    assert not appender.is_alive() and still_paused   # receipt before the drain
+    assert result[0] is not None and result[0].outcome == capture.SPOOLED
+    assert links == [1], links
+    _kept_once(mem, late.source_key)
+    assert [ln["item"]["source_key"] for ln in spool_lines(mem)] == [
+        late.source_key]
+    capture.drain_spool(mem)
+    assert [e["text"] for e in events(mem)] == [
+        "already spooled", "arrived while the drain stored"]
+    monkeypatch.setattr(capture, "_insert", real_insert)
 
+    # (b) rename versus append.
+    _down(mem)
+    capture.append(mem, _item("in the spool before the rename"))
+    _up(mem)
+    renaming, rename_go = threading.Event(), threading.Event()
+    snapshot_read = threading.Event()
+    real_rename, real_read = capture._rename, capture._read
 
-async def test_append_during_a_drain_is_kept(mem, monkeypatch):
-    """A capture that arrives while a drain holds the store keeps its item:
-    it times out on the store, spools, fsyncs and returns a receipt, and the
-    line survives the drain's removal of the spool (it is either an event or
-    a line at the spool path the next drain stores)."""
-    monkeypatch.setattr(capture, "CAPTURE_BUSY_TIMEOUT_S", 0.1)
-    links_at_fsync: list[int] = []
-    real_fsync = capture._fsync
+    def _rename(src, dst):
+        renaming.set()
+        assert rename_go.wait(10)
+        return real_rename(src, dst)
 
-    def _fsync(fd):
-        if not os.path.isdir(f"/proc/self/fd/{fd}"):
-            links_at_fsync.append(os.fstat(fd).st_nlink)
-        return real_fsync(fd)
+    def _read(path):
+        data = real_read(path)
+        snapshot_read.set()
+        return data
 
-    monkeypatch.setattr(capture, "_fsync", _fsync)
+    class _GatedLock:
+        """The spool lock, except that the appender, once it holds it, waits
+        until the drain has read its snapshot before writing."""
+
+        def __init__(self, lock):
+            self._lock = lock
+
+        def __enter__(self):
+            self._lock.acquire()
+            if threading.current_thread().name == "appender":
+                assert snapshot_read.wait(10)
+            return self
+
+        def __exit__(self, *exc):
+            self._lock.release()
+
+    monkeypatch.setattr(capture, "_rename", _rename)
+    monkeypatch.setattr(capture, "_read", _read)
+    monkeypatch.setattr(capture, "_spool_lock", _GatedLock(threading.Lock()))
     reached_spool = threading.Event()
     real_spool_write = capture._spool_write
 
@@ -376,41 +514,31 @@ async def test_append_during_a_drain_is_kept(mem, monkeypatch):
         return real_spool_write(*a, **k)
 
     monkeypatch.setattr(capture, "_spool_write", _spool_write)
-
-    _down(mem)
-    capture.append(mem, _item("already spooled"))
-    _up(mem)
-    links_at_fsync.clear()
-    paused, release = _pause_drain(monkeypatch, "drain")
     drain = threading.Thread(target=capture.drain_spool, args=(mem,),
                              name="drain")
     drain.start()
-    assert paused.wait(10)
-
-    late = _item("arrived during the drain")
-    result: list = []
+    assert renaming.wait(10)                   # the drain holds the spool lock
+    links.clear()
+    late = _item("arrived during the rename")
+    result = []
+    # The capture's spool fallback itself (its store attempt is (a)'s case).
     appender = threading.Thread(
-        target=lambda: result.append(capture.append(mem, late)))
+        target=lambda: result.append(capture._spool(mem.directory, late)),
+        name="appender")
     appender.start()
-    # The capture reaches its spool write while the drain still holds the
-    # lock and its transaction; the drain then unlinks the spool.
     assert reached_spool.wait(10)
     await asyncio.sleep(0.2)
-    release.set()
+    rename_go.set()
     drain.join(10)
     appender.join(10)
     assert not drain.is_alive() and not appender.is_alive()
-
-    receipt = result[0]
-    assert receipt is not None and receipt.outcome == capture.SPOOLED
-    assert links_at_fsync == [1], links_at_fsync
-    stored = [e["source_key"] for e in events(mem)]
-    lines = [ln["item"]["source_key"] for ln in spool_lines(mem)]
-    assert (late.source_key in stored) != (late.source_key in lines)
-    assert lines == [late.source_key]               # never lost, never doubled
+    assert result[0] is not None and result[0].outcome == capture.SPOOLED
+    assert links == [1], links
+    _kept_once(mem, late.source_key)
     capture.drain_spool(mem)
-    assert [e["text"] for e in events(mem)] == [
-        "already spooled", "arrived during the drain"]
+    assert sorted(e["text"] for e in events(mem)) == [
+        "already spooled", "arrived during the rename",
+        "arrived while the drain stored", "in the spool before the rename"]
 
 
 # --- tier floors and the delegated request ----------------------------------
@@ -596,15 +724,17 @@ def _write_spool(store: MemoryStore, lines: int, *, age_s: float = 0.0) -> None:
 
 
 @pytest.mark.parametrize("case", ["store_locked", "old_spool_notice_hangs",
-                                  "large_spool", "drain_running"])
+                                  "large_spool", "drain_running",
+                                  "spool_behind_a_drain"])
 async def test_capture_never_holds_a_turn(mem, tmp_path, monkeypatch, case):
     """A real ``Agent._process`` turn's capture overhead stays under
     ``CAPTURE_OVERHEAD_BOUND_S`` against a warm baseline turn of the same
     agent, whatever state the store and spool are in: a write lock another
     connection holds, an old spool whose notice never resolves, or a large
     spool waiting to be drained — the turn's own capture starting the drain,
-    or a drain already storing batches when the turn arrives. Each item still
-    gets its receipt."""
+    or a drain already storing batches when the turn arrives — and a turn that
+    must spool (the store's write lock held) while a drain of a large spool
+    is in flight. Each item still gets its receipt."""
     FakeClient.reset()
     agent = _make_agent(tmp_path)
     baseline = await _timed_turn(agent, "1")            # warm, healthy
@@ -619,7 +749,23 @@ async def test_capture_never_holds_a_turn(mem, tmp_path, monkeypatch, case):
     monkeypatch.setattr(capture, "record", _recording)
     holder = None
     never = asyncio.Event()
-    if case == "store_locked":
+    drain_go = threading.Event()
+    if case == "spool_behind_a_drain":
+        _write_spool(mem, LARGE_SPOOL)
+        drain_paused = threading.Event()
+        real_parse = capture._parse
+
+        def _paused_parse(raw):
+            drain_paused.set()
+            assert drain_go.wait(30)
+            return real_parse(raw)
+
+        monkeypatch.setattr(capture, "_parse", _paused_parse)
+        await real_record(_item("starts the drain"))
+        assert await asyncio.to_thread(drain_paused.wait, 10)
+        holder = sqlite3.connect(mem.path, isolation_level=None)
+        holder.execute("BEGIN IMMEDIATE")
+    elif case == "store_locked":
         holder = sqlite3.connect(mem.path, isolation_level=None)
         holder.execute("BEGIN IMMEDIATE")
     elif case == "old_spool_notice_hangs":
@@ -654,6 +800,7 @@ async def test_capture_never_holds_a_turn(mem, tmp_path, monkeypatch, case):
             holder.close()
         _up(mem)
         never.set()
+        drain_go.set()
         await capture.settle()
     assert elapsed - baseline < CAPTURE_OVERHEAD_BOUND_S, (case, elapsed,
                                                            baseline)

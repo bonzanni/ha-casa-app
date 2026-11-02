@@ -5,7 +5,8 @@ store the list does not name is one they silently miss, and nothing else
 would notice. Two pins keep the list complete:
 
 * **The store pin** reads a fresh store, and the same store once the capture
-  producers have written to it (a committed item and a spooled one): every
+  producers have written to it (a committed item, a spool, and the snapshot
+  a cut-off drain leaves): every
   ``sqlite_master`` table and every path under ``/data/memory`` must belong to
   a row, and every row must carry all three rules.
 * **The producer pin** runs each named producer of memory-derived text in a
@@ -130,8 +131,11 @@ def _fresh_store(tmp_path: Path) -> MemoryStore:
 
 def _run_capture(store: MemoryStore) -> None:
     """The producers that write under ``/data/memory``: a capture that
-    commits, and one that spools while the store is down."""
+    commits, one that spools while the store is down, a drain cut off by the
+    store after it took the spool (leaving its snapshot), and one more
+    spooled capture (a fresh spool beside the snapshot)."""
     from memory import capture
+    from memory.store import MemoryUnavailable
     item = capture.event(role="assistant", channel="telegram",
                          speaker_kind="resident", origin_kind="operator",
                          text="a sample remembered fact",
@@ -140,9 +144,12 @@ def _run_capture(store: MemoryStore) -> None:
     store._unavailable_reason = "a simulated outage"
     try:
         spooled = capture.append(store, replace(item, source_key="event:1"))
+        with pytest.raises(MemoryUnavailable):
+            capture.drain_spool(store)
+        again = capture.append(store, replace(item, source_key="event:2"))
     finally:
         store._unavailable_reason = None
-    assert spooled.outcome == capture.SPOOLED
+    assert spooled.outcome == again.outcome == capture.SPOOLED
 
 
 def test_store_pin_every_table_and_path_is_registered(tmp_path: Path) -> None:
@@ -155,7 +162,8 @@ def test_store_pin_every_table_and_path_is_registered(tmp_path: Path) -> None:
     assert store_pin_violations(str(tmp_path)) == []
     # And after the capture producers have written: the spool is a path too.
     _run_capture(store)
-    assert "spool.jsonl" in os.listdir(store.directory)
+    assert {"spool.jsonl", "spool.draining.jsonl"} <= set(
+        os.listdir(store.directory))
     assert store_pin_violations(str(tmp_path)) == []
 
 
@@ -175,10 +183,13 @@ def test_store_pin_red_cases(tmp_path: Path) -> None:
     from memory import capture
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(capture, "SPOOL_NAME", "stray-capture.jsonl")
+        mp.setattr(capture, "SNAPSHOT_NAME", "stray-snapshot.jsonl")
         _run_capture(store)
-    assert (f"path {registry.MEMORY_DIR}/stray-capture.jsonl has no registry "
-            "row") in store_pin_violations(str(tmp_path))
-    (Path(store.directory) / "stray-capture.jsonl").unlink()
+    problems = store_pin_violations(str(tmp_path))
+    for stray_name in ("stray-capture.jsonl", "stray-snapshot.jsonl"):
+        assert (f"path {registry.MEMORY_DIR}/{stray_name} has no registry "
+                "row") in problems
+        (Path(store.directory) / stray_name).unlink()
 
     no_rule = tuple(replace(e, wipe=None) if e.name == "meta" else e
                     for e in REGISTRY)

@@ -12,24 +12,26 @@ draining the spool into a healthy store, which the first append to reach one
 starts (one drain at a time), and the private notice an old spool earns, sent
 under its own bound. :func:`settle` awaits whatever is in flight.
 
-Every spool line carries its item's ``source_key``, and the drain inserts with
-an ``INSERT`` that ignores a key already stored, in batches of
+Every spool line carries its item's ``source_key``. A drain takes the spool by
+renaming it to a snapshot (:data:`SNAPSHOT_NAME`) and stores the snapshot's
+lines with an ``INSERT`` that ignores a key already stored, in batches of
 :data:`DRAIN_BATCH` lines per transaction with the store left free for
-:data:`DRAIN_PAUSE_S` between them, so a drain cut off after any commit and run
-again adds each item once, and the captures of running turns reach the store
-while a long drain runs. Appends to the spool and the drain are
-serialized by one process-wide lock, :data:`_spool_lock`:
+:data:`DRAIN_PAUSE_S` between them; it removes the snapshot only once every
+line is committed. A drain cut off at any point leaves the snapshot, the next
+drain finishes it before taking a new one (so at most one exists), and a
+re-run adds each item once. Spool writes and the drain's rename are serialized
+by one process-wide lock, :data:`_spool_lock`:
 
 * a spool write takes it before it opens or creates the file and holds it
   through the write, the fsync and the close (and the directory fsync when it
   created the file); no descriptor is kept across acquisitions;
-* a drain holds it from its read of the spool, through its commits, to the
-  spool's removal and the directory fsync. It waits on the store no longer
-  than a capture does, so a capture that has to spool is never held behind a
-  drain that is itself waiting for the store.
+* a drain holds it only to rename the spool to the snapshot and fsync the
+  directory. Storing the snapshot happens outside it, so a capture that has to
+  spool never waits for a drain: it creates a fresh spool.
 
-A line is therefore removed only by the drain that stored it, and a line
-written while a drain runs lands in a spool the next drain reads. A
+A line written before the rename is in the snapshot the drain stores; a line
+written after it is in the fresh spool the next drain takes. None is removed
+by a drain that did not store it. A
 ``threading.Lock`` is enough because one process captures and drains; the
 blocking work runs in a worker thread (:func:`record` uses
 ``asyncio.to_thread``).
@@ -63,6 +65,9 @@ from timekeeping import resolve_tz
 logger = logging.getLogger(__name__)
 
 SPOOL_NAME = "spool.jsonl"
+#: The spool as a drain took it: renamed under the spool lock, then stored
+#: outside it. At most one exists; the next drain finishes a leftover one.
+SNAPSHOT_NAME = "spool.draining.jsonl"
 
 #: Seconds an append (or a drain batch) waits on a busy store before it
 #: spools instead (or gives up until the next healthy append). The store's own
@@ -92,8 +97,10 @@ SPOOL_NOTICE = (
 STORED = "stored"
 SPOOLED = "spooled"
 
-#: Serializes every spool write with every drain (see the module docstring).
+#: Serializes every spool write with a drain's rename of the spool.
 _spool_lock = threading.Lock()
+#: Serializes drains among themselves (the background drain, the export's).
+_drain_lock = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -202,6 +209,10 @@ def spool_path(directory: str) -> str:
     return os.path.join(directory, SPOOL_NAME)
 
 
+def snapshot_path(directory: str) -> str:
+    return os.path.join(directory, SNAPSHOT_NAME)
+
+
 def _insert(conn: sqlite3.Connection, item: Event | Summary) -> int:
     """Insert *item*; an item whose key is already stored adds nothing.
     Returns the number of rows added."""
@@ -244,8 +255,9 @@ def append(store: MemoryStore, item: Event | Summary) -> Receipt | None:
 
 # --- the spool -------------------------------------------------------------
 
-#: The fsync calls, named so a test can observe the descriptor they sync.
+#: The fsync and rename calls, named so a test can observe them.
 _fsync = os.fsync
+_rename = os.rename
 
 
 def _fsync_dir(directory: str) -> None:
@@ -322,33 +334,54 @@ def _parse(raw: bytes) -> tuple[list[Event | Summary], int]:
 
 
 def drain_spool(store: MemoryStore) -> int:
-    """Store every spooled item, then remove the spool. Blocking.
+    """Store every spooled item. Blocking.
+
+    A snapshot a cut-off drain left behind is finished first. Then, holding
+    :data:`_spool_lock` only for this, the spool is renamed to the snapshot
+    and the directory fsynced; spool writes after that create a fresh spool
+    and never wait for the rest. The snapshot is stored outside the lock and
+    removed once every line is committed.
 
     Returns the number of rows added. Raises when the store cannot take them;
-    the spool is then left whole (batches already committed are ignored when
-    it is drained again). The export drains through this too; no caller holds
-    :data:`_spool_lock` when calling it."""
-    path = spool_path(store.directory)
-    with _spool_lock:
-        try:
-            with open(path, "rb") as f:
-                raw = f.read()
-        except FileNotFoundError:
-            return 0
-        items, torn = _parse(raw)
-        added = refused = 0
-        for start in range(0, len(items), DRAIN_BATCH):
-            if start:
-                time.sleep(DRAIN_PAUSE_S)
-            with store.transaction(
-                    write=True, busy_timeout=CAPTURE_BUSY_TIMEOUT_S) as conn:
-                for item in items[start:start + DRAIN_BATCH]:
-                    try:
-                        added += _insert(conn, item)
-                    except sqlite3.IntegrityError:
-                        refused += 1
-        os.unlink(path)
-        _fsync_dir(store.directory)
+    the snapshot is then left for the next drain, which adds nothing twice.
+    Drains are serialized among themselves (:data:`_drain_lock`). The export
+    drains through this too; no caller holds :data:`_spool_lock` when calling
+    it."""
+    directory = store.directory
+    snapshot = snapshot_path(directory)
+    with _drain_lock:
+        added = 0
+        if os.path.lexists(snapshot):
+            added += _store_snapshot(store, snapshot)
+        with _spool_lock:
+            if not os.path.lexists(spool_path(directory)):
+                return added
+            _rename(spool_path(directory), snapshot)
+            _fsync_dir(directory)
+        return added + _store_snapshot(store, snapshot)
+
+
+def _read(path: str) -> bytes:
+    with open(path, "rb") as f:
+        return f.read()
+
+
+def _store_snapshot(store: MemoryStore, snapshot: str) -> int:
+    """Store an immutable snapshot's lines in batches, then remove it."""
+    items, torn = _parse(_read(snapshot))
+    added = refused = 0
+    for start in range(0, len(items), DRAIN_BATCH):
+        if start:
+            time.sleep(DRAIN_PAUSE_S)
+        with store.transaction(
+                write=True, busy_timeout=CAPTURE_BUSY_TIMEOUT_S) as conn:
+            for item in items[start:start + DRAIN_BATCH]:
+                try:
+                    added += _insert(conn, item)
+                except sqlite3.IntegrityError:
+                    refused += 1
+    os.unlink(snapshot)
+    _fsync_dir(store.directory)
     if torn or refused:
         # A torn line was never fsynced, so it was never a receipt.
         logger.warning("memory spool drained with %d torn and %d refused "
@@ -392,7 +425,8 @@ def _durable_write(store: MemoryStore, item: Event | Summary
     store that just took a write."""
     receipt = append(store, item)
     waiting = (receipt is not None and receipt.outcome == STORED
-               and os.path.exists(spool_path(store.directory)))
+               and (os.path.lexists(spool_path(store.directory))
+                    or os.path.lexists(snapshot_path(store.directory))))
     return receipt, waiting
 
 

@@ -48,11 +48,18 @@ awaits the append, so every capture a turn made has returned by the time the tur
 short store transaction, or — when the store is unavailable or held past a 50 ms bound —
 written to `/data/memory/spool.jsonl` and fsynced. That write is the only part of a capture
 a seam awaits. Everything else is detached and never awaited by a turn: the first append
-that commits while a spool waits starts a drain (one at a time) that stores the spool in
-batches, leaving the store free between them for the captures of running turns; an old
-spool's notice is sent under its own bound. Appends to the spool and the drain are
-serialized by one lock, so a drain removes only the lines it stored. There is no model call
-on this path and no comparison of text: the same words said twice are two events.
+that commits while a spool waits starts a drain (one at a time); an old spool's notice is
+sent under its own bound.
+
+**A drain takes the spool whole, then stores it outside the lock.** Spool appends and the
+drain share one lock, and the drain holds it for one step only: renaming `spool.jsonl` to
+`spool.draining.jsonl` and fsyncing the directory. A line appended before the rename is in
+that snapshot; a line appended after it starts a fresh spool, so a capture that has to spool
+never waits for a drain. The drain then stores the immutable snapshot in batches, leaving
+the store free between them for the captures of running turns, and removes it only once
+every line is committed. At most one snapshot exists: a drain finishes a leftover one before
+it takes the spool again. There is no model call on this path and no comparison of text:
+the same words said twice are two events.
 
 **Writing is narrower than reading.** Only write-trusted channels retain to the shared
 bank, and only they capture. A channel that can recall is not thereby able to store.
@@ -165,9 +172,10 @@ the mechanisms that read.
 
 **The store is unavailable, or busy past the capture's bound.** The item is spooled and
 fsynced, with a receipt, and the turn goes on; a locked store costs a turn at most the
-50 ms bound per captured item. The next append that commits starts a detached drain; the
-drain inserts every line with an `INSERT` that ignores a `source_key` already stored, so a
-drain cut off after any of its commits and run again adds nothing twice.
+50 ms bound per captured item, and never waits for a drain that is running. The next append
+that commits starts a detached drain; the drain inserts every line with an `INSERT` that
+ignores a `source_key` already stored, so a drain cut off at any point and run again adds
+nothing twice.
 
 **The spool cannot be written either.** No receipt; the failure is logged at ERROR with the
 item's key, and the turn goes on without that item in memory.
@@ -177,10 +185,12 @@ hour old, the operator gets one private notice, sent detached so no turn waits o
 delivery; it is sent once per spool, and a send that fails or exceeds its own bound is
 logged and retried at the next spooled append.
 
-**A drain fails.** It waits on the store no longer than a capture does, so a drain blocked by
-another writer gives up rather than holding the spool lock a spooling capture needs. The
-spool is left whole for the next healthy append (batches already committed are ignored
-then). A line a
+**A drain fails, or the process dies during one.** Whatever the drain had taken stays in
+`spool.draining.jsonl` (a drain waits on the store no longer than a capture does, so one
+blocked by another writer gives up at its next batch). The next drain, started by the next
+healthy append, stores that snapshot first — its committed batches are ignored — and only
+then takes the spool. Both files are registered memory: the export drains them, the wipe
+deletes them. A line a
 crash tore part-way is skipped by the drain — it was never fsynced, so it never had a
 receipt — and the next spool write starts on a fresh line so it is never glued to one.
 

@@ -52,8 +52,9 @@ after its wipe, and what the wipe does. Export, restore and the wipe are loops o
 list, so a store missing from it is one they would silently skip. The registry covers:
 
 - the tables of `memory.db` and the file with its SQLite sidecars;
-- the rest of `/data/memory`: the capture spool, the search index, local exports, a staged
-  restore source, legacy transcripts awaiting backfill, and the maintenance intent;
+- the rest of `/data/memory`: the capture spool and the snapshot a drain stores from, the
+  search index, local exports, a staged restore source, legacy transcripts awaiting
+  backfill, and the maintenance intent;
 - the SDK transcript roots: the resident home's `.claude/projects`, each engagement
   workspace's `.home/.claude/projects`, and `/root/.claude/projects` when it is a real
   directory;
