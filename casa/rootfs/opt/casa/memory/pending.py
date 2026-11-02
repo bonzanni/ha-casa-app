@@ -35,6 +35,18 @@ def rank(tier: str) -> int:
     return TIERS.index(tier)
 
 
+#: The range of an event's ``seq``: SQLite's signed 64-bit integer. A value
+#: outside it names no event and cannot even be bound to a query.
+SEQ_MIN, SEQ_MAX = -2 ** 63, 2 ** 63 - 1
+
+
+def is_seq(value) -> bool:
+    """Whether *value* could be an event's ``seq``: an ``int``, not a
+    ``bool``, within SQLite's integer range."""
+    return (isinstance(value, int) and not isinstance(value, bool)
+            and SEQ_MIN <= value <= SEQ_MAX)
+
+
 def current_commit_no(conn: sqlite3.Connection) -> int:
     """The highest ``commit_no`` the store's rows carry (0 when none)."""
     return conn.execute(

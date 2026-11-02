@@ -368,3 +368,45 @@ async def test_the_private_ledger_keeps_every_source_it_cites(
         store, "SELECT object_id FROM objects WHERE ledger = 'private'")]
     cited = [private, shared, shy, shy + 1000]
     assert _sources(store, "private", oid) == (cited, [cited])
+
+
+@pytest.mark.parametrize("huge", [2 ** 63, -2 ** 63 - 1, 10 ** 30])
+async def test_a_source_id_sqlite_cannot_hold_is_dropped_not_fatal(
+        tmp_path, monkeypatch, friends, caplog, huge):
+    """An integer beyond SQLite's signed 64-bit range names no event: a
+    lower ledger drops it like any unreadable id, and the job files."""
+    store = new_store(tmp_path)
+    shared = seed(store, f"bins on Tuesday {FRIENDS_MARK}", tier="friends",
+                  tier_status="classified")
+    caplog.set_level("WARNING", logger="memory.patches")
+    out = await _file_friends(store, monkeypatch, lambda seqs: [
+        {"op": "add", "kind": "entry", "entry_kind": "fact",
+         "subject": "bins", "body": "Tuesday", "line": "bin day",
+         "source_seqs": [shared, huge, True]}])
+    assert out == writer.COMMITTED
+    [oid] = [r["object_id"] for r in rows(
+        store, "SELECT object_id FROM objects WHERE ledger = 'friends'")]
+    assert _sources(store, "friends", oid) == ([shared], [[shared]])
+    assert pending_seqs(store, "friends") == []
+    [line] = [r.getMessage() for r in caplog.records
+              if r.name == "memory.patches"]
+    assert "2 source ref(s)" in line and "1 object(s)" in line
+
+
+@pytest.mark.parametrize("huge", [2 ** 63, -2 ** 63 - 1, float("inf")])
+def test_a_private_source_id_sqlite_cannot_hold_dates_nothing(
+        tmp_path, huge):
+    """The private ledger keeps every id it cites; one SQLite cannot hold
+    names no event, so serving the ledger dates nothing from it rather
+    than failing the view."""
+    from memory import view
+    store = new_store(tmp_path)
+    seq = seed(store, "said today")
+    _, [oid] = add(store, [fact("a", "x", source_seqs=[seq, huge])])
+    assert _sources(store, "private", oid)[0] == [seq, huge]
+    with store.transaction() as conn:
+        assert view.unreachable(conn, "private") == []
+    served = view.serve(store, "k", clearance="private", budget=1000).view
+    assert served is not None and "- a: x" in served.text
+    [opened] = view.open_objects(store, [oid], clearance="private")
+    assert opened["date"]

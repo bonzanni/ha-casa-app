@@ -176,14 +176,16 @@ def _date(conn: sqlite3.Connection, objs: list[Obj], ledger: str) -> None:
     """Date each object by the latest local day among its source events
     that are readable at *ledger* (classified at or below it, or any for
     ``private``): a source id naming an event *ledger* cannot read dates
-    nothing."""
+    nothing, and nor does one that cannot be a ``seq`` (never bound)."""
     seqs: set[int] = set()
     for o in objs:
         for s in o.source_seqs:
             try:
-                seqs.add(int(s))
-            except (TypeError, ValueError):
+                value = int(s)
+            except (TypeError, ValueError, OverflowError):
                 continue
+            if pending.is_seq(value):
+                seqs.add(value)
     if not seqs:
         return
     days: dict[int, str] = {}
@@ -200,7 +202,7 @@ def _date(conn: sqlite3.Connection, objs: list[Obj], ledger: str) -> None:
         for s in o.source_seqs:
             try:
                 day = days.get(int(s))
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 day = None
             if day:
                 found.append(day)

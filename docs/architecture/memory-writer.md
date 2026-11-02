@@ -67,8 +67,9 @@ and an outcome per event. What the conversation means, and how the ledger should
 the model's judgement; code checks only that each operation is well formed and stays in the
 job's ledger. Cues are add-only. Each object written keeps only the source event ids its
 ledger can read: below `private`, an id naming an event the job was never given — a
-`private` one, one left provisional, a `seq` no event holds yet — is dropped from the object,
-not refused, and one warning per commit counts the drops (INV-MEM-029).
+`private` one, one left provisional, a `seq` no event holds yet, a value no `seq` can be —
+is dropped from the object, not refused, and one warning per commit counts the drops
+(INV-MEM-029).
 
 **The commit is one transaction with three checks.** It re-reads the ledger's revisions and
 each input event's mark: if the ledger changed or an input event's mark is not the one the

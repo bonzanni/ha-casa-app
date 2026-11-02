@@ -27,8 +27,9 @@ Every object written keeps only the sources its ledger can read (M6,
 INV-MEM-029): below ``private``, a source id is kept only when it names an
 event classified at or below the ledger, the rule of the pending view. An
 id naming an event the job was never given (a ``private`` one, one left
-provisional, or a ``seq`` no event holds yet, which a later event could
-take) is dropped, not refused: the model never saw that event, so a cite it
+provisional, a ``seq`` no event holds yet, which a later event could take,
+or a value that cannot be a ``seq`` at all, such as an integer beyond
+SQLite's range) is dropped, before anything is bound, not refused: the model never saw that event, so a cite it
 invented costs the object that reference and nothing else. One warning per
 commit counts what was dropped. The ``private`` ledger reads every event,
 and keeps every id it cites.
@@ -107,8 +108,7 @@ class _Ledger:
         or below the ledger."""
         if self.ledger == "private" or not seqs:
             return seqs
-        ids = {s for s in seqs if isinstance(s, int)
-               and not isinstance(s, bool)}
+        ids = {s for s in seqs if pending.is_seq(s)}
         readable: set[int] = set()
         ordered = sorted(ids)
         for i in range(0, len(ordered), 500):
@@ -118,8 +118,7 @@ class _Ledger:
                 f"({', '.join('?' for _ in chunk)}) "
                 f"AND {_TIER_RANK} <= ? AND tier_status = 'classified'",
                 (*chunk, pending.rank(self.ledger))))
-        kept = [s for s in seqs if s in readable
-                and isinstance(s, int) and not isinstance(s, bool)]
+        kept = [s for s in seqs if pending.is_seq(s) and s in readable]
         if len(kept) != len(seqs):
             self.dropped += len(seqs) - len(kept)
             self.trimmed.add(object_id)
