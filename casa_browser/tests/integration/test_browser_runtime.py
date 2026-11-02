@@ -236,9 +236,14 @@ def test_the_extensions_own_background_calls_are_never_a_question():
     try:
         install_policy(h.account_policy(sites=(s_f,), revision=1))
         # The proxy starts with its credential window open (events then keep no origin); the
-        # controller closes it once it is up — closed here the same way.
+        # controller closes it once it is up — closed here the same way. A close keeps origins
+        # out for a quiet period after it (WINDOW_QUIET), and the extension's first calls come
+        # about 2.6 s after Chrome starts (measured): the browser starts only once the proxy
+        # reports the window closed, or the control's calls can arrive without their origin.
         r = as_user("controller", "import asyncio\nfrom casa_browser.proxy_client import ProxyClient\n"
                     "async def main():\n    c = ProxyClient()\n    await c.close_window(await c.open_window())\n"
+                    "    for _ in range(300):\n        if not (await c.status())['window_open']:\n            return\n"
+                    "        await asyncio.sleep(0.1)\n    raise SystemExit('the window stayed open')\n"
                     "asyncio.run(main())")
         assert r.returncode == 0, r.stderr[-400:]
         res = run_scenario([{"open": {"site_id": "ext-f"}}, {"extension": 150}, {"wait": 150}],

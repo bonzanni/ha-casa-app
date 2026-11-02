@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.3] - 2026-11-02
+
+### Security
+
+- The browser's proxy runs on mitmproxy 12.3.1, and with it on fixed releases of the libraries it uses: Brotli 1.2.1 (a decoder flaw that a crafted compressed response could exploit), cryptography 50.0.2, h2 4.4.1, tornado 6.5.10 and pyasn1 0.6.5. msgpack is no longer installed (mitmproxy stopped using it). Three tornado advisories fixed only in tornado 6.6 remain open: mitmproxy does not yet accept 6.6, and only mitmproxy's web interface uses tornado, which the app never starts (the proxy does not load tornado at all).
+
 ## [0.1.2] - 2026-11-02
 
 ### Fixed
