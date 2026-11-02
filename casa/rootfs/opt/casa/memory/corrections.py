@@ -13,8 +13,9 @@ maintained ledger, a second mark (a retried tool call) changes nothing and
 queues nothing. Once every ledger has filed the event after its mark, a new
 mark replaces the old one.
 
-After the transaction a correction job is queued for every maintained ledger
-the event is now pending in; the writer runs it next. A writer job already
+In the same transaction a correction job is queued for every maintained
+ledger the event is now pending in, so a mark and its jobs are stored
+together or not at all; the writer runs them next. A writer job already
 holding the event is rejected at its commit, because the event's mark is no
 longer the one it read.
 
@@ -59,8 +60,8 @@ def mark(store: MemoryStore, seq: int) -> MarkResult:
              datetime.now(timezone.utc).isoformat(timespec="microseconds"),
              pending.current_commit_no(conn)))
         ledgers = tuple(pending.pending_in(conn, seq))
-    for ledger in ledgers:
-        writer.enqueue(store, ledger, writer.CORRECTION)
+        for ledger in ledgers:
+            writer._enqueue(conn, ledger, writer.CORRECTION)
     if ledgers:
         writer.wake()
     return MarkResult(marked=True, queued=ledgers)

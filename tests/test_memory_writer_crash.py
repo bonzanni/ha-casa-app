@@ -19,10 +19,14 @@ import json
 import os
 import re
 import signal
+import sqlite3
 import subprocess
 import sys
 import threading
 import time
+from contextlib import contextmanager
+
+import pytest
 
 from memory import corrections, nightly, pending, writer
 from memory_writer_support import (
@@ -497,3 +501,104 @@ def test_only_the_commit_marks_a_job_committed_red_case(tmp_path):
         "def finish(conn):\n"
         "    conn.execute(\"UPDATE jobs SET state = 'committed'\")\n")
     assert _committing_sites(tmp_path) == ["x.py:finish"]
+
+
+# --- a mark and its job; two writers ------------------------------------------
+
+async def test_a_mark_and_its_correction_job_are_stored_together(tmp_path):
+    """The store stops taking writes the moment the mark's transaction
+    commits. The mark's correction job must already be stored with it: a
+    retried mark is idempotent and queues nothing, and the cadence never
+    re-offers an event this process was already given, so a job queued after
+    the mark would be lost with the outage."""
+    if os.geteuid() == 0:
+        pytest.skip("a permission flip does not stop root")
+    store = new_store(tmp_path)
+    e = seed(store, "my gym is on Elm Street")
+    w = new_writer(store, ScriptedPort(no_change_all))
+    await run_new(w)
+    assert pending_seqs(store) == []
+
+    real = store.transaction
+    writes = []
+
+    @contextmanager
+    def outage_after_first_write(**kw):
+        with real(**kw) as conn:
+            yield conn
+        if kw.get("write"):
+            writes.append(1)
+            if len(writes) == 1:
+                os.chmod(store.path, 0)
+
+    store.transaction = outage_after_first_write
+    try:
+        try:
+            corrections.mark(store, e)
+        except sqlite3.OperationalError:
+            pass                            # the outage cut the call short
+    finally:
+        os.chmod(store.path, 0o600)
+        del store.transaction
+    assert corrections.mark(store, e).marked is False   # the retry
+    assert pending_seqs(store) == [e]
+    queued = [j for j in job_rows(store) if j["state"] == "queued"]
+    assert [(j["kind"], j["ledger"]) for j in queued] == [
+        ("correction", "private")]
+    assert w.schedule_due() == []           # the cadence would not save it
+    assert await w.pass_once() is True
+    assert terminal_after_mark(store, e) == 1
+    assert pending_seqs(store) == []
+
+
+def _second_writer_files(store, script, a_script=no_change_all):
+    """A port for writer A whose model call lets writer B (another process
+    id) queue a job, assemble, file with *script* and commit first; A then
+    answers with *a_script*."""
+    from memory.model_port import ModelReply
+
+    class Port(ScriptedPort):
+        async def complete(self, *, system, prompt):
+            parsed = json.loads(prompt)
+            self.prompts.append(parsed)
+            b = writer.enqueue(store, "private", writer.ORDINARY)
+            assert b is not None            # a queued job while A runs
+            other = new_writer(store, ScriptedPort(script), boot_id="boot-b")
+            assert await other.run_job(b) == writer.COMMITTED
+            return ModelReply(text=a_script(parsed))
+    return Port(None)
+
+
+@pytest.mark.parametrize("a_script", [no_change_all, add_each],
+                         ids=["a-no-change", "a-adds"])
+async def test_two_writers_never_file_an_event_twice(tmp_path, a_script):
+    """Writers A and B (two process ids, one WAL store) both read e as
+    pending; B commits ``no_change`` first, which changes no revision and no
+    mark. A's commit re-reads the pending view, finds e filed and writes
+    nothing (not even A's patch): e has one terminal disposition."""
+    store = new_store(tmp_path)
+    e = seed(store, "the bins go out on Tuesday")
+    a = writer.enqueue(store, "private", writer.ORDINARY)
+    port = _second_writer_files(store, no_change_all, a_script)
+    assert await new_writer(store, port, boot_id="boot-a").run_job(a) == (
+        writer.COMMITTED)
+    assert [e_["seq"] for e_ in port.prompts[0]["events"]] == [e]
+    assert dispositions(store) == [(e, "private", "no_change", 1)]
+    assert terminal_after_mark(store, e) == 1
+    assert rows(store, "SELECT * FROM revisions") == []
+    assert [j["state"] for j in job_rows(store)] == ["committed"] * 2
+
+
+async def test_a_second_writer_filing_some_events_leaves_the_rest(tmp_path):
+    """B files one of A's two events and defers the other: A's commit gives
+    a disposition only to the event still pending."""
+    store = new_store(tmp_path)
+    e1, e2 = seed(store, "one"), seed(store, "two")
+    a = writer.enqueue(store, "private", writer.ORDINARY)
+    port = _second_writer_files(
+        store, lambda p: reply({e1: "no_change", e2: "deferred"}))
+    await new_writer(store, port, boot_id="boot-a").run_job(a)
+    assert dispositions(store) == [(e1, "private", "no_change", 1),
+                                   (e2, "private", "deferred", 1),
+                                   (e2, "private", "no_change", 2)]
+    assert pending_seqs(store) == []
