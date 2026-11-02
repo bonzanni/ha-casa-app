@@ -224,16 +224,16 @@ async def test_an_unconfirmed_run_blocks_only_its_session(home):
     # a whole-directory target is blocked by any unconfirmed row naming it
     assert transcript_runs.blocks_deletion(s, directory="/d/one")
     assert not transcript_runs.blocks_deletion(s, directory="/d/two")
-    # a row naming no session blocks no session, unless it is a summary
+    # a row naming no session blocks no session, of any kind: only a
+    # whole-directory removal of the directory it names
     transcript_runs.register(s, kind="engagement", role="r", directory="/d/two")
     assert not transcript_runs.blocks_deletion(s, directory="/d/two", session_id=b)
     summary = transcript_runs.register(s, kind="summary", role="r",
                                        directory="/d/three")
-    assert transcript_runs.blocks_deletion(s, directory="/d/three", session_id=b)
-    assert not transcript_runs.blocks_deletion(s, directory="/d/four", session_id=b)
+    assert not transcript_runs.blocks_deletion(s, directory="/d/three", session_id=b)
+    assert transcript_runs.blocks_deletion(s, directory="/d/three")
     # a confirmed row blocks nothing
     transcript_runs.confirm(s, summary)
-    assert not transcript_runs.blocks_deletion(s, directory="/d/three", session_id=b)
     assert not transcript_runs.blocks_deletion(s, directory="/d/three")
 
 
@@ -416,10 +416,12 @@ async def test_a_summary_row_blocks_until_its_summaries_are_captured(
         home, monkeypatch, driver):
     """A real SIGKILL after the terminal flip and before the summary's
     receipt leaves the summary in no table and the ``summary`` row
-    unresolved. The engagement's transcripts — and another engagement's in
-    the same folder — survive every reaper pass; a claude_code workspace
-    survives every workspace sweep past its retention. Red case: a summary
-    with no row lets the reaper delete them."""
+    unresolved. The engagement's own transcript survives every reaper pass
+    while a sibling engagement's transcript in the same shared folder goes;
+    a claude_code workspace survives every workspace sweep past its
+    retention. Red cases: a summary with no row lets the reaper delete the
+    engagement's transcript; a folder-wide summary gate keeps the
+    sibling's."""
     from drivers import workspace
     from engagement_registry import EngagementRegistry
     from engagement_transcript_reaper import reap_engagement_transcripts
@@ -438,21 +440,26 @@ async def test_a_summary_row_blocks_until_its_summaries_are_captured(
     assert [r["status"] for r in json.loads(tombstone.read_text())] == ["completed"]
     assert summaries(home.store) == []
     (row,) = rows(home.store)
-    expected = cwd if driver == "in_casa" else str(root / eid)
-    assert (row["kind"], row["session_id"], row["directory"]) == (
-        "summary", None, expected)
+    expected = (cwd, sid) if driver == "in_casa" else (str(root / eid), None)
+    assert (row["kind"], row["directory"], row["session_id"]) == (
+        "summary", *expected)
     assert row["confirmed_at"] is None and unresolved(home.store) == 1
 
     if driver == "in_casa":
         reg = EngagementRegistry(tombstone_path=str(tombstone), bus=None)
         await reg.load()
+        sibling = await reg.create(
+            kind="executor", role_or_type="configurator", driver="in_casa",
+            task="t", origin=dict(ORIGIN), topic_id=None)
         other = str(uuid.uuid4())
+        await reg.persist_session_id(sibling.id, other)
+        await reg.mark_completed(sibling.id, time.time())
         mine, theirs = write_transcript(cwd, sid), write_transcript(cwd, other)
         for _ in range(2):
             await reap_engagement_transcripts(reg, now=time.time() + 400 * 86400)
             await asyncio.to_thread(transcript_runs.retention_pass, home.store,
                                     now=after_retention())
-        assert mine.exists() and theirs.exists()
+        assert mine.exists() and not theirs.exists()
     else:
         ws = root / eid
         (ws / ".home" / ".claude" / "projects").mkdir(parents=True)
@@ -628,3 +635,28 @@ def _delegated_cfg(home):
     cfg.cwd = str(home.tmp / "agent-home" / "finance")
     cfg.memory.token_budget = 1000
     return cfg
+
+
+async def test_a_summary_run_names_every_session_its_engagement_ran_under(home):
+    """One row per session the record names (current, a job's list, a
+    clearance downgrade's retired ones), confirmed together; a sibling
+    engagement's session in the same folder is named by none of them."""
+    from engagement_registry import JOB_SIDS_KEY, RETIRED_SIDS_KEY, EngagementRegistry
+    a, b, c, sibling = (str(uuid.uuid4()) for _ in range(4))
+    reg = EngagementRegistry(tombstone_path=str(home.tmp / "e.json"), bus=None)
+    rec = await reg.create(
+        kind="executor", role_or_type="configurator", driver="in_casa", task="t",
+        origin=dict(ORIGIN, job={JOB_SIDS_KEY: [a, b]}, **{RETIRED_SIDS_KEY: [c]}),
+        topic_id=None)
+    await reg.persist_session_id(rec.id, b)
+    run = await tools._register_summary_run(rec)
+    assert sorted((r["kind"], r["session_id"]) for r in rows(home.store)) == sorted(
+        ("summary", s) for s in (a, b, c))
+    for s in (a, b, c):
+        assert transcript_runs.blocks_deletion(home.store, directory=tools.EXECUTOR_CWD,
+                                               session_id=s)
+    assert not transcript_runs.blocks_deletion(
+        home.store, directory=tools.EXECUTOR_CWD, session_id=sibling)
+    run.close()
+    await transcript_runs.settle()
+    assert all(r["confirmed_at"] is not None for r in rows(home.store))

@@ -998,22 +998,19 @@ async def test_the_shield_hands_back_the_works_own_cancellation_without_spinning
 
 async def test_an_unconfirmed_teardown_closes_the_fds_and_deletes_no_transcript(env, monkeypatch, deleter):
     """A CLI whose exit is unconfirmed may still flush its transcript; the
-    desk deletes none (the retention pass owns it) and keeps no deferred
-    waiter, so the fds are closed with the settle."""
+    desk deletes none (the retention pass owns it), so the fds are closed
+    with the settle."""
     monkeypatch.setattr(tools_mod, "_DELEGATION_CEILING_S", 0.05)
     env.confirm = False
     closed = []
     monkeypatch.setattr(pr.PinnedRun, "close_fds", lambda self: closed.append(self))
-    scheduled = []
-    monkeypatch.setattr(pr.PinnedRun, "schedule_after_exit",
-                        lambda self, f: scheduled.append(f))
 
     async def respond(call):
         await asyncio.sleep(30)
     env.respond = respond
     await asyncio.wait_for(_tap(env), 5)
     assert env.desk.faulted and env.terminated
-    assert deleter.deletes == [] and scheduled == []
+    assert deleter.deletes == []
     assert closed == [env.calls[0].owner]
 
 

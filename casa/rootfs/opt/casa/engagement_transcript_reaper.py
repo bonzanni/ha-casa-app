@@ -106,7 +106,11 @@ class _Counts:
                 "unconfirmed": self.unconfirmed}
 
 
-def _named_sids(rec) -> tuple[str, ...]:
+def named_sids(rec) -> tuple[str, ...]:
+    """Every SDK session *rec* names: its current one, every one its
+    background job lists and every one a clearance downgrade retired — the
+    sessions this pass deletes and an engagement's finalize summary run
+    keeps."""
     origin = rec.origin or {}
     job = origin.get("job")
     listed = job.get(JOB_SIDS_KEY) if isinstance(job, dict) else None
@@ -154,7 +158,7 @@ def _target_for(rec, counts: _Counts) -> _Target | None:
         # guessed — the sessions stay (disclosed residual).
         counts.skipped += 1
         return None
-    return _Target(rec.id, cwd, sids=_named_sids(rec))
+    return _Target(rec.id, cwd, sids=named_sids(rec))
 
 
 def _durable_terminal_ids(tombstone_path: str) -> set[str] | None:

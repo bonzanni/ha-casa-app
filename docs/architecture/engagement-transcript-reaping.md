@@ -26,12 +26,13 @@ unconfirmed run.** The invariant below states what that selects, and its gaps.
 **INV-ENG-027**: Once an `in_casa` engagement's terminal status is on disk and `TRANSCRIPT_RETENTION_DAYS` have passed since its `completed_at`, a pass run at scheduler start and every six hours deletes its CLI transcripts — a plugin job's whole per-engagement project folder, or, for a specialist or executor, each session the record names (its current session, every session its background job lists, and every session a clearance downgrade retired from it) in that record's own project folder — each only where the run-confirmation gate passes, and a plugin job's working folder `/data/engagements/<id>` at once, and selects nothing else; a `claude_code` workspace past its `retention_until` is deleted whole only where the gate passes for it, and is kept whole otherwise. A pass that cannot import the SDK's folder lookup deletes no transcript.
 
 **The gate** is `memory/transcript_runs.py`'s, asked at each delete and never copied: a
-session is kept while an unconfirmed run names it, every transcript in a folder is kept while
-an engagement's finalize-summary run naming that folder is unconfirmed, and a whole folder (a
-plugin job's, a workspace) is kept while any unconfirmed run names it. The finalize registers
-its summary run before the terminal flip that makes the record eligible here
-(`tools.py::_register_summary_run`), so a crash between the flip and the summaries' capture
-leaves the folder kept until a wipe, counted unresolved (INV-MEM-031, in
+session is kept while an unconfirmed run names it, and a whole folder (a plugin job's, a
+workspace) is kept while any unconfirmed run names it. The finalize registers its summary run
+before the terminal flip that makes the record eligible here
+(`tools.py::_register_summary_run`), one row per session the record names (one naming only
+the folder when it names none), so a crash between the flip and the summaries' capture keeps
+that engagement's own transcripts until a wipe, counted unresolved, and never a sibling
+engagement's in a shared folder (INV-MEM-031, in
 [`architecture/memory-lifecycle.md`](memory-lifecycle.md)). After a delete the rows that
 named it are removed. The pass reads no transcript.
 

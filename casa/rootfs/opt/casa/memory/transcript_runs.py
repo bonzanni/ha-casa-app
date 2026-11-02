@@ -26,9 +26,11 @@ it, its transcript is kept until a wipe, and nothing resolves it.
 **The gate.** Every deleter asks :func:`blocks_deletion` (through
 :func:`blocked`) at the delete and removes the rows that named what it deleted
 afterwards (:func:`forget`). A transcript is blocked while an unconfirmed row
-names its session; an unconfirmed ``summary`` row blocks every transcript in
-its directory; a whole-directory removal is blocked by any unconfirmed row
-naming that directory.
+names its session; a whole-directory removal is blocked by any unconfirmed row
+naming that directory. An engagement's ``summary`` run registers one row per
+session the engagement ran under (or one naming only its directory when it
+names none), so it keeps that engagement's own transcripts and never a
+sibling's in a shared folder.
 
 Registration and naming are awaited by the run (bounded like a capture, so a
 busy store never holds a turn: a failure is logged and the run continues,
@@ -124,17 +126,22 @@ def name_session(store: MemoryStore, run_id: str, session_id: str, *,
                      "WHERE run_id = ?", (session_id, run_id))
 
 
-def confirm(store: MemoryStore, run_id: str) -> None:
+def confirm(store: MemoryStore, *run_ids: str) -> None:
+    now = _now()
     with store.transaction(write=True) as conn:
-        conn.execute("UPDATE transcript_runs SET confirmed_at = ? "
-                     "WHERE run_id = ? AND confirmed_at IS NULL",
-                     (_now(), run_id))
+        for run_id in run_ids:
+            conn.execute("UPDATE transcript_runs SET confirmed_at = ? "
+                         "WHERE run_id = ? AND confirmed_at IS NULL",
+                         (now, run_id))
 
 
-def end(store: MemoryStore, run_id: str) -> None:
+def end(store: MemoryStore, *run_ids: str) -> None:
+    now = _now()
     with store.transaction(write=True) as conn:
-        conn.execute("UPDATE transcript_runs SET ended_at = ? "
-                     "WHERE run_id = ? AND ended_at IS NULL", (_now(), run_id))
+        for run_id in run_ids:
+            conn.execute("UPDATE transcript_runs SET ended_at = ? "
+                         "WHERE run_id = ? AND ended_at IS NULL",
+                         (now, run_id))
 
 
 def blocks_deletion(store: MemoryStore, *, directory: str | None,
@@ -150,8 +157,7 @@ def blocks_deletion(store: MemoryStore, *, directory: str | None,
         else:
             row = conn.execute(
                 "SELECT 1 FROM transcript_runs WHERE confirmed_at IS NULL "
-                "AND (session_id = ? OR (kind = ? AND directory = ?)) LIMIT 1",
-                (session_id, SUMMARY, directory)).fetchone()
+                "AND session_id = ? LIMIT 1", (session_id,)).fetchone()
     return row is not None
 
 
@@ -299,28 +305,36 @@ class Run:
         self.role = role
         self.directory = directory_key(directory)
         self.session_id = session_id
-        self.run_id: str | None = None
+        self.run_ids: list[str] = []
         self._store: MemoryStore | None = None
         self._open = 0
         self._failed = False
         self._closed = False
 
+    @property
+    def run_id(self) -> str | None:
+        return self.run_ids[0] if self.run_ids else None
+
     @classmethod
     async def start(cls, kind: str, *, role: str, directory: str | None,
                     session_id: str | None = None,
+                    sessions: tuple[str, ...] = (),
                     confirmed: bool = False) -> "Run":
         """Register a run before its first capture. A run whose role
-        captures nothing (*confirmed*) registers confirmed. A registration
-        that fails is logged once and the run goes on unprotected."""
+        captures nothing (*confirmed*) registers confirmed. A run that
+        already spans several sessions (an engagement's finalize, over the
+        sessions the engagement ran under) gives them as *sessions*: one row
+        each, one confirmation. A registration that fails is logged once and
+        the run goes on unprotected."""
         run = cls(kind, role, directory, session_id)
         store = _store()
         if store is None:
             return run
         try:
-            run.run_id = await asyncio.to_thread(
+            run.run_ids = [await asyncio.to_thread(
                 register, store, kind=kind, role=role,
-                directory=run.directory, session_id=session_id,
-                confirmed=confirmed)
+                directory=run.directory, session_id=sid,
+                confirmed=confirmed) for sid in (sessions or (session_id,))]
         except Exception as exc:  # noqa: BLE001 — never blocks the run
             logger.warning("%s run of %s not registered (%s: %s); its "
                            "transcript is not protected", kind, role,
@@ -371,13 +385,13 @@ class Run:
                 "transcript is kept", self.kind, self.run_id[:8], self.role,
                 "was interrupted" if self._open else "was not kept")
             return
-        _detach(confirm, self._store, self.run_id)
+        _detach(confirm, self._store, *self.run_ids)
 
     def end(self) -> None:
         """Record when a delegated run's client exited (its retention
         clock)."""
-        if self.run_id is not None and self._store is not None:
-            _detach(end, self._store, self.run_id)
+        if self.run_ids and self._store is not None:
+            _detach(end, self._store, *self.run_ids)
 
 
 def unregistered(kind: str, *, role: str, directory: str | None = None,
