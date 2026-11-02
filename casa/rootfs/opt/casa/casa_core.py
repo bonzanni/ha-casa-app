@@ -4193,7 +4193,8 @@ async def main() -> None:
     try:
         _maintenance_intent = await asyncio.to_thread(
             memory_maintenance.read_intent)
-    except memory_maintenance.IntentUnreadable:
+    except (memory_maintenance.IntentUnreadable, OSError):
+        # A record that exists but cannot be read is never a normal boot.
         _maintenance_intent = memory_maintenance.unreadable_intent()
     if _maintenance_intent is not None and _maintenance_intent["attempts"]:
         await memory_maintenance.notification_only(_maintenance_intent)

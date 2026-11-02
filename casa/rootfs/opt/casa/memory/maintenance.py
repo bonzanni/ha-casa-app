@@ -874,14 +874,27 @@ async def notification_only(
     """A recorded attempt means memory may be partly deleted: nothing that
     reads memory starts. The operator gets one line per container start,
     recorded before it is sent and never retried, and the process idles
-    until it is told to stop, so s6 does not respawn it into a loop."""
-    cid = _container_id(proc_root)
-    if cid not in intent["notified_container_ids"]:
-        intent["notified_container_ids"].append(cid)
-        await asyncio.to_thread(write_intent, intent, root)
-        await _say(send or send_operator_line, notification_line(intent))
+    until it is told to stop, so s6 does not respawn it into a loop.
+
+    Nothing here raises: a line that cannot be recorded is not sent (so a
+    failing write can never flood the operator), the reason is logged, and
+    the process idles all the same; the next start tries again."""
+    try:
+        line = notification_line(intent)
+    except Exception:  # noqa: BLE001 — a malformed record still idles
+        line = failed_line(intent.get("kind"), UNREADABLE_REASON)
+    try:
+        cid = _container_id(proc_root)
+        notified = intent.setdefault("notified_container_ids", [])
+        if cid not in notified:
+            notified.append(cid)
+            await asyncio.to_thread(write_intent, intent, root)
+            await _say(send or send_operator_line, line)
+    except Exception as exc:  # noqa: BLE001 — logged; never a crash loop
+        logger.error("memory maintenance: could not record the notice, so "
+                     "it was not sent (%s)", exc)
     logger.error("memory maintenance pending (%s); Casa is not taking "
-                 "messages until the app restarts", notification_line(intent))
+                 "messages until the app restarts", line)
     if stop is None:
         stop = asyncio.Event()
         loop = asyncio.get_running_loop()

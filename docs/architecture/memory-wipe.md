@@ -132,6 +132,10 @@ channels, the internal socket and the public app — `casa_core.main()` reads th
   until it succeeds; restart the app to retry."), or, for an attempt cut off before it could
   record one, "The memory wipe was interrupted before it finished; restart the app to
   retry." — and idles until it is stopped. It requests no restart, so it cannot loop.
+  Nothing on this path raises out of `main()`: a line it cannot record as sent is not sent
+  (so a failing write can never repeat it), the reason is logged, and the process idles
+  all the same; the next start tries again. A record that exists but cannot be opened is
+  treated as unreadable, never as a normal boot.
 
 **`setup-configs.sh` waits for the wipe.** While `maintenance.json` exists it skips the
 `/root/.claude/projects` migration — both the copy into the resident home and the symlink —

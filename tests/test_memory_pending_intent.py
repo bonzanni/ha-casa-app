@@ -49,7 +49,9 @@ import casa_core, supervisor_restart
 from memory import maintenance as m
 m.INTENT_PATH = {intent!r}
 m.container_id = lambda proc_root="/proc": {cid!r}
+sends = []
 async def _send(text):
+    sends.append(text)
     with open({sent!r}, "a") as fh:
         fh.write(text + "\\n")
     return True
@@ -64,16 +66,19 @@ replays = []
 async def _replay(**kw):
     replays.append(1)
 casa_core.replay_undergoing_engagements = _replay
+{prelude}
 asyncio.run(casa_core.main())
 print("RESULT " + json.dumps({{"opens": opens, "binds": binds,
-      "replays": len(replays), "restarts": len(restarts)}}))
+      "replays": len(replays), "restarts": len(restarts),
+      "sends": len(sends)}}))
 """
 
 
 _RUNS = [0]
 
 
-def run_main(tmp: Path, intent: dict | bytes | None, *, cid: str) -> tuple[dict, list[str]]:
+def run_main(tmp: Path, intent: dict | bytes | None, *, cid: str,
+             prelude: str = "") -> tuple[dict, list[str]]:
     """``casa_core.main()`` in its own process until it idles, then SIGTERM."""
     path = tmp / "memory" / "maintenance.json"
     if isinstance(intent, bytes):
@@ -83,6 +88,7 @@ def run_main(tmp: Path, intent: dict | bytes | None, *, cid: str) -> tuple[dict,
     _RUNS[0] += 1
     sent = tmp / f"sent-{_RUNS[0]}.txt"
     script = _MAIN.format(code=str(w.CODE_ROOT), intent=str(path), cid=cid,
+                          prelude=prelude,
                           sent=str(sent))
     env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
     child = subprocess.Popen([sys.executable, "-c", script], env=env, cwd="/",
@@ -135,7 +141,8 @@ def _attempted(error=None, *, kind="wipe", cid="c1"):
 def test_a_recorded_attempt_puts_casa_main_in_notification_only_mode(tmp_path):
     result, lines = run_main(tmp_path, _attempted(), cid="c2")
     assert lines == [maintenance.INTERRUPTED_LINES["wipe"]]
-    assert result == {"opens": [], "binds": [], "replays": 0, "restarts": 0}
+    assert result == {"opens": [], "binds": [], "replays": 0, "restarts": 0,
+                      "sends": 1}
     intent = json.loads((tmp_path / "memory" / "maintenance.json").read_text())
     assert intent["notified_container_ids"] == ["c2"]
 
@@ -464,6 +471,46 @@ def test_casa_main_meeting_an_intent_that_is_not_utf8_tells_and_waits(tmp_path):
     assert lines == ["Memory maintenance could not read its record, so "
                      "nothing was deleted. Remove /data/memory/maintenance.json, "
                      "then restart the app."]
-    assert result == {"opens": [], "binds": [], "replays": 0, "restarts": 0}
+    assert result == {"opens": [], "binds": [], "replays": 0, "restarts": 0,
+                      "sends": 1}
     _, again = run_main(tmp_path, None, cid="c3")
     assert len(again) == 1
+
+
+#: A file-size limit for the child only, set just before main() runs: every
+#: write past one byte fails with EFBIG (the signal is ignored, as a
+#: process that writes would see it), so the intent cannot be rewritten.
+EFBIG = """
+import resource, signal
+signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
+resource.setrlimit(resource.RLIMIT_FSIZE, (1, 1))
+"""
+
+
+def test_a_failing_bookkeeping_write_never_crashes_notification_only(tmp_path):
+    """r5 Astra S1: after a recorded failed wipe, casa-main cannot record
+    that it notified (EFBIG). It must not crash into a respawn loop: it logs,
+    sends nothing it could not record, and idles; the intent is kept, and
+    the next start does the same."""
+    intent = _attempted("the step failed")
+    path = tmp_path / "memory" / "maintenance.json"
+    for start in ("c2", "c3"):
+        result, lines = run_main(tmp_path, intent if start == "c2" else None,
+                                 cid=start, prelude=EFBIG)
+        assert lines == []
+        assert result == {"opens": [], "binds": [], "replays": 0,
+                          "restarts": 0, "sends": 0}
+    kept = json.loads(path.read_text())
+    assert kept["attempts"] == intent["attempts"]
+    assert kept["notified_container_ids"] == []
+
+
+def test_an_intent_path_that_cannot_be_read_never_boots_normally(tmp_path):
+    """A record that exists but cannot be opened (here a directory where the
+    file should be) is not a normal boot and not a crash: casa-main idles in
+    notification-only mode."""
+    (tmp_path / "memory" / "maintenance.json").mkdir(parents=True)
+    result, lines = run_main(tmp_path, None, cid="c2")
+    assert lines == []
+    assert result == {"opens": [], "binds": [], "replays": 0, "restarts": 0,
+                      "sends": 0}
