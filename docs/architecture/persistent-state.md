@@ -157,9 +157,8 @@ before the session's freshness window plus the transcript retention
 (`TRANSCRIPT_RETENTION_DAYS`, default 30) has passed, and its transcript is deleted only
 where no unconfirmed run names it (INV-MEM-031, `architecture/memory-lifecycle.md`); the
 run registrations themselves live in `memory.db`'s `transcript_runs` table (ids and times,
-no content). A reset removes an entry without losing the conversation: the reset retains
-that session itself and, on failure, leaves a durable retry record in its place
-(`architecture/memory-lifecycle.md`). The TTLs are environment-tunable: `SESSION_TTL_DAYS` (default 30)
+no content). A reset removes an entry without losing the conversation, whose words were
+captured as they were said (`architecture/memory-lifecycle.md`). The TTLs are environment-tunable: `SESSION_TTL_DAYS` (default 30)
 and the much shorter `WEBHOOK_SESSION_TTL_DAYS` (default 1). And a boot-time purge drops *every* webhook-scoped session
 unconditionally, so webhook conversation continuity deliberately does not survive a
 restart even though the registry file does.

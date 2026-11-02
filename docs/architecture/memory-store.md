@@ -10,8 +10,8 @@ last_reviewed: 2026-11-02
 
 The SQLite store under `/data/memory`, the one way code opens it, what happens at boot when
 it cannot be opened, and the registry that lists every place memory lives, inside the store
-and outside it. What fills the store and what reads it are documented with those mechanisms;
-the recall path in service today is [`memory.md`](memory.md).
+and outside it. What fills the store and what reads it are documented with those mechanisms,
+mapped from [`memory.md`](memory.md).
 
 ## Mental model
 
@@ -27,8 +27,8 @@ keeps that bound short, so a busy store makes it spool rather than hold a turn
 ([`memory-capture.md`](memory-capture.md)). The code is blocking; async callers run it in a
 thread.
 
-**Boot opens the store once.** `MemoryStore.open()` runs in `casa_core.main()` right after
-the long-term memory backend is built. It checks that SQLite can create and query an FTS5
+**Boot opens the store once.** `MemoryStore.open()` runs in `casa_core.main()` once the
+plugin environment is applied, as memory's first consumer at boot. It checks that SQLite can create and query an FTS5
 table, creates the directory, and brings the file to the current schema version in a single
 transaction. A fresh file counts as version 0, so creating a store and migrating one are
 the same loop over `memory/schema.py`'s `MIGRATIONS`. The schema version is SQLite's

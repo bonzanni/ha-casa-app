@@ -130,8 +130,8 @@ able to reclaim them: outside the map, outside what the closers own, and outside
 the drain bound above, which quantifies over generations the pool recorded. Two
 of the three close paths never set the closing flag, so the record is keyed on
 map identity rather than on that flag, and the window is not a cold connect's
-alone — it spans the registry read, the flush of a stale warm client, the retain
-spawn and the options build, so a warm entry being replaced enters it too. A
+alone — it spans the registry read, the flush of a stale warm client and the options
+build, so a warm entry being replaced enters it too. A
 close that takes the record while the connect is in flight owns that client: it
 is blocked on the entry lock the turn holds, so the turn hands the client over
 closed rather than running a query on a generation something has already retired,

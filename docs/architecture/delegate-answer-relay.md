@@ -30,9 +30,9 @@ it — so what is posted is what the delegate ended its turn with. When that mes
 (`<silent/>`, as after a hand-over that already reached the person), nothing is held: this is
 the #1075 closing-silence rule judged on the last message alone, and the earlier text is not
 posted either. A sentinel beside the closing words is dropped and the words kept, as on a desk
-reply (#1342). The assistant still reads the whole turn as the delegation result, and the
-delegate's own memory retain still banks the whole turn: only what is posted under the
-delegate's name is the closing message.
+reply (#1342). The assistant still reads the whole turn as the delegation result, and memory capture
+still stores the whole answer: only what is posted under the delegate's name is the closing
+message.
 
 **A closing silence is told as silence.** When that closing message is silence, the
 assistant would otherwise read only the narration before it, which can sound like progress
@@ -57,7 +57,7 @@ the resident's role, the chat and the operator. A sync result then carries a
 `relay` field naming the id; a notification turn gets one line naming the full id (its header
 shows eight characters). Nothing is held for a voice run, a delegation made inside a delegated
 run, an origin without a chat, or a turn whose closing message is only silence. An answer the run did not
-finish (cut off before its end, which the memory retain also withholds) and a sync answer
+finish (cut off before its end, which memory capture also withholds) and a sync answer
 whose run left an approval waiting are held but not offered: no relay field or notice line
 names them, and a relay called anyway refuses, so the assistant passes the answer on herself
 and can say it was cut off. Holding is memory-only and

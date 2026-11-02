@@ -387,7 +387,8 @@ class SessionRegistry:
         Advisory streak state consumed by ``agent._resume_decision``: a
         conversation whose resumed trusted-ingress turns repeatedly evidence
         SDK faults stops being resumed once ``resume_fault_streak`` reaches
-        the limit — fresh WITH retain, so continuity is saved, never cleared.
+        the limit — fresh, like an expired entry; capture already holds what
+        the session said.
 
         The streak follows the SID CHAIN, not one sid: a resumed turn may
         publish a successor sid (the CLI can assign a new session id on

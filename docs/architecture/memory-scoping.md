@@ -13,10 +13,12 @@ Telegram sender via the stamped origin, failing closed — the ledgers Casa main
 clearance it serves, each written only from what that clearance can read, the check every
 read path makes on each object it returns, the clearance an engagement
 inherits from its creating turn and the monotonic clamp steering applies to it, and the
-procedural-epoch scoping on the executor archive. How a recalled fact is rendered, what a
+procedural-epoch scoping on the executor archive. How a ledger is served, what a
 caller is told when the store cannot answer, and what a caller may claim from what comes
-back are [`architecture/memory.md`](memory.md); the write side — write trust and
-retention — is [`architecture/memory-lifecycle.md`](memory-lifecycle.md), and tier
+back are [`architecture/memory-serving.md`](memory-serving.md) and
+[`architecture/memory-tools.md`](memory-tools.md); write trust is
+[`architecture/memory-capture.md`](memory-capture.md), retention is
+[`architecture/memory-lifecycle.md`](memory-lifecycle.md), and tier
 labelling is [`architecture/memory-labelling.md`](memory-labelling.md).
 
 ## Mental model
@@ -213,9 +215,11 @@ would thread an immutable byte snapshot through the whole provisioning path.
 leaves this process correctly clamped while a restart would restore the higher tier
 (logged as security-relevant).
 
-Recall failures — an unavailable backend, a malformed envelope, a tripped breaker — are
-[`architecture/memory.md`](memory.md)'s; failures on the write side are
-[`architecture/memory-lifecycle.md`](memory-lifecycle.md)'s.
+A store that cannot be read is reported unavailable by every read path
+([`architecture/memory-tools.md`](memory-tools.md),
+[`architecture/memory-store.md`](memory-store.md)); failures on the write side are
+[`architecture/memory-capture.md`](memory-capture.md)'s and
+[`architecture/memory-writer.md`](memory-writer.md)'s.
 
 ## Extension points
 
@@ -226,11 +230,6 @@ on-demand clearances; the writer, the view, the note and the tools need no chang
 by default. Write access is a separate, deliberate addition
 ([`architecture/memory-capture.md`](memory-capture.md)), and the retention list is a third
 ([`architecture/memory-lifecycle.md`](memory-lifecycle.md)).
-
-**Scoping what a recall surfaces** is a caller-side decision: the backend's only content
-filter is the sensitivity tags, so a caller that must narrow further filters the typed hits
-between recall and render, never by adding tags to the request (an added tag *broadens* an
-any-match filter).
 
 **One archive read per launch.** A memory-enabled launch reads the archive once — into the
 first turn for an in-process executor, into the workspace instructions for one with a

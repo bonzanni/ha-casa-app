@@ -159,8 +159,8 @@ a real answer, a clean no-retry finish, or a turn that stopped at its turn limit
 retries preceded it (INV-TURN-014). A terminal rate-limit or timeout is
 congestion-shaped and records no verdict either way. The note follows the session-id
 chain (a resumed turn may publish a successor id), so the recorded fault id is always the
-id the next ask would resume. At the streak bound the resume decision comes out fresh
-*with retain*, exactly like an expired entry — continuity is saved, never cleared, and
+id the next ask would resume. At the streak bound the resume decision comes out fresh,
+exactly like an expired entry — what the session said was captured as it happened — and
 the refusal-only registration clearing of INV-TURN-007 is untouched.
 
 What it does not cover: the notice does not extend to delegation-completion synthesis

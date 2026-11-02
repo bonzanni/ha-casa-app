@@ -85,13 +85,14 @@ inbound spool drain runs before the win/lose transition, so a caller that goes o
 race may already have flushed pending receipts and eviction notices externally; the drain is
 idempotent, which is why running it ahead of the gate is tolerated.
 
-**INV-ENG-010**: Once the terminal transition is won, the funnel's post-topic tail — driver teardown, the completion notification, retains and the deferred restart — survives cancellation of the task that ran the funnel, and its payloads carry the record values frozen at the flip.
+**INV-ENG-010**: Once the terminal transition is won, the funnel's post-topic tail — driver teardown, the completion notification, the summary captures and the deferred restart — survives cancellation of the task that ran the funnel, and its payloads carry the record values frozen at the flip.
 
 An `in_casa` engagement's own `emit_completion` runs inside a child task of the very SDK
 client the teardown closes, so the close cancels the funnel's host. For that caller the tail
 is detached into a Casa-owned anchored task and awaited through a shield: the handler unwinds
 cancelled — its tool result is not part of the guarantee and may be lost — while teardown,
-notification, retains, the deferred restart (still strictly after the retains have landed)
+notification, the summary captures, the deferred restart (still strictly after the captures
+have landed)
 and the finalized log complete. Every other caller runs the same tail inline, unchanged.
 Payload inputs (origin, task, provenance) are snapshotted before the funnel's first
 post-flip await, so a post-terminal record rewrite (clearance lowering) cannot alter what
@@ -267,7 +268,7 @@ appearance — is the delivery fact.
 
 **The driver teardown overruns.** It is bounded as a whole — the compile lock, both s6 stops
 and the recompile — and a timeout is logged and stepped over, so the notification and the
-retains behind it still run. The engagement's processes are already dead by then: the kill
+summary captures behind it still run. The engagement's processes are already dead by then: the kill
 happened at the transition, not here.
 
 ## Extension points

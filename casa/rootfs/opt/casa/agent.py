@@ -604,8 +604,8 @@ def speaker_provenance_for_role(cfg: AgentConfig) -> SpeakerProvenance:
 
 
 #: #650: how many consecutive resumed trusted-ingress turns may evidence an
-#: SDK fault before the resume decision stops resuming that session (fresh
-#: WITH retain — continuity is saved, never cleared). Env-tunable alongside
+#: SDK fault before the resume decision stops resuming that session (fresh,
+#: like an expired entry; what it said was captured as it happened). Env-tunable alongside
 #: the retry knobs (SDK_RETRY_*); see docs/architecture/sdk-client-pool.md.
 RESUME_FAULT_LIMIT: int = _env_int("SDK_RESUME_FAULT_LIMIT", 2)
 
@@ -2682,9 +2682,8 @@ class Agent:
                     sdk_session_id,
                 )
 
-            # 8. Persist — the freshness reaper classifies each retained item at
-            # its true sensitivity tier off the critical path (tier model §2.4);
-            # nothing to compute or record per-turn here.
+            # 8. Persist — capture stored the turn as it ran; the memory writer
+            # classifies each event off the critical path.
 
             # 9. SessionRegistry publish moved up, under the #573 session write
             # gate — see the attempt block above.
