@@ -52,15 +52,17 @@ than a long prompt, and the view says so. The meter flags the overflow, and the 
 queues a regroup for that ledger. Every line of a view comes from one ledger, so every line
 carries that ledger's tier.
 
-**The view is frozen for the session.** The session's row in `session_views` records the
+**The view is frozen for its SDK session.** The chat's row in `session_views` records the
 ledger, the base, the clearance and budget it was rendered for, the renderer's version and
-the hash of the block — no memory text. A commit after the base never changes what the
-session was served. Every rendering goes through one function that rebuilds the ledger *as
-of* a commit from `revisions` (each revision row holds an object's whole state), so a
-reconnecting session renders its view again from its base and checks the hash. A session
-whose view cannot be reproduced — no record, a record for another ledger, budget or
-renderer or clearance, or a hash that differs — starts afresh, once, and the reason is
-logged. The session's resume pointer is dropped durably before the new view is rendered and
+the hash of the block — no memory text — and, once the turn that served it has published its
+session, the id of that SDK session: the record belongs to that one session. A commit after
+the base never changes what the session was served. Every rendering goes through one function
+that rebuilds the ledger *as of* a commit from `revisions` (each revision row holds an
+object's whole state), so a reconnecting session renders its view again from its base and
+checks the hash. A session resumes only on a record bound to its own id, made for the same
+ledger, clearance, budget and renderer, whose hash verifies. Any other session — one whose
+record was never written or never bound, or was replaced by another session's — starts
+afresh, once, and the reason is logged. The session's resume pointer is dropped durably before the new view is rendered and
 recorded, so a retry of that turn (a connect that times out) starts a session too and never
 resumes the old one on the new view. The
 turn's explanation record names the ledger and the base.
@@ -87,8 +89,8 @@ and nothing records that a correction was "shown". A delegated specialist's note
 prompt with its view. An in-casa engagement of a memory-role specialist is served no view,
 but its session is recorded at its first turn, keyed by the engagement, with that turn's
 `commit_no` as its base, so every engagement turn carries the corrections pending and those
-committed since, ahead of its message. A resident session whose view could not be recorded
-is owed the pending corrections only, until its next reconnect starts it afresh. A turn that starts a session reads its note first, and its view is rendered as of that
+committed since, ahead of its message. A resident session with no record bound to it is
+owed the pending corrections only, until its next reconnect starts it afresh. A turn that starts a session reads its note first, and its view is rendered as of that
 note's own snapshot, so the two describe one state of the store: a correction filed while
 the session starts is after its base, and owed to its next turn. On that first turn the note
 may also name a correction the view already reflects; that is redundant, never wrong.
@@ -114,22 +116,26 @@ is chosen; the delegated specialist's prompt, read with its view in one snapshot
 in-casa engagement turn, read before the delivery fence and put on the prompt without
 awaiting.
 
-What it does not cover: a resident session whose view could not be recorded gets the pending
+What it does not cover: a resident session with no record bound to it gets the pending
 corrections only, since no base says which committed ones it lacks; a turn whose store is
 unavailable carries no note, and logs that it could not read one.
 
 ## Failure behavior
 
-**The store is unavailable or fails while a view is served.** The turn runs without a memory
-block and the failure is logged; a resumed session keeps resuming. A delegated specialist is
-told memory could not be checked.
+**The store is unavailable or fails while a view is served.** The failure is logged. A
+resumed session keeps resuming, on its own frozen view: the CLI pinned its system prompt, the
+view included, when the session was created, so it keeps exactly what it was served and
+keeps its conversation through the outage. A new session starts with no memory block and no
+record bound to it, so its next reconnect starts it afresh. A delegated specialist is told
+memory could not be checked.
 
 **The store is unavailable or fails while the note is read.** The turn runs without the note
 and the failure is logged. The note comes back on the next turn the store answers.
 
-**A view's record cannot be written** (the store's write lock is busy past a second). The view
-is served unrecorded; the session's next reconnect finds no record and starts afresh, and
-until then its note owes the pending corrections only.
+**A view's record cannot be written or bound** (the store's write lock is busy past a second).
+A view that could not be recorded is not served; one recorded but not bound to its session
+was served. Either way no record is bound to that session, so its next reconnect starts it
+afresh, and until then its note owes the pending corrections only.
 
 **The ledger is too large for the coarsest index level.** The view is served over budget, with
 a line saying every entry is still reachable; the meter reports the overflow and the nightly

@@ -25,9 +25,10 @@ view from its recorded ``base_commit_no`` and check the hash.
 :func:`serve` is the session-start producer: in one read transaction it
 renders the view and takes the snapshot's ``commit_no`` as the session's
 base, then records the session's row in ``session_views``
-(:mod:`memory.sessions`). A session is frozen on that view: a later commit
-reaches it only through the per-turn correction note (:mod:`memory.note`) or
-at its next session.
+(:mod:`memory.sessions`), which :func:`bind` binds to the SDK session once
+its id is known. A session is frozen on that view: a later commit reaches
+it only through the per-turn correction note (:mod:`memory.note`) or at its
+next session.
 
 :func:`unreachable` is the writer commit's reachability check.
 
@@ -483,32 +484,35 @@ class Served:
 
 
 def serve(store: MemoryStore, session_key: str, *, clearance: str,
-          budget: int, resume: bool = False,
+          budget: int, resume_sid: str | None = None,
           as_of: int | None = None) -> Served:
     """The frozen view of session *session_key*.
 
-    For a new session (``resume`` false) the view is rendered from the
-    current ledger and recorded with its base. For a resumed session the
-    recorded view is rendered again as of its base and checked against the
-    recorded hash. When there is no record, or it was made for another
-    ledger, clearance, budget or renderer, or the hash differs, nothing is
-    rendered or recorded and ``Served(None, reset=True)`` comes back: the
-    caller drops the resume pointer first, so no later attempt can resume
-    that session, and only then serves a new session.
+    A view belongs to one SDK session. For a new session (``resume_sid`` is
+    ``None``) the view is rendered and recorded, unbound; :func:`bind` binds
+    it once the SDK names the session. A new session's view is rendered as
+    of commit *as_of* when given (the snapshot its first turn's correction
+    note was read in, so view and note describe one state of the store),
+    else as of the current commit.
 
-    A new session's view is rendered as of commit *as_of* when given (the
-    snapshot its first turn's correction note was read in, so view and note
-    describe one state of the store), else as of the current commit.
+    A session resumes on its view only when the record is bound to exactly
+    *resume_sid*, was made for this ledger, clearance, budget and renderer,
+    and its view rendered again as of its base matches the recorded hash.
+    Otherwise nothing is rendered or recorded and ``Served(None,
+    reset=True)`` comes back: the caller drops the resume pointer first, so
+    no later attempt can resume that session, and only then serves a new
+    session.
 
     ``Served(None)`` when the session reads no ledger. Raises when the store
     is unavailable or fails."""
     ledger = ledger_for(clearance)
     if ledger is None or budget <= 0:
         return Served(None)
-    if resume:
+    if resume_sid is not None:
         with store.transaction(busy_timeout=BUSY_TIMEOUT_S) as conn:
             row = sessions.get(conn, session_key)
-            if (row is not None and row.ledger == ledger
+            if (row is not None and row.sdk_session_id == resume_sid
+                    and row.ledger == ledger
                     and row.clearance == clearance and row.budget == budget
                     and row.renderer_version == RENDERER_VERSION):
                 view = render_as_of(conn, ledger, row.base_commit_no, budget)
@@ -517,7 +521,9 @@ def serve(store: MemoryStore, session_key: str, *, clearance: str,
         logger.warning(
             "memory view of session %s could not be reproduced (%s); the "
             "session starts afresh", session_key,
-            "no record" if row is None else "changed")
+            "no record" if row is None else
+            "recorded for another session"
+            if row.sdk_session_id != resume_sid else "changed")
         return Served(None, reset=True)
     with store.transaction(busy_timeout=BUSY_TIMEOUT_S) as conn:
         if as_of is None:
@@ -531,6 +537,20 @@ def serve(store: MemoryStore, session_key: str, *, clearance: str,
             budget=budget, renderer_version=view.renderer_version,
             block_hash=view.block_hash))
     return Served(view)
+
+
+def bind(store: MemoryStore, session_key: str, view: View,
+         sdk_session_id: str) -> bool:
+    """Bind the record of *view*, served to session *session_key*, to the
+    SDK session it was served to. Returns whether it is bound; a record
+    replaced since, or never written, is not, so that session's next
+    reconnect starts afresh. Raises when the store is unavailable or
+    fails."""
+    with store.transaction(write=True, busy_timeout=BUSY_TIMEOUT_S) as conn:
+        return sessions.bind(conn, session_key,
+                             base_commit_no=view.commit_no,
+                             budget=view.budget, block_hash=view.block_hash,
+                             sdk_session_id=sdk_session_id)
 
 
 # --- reachability --------------------------------------------------------------

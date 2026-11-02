@@ -918,7 +918,7 @@ async def _run_refresh(sandbox, mods, mp, code_root):
 
 async def _run_view_serve(sandbox, mods, mp, code_root):
     """A session served its view of a ledger holding one entry: a new
-    session, then the same session resumed."""
+    session, its view bound to its SDK session, then that session resumed."""
     from memory import patches
     module = mods["memory/view.py"]
     store = MemoryStore(str(_sandboxed(sandbox, registry.MEMORY_DIR + "/x")
@@ -930,10 +930,13 @@ async def _run_view_serve(sandbox, mods, mp, code_root):
              "topic": "Home", "subject": "sample", "body": MEMORY,
              "line": "a sample need"}],
             job_id="job", commit_no=1, committed_at="2026-01-01T00:00:00+00:00")
-    for resume in (False, True):
-        served = module.serve(store, "telegram-sample", clearance="private",
-                              budget=1000, resume=resume)
-        assert MEMORY in served.view.text and not served.reset
+    served = module.serve(store, "telegram-sample", clearance="private",
+                          budget=1000)
+    assert MEMORY in served.view.text and not served.reset
+    assert module.bind(store, "telegram-sample", served.view, "sid-sample")
+    served = module.serve(store, "telegram-sample", clearance="private",
+                          budget=1000, resume_sid="sid-sample")
+    assert MEMORY in served.view.text and not served.reset
 
 
 #: One way to run each named producer.

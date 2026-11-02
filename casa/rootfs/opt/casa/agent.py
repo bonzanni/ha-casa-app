@@ -2653,6 +2653,9 @@ class Agent:
                         user_provenance=user_provenance,
                         scheduled=turn_scheduled,
                     )
+                # The view this turn served belongs to the session the turn
+                # published, pooled or not; inside the same gate.
+                await self._bind_memory_view(sdk_session_id)
 
                 # #650: return-path health note — after the registration step
                 # (the published successor sid must precede the strike that
@@ -2871,22 +2874,56 @@ class Agent:
         # A new session's view is rendered as of the snapshot this turn's
         # correction note was read in, so the two describe one state of the
         # store and a correction filed in between is after the base.
-        draft = _explain_draft_var.get(None) or {}
-        as_of = draft.get("memory_snapshot_commit_no")
+        draft = _explain_draft_var.get(None)
+        as_of = (draft or {}).get("memory_snapshot_commit_no")
+        if draft is not None:
+            draft.pop("memory_view_binding", None)
         try:
             served = await asyncio.to_thread(
-                serve, resume=resume_sid is not None, as_of=as_of)
+                serve, resume_sid=resume_sid, as_of=as_of)
             if served.reset:
                 await self._session_registry.clear_sdk_session(
                     channel_key, expected_sid=resume_sid)
                 resume_sid = None
-                served = await asyncio.to_thread(
-                    serve, resume=False, as_of=as_of)
+                served = await asyncio.to_thread(serve, as_of=as_of)
         except Exception:  # noqa: BLE001 — the turn runs without memory
+            # A resumed session keeps the frozen view its CLI session was
+            # created with; a new one starts without a view, recorded for
+            # no SDK session, so its next reconnect starts it afresh.
             logger.warning("memory view not served role=%s",
                            self.config.role, exc_info=True)
             return None, resume_sid
+        if draft is not None and served.view is not None:
+            # Bound to the SDK session once its id is known
+            # (``_bind_memory_view``), after the turn.
+            draft["memory_view_binding"] = (channel_key, served.view)
         return served.view, resume_sid
+
+    async def _bind_memory_view(self, sdk_session_id: str | None) -> None:
+        """Bind the view this turn served to the SDK session it was served
+        to, so only that session may resume on it. A failure is logged: the
+        record stays unbound, and the session's next reconnect starts it
+        afresh."""
+        draft = _explain_draft_var.get(None)
+        binding = (draft or {}).get("memory_view_binding")
+        if not sdk_session_id or binding is None:
+            return
+        from memory import capture
+        from memory import view as memory_view
+        store = capture.active_store()
+        if store is None or not store.available:
+            return
+        channel_key, served = binding
+        try:
+            bound = await asyncio.to_thread(
+                memory_view.bind, store, channel_key, served, sdk_session_id)
+        except Exception:  # noqa: BLE001 — the reconnect resets instead
+            logger.warning("memory view not bound role=%s",
+                           self.config.role, exc_info=True)
+            return
+        if not bound:
+            logger.warning("memory view of session %s was replaced before it "
+                           "could be bound", channel_key)
 
     async def _memory_note(self, *, channel: str, channel_key: str) -> str:
         """This turn's correction note, read off the event loop
@@ -2901,11 +2938,13 @@ class Agent:
         store = capture.active_store()
         if store is None or not store.available:
             return ""
+        entry = self._session_registry.get(channel_key) or {}
         try:
             note = await asyncio.to_thread(
                 memory_note.for_turn, store,
                 clearance=_current_origin_clearance(channel),
                 session_key=channel_key,
+                sdk_session_id=entry.get("sdk_session_id"),
             )
         except Exception:  # noqa: BLE001 — the turn runs without the note
             logger.warning("memory correction note not read role=%s",

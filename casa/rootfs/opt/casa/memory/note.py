@@ -23,7 +23,9 @@ base (:func:`for_session_without_view`), so it is owed (a) and (b) like any
 other. A resident session whose view could not be recorded (the store was
 unavailable) gets (a) only; its next reconnect starts it afresh.
 
-A turn that starts a session reads its note before its view is built, so
+A resident session's base is read only from a record bound to the SDK
+session the turn continues; a turn with none is owed (a) only. A turn that
+starts a session reads its note before its view is built, so
 the view is rendered as of the note's own snapshot
 (``Note.snapshot_commit_no``): a correction filed in between is then after
 the session's base, and owed to its next turn.
@@ -109,16 +111,21 @@ def _base(row, ledger: str, clearance: str) -> int | None:
 
 
 def for_turn(store: MemoryStore, *, clearance: str,
-             session_key: str | None = None) -> Note:
+             session_key: str | None = None,
+             sdk_session_id: str | None = None) -> Note:
     """The note for one turn of a session at *clearance*, read in one
-    snapshot: the session's recorded view (by *session_key*) and the
-    corrections. ``Note("")`` when the clearance reads no ledger. Raises
-    when the store is unavailable or fails."""
+    snapshot: the session's recorded view (by *session_key*, used only when
+    it is bound to the SDK session *sdk_session_id* the turn continues) and
+    the corrections. ``Note("")`` when the clearance reads no ledger.
+    Raises when the store is unavailable or fails."""
     ledger = ledger_for(clearance)
     if ledger is None:
         return Note("")
     with store.transaction(busy_timeout=BUSY_TIMEOUT_S) as conn:
         row = sessions.get(conn, session_key) if session_key else None
+        if row is not None and (sdk_session_id is None
+                                or row.sdk_session_id != sdk_session_id):
+            row = None
         base = _base(row, ledger, clearance)
         items = corrections(conn, ledger=ledger, clearance=clearance,
                             base_commit_no=base)

@@ -181,7 +181,8 @@ V1: tuple[str, ...] = (
         clearance TEXT NOT NULL CHECK (clearance IN {_TIERS}),
         budget INTEGER NOT NULL,
         renderer_version TEXT NOT NULL,
-        block_hash TEXT NOT NULL
+        block_hash TEXT NOT NULL,
+        sdk_session_id TEXT
     ) STRICT
     """,
     # A finalized engagement's summaries. ``source_key`` is the occurrence

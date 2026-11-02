@@ -32,8 +32,15 @@ pytestmark = [pytest.mark.unit]
 KEY = "telegram:assistant:42"
 
 
-def _note(store, key=KEY, clearance="private") -> str:
-    return note.for_turn(store, clearance=clearance, session_key=key).text
+def _note(store, key=KEY, clearance="private", sid=None) -> str:
+    return note.for_turn(store, clearance=clearance, session_key=key,
+                         sdk_session_id=sid or f"sid-{key}").text
+
+
+def _start(store, key=KEY) -> None:
+    """A session started on its view, bound to its SDK session."""
+    served = view.serve(store, key, clearance="private", budget=1000)
+    assert view.bind(store, key, served.view, f"sid-{key}")
 
 
 def _correction(store, words: str) -> int:
@@ -82,16 +89,18 @@ async def test_a_session_sees_every_correction_its_view_does_not_reflect(
     store = ledger_store(tmp_path, [fact("code", "4471")])
     _correction(store, "the code is 4417")
     await _run_jobs(store, no_change_all)          # c1 filed before start
-    view.serve(store, KEY, clearance="private", budget=1000)
+    _start(store)
     assert _note(store) == ""                      # c1 is in the view
     _correction(store, "the dentist is Dr Rossi")
     assert "Dr Rossi" in _note(store)              # (a) pending
     await _run_jobs(store, no_change_all)
     assert "Dr Rossi" in _note(store)              # (b) committed after base
     assert "4417" not in _note(store)
+    # The base belongs to the SDK session the view was bound to: another
+    # session on the same chat is owed the pending corrections only.
+    assert _note(store, sid="another-session") == ""
     # A session that started after that commit has it in its view.
-    view.serve(store, "telegram:assistant:43", clearance="private",
-               budget=1000)
+    _start(store, "telegram:assistant:43")
     assert _note(store, "telegram:assistant:43") == ""
 
 

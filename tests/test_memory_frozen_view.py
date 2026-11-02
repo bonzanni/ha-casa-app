@@ -60,12 +60,29 @@ def test_a_new_session_records_its_base_and_a_commit_leaves_it_frozen(
             row.renderer_version, row.block_hash) == (
         "private", 1, "private", 1000, view.RENDERER_VERSION,
         served.view.block_hash)
+    assert row.sdk_session_id is None              # unbound until named
+    assert view.bind(store, KEY, served.view, "sid-1")
     add(store, [fact("pet", "a cat")])
     again = view.serve(store, KEY, clearance="private", budget=1000,
-                       resume=True)
+                       resume_sid="sid-1")
     assert not again.reset
     assert again.view.text == served.view.text and "a cat" not in again.view.text
-    assert _row(store) == row
+    assert _row(store).sdk_session_id == "sid-1"
+
+
+def test_a_record_resumes_only_the_session_it_is_bound_to(tmp_path):
+    """A view belongs to one SDK session. Red case: a record accepted for any
+    session lets another session resume on a view it was never served."""
+    store = ledger_store(tmp_path, [fact("city", "Rome")])
+    served = view.serve(store, KEY, clearance="private", budget=1000)
+    assert view.serve(store, KEY, clearance="private", budget=1000,
+                      resume_sid="sid-1").reset is True    # unbound
+    assert view.bind(store, KEY, served.view, "sid-1")
+    assert view.serve(store, KEY, clearance="private", budget=1000,
+                      resume_sid="sid-2").reset is True
+    # A record replaced since the view was served is not bound to it.
+    view.serve(store, KEY, clearance="private", budget=999)
+    assert not view.bind(store, KEY, served.view, "sid-1")
 
 
 @pytest.mark.parametrize("change", ["no_record", "budget", "renderer",
@@ -78,7 +95,8 @@ def test_a_view_that_cannot_be_reproduced_starts_afresh_once(
     a new session."""
     store = ledger_store(tmp_path, [fact("city", "Rome")])
     if change != "no_record":
-        view.serve(store, KEY, clearance="private", budget=1000)
+        first = view.serve(store, KEY, clearance="private", budget=1000)
+        assert view.bind(store, KEY, first.view, "sid-1")
         with store.transaction(write=True) as conn:
             conn.execute({
                 "budget": "UPDATE session_views SET budget = 999",
@@ -89,15 +107,16 @@ def test_a_view_that_cannot_be_reproduced_starts_afresh_once(
     before = _row(store)
     add(store, [fact("pet", "a cat")])
     served = view.serve(store, KEY, clearance="private", budget=1000,
-                        resume=True)
+                        resume_sid="sid-1")
     assert (served.view, served.reset) == (None, True)
     assert _row(store) == before                  # nothing recorded yet
     assert any("starts afresh" in r.message for r in caplog.records)
     fresh = view.serve(store, KEY, clearance="private", budget=1000)
     assert "a cat" in fresh.view.text and _row(store).base_commit_no == 2
-    # Once: the next reconnect reproduces the new record.
+    assert view.bind(store, KEY, fresh.view, "sid-2")
+    # Once: the next reconnect of the new session reproduces its record.
     assert view.serve(store, KEY, clearance="private", budget=1000,
-                      resume=True).reset is False
+                      resume_sid="sid-2").reset is False
 
 
 def test_a_session_reading_no_ledger_is_served_nothing(tmp_path):
@@ -292,3 +311,55 @@ async def test_a_turn_never_runs_on_a_session_of_another_clearance(
         assert options.resume is None
         assert ("PRIVATE-ROME" in options.system_prompt) == (
             clearance == "private")
+
+
+class _SessionClient(_Client):
+    """Each client is a new SDK session with its own id."""
+
+    count = 0
+
+    async def receive_response(self):
+        type(self).count += 1
+        sid = f"sid-{type(self).count}"
+        async for message in super().receive_response():
+            if getattr(message, "session_id", None) == "sid-frozen":
+                message.session_id = sid  # type: ignore[attr-defined]
+            yield message
+
+
+async def test_a_session_whose_view_was_never_recorded_never_resumes_another(
+        tmp_path, monkeypatch):
+    """A view record belongs to the SDK session it was served to. When a new
+    session's record cannot be written (the store's write lock is held
+    through its first turn), its reconnect must start afresh rather than
+    resume on the chat's previous session's record. Red case: a record
+    keyed by the chat alone is accepted for the new session."""
+    import sqlite3
+    store = ledger_store(tmp_path, [fact("city", "Rome")])
+    wire(monkeypatch, store)
+    key = build_scoped_session_key("telegram", "assistant", "42")
+    _SessionClient.options, _SessionClient.count = [], 0
+    with patch("sdk_client_pool._default_make_client", _SessionClient):
+        first = _agent(tmp_path)
+        await first._process(_msg())                     # session sid-1
+        entry = first._session_registry._data[key]
+        entry["last_active"] = (datetime.now(timezone.utc)
+                                - timedelta(days=30)).isoformat()
+        add(store, [fact("pet", "a cat")])
+        lock = sqlite3.connect(store.path, isolation_level=None)
+        lock.execute("BEGIN IMMEDIATE")
+        try:
+            await first._process(_msg())                 # session sid-2
+        finally:
+            lock.execute("ROLLBACK")
+            lock.close()
+        await first.aclose()
+        assert first._session_registry.get(key)["sdk_session_id"] == "sid-2"
+        second = _agent(tmp_path)
+        await second._process(_msg())                    # cold reconnect
+        await second.aclose()
+    one, two, three = _SessionClient.options
+    assert (one.resume, two.resume) == (None, None)
+    assert "<memory>" not in two.system_prompt           # never recorded
+    assert three.resume is None                          # not sid-2
+    assert "a cat" in three.system_prompt
