@@ -367,6 +367,18 @@ def drain_spool(store: MemoryStore) -> int:
         return added + _store_snapshot(store, snapshot)
 
 
+def drain_waiting(store: MemoryStore) -> int:
+    """Drain the spool (or a cut-off drain's snapshot) when one is waiting;
+    0 when none is. Blocking; raises as :func:`drain_spool` does. The writer
+    calls this on each pass, so a spool is stored once the store is back even
+    when no further capture comes to start a drain."""
+    directory = store.directory
+    if not (os.path.lexists(spool_path(directory))
+            or os.path.lexists(snapshot_path(directory))):
+        return 0
+    return drain_spool(store)
+
+
 def _read(path: str) -> bytes:
     with open(path, "rb") as f:
         return f.read()

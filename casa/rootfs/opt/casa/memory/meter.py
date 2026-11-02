@@ -47,7 +47,8 @@ def measure(store: MemoryStore) -> dict:
             entries = [(r[0], _tokens(r[1])) for r in conn.execute(
                 "SELECT object_id, body FROM objects WHERE ledger = ? "
                 "AND kind = 'entry' AND status = 'current'", (ledger,))]
-            times = pending.pending_times(conn, ledger)
+            times = sorted(t for _, t in pending.pending_arrivals(
+                conn, ledger))
             added = conn.execute(
                 "SELECT count(*), coalesce(sum(length(body)), 0) / 4 "
                 "FROM revisions WHERE ledger = ? AND op = 'add' "

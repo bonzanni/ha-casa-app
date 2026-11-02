@@ -7,10 +7,12 @@ groups and topics. Only the worker runs any of them, one at a time, a
 ``correction`` job first. :func:`enqueue` adds a job unless one of the same
 kind and ledger is already queued.
 
-**Cadence.** Each tick, a ledger with pending events the writer has not yet
-been shown since this process started running jobs gets an ``ordinary`` job
-once those events have been quiet for :data:`QUIET_S`, or once the oldest has
-waited :data:`MAX_WAIT_S`. The end of a session (an explicit reset) queues one
+**Cadence.** Each tick, a ledger with pending events this process's runs have
+not yet been given (a ``seq`` above the highest any filing run's input held)
+gets an ``ordinary`` job once those events have been quiet for
+:data:`QUIET_S`, or once the oldest has waited :data:`MAX_WAIT_S`. ``seq`` is
+assigned inside the store's single write transaction, so an event a run's
+snapshot missed always counts as not yet given. The end of a session (an explicit reset) queues one
 for every ledger with anything pending. Correction marking queues a
 ``correction`` job (:mod:`memory.corrections`); the nightly pass queues
 ``condense``, ``regroup`` and a retry of every failed job
@@ -52,6 +54,21 @@ process's ``boot_id``.
 :data:`MAX_ATTEMPTS` the job is ``failed`` and its events stay pending, the
 operator gets one private notice, and the nightly pass retries it once a
 night.
+
+**The store failing under the worker.** The worker owns recovery from it,
+on every pass (:meth:`Writer.pass_once`):
+
+* a store that could not be opened at boot is opened again, after
+  :data:`REOPEN_FIRST_S` and then at doubling intervals up to
+  :data:`REOPEN_MAX_S`;
+* a job whose move out of ``running`` could not be written (the commit and
+  the failure count both hit the failing store) is remembered, and once the
+  store takes writes it is sent back to ``queued`` by boot recovery's own
+  rule, only while it is still ``running`` under this process's id. Its next
+  run assembles afresh, as any requeued run does; the outage counts as no
+  attempt of the job's;
+* a spool capture left is drained, so what was said during the outage is
+  stored even when no later capture comes to start a drain.
 """
 from __future__ import annotations
 
@@ -66,7 +83,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from memory import classify, meter, patches, pending
+from memory import capture, classify, meter, patches, pending
 from memory.model_port import ModelPort, ModelReply
 from memory.store import MemoryStore
 
@@ -89,6 +106,10 @@ TICK_S = 30.0
 MAX_ATTEMPTS = 3
 #: Seconds before the first retry of a failed run; doubled for the next.
 BACKOFF_S = 60.0
+#: Seconds before the worker first retries opening an unavailable store;
+#: doubled after each failure, up to :data:`REOPEN_MAX_S`.
+REOPEN_FIRST_S = 30.0
+REOPEN_MAX_S = 900.0
 #: Earlier events of the same session shown as context.
 WINDOW = 6
 #: An entry over this many tokens is condensed at night.
@@ -486,9 +507,18 @@ class Writer:
         self.clock = clock
         self.boot_id = boot_id
         self.ledgers = ledgers
-        #: Per ledger, when the last filing run assembled its input (UTC ISO):
-        #: events stored after it are ones the writer has not been shown.
-        self._last_run: dict[str, str] = {}
+        #: Per ledger, the highest ``seq`` a filing run of this process was
+        #: given: pending events above it are ones the writer has not been
+        #: shown.
+        self._shown_seq: dict[str, int] = {}
+        #: Jobs of this process whose transition out of ``running`` did not
+        #: land (the store failed under it); each pass requeues them.
+        self._abandoned: set[str] = set()
+        self._recovered = False
+        #: When the next attempt to open an unavailable store is due, and the
+        #: wait after it.
+        self._reopen_at = 0.0
+        self._reopen_wait = REOPEN_FIRST_S
         #: Per job, the earliest time its next retry may run.
         self._not_before: dict[str, float] = {}
         self._session_end = False
@@ -522,13 +552,14 @@ class Writer:
         now = self.clock()
         for ledger in self.ledgers:
             with self.store.transaction() as conn:
-                times = pending.pending_times(conn, ledger)
-            unseen = [t for t in times if t > self._last_run.get(ledger, "")]
-            due = session_end and bool(times)
+                arrivals = pending.pending_arrivals(conn, ledger)
+            shown = self._shown_seq.get(ledger, 0)
+            unseen = [datetime.fromisoformat(t).timestamp()
+                      for seq, t in arrivals if seq > shown]
+            due = session_end and bool(arrivals)
             if unseen and not due:
-                newest = datetime.fromisoformat(unseen[-1]).timestamp()
-                oldest = datetime.fromisoformat(unseen[0]).timestamp()
-                due = now - newest >= QUIET_S or now - oldest >= MAX_WAIT_S
+                due = (now - max(unseen) >= QUIET_S
+                       or now - min(unseen) >= MAX_WAIT_S)
             if due:
                 job = enqueue(self.store, ledger, ORDINARY)
                 queued += [job] if job else []
@@ -557,14 +588,30 @@ class Writer:
         if row is None:
             return SKIPPED
         ledger, kind = row
-        started = _now_iso()
         inp = await asyncio.to_thread(assemble_input, self.store, job_id,
                                       ledger, kind)
         if not await asyncio.to_thread(_claim, self.store, inp, self.boot_id):
             return SKIPPED
-        if kind in _FILING:
-            self._last_run[ledger] = max(self._last_run.get(ledger, ""),
-                                         started)
+        if inp.events:
+            # Only what this run was given counts as shown. ``seq`` is
+            # assigned inside the store's single write transaction, so an
+            # event the run's snapshot missed has a higher one.
+            self._shown_seq[ledger] = max(self._shown_seq.get(ledger, 0),
+                                          max(inp.input_seqs))
+        landed = False
+        try:
+            outcome = await self._run_claimed(inp)
+            landed = True
+            return outcome
+        finally:
+            if not landed:
+                self._abandoned.add(job_id)
+
+    async def _run_claimed(self, inp: Input) -> str:
+        """Everything after the claim. Returns once the job has left
+        ``running`` (or was found not to be running here); raises when the
+        store failed before that transition landed."""
+        job_id, ledger, kind = inp.job_id, inp.ledger, inp.kind
         reply: ModelReply | None = None
         try:
             plan = Plan()
@@ -646,13 +693,81 @@ class Writer:
         except Exception:  # noqa: BLE001 — the meter never fails a job
             logger.warning("memory meter not persisted", exc_info=True)
 
+    # -- recovery from an unavailable or failing store --
+
+    async def ensure_store(self) -> bool:
+        """Whether the store is available, opening it again when it is not
+        and a retry is due (:data:`REOPEN_FIRST_S`, doubling to
+        :data:`REOPEN_MAX_S`)."""
+        if self.store.available:
+            return True
+        now = self.clock()
+        if now < self._reopen_at:
+            return False
+        if await asyncio.to_thread(self.store.open):
+            self._reopen_wait = REOPEN_FIRST_S
+            logger.info("memory writer: the store is available again")
+            return True
+        self._reopen_at = now + self._reopen_wait
+        self._reopen_wait = min(self._reopen_wait * 2, REOPEN_MAX_S)
+        return False
+
+    def requeue_abandoned(self) -> int:
+        """Send back to ``queued`` every job this process abandoned while it
+        was ``running`` (blocking). The rule is boot recovery's, applied to
+        this process's own jobs that it knows it lost: only a job still
+        ``running`` under this process's id moves, so one whose commit did
+        land is left alone. Returns how many moved."""
+        ids = sorted(self._abandoned)
+        if not ids:
+            return 0
+        moved = 0
+        with self.store.transaction(write=True) as conn:
+            for job_id in ids:
+                moved += conn.execute(
+                    "UPDATE jobs SET state = 'queued', boot_id = NULL "
+                    "WHERE job_id = ? AND state = 'running' AND boot_id = ?",
+                    (job_id, self.boot_id)).rowcount
+        self._abandoned.difference_update(ids)
+        if moved:
+            logger.info("memory writer: %d job(s) cut off by a store failure "
+                        "requeued", moved)
+        return moved
+
+    async def pass_once(self) -> bool:
+        """One pass of the worker: reopen an unavailable store when due;
+        then, with the store available, requeue running jobs of earlier
+        processes (once) and the jobs this process abandoned, drain a spool
+        capture left, queue what the cadence makes due and run the next job.
+        Returns whether a job ran."""
+        if not await self.ensure_store():
+            return False
+        if not self._recovered:
+            n = await asyncio.to_thread(recover, self.store, self.boot_id)
+            self._recovered = True
+            if n:
+                logger.info("memory writer: %d running job(s) of an earlier "
+                            "process requeued", n)
+        await asyncio.to_thread(self.requeue_abandoned)
+        try:
+            await asyncio.to_thread(capture.drain_waiting, self.store)
+        except Exception:  # noqa: BLE001 — the spool stays for a later pass
+            logger.warning("memory writer: spool drain failed; kept for a "
+                           "later pass", exc_info=True)
+        return await self.step()
+
     # -- the loop --
 
     async def step(self) -> bool:
-        """One pass: queue what is due, then run the next job. Returns
-        whether a job ran."""
+        """Queue what is due, then run the next job. Returns whether a job
+        ran."""
         session_end, self._session_end = self._session_end, False
-        await asyncio.to_thread(self.schedule_due, session_end=session_end)
+        try:
+            await asyncio.to_thread(self.schedule_due,
+                                    session_end=session_end)
+        except BaseException:
+            self._session_end = self._session_end or session_end
+            raise
         job = await asyncio.to_thread(self.next_job)
         if job is None:
             return False
@@ -662,19 +777,10 @@ class Writer:
     async def run_forever(self) -> None:
         self._loop = asyncio.get_running_loop()
         self._wakeup = asyncio.Event()
-        recovered = False
         while True:
             ran = False
             try:
-                if self.store.available:
-                    if not recovered:
-                        n = await asyncio.to_thread(recover, self.store,
-                                                    self.boot_id)
-                        recovered = True
-                        if n:
-                            logger.info("memory writer: %d running job(s) of "
-                                        "an earlier process requeued", n)
-                    ran = await self.step()
+                ran = await self.pass_once()
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001 — the worker never dies

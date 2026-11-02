@@ -85,10 +85,11 @@ def pending_corrections(conn: sqlite3.Connection, ledger: str) -> list[int]:
         "ON m.seq = p.seq WHERE p.ledger = ? ORDER BY m.mark_no", (ledger,))]
 
 
-def pending_times(conn: sqlite3.Connection, ledger: str) -> list[str]:
-    """``recorded_at`` of every event pending in *ledger* (when the store
-    took it, so the writer could first see it), oldest first."""
-    return [r[0] for r in conn.execute(
-        "SELECT e.recorded_at FROM pending AS p JOIN events AS e "
-        "ON e.seq = p.seq WHERE p.ledger = ? ORDER BY e.recorded_at",
-        (ledger,))]
+def pending_arrivals(conn: sqlite3.Connection,
+                     ledger: str) -> list[tuple[int, str]]:
+    """``(seq, recorded_at)`` of every event pending in *ledger*, in ``seq``
+    order: the order the store's single writer committed them in, and when
+    the store took each, so the writer could first see it."""
+    return [(r[0], r[1]) for r in conn.execute(
+        "SELECT e.seq, e.recorded_at FROM pending AS p JOIN events AS e "
+        "ON e.seq = p.seq WHERE p.ledger = ? ORDER BY e.seq", (ledger,))]

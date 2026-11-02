@@ -173,7 +173,9 @@ the mechanisms that read.
 **The store is unavailable, or busy past the capture's bound.** The item is spooled and
 fsynced, with a receipt, and the turn goes on; a locked store costs a turn at most the
 50 ms bound per captured item, and never waits for a drain that is running. The next append
-that commits starts a detached drain; the drain inserts every line with an `INSERT` that
+that commits starts a detached drain, and the memory writer drains a waiting spool on each of
+its passes once the store is available, which covers a store that only came back after boot
+([`memory-writer.md`](memory-writer.md)); the drain inserts every line with an `INSERT` that
 ignores a `source_key` already stored, so a drain cut off at any point and run again adds
 nothing twice.
 

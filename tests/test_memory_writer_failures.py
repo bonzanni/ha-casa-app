@@ -6,13 +6,27 @@ the nightly pass retries it once a night. A reply that cannot be read, a
 patch that names something outside the ledger, and a commit that would leave
 an object unreachable each fail the run and write nothing. The meter counts
 failed jobs, pending events and pending corrections.
+
+The store failing under the worker is the worker's to recover from, inside
+the running process: a store that could not be opened is opened again at a
+doubling interval and its spool then drained, and a job cut off while
+``running`` is requeued once the store takes writes. Both outages are a real
+permission flip on the store file.
 """
 from __future__ import annotations
 
-from memory import corrections, meter, nightly, writer
+import os
+import sqlite3
+import threading
+from datetime import datetime
+
+import pytest
+
+from memory import capture, corrections, meter, nightly, writer
+from memory.store import MemoryStore
 from memory_writer_support import (
     ScriptedPort, add_each, dispositions, job_rows, new_store, new_writer,
-    pending_seqs, reply, rows, run_new, seed,
+    no_change_all, pending_seqs, reply, rows, run_new, seed,
 )
 
 
@@ -175,3 +189,161 @@ async def test_the_meter_counts_what_memory_owes(tmp_path):
     assert got["commit_no"] == 1 and got["provisional_events"] == 3
     assert got["maintenance_intent"] is False
     assert meter.read(store) == got
+
+
+# --- the store failing under the worker --------------------------------------
+
+def _outage(store) -> None:
+    """Make the real store file unopenable (a permission flip)."""
+    os.chmod(store.path, 0)
+
+
+def _restore(store) -> None:
+    os.chmod(store.path, 0o600)
+
+
+@pytest.fixture
+def not_root():
+    if os.geteuid() == 0:
+        pytest.skip("a permission flip does not stop root")
+
+
+async def test_a_store_failing_mid_run_is_recovered_in_process(tmp_path,
+                                                                not_root):
+    """The store fails after the model replied, so neither the commit nor
+    the failure count can be written: the job is left ``running`` under this
+    process. Passes while the store is still failing change nothing; the
+    first pass after it is back requeues the job, which files the event
+    once. The outage counts as no attempt."""
+    store = new_store(tmp_path)
+    e = seed(store, "the spare key is under the mat")
+
+    def flip(prompt):
+        _outage(store)
+        return reply({e: "no_change"})
+
+    w = new_writer(store, ScriptedPort([flip, lambda p: reply(
+        {e: "no_change"})]))
+    job = writer.enqueue(store, "private", writer.ORDINARY)
+    try:
+        with pytest.raises(sqlite3.OperationalError):
+            await w.pass_once()
+        with pytest.raises(sqlite3.OperationalError):
+            await w.pass_once()             # still failing: nothing moves
+    finally:
+        _restore(store)
+    assert [(j["state"], j["attempts"]) for j in job_rows(store)] == [
+        ("running", 0)]
+    assert pending_seqs(store) == [e] and dispositions(store) == []
+
+    assert await w.pass_once() is True
+    assert [(j["job_id"], j["state"], j["attempts"])
+            for j in job_rows(store)] == [(job, "committed", 0)]
+    assert dispositions(store) == [(e, "private", "no_change", 1)]
+    assert pending_seqs(store) == []
+
+
+async def test_requeueing_an_abandoned_job_leaves_a_landed_one_alone(
+        tmp_path):
+    """The requeue moves a job only while it is still ``running`` under
+    this process: one whose commit landed, or one another process runs,
+    stays as it is."""
+    store = new_store(tmp_path)
+    seed(store, "x")
+    w = new_writer(store, ScriptedPort(add_each), boot_id="boot-a")
+    done, _ = await run_new(w)
+    other = writer.enqueue(store, "private", writer.CONDENSE)
+    with store.transaction(write=True) as conn:
+        conn.execute("UPDATE jobs SET state = 'running', boot_id = 'boot-b' "
+                     "WHERE job_id = ?", (other,))
+    w._abandoned.update({done, other})
+    assert w.requeue_abandoned() == 0
+    assert [(j["state"], j["boot_id"]) for j in job_rows(store)] == [
+        ("committed", "boot-a"), ("running", "boot-b")]
+    assert w._abandoned == set()
+
+
+async def test_a_store_unavailable_at_boot_is_reopened_and_the_spool_filed(
+        tmp_path, not_root):
+    """The store cannot be opened at boot, so capture spools. The worker
+    retries the open at a doubling interval; once the store opens it drains
+    the spool, and the event is filed."""
+    first = new_store(tmp_path)
+    _outage(first)
+    try:
+        store = MemoryStore(first.directory)
+        assert store.open() is False
+        item = capture.event(role="assistant", channel="telegram",
+                             speaker_kind="operator", origin_kind="operator",
+                             text="the boiler code is 4417",
+                             eligibility="write_trusted_turn",
+                             origin_tier=None)
+        assert capture.append(store, item).outcome == capture.SPOOLED
+        clock = Clock()
+        w = new_writer(store, ScriptedPort(add_each), clock=clock)
+        assert await w.pass_once() is False      # retried at once: fails
+        clock.now += writer.REOPEN_FIRST_S
+        assert await w.pass_once() is False      # due, fails: wait doubles
+    finally:
+        _restore(first)
+    clock.now += writer.REOPEN_FIRST_S
+    assert await w.pass_once() is False          # back, but not due yet
+    assert store.available is False
+    clock.now += writer.REOPEN_FIRST_S
+    w.session_ended()
+    assert await w.pass_once() is True
+    assert store.available is True
+    assert not os.path.exists(capture.spool_path(store.directory))
+    [event] = rows(store, "SELECT * FROM events")
+    assert event["source_key"] == item.source_key
+    assert dispositions(store) == [(event["seq"], "private", "patched", 1)]
+    assert pending_seqs(store) == []
+
+
+async def test_an_event_the_snapshot_missed_is_still_due(tmp_path,
+                                                         monkeypatch):
+    """A capture stamped before the run started but committed after the
+    run's read snapshot was never given to the run, so the maximum wait
+    still applies to it. (A cutoff at the run's start time would hide it
+    until a session ends.)"""
+    store = new_store(tmp_path)
+    old = seed(store, "old words")
+    job = writer.enqueue(store, "private", writer.ORDINARY)
+    item = capture.event(role="assistant", channel="telegram",
+                         speaker_kind="operator", origin_kind="operator",
+                         text="late words", eligibility="write_trusted_turn",
+                         origin_tier=None)
+    inserted, release, committed = (threading.Event() for _ in range(3))
+
+    def paused_capture():
+        with store.transaction(write=True) as conn:
+            capture._insert(conn, item)
+            inserted.set()
+            release.wait(30)
+        committed.set()
+
+    t = threading.Thread(target=paused_capture)
+    t.start()
+    assert inserted.wait(30)
+
+    def commit_after_snapshot():
+        release.set()
+        assert committed.wait(30)
+
+    monkeypatch.setitem(writer._hooks, "selected", commit_after_snapshot)
+    clock = Clock()
+    port = ScriptedPort(no_change_all)
+    w = new_writer(store, port, clock=clock)
+    assert await w.run_job(job) == writer.COMMITTED
+    t.join(30)
+    monkeypatch.setitem(writer._hooks, "selected", lambda: None)
+    assert [e["seq"] for e in port.prompts[0]["events"]] == [old]
+    [late] = rows(store, "SELECT seq, recorded_at FROM events WHERE "
+                         "source_key = ?", item.source_key)
+    assert pending_seqs(store) == [late["seq"]]
+
+    clock.now = datetime.fromisoformat(
+        late["recorded_at"]).timestamp() + writer.MAX_WAIT_S
+    [due] = w.schedule_due()
+    assert await w.run_job(due) == writer.COMMITTED
+    assert pending_seqs(store) == []

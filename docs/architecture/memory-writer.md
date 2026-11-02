@@ -36,9 +36,11 @@ its transaction. A store that holds the rows holds its counters.
 `correction` file pending events, `condense` shortens entries over 1 024 tokens, `regroup`
 arranges entries into groups and topics — and only the writer task in the Casa process runs
 them, a correction job first. It never runs on a turn's path: it is a background task, and
-its SQLite work runs in threads. Cadence: once a ledger's events that the worker has not yet
-been shown have been quiet for 10 minutes, or the oldest of them has waited 60 minutes; at the
-end of a session (an explicit reset); and right after a correction mark. Nightly, at 03:30 in
+its SQLite work runs in threads. Cadence: once a ledger's pending events that no run of this
+process was given have been quiet for 10 minutes, or the oldest of them has waited 60 minutes;
+at the end of a session (an explicit reset); and right after a correction mark. "Given" is
+measured by `seq`, which the store assigns inside its single write transaction, so an event a
+run's read snapshot missed always counts as not given, whenever it was stamped. Nightly, at 03:30 in
 the operator's zone, a pass queues `condense` (an entry over 1 024 tokens), `regroup` (a
 ledger over 50 000 tokens) and a retry of every failed job. The nightly pass writes no
 ledger row itself.
@@ -119,8 +121,23 @@ not given is ignored: a disposition is written only for the run's own input.
 **Classification falls back.** The event stays provisional `private`: pending in no lower
 ledger, counted by the meter, never re-classified.
 
-**The store is unavailable.** The worker idles and checks again at its next tick; capture
-keeps spooling ([`memory-capture.md`](memory-capture.md)).
+**The store fails under the worker.** Recovery is the worker's own, in the running
+process, on every pass:
+
+- a store that could not be opened at boot is opened again after 30 seconds, then at
+  doubling intervals up to 15 minutes; meanwhile capture keeps spooling
+  ([`memory-capture.md`](memory-capture.md));
+- once the store is available, a spool that capture left is drained, so what was said during
+  the outage is stored even when no later capture comes to start a drain;
+- a job whose move out of `running` could not be written (its commit and its failure count
+  both hit the failing store) is remembered, and once the store takes writes it is sent back
+  to `queued` by boot recovery's rule, applied only to that job and only while it is still
+  `running` under this process: a job whose commit did land is left alone. Its next run
+  assembles afresh like any requeued run, and the outage counts as no attempt.
+
+Requeueing was chosen over replaying the lost transition: the transition it would replay (a
+failure count and possibly a notice) describes the store, not the job, and a requeue needs
+no state beyond the job's id.
 
 **The meter.** After every commit and every failure, `memory.meter.persist` stores in
 `meta` the per-ledger entry count and tokens, unreachable objects, the twenty largest entries
