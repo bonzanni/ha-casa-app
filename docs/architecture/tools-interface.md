@@ -265,7 +265,7 @@ nothing else records, is submitted regardless of the answer; the answer itself n
 completeness predicate, including a stop reason on the finished list — an answer the
 model did not finish (output tokens exhausted among the reasons) stays a caller-visible
 success whose text is withheld from the bank, audibly (INV-MEM-016, and see
-[`memory-lifecycle.md`](memory-lifecycle.md); the ledger and reconciliation rules are in
+[`memory-capture.md`](memory-capture.md); the ledger and reconciliation rules are in
 [`jobs-and-delivery.md`](jobs-and-delivery.md)).
 
 **Memory cannot answer.** The recall tools report unavailability as its own status and

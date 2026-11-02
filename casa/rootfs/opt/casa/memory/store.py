@@ -179,9 +179,10 @@ class MemoryStore:
         if str(mode).lower() != "wal":
             raise sqlite3.OperationalError(f"journal mode {mode!r}, not WAL")
 
-    def _connect(self) -> sqlite3.Connection:
+    def _connect(self, busy_timeout: float = BUSY_TIMEOUT_S
+                 ) -> sqlite3.Connection:
         conn = sqlite3.connect(
-            self.path, timeout=BUSY_TIMEOUT_S, isolation_level=None)
+            self.path, timeout=busy_timeout, isolation_level=None)
         try:
             conn.execute("PRAGMA synchronous=FULL")
         except BaseException:
@@ -190,16 +191,20 @@ class MemoryStore:
         return conn
 
     @contextmanager
-    def transaction(self, *, write: bool = False) -> Iterator[sqlite3.Connection]:
+    def transaction(
+        self, *, write: bool = False, busy_timeout: float = BUSY_TIMEOUT_S,
+    ) -> Iterator[sqlite3.Connection]:
         """One transaction on a connection of its own, closed on exit.
 
         ``write=True`` takes the write lock at once (``BEGIN IMMEDIATE``); a
         read is a deferred ``BEGIN``, a consistent snapshot from its first
-        read. The block's exception rolls back and propagates.
+        read. ``busy_timeout`` bounds the wait for another connection's lock;
+        capture keeps it short, so a busy store spools instead of holding a
+        turn. The block's exception rolls back and propagates.
         """
         if not self.available:
             raise MemoryUnavailable(self._unavailable_reason or "unavailable")
-        conn = self._connect()
+        conn = self._connect(busy_timeout)
         try:
             conn.execute("BEGIN IMMEDIATE" if write else "BEGIN")
             try:

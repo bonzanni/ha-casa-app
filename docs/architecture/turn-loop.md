@@ -21,7 +21,9 @@ read into a turn.
 
 A turn is a single pass with a fixed shape: take a message, decide whether it continues an
 existing conversation or starts a fresh one, assemble a system prompt and a memory block,
-call the model with retry, stream the output, and record what happened.
+call the model with retry, stream the output, and record what happened. On a write-trusted
+channel the turn's opening text and each message the resident writes are also captured into
+the memory store as they happen ([`memory-capture.md`](memory-capture.md)).
 
 The client the turn calls is usually a warm one the pool hands it rather than one this turn
 created; what that reuse guarantees, and what a close or a reset owes it, is

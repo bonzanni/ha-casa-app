@@ -95,6 +95,76 @@ class _EngagementTurn:
         return self.value
 
 
+class _EngagementCapture:
+    """What one engagement turn of a memory-writing specialist captures into
+    memory: the operator's message in the topic, keyed by its Telegram id,
+    and each text-bearing message the specialist writes. Executors and plugin
+    jobs are not memory-writing specialists and capture nothing. Every
+    event's floor is the engagement's read clearance. A capture failure is
+    logged and never fails the turn."""
+
+    CHANNEL = "telegram"
+
+    def __init__(self, engagement: EngagementRecord) -> None:
+        from sensitivity import clearance_for_origin
+        origin = getattr(engagement, "origin", None) or {}
+        self._engagement = engagement
+        self._floor = clearance_for_origin(
+            origin.get("_origin_route"), origin.get("_origin_clearance"),
+            str(origin.get("channel", "")))
+
+    @classmethod
+    def for_turn(cls, engagement: EngagementRecord) -> "_EngagementCapture | None":
+        from channel_policy import writes_to_bank
+        from delegated_memory import role_writes_memory
+        if (getattr(engagement, "kind", "") != "specialist"
+                or not writes_to_bank(cls.CHANNEL)
+                or not role_writes_memory(engagement.role_or_type)):
+            return None
+        return cls(engagement)
+
+    async def _record(self, source, text: str, **fields) -> None:
+        from memory import capture, eligibility
+        try:
+            rule = eligibility.admit(source, text=text, channel_writes=True)
+            if rule is None:
+                return
+            item = capture.event(
+                role=self._engagement.role_or_type, channel=self.CHANNEL,
+                origin_kind="operator", text=text, eligibility=rule,
+                origin_tier=self._floor, **fields)
+        except Exception:  # noqa: BLE001 — capture never fails a turn
+            logger.exception("memory capture in engagement %s failed",
+                             self._engagement.id[:8])
+            return
+        await capture.record(item)
+
+    async def operator(self, text: str, tg_message_id: int) -> None:
+        from memory import eligibility, occurrence
+        eid = self._engagement.id
+        await self._record(
+            eligibility.Source.ENGAGEMENT_TURN, text,
+            source_key=occurrence.provider_key(
+                self.CHANNEL, f"engagement:{eid}", str(tg_message_id)),
+            provider_message_id=str(tg_message_id),
+            # Only the operator reads at ``private``; a lower floor means a
+            # lower-clearance sender has steered this engagement.
+            speaker_kind=("operator" if self._floor == "private"
+                          else "third_party"),
+            session_id=self._engagement.sdk_session_id)
+
+    async def answer(self, sdk_msg: Any, session_id: str | None) -> None:
+        from memory import eligibility
+        text = "".join(b.text for b in getattr(sdk_msg, "content", [])
+                       if isinstance(b, TextBlock))
+        sid = getattr(sdk_msg, "session_id", None) or session_id
+        await self._record(
+            eligibility.Source.ENGAGEMENT_ANSWER, text,
+            speaker_kind="specialist",
+            speaker_id=self._engagement.role_or_type,
+            session_id=sid if isinstance(sid, str) and sid else None)
+
+
 def _session_id_from_message(sdk_msg: Any) -> str | None:
     """Extract the CLI session id from an SDK message (v0.69.11).
 
@@ -547,8 +617,9 @@ class InCasaDriver(DriverProtocol):
         batch: int | None = None,
     ) -> None:
         # tg_message_id is part of the uniform driver interface (v0.79
-        # reply-threading); in_casa turns have no topic-stream threading,
-        # so it is accepted and ignored.
+        # reply-threading); in_casa turns have no topic-stream threading.
+        # It is the operator message's provider id, which keys that
+        # message's memory capture (a redelivery collapses into one event).
         #
         # #1033: ``batch`` is the job batch number this turn delivers, passed
         # only by ``start_next_batch``'s hand-off; every other turn is None.
@@ -574,7 +645,8 @@ class InCasaDriver(DriverProtocol):
                     f"engagement {engagement.id[:8]} has no live client"
                 )
             await self._run_turn(
-                engagement, text, inbound_token=token, batch=batch)
+                engagement, text, inbound_token=token, batch=batch,
+                tg_message_id=tg_message_id)
         except BaseException:
             if self_owned:
                 self.discharge_inbound(engagement.id, token)
@@ -611,6 +683,16 @@ class InCasaDriver(DriverProtocol):
         return any(
             token in pop.get(engagement_id, ())
             for pop in (self._inbound_unread, self._inbound_accepted))
+
+    def _admitted_text(self, engagement_id: str,
+                       token: object) -> str | None:
+        """SYNCHRONOUS peek: the exact text one ticket was admitted with,
+        unread or accepted."""
+        for pop in (self._inbound_unread, self._inbound_accepted):
+            text = pop.get(engagement_id, {}).get(token)
+            if text is not None:
+                return text
+        return None
 
     def _accept_inbound(self, engagement_id: str, token: object) -> None:
         """Move unread -> accepted, synchronously, immediately BEFORE the
@@ -1108,7 +1190,7 @@ class InCasaDriver(DriverProtocol):
     async def _run_turn(
         self, engagement: EngagementRecord, prompt: str,
         *, inbound_token: object | None = None,
-        batch: int | None = None,
+        batch: int | None = None, tg_message_id: int | None = None,
     ) -> None:
         """#1165: run one turn under a cid of its own. The turn task logs under
         the minted cid as a plain string for the whole turn — the stream's
@@ -1121,7 +1203,8 @@ class InCasaDriver(DriverProtocol):
         try:
             await self._deliver_turn(engagement, prompt,
                                      inbound_token=inbound_token,
-                                     batch=batch, cid=cid)
+                                     batch=batch, cid=cid,
+                                     tg_message_id=tg_message_id)
         finally:
             cid_var.reset(cid_token)
 
@@ -1129,6 +1212,7 @@ class InCasaDriver(DriverProtocol):
         self, engagement: EngagementRecord, prompt: str,
         *, inbound_token: object | None = None,
         batch: int | None = None, cid: str | None = None,
+        tg_message_id: int | None = None,
     ) -> None:
         """#1350: an executor turn with a topic keeps a step log there, closed
         with the turn's real outcome — a result-carried refusal raises late in
@@ -1149,7 +1233,7 @@ class InCasaDriver(DriverProtocol):
         try:
             await self._deliver_turn_body(
                 engagement, prompt, inbound_token=inbound_token, batch=batch,
-                cid=cid, progress=progress)
+                cid=cid, progress=progress, tg_message_id=tg_message_id)
             ok = True
         finally:
             if progress is not None:
@@ -1163,7 +1247,7 @@ class InCasaDriver(DriverProtocol):
         self, engagement: EngagementRecord, prompt: str,
         *, inbound_token: object | None = None,
         batch: int | None = None, cid: str | None = None,
-        progress: Any = None,
+        progress: Any = None, tg_message_id: int | None = None,
     ) -> None:
         # Lazy import: tools imports engagement_registry; doing this at
         # module top-level would create a circular import.
@@ -1225,6 +1309,17 @@ class InCasaDriver(DriverProtocol):
                     "-" if batch is None else batch,
                     (getattr(engagement, "origin", None) or {}).get("cid") or "-",
                 )
+                # This turn's memory capture: the operator's message as it was
+                # admitted (its ticket's text, never a preamble Casa adds),
+                # here, before the fence below whose window must not await.
+                # A turn that captures is registered before its first
+                # capture; that registration belongs here, ahead of this one.
+                eng_capture = _EngagementCapture.for_turn(engagement)
+                if (eng_capture is not None and tg_message_id is not None
+                        and inbound_token is not None):
+                    admitted = self._admitted_text(engagement.id, inbound_token)
+                    if admitted is not None:
+                        await eng_capture.operator(admitted, tg_message_id)
                 # #690 — the in_casa half of INV-ENG-009, and the ONLY point
                 # at which it can be made. Everything from here to
                 # ``client.query`` below is synchronous, so no other coroutine
@@ -1436,6 +1531,12 @@ class InCasaDriver(DriverProtocol):
                             and result_api_error_kind(sdk_msg) is None):
                         evidence_seen = True
                         self.discharge_inbound(engagement.id, inbound_token)
+                    # The specialist's own words, captured before they are
+                    # streamed, whatever the stream's output bound clips.
+                    if (eng_capture is not None
+                            and isinstance(sdk_msg, AssistantMessage)):
+                        await eng_capture.answer(
+                            sdk_msg, self._session_ids.get(engagement.id))
                     # Phase 3b streaming — Task 6 output bound for specialists.
                     if isinstance(sdk_msg, AssistantMessage) and not stream_truncated:
                         msg_text = "".join(

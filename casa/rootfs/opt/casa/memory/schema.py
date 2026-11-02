@@ -151,11 +151,15 @@ V1: tuple[str, ...] = (
         block_hash TEXT NOT NULL
     ) STRICT
     """,
+    # A finalized engagement's summaries. ``source_key`` is the occurrence
+    # identity capture mints for each (so a spool drain re-run adds one row);
+    # ``procedural_epoch`` is the executor epoch digest, empty when none.
     f"""
     CREATE TABLE engagement_summaries (
         id INTEGER PRIMARY KEY,
+        source_key TEXT NOT NULL UNIQUE,
         role TEXT NOT NULL,
-        procedural_epoch INTEGER NOT NULL,
+        procedural_epoch TEXT NOT NULL DEFAULT '',
         tier TEXT NOT NULL CHECK (tier IN {_TIERS}),
         text TEXT NOT NULL,
         engagement_id TEXT NOT NULL,

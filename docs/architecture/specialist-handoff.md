@@ -14,7 +14,7 @@ carries, the operator's own words that travel down it, the mechanical bounds, th
 hand-off holds, and the requester's ceiling a hand-off pauses. How a
 resident delegates — the ACL, the depth cap on `delegate_to_agent`, the spawn cap, the
 desk — is [`delegation.md`](delegation.md); what a delegated run banks in memory is
-[`memory-lifecycle.md`](memory-lifecycle.md); how a plugin running under a hand-off learns
+[`memory-capture.md`](memory-capture.md); how a plugin running under a hand-off learns
 whom it serves is [`plugin-operator-calls.md`](plugin-operator-calls.md), and how its
 later turns carry the answer back up the chain is
 [`plugin-continuations.md`](plugin-continuations.md).

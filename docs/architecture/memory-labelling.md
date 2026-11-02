@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-10-07
+last_reviewed: 2026-11-02
 ---
 
 # Memory labelling: tier, provenance, and content addressing
@@ -9,7 +9,10 @@ last_reviewed: 2026-10-07
 ## Scope
 
 How each item is labelled on the way in to long-term memory: its sensitivity
-tier, its speaker provenance, and the content addressing that deduplicates it.
+tier, its speaker provenance, and the content addressing that deduplicates it —
+and, for an item captured into the memory store, the occurrence identity that
+names it and the tier floor it carries from the moment it is captured. Which
+text is captured, and when, is [`architecture/memory-capture.md`](memory-capture.md).
 How a conversation becomes long-term memory and how it stops being one — the
 freshness windows, the claim-and-guard save protocol, the explicit reset and
 the durable retry spool — is
@@ -18,6 +21,30 @@ stored fact on the way back out is [`architecture/memory.md`](memory.md), and
 who may read it back is [`architecture/memory-scoping.md`](memory-scoping.md).
 
 ## Mental model
+
+**A captured item is named by what occurred, never by what it says.** The
+shared bank collapses an identical utterance into one document (below); the
+memory store does the opposite. Every captured item's `source_key` comes from
+one constructor, `memory/occurrence.py`, in one of two forms. An operator
+message that carries a provider id — a Telegram DM, or a message in an
+engagement topic — is keyed by a hash of its channel, its chat and that id,
+so the same message delivered twice is one event. Everything else — a turn no
+person typed, each resident or specialist message, a delegated request and
+answer, an engagement summary — is keyed by a random id minted once, when
+capture builds the item, and carried on its spool line. The same words said
+twice are two events; a retried attempt's output and a regenerated answer are
+new events; a spool drain run twice adds nothing. No key counts anything, and
+the short log correlation id is never an input, since two turns can share one.
+
+**A captured item starts `private` and provisional, with a floor.** Capture
+does not classify. Every event is stored `private`, `provisional`, with an
+`origin_tier` below which it can never be classified: for the opening of a
+turn, the clearance of the origin that sent it; for a resident's or a
+specialist's own message, the read clearance of the session that wrote it —
+the clearance its served memory and its tools were bounded by. A friend's
+Telegram turn and the resident's answer to it therefore carry the friend's
+clearance as their floor; a delegated run's request and answer carry the
+delegating turn's. An engagement summary is stored at its origin's tier.
 
 
 Content addressing only holds because the hash input is the utterance and
@@ -126,6 +153,17 @@ Writers that bypass the transcript readback (delegated retains) never carried
 the envelope in the first place. Model lines saved from an entry that predates the
 scheduled marker carry no time, so the backend dates them by the save.
 
+**INV-MEM-026**: Every `source_key` of an item captured into the memory store is built by `memory/occurrence.py` from no positional counter and never from the log correlation id: an operator message with a provider id is keyed by its channel, chat and provider message id, so a redelivery collapses into one event, and every other live item by an id minted once when capture builds it, so a spool drain re-run adds it once while a repeat, a retry's output or a regenerated answer is a new event.
+
+The opposite of INV-MEM-009 on purpose: that rule deduplicates the shared
+bank's documents by content, this one keeps every occurrence in the verbatim
+store. The engagement-topic form uses the engagement as its chat, since the
+driver that captures it knows the engagement, not the forum's chat id.
+
+What it does not cover: the same words reaching two seams — an operator's
+message, and the resident quoting it back — are two items by design; and no
+key is meant to match anything in an SDK transcript.
+
 **INV-MEM-022**: Casa's per-turn notes block, composed directly after the time envelope, is split off with that envelope at the transcript-readback boundary, so no note it carries reaches the stored memory text or the document id.
 
 Enforced by the same pinned composer and splitter as INV-MEM-009: the block's
@@ -204,7 +242,9 @@ fails every first save the same way, which is the safe direction.
 [`architecture/memory-lifecycle.md`](memory-lifecycle.md): it builds its items
 through the retain-item builder — bypassing it skips tier tagging, provenance
 validation and the tier floor — and hands it the stored-tag read of the bank it
-is about to write.
+is about to write. A new capture seam keys its items only through
+`memory/occurrence.py` and gives each the floor of the session that produced it
+([`architecture/memory-capture.md`](memory-capture.md)).
 
 ## Source & test map
 
@@ -216,14 +256,17 @@ is about to write.
 - `casa/rootfs/opt/casa/timekeeping.py::compose_time_envelope`
 - `casa/rootfs/opt/casa/timekeeping.py::split_time_envelope`
 - `casa/rootfs/opt/casa/timekeeping.py::compose_turn_preamble`
+- `casa/rootfs/opt/casa/memory/occurrence.py`
 
 **Tests**
 - `tests/test_memory_provenance.py`
 - `tests/test_time_envelope.py`
 - `tests/test_pin_1123_tier_floor.py`
+- `tests/test_memory_capture.py`
 
 **Related**
 - [`architecture/memory-lifecycle.md`](../architecture/memory-lifecycle.md)
+- [`architecture/memory-capture.md`](../architecture/memory-capture.md)
 - [`architecture/memory.md`](../architecture/memory.md)
 - [`architecture/persistent-state.md`](../architecture/persistent-state.md)
 <!-- END SOURCEMAP -->

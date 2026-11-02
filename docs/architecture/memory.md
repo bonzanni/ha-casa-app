@@ -190,8 +190,9 @@ What it does not cover: the legacy string recall path, mental-model overlays, an
 transcript are not tier-filtered by this check. Filtering is also applied locally to what the
 backend returned — the request's own tag filter is not treated as the access control.
 
-**INV-MEM-005** and **INV-MEM-006** — write trust and the save/reset guard protocol — are
-declared in [`architecture/memory-lifecycle.md`](memory-lifecycle.md), together with the
+**INV-MEM-005** — write trust — is declared in
+[`architecture/memory-capture.md`](memory-capture.md); **INV-MEM-006** — the save/reset guard
+protocol — in [`architecture/memory-lifecycle.md`](memory-lifecycle.md), together with the
 retirement claims (INV-MEM-013); **INV-MEM-004**, **INV-MEM-009** and **INV-MEM-012** — the
 write-side tag and provenance gate, the content-addressing contract and the tier-classifier
 parse — are declared in [`architecture/memory-labelling.md`](memory-labelling.md), together

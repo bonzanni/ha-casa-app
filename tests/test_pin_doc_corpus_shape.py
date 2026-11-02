@@ -635,7 +635,10 @@ def test_memory_labelling_and_retention_lifecycle_are_separate():
     independently yield (1, 1) at base and are regression arms.
 
     Pins ownership and lead location; byte-identical movement and
-    completeness of the passages remain review obligations.
+    completeness of the passages remain review obligations. The write-trust
+    and completeness rules (INV-MEM-005, INV-MEM-016) later moved on to
+    ``architecture/memory-capture.md`` with the rest of capture eligibility,
+    so the lifecycle set names the ids that stayed with the lifecycle.
 
     Specified by **astra** in the drive red-case round.
     """
@@ -649,8 +652,7 @@ def test_memory_labelling_and_retention_lifecycle_are_separate():
     lifecycle = {
         _declaring_document(inv)
         for inv in (
-            "INV-MEM-005", "INV-MEM-006", "INV-MEM-013",
-            "INV-MEM-016", "INV-MEM-017",
+            "INV-MEM-006", "INV-MEM-013", "INV-MEM-017", "INV-MEM-023",
         )
     }
     counts = (

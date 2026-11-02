@@ -4203,9 +4203,13 @@ async def main() -> None:
     # the file untouched and memory unavailable; Casa boots either way. A
     # pending container-start maintenance (wipe or restore) must be settled
     # before this point: this open is the store's first consumer at boot.
+    from memory import capture as memory_capture
     from memory.store import MemoryStore
     memory_store = MemoryStore()
     await asyncio.to_thread(memory_store.open)
+    # Live capture writes here, or to the spool while the store is
+    # unavailable or busy.
+    memory_capture.configure(store=memory_store)
 
     def _agent_home_dir(role: str) -> str:
         """Resident transcript cwd (encoded-cwd dir for get_session_messages /
@@ -4941,6 +4945,10 @@ async def main() -> None:
     import agent as agent_mod
     agent_mod.active_engagement_driver = engagement_driver
     agent_mod.active_semantic_memory = semantic_memory   # resident long-term (Hindsight seam)
+
+    async def _memory_spool_notice(text: str) -> None:
+        await operator_notify(channel_manager, text)
+    memory_capture.configure(notify=_memory_spool_notice)
     agent_mod.active_session_registry = session_registry  # #411 — wipe orchestrator input
     agent_mod.active_executor_registry = executor_registry
     runtime.engagement_driver = engagement_driver
@@ -5088,12 +5096,14 @@ async def main() -> None:
                 return await claude_code_driver.send_user_turn(
                     rec, text, tg_message_id=tg_message_id)
             # in_casa driver has no durable spool / reply-threading (§7
-            # follow-up) — drop the id; no reservation disposition. #649:
-            # thread the seam-admitted ticket so the driver adopts it. #1033:
-            # and the job batch number a batch turn carries (jobs are always
-            # in_casa, so the claude_code branch above never sees one).
+            # follow-up) — the id only keys the message's memory capture; no
+            # reservation disposition. #649: thread the seam-admitted ticket
+            # so the driver adopts it. #1033: and the job batch number a batch
+            # turn carries (jobs are always in_casa, so the claude_code branch
+            # above never sees one).
             await engagement_driver.send_user_turn(
-                rec, text, inbound_token=inbound_token, batch=batch)
+                rec, text, tg_message_id=tg_message_id,
+                inbound_token=inbound_token, batch=batch)
             return None
         telegram_channel._driver_send_user_turn = _driver_send_user_turn
 

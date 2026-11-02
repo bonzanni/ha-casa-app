@@ -22,7 +22,10 @@ directory created at mode 0700 and kept there by the private-state inventory
 transaction explicitly (`BEGIN IMMEDIATE` for a write, a deferred `BEGIN` for a read, which
 is a consistent snapshot from its first read), commits or rolls back, and closes the
 connection. No handle outlives its transaction, so between uses nothing in the process holds
-the file open. The code is blocking; async callers run it in a thread.
+the file open. A transaction waits a bounded time for another connection's lock; capture
+keeps that bound short, so a busy store makes it spool rather than hold a turn
+([`memory-capture.md`](memory-capture.md)). The code is blocking; async callers run it in a
+thread.
 
 **Boot opens the store once.** `MemoryStore.open()` runs in `casa_core.main()` right after
 the long-term memory backend is built. It checks that SQLite can create and query an FTS5
@@ -73,7 +76,8 @@ the `memory` package, so it can be used while that process is not running.
 **INV-MEM-025**: Export, restore and the wipe walk one registry whose every row carries an export, a restore and a wipe rule; a test fails when a fresh store has a table or a `/data/memory` path no row declares, when a named producer of memory-derived text, run as the code configures it, writes from a memory-bearing call site to a path its row does not cover or writes any other file that neither its row nor its declared list of files carrying no memory covers, when a memory-bearing call site issues no write in any run, or when a launcher configures a transcript root no row covers.
 
 The store pin opens a real store and reads `sqlite_master` and the directory, once with a
-transaction open so the WAL sidecars are present. The producer pin judges what it
+transaction open so the WAL sidecars are present, and once more after the producers that
+write under `/data/memory` have run: a capture that commits and one that spools. The producer pin judges what it
 observes, never a path it is told:
 
 - **Every write, as it happens.** Each named producer runs in a sandbox that stands in for
@@ -146,7 +150,8 @@ statements never change) and into a registry row in the same change; the store p
 otherwise.
 
 **A new file or directory under `/data/memory`**, or a new place outside it that holds
-memory-derived text, gets a registry row with all three rules. A new producer of such text
+memory-derived text, gets a registry row with all three rules; a producer writing under
+`/data/memory` is run by the store pin, so the path it really writes is the one judged. A new producer of such text
 is named in its row's `producer`, its memory-bearing input is declared in the producer pin's
 table, and each persisting site the pin then reports is mapped to its path. A producer that
 writes through an atomic helper declares the helper's staging pattern, and the pin runs it
@@ -175,5 +180,6 @@ transcript root, which needs a row.
 **Related**
 - [`architecture/persistent-state.md`](../architecture/persistent-state.md)
 - [`architecture/memory.md`](../architecture/memory.md)
+- [`architecture/memory-capture.md`](../architecture/memory-capture.md)
 - [`architecture/memory-wipe.md`](../architecture/memory-wipe.md)
 <!-- END SOURCEMAP -->

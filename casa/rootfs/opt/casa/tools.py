@@ -51,6 +51,7 @@ from plugin_grants import (
 from authz_grants import CHALLENGES, GRANTS, normalize_role
 from delegated_memory import delegated_recall, retain_delegated, topical_query
 from handoff import child_chain, requester_of
+from memory.eligibility import Source as _CaptureSource
 from semantic_memory import RecallUnavailable
 
 from claude_agent_sdk import (
@@ -4231,6 +4232,50 @@ async def _delete_own_delegated_transcript(
         )
 
 
+async def _capture_delegated(
+    source: _CaptureSource, cfg, parent: dict, text: str, *,
+    speaker_kind: str, speaker_id: str, resident_request: bool = True,
+    answer_incomplete: bool = False, session_id: str | None = None,
+) -> None:
+    """Capture one side of a delegated exchange into memory, under the gate
+    the exchange's retain uses: a memory-writing role (``token_budget > 0``),
+    no stored call, a write-trusted originating channel. Its floor is the
+    delegating turn's read clearance — the clearance the run reads at. A
+    capture failure is logged and never fails the run."""
+    from channel_policy import writes_to_bank
+    from memory import capture, eligibility
+    from sensitivity import clearance_for_origin
+    try:
+        channel = str(parent.get("channel", ""))
+        rule = eligibility.admit(
+            source, text=text, channel_writes=writes_to_bank(channel),
+            role_writes_memory=cfg.memory.token_budget > 0,
+            stored_call=bool(parent.get("stored_call")),
+            resident_request=resident_request,
+            answer_incomplete=answer_incomplete)
+        if rule is None:
+            return
+        route, clearance = _origin_clearance_markers(parent)
+        scheduled = parent.get("_scheduled_delivery") is True
+        origin_kind = ("delegated_result"
+                       if source is _CaptureSource.DELEGATED_ANSWER
+                       else capture.origin_kind_of(
+                           scheduled=scheduled,
+                           operator_authored=(
+                               parent.get("_unauthored_opening") is False)))
+        item = capture.event(
+            role=cfg.role, channel=channel, speaker_kind=speaker_kind,
+            speaker_id=speaker_id, origin_kind=origin_kind, text=text,
+            eligibility=rule,
+            origin_tier=clearance_for_origin(route, clearance, channel),
+            scheduled=scheduled, session_id=session_id)
+    except Exception:  # noqa: BLE001 — capture never fails a delegation
+        logger.exception("memory capture of a delegated %s failed",
+                         source.value)
+        return
+    await capture.record(item)
+
+
 # #1220: how often a pinned turn asks the CLI whether its MCP servers settled
 _MCP_SETTLE_POLL_S = 0.25
 
@@ -4441,6 +4486,15 @@ async def _run_delegated_agent(
         f"{delegation_context}\n\n{memory_block}"
         f"{_result_contract_block(output_format)}{body_tail}"
     )
+
+    # The request is captured raw, before the run starts, and never depends
+    # on the answer (INV-MEM-016). A run that captures is registered before
+    # its first capture; that registration belongs here, ahead of this one.
+    await _capture_delegated(
+        _CaptureSource.DELEGATED_REQUEST, cfg, parent, task_text,
+        speaker_kind="resident", speaker_id=caller_role,
+        resident_request=(len(child_origin["_handoff_chain"]) <= 2
+                          and parent.get("synthetic") != "continuation"))
 
     # Off-loop: _build_specialist_options resolves the registry (file IO) —
     # keep it off the shared event loop (H2/M20).
@@ -4771,6 +4825,15 @@ async def _run_delegated_agent(
         approval_scope.approval_kept = "\n\n".join(messages[:approval_cut.cut])
         # #1283: the messages the kept words are joined from, cut at the same index
         output = replace(output, reply_messages=tuple(messages[:approval_cut.cut]))
+
+    # The answer is captured at completion — the whole live fold — only when
+    # the run's own evidence says it is complete (INV-MEM-016).
+    await _capture_delegated(
+        _CaptureSource.DELEGATED_ANSWER, cfg, parent, text,
+        speaker_kind=("resident" if getattr(cfg, "kind", "") == "resident"
+                      else "specialist"),
+        speaker_id=cfg.role, answer_incomplete=output.answer_incomplete,
+        session_id=own_sid)
 
     # Specialist write: one explicit tier-classified retain of the exchange
     # OFFERED to the shared bank, gated by the PARENT channel's write-trust
@@ -13298,6 +13361,36 @@ def _told_nowhere(origin: Any, outcome: str) -> bool:
     return outcome == "completed" and background_jobs.is_quiet_origin(origin)
 
 
+async def _capture_summary(frozen: dict[str, Any], text: str, *,
+                           allowed: bool) -> None:
+    """Capture one finalized engagement's summary into memory's
+    ``engagement_summaries``, at the origin's tier and stamped with the
+    record's epoch. ``allowed`` is the summary's own switch (a specialist
+    that writes no memory leaves none); the origin channel's write-trust
+    gates it as it gates the retain. A failure is logged, never raised."""
+    from channel_policy import writes_to_bank
+    from memory import capture, eligibility
+    from sensitivity import clearance_for_origin
+    try:
+        origin = frozen["origin"]
+        channel = str(origin.get("channel", ""))
+        if eligibility.admit(
+                _CaptureSource.ENGAGEMENT_SUMMARY, text=text,
+                channel_writes=writes_to_bank(channel),
+                role_writes_memory=allowed) is None:
+            return
+        item = capture.summary(
+            role=frozen["role_or_type"],
+            procedural_epoch=frozen.get("procedural_epoch") or "",
+            tier=clearance_for_origin(origin.get("_origin_route"),
+                                      origin.get("_origin_clearance"), channel),
+            text=text, engagement_id=frozen["id"])
+    except Exception:  # noqa: BLE001 — capture never fails a finalize
+        logger.exception("memory capture of an engagement summary failed")
+        return
+    await capture.record(item)
+
+
 async def _finalize_engagement_tail(
     engagement: EngagementRecord,
     *,
@@ -13424,20 +13517,23 @@ async def _finalize_engagement_tail(
     from delegated_memory import role_writes_memory
     _summary_allowed = (frozen["kind"] != "specialist"
                         or role_writes_memory(frozen["role_or_type"]))
+    summary = json.dumps({
+        "kind": "engagement_summary",
+        "engagement_id": eng_id,
+        "specialist_or_type": frozen["role_or_type"],
+        "task": frozen["task"],
+        "status": outcome,
+        "started_at": frozen["started_at"],
+        "completed_at": now,
+        "duration_s": now - frozen["started_at"],
+        "text": text,
+        "artifacts": artifacts,
+        "next_steps": next_steps,
+    })
+    # The summary's memory capture, awaited: a local append (or spool) that
+    # returns a receipt, under the same switch as the retain below.
+    await _capture_summary(frozen, summary, allowed=_summary_allowed)
     if sem is not None and _summary_allowed:
-        summary = json.dumps({
-            "kind": "engagement_summary",
-            "engagement_id": eng_id,
-            "specialist_or_type": frozen["role_or_type"],
-            "task": frozen["task"],
-            "status": outcome,
-            "started_at": frozen["started_at"],
-            "completed_at": now,
-            "duration_s": now - frozen["started_at"],
-            "text": text,
-            "artifacts": artifacts,
-            "next_steps": next_steps,
-        })
         # #411: fence generation captured synchronously with the summary
         # assembly — the detached task may not run until after a wipe.
         from memory_wipe import FENCE as _FENCE
@@ -13508,7 +13604,7 @@ async def _finalize_engagement_tail(
     # summary above, so its content-addressed document_id (Task 10) is distinct
     # and the two never clobber each other.
     # `sem` is the active_semantic_memory resolved in step 5 above.
-    if frozen["kind"] == "executor" and sem is not None:
+    if frozen["kind"] == "executor":
         type_summary = json.dumps({
             "kind": "executor_engagement_summary",
             "engagement_id": eng_id,
@@ -13522,6 +13618,10 @@ async def _finalize_engagement_tail(
             "last_text": text,
             "artifacts": artifacts,
         })
+        # The executor summary's memory capture, awaited, stamped with the
+        # record's epoch (the archive an executor is served is per epoch).
+        await _capture_summary(frozen, type_summary, allowed=True)
+    if frozen["kind"] == "executor" and sem is not None:
         # #215: stamp the summary with the epoch persisted on the RECORD at
         # launch (never the finalize-time definition — a reload may have
         # moved it). A legacy record without one retains untagged; the

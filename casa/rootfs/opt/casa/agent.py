@@ -1201,6 +1201,97 @@ def _replay_statement(statement: str, complete: DelegationComplete, *,
     return (statement + " "
             + _replay_time_sentence(complete, orphan=orphan) + "\n\n")
 
+
+class _TurnCapture:
+    """What one resident turn captures into memory: the text it opens with,
+    at admission, and each text-bearing message the resident writes, as it
+    is emitted (``memory/capture.py``). Built only for a turn on a
+    write-trusted channel; every event's floor is the turn's read clearance.
+    A capture failure is logged and never fails the turn."""
+
+    def __init__(self, *, role: str, msg: BusMessage, user_text: str,
+                 origin: Mapping[str, Any], scheduled: bool,
+                 delegated_result: bool) -> None:
+        from memory import capture
+        self._role = role
+        self._msg = msg
+        self._user_text = user_text
+        self._scheduled = scheduled
+        operator_authored = msg.trusted_user_origin is not None
+        self._operator_authored = operator_authored
+        self._origin_kind = capture.origin_kind_of(
+            scheduled=scheduled, operator_authored=operator_authored,
+            delegated_result=delegated_result,
+            callback=msg.context.get("synthetic") == "callback_nudge")
+        self._floor = clearance_for_origin(
+            origin.get("_origin_route"), origin.get("_origin_clearance"),
+            msg.channel)
+
+    @classmethod
+    def for_turn(cls, **kw) -> "_TurnCapture | None":
+        from channel_policy import writes_to_bank
+        return cls(**kw) if writes_to_bank(kw["msg"].channel) else None
+
+    async def opening(self) -> None:
+        from delegated_memory import notice_from_excluded_role
+        from memory import capture, eligibility, occurrence
+        msg = self._msg
+        try:
+            rule = eligibility.admit(
+                eligibility.Source.TURN, text=self._user_text,
+                channel_writes=True, scheduled=self._scheduled,
+                excluded_notice=notice_from_excluded_role(self._user_text))
+            if rule is None:
+                return
+            ctx = msg.context
+            provider_id = ctx.get("message_id") if self._operator_authored \
+                else None
+            key = (occurrence.provider_key(msg.channel, ctx.get("chat_id"),
+                                           provider_id)
+                   if provider_id else None)
+            if not self._operator_authored:
+                speaker = "casa"
+            elif ctx.get("_operator_turn") is True:
+                speaker = "operator"
+            else:
+                speaker = "third_party"
+            user_id = ctx.get("user_id")
+            item = capture.event(
+                source_key=key, role=self._role, channel=msg.channel,
+                speaker_kind=speaker, origin_kind=self._origin_kind,
+                text=self._user_text, eligibility=rule,
+                origin_tier=self._floor, scheduled=self._scheduled,
+                speaker_id=None if user_id is None else str(user_id),
+                speaker_name=ctx.get("user_name") if self._operator_authored
+                else None,
+                provider_message_id=None if provider_id is None
+                else str(provider_id))
+        except Exception:  # noqa: BLE001 — capture never fails a turn
+            logger.exception("memory capture of a turn's opening failed")
+            return
+        await capture.record(item)
+
+    async def message(self, text: str, sdk_msg: Any) -> None:
+        from memory import capture, eligibility
+        try:
+            rule = eligibility.admit(
+                eligibility.Source.RESIDENT_MESSAGE, text=text,
+                channel_writes=True)
+            if rule is None:
+                return
+            sid = getattr(sdk_msg, "session_id", None)
+            item = capture.event(
+                role=self._role, channel=self._msg.channel,
+                speaker_kind="resident", speaker_id=self._role,
+                origin_kind=self._origin_kind, text=text, eligibility=rule,
+                origin_tier=self._floor, scheduled=self._scheduled,
+                session_id=sid if isinstance(sid, str) and sid else None)
+        except Exception:  # noqa: BLE001 — capture never fails a turn
+            logger.exception("memory capture of a resident message failed")
+            return
+        await capture.record(item)
+
+
 class Agent:
     """A Casa agent backed by the Claude Agent SDK."""
 
@@ -2236,6 +2327,15 @@ class Agent:
                 msg.channel == "telegram"
                 and msg.context.get("_scheduled_delivery") is True
             )
+            # What this turn captures into memory; None off a write-trusted
+            # channel. The opening is captured in the admitted block below,
+            # each resident message by the fold that emits it.
+            turn_capture = _TurnCapture.for_turn(
+                role=self.config.role, msg=msg, user_text=user_text,
+                origin=origin_snapshot, scheduled=turn_scheduled,
+                delegated_result=origin_question is not None)
+            capture_message = (turn_capture.message
+                               if turn_capture is not None else None)
 
             # <current_time> rides on the per-turn query text (NOT the cached
             # system prompt) so the agent still knows the wall-clock time to
@@ -2320,7 +2420,7 @@ class Agent:
                     on_token, turn_guard,
                     settle_evidence=(
                         msg.context.get("synthetic") != "plugin_setup"),
-                    scope=scope,
+                    scope=scope, capture=capture_message,
                 )
                 turn_state["state"] = state
                 # #521: keep EVERY attempt's state — a setup tool can run in
@@ -2453,7 +2553,7 @@ class Agent:
                     on_token, turn_guard,
                     settle_evidence=(
                         msg.context.get("synthetic") != "plugin_setup"),
-                    scope=scope,
+                    scope=scope, capture=capture_message,
                 )
                 turn_state["state"] = state
                 turn_state.setdefault("states", []).append(state)
@@ -2588,6 +2688,11 @@ class Agent:
                             "by turn evidence before it ran (role=%s)",
                             _episode, self.config.role)
                         return None
+                # A turn that captures is registered before its first
+                # capture; that registration belongs here, ahead of this one.
+                # The opening is captured raw, before the model is called.
+                if turn_capture is not None:
+                    await turn_capture.opening()
                 try:
                     try:
                         response_text, sdk_session_id, usage, used_resume, \
@@ -3467,8 +3572,13 @@ class Agent:
         turn_guard: VoiceTurnGuard | None = None,
         settle_evidence: bool = True,
         scope: TurnScope | None = None,
+        capture: Callable[[str, Any], Awaitable[None]] | None = None,
     ):
         """Build the per-turn ``on_message(sdk_msg)`` handler + its ``state``.
+
+        ``capture``, when given, is awaited with each text-bearing message's
+        folded text (and the message) before that text is emitted: the
+        turn's memory capture of what the resident wrote.
 
         Reproduces today's per-message body VERBATIM (Phase 4b sdk_logging
         dispatch wrapped in try/except, tool_names_by_id, idx counter,
@@ -3773,6 +3883,8 @@ class Agent:
                             state["text"] += "\n\n"
                         state["text"] += msg_text
                         state["messages"].append(msg_text)
+                        if capture is not None:
+                            await capture(msg_text, sdk_msg)
                     # The canonical fold supersedes any in-flight partial for
                     # this message (AR-A/AR-B): reset before computing the
                     # cumulative so a stale partial never bleeds into message

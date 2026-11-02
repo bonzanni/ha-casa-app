@@ -165,6 +165,12 @@
   doc: architecture/memory-wipe.md
 - item: casa/rootfs/opt/casa/memory/__init__.py
   doc: architecture/memory-store.md
+- item: casa/rootfs/opt/casa/memory/capture.py
+  doc: architecture/memory-capture.md
+- item: casa/rootfs/opt/casa/memory/eligibility.py
+  doc: architecture/memory-capture.md
+- item: casa/rootfs/opt/casa/memory/occurrence.py
+  doc: architecture/memory-labelling.md
 - item: casa/rootfs/opt/casa/memory/registry.py
   doc: architecture/memory-store.md
 - item: casa/rootfs/opt/casa/memory/schema.py
@@ -602,7 +608,7 @@
 - item: casa/rootfs/opt/casa/channel_authz.py
   doc: architecture/voice.md
 - item: casa/rootfs/opt/casa/channel_policy.py
-  doc: architecture/memory-lifecycle.md
+  doc: architecture/memory-capture.md
 - item: casa/rootfs/opt/casa/channel_trust.py
   doc: architecture/memory.md
 - item: casa/rootfs/opt/casa/channels/__init__.py

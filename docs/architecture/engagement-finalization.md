@@ -152,9 +152,10 @@ falls back to a direct send that bypasses sequencing entirely.
 **One terminal path deliberately stays outside this funnel.** A launch turn that ends
 without leaving any artifact (INV-ENG-011, [`architecture/engagements.md`](engagements.md))
 is reported by the launch's owner, not finalized here, and the exclusion is what makes it
-safe. This funnel retains a tier-classified engagement summary onto the shared memory bank on
+safe. This funnel retains a tier-classified engagement summary onto the shared memory bank, and
+captures it into the memory store's `engagement_summaries` (awaited, at the origin's tier), on
 *every* outcome (a zero-budget specialist's summary excepted, INV-MEM-024 in
-[`architecture/memory-lifecycle.md`](memory-lifecycle.md)); a launch death recorded as a completion with empty text would put a
+[`architecture/memory-capture.md`](memory-capture.md)); a launch death recorded as a completion with empty text would put a
 fabricated success into a store with no other copy. It also hard-codes a single completion
 error kind, which would erase the specific kind the report exists to name. So that path
 uses the strict terminal primitive directly, writes only `error`, tells the engager itself —

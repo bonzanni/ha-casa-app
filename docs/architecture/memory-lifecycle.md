@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-08-13
+last_reviewed: 2026-11-02
 ---
 
 # Memory lifecycle: retention, reset, and the retry spool
@@ -11,7 +11,10 @@ last_reviewed: 2026-08-13
 How a conversation becomes long-term memory and how it stops being one: the
 freshness windows that make a session save-eligible, the claim-and-guard
 protocol that retains it exactly once, the explicit reset, and the durable
-retry spool. How each item is labelled on the way in — its sensitivity tier,
+retry spool. Which text may be stored at all — write-trust, the completeness
+of a delegated answer, the specialists whose output is kept out — and Casa's
+per-turn capture into the memory store are
+[`architecture/memory-capture.md`](memory-capture.md). How each item is labelled on the way in — its sensitivity tier,
 its speaker provenance, and the content addressing that deduplicates it — is
 [`architecture/memory-labelling.md`](memory-labelling.md). The
 operator-consented wipe that removes long-term memory and leaves conversation
@@ -24,26 +27,6 @@ whose resume decision this lifecycle steers is
 [`architecture/sdk-client-pool.md`](sdk-client-pool.md).
 
 ## Mental model
-
-**Writing is narrower than reading.** Only write-trusted channels retain to
-the shared bank. A channel that can recall is not thereby able to store.
-
-**A turn that did not finish is not a fact.** Write-trust decides *whether* a
-channel may store; it does not decide whether what is being stored actually
-happened. A delegated specialist run that the CLI ends without completing the
-turn has produced text, but not an answer — and the bank has no way to say
-"partial", because an additive tag broadens a recall rather than narrowing it and
-the bank-wide profile overlay is not filterable at all. The exclusion is therefore
-made by the writer, at the point where the terminal verdict is known: the
-incomplete answer is never built into an item.
-
-The rest of that exchange is admitted turn by turn. The caller's request turn
-is submitted whenever it is non-blank — the caller did genuinely make it, and
-nothing else records it — regardless of whether the specialist produced any
-answer text, so an empty answer no longer discards the request. The answer
-turn is submitted only when it is non-empty and the terminal evidence says the
-model actually finished it; a withheld answer is logged at the assembly site,
-and a blank request beside a withheld answer submits nothing at all.
 
 **When a session goes cold is tunable, and retention deduplicates.** The
 freshness windows that decide when a session stops being resumable and
@@ -75,86 +58,15 @@ detached background task, whose failure spools a durable retry record under
 `/data/cold-retain-retry`; and a finishing engagement retains its summary
 from a detached task of its own. All of them converge on the shared bank —
 which is why the wipe cannot be "delete the bank" alone
-([`architecture/memory-wipe.md`](memory-wipe.md)).
+([`architecture/memory-wipe.md`](memory-wipe.md)). Every one of them passes
+the eligibility rules first: a session save skips the user turn that is Casa's
+notice naming a specialist that writes no memory
+(`delegated_memory.notice_from_excluded_role`, which reads
+`delegated_memory.role_writes_memory`) and keeps the resident's relay after it;
+a summary of such a specialist is not written (INV-MEM-024 in
+[`architecture/memory-capture.md`](memory-capture.md)).
 
 ## Contracts & invariants
-
-**INV-MEM-005**: Only write-trusted channels retain to the shared bank.
-
-Enforced by the channel write-policy check, consulted by every production
-retain path.
-
-What it does not cover: the seam's retain method itself enforces nothing. A
-future caller that skips the builder and the policy check would bypass both.
-
-**INV-MEM-016**: A delegated specialist answer the terminal evidence does not certify complete — an aborted run, a terminal fault, or an answer the model did not finish — is never retained to the shared bank; the caller's own non-blank task turn is submitted independently of the answer.
-
-A stored-call pinned turn ([`stored-call-buttons.md`](stored-call-buttons.md)) recalls
-nothing — its prompt carries no `<memory_context>` block — and submits nothing at all —
-neither the Casa-composed task nor the model's text — since its only operator-visible outcome
-is the plugin's receipt; the read and the write are skipped on the same `stored_call` marker. The runner records the whole terminal
-shape once, beside the returned text, and
-assembles the answer turn only when a single completeness predicate on that
-evidence says the model finished. The predicate is deliberately wider than the
-run's own reported verdict, in three ways. A result carrying an error flag while
-still naming itself a success is a failed API call, and a result naming any
-reason for stopping other than a completed one — cancellation among them — is a
-turn that ended some other way; both now end the run as a typed caller failure,
-raised before the retain is ever assembled, so those exchanges bank nothing at
-all. An otherwise completed result whose *stop reason* says the model ran out of
-output tokens — or says anything else not on the short list of reasons that mean
-*finished* — is a caller-visible success whose unfinished answer is withheld from
-the bank, audibly. Both vocabularies belong to the CLI and can grow, so each is
-tested against an allow-list of completed values, never a list of known-bad
-ones: a reason this release has never heard of withholds the answer rather than
-banking it. A value that is not even a string is normalized at capture to a
-sentinel that fails every such list — malformed evidence never reads as the
-absent-field legacy case, which counts as completed. The reported verdict
-itself is left alone — it has consumers outside memory, and widening it there
-would change what they see. "Did not complete" covers every non-success terminal
-subtype — including one this release has never seen — and a stream that ends
-with no terminal message at all, which certifies nothing. The subtype is a
-*required* field on a parsed terminal message, so a null there is malformed
-evidence and reads as an abort too; the completed-without-subtype reading
-survives only for directly constructed outputs, which is where the legacy and
-test shapes live.
-
-The caller's turn is kept deliberately: it is a true utterance, and this is its
-only writer — a resident's own session save never sees the paraphrase it sent to
-the specialist. The two are independent content-addressed documents rather than
-one paired record, so withholding the answer leaves nothing dangling. Admission
-is per turn: the request turn no longer rides on the answer having text, a
-whitespace-only request is blank, and the writer is invoked only when at least
-one turn survived admission.
-
-What it does not cover: documents already stored. This narrows what is written
-from here on; it does not inspect or repair anything the bank already holds, and
-the only removal authority remains the operator-consented wipe. Nor is it the
-rule for the delegation's *delivery* copy: a job row keeps its answer only while
-that answer is owed to its creator, and drops it on delivery (INV-JOB-015). One
-rule, two purposes — the bank keeps what is worth remembering, the row keeps
-what has not yet been said.
-
-**INV-MEM-024**: Output authored by a loaded specialist whose `memory.token_budget` is 0 is not retained to the shared bank — not its delegated answer, not a delegation or engagement notice carrying it in a resident's transcript, not its engagement summary — while the resident's own turns around it are retained as before.
-
-The switch is the specialist's own declaration: a role that reads no memory writes none,
-and a role Casa no longer has loaded — whose switch it cannot read — writes none either.
-The delegated answer has been gated on the budget since specialists first wrote to the
-bank; the other paths read `delegated_memory.role_writes_memory`. A resident's
-transcript save (`session_saver.transcript_to_items`, under every save path — the reaper,
-`/new`, a gap-superseded session) skips a user turn that is Casa's own notice header
-naming such a role (`delegated_memory.notice_from_excluded_role`), and keeps the resident's reply
-after it: relaying the result in its own words is the resident's turn. A delegated run's
-task is banked only as a resident's own words: a chain of at most the resident and one
-specialist (`len(_handoff_chain) <= 2`) on a turn Casa did not compose
-(`synthetic != "continuation"`).
-`_finalize_engagement` writes no engagement summary for such a specialist and still tells
-the requester.
-
-What it does not cover: what the resident chooses to say about the result, which is the
-resident's; a specialist that writes memory quoting the browsing specialist's answer in its
-own reply, which is that specialist's own output; and a Casa whose tools were never
-initialised (an empty role map), where nothing is gated.
 
 **INV-MEM-006**: A session save or removal keyed by channel acts only on the session id its caller snapshotted — a registration carrying a different id in that window is released, not retained or deleted; an explicit reset deliberately removes its snapshotted session even when re-registered.
 
@@ -358,8 +270,6 @@ the wipe do — the claim is what keeps racing turns off the dying session.
 
 **Source**
 - `casa/rootfs/opt/casa/memory_provenance.py::build_retain_items`
-- `casa/rootfs/opt/casa/tools.py::_run_delegated_agent`
-- `casa/rootfs/opt/casa/channel_policy.py::writes_to_bank`
 - `casa/rootfs/opt/casa/session_saver.py::save_session`
 - `casa/rootfs/opt/casa/session_saver.py::reset_channel`
 - `casa/rootfs/opt/casa/session_saver.py::retain_cold_session`
@@ -378,17 +288,16 @@ the wipe do — the claim is what keeps racing turns off the dying session.
 **Tests**
 - `tests/test_session_saver.py`
 - `tests/test_no_retain_specialist.py`
-- `tests/test_channel_policy.py`
 - `tests/test_freshness_reaper.py`
 - `tests/test_retirement_claims.py`
 - `tests/test_reset_channel_retirement.py`
 - `tests/test_reset_background_save.py`
 - `tests/test_memory_provenance.py`
-- `tests/test_specialist_memory_tiers.py`
 - `tests/test_session_sweeper.py`
 
 **Related**
 - [`architecture/memory.md`](../architecture/memory.md)
+- [`architecture/memory-capture.md`](../architecture/memory-capture.md)
 - [`architecture/memory-labelling.md`](../architecture/memory-labelling.md)
 - [`architecture/memory-wipe.md`](../architecture/memory-wipe.md)
 - [`architecture/turn-loop.md`](../architecture/turn-loop.md)

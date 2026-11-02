@@ -90,8 +90,6 @@
   when_changing: session persistence, the save/reset guard protocol, the retirement claims, or the retry spool
   covers:
     - casa/rootfs/opt/casa/memory_provenance.py::build_retain_items
-    - casa/rootfs/opt/casa/tools.py::_run_delegated_agent
-    - casa/rootfs/opt/casa/channel_policy.py::writes_to_bank
     - casa/rootfs/opt/casa/session_saver.py::save_session
     - casa/rootfs/opt/casa/session_saver.py::reset_channel
     - casa/rootfs/opt/casa/session_saver.py::retain_cold_session
@@ -109,25 +107,49 @@
   tests:
     - tests/test_session_saver.py
     - tests/test_no_retain_specialist.py
-    - tests/test_channel_policy.py
     - tests/test_freshness_reaper.py
     - tests/test_retirement_claims.py
     - tests/test_reset_channel_retirement.py
     - tests/test_reset_background_save.py
     - tests/test_memory_provenance.py
-    - tests/test_specialist_memory_tiers.py
     - tests/test_session_sweeper.py
-  related: [architecture/memory.md, architecture/memory-labelling.md, architecture/memory-wipe.md, architecture/turn-loop.md, architecture/sdk-client-pool.md, architecture/persistent-state.md]
-  defines_invariants: [INV-MEM-005, INV-MEM-006, INV-MEM-013, INV-MEM-016, INV-MEM-017, INV-MEM-021, INV-MEM-023, INV-MEM-024]
+  related: [architecture/memory.md, architecture/memory-capture.md, architecture/memory-labelling.md, architecture/memory-wipe.md, architecture/turn-loop.md, architecture/sdk-client-pool.md, architecture/persistent-state.md]
+  defines_invariants: [INV-MEM-006, INV-MEM-013, INV-MEM-017, INV-MEM-021, INV-MEM-023]
   invariant_tests:
-    INV-MEM-024: [tests/test_specialist_memory_tiers.py::test_token_budget_zero_no_sem_calls, tests/test_no_retain_specialist.py::test_only_a_zero_budget_specialist_is_kept_out, tests/test_no_retain_specialist.py::test_every_notice_branch_names_its_role, tests/test_no_retain_specialist.py::test_cold_save_drops_the_notice_and_keeps_the_relay, tests/test_no_retain_specialist.py::test_specialist_engagement_summary_follows_the_switch, tests/test_plugin_continuations.py::test_a_relayed_answer_is_not_banked_as_the_requesters_task, tests/test_no_retain_specialist.py::test_a_notice_from_a_role_no_longer_loaded_is_kept_out, tests/test_no_retain_specialist.py::test_a_handoff_task_written_by_a_zero_budget_specialist_is_not_banked, tests/test_plugin_continuations.py::test_a_relay_whose_author_is_no_longer_loaded_is_not_banked, tests/test_plugin_continuations.py::test_no_task_inside_a_relay_is_banked_however_deep]
-    INV-MEM-005: [tests/test_delegated_memory.py::test_retain_delegated_voice_writes_nothing]
-    INV-MEM-016: [tests/test_specialist_memory_tiers.py::test_pin_inv_mem_016_aborted_run_retains_only_caller_task, tests/test_specialist_memory_tiers.py::test_pin_inv_mem_016_null_subtype_on_a_parsed_result_is_an_abort, tests/test_specialist_memory_tiers.py::test_write_retain_telegram, tests/test_specialist_memory_tiers.py::test_empty_answer_submits_caller_turn_whether_or_not_run_aborted, tests/test_specialist_memory_tiers.py::test_red_incomplete_stop_reason_withholds_only_the_answer, tests/test_specialist_memory_tiers.py::test_stop_reason_matrix, tests/test_specialist_memory_tiers.py::test_malformed_stop_reason_withholds_the_answer, tests/test_specialist_memory_tiers.py::test_whitespace_only_task_submits_nothing, tests/test_specialist_memory_tiers.py::test_a_success_subtype_is_not_enough_to_call_the_turn_complete, tests/test_specialist_memory_tiers.py::test_a_genuinely_completed_run_still_retains_both_turns]
     INV-MEM-006: [tests/test_session_saver.py::test_save_session_expected_sid_mismatch_releases_claim, tests/test_session_saver.py::test_reset_channel_trailing_remove_spares_follow_up_session, tests/test_session_registry.py::test_remove_with_stale_expected_sid_spares_newer_session, tests/test_freshness_reaper.py::test_sweep_passes_cold_snapshot_sid_to_save]
     INV-MEM-013: [tests/test_sdk_client_pool_pool.py::test_retirement_steers_turn_fresh_and_skips_stale_retain, tests/test_sdk_client_pool_pool.py::test_no_retirement_resumes_normally_on_same_registry, tests/test_retirement_claims.py::TestClaimSet::test_pending_while_any_claim_live, tests/test_retirement_claims.py::TestRegisterRefusal::test_dying_sid_refused_other_sids_proceed, tests/test_reset_channel_retirement.py::test_racing_fresh_registration_survives_reset, tests/test_reset_channel_retirement.py::test_sidless_entry_rederives_and_retires_materialized_session, tests/test_reset_channel_retirement.py::test_claim_released_when_the_retain_raises]
     INV-MEM-017: [tests/test_session_sweeper.py::TestRetentionOwedIsNeverDestroyed::test_ttl_preserves_never_banked_telegram, tests/test_session_sweeper.py::TestRetentionOwedIsNeverDestroyed::test_ttl_preserves_telegram_during_reset_notify, tests/test_session_sweeper.py::TestRetentionOwedIsNeverDestroyed::test_ttl_preserves_telegram_with_inflight_save_claim, tests/test_session_sweeper.py::TestRetentionOwedIsNeverDestroyed::test_ttl_preserves_telegram_with_unparseable_last_active, tests/test_session_sweeper.py::TestRetentionOwedIsNeverDestroyed::test_ttl_preserves_telegram_with_missing_last_active, tests/test_session_sweeper.py::TestRetentionOwedIsNeverDestroyed::test_ttl_preserves_telegram_without_provenance, tests/test_session_sweeper.py::TestRetentionOwedIsNeverDestroyed::test_ttl_still_evicts_a_sidless_telegram_pointer]
     INV-MEM-023: [tests/test_reset_background_save.py::test_the_next_message_is_dispatched_while_the_save_still_runs, tests/test_reset_background_save.py::test_the_record_is_on_disk_before_the_pointer_is_dropped, tests/test_reset_background_save.py::test_a_restart_before_the_background_save_still_banks_it, tests/test_reset_background_save.py::test_a_landed_save_removes_its_record_and_a_failed_one_keeps_it, tests/test_reset_background_save.py::test_the_record_stays_until_the_retain_has_landed, tests/test_reset_background_save.py::test_a_recall_only_channel_records_and_retains_nothing]
     INV-MEM-021: [tests/test_cross_session_tools.py::test_query_engager_synthesis_options, tests/test_cross_session_tools.py::test_observer_decider_options, tests/test_cross_session_tools.py::test_tier_classifier_options, tests/test_cross_session_tools.py::test_resident_options, tests/test_cross_session_tools.py::test_restricted_webhook_options, tests/test_cross_session_tools.py::test_specialist_and_executor_options, tests/test_plugin_job_launch.py::test_worker_options_record_and_topic, tests/test_cross_session_tools.py::test_run_admission_options]
+
+- doc: architecture/memory-capture.md
+  summary: Capture — how each turn's words are made durable in the memory store as they happen, with the spool fallback, and which text is eligible at all — write-trust, a delegated answer's completeness, and the specialists whose output is kept out.
+  when_changing: what a turn, a delegation, an engagement turn or a summary captures, capture eligibility or write-trust, the spool, or what keeps a no-memory specialist's output out
+  covers:
+    - casa/rootfs/opt/casa/memory/capture.py
+    - casa/rootfs/opt/casa/memory/eligibility.py
+    - casa/rootfs/opt/casa/agent.py::_TurnCapture
+    - casa/rootfs/opt/casa/tools.py::_run_delegated_agent
+    - casa/rootfs/opt/casa/tools.py::_capture_delegated
+    - casa/rootfs/opt/casa/tools.py::_capture_summary
+    - casa/rootfs/opt/casa/drivers/in_casa_driver.py::_EngagementCapture
+    - casa/rootfs/opt/casa/channel_policy.py::writes_to_bank
+    - casa/rootfs/opt/casa/delegated_memory.py::role_writes_memory
+    - casa/rootfs/opt/casa/delegated_memory.py::notice_from_excluded_role
+  tests:
+    - tests/test_memory_capture.py
+    - tests/test_memory_eligibility.py
+    - tests/test_memory_excluded_specialist.py
+    - tests/test_no_retain_specialist.py
+    - tests/test_channel_policy.py
+    - tests/test_specialist_memory_tiers.py
+  related: [architecture/memory-store.md, architecture/memory-labelling.md, architecture/memory-lifecycle.md, architecture/memory-scoping.md, architecture/turn-loop.md, architecture/delegation.md]
+  defines_invariants: [INV-MEM-005, INV-MEM-016, INV-MEM-024, INV-MEM-032]
+  invariant_tests:
+    INV-MEM-005: [tests/test_delegated_memory.py::test_retain_delegated_voice_writes_nothing]
+    INV-MEM-016: [tests/test_specialist_memory_tiers.py::test_pin_inv_mem_016_aborted_run_retains_only_caller_task, tests/test_specialist_memory_tiers.py::test_pin_inv_mem_016_null_subtype_on_a_parsed_result_is_an_abort, tests/test_specialist_memory_tiers.py::test_write_retain_telegram, tests/test_specialist_memory_tiers.py::test_empty_answer_submits_caller_turn_whether_or_not_run_aborted, tests/test_specialist_memory_tiers.py::test_red_incomplete_stop_reason_withholds_only_the_answer, tests/test_specialist_memory_tiers.py::test_stop_reason_matrix, tests/test_specialist_memory_tiers.py::test_malformed_stop_reason_withholds_the_answer, tests/test_specialist_memory_tiers.py::test_whitespace_only_task_submits_nothing, tests/test_specialist_memory_tiers.py::test_a_success_subtype_is_not_enough_to_call_the_turn_complete, tests/test_specialist_memory_tiers.py::test_a_genuinely_completed_run_still_retains_both_turns]
+    INV-MEM-024: [tests/test_specialist_memory_tiers.py::test_token_budget_zero_no_sem_calls, tests/test_no_retain_specialist.py::test_only_a_zero_budget_specialist_is_kept_out, tests/test_no_retain_specialist.py::test_every_notice_branch_names_its_role, tests/test_no_retain_specialist.py::test_cold_save_drops_the_notice_and_keeps_the_relay, tests/test_no_retain_specialist.py::test_specialist_engagement_summary_follows_the_switch, tests/test_plugin_continuations.py::test_a_relayed_answer_is_not_banked_as_the_requesters_task, tests/test_no_retain_specialist.py::test_a_notice_from_a_role_no_longer_loaded_is_kept_out, tests/test_no_retain_specialist.py::test_a_handoff_task_written_by_a_zero_budget_specialist_is_not_banked, tests/test_plugin_continuations.py::test_a_relay_whose_author_is_no_longer_loaded_is_not_banked, tests/test_plugin_continuations.py::test_no_task_inside_a_relay_is_banked_however_deep]
+    INV-MEM-032: [tests/test_memory_excluded_specialist.py::test_the_notice_is_not_captured_and_the_relay_is, tests/test_memory_excluded_specialist.py::test_an_excluded_delegation_captures_nothing, tests/test_memory_excluded_specialist.py::test_a_handoff_task_from_an_excluded_specialist_is_not_captured, tests/test_memory_excluded_specialist.py::test_no_task_inside_a_relay_is_captured, tests/test_memory_excluded_specialist.py::test_an_excluded_engagement_leaves_no_summary, tests/test_memory_excluded_specialist.py::test_an_excluded_specialists_engagement_turn_captures_nothing, tests/test_memory_eligibility.py::test_eligibility_matrix]
 
 - doc: architecture/memory-labelling.md
   summary: Item labelling — how each item is labelled on the way in to long-term memory, with its sensitivity tier and the floor a stored tier sets, its speaker provenance, the scheduled mark, and the content addressing that deduplicates it.
@@ -137,13 +159,16 @@
     - casa/rootfs/opt/casa/timekeeping.py::compose_time_envelope
     - casa/rootfs/opt/casa/timekeeping.py::split_time_envelope
     - casa/rootfs/opt/casa/timekeeping.py::compose_turn_preamble
+    - casa/rootfs/opt/casa/memory/occurrence.py
   tests:
     - tests/test_memory_provenance.py
     - tests/test_time_envelope.py
     - tests/test_pin_1123_tier_floor.py
-  related: [architecture/memory-lifecycle.md, architecture/memory.md, architecture/persistent-state.md]
-  defines_invariants: [INV-MEM-004, INV-MEM-009, INV-MEM-012, INV-MEM-018, INV-MEM-022]
+    - tests/test_memory_capture.py
+  related: [architecture/memory-lifecycle.md, architecture/memory-capture.md, architecture/memory.md, architecture/persistent-state.md]
+  defines_invariants: [INV-MEM-004, INV-MEM-009, INV-MEM-012, INV-MEM-018, INV-MEM-022, INV-MEM-026]
   invariant_tests:
+    INV-MEM-026: [tests/test_memory_capture.py::test_repeats_stay_distinct_retry_collapses, tests/test_memory_capture.py::test_two_turns_with_one_log_cid_stay_distinct, tests/test_memory_capture.py::test_telegram_redelivery_collapses, tests/test_memory_capture.py::test_redelivery_with_a_regenerated_answer_keeps_both_answers, tests/test_memory_capture.py::test_internal_retry_output_is_captured, tests/test_memory_capture.py::test_spool_drain_rerun_adds_each_item_once, tests/test_memory_capture.py::test_a_turn_a_delegation_and_an_engagement_turn_each_capture]
     INV-MEM-004: [tests/test_pin_memory_invariants.py::test_pin_inv_mem_004_reserved_tags_refused_before_io, tests/test_pin_1123_tier_floor.py::test_rc5_callers_cannot_supply_tier_namespace]
     INV-MEM-009: [tests/test_time_envelope.py::TestDedupAcrossTimestamps::test_same_utterance_two_timestamps_is_one_document, tests/test_time_envelope.py::TestDedupAcrossTimestamps::test_timestamp_survives_out_of_band, tests/test_time_envelope.py::TestComposeStripPair::test_round_trip_is_identity_on_the_raw_text]
     INV-MEM-022: [tests/test_time_envelope.py::test_the_pair_strips_the_notes_with_the_envelope, tests/test_time_envelope.py::test_a_notes_block_the_operator_typed_after_no_notes_is_their_text_mid_message, tests/test_time_envelope.py::TestNotesNeverRetained::test_notes_and_text_retain_only_the_text, tests/test_time_envelope.py::TestNotesNeverRetained::test_a_whitespace_body_after_notes_retains_nothing, tests/test_desk_echo_prompt.py::test_the_residents_next_turn_carries_the_echo_once_then_nothing]
@@ -186,7 +211,7 @@
   tests:
     - tests/test_memory_store.py
     - tests/test_memory_registry.py
-  related: [architecture/persistent-state.md, architecture/memory.md, architecture/memory-wipe.md]
+  related: [architecture/persistent-state.md, architecture/memory.md, architecture/memory-capture.md, architecture/memory-wipe.md]
   defines_invariants: [INV-MEM-025]
   invariant_tests:
     INV-MEM-025: [tests/test_memory_registry.py::test_store_pin_every_table_and_path_is_registered, tests/test_memory_registry.py::test_producer_pin_every_persisting_call_site_has_a_row, tests/test_memory_registry.py::test_every_producer_declares_its_staging_pattern, tests/test_memory_registry.py::test_store_pin_red_cases, tests/test_memory_registry.py::test_producer_pin_red_cases, tests/test_memory_registry.py::test_staging_pin_red_case]

@@ -165,8 +165,9 @@ Recall failures — an unavailable backend, a malformed envelope, a tripped brea
 ## Extension points
 
 **A new channel** needs an explicit clearance entry, or it reads at the least-sensitive tier
-by default. Write access is a separate, deliberate addition, and the retention list is a
-third ([`architecture/memory-lifecycle.md`](memory-lifecycle.md)).
+by default. Write access is a separate, deliberate addition
+([`architecture/memory-capture.md`](memory-capture.md)), and the retention list is a third
+([`architecture/memory-lifecycle.md`](memory-lifecycle.md)).
 
 **Scoping what a recall surfaces** is a caller-side decision: the backend's only content
 filter is the sensitivity tags, so a caller that must narrow further (the executor archive

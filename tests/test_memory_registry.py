@@ -4,9 +4,10 @@ Export, restore and the wipe are loops over ``memory.registry.REGISTRY``, so a
 store the list does not name is one they silently miss, and nothing else
 would notice. Two pins keep the list complete:
 
-* **The store pin** reads a fresh store: every ``sqlite_master`` table and
-  every path under ``/data/memory`` must belong to a row, and every row must
-  carry all three rules.
+* **The store pin** reads a fresh store, and the same store once the capture
+  producers have written to it (a committed item and a spooled one): every
+  ``sqlite_master`` table and every path under ``/data/memory`` must belong to
+  a row, and every row must carry all three rules.
 * **The producer pin** runs each named producer of memory-derived text in a
   sandbox standing in for the root, configured the way the code configures it
   and with its optional memory-bearing inputs filled. An audit hook records every
@@ -127,6 +128,23 @@ def _fresh_store(tmp_path: Path) -> MemoryStore:
     return store
 
 
+def _run_capture(store: MemoryStore) -> None:
+    """The producers that write under ``/data/memory``: a capture that
+    commits, and one that spools while the store is down."""
+    from memory import capture
+    item = capture.event(role="assistant", channel="telegram",
+                         speaker_kind="resident", origin_kind="operator",
+                         text="a sample remembered fact",
+                         eligibility="resident_message", origin_tier="private")
+    assert capture.append(store, item).outcome == capture.STORED
+    store._unavailable_reason = "a simulated outage"
+    try:
+        spooled = capture.append(store, replace(item, source_key="event:1"))
+    finally:
+        store._unavailable_reason = None
+    assert spooled.outcome == capture.SPOOLED
+
+
 def test_store_pin_every_table_and_path_is_registered(tmp_path: Path) -> None:
     store = _fresh_store(tmp_path)
     # Once with a transaction open, so the WAL sidecars are on disk too.
@@ -134,6 +152,10 @@ def test_store_pin_every_table_and_path_is_registered(tmp_path: Path) -> None:
         held = os.listdir(store.directory)
         assert any(n.endswith("-wal") for n in held), held
         assert store_pin_violations(str(tmp_path)) == []
+    assert store_pin_violations(str(tmp_path)) == []
+    # And after the capture producers have written: the spool is a path too.
+    _run_capture(store)
+    assert "spool.jsonl" in os.listdir(store.directory)
     assert store_pin_violations(str(tmp_path)) == []
 
 
@@ -149,6 +171,15 @@ def test_store_pin_red_cases(tmp_path: Path) -> None:
         in problems
 
     stray.unlink()
+    # A capture producer that writes somewhere no row declares.
+    from memory import capture
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(capture, "SPOOL_NAME", "stray-capture.jsonl")
+        _run_capture(store)
+    assert (f"path {registry.MEMORY_DIR}/stray-capture.jsonl has no registry "
+            "row") in store_pin_violations(str(tmp_path))
+    (Path(store.directory) / "stray-capture.jsonl").unlink()
+
     no_rule = tuple(replace(e, wipe=None) if e.name == "meta" else e
                     for e in REGISTRY)
     assert store_pin_violations(str(tmp_path), no_rule) == [
