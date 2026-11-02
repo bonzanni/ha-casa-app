@@ -73,7 +73,11 @@ transcripts, `sessions.json`, explanation records, an engagement's executor-memo
 is listed with the directory's own contents in one registry, together with the staging-file
 names their atomic writers leave on a crash. For that reason `sessions.json`'s writer names
 its staging file after its target, while the shared writer's default name stays generic.
-Its contract is [`memory-store.md`](memory-store.md) (INV-MEM-025).
+Its contract is [`memory-store.md`](memory-store.md) (INV-MEM-025). A memory wipe is
+recorded as `/data/memory/maintenance.json` and carried out at the next container start,
+before any service, over exactly that registry; while the file exists `setup-configs.sh`
+leaves a real `/root/.claude/projects` where it is
+([`memory-wipe.md`](memory-wipe.md), INV-MEM-035).
 
 **Two stored fields carry a disclosure a payload owes.** A reminder entry in a role's
 `triggers.yaml` may carry `output_note`, and a durable job row carries `output_note` — the

@@ -590,7 +590,7 @@ def _record_pending_reset_retain(
     Returns whether a background retain is owed: False when nothing may be
     banked (a recall-only channel, an entry without usable provenance — the
     same guards ``retain_cold_session`` applies) or a wipe has completed since
-    the reset's snapshot (INV-MEM-014). A record that cannot be written does
+    the reset's snapshot (the retain fence). A record that cannot be written does
     not stop the retain; the background retain's own failure arm still spools
     or reports at ERROR, as it always has."""
     from memory_wipe import FENCE
@@ -742,7 +742,7 @@ async def _reset_locked(
             # retain_cold_session is the module's existing decoupled path and
             # already carries what this needs: the write-trust and provenance
             # guards, the durable failure spool, the cancellation spool, and
-            # the fence-generation guard on BOTH spool arms (INV-MEM-014 — a
+            # the fence-generation guard on BOTH spool arms (the retain fence — a
             # wipe completing here leaves no record either). The generation
             # captured in the no-await block above is passed down, exactly as
             # that contract requires (#411/#578); capturing it inside would be

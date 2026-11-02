@@ -1768,6 +1768,15 @@ class TelegramChannel(Channel):
     # Inbound
     # ------------------------------------------------------------------
 
+    async def _send_plain_line(self, chat_id: str, text: str) -> None:
+        """One Casa line to *chat_id*; a failure is logged, never raised."""
+        if self._app is None:
+            return
+        try:
+            await self._app.bot.send_message(chat_id=chat_id, text=text)
+        except Exception as exc:  # noqa: BLE001 — a notice fault is logged
+            logger.debug("line to chat_id=%s failed: %s", chat_id, exc)
+
     async def _send_rate_limit_reply(self, chat_id: str) -> None:
         """Send the one-shot 'slow down' reply for a rate-limited chat."""
         if self._app is None:
@@ -1937,8 +1946,16 @@ class TelegramChannel(Channel):
         """The direct chat's turn admission, run under ``_chat_serial_locks[chat_id]``:
         the rate decision, the typed-answer ask cancellation, the trusted identity,
         the typing lease and ONE bus message for the default agent. ``False`` when
-        the rate limiter refused the turn (nothing was dispatched). #1378: a file's
+        nothing was dispatched: the rate limiter refused the turn, or the memory
+        wipe's restart is under way. #1378: a file's
         caption takes this same path, with ``received_file`` naming the stored file."""
+        # The memory wipe's courtesy line: the Supervisor accepted the app
+        # restart, so a turn now would only be cut off. A message nicety, not
+        # a guarantee — one that slips past is handled, and wiped with the rest.
+        from memory import maintenance as memory_maintenance
+        if memory_maintenance.restart_pending():
+            await self._send_plain_line(chat_id, memory_maintenance.COURTESY_LINE)
+            return False
         # Rate limit BEFORE typing indicator or bus dispatch (spec 5.2 §8) —
         # and BEFORE the typed-answer ask cancellation below (#347): a
         # rate-limited reply is dropped, so it must not expire the pending
@@ -2513,6 +2530,43 @@ class TelegramChannel(Channel):
             return True
         await self.clear_dm_keyboard(chat_id, message_id)
         return False
+
+    async def notify_operator(self, text: str) -> bool:
+        """A Casa line to the configured operator chat (the memory wipe's
+        restart and done lines). One attempt; a failure is logged."""
+        if self._app is None or not self.chat_id:
+            logger.warning("Telegram channel not ready; operator line not sent")
+            return False
+        try:
+            await self._app.bot.send_message(chat_id=self.chat_id, text=text)
+            return True
+        except Exception as exc:  # noqa: BLE001 — a notice fault is logged
+            logger.warning("operator line failed: %s", type(exc).__name__)
+            return False
+
+    async def pause_updates_for_restart(self) -> bool:
+        """Stop taking updates before an app restart, so the update that
+        carried the operator's consent is confirmed to Telegram and never
+        delivered again after the restart. Polling: stopping the updater
+        makes one last ``getUpdates`` with the next offset, which confirms
+        every update fetched so far (PTB 22.7). A webhook update is already
+        acknowledged when it is queued. Returns whether intake was paused."""
+        app = self._app
+        updater = getattr(app, "updater", None) if app is not None else None
+        if (self._webhook_url or updater is None
+                or not getattr(updater, "running", False)):
+            return False
+        await updater.stop()
+        return True
+
+    async def resume_updates(self) -> None:
+        """Undo :meth:`pause_updates_for_restart` when no restart came."""
+        app = self._app
+        updater = getattr(app, "updater", None) if app is not None else None
+        if (self._webhook_url or updater is None
+                or getattr(updater, "running", False)):
+            return
+        await updater.start_polling()
 
     async def deliver_desk_notice(self, chat_id: int, text: str) -> bool:
         """§9: ONE Casa-composed, labelled, body-free notice to the operator's
@@ -3363,6 +3417,29 @@ class TelegramChannel(Channel):
 
         if await_rebuild and not await _ready():
             background_jobs.turn_owner_finished(rec.id)
+            return
+
+        # The memory wipe's courtesy line for the operator's message: the
+        # Supervisor accepted the app restart, so the turn would only be cut
+        # off. The message is released as one that was not delivered.
+        from memory import maintenance as memory_maintenance
+        if not system_turn and memory_maintenance.restart_pending():
+            try:
+                await self._post_engagement_notice(
+                    rec, memory_maintenance.COURTESY_LINE)
+            except Exception:  # noqa: BLE001 — a notice fault is logged
+                logger.debug("courtesy line failed for %s", rec.id[:8],
+                             exc_info=True)
+            finally:
+                _release_inbound()
+                if (inbound_token is not None
+                        and self._driver_discharge_inbound is not None):
+                    try:
+                        self._driver_discharge_inbound(rec, inbound_token)
+                    except Exception:  # noqa: BLE001
+                        logger.debug("inbound discharge failed", exc_info=True)
+                await self._rollback_answer(rec, answer_token)
+                background_jobs.turn_owner_finished(rec.id)
             return
 
         async def _send():

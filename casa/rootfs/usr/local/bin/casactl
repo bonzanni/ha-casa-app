@@ -155,16 +155,17 @@ def _cmd_explain(args: argparse.Namespace) -> int:
 
 
 def _cmd_memory_wipe(args: argparse.Namespace) -> int:
-    """#411: irreversibly wipe long-term memory. Refuses without --yes;
-    prints exactly what will be deleted first so the refusal is informed."""
+    """Irreversibly wipe memory. Refuses without --yes; prints exactly what
+    is erased and what stays first, so the refusal is informed."""
     if not args.yes:
         print(
-            "memory-wipe deletes ALL long-term memory:\n"
-            "  - the shared memory bank (every retained fact and summary)\n"
-            "  - the durable cold-retain retry spool\n"
-            "  - every conversation pointer (dropped WITHOUT saving)\n"
-            "Conversation transcripts on disk are not removed by the wipe.\n"
-            "It cannot be undone. Re-run with --yes to proceed.",
+            "memory-wipe erases everything Casa remembers: saved "
+            "conversations, its notes about you, the search index and its "
+            "memory backups. Every conversation starts fresh.\n"
+            "Reminders, triggers, files, settings and prompts, pending tasks, "
+            "plugin data, logs and everything else outside memory stay.\n"
+            "Casa restarts to do this. It cannot be undone. Re-run with --yes "
+            "to proceed.",
             file=sys.stderr,
         )
         return 2
@@ -247,7 +248,7 @@ def main() -> int:
 
     wipe_p = sub.add_parser(
         "memory-wipe",
-        help="Irreversibly wipe ALL long-term memory (#411). Requires --yes.",
+        help="Irreversibly wipe ALL memory; Casa restarts to do it. Requires --yes.",
     )
     wipe_p.add_argument("--yes", action="store_true",
                         help="Actually perform the wipe.")

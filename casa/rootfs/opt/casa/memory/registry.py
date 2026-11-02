@@ -151,7 +151,8 @@ REGISTRY: tuple[Entry, ...] = (
           (f"{MEMORY_DIR}/legacy-transcripts",),
           Export.NO, Restore.NONE, Wipe.DELETE),
     Entry("maintenance intent", Kind.FILE, (f"{MEMORY_DIR}/maintenance.json",),
-          Export.NO, Restore.NONE, Wipe.REMOVE_LAST),
+          Export.NO, Restore.NONE, Wipe.REMOVE_LAST,
+          staging_patterns=(f"{MEMORY_DIR}/.maintenance.json.*.tmp",)),
     # --- memory outside /data/memory -----------------------------------------
     Entry("transcripts", Kind.TRANSCRIPTS,
           (f"{RESIDENT_HOME}/.claude/projects",

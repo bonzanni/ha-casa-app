@@ -21,6 +21,7 @@ from engagement_uids import (
     UID_BASE, UNALLOCATED_UID, ensure_identity, owner_uid_or_none,
     prune_identity,
 )
+from memory import executor_block
 from safe_fs import SymlinkRefused, atomic_write_beneath, read_text_beneath
 
 logger = logging.getLogger(__name__)
@@ -88,6 +89,25 @@ def provision_control_dir(engagement_id: str, *, root: str | None = None) -> str
 
 def session_id_path(engagement_id: str, *, root: str | None = None) -> str:
     return os.path.join(control_dir(engagement_id, root=root), ".session_id")
+
+
+def drop_session_without_transcript(
+    ws_dir: str, engagement_id: str, *, root: str | None = None,
+) -> bool:
+    """Remove the control-dir session pointer when the session it names has
+    no transcript under the workspace's ``.home/.claude/projects`` (a memory
+    wipe deleted it), so the run script starts a fresh session instead of a
+    resume that cannot start. Returns whether it removed one."""
+    path = Path(session_id_path(engagement_id, root=root))
+    try:
+        sid = path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return False
+    projects = Path(ws_dir) / ".home" / ".claude" / "projects"
+    if sid and any(projects.glob(f"*/{sid}.jsonl")):
+        return False
+    path.unlink(missing_ok=True)
+    return True
 
 
 def spawn_epoch_path(engagement_id: str, *, root: str | None = None) -> str:
@@ -718,13 +738,41 @@ async def provision_workspace(
     # there is no hooks file), so no os.path.isfile probe is needed anymore.
     hooks_yaml_data: dict = getattr(defn, "hooks_document", None) or {}
 
+    use_template = (
+        workspace_template_root is not None
+        and workspace_template_root.is_dir()
+    )
+    if use_template:
+        tmpl = workspace_template_root / "CLAUDE.md.tmpl"
+        template_text = _read_text(str(tmpl)) if tmpl.is_file() else ""
+    else:
+        template_text = _read_text(defn.prompt_template_path)
+
+    # Task 4 (containment stage 2): the control dir is provisioned here,
+    # alongside the workspace — every root-only run-state file below lands
+    # in it, never under the uid-owned workspace the CLI can symlink through.
+    provision_control_dir(engagement_id)
+
+    # W3 (Task 8): cache the fetched executor_memory block at the control-dir
+    # ``.executor_memory`` so a later ``refresh_claude_md`` (boot replay) can
+    # re-interpolate the SAME {executor_memory} section — the block is a LIVE
+    # fetch, not re-derivable at boot, so it must be persisted alongside the
+    # workspace. Task 4: moved OUT of the workspace — root generates and
+    # reads this, the CLI never does.
+    #
+    # The memory wipe finds the section again through this cache and the
+    # section's markers, so the cache is written BEFORE any CLAUDE.md: a crash
+    # between the two leaves a cache with no file, never a memory-bearing file
+    # with no cache. A template with no slot never carries the block, so its
+    # cache holds nothing either.
+    Path(executor_memory_path(engagement_id)).write_text(
+        (executor_memory or "") if executor_block.SLOT in template_text
+        else "", encoding="utf-8")
+
     # Plan 4b §16.3: if a workspace-template exists for this executor, render it
     # into the workspace root. This subsumes the old symlink-loop behavior.
     # §3.3: selection is independent of plugin assignment now.
-    if (
-        workspace_template_root is not None
-        and workspace_template_root.is_dir()
-    ):
+    if use_template:
         render_workspace_template(
             template_root=workspace_template_root,
             dest=ws,
@@ -738,15 +786,16 @@ async def provision_workspace(
         )
     else:
         # 1. CLAUDE.md — the executor prompt, interpolated (legacy path).
-        prompt_text = _read_text(defn.prompt_template_path)
-        prompt_interpolated = (
-            prompt_text
+        # Written atomically, so a crash leaves no file or a whole one.
+        prompt_interpolated = executor_block.fill(
+            template_text
             .replace("{task}", task or "")
             .replace("{context}", context or "(none)")
-            .replace("{executor_type}", defn.type)
-            .replace("{executor_memory}", executor_memory or "")
+            .replace("{executor_type}", defn.type),
+            executor_memory,
         )
-        (ws / "CLAUDE.md").write_text(prompt_interpolated, encoding="utf-8")
+        atomic_write_beneath(
+            str(ws), "CLAUDE.md", prompt_interpolated, mode=0o644)
 
         # .claude/settings.json with translated hooks (legacy path).
         (ws / ".claude").mkdir(exist_ok=True)
@@ -756,20 +805,6 @@ async def provision_workspace(
         (ws / ".claude" / "settings.json").write_text(
             json.dumps(settings, indent=2), encoding="utf-8",
         )
-
-    # Task 4 (containment stage 2): the control dir is provisioned here,
-    # alongside the workspace — every root-only run-state file below lands
-    # in it, never under the uid-owned workspace the CLI can symlink through.
-    provision_control_dir(engagement_id)
-
-    # W3 (Task 8): cache the fetched executor_memory block at the control-dir
-    # ``.executor_memory`` so a later ``refresh_claude_md`` (boot replay) can
-    # re-interpolate the SAME {executor_memory} section — the block is a LIVE
-    # Hindsight fetch, not re-derivable at boot, so it must be persisted
-    # alongside the workspace. Task 4: moved OUT of the workspace — root
-    # generates and reads this, the CLI never does.
-    Path(executor_memory_path(engagement_id)).write_text(
-        executor_memory or "", encoding="utf-8")
 
     # v0.74.2 (live finding 2026-07-13): provision the executor's doctrine/
     # into the workspace — the rendered CLAUDE.md references doctrine/*.md,
@@ -907,24 +942,24 @@ def refresh_claude_md(ws_dir: str, *, defn, rec) -> None:
     if template_root.is_dir():
         # Mirror render_workspace_template (workspace.py:489-496) EXACTLY.
         text = (template_root / "CLAUDE.md.tmpl").read_text(encoding="utf-8")
-        text = (
+        text = executor_block.fill(
             text.replace("{executor_type}", defn.type)
                 .replace("{task}", task)
                 .replace("{context}", context)
-                .replace("{world_state_summary}", world_state_summary)
-                .replace("{executor_memory}", executor_memory or "")
+                .replace("{world_state_summary}", world_state_summary),
+            executor_memory,
         )
         atomic_write_beneath(
             str(ws), "CLAUDE.md", text, owner_uid=owner_uid, mode=0o644)
     else:
         # Mirror the legacy provision branch (workspace.py:245-253) EXACTLY.
         prompt_text = _read_text(defn.prompt_template_path)
-        prompt_interpolated = (
+        prompt_interpolated = executor_block.fill(
             prompt_text
             .replace("{task}", task or "")
             .replace("{context}", context or "(none)")
-            .replace("{executor_type}", defn.type)
-            .replace("{executor_memory}", executor_memory or "")
+            .replace("{executor_type}", defn.type),
+            executor_memory,
         )
         atomic_write_beneath(
             str(ws), "CLAUDE.md", prompt_interpolated,
@@ -1316,14 +1351,15 @@ def render_workspace_template(
     tmpl = template_root / "CLAUDE.md.tmpl"
     if tmpl.is_file():
         text = tmpl.read_text(encoding="utf-8")
-        text = (
+        text = executor_block.fill(
             text.replace("{executor_type}", executor_type)
                 .replace("{task}", task)
                 .replace("{context}", context)
-                .replace("{world_state_summary}", world_state_summary)
-                .replace("{executor_memory}", executor_memory or "")
+                .replace("{world_state_summary}", world_state_summary),
+            executor_memory,
         )
-        (dest / "CLAUDE.md").write_text(text, encoding="utf-8")
+        # Atomic, so a crash leaves no file or a whole one.
+        atomic_write_beneath(str(dest), "CLAUDE.md", text, mode=0o644)
 
     # Generate .claude/settings.json (hooks + permissions only).
     # §3.3: no enabledPlugins — executor plugins load via --plugin-dir.

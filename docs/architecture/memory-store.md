@@ -78,7 +78,11 @@ writer names its staging file after its target (`.sessions.json.<random>.tmp`) f
 reason; the shared atomic writer's default name, `.<random>.tmp`, names nothing.
 
 The registry imports nothing from the running Casa process, and neither does the rest of
-the `memory` package, so it can be used while that process is not running.
+the `memory` package beyond three stdlib-only helpers (`atomic_io`, `safe_fs`,
+`supervisor_restart`), so it can be used while that process is not running: the
+container-start step that carries out a wipe walks this list with no Casa process up
+([`memory-wipe.md`](memory-wipe.md)). The maintenance intent's row also declares the
+staging name its atomic write leaves on a crash.
 
 ## Contracts & invariants
 

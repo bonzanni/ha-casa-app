@@ -202,27 +202,35 @@
     INV-MEM-018: [tests/test_pin_1123_tier_floor.py::test_rc1_stored_real_tier_never_lowers, tests/test_pin_1123_tier_floor.py::test_rc2_unmarked_existing_document_has_floor, tests/test_pin_1123_tier_floor.py::test_rc3_fallback_preserves_real_floor_unmarked, tests/test_pin_1123_tier_floor.py::test_rc4_unreadable_floor_prevents_entire_save, tests/test_pin_1123_tier_floor.py::test_rc6_cross_ask_conflict_establishes_real_floor, tests/test_pin_1123_tier_floor.py::test_rc7_first_fallback_is_provisional, tests/test_1123_tier_floor_regressions.py::test_hindsight_read_only_the_document_not_found_404_is_never_saved, tests/test_1123_tier_floor_regressions.py::test_hindsight_read_fails_on_every_other_answer]
 
 - doc: architecture/memory-wipe.md
-  summary: The operator-consented wipe — its two doors and the consent each demands, the order the orchestrator works in, the fence every bank writer passes through, and what a wipe deliberately does not cover.
-  when_changing: wipe consent or its doors, the wipe orchestrator's order, the retain fence, the writer drain, or what a wipe leaves behind
+  summary: The operator-consented memory wipe — its three doors and the consent each demands, the intent and the app restart, the container-start step that erases exactly the registry, notification-only boot after a failed attempt, and the courtesy line in the window before the restart.
+  when_changing: wipe consent or its doors, the maintenance intent, the init-memory-maintenance oneshot or its place in the s6 graph, the wipe loop, the executor-memory markers, notification-only boot, or the setup-configs guard
   covers:
+    - casa/rootfs/opt/casa/memory/maintenance.py
+    - casa/rootfs/opt/casa/memory/executor_block.py
+    - casa/rootfs/opt/casa/supervisor_restart.py
     - casa/rootfs/opt/casa/memory_wipe.py::RetainFence
-    - casa/rootfs/opt/casa/memory_wipe.py::wipe_long_term_memory
-    - casa/rootfs/opt/casa/memory_wipe.py::start_wipe_task
-    - casa/rootfs/opt/casa/memory_wipe.py::freeze_wipes
-    - casa/rootfs/opt/casa/memory_wipe.py::drain_wipe_task
     - casa/rootfs/opt/casa/tools.py::wipe_memory
     - casa/rootfs/opt/casa/internal_handlers.py::build_admin_memory_wipe_handler
-    - casa/rootfs/opt/casa/semantic_memory.py::SemanticMemory.delete_bank
-    - casa/rootfs/opt/casa/hindsight_memory.py::HindsightSemanticMemory.delete_bank
+    - casa/rootfs/opt/casa/drivers/workspace.py::drop_session_without_transcript
+    - casa/rootfs/etc/s6-overlay/scripts/memory-maintenance.sh
   tests:
     - tests/test_memory_wipe.py
-    - tests/test_retain_fence_writers.py
+    - tests/test_memory_wipe_crash.py
+    - tests/test_executor_memory_blank.py
+    - tests/test_memory_pending_intent.py
+    - tests/test_memory_maintenance_only_in_oneshot.py
+    - tests/test_s6_memory_maintenance_graph.py
+    - tests/test_wipe_door.py
     - tests/test_wipe_memory_tool.py
     - tests/test_admin_memory_wipe_route.py
-  related: [architecture/memory-lifecycle.md, architecture/memory.md, architecture/persistent-state.md]
-  defines_invariants: [INV-MEM-014]
+    - tests/test_retain_fence.py
+    - tests/test_retain_fence_writers.py
+  related: [architecture/memory-store.md, architecture/memory-capture.md, architecture/memory-lifecycle.md, architecture/memory.md, architecture/persistent-state.md, architecture/engagement-workspace-access.md]
+  defines_invariants: [INV-MEM-035, INV-MEM-036, INV-MEM-038]
   invariant_tests:
-    INV-MEM-014: [tests/test_wipe_memory_tool.py::TestConsentFlow::test_approve_runs_orchestrator_once_and_reports, tests/test_wipe_memory_tool.py::TestConsentFlow::test_cancel_tap_deletes_nothing, tests/test_wipe_memory_tool.py::TestConsentFlow::test_non_operator_tap_cannot_claim, tests/test_wipe_memory_tool.py::TestGates::test_refused_without_configured_operator, tests/test_memory_wipe.py::TestWipeOrchestrator::test_removes_without_any_retain, tests/test_memory_wipe.py::TestWipeOrchestrator::test_steered_fresh_session_survives, tests/test_memory_wipe.py::TestWipeOrchestrator::test_spool_dropped_before_bank_delete, tests/test_retain_fence_writers.py::test_cold_retain_failure_after_wipe_does_not_respool, tests/test_retain_fence_writers.py::test_spool_replay_discards_and_drops_record, tests/test_admin_memory_wipe_route.py::test_requires_explicit_confirm]
+    INV-MEM-035: [tests/test_memory_maintenance_only_in_oneshot.py::test_only_the_step_runs_the_wipe_loop, tests/test_memory_maintenance_only_in_oneshot.py::test_the_scan_reports_a_casa_main_caller, tests/test_s6_memory_maintenance_graph.py::test_the_step_runs_before_every_longrun_and_engagement, tests/test_s6_memory_maintenance_graph.py::test_dropping_the_setup_configs_edge_is_reported, tests/test_s6_memory_maintenance_graph.py::test_no_oneshot_touches_registry_content_outside_the_guard, tests/test_s6_memory_maintenance_graph.py::test_removing_the_guard_is_reported, tests/test_memory_pending_intent.py::test_setup_configs_leaves_a_real_projects_dir_alone_while_pending, tests/test_memory_pending_intent.py::test_without_the_guard_the_migration_copies_during_a_pending_wipe]
+    INV-MEM-036: [tests/test_memory_pending_intent.py::test_a_recorded_attempt_puts_casa_main_in_notification_only_mode, tests/test_memory_pending_intent.py::test_one_line_per_container_start, tests/test_memory_pending_intent.py::test_the_container_is_recorded_before_the_line_is_sent, tests/test_memory_pending_intent.py::test_a_step_killed_after_its_first_deletion_leaves_its_attempt, tests/test_memory_pending_intent.py::test_an_earlier_containers_attempt_alone_is_still_an_attempt, tests/test_memory_pending_intent.py::test_no_attempt_boots_normally_and_requests_the_restart_again, tests/test_memory_pending_intent.py::test_the_check_comes_before_every_memory_consumer, tests/test_memory_pending_intent.py::test_the_order_check_reports_a_check_moved_after_boot_replay]
+    INV-MEM-038: [tests/test_memory_wipe.py::test_wipe_erases_every_registry_row_and_keeps_the_rest, tests/test_memory_wipe.py::test_every_registry_row_has_a_wipe_handler, tests/test_memory_wipe.py::test_a_row_with_no_handler_stops_the_wipe, tests/test_executor_memory_blank.py::test_markers_written_by_provision_and_by_refresh_blank_exactly, tests/test_executor_memory_blank.py::test_legacy_block_is_replaced_by_an_empty_marked_section, tests/test_executor_memory_blank.py::test_kill_inside_the_frozen_cache_write_is_case_4, tests/test_executor_memory_blank.py::test_one_unlocatable_section_stops_before_any_deletion, tests/test_memory_wipe_crash.py::test_every_crash_point_reruns_to_the_same_result, tests/test_wipe_memory_tool.py::TestConsentFlow::test_approve_records_the_intent_and_requests_the_restart, tests/test_wipe_memory_tool.py::TestConsentFlow::test_cancel_tap_deletes_nothing, tests/test_wipe_memory_tool.py::TestConsentFlow::test_non_operator_tap_cannot_claim, tests/test_wipe_memory_tool.py::TestGates::test_refused_without_configured_operator, tests/test_admin_memory_wipe_route.py::test_requires_explicit_confirm, tests/test_admin_memory_wipe_route.py::test_consent_records_the_intent_and_requests_the_restart]
 
 - doc: architecture/memory-store.md
   summary: The SQLite memory store and its one connection owner, the boot check that leaves memory unavailable rather than empty, and the registry of every place memory lives with its export, restore and wipe rules.

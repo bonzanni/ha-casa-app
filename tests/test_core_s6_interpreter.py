@@ -3,7 +3,7 @@ before their final hand-off.
 
 `setup-configs.sh` prepends `/config/tools/bin` — where a plugin's
 `verify_bin` executables are published, under any name — to the PATH of every
-s6 service. The twelve `#!/command/with-contenv …` scripts under
+s6 service. The `#!/command/with-contenv …` scripts under
 `casa/rootfs/etc/s6-overlay` used to name `bashio` by bare name, so the
 interpreter, the `bash` that bashio's own `#!/usr/bin/env bash` line looks up,
 the launcher's `readlink`/`dirname`, the library's `jq`/`curl` and the bodies'
@@ -51,6 +51,7 @@ CORE_SCRIPTS = (
     "s6-rc.d/svc-nginx/finish",
     "s6-rc.d/svc-ttyd/run",
     "s6-rc.d/svc-ttyd/finish",
+    "scripts/memory-maintenance.sh",
     "scripts/setup-configs.sh",
     "scripts/setup-nginx.sh",
     "scripts/setup-plugin-store.sh",
@@ -202,7 +203,7 @@ def test_core_interpreter_chain(chain, rel):
 # --- K4: every core shebang names exactly the wrapper ------------------------
 
 def test_core_shebang_inventory():
-    assert len(CORE_SCRIPTS) == len(set(CORE_SCRIPTS)) == 12
+    assert len(CORE_SCRIPTS) == len(set(CORE_SCRIPTS)) == 13
     found = {str(p.relative_to(OVERLAY)) for p in OVERLAY.rglob("*")
              if p.is_file() and _first_line(p).startswith("#!/command/with-contenv")}
     assert found == set(CORE_SCRIPTS)

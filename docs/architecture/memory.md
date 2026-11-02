@@ -101,7 +101,7 @@ provenance, and the content addressing that deduplicates it — is item labellin
 save guard protocol (INV-MEM-006) and the retirement claims (INV-MEM-013);
 [`architecture/memory-labelling.md`](memory-labelling.md) owns the write-side tag and
 provenance gate (INV-MEM-004), the content-addressing contract (INV-MEM-009), the
-tier-classifier parse (INV-MEM-012) and the tier floor (INV-MEM-018); the operator-consented wipe (INV-MEM-014) is
+tier-classifier parse (INV-MEM-012) and the tier floor (INV-MEM-018); the operator-consented wipe (INV-MEM-038) is
 [`architecture/memory-wipe.md`](memory-wipe.md)'s. What this
 document owns is the other direction: what comes back, and what a caller may claim from it.
 
@@ -151,7 +151,7 @@ protocol — in [`architecture/memory-lifecycle.md`](memory-lifecycle.md), toget
 retirement claims (INV-MEM-013); **INV-MEM-004**, **INV-MEM-009** and **INV-MEM-012** — the
 write-side tag and provenance gate, the content-addressing contract and the tier-classifier
 parse — are declared in [`architecture/memory-labelling.md`](memory-labelling.md), together
-with the tier floor (INV-MEM-018); the wipe contract (INV-MEM-014) is declared in
+with the tier floor (INV-MEM-018); the wipe contract (INV-MEM-038) is declared in
 [`architecture/memory-wipe.md`](memory-wipe.md).
 
 One consequence of INV-MEM-004 belongs on the read side and is easy to miss: it protects the

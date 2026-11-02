@@ -175,6 +175,10 @@
   doc: architecture/memory-writer.md
 - item: casa/rootfs/opt/casa/memory/eligibility.py
   doc: architecture/memory-capture.md
+- item: casa/rootfs/opt/casa/memory/executor_block.py
+  doc: architecture/memory-wipe.md
+- item: casa/rootfs/opt/casa/memory/maintenance.py
+  doc: architecture/memory-wipe.md
 - item: casa/rootfs/opt/casa/memory/meter.py
   doc: architecture/memory-writer.md
 - item: casa/rootfs/opt/casa/memory/model_port.py
@@ -323,6 +327,8 @@
   doc: architecture/specialist-lifecycle.md
 - item: casa/rootfs/opt/casa/supervisor_discovery.py
   doc: architecture/home-assistant-control.md
+- item: casa/rootfs/opt/casa/supervisor_restart.py
+  doc: architecture/memory-wipe.md
 - item: casa/rootfs/opt/casa/result_broker.py
   doc: architecture/plugin-result-contract.md
 - item: casa/rootfs/opt/casa/svc_casa_mcp.py
@@ -399,6 +405,8 @@
   doc: reference/operator-options.md
 - item: option:webhook_secret
   doc: reference/operator-options.md
+- item: s6:init-memory-maintenance
+  doc: architecture/memory-wipe.md
 - item: s6:init-plugin-store
   doc: architecture/overview.md
 - item: s6:init-setup-configs
@@ -713,6 +721,8 @@
   doc: architecture/callbacks.md
 - item: env:CASA_BINDINGS_DIR
   doc: architecture/overview.md
+- item: env:CASA_TEST_MAINTENANCE_SLEEP_S
+  doc: architecture/memory-wipe.md
 - item: env:CASA_CALLBACK_SPOOL_ROOT
   doc: architecture/callback-delivery.md
 - item: env:CASA_CONFIG_DIR
@@ -829,6 +839,8 @@
   doc: architecture/triggers.md
 - item: schema:voice.v1.json
   doc: architecture/personality.md
+- item: script:memory-maintenance.sh
+  doc: architecture/memory-wipe.md
 - item: script:setup-configs.sh
   doc: architecture/configuration.md
 - item: script:setup-nginx.sh

@@ -1350,7 +1350,7 @@ _ASK_TIMEOUT_MAX = 570.0
 # cancelled, superseded, timed out AND answered. So the status is `settled`,
 # which names no outcome, and the message says so rather than claiming that
 # nothing happened: an Approve tapped inside the post window may already have
-# started the detached wipe.
+# recorded the wipe and asked for the restart.
 #
 # `settled` is deliberately NOT an error kind. Under INV-TOOL-001 `_result`
 # marks `status == "error"` as an outer MCP error, and every way a request is
@@ -2189,26 +2189,27 @@ async def correct_memory(args: dict) -> dict:
 
 @tool(
     "wipe_memory",
-    "Irreversibly wipe ALL long-term memory: the shared memory bank, the "
-    "durable retry spool, and every conversation pointer (dropped WITHOUT "
-    "retention). Operator-only and consent-gated: posts an Approve/Cancel "
-    "keyboard to the operator's DM and executes only on the operator's "
-    "Approve tap. Two-turn: returns awaiting_user immediately; the outcome "
-    "is edited into the keyboard message when the wipe finishes. A `settled` "
-    "status instead means the consent request was already over when this call "
-    "returned: nothing is pending on it, and whether anything was deleted is "
-    "reported in that keyboard message, not here.",
+    "Irreversibly wipe ALL memory: saved conversations, notes about the "
+    "operator, the search index and memory backups; every conversation starts "
+    "fresh. Reminders, triggers, files, settings, prompts, pending tasks and "
+    "plugin data stay. Operator-only and consent-gated: posts an "
+    "Approve/Cancel keyboard to the operator's DM and acts only on the "
+    "operator's Approve tap, which records the request and restarts Casa; the "
+    "wipe runs as the app starts again. Two-turn: returns awaiting_user "
+    "immediately. A `settled` status instead means the consent request was "
+    "already over when this call returned: nothing is pending on it, and what "
+    "happened is reported in that keyboard message, not here.",
     {},
 )
 async def wipe_memory(args: dict) -> dict:
-    """#411 agent door. Code-enforced gates, in order: a direct genuine
+    """The agent door. Code-enforced gates, in order: a direct genuine
     operator-DM turn (never a delegated/engagement/scheduled context), a
     configured operator identity (empty ⇒ NOBODY is operator ⇒ refused for
-    everyone), the operator-bound broker claim (#469 — only the configured
-    operator's tap can commit), and single-flight admission. The wipe itself
-    runs as a DETACHED task spawned from the broker finish hook — never
-    inside the invoking turn, whose pool entry lock the orchestrator's
-    flush-close must be able to take (design r1, Sol S-C2)."""
+    everyone), and the operator-bound broker claim (#469 — only the configured
+    operator's tap can commit). On Approve the broker's finish hook — outside
+    any turn — records the wipe intent, says so in the keyboard message, and
+    asks the Supervisor for the app restart; the wipe itself runs at the next
+    container start (``memory.maintenance``)."""
     from provenance import turn_provenance
 
     prov = turn_provenance()
@@ -2226,18 +2227,9 @@ async def wipe_memory(args: dict) -> dict:
             "message": "wipe_memory is not available from an engagement",
         })
 
-    import agent as agent_mod
     import trigger_consent
-    from memory_wipe import FENCE
-    import memory_wipe as memory_wipe_mod
+    from memory import maintenance as memory_maintenance
 
-    registry = getattr(agent_mod, "active_session_registry", None)
-    sem = getattr(agent_mod, "active_semantic_memory", None)
-    if registry is None or sem is None:
-        return _result({
-            "status": "error", "kind": "not_initialized",
-            "message": "memory backend or session registry not initialized",
-        })
     channel = _channel_manager.get("telegram") if _channel_manager is not None else None
     op = trigger_consent.operator_identity(channel) if channel is not None else None
     if channel is None or op is None:
@@ -2259,12 +2251,7 @@ async def wipe_memory(args: dict) -> dict:
 
     rid = uuid.uuid4().hex
     options = ["Approve — wipe everything", "Cancel"]
-    question = (
-        "⚠️ Wipe ALL long-term memory?\n\n"
-        "This deletes the shared memory bank, drops any spooled retry "
-        "records, and forgets every conversation pointer without saving it. "
-        "It cannot be undone."
-    )
+    question = f"⚠️ Wipe ALL memory?\n\n{memory_maintenance.CONFIRMATION}"
     scope = f"authz:{chat_id}"
     body = render_ask_body(None, question, options, short_option_labels(options))
     req, _created = BROKER.register(
@@ -2287,20 +2274,9 @@ async def wipe_memory(args: dict) -> dict:
         )
 
     def _finish_factory(message_id: int):
-        async def _run_wipe_and_report() -> None:
-            try:
-                from hindsight_ids import bank_id
-                report = await memory_wipe_mod.wipe_long_term_memory(
-                    registry=registry, semantic_memory=sem, fence=FENCE,
-                    bank=bank_id("casa"),
-                )
-                text = f"{body}\n\n✅ {report.summary()}"
-            except memory_wipe_mod.WipeAborted as exc:
-                text = f"{body}\n\n❌ Wipe aborted: {exc}"
-            except Exception as exc:  # noqa: BLE001 — report truthfully
-                logger.exception("memory wipe failed")
-                text = f"{body}\n\n❌ Wipe FAILED: {exc} — state may be partial"
-            await channel.edit_dm_message(chat_id, message_id, text)
+        async def _wipe_status(line: str) -> None:
+            await channel.edit_dm_message(
+                chat_id, message_id, f"{body}\n\n{line}")
 
         async def _finish(outcome: dict) -> None:
             kind = outcome.get("outcome")
@@ -2325,20 +2301,22 @@ async def wipe_memory(args: dict) -> dict:
                         consequence="nothing was deleted"),
                 )
                 return
-            # Approve: admit as THE single-flight wipe. The finish hook runs
-            # broker-owned, OUTSIDE any turn, so the orchestrator's
-            # flush-close can take pool entry locks freely (Sol S-C2).
-            task = memory_wipe_mod.start_wipe_task(_run_wipe_and_report())
-            if task is None:
-                await channel.edit_dm_message(
-                    chat_id, message_id,
-                    f"{body}\n\n(refused — a wipe is already running or the "
-                    "app is shutting down; nothing additional was deleted)",
+            # Approve: the finish hook runs broker-owned, OUTSIDE any turn.
+            # Update intake pauses before the restart is requested, so the
+            # tap is confirmed to Telegram and never redelivered after it.
+            try:
+                await memory_maintenance.request_wipe(
+                    reply=_wipe_status,
+                    notify=getattr(channel, "notify_operator", None),
+                    pause_updates=getattr(
+                        channel, "pause_updates_for_restart", None),
+                    resume_updates=getattr(channel, "resume_updates", None),
                 )
-                return
-            await channel.edit_dm_message(
-                chat_id, message_id, f"{body}\n\n⏳ Wiping long-term memory…",
-            )
+            except Exception as exc:  # noqa: BLE001 — report truthfully
+                logger.exception("memory wipe could not be scheduled")
+                await _wipe_status(
+                    f"❌ The wipe could not be scheduled ({exc}); nothing "
+                    "was deleted.")
         return _finish
 
     await BROKER.ensure_posted(req, _post, _finish_factory)
@@ -10211,28 +10189,12 @@ async def casa_reload(args: dict) -> dict:
 async def _post_supervisor_restart() -> dict:
     """Internal helper used by ``_finalize_engagement`` to honor a
     deferred hard-reload after the bus message + engagement-summary retain have
-    landed. Returns a result-shaped dict for logging; never raises.
+    landed. Returns a result-shaped dict for logging; never raises. The
+    request itself lives in :mod:`supervisor_restart`, which the memory wipe
+    uses too.
     """
-    import aiohttp
-    token = os.environ.get("SUPERVISOR_TOKEN")
-    if not token:
-        return {
-            "status": "error",
-            "kind": "no_supervisor_token",
-            "message": "SUPERVISOR_TOKEN not set - cannot restart addon",
-        }
-    headers = {"Authorization": f"Bearer {token}"}
-    url = "http://supervisor/addons/self/restart"
-    try:
-        async with aiohttp.ClientSession(headers=headers) as s:
-            async with s.post(url) as resp:
-                return {"supervisor_status": resp.status}
-    except Exception as exc:  # noqa: BLE001
-        return {
-            "status": "error",
-            "kind": "supervisor_error",
-            "message": str(exc),
-        }
+    import supervisor_restart
+    return await supervisor_restart.request_app_restart()
 
 
 @tool(

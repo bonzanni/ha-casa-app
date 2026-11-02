@@ -139,7 +139,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | whether an action is checked, the gate's page reading or packet, a verdict route, the pending judgement, the stored responses, the pacer guard's checks, the screenshot rule, or a sign-in code | [`reference/casa-browser-actions.md`](reference/casa-browser-actions.md) |
 | which specialist turns are offered start_job, how a specialist's start_job resolves its job and host, the gates a specialist's own start passes, or the origin a specialist-started job records | [`architecture/specialist-job-start.md`](architecture/specialist-job-start.md) |
 | who may mark a job or an engagement terminal, terminal transitions, engagement creation strictness, finalization side effects, or engagement output ordering | [`architecture/engagement-finalization.md`](architecture/engagement-finalization.md) |
-| wipe consent or its doors, the wipe orchestrator's order, the retain fence, the writer drain, or what a wipe leaves behind | [`architecture/memory-wipe.md`](architecture/memory-wipe.md) |
+| wipe consent or its doors, the maintenance intent, the init-memory-maintenance oneshot or its place in the s6 graph, the wipe loop, the executor-memory markers, notification-only boot, or the setup-configs guard | [`architecture/memory-wipe.md`](architecture/memory-wipe.md) |
 <!-- END ROUTING -->
 
 Documents stay small — a 25 KB ceiling, judged on pull requests against the merge-base —

@@ -621,17 +621,16 @@ def _make_internal_hooks_resolve_handler(
 
 
 def build_admin_memory_wipe_handler():
-    """#411 terminal door — POST /admin/memory/wipe on the internal unix
+    """The terminal door — POST /admin/memory/wipe on the internal unix
     socket, root-gated by the same SO_PEERCRED middleware as every
     ``/admin/*`` route (#467). Consent here is being root in the gated
     terminal PLUS an explicit ``{"confirm": true}`` in the body (casactl
-    sends it only under ``--yes``). Shares the single-flight slot with the
-    agent door: a wipe already running (or admission frozen for shutdown)
-    is a 409, never a second wipe. The response carries the WipeReport."""
+    sends it only under ``--yes``). On consent it records the wipe intent and
+    asks the Supervisor for the app restart; the wipe runs at the next
+    container start. The response carries the lines the operator would read
+    in Telegram."""
     async def handler(request: web.Request) -> web.Response:
-        import agent as agent_mod
-        import memory_wipe as memory_wipe_mod
-        from hindsight_ids import bank_id
+        from memory import maintenance as memory_maintenance
         try:
             payload = await request.json()
         except Exception:
@@ -639,49 +638,32 @@ def build_admin_memory_wipe_handler():
         if not isinstance(payload, dict) or payload.get("confirm") is not True:
             return web.json_response(
                 {"status": "error", "kind": "confirm_required",
-                 "message": "POST {\"confirm\": true} to wipe long-term memory"},
+                 "message": "POST {\"confirm\": true} to wipe memory"},
                 status=400,
             )
-        registry = getattr(agent_mod, "active_session_registry", None)
-        sem = getattr(agent_mod, "active_semantic_memory", None)
-        if registry is None or sem is None:
+        lines: list[str] = []
+
+        async def _collect(line: str) -> None:
+            lines.append(line)
+
+        try:
+            state = await memory_maintenance.request_wipe(
+                reply=_collect, notify=_collect)
+        except Exception as exc:  # noqa: BLE001 — report truthfully
+            logger.exception("memory wipe could not be scheduled")
             return web.json_response(
-                {"status": "error", "kind": "not_initialized",
-                 "message": "memory backend or session registry not bound"},
+                {"status": "error", "kind": "not_scheduled",
+                 "message": f"{exc} — nothing was deleted"},
                 status=500,
             )
-        task = memory_wipe_mod.start_wipe_task(
-            memory_wipe_mod.wipe_long_term_memory(
-                registry=registry, semantic_memory=sem,
-                fence=memory_wipe_mod.FENCE, bank=bank_id("casa"),
-            ),
-        )
-        if task is None:
+        if state == "restore_pending":
             return web.json_response(
-                {"status": "error", "kind": "already_running",
-                 "message": "a wipe is already running or the app is shutting down"},
+                {"status": "error", "kind": "restore_pending",
+                 "message": " ".join(lines)},
                 status=409,
             )
-        try:
-            report = await task
-        except memory_wipe_mod.WipeAborted as exc:
-            return web.json_response(
-                {"status": "error", "kind": "aborted", "message": str(exc)},
-                status=503,
-            )
-        except Exception as exc:  # noqa: BLE001 — report truthfully
-            logger.exception("memory wipe failed")
-            return web.json_response(
-                {"status": "error", "kind": "wipe_failed",
-                 "message": f"{exc} — state may be partial"},
-                status=500,
-            )
         return web.json_response({
-            "status": "ok",
-            "bank_deleted": report.bank_deleted,
-            "spool_records_dropped": report.spool_records_dropped,
-            "session_entries_dropped": report.session_entries_dropped,
-            "summary": report.summary(),
+            "status": "ok", "state": state, "message": " ".join(lines),
         })
     return handler
 

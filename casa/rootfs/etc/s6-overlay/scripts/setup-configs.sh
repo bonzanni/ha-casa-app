@@ -160,13 +160,21 @@ fi
 # /root/ is wiped on every rebuild, so --resume <sid> failed on the
 # first turn after a deploy (sessions.json persisted, transcript file
 # did not — see agent.py resume-recovery comment).
+#
+# While a memory wipe is pending (its intent still exists because the
+# maintenance oneshot failed or was cut off), a real /root/.claude/projects
+# holds transcripts the wipe has not deleted yet: neither copy it into
+# cc-home nor replace it with the symlink. It stays where it is for the next
+# maintenance run to delete.
 PERSIST_PROJECTS="$CONFIG_DIR/cc-home/.claude/projects"
 mkdir -p "$PERSIST_PROJECTS" /root/.claude
-if [ -e /root/.claude/projects ] && [ ! -L /root/.claude/projects ]; then
-    cp -R /root/.claude/projects/. "$PERSIST_PROJECTS/" 2>/dev/null || true
-    rm -rf /root/.claude/projects
+if [ ! -e "$DATA_DIR/memory/maintenance.json" ]; then
+    if [ -e /root/.claude/projects ] && [ ! -L /root/.claude/projects ]; then
+        cp -R /root/.claude/projects/. "$PERSIST_PROJECTS/" 2>/dev/null || true
+        rm -rf /root/.claude/projects
+    fi
+    [ -L /root/.claude/projects ] || ln -s "$PERSIST_PROJECTS" /root/.claude/projects
 fi
-[ -L /root/.claude/projects ] || ln -s "$PERSIST_PROJECTS" /root/.claude/projects
 
 # Webhook/voice authentication is MANDATORY (v0.125.0, #228): the
 # `webhook_auth_enabled` toggle is removed, so a secret always exists. Every

@@ -27,7 +27,7 @@ def test_pin_inv_sys_001_materialisation_depends_on_validation():
         / "init-setup-configs/dependencies.d"
     )
     assert sorted(p.name for p in dependencies.iterdir()) == [
-        "init-validate-config",
+        "init-memory-maintenance", "init-validate-config",
     ]
 
 

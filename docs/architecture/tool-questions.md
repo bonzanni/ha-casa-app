@@ -76,7 +76,10 @@ would misreport the common case to fix the rare one. The status names no outcome
 the single read that produced it cannot tell a cancellation from an answer — which is also
 why the consent keyboard `wipe_memory` posts reports it the same way and neither claims
 nor denies that anything was deleted (an Approve tapped inside that window may already
-have started the wipe, whose result is reported in the keyboard message).
+have recorded the wipe and asked for the restart, which the keyboard message reports).
+The keyboard's text is the wipe's confirmation: what is erased, what stays, that Casa
+restarts, and that copies outside Casa are untouched
+([`memory-wipe.md`](memory-wipe.md)).
 
 ## Extension points
 

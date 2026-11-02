@@ -219,7 +219,7 @@ things this does not promise. A record that cannot be written is a WARNING,
 not a stop — the background retain still runs, and if it fails too and its own
 spool write fails, that is said out loud at ERROR with the session id and the
 transcript directory, the only handle left. And a wipe completing first
-discards both, by the operator's consent (INV-MEM-014).
+discards both, by the retain fence the bank's writers pass.
 
 Because the reset takes no save claim, a freshness sweep already retaining
 the same session can submit the same transcript alongside it — and so can the

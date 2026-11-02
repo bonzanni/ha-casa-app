@@ -81,7 +81,7 @@ CASA_TEXT_SITES = {
 
 EDIT_DM_MESSAGE_CALLERS = {
     ("tools.py", "_finish"): {"derived", "status"},                 # ask_user: answered/retired body; 'delivery failed' status
-    ("tools.py", "_run_wipe_and_report"): {"status"},              # wipe_memory: Casa report text
+    ("tools.py", "_wipe_status"): {"status"},                      # wipe_memory: the memory wipe's fixed lines
     ("scheduled_asks.py", "_settle"): {"derived"},                 # the stored admitted body + terminal suffix
     ("scheduled_asks.py", "_replay_terminal_edit"): {"derived"},   # the persisted terminal_edit of that body
     ("authz_grants.py", "_finish_inner"): {"status"},              # retired / denied / delivery-failed statuses
@@ -123,6 +123,8 @@ RAW_TRANSPORT_FUNCTIONS = {
     ("channels/telegram.py", "replace_operator_proposal"): "notice", # #1339: that proposal edited in place, as a tap's next card
     ("channels/telegram.py", "deliver_desk_notice"): "notice",       # S4: a desk turn's outcome, Casa-composed
     ("channels/telegram.py", "send_handoff_line"): "notice",         # #1350: a hand-off record, Casa-composed
+    ("channels/telegram.py", "notify_operator"): "notice",           # the memory wipe's restart and done lines
+    ("channels/telegram.py", "_send_plain_line"): "notice",          # the memory wipe's courtesy line
     # topic — sequencer-owned engagement-topic methods (out of this boundary)
     ("channels/telegram.py", "edit_topic_message"): "topic",
     ("channels/telegram.py", "edit_topic_message_markup"): "topic",
@@ -227,7 +229,7 @@ TOPIC_METHODS = {"send_to_topic", "send_to_topic_rich", "send_to_topic_paged",
 NOTICE_METHODS = {"deliver_operator_link", "deliver_operator_message", "deliver_operator_page",
                   "deliver_operator_file", "deliver_desk_notice", "send_handoff_line", "reply",
                   "deliver_operator_proposal", "replace_operator_proposal",
-                  "deliver_operator_question"}
+                  "deliver_operator_question", "notify_operator"}
 # dispatch — the text becomes a TURN's input, not an emission (Astra r1 item 1)
 DISPATCH_METHODS = {"deliver_system_turn"}
 

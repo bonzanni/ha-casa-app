@@ -1151,6 +1151,26 @@ async def replay_undergoing_engagements(
                         "clamped floor (fresh session, archive cleared); "
                         "flag clears after service start", rec.id[:8])
 
+                # A memory wipe deletes every transcript and keeps the record,
+                # the workspace and its session pointer. A resume of a session
+                # whose transcript is gone cannot start, so the engagement
+                # continues in a fresh session: the same pointer removal as the
+                # reset above.
+                from drivers.workspace import drop_session_without_transcript
+                try:
+                    if drop_session_without_transcript(
+                            os.path.join(engagements_root, rec.id), rec.id):
+                        logger.info(
+                            "boot replay: engagement %s has no transcript for "
+                            "its session; continuing in a fresh session",
+                            rec.id[:8])
+                except OSError as exc:
+                    logger.warning(
+                        "boot replay: engagement %s session check failed "
+                        "(%s) — refusing resume", rec.id[:8], exc)
+                    refused_ids.add(rec.id)
+                    continue
+
                 # W3 (r8-B5/r9-B5): re-render the workspace CLAUDE.md from the
                 # VERBATIM origin["brief"] for EVERY resumed brief-bearing
                 # engagement — placed BEFORE the service_pair_complete fast
@@ -4163,6 +4183,22 @@ async def main() -> None:
     from secrets_resolver import resolve as _resolve_secret
     _resolve_password_options()
 
+    # 1c. A pending memory wipe, before anything that reads memory starts.
+    # With an attempt recorded (the container-start step failed or was cut
+    # off), memory may be partly deleted: notification-only mode opens no
+    # memory and starts nothing. With none recorded, memory is untouched:
+    # boot normally and ask for the app restart again once the channels are
+    # up.
+    from memory import maintenance as memory_maintenance
+    try:
+        _maintenance_intent = await asyncio.to_thread(
+            memory_maintenance.read_intent)
+    except memory_maintenance.IntentUnreadable:
+        _maintenance_intent = memory_maintenance.unreadable_intent()
+    if _maintenance_intent is not None and _maintenance_intent["attempts"]:
+        await memory_maintenance.notification_only(_maintenance_intent)
+        return
+
     # 1b. §5.5 / §8.3: source plugin-env.conf into process env.
     # Resolved after OP_SERVICE_ACCOUNT_TOKEN is available so that op://
     # references inside plugin-env.conf can be resolved by the same `op` CLI.
@@ -5745,6 +5781,24 @@ async def main() -> None:
 
     # 12. Start all channels
     await channel_manager.start_all()
+
+    # 12'. The memory wipe's lines reach the operator from here on. A wipe
+    # intent still waiting for its restart (a respawn, or a crash before the
+    # restart request) asks for it again now; a wipe the container-start
+    # step completed is reported once.
+    memory_maintenance.configure(
+        notify=telegram_channel.notify_operator
+        if telegram_channel is not None else None)
+    if _maintenance_intent is not None:
+        await memory_maintenance.request_restart()
+    try:
+        _forgotten_line = await asyncio.to_thread(
+            memory_maintenance.claim_forgotten_notice, memory_store)
+    except Exception:  # noqa: BLE001 — a notice must not stop the boot
+        logger.warning("memory wipe done line not claimed", exc_info=True)
+        _forgotten_line = None
+    if _forgotten_line is not None and telegram_channel is not None:
+        await telegram_channel.notify_operator(_forgotten_line)
 
     # #532: the event worker's boot pass (13d'' above) ran BEFORE the
     # channels started, so any operator notice it owed (an exhausted

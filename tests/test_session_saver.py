@@ -380,7 +380,7 @@ async def test_reset_channel_trailing_remove_spares_follow_up_session(tmp_path, 
 #   ``_spool_cold_retain``, into the directory ``retry_spooled_cold_retains``
 #   drains — rather than leaving the reset path with no retry route at all. Two
 #   conditions on that routing, both pre-existing and unchanged: a retain-fence
-#   generation change discards instead, by operator consent (INV-MEM-014); and
+#   generation change discards instead, by operator consent (the retain fence); and
 #   a spool write that itself fails is reported at ERROR naming the session id
 #   and the transcript directory.
 #
@@ -398,7 +398,7 @@ async def test_reset_channel_trailing_remove_spares_follow_up_session(tmp_path, 
 # on the double failure (a record for the same sid written by an EARLIER failed
 # reset survives an atomic write that fails before its rename, and will still
 # retry). Each clause was CUT rather than narrowed again. No implementation
-# change was made for either: the fence discard is INV-MEM-014 working as
+# change was made for either: the fence discard is the retain fence working as
 # designed, and the bookkeeping, cancellation and record-preservation
 # behaviours are pre-existing and untouched here. A fourth round cut one more
 # phrase on the same shape — "a failed spool write writes no record", refuted by
@@ -637,7 +637,7 @@ async def test_r878_unusable_provenance_spools_nothing(r878, caplog, missing):
 
 
 async def test_r878_advanced_fence_generation_spools_nothing(r878):
-    """Anti-overfire, INV-MEM-014: the fence generation the reset captured in
+    """Anti-overfire, the retain fence: the fence generation the reset captured in
     its no-await block must gate the spool as well as the retain — a durable
     record written for content an operator consented to deleting is exactly the
     residue a wipe must not leave.

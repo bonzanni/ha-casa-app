@@ -228,3 +228,47 @@ def test_fresh_memory_store_on_the_image_sqlite(image_tag: str) -> None:
     )
     assert r.returncode == 0, (r.stdout, r.stderr)
     assert r.stdout.startswith("ok "), r.stdout
+
+
+# --------------------------------------------------------------------------
+# The memory wipe's container-start step, in the image.
+# --------------------------------------------------------------------------
+
+_WIPE_IN_IMAGE = r"""
+set -e
+test -x /etc/s6-overlay/scripts/memory-maintenance.sh
+test "$(cat /etc/s6-overlay/s6-rc.d/init-memory-maintenance/type)" = oneshot
+test -e /etc/s6-overlay/s6-rc.d/init-setup-configs/dependencies.d/init-memory-maintenance
+test -e /etc/s6-overlay/user-bundles.d/user/contents.d/init-memory-maintenance
+C=5f0c1d2e3a4b5c6d7e8f9a0b
+export PYTHONPATH=/opt/casa
+/opt/casa/venv/bin/python3 - <<PY
+from memory import capture, maintenance
+from memory.store import MemoryStore
+store = MemoryStore()
+assert store.open(), store.unavailable_reason
+capture.append(store, capture.event(role="assistant", channel="telegram",
+    speaker_kind="operator", origin_kind="operator", text="told $C",
+    eligibility="eligible", origin_tier="private"))
+import os
+os.makedirs("/config/cc-home/.claude/projects/-a", exist_ok=True)
+open("/config/cc-home/.claude/projects/-a/s.jsonl", "w").write("$C")
+open("/data/sessions.json", "w").write('{"k": "$C"}')
+os.makedirs("/data/explanations", exist_ok=True)
+open("/data/explanations/abcd1234.json", "w").write("$C")
+assert maintenance.write_wipe_intent() == "written"
+PY
+/opt/casa/venv/bin/python3 -m memory.maintenance
+test ! -e /data/memory/maintenance.json
+if grep -rl "$C" /data /config /root 2>/dev/null; then exit 3; fi
+/opt/casa/venv/bin/python3 -c "from memory.store import MemoryStore; s = MemoryStore(); assert s.open(); print('fresh', s.path)"
+"""
+
+
+def test_the_wipe_step_runs_on_the_image(image_tag: str) -> None:
+    """The oneshot ships in the s6 tree, and the step itself wipes a store
+    and the memory beside it on the image's own Python and SQLite."""
+    r = _run_in_image(image_tag, _WIPE_IN_IMAGE)
+    assert r.returncode == 0, (r.stdout, r.stderr)
+    assert "fresh /data/memory/memory.db" in r.stdout, r.stdout
+    assert "memory maintenance: wipe done" in r.stderr, r.stderr

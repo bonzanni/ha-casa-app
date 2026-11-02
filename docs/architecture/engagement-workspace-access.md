@@ -26,6 +26,13 @@ never `--add-dir`ed into. A symlink the CLI plants in its own workspace cannot r
 root's read or write of any of them, because none of them is a path under the workspace at
 all.
 
+**The executor-memory block is written cache first.** `provision_workspace` writes the
+control directory's `.executor_memory` cache before any `CLAUDE.md`, and writes
+`CLAUDE.md` with `atomic_write_beneath`; it and `refresh_claude_md` wrap the block between
+two fixed markers, with every marker string removed from the block itself. The memory
+wipe blanks that section through the markers and keeps every other byte of the file
+([`memory-wipe.md`](memory-wipe.md), INV-MEM-038).
+
 **Root still reaches in, and that reach is the boundary's remaining weak point.** casa-core
 stays root and has to read and write inside a workspace owned by the very process the drop
 exists to contain, so those crossings go through the confined accessors rather than a plain

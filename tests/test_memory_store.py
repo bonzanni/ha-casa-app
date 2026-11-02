@@ -270,7 +270,12 @@ def test_memory_package_imports_no_casa_main_module() -> None:
         env=env, cwd="/", check=True,
     ).stdout.split()
     assert "memory.store" in out and "memory.registry" in out, out
-    allowed_ports = {"config", "timekeeping"}
+    # The declared ports, plus three stdlib-only leaf helpers the
+    # container-start maintenance step writes and restarts through: the
+    # atomic writer, the no-symlink workspace writer, and the Supervisor's
+    # restart request.
+    allowed_ports = {"config", "timekeeping", "atomic_io", "safe_fs",
+                     "supervisor_restart"}
     foreign = [m for m in out
                if m != "memory" and not m.startswith("memory.")
                and m not in allowed_ports]

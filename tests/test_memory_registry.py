@@ -1101,6 +1101,7 @@ async def test_every_producer_declares_its_staging_pattern(
     assert staged == {
         "session_registry.py:SessionRegistry._write",
         "explanation_store.py:ExplanationStore.record",
+        "drivers/workspace.py:provision_workspace",
         "drivers/workspace.py:refresh_claude_md",
     }, observations
     assert staging_violations(CODE_ROOT, observations) == []
