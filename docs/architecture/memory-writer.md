@@ -63,12 +63,15 @@ each input event's mark: if the ledger changed or an input event's mark is not t
 run read, nothing is written and the job goes back to the queue. Otherwise it applies the
 operations (each object's next revision plus a history row), checks that every current
 object still hangs from current parents a level up (entry, group, topic), writes the
-classification verdicts, one disposition for every input event still pending, and the job's
-`committed` state, all under one `commit_no`. "Still pending" is read from the pending view
-inside the commit: an event another commit filed since the run's read (a second writer
-process, whose `no_change` changes no revision and no mark) gets nothing from this one, and a
-run whose every event is gone writes nothing at all. A run whose fresh input is empty commits
-with no disposition.
+classification verdicts, one disposition for every input event, and the job's `committed`
+state, all under one `commit_no`. Its input must still be exactly what is owed: the commit
+re-reads the pending view, and if another commit filed some of the run's events since the read
+(a second writer process, whose `no_change` changes no revision and no mark), the answer is
+stale — it may cite an event already filed — so nothing is written and the job is requeued to
+reassemble from what survives. Each such requeue follows another commit's terminal filing,
+so it cannot repeat without that progress. If every event is gone, the run has nothing left to
+file: it writes nothing and ends committed. A run whose fresh input is empty commits with no
+disposition.
 
 **A mark re-opens.** `memory.corrections.mark` marks the operator's event in its own
 `BEGIN IMMEDIATE` transaction. Because a disposition counts only when committed after the
@@ -96,7 +99,7 @@ event it should have filed files it; that is the model's judgement, not this rul
 ledgers are not maintained yet, so an event classified below `private` is pending in them
 and nothing files it there.
 
-**INV-MEM-028**: Only the writer's commit marks a job `committed`, in the same transaction that writes its patches, revisions, classification verdicts and a disposition for every event of the run's input that the pending view still shows pending in that transaction (none, and no patch, when every such event is gone), and only after checking that the ledger's revisions and every input event's correction mark are those the run's one read transaction saw; a stale base or a new mark writes nothing and requeues the job, every run assembles its input afresh, and nothing but that commit writes `objects`, `revisions` or `dispositions`.
+**INV-MEM-028**: Only the writer's commit marks a job `committed`, in the same transaction that writes its patches, revisions, classification verdicts and a disposition for every event of the run's input, and only after checking that the ledger's revisions and every input event's correction mark are those the run's one read transaction saw and that the pending view still shows every input event pending; a stale base, a new mark or an input event filed meanwhile writes nothing and requeues the job, a run whose every input event was filed meanwhile writes nothing and ends committed, every run assembles its input afresh, and nothing but that commit writes `objects`, `revisions` or `dispositions`.
 
 So a crash at any point leaves each event filed or pending, never both and never neither: a
 process killed after the model replied, or inside the commit before COMMIT, leaves the job
@@ -108,8 +111,8 @@ checks.
 
 What it does not cover: scheduling between two Casa processes writing one store at once.
 The worker is one task in one process. A second writer's commit cannot file an event twice
-or clobber the ledger (the pending re-read and the base check), but the two may spend a model
-call each on the same events.
+or write an answer made from events the other already filed (the pending re-read and the
+base check), but the two may spend a model call each on the same events.
 
 ## Failure behavior
 

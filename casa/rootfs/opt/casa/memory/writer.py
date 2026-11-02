@@ -39,9 +39,11 @@ background task, and every blocking SQLite call runs in a thread.
    (a stale base or a new mark rolls back and requeues the job), and after
    the patches that every current object is reachable (otherwise the job
    fails). It also reads, through the pending view, which input events are
-   still pending: one another commit filed meanwhile (a second writer
-   process) gets nothing from this one, and a run whose every event is gone
-   writes nothing, so an event is filed once however many writers run. Only this commit marks a job ``committed`` (INV-MEM-028), so an
+   still pending: if another commit filed some of them meanwhile (a second
+   writer process), the answer is stale and the job is requeued with nothing
+   written; if it filed all of them, the run writes nothing and ends
+   committed. So an event is filed once however many writers run, and no
+   patch cites an event another commit filed. Only this commit marks a job ``committed`` (INV-MEM-028), so an
    event stays pending until the commit that files it, and every write to
    ``objects``, ``revisions`` or ``dispositions`` is made here.
 
@@ -435,11 +437,18 @@ def _commit(store: MemoryStore, inp: Input, plan: Plan, boot_id: str) -> int:
                                "WHERE seq = ?", (seq,)).fetchone()
             if (row[0] if row else None) != inp.mark_seen.get(seq):
                 raise Stale(f"event {seq} was marked since the run read it")
-        # An event another commit filed since the read (a second writer) is
-        # no longer pending: it gets nothing from this commit. A run whose
-        # every event is gone writes nothing and ends committed.
+        # The run's input must still be exactly what is owed. An event
+        # another commit filed since the read (a second writer) makes the
+        # whole answer stale: it may cite that event, so nothing of it is
+        # written and the job reassembles from what survives. Each requeue
+        # follows another commit's terminal filing, so it cannot repeat
+        # without that progress. A run whose every event is gone has nothing
+        # left to file: it writes nothing and ends committed.
         still = [seq for seq in inp.input_seqs
                  if pending.is_pending(conn, seq, inp.ledger)]
+        if still and still != inp.input_seqs:
+            raise Stale(f"{len(inp.input_seqs) - len(still)} input event(s) "
+                        "were filed since the run read them")
         ops = plan.ops if still or not inp.input_seqs else []
         commit_no = pending.next_commit_no(conn)
         committed_at = _now_iso()

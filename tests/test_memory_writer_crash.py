@@ -589,16 +589,33 @@ async def test_two_writers_never_file_an_event_twice(tmp_path, a_script):
     assert [j["state"] for j in job_rows(store)] == ["committed"] * 2
 
 
-async def test_a_second_writer_filing_some_events_leaves_the_rest(tmp_path):
-    """B files one of A's two events and defers the other: A's commit gives
-    a disposition only to the event still pending."""
+@pytest.mark.parametrize("a_script", [no_change_all, add_each],
+                         ids=["a-no-change", "a-adds"])
+async def test_a_second_writer_filing_some_events_makes_the_run_stale(
+        tmp_path, a_script):
+    """B files one of A's two events and defers the other. A's answer was
+    made for both and may cite the filed one, so A's commit writes nothing
+    and requeues the job; its rerun is given only the surviving event and
+    files it once. (Writing A's answer would add an object citing an event B
+    already filed.)"""
     store = new_store(tmp_path)
     e1, e2 = seed(store, "one"), seed(store, "two")
     a = writer.enqueue(store, "private", writer.ORDINARY)
     port = _second_writer_files(
-        store, lambda p: reply({e1: "no_change", e2: "deferred"}))
-    await new_writer(store, port, boot_id="boot-a").run_job(a)
+        store, lambda p: reply({e1: "no_change", e2: "deferred"}), a_script)
+    assert await new_writer(store, port, boot_id="boot-a").run_job(a) == (
+        writer.REQUEUED)
     assert dispositions(store) == [(e1, "private", "no_change", 1),
-                                   (e2, "private", "deferred", 1),
-                                   (e2, "private", "no_change", 2)]
+                                   (e2, "private", "deferred", 1)]
+    assert rows(store, "SELECT * FROM revisions") == []
+    assert pending_seqs(store) == [e2]
+
+    rerun = ScriptedPort(a_script)
+    assert await new_writer(store, rerun, boot_id="boot-a").run_job(a) == (
+        writer.COMMITTED)
+    assert [e["seq"] for e in rerun.prompts[0]["events"]] == [e2]
+    assert terminal_after_mark(store, e1) == terminal_after_mark(store, e2) == 1
     assert pending_seqs(store) == []
+    cited = [json.loads(r["source_seqs"]) for r in rows(
+        store, "SELECT source_seqs FROM revisions")]
+    assert all(e1 not in c for c in cited)
