@@ -102,10 +102,11 @@ and pickers, and types text with several lines only into a page's own multi-line
   sign-in form ("verify you are human") still gets the card. Fido never solves a puzzle:
   after your Yes, a page that does not show you signed in brings you a live view.
 - A site that signs in with a **passkey**: keep the passkey in the site's 1Password item in
-  the browsing vault. When a run starts, Casa Browser signs the browser's 1Password extension
-  in as the guest, or unlocks it, by itself. When the site's page asks for a passkey and
-  1Password offers exactly the site's item, it is picked for you, once per run; the item needs
-  a username and a title no other login in the vault has. A passkey prompt offering anything
+  the browsing vault. When a sign-in page first offers a passkey, or before a sign-in live
+  view, Casa Browser signs the browser's 1Password extension in as the guest, or unlocks it,
+  by itself (once per browser start; the sign-in page then loads once more). When the site's
+  page asks for a passkey and 1Password offers exactly the site's item, it is picked for you,
+  once per run; the item needs a username and a title no other login in the vault has. A passkey prompt offering anything
   else is left alone: if the page also shows a login form, the item's login is filled in as
   usual; if not, you get a live view, where you can pick the passkey yourself.
 - A code the site emails you: Fido asks whoever handed it the task (usually your assistant)

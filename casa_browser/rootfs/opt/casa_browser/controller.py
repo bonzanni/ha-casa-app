@@ -188,6 +188,10 @@ class _Active:
     # session, the page's generation, the page itself) — until one code is given or a new
     # sign-in starts.
     code_wait: tuple | None = field(default=None, repr=False)
+    # The browser session the 1Password guest flow was last started for (set before it is
+    # awaited, so one that was cancelled, failed or timed out counts too). Every browser start
+    # relocks the extension, so another session object means it has not run yet.
+    guest_for: Any = field(default=None, repr=False)
 
 
 @dataclass(eq=False)
@@ -648,8 +652,8 @@ class RunController:
             pass
 
     async def _open_session(self, active: _Active, site: Site | None) -> None:
-        """Close whatever runs, install the session's policy, start it; an account profile
-        with login origins gets the guest unlock (never a public session)."""
+        """Close whatever runs, install the session's policy, start it. The guest unlock is
+        not run here: a sign-in that meets a passkey hint, or a sign-in live view, runs it."""
         spec = active.spec
         account = (spec.mode == "account" and site is not None
                    and self._access(spec, site.site_id) == "account")
@@ -692,8 +696,6 @@ class RunController:
             active.ref = replace(active.ref, generation=session.generation)
             await self._install(active)
         self._watch_downloads(active, session)
-        if account and site.login_origins:
-            await self._guest(active, site)
 
     async def _ensure_session(self, active: _Active):
         """The run's browser session; after a forced close, a new one on the same site."""
@@ -706,7 +708,7 @@ class RunController:
         active.session = None
         await self._open_session(active, site)
         if active.session is None:
-            raise ProtocolError("not_ready")  # closed again by the driver during its guest unlock
+            raise ProtocolError("not_ready")  # no session came of the open
         return active.session
 
     def _watch_downloads(self, active: _Active, session) -> None:
@@ -775,11 +777,13 @@ class RunController:
                     text or "The site needs the operator in a login live view.")
         return reason
 
-    async def _guest(self, active: _Active, site: Site) -> None:
+    async def _guest(self, active: _Active, site: Site) -> bool:
         """The 1Password guest unlock, best effort: only a passkey needs the extension (slice 5v:
         a fresh profile's extension is signed in, a restarted browser's unlocked, and the
         login answers 1Password's passkey prompt for the site's linked item). A state other
-        than unlocked or signed in stops nothing and asks for nothing (slice 5s)."""
+        than unlocked or signed in stops nothing and asks for nothing (slice 5s). True when the
+        driver closed the browser under it (K1); the caller says what that means for it. The
+        caller sets ``guest_for`` before awaiting it."""
         sid = await self._driver_session(active, "guest", site)
         reply: dict = {}
         try:
@@ -789,29 +793,44 @@ class RunController:
         if "error" in reply:
             raise _Dependency("broker_" + str(reply["error"]))
         if forced:
-            self._login_needed(active, "timeout")
-            return
+            return True
         if reply.get("state") not in ("unlocked", "signed_in"):
             reason = reply.get("reason")
             log.info("guest unlock not completed (%s)", reason if isinstance(reason, str)
                      and reason.isascii() and reason.isidentifier() and len(reason) <= 40
                      else "unknown")
+        return False
 
-    async def _login(self, active: _Active, site: Site, url: str) -> None:
+    async def _login(self, active: _Active, site: Site, url: str, *,
+                     guest_ask: bool | None = None) -> None:
         """A login needs, in order: the browser on the site's profile, the policy installed,
-        a ``login`` driver session (its first lease), the start page; then the broker."""
+        a ``login`` driver session (its first lease), the start page; then the broker. While
+        the guest flow has not run in this browser session, the broker stops on a passkey
+        hint (``needs_guest``): the guest flow runs once, then the sign-in once more from the
+        start page."""
         active.code_wait = None              # a new sign-in replaces a code report (S6-2)
+        session = active.session
+        if guest_ask is None:
+            guest_ask = active.guest_for is not session
         sid = await self._driver_session(active, "login", site)
         reply: dict = {}
         try:
             await self._goto(active, url)
-            reply = await self.broker.login(active.run_id, site.site_id, sid)
+            reply = await self.broker.login(active.run_id, site.site_id, sid,
+                                            guest_ask=guest_ask)
         finally:
             forced = await self._close_driver(active, sid)
         if "error" in reply:
             raise _Dependency("broker_" + str(reply["error"]))
         if forced:
             self._login_needed(active, "timeout")
+            return
+        if reply.get("status") == "needs_guest" and guest_ask:
+            active.guest_for = session
+            if await self._guest(active, site) or active.session is not session:
+                self._login_needed(active, "timeout")   # K1: the session is gone, no retry
+                return
+            await self._login(active, site, url, guest_ask=False)
             return
         if reply.get("status") == "needs_code":
             self._code_asked(active, site, reply.get("page_generation"))
@@ -1006,8 +1025,8 @@ class RunController:
         dispatch journal) and may refuse it."""
         await self._switch_for(active, url, public=public)
         if active.session is None:
-            # The session just opened was closed by the driver (K1) during its guest unlock:
-            # this step ends here; the run's next step opens a new one.
+            # No session came of the switch: this step ends here; the run's next step opens
+            # a new one.
             raise ProtocolError("not_ready")
         self._precheck(active, url)
         if before_goto is not None:
@@ -2736,6 +2755,16 @@ class RunController:
             # A login needs an account session; an assist view pauses the model in any session.
             if purpose == "login" and (active.ref is None or active.ref.kind != "account"):
                 raise ProtocolError("unsupported")
+            site = self.store.get_site(active.ref.site_id) if purpose == "login" else None
+            if site is not None and site.login_origins:
+                # A sign-in view gets the guest unlocked before its link goes out (the operator
+                # may use 1Password's own fill there): on the run's live session, reopened when
+                # gone or stale as begin_live would, once per browser session. Not completed,
+                # or K1 under it: the request goes on.
+                session = await self._ensure_session(active)
+                if active.guest_for is not session:
+                    active.guest_for = session
+                    await self._guest(active, site)
             if not self.store.transition(run_id, "running", "waiting_live"):
                 raise ProtocolError("not_ready")
             active.live = _Live(purpose, site_id=active.ref.site_id if active.ref else None)

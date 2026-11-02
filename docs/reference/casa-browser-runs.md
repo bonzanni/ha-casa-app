@@ -52,20 +52,19 @@ re-reads the granted sites (a site gone, or the setup no longer ready, ends the 
 then: the broker's `begin_run` (account runs); the first session — the first account grant's
 profile, else the public session; `status()` for the proxy start; before a browser starts while
 no Chrome runs, the credential window a started proxy opened is closed with the token
-`status()` reports (never while Chrome runs); the session's policy; the browser; for an account
-profile with login origins the guest unlock (a `guest` driver session, the broker's
-`unlock_guest`, `close_session`; a fresh profile's extension is signed in, a restarted
-browser's unlocked, slice 5v), best effort: a state other than `unlocked` or `signed_in` is
-logged and asks for nothing (only a passkey needs the guest; a passkey prompt the login meets is
-answered for the site's linked item, or else `challenge`); then the site's start page, with the login sequence below (a
-start page the policy refuses is not loaded and is logged as `page_unreachable`). An open-web
+`status()` reports (never while Chrome runs); the session's policy; the browser; then the site's
+start page, with the login sequence below (a start page the policy refuses is not loaded and is
+logged as `page_unreachable`). Opening a session runs no 1Password guest unlock: that waits
+until a sign-in meets a passkey hint or a sign-in live view is requested (**The guest unlock**,
+below). An open-web
 spec's `start_url` is opened the same way in the public session, as a free public navigation
 (the floor, G1's public-session check before the load); a refusal is `page_unreachable` and the
 run starts on a blank page.
 
 **Login.** Whenever the controller navigates an account site's start page: a `login` driver
 session (which begins the first login lease), the start page, the broker's `login`, then
-`close_session`. `logged_in` continues, and so does `no_form` (the sign-in filled nothing and
+`close_session`. The `login` call carries `guest_ask`, true while the guest flow has not been
+started for this browser session. `logged_in` continues, and so does `no_form` (the sign-in filled nothing and
 found no form, or answered a passkey prompt: it claims nothing, and the model reading the page
 decides whether he is signed in or needs the live view); any other status appends one `login_needed` event
 whose outcome is the broker's fixed reason code (`password_change_page`, `rejected`, …) and the run
@@ -73,6 +72,23 @@ waits for the model's `request_live(…, 'login')`. A broker RPC error interrupt
 `not_found` (no linked item) first lists the vault and starts a `login_item` judgement (once per
 site per run; the login question, [`casa-browser-actions.md`](casa-browser-actions.md)); only
 when there is nothing to judge is it `login_needed`.
+
+**The guest unlock** (the browser's 1Password extension, signed in as the guest on a fresh
+profile, unlocked after a browser restart; slice 5v) runs at most once per browser session, only
+for an account profile with login origins, and only when needed: the active run's `guest_for` holds the
+session it was last started for, set before the flow is awaited, so a flow that was cancelled,
+failed or timed out still counts for that session (every browser start relocks the extension, so
+another session object has not had it). The flow is a `guest` driver session, the broker's
+`unlock_guest`, `close_session`; best effort: a state other than `unlocked` or `signed_in` is
+logged and asks for nothing; a broker RPC error interrupts the run. Two things start it:
+- A sign-in's `needs_guest` (the broker read a passkey hint with `guest_ask` set,
+  [`casa-browser-credentials.md`](casa-browser-credentials.md)): the guest flow runs, then the
+  sign-in once more from the start page with `guest_ask` false, so a sign-in retries at most
+  once. When the driver closed the browser under the flow (K1) there is no retry and the run
+  reports `login_needed` (`timeout`). A sign-in with no hint (a password, an emailed code, a
+  start page already signed in by cookie) opens no guest session at all.
+- `request_live(…, 'login')` on a site with login origins (below).
+
 A run also gains a site from the operator's Yes on a sign-in card: the site's account grant
 replaces any grant for it, the stored spec follows (the admitted digest stays), the broker's run
 set is replaced, and the start page opens on the site's own profile, which signs in as above
@@ -91,8 +107,8 @@ fresh `login` driver session, the broker's `fill_code` with that generation, the
 error interrupts the run, as for `login`.
 `close_session` is the controller's only cleanup call and follows every path. When the driver
 had to close the browser (an operation that did not drain, Task 9's K1), the controller drops
-that session: the run's next step opens a new one (new generation, no live handles, guest
-unlock again) and the cut login is reported as `login_needed` (`timeout`). A close the driver
+that session: the run's next step opens a new one (new generation, no live handles, its guest
+not yet unlocked) and the cut login is reported as `login_needed` (`timeout`). A close the driver
 could not confirm interrupts the run; that session is retired only after the launcher's exit
 proof.
 
@@ -146,7 +162,12 @@ in a thread.
 
 `request_live(run, purpose)` drains the in-flight work, moves `running` → `waiting_live` and
 issues a grant (120 s, `LiveView.issue`). The purpose is `login` or `assist`; a `login` view
-needs an account session. `begin_live(run, expose)` — the ingress claim, before the
+needs an account session. Before that transition, a `login` view on a site with login origins
+takes the run's session (`_ensure_session`, which reopens one that is gone or stale, as
+`begin_live` would) and, when the guest flow has not been started for it, runs it, so the
+operator's link goes out with 1Password unlocked for its own fill. A flow that does not complete,
+or a K1 under it, lets the request go on (the claim then opens a new session whose guest has not
+run); an `assist` view runs no guest flow. `begin_live(run, expose)` — the ingress claim, before the
 operator's input is exposed — moves `waiting_live` → `live`; on an account session it begins the
 manual lease (`begin_manual(lease, purpose=…)`, keeping the window token), opens a `capture`
 driver session and arms the broker's

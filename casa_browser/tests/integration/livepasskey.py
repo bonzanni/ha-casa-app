@@ -7,10 +7,14 @@ production services up (the enforcing proxy, the launcher, Chrome as the browser
 production ``RunController`` as the controller user, and the production ``Broker`` with the real
 SDK as the broker user, its options read from this script's stdin and held in memory only.
 
-Two account runs on one fresh site profile: the first finds the extension signed out and signs the
-guest in; the second (the browser restarted, the extension locked again) unlocks it. Each run's
-start page then meets 1Password's passkey prompt, which the broker answers with the site's linked
-item. Prints one ``RESULT`` JSON line (no secret); exits 0 only when every check passed.
+Two account runs on one fresh site profile: the first finds the extension signed out, and the
+sign-in stops at the start page's ``username webauthn`` field (``needs_guest``) to sign the guest
+in; the second (the browser restarted, the extension locked again) stops at 1Password's "Unlock
+1Password" prompt to unlock it. Each sign-in then runs once more from the start page, whose
+passkey prompt the broker answers with the site's linked item. Before them, one run on a fresh
+profile of the-internet.herokuapp.com (a password page, no passkey anywhere) never runs the
+guest flow, so no extension popup tab and no guest sign-in. Prints one ``RESULT`` JSON line (no
+secret); exits 0 only when every check passed.
 """
 from __future__ import annotations
 
@@ -23,6 +27,7 @@ import tempfile
 from pathlib import Path
 
 SITE = "https://webauthn.io"
+PASSWORD_SITE = "https://the-internet.herokuapp.com"
 SIGNED_IN = "You're logged in!"
 
 
@@ -41,6 +46,17 @@ async def _serve_broker(config: dict) -> None:
                     DriverClient(Path(config["driver_socket"])), Journal(root / "journal.db"),
                     root / "registry.json", options)
     await broker.start()
+    # The sign-in order the pin checks (site ids and guest_ask only, never a value).
+    login, unlock = broker.login, broker.unlock_guest
+
+    async def traced_login(run_id, site_id, driver_session, guest_ask=False, *a, **k):
+        print("OP login", site_id, guest_ask, file=sys.stderr, flush=True)
+        return await login(run_id, site_id, driver_session, guest_ask, *a, **k)
+
+    async def traced_unlock(run_id, site_id, driver_session):
+        print("OP unlock_guest", site_id, file=sys.stderr, flush=True)
+        return await unlock(run_id, site_id, driver_session)
+    broker.login, broker.unlock_guest = traced_login, traced_unlock
     if config.get("debug"):
         # Diagnostics for a failing pin: the broker's own handler errors as type and place
         # (traceback frames name code, never values), on stderr, which the pin scans.
@@ -117,11 +133,25 @@ def main() -> int:
                             "debug": os.environ.get("LIVE_DEBUG") == "1"})
     site = {"site_id": "wa", "name": "webauthn.io", "origins": [SITE], "login": [SITE],
             "item": item, "start": SITE + "/"}
+    # The password site: linked to the vault's item for it when the JSON line names one
+    # ("password_item_id"); either way it has no passkey, so its run never needs the guest.
+    password_item = secrets.get("password_item_id")
+    password_site = {"site_id": "ht", "name": "The Internet", "origins": [PASSWORD_SITE],
+                     "login": [PASSWORD_SITE], "item": password_item,
+                     "start": PASSWORD_SITE + "/login"}
     steps = [{"site": site},
              {"broker": {"op": "register_item", "site_id": "wa", "item_id": item,
-                         "login_origins": [SITE], "operator_ref": "live"}}]
-    for name in ("first", "second"):
-        steps += [{"run": {"name": name, "request_id": "live-" + name, "sites": [["wa", "account"]]}},
+                         "login_origins": [SITE], "operator_ref": "live"}},
+             {"site": password_site},
+             {"broker": {"op": "register_item", "site_id": "ht", "item_id": password_item,
+                         "login_origins": [PASSWORD_SITE], "operator_ref": "live"}}
+             if password_item else
+             {"broker": {"op": "register_capture", "site_id": "ht",
+                         "login_origins": [PASSWORD_SITE], "operator_ref": "live",
+                         "title": "The Internet"}}]
+    runs = (("password", "ht"), ("first", "wa"), ("second", "wa"))
+    for name, site_id in runs:
+        steps += [{"run": {"name": name, "request_id": "live-" + name, "sites": [[site_id, "account"]]}},
                   {"wait_state": {"name": name, "state": ["running", "failed", "interrupted"],
                                   "timeout": 300}},
                   {"sleep": 4},
@@ -141,19 +171,30 @@ def main() -> int:
         except subprocess.TimeoutExpired:
             broker.kill()
     controller_log = (home / "controller.log").read_text() if (home / "controller.log").exists() else ""
+    ops = [line.split()[1:] for line in logs.get("broker stderr", "").splitlines()
+           if line.startswith("OP ")]
     checks = {}
-    for i, name in enumerate(("first", "second")):
-        base = 2 + 7 * i
+    for i, (name, _site_id) in enumerate(runs):
+        base = 4 + 7 * i
         observed = out[base + 3]
         events = out[base + 4]
         tabs = out[base + 5]
         checks[name] = {
             "running": out[base + 1] == "running",
-            "signed_in": isinstance(observed, dict) and SIGNED_IN in observed.get("text", ""),
-            "no_login_needed": not [k for k, _ in events if k == "login_needed"],
             # Slice 5w: the guest flow leaves no tab behind and the site's page in front.
             "one_tab_site_in_front": tabs == {"tabs": 1, "front": "visible"},
         }
+        if name != "password":
+            checks[name].update({
+                "signed_in": isinstance(observed, dict) and SIGNED_IN in observed.get("text", ""),
+                "no_login_needed": not [k for k, _ in events if k == "login_needed"],
+            })
+    # The password site's run asked with guest_ask and never ran the guest flow (no popup tab,
+    # no guest sign-in); each webauthn.io run: the hint, one guest flow, the sign-in once more.
+    checks["password"]["no_guest_flow"] = [o for o in ops if o[1] == "ht"] == [
+        ["login", "ht", "True"]]
+    checks["sign_in_order"] = [o for o in ops if o[1] == "wa"] == [
+        ["login", "wa", "True"], ["unlock_guest", "wa"], ["login", "wa", "False"]] * 2
     checks["guest_completed"] = "guest unlock not completed" not in controller_log
     texts = [controller_log, *logs.values()]
     checks["no_secret_in_logs"] = not any(v and v in t for v in values for t in texts)
@@ -163,13 +204,14 @@ def main() -> int:
         # What went wrong, without a value: run states, event kinds, the page's opening text,
         # the controller log's last lines (scanned clean above).
         result["diagnostics"] = {
-            name: {"state": out[2 + 7 * i + 1], "events": out[2 + 7 * i + 4],
-                   "tabs": out[2 + 7 * i + 5],
-                   "page": (out[2 + 7 * i + 3] or {}).get("text", "")[:300]
-                   if isinstance(out[2 + 7 * i + 3], dict) else out[2 + 7 * i + 3]}
-            for i, name in enumerate(("first", "second"))}
+            name: {"state": out[4 + 7 * i + 1], "events": out[4 + 7 * i + 4],
+                   "tabs": out[4 + 7 * i + 5],
+                   "page": (out[4 + 7 * i + 3] or {}).get("text", "")[:300]
+                   if isinstance(out[4 + 7 * i + 3], dict) else out[4 + 7 * i + 3]}
+            for i, (name, _site_id) in enumerate(runs)}
+        result["ops"] = ops
         result["controller_log"] = controller_log.splitlines()[-25:]
-        result["setup"] = out[:2]
+        result["setup"] = out[:4]
         result["broker_stderr"] = logs.get("broker stderr", "").splitlines()[-10:]
         result["controller_stderr"] = [l for l in logs.get("controller stderr", "").splitlines()
                                        if l.startswith("driver error")][-10:]

@@ -28,6 +28,9 @@ BROKER_OPS = {'status': (), 'begin_run': ('run_id', 'account_site_ids'), 'end_ru
               # action model slice 6 (S6-3): the sign-in code the site sent
               'fill_code': ('run_id', 'site_id', 'driver_session', 'page_generation', 'code')}
 
+#: keys an op may carry beyond its required ones: ``login``'s ``guest_ask`` (False when absent)
+BROKER_OPTIONAL = {'login': ('guest_ask',)}
+
 #: a site's one-time sign-in code (``protocol.LOGIN_CODE``)
 CODE_PATTERN = r'[A-Za-z0-9-]{4,10}'
 
@@ -115,7 +118,8 @@ class Broker:
         op = request.get('op')
         if not isinstance(op, str) or op not in BROKER_OPS:
             raise BrokerError('unsupported')
-        if set(request) != {'op', *BROKER_OPS[op]}:
+        required = {'op', *BROKER_OPS[op]}
+        if not required <= set(request) <= required | set(BROKER_OPTIONAL.get(op, ())):
             raise BrokerError('unsupported')
         for key, value in request.items():
             if key in ('op', 'login_origins'):
@@ -135,6 +139,8 @@ class Broker:
                 valid = type(value) is int and value >= 0
             elif key == 'code':
                 valid = isinstance(value, str) and re.fullmatch(CODE_PATTERN, value)
+            elif key == 'guest_ask':
+                valid = type(value) is bool
             else:
                 valid = isinstance(value, str) and ID_PATTERN.fullmatch(value)
             if not valid:
@@ -259,7 +265,12 @@ class Broker:
             raise BrokerError(reply['error'])
         return reply
 
-    async def login(self, run_id, site_id, driver_session, code=None, page_generation=None):
+    async def login(self, run_id, site_id, driver_session, guest_ask=False, code=None,
+                    page_generation=None):
+        """The automatic sign-in. With ``guest_ask`` (the run controller's: the extension's guest
+        has not been unlocked in this browser session), a read that shows a passkey hint ends it
+        as ``needs_guest`` before anything more is filled or clicked: the controller unlocks the
+        guest and signs in again from the start page, with ``guest_ask`` False."""
         site = self._account_site(run_id, site_id)
         deadline = self.clock() + 120
         try:
@@ -277,7 +288,8 @@ class Broker:
                     mark, answered = held
                 outcome = await self._login_flow(site, driver_session, deadline, code,
                                                  page_generation, mark, answered,
-                                                 tries_key=(run_id, site_id))
+                                                 tries_key=(run_id, site_id),
+                                                 guest_ask=guest_ask and code is None)
                 if outcome.get('status') == 'needs_code':
                     self._code_marks[(run_id, site_id)] = (outcome.pop('_mark'),
                                                            outcome.pop('_passkey'))
@@ -295,7 +307,7 @@ class Broker:
         (``needs_code`` named its ``page_generation``; any navigation since changes it), then the
         rest of the sign-in with the item's values. The code is filled once and kept nowhere:
         not in a reply, the journal, the registry or a log."""
-        return await self.login(run_id, site_id, driver_session, code, page_generation)
+        return await self.login(run_id, site_id, driver_session, False, code, page_generation)
 
     def _after_login(self, run_id, site, outcome):
         """Slice 5 (S5-6): the linked item's password rejected in this run is recorded (a
@@ -310,7 +322,7 @@ class Broker:
         self._persist_registry()
 
     async def _login_flow(self, site, driver_session, deadline, code=None, page_generation=None,
-                          mark=None, answered=False, tries_key=None):
+                          mark=None, answered=False, tries_key=None, guest_ask=False):
         item = await self.vault.get(site['item_id'])
         values = {f.id: f.value for f in item.fields
                   if f.id in ('username', 'password') and not f.section_id}
@@ -379,6 +391,11 @@ class Broker:
                 return {'status': 'needs_live_view', 'reason': 'off_origin'}
             if 'new_password' in roles or 'confirm_password' in roles:
                 return {'status': 'needs_live_view', 'reason': 'password_change_page'}
+            if guest_ask and (fields['passkey_hint'] or fields['passkey_frame']):
+                # A passkey hint (the site's webauthn field, or 1Password's prompt, the locked
+                # "Unlock 1Password" one included) while the guest is not unlocked: nothing more
+                # is filled or clicked, and the passkey try is not spent.
+                return {'status': 'needs_guest', 'reason': 'passkey'}
             if (fields['passkey_frame'] and code is None and tries_key is not None
                     and tries_key not in self._passkey_tries
                     and values.get('username') and await unique_title()):

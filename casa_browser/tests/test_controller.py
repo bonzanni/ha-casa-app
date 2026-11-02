@@ -580,17 +580,22 @@ async def test_a_sign_in_that_found_no_form_asks_for_nothing(rig):
     assert rig.state(run.run_id) == "running"
 
 
-@pytest.mark.parametrize("unlock", [{"state": "needs_live_view", "reason": "guest_prompt"},
+@pytest.mark.parametrize("unlock", [{"state": "unlocked", "reason": "completed"},
+                                    {"state": "needs_live_view", "reason": "guest_prompt"},
                                     {"state": "unknown"}, {}])
 async def test_a_guest_not_unlocked_asks_for_nothing_and_the_login_goes_on(rig, unlock):
     """Slice 5s (casa-test): the extension shows no page whose state the driver reads, so every
     browser start replied guest_prompt, and every account run asked for a login live view before
-    its sign-in was even tried. Only a passkey needs the guest: the run signs in as usual."""
+    its sign-in was even tried. Only a passkey needs the guest: the sign-in that met a passkey
+    hint asks for it, the guest flow runs once, and the sign-in runs once more, whatever the
+    unlock answered (login, unlock, login)."""
     rig.broker.unlock_reply = unlock
+    rig.broker.passkey_hint = True
     run = await rig.run()
     assert rig.events(run.run_id, "login_needed") == []
-    ops = [e[1] for e in rig.log if e[0] == "broker"]
-    assert ops.index("unlock_guest") < ops.index("login")
+    assert sign_in_ops(rig) == ["login", "unlock_guest", "login"]
+    assert rig.broker.guest_asks == [True, False]
+    assert guest_sessions(rig) == 1
     assert rig.state(run.run_id) == "running"
 
 
@@ -1629,7 +1634,11 @@ async def test_every_begin_live_failure_cleans_up(rig, purpose, session, failure
     if failure == "begin_manual":
         rig.proxy.begin_manual = boom
     elif failure == "open_session":
-        rig.driver.open_session = boom
+        async def capture_boom(kind, *a, **k):   # the view's capture session (the sign-in
+            if kind == "capture":                # view's guest session before it opens)
+                return await boom()
+            return await real_open(kind, *a, **k)
+        rig.driver.open_session = capture_boom
     elif failure == "begin_capture":
         rig.broker.capture_reply = {"error": "conflict"}
     exposed = []
@@ -3526,3 +3535,213 @@ async def test_the_code_is_in_no_event_or_record(rig, caplog):
     for path in rig.tmp.rglob("*"):
         if path.is_file():
             assert code.encode() not in path.read_bytes(), path
+
+
+# --------------------------------------------------------------------------- lazy guest unlock
+
+
+def guest_sessions(rig):
+    return len([e for e in rig.log if e[:2] == ("open_session", "guest")])
+
+
+def sign_in_ops(rig):
+    return [e[1] for e in rig.log if e[0] == "broker" and e[1] in ("login", "unlock_guest")]
+
+
+async def back_to_running(rig, run_id):
+    async def expose():
+        pass
+    await rig.ctl.begin_live(run_id, expose)
+    await rig.ctl.live_done(run_id)
+    assert rig.state(run_id) == "running"
+
+
+async def open_site_a(rig, run_id):
+    obs = await observe(rig, run_id)
+    return await act(rig, run_id, "navigate", handle_of(obs, "Site A"), obs)
+
+
+@pytest.mark.parametrize("reply", [{"status": "logged_in", "reason": "completed"},
+                                   {"status": "needs_code", "code_field": True,
+                                    "totp_held": False},
+                                   {"status": "no_form", "reason": "no_form"}])
+async def test_a_sign_in_with_no_passkey_hint_opens_no_guest_session(rig, reply):
+    """A password sign-in, an email-code sign-in and a start page already signed in by cookie
+    never run the guest flow: no popup tab, no unlock, no new-sign-in email."""
+    rig.broker.login_reply = reply
+    run = await rig.run()
+    assert guest_sessions(rig) == 0
+    assert sign_in_ops(rig) == ["login"] and rig.broker.guest_asks == [True]
+    assert rig.state(run.run_id) == "running"
+
+
+async def test_a_forced_close_in_the_guest_flow_ends_the_sign_in(rig):
+    """K1 inside the guest flow: the session is gone, so no second sign-in; the run says
+    ``login_needed timeout`` and goes on."""
+    rig.broker.passkey_hint = True
+    rig.driver.close_modes = {"guest": "forced"}
+    run = await rig.run()
+    assert sign_in_ops(rig) == ["login", "unlock_guest"]
+    assert [e.outcome for e in rig.events(run.run_id, "login_needed")] == ["timeout"]
+    assert rig.browser.session is None and rig.state(run.run_id) == "running"
+
+
+async def test_the_guest_flow_runs_once_per_browser_session(rig):
+    """A later sign-in in the same browser session never asks again (``guest_ask`` False); a
+    new browser session (a profile switch and back) asks again, and unlocks once more."""
+    rig.broker.passkey_hint = True
+    run = await rig.run(sites=(("sa", "account"), ("sp", "public")))
+    assert guest_sessions(rig) == 1
+    await open_site_a(rig, run.run_id)               # the same session: no guest asked
+    assert rig.broker.guest_asks == [True, False, False]
+    assert guest_sessions(rig) == 1
+    obs = await observe(rig, run.run_id)
+    await act(rig, run.run_id, "navigate", handle_of(obs, "Public B"), obs)
+    assert rig.browser.session.kind == "public"
+    await open_site_a(rig, run.run_id)               # a new account session: asked again
+    assert rig.broker.guest_asks == [True, False, False, True, False]
+    assert guest_sessions(rig) == 2
+    assert rig.events(run.run_id, "login_needed") == []
+
+
+async def test_a_guest_flow_cancelled_in_its_cleanup_still_counts(rig, monkeypatch):
+    """r3: a live-view request's drain cuts a command while the guest flow cleans up. The flow
+    counts for that browser session all the same: the sign-in view and the next sign-in in that
+    session open no second guest session."""
+    monkeypatch.setattr(ctl_mod, "DRAIN_S", 0.05)
+    run = await rig.run()
+    assert guest_sessions(rig) == 0
+    rig.broker.passkey_hint = True
+    real_close = rig.driver.close_session
+    hang = asyncio.Event()
+
+    async def slow_close(sid):
+        kind = rig.driver.sessions.get(sid, ("",))[0]
+        await real_close(sid)
+        if kind == "guest" and not hang.is_set():
+            hang.set()                               # once: a second guest flow is counted,
+            await asyncio.Event().wait()             # never hung; this cleanup outlasts the drain
+    rig.driver.close_session = slow_close
+    action = asyncio.create_task(open_site_a(rig, run.run_id))
+    for _ in range(100):
+        await asyncio.sleep(0)
+        if guest_sessions(rig) == 1 and not rig.driver.sessions:
+            break
+    await rig.ctl.request_live(run.run_id, "login")
+    with pytest.raises(ProtocolError, match="not_ready"):
+        await action
+    rig.driver.close_session = real_close
+    assert rig.state(run.run_id) == "waiting_live" and guest_sessions(rig) == 1
+    await back_to_running(rig, run.run_id)
+    await open_site_a(rig, run.run_id)
+    assert guest_sessions(rig) == 1 and rig.broker.guest_asks[-1] is False
+
+
+@pytest.mark.parametrize("hinted", [False, True])
+async def test_a_sign_in_live_view_unlocks_the_guest_before_its_link(rig, hinted):
+    """Ruling 2: a ``login`` view's request runs the guest flow before the run waits for the
+    operator, once per browser session: none when a sign-in already ran it in this session,
+    and none for a second view in it."""
+    rig.broker.passkey_hint = hinted
+    run = await rig.run()
+    states = []
+
+    async def at_unlock(args):
+        states.append(rig.state(run.run_id))
+    rig.broker.unlock_hook = at_unlock
+    await rig.ctl.request_live(run.run_id, "login")
+    assert rig.state(run.run_id) == "waiting_live"
+    assert guest_sessions(rig) == 1
+    assert states == ([] if hinted else ["running"])
+    await back_to_running(rig, run.run_id)
+    await rig.ctl.request_live(run.run_id, "login")
+    assert guest_sessions(rig) == 1
+
+
+async def test_an_assist_live_view_does_not_unlock_the_guest(rig):
+    run = await rig.run()
+    await rig.ctl.request_live(run.run_id, "assist")
+    assert rig.state(run.run_id) == "waiting_live" and guest_sessions(rig) == 0
+
+
+async def test_a_forced_close_in_the_views_guest_flow_still_grants_the_view(rig):
+    """K1 inside the sign-in view's guest flow: the request goes on; the claim opens a new
+    session (its guest not run: a declared residual) and the view starts."""
+    run = await rig.run()
+    rig.driver.close_modes = {"guest": "forced"}
+    grant = await rig.ctl.request_live(run.run_id, "login")
+    assert grant.grant_id and rig.state(run.run_id) == "waiting_live"
+    assert guest_sessions(rig) == 1 and rig.browser.session is None
+    rig.driver.close_modes = {}
+
+    async def expose():
+        pass
+    await rig.ctl.begin_live(run.run_id, expose)
+    assert rig.state(run.run_id) == "live" and rig.browser.session is not None
+
+
+async def test_a_sign_in_view_after_a_forced_close_reopens_and_unlocks(rig):
+    """r4 Terra: after a sign-in's K1 (no session), the sign-in view's request opens the run's
+    session again and runs the guest flow on it, exactly once, then the view starts."""
+    rig.driver.close_modes = {"login": "forced"}
+    run = await rig.run()
+    assert rig.ctl.active.session is None and rig.browser.session is None
+    rig.driver.close_modes = {}
+    opens = rig.log.kinds().count("open")
+    await rig.ctl.request_live(run.run_id, "login")
+    assert rig.log.kinds().count("open") == opens + 1
+    assert guest_sessions(rig) == 1 and rig.state(run.run_id) == "waiting_live"
+
+    async def expose():
+        pass
+    await rig.ctl.begin_live(run.run_id, expose)
+    assert rig.state(run.run_id) == "live"
+    assert rig.log.kinds().count("open") == opens + 1
+
+
+async def test_a_sign_in_view_after_a_drain_cancelled_forced_close_reopens_and_unlocks(
+        rig, monkeypatch):
+    """r4 Astra: the drain cuts a sign-in whose driver close killed the browser (K1) before
+    the controller noticed: the run's session is stale. The sign-in view's request opens a
+    new one, runs the guest flow on it exactly once, and the view starts (not interrupted)."""
+    monkeypatch.setattr(ctl_mod, "DRAIN_S", 0.05)
+    run = await rig.run()
+    real_close = rig.driver.close_session
+    hang = asyncio.Event()
+
+    async def forced_then_hang(sid):
+        kind = rig.driver.sessions.get(sid, ("",))[0]
+        if kind == "login" and not hang.is_set():
+            rig.driver.close_modes = {"login": "forced"}
+        await real_close(sid)
+        rig.driver.close_modes = {}
+        if kind == "login" and not hang.is_set():
+            hang.set()
+            await asyncio.Event().wait()
+    rig.driver.close_session = forced_then_hang
+    action = asyncio.create_task(open_site_a(rig, run.run_id))
+    for _ in range(100):
+        await asyncio.sleep(0)
+        if rig.browser.session is None:
+            break
+    await rig.ctl.request_live(run.run_id, "login")
+    with pytest.raises(ProtocolError, match="not_ready"):
+        await action
+    rig.driver.close_session = real_close
+    assert rig.state(run.run_id) == "waiting_live"
+    assert guest_sessions(rig) == 1 and rig.browser.session is rig.ctl.active.session
+
+    async def expose():
+        pass
+    await rig.ctl.begin_live(run.run_id, expose)
+    assert rig.state(run.run_id) == "live"
+
+
+async def test_a_needs_guest_reply_to_a_sign_in_that_did_not_ask_is_not_retried(rig):
+    """At most one retry per sign-in: a ``needs_guest`` the broker gives a sign-in asked with
+    ``guest_ask`` False (it never does) is that sign-in's reason, not another guest flow."""
+    rig.broker.login_reply = {"status": "needs_guest", "reason": "passkey"}
+    run = await rig.run()
+    assert sign_in_ops(rig) == ["login", "unlock_guest", "login"]
+    assert rig.broker.guest_asks == [True, False]
+    assert [e.outcome for e in rig.events(run.run_id, "login_needed")] == ["passkey"]

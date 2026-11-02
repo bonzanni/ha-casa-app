@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.4] - 2026-11-02
+
+### Changed
+
+- Fewer 1Password tabs and unlocks: the browser's 1Password extension is no longer signed in or unlocked at the start of every run. It happens only when a site's sign-in page offers a passkey, or just before you get a sign-in live view (so 1Password's own fill is ready there), and at most once per browser start. A sign-in with a password or an emailed code, or a site you are already signed in to, opens no 1Password tab at all, and a site profile that never needs a passkey no longer causes 1Password's "new sign-in" email. When a passkey is needed, the sign-in page loads once more after the unlock.
+
 ## [0.1.3] - 2026-11-02
 
 ### Security

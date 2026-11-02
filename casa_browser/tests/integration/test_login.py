@@ -412,6 +412,36 @@ def test_driver_scripts_read_the_measured_extension_pages(tmp_path):
         assert result[1:] == expected, result
 
 
+def test_a_passkey_hint_is_a_shown_webauthn_field_on_a_login_origin(tmp_path):
+    """The lazy guest unlock's T1, in Chrome's own DOM: field discovery reports
+    ``passkey_hint`` for a visible, enabled input on a login origin whose autocomplete ends with
+    the token ``webauthn`` (webauthn.io's ``username webauthn``), and for nothing else."""
+    config = fixture_config(tmp_path)
+    with ChromeSites([LOGIN, ACCOUNT]) as sites:
+        install(sites)
+        pages = {
+            '/fields': FIELDS,                                                 # T1
+            '/only': b'<input autocomplete=webauthn>',                          # T1, no role
+            '/hidden': b'<input autocomplete="username webauthn" hidden>',
+            '/disabled': b'<input autocomplete="username webauthn" disabled>',
+            '/order': b'<input autocomplete="webauthn username">',              # not the last token
+            '/plain': (b'<form><input autocomplete=username>'
+                       b'<input type=password autocomplete=current-password>'
+                       b'<button>Go</button></form>'),
+        }
+        for path, body in pages.items():
+            sites.pages[path] = ('text/html', body, {})
+        sites.pages['/off'] = ('text/html', b'<input autocomplete="username webauthn">', {})
+        steps = [{'open': {'site_id': 's1'}}, instruction(config, 'setup'),
+                 instruction(config, 'open_login'),
+                 {'goto': 'https://' + ACCOUNT + '/off'}, instruction(config, 'find_login_fields')]
+        for path in ('/hidden', '/disabled', '/order', '/plain', '/only', '/fields'):
+            steps += [{'goto': 'https://' + LOGIN + path}, instruction(config, 'find_login_fields')]
+        result = run_scenario(steps, broker_fixture=config)
+        hints = [r.get('passkey_hint') for r in result[4::2]]
+        assert hints == [False, False, False, False, False, True, True], result
+
+
 def test_main_world_cannot_forge_capture(tmp_path):
     """A page can enumerate the binding, but only isolated-world values reach review."""
     config = fixture_config(tmp_path)

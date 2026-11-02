@@ -1292,3 +1292,98 @@ async def test_a_run_tries_a_sites_passkey_prompt_once(tmp_path):
     assert await r.call('login', run_id='run2', site_id='site', driver_session='driver') == \
         {'status': 'no_form', 'reason': 'passkey'}
     assert len(r.driver.passkeys) == 2
+
+
+# -- the lazy guest unlock: a passkey hint while the guest is not unlocked -------------------
+
+NEEDS_GUEST = {'status': 'needs_guest', 'reason': 'passkey'}
+
+
+async def _ask(r, guest_ask=True):
+    return await r.call('login', run_id='run', site_id='site', driver_session='driver',
+                        guest_ask=guest_ask)
+
+
+def _acted(r):
+    return [c[0] for c in r.driver.calls if c[0] in ('fill', 'submit', 'choose_passkey')]
+
+
+@pytest.mark.parametrize('hint', [
+    Step(('username',), submit=None, passkey_hint=True),          # T1: the webauthn field
+    Step(passkey_frame=True),                                       # T2: 1Password's prompt
+    Step(('username',), passkey_frame=True),                        # T2 beside a form
+])
+async def test_a_passkey_hint_at_the_first_read_asks_for_the_guest(tmp_path, hint):
+    """With ``guest_ask``, the first read's hint ends the sign-in before anything is filled,
+    submitted or chosen, and the passkey try is not spent."""
+    r = await Rig(tmp_path).setup()
+    if hint.passkey_frame:
+        r.driver.passkey_ok = False      # a locked prompt offers no item (M8): unmatched
+    r.driver.steps = [hint, Step()]
+    assert await _ask(r) == NEEDS_GUEST
+    assert _acted(r) == [] and r.driver.fills == []
+    assert r.broker._passkey_tries == set()
+    assert [c[0] for c in r.driver.calls].count('find_login_fields') == 1
+
+
+@pytest.mark.parametrize('hint', [Step(('username',), passkey_hint=True),
+                                  Step(passkey_frame=True)])
+async def test_a_passkey_hint_after_a_password_submit_asks_for_the_guest(tmp_path, hint):
+    """A hint on the page after a submit of ours ends the sign-in there: the first step's fill
+    and submit happened, nothing more."""
+    r = await Rig(tmp_path).setup()
+    r.driver.steps = [Step(('username', 'password')), hint, Step()]
+    assert await _ask(r) == NEEDS_GUEST
+    assert _acted(r) == ['fill', 'fill', 'submit']
+    assert r.broker._passkey_tries == set()
+
+
+@pytest.mark.parametrize('steps, reply', [
+    ([Step(('username',), submit=None, passkey_hint=True), Step()],
+     {'status': 'needs_live_view', 'reason': 'ambiguous_fields'}),
+    ([Step(passkey_frame=True), Step()], {'status': 'no_form', 'reason': 'passkey'}),
+])
+async def test_no_guest_is_asked_for_without_guest_ask(tmp_path, steps, reply):
+    """``guest_ask`` False (or absent, as before) never ends in ``needs_guest``: the sign-in
+    goes on as it did (the prompt answered, a hint field read as the form it is)."""
+    for n, absent in enumerate((False, True)):
+        (tmp_path / str(n)).mkdir()
+        r = await Rig(tmp_path / str(n)).setup()
+        r.driver.steps = list(steps)
+        if absent:
+            assert await r.call('login', run_id='run', site_id='site',
+                                driver_session='driver') == reply
+        else:
+            assert await _ask(r, False) == reply
+
+
+async def test_fill_code_never_asks_for_the_guest(tmp_path):
+    """A code continuing a sign-in is that sign-in's: the page after it shows a hint, and the
+    sign-in goes on (the prompt is the one it would have answered)."""
+    r = await Rig(tmp_path).setup()
+    _no_totp(r)
+    r.driver.steps = [Step(('one_time_code',)), Step(passkey_frame=True, passkey_hint=True),
+                      Step()]
+    first = await _ask(r)
+    assert first['status'] == 'needs_code'
+    reply = await r.call('fill_code', run_id='run', site_id='site', driver_session='driver',
+                         page_generation=first['page_generation'], code='123456')
+    assert reply != NEEDS_GUEST and reply['status'] != 'needs_guest'
+
+
+async def test_an_unlinked_item_or_a_page_with_no_hint_never_asks_for_the_guest(tmp_path):
+    r = await Rig(tmp_path).setup(item=False)
+    r.driver.steps = [Step(passkey_frame=True, passkey_hint=True)]
+    assert await _ask(r) == {'status': 'needs_live_view', 'reason': 'not_found'}
+    assert r.driver.calls == []
+    (tmp_path / 'b').mkdir()
+    r2 = await Rig(tmp_path / 'b').setup()
+    r2.driver.steps = [Step(('username', 'password')), Step()]
+    assert await _ask(r2) == {'status': 'logged_in', 'reason': 'completed'}
+
+
+async def test_guest_ask_must_be_a_boolean(tmp_path):
+    r = await Rig(tmp_path).setup()
+    for value in ('true', 1, None):
+        assert await _ask(r, value) == {'error': 'unsupported'}
+    assert r.driver.calls == []
