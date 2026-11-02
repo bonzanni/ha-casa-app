@@ -272,3 +272,99 @@ async def test_an_unclassified_event_reaches_no_lower_ledger_whatever_its_tier(
         store, "SELECT seq FROM dispositions WHERE ledger = 'friends'")] == [
             seen]
     assert shy in pending_seqs(store, "private")
+
+
+def _sources(store, ledger: str, object_id: str) -> tuple[list, list]:
+    """An object's current sources, and those of each of its revisions."""
+    [obj] = rows(store, "SELECT source_seqs FROM objects WHERE ledger = ? "
+                        "AND object_id = ?", ledger, object_id)
+    revs = rows(store, "SELECT source_seqs FROM revisions WHERE ledger = ? "
+                       "AND object_id = ? ORDER BY revision", ledger,
+                object_id)
+    return (json.loads(obj["source_seqs"]),
+            [json.loads(r["source_seqs"]) for r in revs])
+
+
+async def _file_friends(store, monkeypatch, ops_for) -> str:
+    """Run one friends job whose answer is ``ops_for(input seqs)``."""
+    def script(inp, prompt):
+        seqs = [e["seq"] for e in prompt["events"]]
+        return reply({s: "patched" for s in seqs}, ops_for(seqs))
+
+    job = writer.enqueue(store, "friends", writer.ORDINARY)
+    return await new_writer(store, Spy(monkeypatch, script)).run_job(job)
+
+
+async def test_a_lower_ledger_never_records_a_private_event_as_a_source(
+        tmp_path, monkeypatch, friends):
+    """A friends answer that cites an event it was never given (a private
+    one) still files, and the private source is dropped from the object and
+    its revision."""
+    store = new_store(tmp_path)
+    private = seed(store, f"my PIN is {canary()}", tier="private",
+                   tier_status="classified")
+    shared = seed(store, f"bins on Tuesday {FRIENDS_MARK}", tier="friends",
+                  tier_status="classified")
+    out = await _file_friends(store, monkeypatch, lambda seqs: [
+        {"op": "add", "kind": "entry", "entry_kind": "fact",
+         "subject": "bins", "body": "Tuesday", "line": "bin day",
+         "source_seqs": [private]}])
+    assert out == writer.COMMITTED
+    [oid] = [r["object_id"] for r in rows(
+        store, "SELECT object_id FROM objects WHERE ledger = 'friends'")]
+    assert _sources(store, "friends", oid) == ([], [[]])
+    assert pending_seqs(store, "friends") == []
+    assert shared not in pending_seqs(store, "friends")
+
+
+async def test_only_the_readable_sources_of_a_lower_ledger_patch_are_kept(
+        tmp_path, monkeypatch, friends, caplog):
+    store = new_store(tmp_path)
+    private = seed(store, f"my PIN is {canary()}", tier="private",
+                   tier_status="classified")
+    shared = seed(store, f"bins on Tuesday {FRIENDS_MARK}", tier="friends",
+                  tier_status="classified")
+    shy = seed(store, f"{canary()} {FRIENDS_MARK}", tier="friends",
+               tier_status="provisional")
+    _, [oid] = add(store, [fact("bins", "Monday")], ledger="friends")
+    future = shy + 1000   # a seq a later private event could take
+    caplog.set_level("WARNING", logger="memory.patches")
+    out = await _file_friends(store, monkeypatch, lambda seqs: [
+        {"op": "add", "kind": "entry", "entry_kind": "fact",
+         "subject": "plumber", "body": "Friday", "line": "visits",
+         "source_seqs": [private, shared, future, "x"]},
+        {"op": "replace", "object_id": oid, "body": "Tuesday",
+         "source_seqs": [shy, shared, private]}])
+    assert out == writer.COMMITTED
+    new = [r["object_id"] for r in rows(
+        store, "SELECT object_id FROM objects WHERE ledger = 'friends' "
+               "AND object_id != ?", oid)]
+    assert _sources(store, "friends", new[0]) == ([shared], [[shared]])
+    assert _sources(store, "friends", oid) == ([shared], [[], [shared]])
+    lines = [r.getMessage() for r in caplog.records
+             if r.name == "memory.patches"]
+    assert len(lines) == 1 and "5 source ref(s)" in lines[0] \
+        and "2 object(s)" in lines[0], lines
+
+
+async def test_the_private_ledger_keeps_every_source_it_cites(
+        tmp_path, monkeypatch, friends):
+    store = new_store(tmp_path)
+    private = seed(store, "my PIN is 1234")
+    shared = seed(store, f"bins on Tuesday {FRIENDS_MARK}", tier="friends",
+                  tier_status="classified")
+    shy = seed(store, "left provisional")
+
+    def script(inp, prompt):
+        return reply({e["seq"]: "patched" for e in prompt["events"]}, [
+            {"op": "add", "kind": "entry", "entry_kind": "fact",
+             "subject": "s", "body": "b", "line": "l",
+             "source_seqs": [private, shared, shy, shy + 1000]}])
+
+    job = writer.enqueue(store, "private", writer.ORDINARY)
+    out = await new_writer(store, Spy(monkeypatch, script)).run_job(job)
+    assert out == writer.COMMITTED
+    [oid] = [r["object_id"] for r in rows(
+        store, "SELECT object_id FROM objects WHERE ledger = 'private'")]
+    cited = [private, shared, shy, shy + 1000]
+    assert _sources(store, "private", oid) == (cited, [cited])

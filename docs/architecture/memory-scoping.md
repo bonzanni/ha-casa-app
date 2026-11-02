@@ -126,19 +126,22 @@ declared origin. Delegated recall honours a route its caller passes, but falls b
 channel-keyed clearance for every caller that passes none — check the call site before
 assuming a delegated read is origin-filtered.
 
-**INV-MEM-029**: A writer job for ledger L is given only what is readable at L — the events pending in L, which below `private` are only events classified at or below it, a window of earlier events readable at L, and L's own objects, all built by `assemble_input`, the only builder of a job's input — and its patches change objects of L only.
+**INV-MEM-029**: A writer job for ledger L is given only what is readable at L — the events pending in L, which below `private` are only events classified at or below it, a window of earlier events readable at L, and L's own objects, all built by `assemble_input`, the only builder of a job's input — and its patches change objects of L only, each recording as its sources only events readable at L.
 
 Enforced by the pending view's eligibility rule, by input assembly reading the events, the
-window and the objects through L in one read transaction, and by the patch loader refusing
-an id that is no object of L. The `private` job runs before any lower one, so an event
+window and the objects through L in one read transaction, by the patch loader refusing
+an id that is no object of L, and by every object write in the commit dropping a source id
+that names no event classified at or below L — one the model invented, since it was never
+given such an event — without failing the job. The `private` job runs before any lower one, so an event
 reaches a lower ledger only once classified. Pinned by a `private` canary in an event, in
 the `private` ledger and in its history, and a provisional event, none of which may appear
 in any `friends` prompt, object or revision, with every prompt the model port is given
 checked against the input that function built for the running job.
 
-What it does not cover: the source ids a model writes into a patch are not checked against
-its input — an id naming an event the ledger cannot read dates nothing (INV-MEM-034); and a
-tier raised after a lower ledger filed the event, since nothing reclassifies an event.
+What it does not cover: a source id naming a readable event the job was not given is kept
+— it is readable at L either way; and a tier raised after a lower ledger filed the event,
+since nothing reclassifies an event (an object citing it is then dated from nothing,
+INV-MEM-034).
 
 **INV-MEM-034**: Every memory read path checks each object it returns against the reader's clearance — the served view and `open_memory` by ledger, the correction note by ledger and each correction's own tier, search hits, their window neighbours and date browse by event tier before paging and counts, the executor archive by summary tier — and an id the reader's ledger does not hold gets the same answer as an id that does not exist.
 

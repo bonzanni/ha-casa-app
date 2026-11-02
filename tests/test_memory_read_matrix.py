@@ -229,15 +229,21 @@ def test_an_unknown_id_and_an_unreadable_id_get_one_answer(tmp_path, friends):
 
 def test_an_object_is_dated_only_from_events_its_ledger_may_read(
         tmp_path, friends):
-    """A source id naming an event the ledger cannot read dates nothing."""
+    """A source id naming an event the ledger cannot read dates nothing.
+    A patch never records one (INV-MEM-029), so the row is written as a
+    raised tier would leave it: the read check stands on its own."""
     store = new_store(tmp_path)
     private = store_event(store, "a private day", day="2001-01-01")
     shared = store_event(store, "a shared day", tier="friends",
                          day="2002-02-02")
-    _, [only_private] = add(store, [fact("a", "x", source_seqs=[private])],
-                            ledger="friends")
-    _, [both] = add(store, [fact("b", "y", source_seqs=[private, shared])],
-                    ledger="friends")
+    _, [only_private] = add(store, [fact("a", "x")], ledger="friends")
+    _, [both] = add(store, [fact("b", "y")], ledger="friends")
+    for oid, cited in ((only_private, [private]), (both, [private, shared])):
+        with store.transaction(write=True) as conn:
+            for table in ("objects", "revisions"):
+                conn.execute(f"UPDATE {table} SET source_seqs = ? WHERE "
+                             "ledger = 'friends' AND object_id = ?",
+                             (json.dumps(cited), oid))
     _, [mine] = add(store, [fact("c", "z", source_seqs=[private])])
     friends_view = view.open_objects(store, [only_private, both],
                                      clearance="friends")

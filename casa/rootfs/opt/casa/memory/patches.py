@@ -23,6 +23,16 @@ not an object of that ledger is refused, as is any malformed operation
 (:class:`PatchError`), which fails the job. Whether an operation is right is
 the model's judgement; this module checks only that it is well-formed.
 
+Every object written keeps only the sources its ledger can read (M6,
+INV-MEM-029): below ``private``, a source id is kept only when it names an
+event classified at or below the ledger, the rule of the pending view. An
+id naming an event the job was never given (a ``private`` one, one left
+provisional, or a ``seq`` no event holds yet, which a later event could
+take) is dropped, not refused: the model never saw that event, so a cite it
+invented costs the object that reference and nothing else. One warning per
+commit counts what was dropped. The ``private`` ledger reads every event,
+and keeps every id it cites.
+
 The commit's reachability check is :func:`memory.view.unreachable`: every
 current object must hang from current parents of the same ledger, each a
 level above it (entry, then group, then topic), or sit at the top.
@@ -30,9 +40,14 @@ level above it (entry, then group, then topic), or sit at the top.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import uuid
 from typing import Any
+
+from memory import pending
+
+logger = logging.getLogger(__name__)
 
 OPS = ("add", "replace", "retire", "split", "merge", "add_cue", "set_line",
        "move")
@@ -81,6 +96,34 @@ class _Ledger:
         self.committed_at = committed_at
         self.refs: dict[str, str] = {}
         self.touched: list[str] = []
+        #: Source ids dropped as unreadable at this ledger, and the objects
+        #: written without them.
+        self.dropped = 0
+        self.trimmed: set[str] = set()
+
+    def readable_sources(self, object_id: str, seqs: list) -> list:
+        """*seqs* without the ids this ledger cannot read: below
+        ``private``, an id is kept only when it names an event classified at
+        or below the ledger."""
+        if self.ledger == "private" or not seqs:
+            return seqs
+        ids = {s for s in seqs if isinstance(s, int)
+               and not isinstance(s, bool)}
+        readable: set[int] = set()
+        ordered = sorted(ids)
+        for i in range(0, len(ordered), 500):
+            chunk = ordered[i:i + 500]
+            readable.update(r[0] for r in self.conn.execute(
+                f"SELECT seq FROM events WHERE seq IN "
+                f"({', '.join('?' for _ in chunk)}) "
+                f"AND {_TIER_RANK} <= ? AND tier_status = 'classified'",
+                (*chunk, pending.rank(self.ledger))))
+        kept = [s for s in seqs if s in readable
+                and isinstance(s, int) and not isinstance(s, bool)]
+        if len(kept) != len(seqs):
+            self.dropped += len(seqs) - len(kept)
+            self.trimmed.add(object_id)
+        return kept
 
     def resolve(self, value: Any) -> str:
         if not isinstance(value, str) or not value:
@@ -110,6 +153,8 @@ class _Ledger:
         return obj
 
     def write(self, obj: dict, op: str, reason: str | None) -> None:
+        obj["source_seqs"] = self.readable_sources(
+            obj["object_id"], obj.get("source_seqs") or [])
         obj["revision"] = obj.get("revision", 0) + 1
         row = {c: obj.get(c) for c in _COLUMNS}
         row["cues"] = json.dumps(obj.get("cues") or [], ensure_ascii=False)
@@ -157,6 +202,11 @@ class _Ledger:
             self.refs[ref] = obj["object_id"]
         self.write(obj, op, reason)
         return obj["object_id"]
+
+
+#: An event's tier rank, as SQL.
+_TIER_RANK = ("(CASE tier WHEN 'public' THEN 0 WHEN 'friends' THEN 1 "
+              "WHEN 'family' THEN 2 ELSE 3 END)")
 
 
 def _check_entry_fields(obj: dict) -> None:
@@ -239,5 +289,10 @@ def apply(conn: sqlite3.Connection, ledger: str, ops: list, *, job_id: str,
                 parent = op.get("parent")
                 obj["parent"] = None if parent is None else led.resolve(parent)
             led.write(obj, name, reason)
+    if led.dropped:
+        logger.warning(
+            "memory patches: job %s dropped %d source ref(s) the %s ledger "
+            "cannot read, from %d object(s)", job_id, led.dropped, ledger,
+            len(led.trimmed))
     return led.touched
 
