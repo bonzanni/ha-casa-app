@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.347.0] - 2026-11-02
+
+### Added
+
+- Long-term memory is built in. Casa saves each Telegram conversation as it happens into its own store under `/data/memory` — your messages, the assistant's replies, what she asks a specialist and its answer, and a finished engagement's summary — with nothing to install and no option to set. In the background Casa files what was said into notes, and every new conversation starts with them: all of them while they fit, and past that an index the assistant can open.
+- Correct me: when you tell the assistant that something she remembers is wrong, she marks your message as a correction. Her notes are refiled from it, and every open conversation sees your correction from its next turn.
+- Search, browse and open: the assistant can search what was said by its words, read back a day or up to a week ("what did we say last Tuesday?"), and open entries of her notes. Each result shows when it was said, who said it, and whether one of Casa's scheduled tasks started that turn.
+- The butler's shared view: on voice, the butler is served notes of its own, written only from what was said at the `friends` tier and below, so it knows what a guest in the room may hear and never your private matters.
+- Export and restore: `casactl memory-export` writes a verified copy of memory to `/data/memory/exports/`, where Casa also keeps one from each of the last seven nights, so a Home Assistant backup carries them. `casactl memory-restore <export> --yes` replaces all of memory with an export's; Casa restarts to do it.
+
+### Changed
+
+- Forget everything: `casactl memory-wipe --yes` now restarts Casa and wipes memory as Casa starts, before anything else runs. Saved conversations, notes, the search index, local memory exports and conversation transcripts all go, and every conversation starts fresh. Your reminders, triggers, files, settings and prompts, pending tasks, plugin data and logs stay. Casa tells you on Telegram when it is done, or why it could not finish.
+- Conversation transcripts on disk are kept for 30 days after a conversation can no longer be resumed, and only once everything it said is safely in memory.
+
+### Removed
+
+- The Hindsight memory server and the `hindsight_api_url` option. Casa no longer uses an external memory server; the memory "mental models" and the `recall_memory` tool go with it.
+
+### Migration
+
+- Nothing is imported from a Hindsight server: memory starts empty after the upgrade.
+- A `hindsight_api_url` value stored by an earlier version makes Home Assistant log a warning at every start until you remove it from the app's stored options. Casa ignores it.
+- Finish any running engagement before you upgrade.
+
 ## [0.346.2] - 2026-11-03
 
 ### Added
