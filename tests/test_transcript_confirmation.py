@@ -214,33 +214,30 @@ async def test_transcript_content_is_never_captured(home):
 
 # --- the gate -----------------------------------------------------------------
 
-async def test_an_unconfirmed_run_blocks_only_its_session(home):
+async def test_an_unconfirmed_run_holds_its_directory(home):
+    """One rule: while a row is unconfirmed nothing in its directory is
+    deleted, whatever session it names or fails to name; a row whose
+    directory is unknown holds the session it names; a confirmed row holds
+    nothing."""
     s = home.store
     a, b = str(uuid.uuid4()), str(uuid.uuid4())
-    transcript_runs.register(s, kind="resident", role="assistant",
-                             directory="/d/one", session_id=a)
-    assert transcript_runs.blocks_deletion(s, directory="/d/one", session_id=a)
-    assert not transcript_runs.blocks_deletion(s, directory="/d/one", session_id=b)
-    # a whole-directory target is blocked by any unconfirmed row naming it
-    assert transcript_runs.blocks_deletion(s, directory="/d/one")
+    named = transcript_runs.register(s, kind="resident", role="assistant",
+                                     directory="/d/one", session_id=a)
+    for sid in (a, b, None):
+        assert transcript_runs.blocks_deletion(s, directory="/d/one", session_id=sid)
+    assert not transcript_runs.blocks_deletion(s, directory="/d/two", session_id=b)
     assert not transcript_runs.blocks_deletion(s, directory="/d/two")
-    # a row naming no session cannot prove which session it covers: it
-    # holds every transcript in its directory, and nothing elsewhere
-    unnamed = transcript_runs.register(s, kind="engagement", role="r",
-                                       directory="/d/two")
+    transcript_runs.register(s, kind="engagement", role="r", directory="/d/two")
     assert transcript_runs.blocks_deletion(s, directory="/d/two", session_id=b)
     assert transcript_runs.blocks_deletion(s, directory="/d/two")
-    assert not transcript_runs.blocks_deletion(s, directory="/d/three", session_id=b)
-    # once named it narrows to its own session
-    transcript_runs.name_session(s, unnamed, a)
-    assert not transcript_runs.blocks_deletion(s, directory="/d/two", session_id=b)
-    # a confirmed row blocks nothing
-    summary = transcript_runs.register(s, kind="summary", role="r",
-                                       directory="/d/three")
+    transcript_runs.register(s, kind="engagement", role="r", directory=None,
+                             session_id=b)
     assert transcript_runs.blocks_deletion(s, directory="/d/three", session_id=b)
-    transcript_runs.confirm(s, summary)
-    assert not transcript_runs.blocks_deletion(s, directory="/d/three", session_id=b)
-    assert not transcript_runs.blocks_deletion(s, directory="/d/three")
+    assert not transcript_runs.blocks_deletion(s, directory="/d/three",
+                                               session_id=str(uuid.uuid4()))
+    transcript_runs.confirm(s, named)
+    for sid in (a, None):
+        assert not transcript_runs.blocks_deletion(s, directory="/d/one", session_id=sid)
 
 
 # --- the run's life -------------------------------------------------------------
@@ -445,12 +442,10 @@ async def test_a_summary_row_blocks_until_its_summaries_are_captured(
     assert [r["status"] for r in json.loads(tombstone.read_text())] == ["completed"]
     assert summaries(home.store) == []
     expected_dir = cwd if driver == "in_casa" else str(root / eid)
-    expected_sids = [None, sid] if driver == "in_casa" else [None]
-    assert sorted(((r["kind"], r["directory"], r["session_id"])
-                   for r in rows(home.store)), key=str) == sorted(
-        (("summary", expected_dir, x) for x in expected_sids), key=str)
-    assert all(r["confirmed_at"] is None for r in rows(home.store))
-    assert unresolved(home.store) == len(expected_sids)
+    (row,) = rows(home.store)
+    assert (row["kind"], row["directory"], row["session_id"],
+            row["confirmed_at"]) == ("summary", expected_dir, None, None)
+    assert unresolved(home.store) == 1
 
     if driver == "in_casa":
         reg = EngagementRegistry(tombstone_path=str(tombstone), bus=None)
@@ -644,27 +639,26 @@ def _delegated_cfg(home):
     return cfg
 
 
-async def test_a_summary_run_names_every_session_its_engagement_ran_under(home):
-    """A row naming only the folder plus one per session the record names
-    (current, a job's list, a clearance downgrade's retired ones), confirmed
-    together; until then the folder row holds a sibling's session too."""
-    from engagement_registry import JOB_SIDS_KEY, RETIRED_SIDS_KEY, EngagementRegistry
-    a, b, c, sibling = (str(uuid.uuid4()) for _ in range(4))
+async def test_a_summary_run_is_one_row_holding_its_folder(home):
+    """Whatever sessions the record names, the finalize's summary run is one
+    row naming the engagement's folder; until it is confirmed it holds every
+    transcript there, and close confirms it."""
+    from engagement_registry import JOB_SIDS_KEY, EngagementRegistry
+    a, b, sibling = (str(uuid.uuid4()) for _ in range(3))
     reg = EngagementRegistry(tombstone_path=str(home.tmp / "e.json"), bus=None)
     rec = await reg.create(
         kind="executor", role_or_type="configurator", driver="in_casa", task="t",
-        origin=dict(ORIGIN, job={JOB_SIDS_KEY: [a, b]}, **{RETIRED_SIDS_KEY: [c]}),
-        topic_id=None)
+        origin=dict(ORIGIN, job={JOB_SIDS_KEY: [a, b]}), topic_id=None)
     await reg.persist_session_id(rec.id, b)
     run = await tools._register_summary_run(rec)
-    assert sorted(((r["kind"], r["session_id"]) for r in rows(home.store)),
-                  key=str) == sorted((("summary", s) for s in (None, a, b, c)),
-                                     key=str)
-    for s in (a, b, c, sibling):          # the folder row holds the folder
-        assert transcript_runs.blocks_deletion(home.store, directory=tools.EXECUTOR_CWD,
-                                               session_id=s)
+    (row,) = rows(home.store)
+    assert (row["kind"], row["directory"], row["session_id"]) == (
+        "summary", tools.EXECUTOR_CWD, None)
+    for s in (a, b, sibling):
+        assert transcript_runs.blocks_deletion(
+            home.store, directory=tools.EXECUTOR_CWD, session_id=s)
     run.close()
     await transcript_runs.settle()
-    assert all(r["confirmed_at"] is not None for r in rows(home.store))
+    assert rows(home.store)[0]["confirmed_at"] is not None
     assert not transcript_runs.blocks_deletion(
         home.store, directory=tools.EXECUTOR_CWD, session_id=sibling)

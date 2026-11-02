@@ -2402,10 +2402,6 @@ class Agent:
                     on_decision=lambda resume_sid, is_fresh, generation: (
                         last_resume.update(sid=resume_sid, gen=generation)
                     ),
-                    # The turn's memory run names the resumed session before
-                    # the query (memory/transcript_runs.py).
-                    on_resume=(turn_capture.name
-                               if turn_capture is not None else None),
                 )
                 last_resume["sid"] = result.resume_sid
                 return (
@@ -2453,8 +2449,6 @@ class Agent:
                     decision.resume_sid if decision.action == "resume" else None
                 )
                 last_resume.update(sid=resume_sid, gen=existing_generation)
-                if turn_capture is not None and resume_sid is not None:
-                    await turn_capture.name(resume_sid)   # before the query
                 if decision.action == "resume":
                     await self._session_registry.touch(channel_key)
                 elif decision.retain_old and decision.old is not None:

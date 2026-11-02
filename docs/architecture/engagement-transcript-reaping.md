@@ -25,16 +25,14 @@ unconfirmed run.** The invariant below states what that selects, and its gaps.
 
 **INV-ENG-027**: Once an `in_casa` engagement's terminal status is on disk and `TRANSCRIPT_RETENTION_DAYS` have passed since its `completed_at`, a pass run at scheduler start and every six hours deletes its CLI transcripts — a plugin job's whole per-engagement project folder, or, for a specialist or executor, each session the record names (its current session, every session its background job lists, and every session a clearance downgrade retired from it) in that record's own project folder — each only where the run-confirmation gate passes, and a plugin job's working folder `/data/engagements/<id>` at once, and selects nothing else; a `claude_code` workspace past its `retention_until` is deleted whole only where the gate passes for it, and is kept whole otherwise. A pass that cannot import the SDK's folder lookup deletes no transcript.
 
-**The gate** is `memory/transcript_runs.py`'s, asked at each delete and never copied: a
-session is kept while an unconfirmed run names it or an unconfirmed run in its folder names
-no session, and a whole folder (a plugin job's, a workspace) is kept while any unconfirmed
-run names it. The finalize registers its summary run before the terminal flip that makes the
-record eligible here (`tools.py::_register_summary_run`): a row naming only the folder plus
-one per session the record already names, confirmed together. A crash between the flip and
-the summaries' capture therefore keeps every transcript in that folder — a sibling
-engagement's in a shared folder too, and a session published after the registration —
-until a wipe, counted unresolved (INV-MEM-031, in
-[`architecture/memory-lifecycle.md`](memory-lifecycle.md)). After a delete the rows that
+**The gate** is `memory/transcript_runs.py`'s, asked at each delete and never copied:
+nothing in a folder is deleted while a run registered in that folder is unconfirmed. The
+finalize registers its summary run, one row naming the engagement's folder, before the
+terminal flip that makes the record eligible here (`tools.py::_register_summary_run`). A
+crash between the flip and the summaries' capture therefore keeps every transcript in that
+folder — a sibling engagement's in a shared folder too — until a wipe, counted unresolved
+(INV-MEM-031, in [`architecture/memory-lifecycle.md`](memory-lifecycle.md)). The workspace
+sweep runs its gate and its removals in a worker thread, off the event loop. After a delete the rows that
 named it are removed. The pass reads no transcript.
 
 Casa owns transcript deletion: the CLI's own cleanup never fires for an `in_casa` launch, since

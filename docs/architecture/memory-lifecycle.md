@@ -147,24 +147,22 @@ longer the load-bearing protection: turn admission (INV-CONC-005) is, and it
 holds until every turn has drained. The claims remain because they still
 cover the background retain paths, which are not turns.
 
-**INV-MEM-031**: No SDK transcript is deleted while a run registered in it is unconfirmed: every run that can capture — an eligible resident turn, an engagement turn of a memory-writing specialist, every delegated run, an engagement's finalize summaries — registers its row (with the working directory its sessions run in) before its first capture and is confirmed only once every capture it made returned a durable receipt (a spool line is never removed by a drain that did not store it); an unconfirmed row that names a session holds that session's transcript, and one that names none holds every transcript in its directory; no transcript's content is ever read into memory; and once every run in it is confirmed a transcript is deleted no sooner than `TRANSCRIPT_RETENTION_DAYS` (default 30) after its session can no longer resume.
+**INV-MEM-031**: No SDK transcript is deleted while a run registered in it is unconfirmed: every run that can capture — an eligible resident turn, an engagement turn of a memory-writing specialist, every delegated run, an engagement's finalize summaries — registers its row (with the working directory its sessions run in) before its first capture and is confirmed only once every capture it made returned a durable receipt (a spool line is never removed by a drain that did not store it); while a row is unconfirmed no transcript in its directory is deleted, whatever session it names; no transcript's content is ever read into memory; and once every run in it is confirmed a transcript is deleted no sooner than `TRANSCRIPT_RETENTION_DAYS` (default 30) after its session can no longer resume.
 
 Casa's live capture ([`architecture/memory-capture.md`](memory-capture.md)) is the only
 source of memory; a transcript is kept as a debug copy and as the record that a run's capture
 is still owed. `memory/transcript_runs.py` owns the `transcript_runs` table in `memory.db`
 (ids and times, no content): `Run.start` registers a run with this process's id, `Run.name`
-moves it to the session each stream message comes from before anything of it is captured
-(a resumed session before the query, on the pooled path through the pool's `on_resume`; a
-fresh one at the init message; a resident turn again before its pointer is published),
-every capture is awaited through `Run.kept`, and `Run.close` in
+records the session each stream message comes from (for visibility: no deletion depends on
+it), every capture is awaited through `Run.kept`, and `Run.close` in
 the run's outermost `finally` confirms it when each capture was kept — a cancelled or failed
 run included, since the live rules capture nothing more for it. Registration and naming wait
 on the store no longer than a capture does; a registration that fails is logged and the run
-goes on unprotected. **The gate fails closed on uncertainty:** a row that names no session —
-not named yet, or its naming write failed — cannot prove which session it covers, so it
-holds its whole directory, and naming only narrows the hold. A name is taken as the row's
-only once its write committed; a failed one is retried at the next stream message and at
-`Run.close`. Confirmation is written off the run's path. A row left unconfirmed by an
+goes on unprotected. **The gate is one rule:** while a row is unconfirmed, nothing in its
+directory is deleted — no single session's transcript and not the folder — because which
+session a row names is no evidence of which sessions the run touched (a resumed run names
+its session late, a naming write can fail, a run can move from one session to another). A
+row whose directory is unknown holds the session it names. Confirmation is written off the run's path. A row left unconfirmed by an
 earlier process is *unresolved*: the size meter counts it (`unresolved_runs`), its
 transcript is kept until a wipe, and nothing resolves or reads it. A crash between a reply
 and its capture therefore loses that reply from memory, by design.

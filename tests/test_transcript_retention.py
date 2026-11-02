@@ -10,6 +10,7 @@ delete. Real transcript files, real SQLite, the real deleters.
 """
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from pathlib import Path
@@ -168,3 +169,44 @@ async def test_the_retention_variable_is_read_at_each_use(monkeypatch, raw, days
     monkeypatch.setenv(transcript_runs.RETENTION_ENV, raw)
     assert transcript_runs.retention_days() == days
     assert transcript_runs.retention() == timedelta(days=days)
+
+
+async def test_the_workspace_sweep_never_holds_the_event_loop(env, tmp_path):
+    """The sweep's gate, its deletion and its row removal run off the loop:
+    with the store's write lock held for 1.5 s by another connection, a
+    resident turn running beside the sweep finishes inside a second, and
+    the workspace still goes once the lock is released."""
+    import sqlite3
+    import threading
+    from unittest.mock import patch
+
+    from drivers import workspace
+    from test_agent_process import FakeClient, _make_agent
+    from test_memory_capture import _operator_msg
+    from test_workspace_sweeper import _write_meta
+
+    root = tmp_path / "engagements"
+    ws = root / uuid.uuid4().hex
+    ws.mkdir(parents=True)
+    _write_meta(ws, status="COMPLETED", retention_iso="2020-01-01T00:00:00Z")
+    holder = sqlite3.connect(env.path, isolation_level=None,
+                             check_same_thread=False)
+    holder.execute("BEGIN IMMEDIATE")
+    release = threading.Timer(1.5, lambda: holder.execute("ROLLBACK"))
+    release.start()
+    try:
+        agent = _make_agent(tmp_path)
+        FakeClient.reset()
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        with patch("sdk_client_pool._default_make_client", FakeClient):
+            sweep = asyncio.create_task(
+                workspace._sweep_workspaces(engagements_root=str(root)))
+            await agent._process(_operator_msg("ping", "777"))
+        took = loop.time() - started
+        await asyncio.wait_for(sweep, 10)
+    finally:
+        release.join()
+        holder.close()
+    assert took < 1.0, took
+    assert not ws.exists()

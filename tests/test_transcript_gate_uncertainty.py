@@ -1,14 +1,13 @@
-"""The run-confirmation gate fails closed on uncertainty (INV-MEM-031).
+"""An unconfirmed run holds its directory, whatever it names (INV-MEM-031).
 
-An unconfirmed ``transcript_runs`` row that names no session — not named
-yet, its naming write failed, or a finalize whose engagement published a
-session after its row was registered — cannot prove which session it
-covers, so it holds every transcript in its directory. Naming only narrows
-the hold: a resumed session is named before the query, a name is taken only
-once its write committed, and a failed naming is retried.
+Which session an unconfirmed ``transcript_runs`` row names is no evidence:
+a resumed run may not have named its session yet, a naming write may have
+failed, a run may have moved from one session to another, and a finalize's
+engagement may publish a session after its row was registered. So the gate
+asks one thing: is any row in this directory unconfirmed.
 
 Each sequence below ends with a deleter that resolves by session, and is red
-against a gate that lets an unnamed row hold nothing per session. Real
+against a gate that trusts the row's session. Real
 SQLite, real transcript files, the real deleters; the kill cases SIGKILL a
 child process this test started, by its own pid.
 """
@@ -16,23 +15,18 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import patch
 
 import pytest
-from claude_agent_sdk import AssistantMessage, SystemMessage, TextBlock
 
 import tools
-from bus import MessageType
 from memory import transcript_runs
 from session_registry import SessionRegistry
 from session_sweeper import SessionSweeper
-from test_agent_process import ScriptedToolClient, _make_agent, _mk_result
-from test_memory_capture import _operator_msg, mem  # noqa: F401 — a fixture
+from test_memory_capture import mem  # noqa: F401 — a fixture
 from transcript_runs_support import kill_child, rows, write_transcript
 
 pytestmark = [pytest.mark.asyncio]
@@ -101,88 +95,19 @@ asyncio.run(main())
 
 async def test_a_resumed_resident_run_killed_before_streaming_keeps_its_transcript(home):
     """Warm reuse, then a SIGKILL after the second query and before any
-    stream message: the second turn's row already names the resumed session
-    (named before the query), and the real sweeper keeps its transcript.
-    Red case: the row unnamed until its first stream message, under a gate
-    that lets an unnamed row hold nothing per session."""
+    stream message: the second turn's row is unconfirmed (and unnamed), and
+    the real sweeper keeps the resumed session's transcript. Red case: a
+    gate under which an unnamed row holds nothing per session."""
     sid, child_home = str(uuid.uuid4()), home.tmp / "child"
     child_home.mkdir()
     kill_child(RESUMED_CHILD, home.store, home.tmp, sid, str(child_home),
                env=_env())
     first, second = rows(home.store)
     assert first["confirmed_at"] is not None
-    assert (second["session_id"], second["confirmed_at"]) == (sid, None)
+    assert second["confirmed_at"] is None
     path = write_transcript(AGENT_HOME, sid)
     await _sweep_resident(child_home / "sessions.json")
     assert path.exists()
-
-
-class _Watching(ScriptedToolClient):
-    """Records the row's session at each query."""
-
-    seen: list = []
-
-    async def query(self, _text):
-        self.seen.append([r["session_id"] for r in self.rows()
-                          if r["confirmed_at"] is None])
-
-
-@pytest.mark.parametrize("path", ["pooled", "bypass"])
-async def test_a_resumed_run_is_named_before_its_query(home, path):
-    sid = str(uuid.uuid4())
-    script = [SystemMessage(subtype="init", data={"session_id": sid}),
-              AssistantMessage(content=[TextBlock(text="said")], model="m",
-                               session_id=sid),
-              _mk_result(sid)]
-    _Watching.seen = []
-    _Watching.rows = staticmethod(lambda: rows(home.store))
-    _Watching.reset(script, script)
-    agent = _make_agent(home.tmp)
-    second = _operator_msg("again", "902")
-    if path == "bypass":
-        second.type = MessageType.SCHEDULED
-    with patch("sdk_client_pool._default_make_client", _Watching):
-        await agent._process(_operator_msg("hello", "901"))
-        await agent._process(second)
-    await transcript_runs.settle()
-    assert _Watching.seen == [[None], [sid]]
-
-
-# --- a failed naming is not taken, and is retried ---------------------------------
-
-async def test_a_failed_naming_is_retried_at_the_next_message(home, monkeypatch):
-    """The init message's naming write fails; the next message names the
-    row before its capture (the failed name was not cached)."""
-    sid = str(uuid.uuid4())
-    real, calls = transcript_runs.name_session, []
-
-    def name_session(store, run_id, session_id, **kw):
-        calls.append(session_id)
-        if len(calls) == 1:
-            raise sqlite3.OperationalError("database is locked")
-        return real(store, run_id, session_id, **kw)
-    monkeypatch.setattr(transcript_runs, "name_session", name_session)
-    from memory import capture
-    real_record, named_at_capture = capture.record, []
-
-    async def record(item):
-        if item.speaker_kind == "resident":
-            named_at_capture.append(rows(home.store)[0]["session_id"])
-        return await real_record(item)
-    monkeypatch.setattr(capture, "record", record)
-    ScriptedToolClient.reset([
-        SystemMessage(subtype="init", data={"session_id": sid}),
-        AssistantMessage(content=[TextBlock(text="said")], model="m",
-                         session_id=sid),
-        _mk_result(sid)])
-    agent = _make_agent(home.tmp)
-    with patch("sdk_client_pool._default_make_client", ScriptedToolClient):
-        await agent._process(_operator_msg("hello", "901"))
-    await transcript_runs.settle()
-    assert named_at_capture == [sid]
-    assert calls == [sid, sid]
-    (row,) = rows(home.store)
-    assert row["session_id"] == sid and row["confirmed_at"] is not None
 
 
 FAILED_NAMING_RESIDENT_CHILD = r"""
@@ -429,28 +354,66 @@ async def test_an_unnamed_row_holds_a_shared_folder_until_it_is_confirmed(
     assert not path.exists()
 
 
-async def test_a_naming_that_fails_on_the_runs_path_lands_at_its_close(
-        home, monkeypatch):
-    """Every on-path naming write (bounded like a capture) fails; the one
-    retried at close, off the run's path, lands, so the row ends named and
-    holds only its session."""
-    sid = str(uuid.uuid4())
-    real = transcript_runs.name_session
+RETRY_FAILED_NAMING_CHILD = r"""
+import sqlite3
+from pathlib import Path
+from unittest.mock import patch
+from claude_agent_sdk import AssistantMessage, SystemMessage, TextBlock
+from memory import transcript_runs
+import session_registry
+from test_agent_process import ScriptedToolClient, _make_agent, _mk_result, patch_retry_sleep
+from test_memory_capture import _system_msg
+from transcript_runs_support import write_transcript
+a, b, home = sys.argv[5:8]
+real_name = transcript_runs.name_session
 
-    def name_session(store, run_id, session_id, *,
-                     busy_timeout=transcript_runs.BUSY_TIMEOUT_S):
-        if busy_timeout <= transcript_runs.BUSY_TIMEOUT_S:
-            raise sqlite3.OperationalError("database is locked")
-        return real(store, run_id, session_id, busy_timeout=busy_timeout)
-    monkeypatch.setattr(transcript_runs, "name_session", name_session)
-    ScriptedToolClient.reset([
-        SystemMessage(subtype="init", data={"session_id": sid}),
-        AssistantMessage(content=[TextBlock(text="said")], model="m",
-                         session_id=sid),
-        _mk_result(sid)])
-    agent = _make_agent(home.tmp)
-    with patch("sdk_client_pool._default_make_client", ScriptedToolClient):
-        await agent._process(_operator_msg("hello", "901"))
-    await transcript_runs.settle()
+def name_session(store, run_id, session_id, **kw):
+    if session_id == b:
+        raise sqlite3.OperationalError("database is locked")
+    return real_name(store, run_id, session_id, **kw)
+transcript_runs.name_session = name_session
+real_register = session_registry.SessionRegistry.register
+
+async def register(self, *args, **kw):
+    await real_register(self, *args, **kw)
+    stop()          # B is published; the run is not confirmed
+session_registry.SessionRegistry.register = register
+
+class Client(ScriptedToolClient):
+    async def receive_response(self):
+        async for m in super().receive_response():
+            if isinstance(m, SystemMessage):
+                write_transcript("/config/agent-home/assistant",
+                                 m.data["session_id"])
+            yield m
+
+def said(text, sid):
+    return AssistantMessage(content=[TextBlock(text=text)], model="m",
+                            session_id=sid)
+ScriptedToolClient.reset(
+    [SystemMessage(subtype="init", data={"session_id": a}), said("one", a),
+     ConnectionError("broken")],
+    [SystemMessage(subtype="init", data={"session_id": b}), said("two", b),
+     _mk_result(b)])
+agent = _make_agent(Path(home))
+with patch("sdk_client_pool._default_make_client", Client), patch_retry_sleep():
+    asyncio.run(agent._process(_system_msg("ping")))
+"""
+
+
+async def test_a_run_that_moved_to_a_session_it_could_not_name_keeps_it(home):
+    """A turn's first attempt runs in session A (named), its retry moves to
+    session B whose naming write fails; B is published and the run is killed
+    before its confirmation. The row still names A, and the real sweeper
+    keeps B's transcript. Red case: a gate that trusts the row's session."""
+    a, b, child_home = str(uuid.uuid4()), str(uuid.uuid4()), home.tmp / "child"
+    child_home.mkdir()
+    kill_child(RETRY_FAILED_NAMING_CHILD, home.store, home.tmp, a, b,
+               str(child_home), env=_env())
     (row,) = rows(home.store)
-    assert row["session_id"] == sid and row["confirmed_at"] is not None
+    assert (row["session_id"], row["confirmed_at"]) == (a, None)
+    reg = SessionRegistry(str(child_home / "sessions.json"))
+    assert [e["sdk_session_id"] for e in reg.all_entries().values()] == [b]
+    path_b = write_transcript(AGENT_HOME, b)
+    await _sweep_resident(child_home / "sessions.json")
+    assert path_b.exists()

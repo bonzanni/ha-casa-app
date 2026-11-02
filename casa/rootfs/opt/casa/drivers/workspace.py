@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -1214,7 +1215,19 @@ async def _sweep_workspaces(
         if not entry.is_dir():
             continue
         try:
-            _sweep_one_workspace(entry, now_iso=now_iso, log_root=log_root)
+            # Off the event loop: the run-confirmation gate and the row
+            # removal are SQLite calls that may wait on the store's lock, and
+            # the removal itself is file work.
+            uid = await asyncio.to_thread(
+                _sweep_one_workspace, entry, now_iso=now_iso, log_root=log_root)
+            if uid is not None:
+                try:
+                    prune_identity(uid)
+                except OSError as exc:
+                    logger.warning(
+                        "workspace sweep: prune_identity(%s) failed: %s",
+                        uid, exc,
+                    )
         except Exception:  # noqa: BLE001 — Sol r6-1: per-workspace boundary
             logger.warning(
                 "workspace sweep: entry %s failed; continuing with the "
@@ -1224,9 +1237,12 @@ async def _sweep_workspaces(
 
 def _sweep_one_workspace(
     entry: os.DirEntry, *, now_iso: str, log_root: str | None,
-) -> None:
+) -> int | None:
     """One workspace's retention decision + deletion — isolated so a
-    surprising per-entry failure cannot abort the whole sweep (Sol r6-1)."""
+    surprising per-entry failure cannot abort the whole sweep (Sol r6-1).
+    Runs in a worker thread; returns the uid whose passwd/group entry the
+    caller prunes on the event loop (where every other passwd edit runs),
+    or ``None``."""
     meta = load_casa_meta(entry.path)
     if meta is None:
         return
@@ -1247,9 +1263,9 @@ def _sweep_one_workspace(
         return
     if retention_until > now_iso:
         return
-    # The run-confirmation gate, asked at the delete: while a run naming the
+    # The run-confirmation gate, asked at the delete: while a run in the
     # workspace (its finalize summary) is unconfirmed, it is kept whole for
-    # a later sweep (memory/transcript_runs.py). One indexed WAL read.
+    # a later sweep (memory/transcript_runs.py).
     from memory import transcript_runs
     if transcript_runs.blocked(directory=entry.path):
         logger.warning(
@@ -1307,13 +1323,6 @@ def _sweep_one_workspace(
             owner_uid_or_none(_raw_uid) if isinstance(_raw_uid, int) else None
         )
         if real_uid is not None:
-            try:
-                prune_identity(real_uid)
-            except OSError as exc:
-                logger.warning(
-                    "workspace sweep: prune_identity(%s) failed: %s",
-                    real_uid, exc,
-                )
             # Task 11 (containment stage 2): the uid's private outbox dir
             # follows the workspace on the SAME retention decision — same
             # reasoning as the control dir and passwd entry above.
@@ -1325,6 +1334,8 @@ def _sweep_one_workspace(
                     "workspace sweep: engagement outbox teardown(%s) "
                     "failed: %s", real_uid, exc,
                 )
+        return real_uid
+    return None
 
 
 # ---------------------------------------------------------------------------
