@@ -24,6 +24,17 @@ directory) this call created, and makes the store *unavailable*:
 :meth:`MemoryStore.transaction` raises :class:`MemoryUnavailable`. ``open``
 never raises, so Casa boots without memory rather than not at all.
 
+**Before a forward migration** of an existing file, ``open`` calls its
+*before_migration* argument with the file as it is (``casa-main`` passes the
+automatic export, :mod:`memory.export`). If that raises, nothing is migrated
+and the store is unavailable, so no migration runs without its export.
+
+The restore builds its store with this same opener, under another name
+(``restore-source/built.db``), at the export's schema version and in a
+rollback journal (``journal_mode="delete"``): a single file with no sidecar
+holding any of its rows. ``casa-main`` switches the installed file to WAL the
+first time it opens it.
+
 Everything here is blocking; async callers run it with ``asyncio.to_thread``.
 """
 from __future__ import annotations
@@ -31,7 +42,7 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 
 from memory import registry
@@ -73,10 +84,19 @@ def fts5_available() -> bool:
 class MemoryStore:
     """``memory.db`` under *directory* (``/data/memory`` in production)."""
 
-    def __init__(self, directory: str = registry.MEMORY_DIR) -> None:
+    def __init__(self, directory: str = registry.MEMORY_DIR, *,
+                 name: str = registry.MEMORY_DB_NAME) -> None:
         self.directory = directory
-        self.path = os.path.join(directory, registry.MEMORY_DB_NAME)
+        self.name = name
+        self.path = os.path.join(directory, name)
         self._unavailable_reason: str | None = "not opened"
+
+    def as_found(self) -> "MemoryStore":
+        """The same file, usable as it is, with no boot check and no
+        migration: what the automatic export reads before a migration."""
+        found = MemoryStore(self.directory, name=self.name)
+        found._unavailable_reason = None
+        return found
 
     @property
     def available(self) -> bool:
@@ -86,10 +106,20 @@ class MemoryStore:
     def unavailable_reason(self) -> str | None:
         return self._unavailable_reason
 
-    def open(self) -> bool:
-        """Boot check and migration. Returns :attr:`available`; never raises."""
+    def open(self, *, journal_mode: str = "wal", target: int | None = None,
+             before_migration: Callable[["MemoryStore", int], object]
+             | None = None) -> bool:
+        """Boot check and migration. Returns :attr:`available`; never raises.
+
+        *target* is the schema version to bring the file to (the current one
+        by default; the restore builds at its export's version first).
+        *journal_mode* ``"wal"`` is a performance setting whose failure is
+        only logged; any other mode is part of the open, which fails without
+        it. *before_migration* runs before a forward migration of an
+        existing file, with that file as it is and its version."""
         try:
-            self._open()
+            self._open(journal_mode, schema_version() if target is None
+                       else target, before_migration)
         except Exception as exc:  # noqa: BLE001 — any failure means unavailable
             self._unavailable_reason = f"{type(exc).__name__}: {exc}"
             logger.error(
@@ -97,19 +127,25 @@ class MemoryStore:
                 self._unavailable_reason)
             return False
         self._unavailable_reason = None
-        logger.info(
-            "memory store open (%s, schema v%d)", self.path, schema_version())
+        logger.info("memory store open (%s, schema v%d)", self.path,
+                    schema_version() if target is None else target)
         return True
 
-    def _open(self) -> None:
+    def _open(self, journal_mode: str, target: int,
+              before_migration: Callable[["MemoryStore", int], object]
+              | None) -> None:
         if not fts5_available():
             raise MemoryUnavailable(
                 f"SQLite {sqlite3.sqlite_version} has no FTS5")
         created_dir = not os.path.isdir(self.directory)
         os.makedirs(self.directory, mode=0o700, exist_ok=True)
         created_file = not os.path.lexists(self.path)
+        if before_migration is not None and not created_file:
+            found = self._file_version()
+            if found is not None and 0 < found < target:
+                before_migration(self.as_found(), found)
         try:
-            self._migrate()
+            self._migrate(target)
         except BaseException:
             if created_file:
                 for name in (self.path, *(self.path + s for s in
@@ -124,6 +160,9 @@ class MemoryStore:
                 except OSError:
                     pass
             raise
+        if journal_mode != "wal":
+            self._set_journal_mode(journal_mode)
+            return
         # WAL is a performance setting, not a correctness one. Once the
         # migration has committed, the store is current and usable in any
         # journal mode, so a failure here never makes it unavailable.
@@ -134,9 +173,23 @@ class MemoryStore:
                 "memory store stays in its current journal mode (%s): %s",
                 self.path, exc)
 
-    def _migrate(self) -> None:
-        """Bring the file to :func:`schema_version` in one transaction."""
-        target = schema_version()
+    def _file_version(self) -> int | None:
+        """The existing file's ``user_version``, read without changing it;
+        ``None`` when it cannot be read (the migration then reports why)."""
+        try:
+            conn = sqlite3.connect(f"file:{self.path}?mode=ro", uri=True,
+                                   timeout=BUSY_TIMEOUT_S)
+        except sqlite3.Error:
+            return None
+        try:
+            return conn.execute("PRAGMA user_version").fetchone()[0]
+        except sqlite3.Error:
+            return None
+        finally:
+            conn.close()
+
+    def _migrate(self, target: int) -> None:
+        """Bring the file to *target* in one transaction."""
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
@@ -171,13 +224,20 @@ class MemoryStore:
     def _enable_wal(self) -> None:
         """WAL is a property of the file and cannot change inside a
         transaction, so it is set once the schema is current."""
+        self._set_journal_mode("wal")
+
+    def _set_journal_mode(self, mode: str) -> None:
         conn = self._connect()
         try:
-            mode = conn.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+            # PRAGMA takes no bound parameter; *mode* is checked here.
+            if mode not in ("wal", "delete"):
+                raise ValueError(f"journal mode {mode!r}")
+            got = conn.execute(f"PRAGMA journal_mode={mode}").fetchone()[0]
         finally:
             conn.close()
-        if str(mode).lower() != "wal":
-            raise sqlite3.OperationalError(f"journal mode {mode!r}, not WAL")
+        if str(got).lower() != mode:
+            raise sqlite3.OperationalError(
+                f"journal mode {got!r}, not {mode}")
 
     def _connect(self, busy_timeout: float = BUSY_TIMEOUT_S
                  ) -> sqlite3.Connection:

@@ -1954,7 +1954,7 @@ class TelegramChannel(Channel):
         # a guarantee — one that slips past is handled, and wiped with the rest.
         from memory import maintenance as memory_maintenance
         if memory_maintenance.restart_pending():
-            await self._send_plain_line(chat_id, memory_maintenance.COURTESY_LINE)
+            await self._send_plain_line(chat_id, memory_maintenance.courtesy_line())
             return False
         # Rate limit BEFORE typing indicator or bus dispatch (spec 5.2 §8) —
         # and BEFORE the typed-answer ask cancellation below (#347): a
@@ -3426,7 +3426,7 @@ class TelegramChannel(Channel):
         if not system_turn and memory_maintenance.restart_pending():
             try:
                 await self._post_engagement_notice(
-                    rec, memory_maintenance.COURTESY_LINE)
+                    rec, memory_maintenance.courtesy_line())
             except Exception:  # noqa: BLE001 — a notice fault is logged
                 logger.debug("courtesy line failed for %s", rec.id[:8],
                              exc_info=True)

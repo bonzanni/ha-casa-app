@@ -33,6 +33,7 @@ The hook responses are pass-through (CC's hook protocol is already body-only).
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import logging
 import re as _re
@@ -665,6 +666,96 @@ def build_admin_memory_wipe_handler():
         return web.json_response({
             "status": "ok", "state": state, "message": " ".join(lines),
         })
+    return handler
+
+
+def build_admin_memory_export_handler():
+    """POST /admin/memory/export (``casactl memory-export``), root-gated like
+    every ``/admin/*`` route. Drains the capture spool, then writes one
+    verified export of the live store to ``/data/memory/exports/`` and
+    answers with its directory and row counts. One export runs at a time."""
+    async def handler(request: web.Request) -> web.Response:
+        from memory import capture as memory_capture
+        from memory import export as memory_export
+        store = memory_capture.active_store()
+        if store is None or not store.available:
+            return web.json_response(
+                {"status": "error", "kind": "unavailable",
+                 "message": "memory is unavailable, so there is nothing to "
+                            "export"},
+                status=503,
+            )
+        try:
+            path = await asyncio.to_thread(memory_export.export, store)
+        except memory_export.ExportBusy as exc:
+            return web.json_response(
+                {"status": "error", "kind": "busy", "message": str(exc)},
+                status=409,
+            )
+        except memory_export.ExportFailed as exc:
+            return web.json_response(
+                {"status": "error", "kind": "failed",
+                 "message": f"{exc}; nothing was published"},
+                status=500,
+            )
+        manifest = await asyncio.to_thread(memory_export.read_manifest, path)
+        return web.json_response({
+            "status": "ok", "path": path,
+            "counts": manifest["counts"]["tables"],
+        })
+    return handler
+
+
+def build_admin_memory_restore_handler():
+    """POST /admin/memory/restore (``casactl memory-restore``), root-gated
+    like every ``/admin/*`` route. Body ``{"path": <export directory or a
+    name in /data/memory/exports>, "confirm": bool}``. The export is
+    validated at once; without ``"confirm": true`` the answer is the
+    confirmation text and nothing is scheduled. With it, the export is
+    staged, the restore intent written and the app restart requested; the
+    restore runs at the next container start."""
+    async def handler(request: web.Request) -> web.Response:
+        from memory import restore as memory_restore
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = None
+        if not isinstance(payload, dict) or not isinstance(
+                payload.get("path"), str) or not payload["path"].strip():
+            return web.json_response(
+                {"status": "error", "kind": "bad_request",
+                 "message": "POST {\"path\": <export directory>}"},
+                status=400,
+            )
+        lines: list[str] = []
+
+        async def _collect(line: str) -> None:
+            lines.append(line)
+
+        try:
+            state = await memory_restore.request_restore(
+                payload["path"].strip(), reply=_collect, notify=_collect,
+                confirm=payload.get("confirm") is True)
+        except Exception as exc:  # noqa: BLE001 — report truthfully
+            logger.exception("memory restore could not be scheduled")
+            return web.json_response(
+                {"status": "error", "kind": "not_scheduled",
+                 "message": f"{exc} — nothing was scheduled"},
+                status=500,
+            )
+        message = " ".join(lines)
+        if state == "refused":
+            return web.json_response(
+                {"status": "error", "kind": "refused", "message": message},
+                status=409,
+            )
+        if state == "needs_confirm":
+            return web.json_response(
+                {"status": "confirm_required", "message": message},
+                status=400,
+            )
+        return web.json_response(
+            {"status": "ok", "state": state, "message": message})
     return handler
 
 

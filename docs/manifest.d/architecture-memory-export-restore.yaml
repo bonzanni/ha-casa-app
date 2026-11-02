@@ -1,0 +1,19 @@
+# Manifest shard: the memory export and restore document (born in its own shard: the
+# F-M shard stands just under the index ceiling).
+- doc: architecture/memory-export-restore.md
+  summary: The memory export — a verified copy of the store's rows from the terminal, every night and before a schema migration — and the restore that replaces all of memory with one, validated and staged at the request and built, wiped and installed by the container-start step.
+  when_changing: the memory export or its format, the nightly or pre-migration export, a memory restore, its request or its build and install in the container-start step
+  covers:
+    - casa/rootfs/opt/casa/memory/export.py
+    - casa/rootfs/opt/casa/memory/restore.py
+    - casa/rootfs/opt/casa/internal_handlers.py::build_admin_memory_export_handler
+    - casa/rootfs/opt/casa/internal_handlers.py::build_admin_memory_restore_handler
+  tests:
+    - tests/test_memory_export_restore.py
+    - tests/test_memory_restore_crash.py
+    - tests/test_admin_memory_export_restore_routes.py
+    - tests/test_executor_memory_blank.py
+  related: [architecture/memory-store.md, architecture/memory-wipe.md, architecture/memory-capture.md, architecture/memory-writer.md, architecture/persistent-state.md]
+  defines_invariants: [INV-MEM-037]
+  invariant_tests:
+    INV-MEM-037: [tests/test_memory_export_restore.py::test_a_round_trip_is_equal_and_runs_only_in_the_step, tests/test_memory_export_restore.py::test_refused_at_the_request_with_nothing_scheduled, tests/test_memory_export_restore.py::test_a_pending_restore_is_neither_replaced_by_a_wipe_nor_a_restore, tests/test_memory_export_restore.py::test_a_staged_export_that_fails_its_checks_is_abandoned, tests/test_memory_export_restore.py::test_no_non_exported_copy_survives, tests/test_memory_export_restore.py::test_a_source_in_exports_succeeds_from_the_staged_copy, tests/test_memory_export_restore.py::test_a_spool_only_event_round_trips, tests/test_memory_export_restore.py::test_an_export_whose_drain_fails_publishes_nothing, tests/test_memory_export_restore.py::test_an_export_taken_before_a_wipe_brings_its_memory_back, tests/test_memory_export_restore.py::test_a_restore_rule_the_step_does_not_know_stops_it, tests/test_memory_restore_crash.py::test_a_kill_in_the_build_leaves_memory_intact_and_builds_again, tests/test_memory_restore_crash.py::test_a_kill_after_the_wiping_write_reruns_from_the_wipe, tests/test_memory_restore_crash.py::test_every_kill_mid_wipe_reruns_to_a_clean_result, tests/test_memory_restore_crash.py::test_a_kill_right_after_the_install_reruns_to_a_clean_result, tests/test_memory_restore_crash.py::test_a_kill_between_the_intent_and_the_source_on_success, tests/test_memory_restore_crash.py::test_an_abandonment_cut_between_the_intent_and_the_source, tests/test_memory_restore_crash.py::test_counters_survive_a_restore, tests/test_memory_restore_crash.py::test_the_built_store_is_one_file_and_installs_every_row, tests/test_memory_maintenance_only_in_oneshot.py::test_only_the_step_runs_the_wipe_loop, tests/test_memory_maintenance_only_in_oneshot.py::test_the_scan_reports_a_casa_main_caller]

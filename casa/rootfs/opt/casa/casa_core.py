@@ -127,6 +127,8 @@ async def start_internal_unix_runner(
         _make_internal_tools_call_handler,
         _make_internal_hooks_resolve_handler,
         build_admin_memory_wipe_handler,
+        build_admin_memory_export_handler,
+        build_admin_memory_restore_handler,
         build_admin_reload_handler,
         admin_peercred_middleware,
     )
@@ -195,6 +197,17 @@ async def start_internal_unix_runner(
     internal_app.router.add_post(
         "/admin/memory/wipe",
         build_admin_memory_wipe_handler(),
+    )
+    # Memory export and restore (casactl memory-export / memory-restore),
+    # root-gated alike. A restore is staged here and carried out by the
+    # container-start step after the app restart.
+    internal_app.router.add_post(
+        "/admin/memory/export",
+        build_admin_memory_export_handler(),
+    )
+    internal_app.router.add_post(
+        "/admin/memory/restore",
+        build_admin_memory_restore_handler(),
     )
 
     # Task 14 (personality Phase A): lean inspection/explain admin routes —
@@ -4225,14 +4238,18 @@ async def main() -> None:
     # Hindsight or noop (resolve_semantic_memory_choice).
     semantic_memory = build_semantic_memory(resolve_semantic_memory_choice(dict(os.environ)))
 
-    # 2a. The memory store: FTS5 check and schema migration. A failure leaves
-    # the file untouched and memory unavailable; Casa boots either way. A
-    # pending container-start maintenance (wipe or restore) must be settled
-    # before this point: this open is the store's first consumer at boot.
+    # 2a. The memory store: FTS5 check and schema migration. A forward
+    # migration runs only after an automatic export of the file as it is. A
+    # failure leaves the file untouched and memory unavailable; Casa boots
+    # either way. A pending container-start maintenance (wipe or restore)
+    # must be settled before this point: this open is the store's first
+    # consumer at boot.
     from memory import capture as memory_capture
+    from memory import export as memory_export
     from memory.store import MemoryStore
     memory_store = MemoryStore()
-    await asyncio.to_thread(memory_store.open)
+    await asyncio.to_thread(
+        memory_store.open, before_migration=memory_export.before_migration)
     # Boot check of the derived files: a missing or unreadable search index
     # is rebuilt from the store, with no model call.
     from memory import search as memory_search
@@ -5791,15 +5808,16 @@ async def main() -> None:
         notify=telegram_channel.notify_operator
         if telegram_channel is not None else None)
     if _maintenance_intent is not None:
-        await memory_maintenance.request_restart()
+        await memory_maintenance.request_restart(
+            kind=_maintenance_intent.get("kind"))
     try:
-        _forgotten_line = await asyncio.to_thread(
-            memory_maintenance.claim_forgotten_notice, memory_store)
+        _maintenance_line = await asyncio.to_thread(
+            memory_maintenance.claim_outcome_notice, memory_store)
     except Exception:  # noqa: BLE001 — a notice must not stop the boot
-        logger.warning("memory wipe done line not claimed", exc_info=True)
-        _forgotten_line = None
-    if _forgotten_line is not None and telegram_channel is not None:
-        await telegram_channel.notify_operator(_forgotten_line)
+        logger.warning("memory maintenance line not claimed", exc_info=True)
+        _maintenance_line = None
+    if _maintenance_line is not None and telegram_channel is not None:
+        await telegram_channel.notify_operator(_maintenance_line)
 
     # #532: the event worker's boot pass (13d'' above) ran BEFORE the
     # channels started, so any operator notice it owed (an exhausted
@@ -6144,6 +6162,17 @@ async def main() -> None:
         misfire_grace_time=3600,
     )
     memory_writer.start()
+    # The nightly export: a verified copy in /data/memory/exports (the last
+    # seven kept), so an HA backup carries one.
+    scheduler.add_job(
+        memory_export.run_nightly,
+        trigger="cron",
+        id="memory_export_nightly",
+        hour=memory_export.HOUR, minute=memory_export.MINUTE,
+        args=[memory_store],
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
 
     scheduler.start()
 

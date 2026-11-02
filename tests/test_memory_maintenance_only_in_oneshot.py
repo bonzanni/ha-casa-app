@@ -1,7 +1,8 @@
-"""§14 test 9a (INV-MEM-035): the wipe loop runs only in the container-start
-step. Nothing but ``memory.maintenance.run`` calls it, and nothing calls
-``run`` but the step's own entry point, so ``casa-main`` (which imports the
-module for the intent check and the doors) never runs it."""
+"""§14 test 9a (INV-MEM-035, INV-MEM-037): the wipe loop and the restore's
+build and install run only in the container-start step. Nothing but
+``memory.maintenance.run`` calls them, and nothing calls ``run`` but the
+step's own entry point, so ``casa-main`` (which imports the modules for the
+intent check and the doors) never runs them."""
 from __future__ import annotations
 
 import ast
@@ -15,6 +16,8 @@ CODE = Path(__file__).resolve().parents[1] / "casa" / "rootfs" / "opt" / "casa"
 
 #: The loops and who may call them.
 LOOPS = {"wipe_loop": {("memory/maintenance.py", "run")},
+         "build_phase": {("memory/maintenance.py", "run")},
+         "install_phase": {("memory/maintenance.py", "run")},
          "run": {("memory/maintenance.py", "main")}}
 
 
@@ -25,8 +28,9 @@ def callers(code: Path) -> dict[str, set[tuple[str, str]]]:
         rel = path.relative_to(code).as_posix()
         tree = ast.parse(path.read_text(encoding="utf-8"))
         imports_maintenance = rel == "memory/maintenance.py" or any(
-            isinstance(n, (ast.Import, ast.ImportFrom)) and "maintenance" in
-            ast.unparse(n) for n in ast.walk(tree))
+            isinstance(n, (ast.Import, ast.ImportFrom)) and (
+                "maintenance" in ast.unparse(n) or "restore" in ast.unparse(n))
+            for n in ast.walk(tree))
         if not imports_maintenance:
             continue
         for fn in ast.walk(tree):
@@ -44,7 +48,7 @@ def callers(code: Path) -> dict[str, set[tuple[str, str]]]:
                 is_step = name == "run" and (
                     isinstance(node, ast.Name)
                     or "maintenance" in ast.unparse(node.value))
-                if name == "wipe_loop" or is_step:
+                if (name in LOOPS and name != "run") or is_step:
                     found[name].add((rel, fn.name))
     return found
 
@@ -60,12 +64,15 @@ def test_the_scan_reports_a_casa_main_caller(tmp_path):
     (tmp_path / "memory" / "maintenance.py").write_text(source)
     (tmp_path / "casa_core.py").write_text(
         "from memory import maintenance as memory_maintenance\n"
+        "from memory import restore as memory_restore\n"
         "async def main():\n"
         "    memory_maintenance.wipe_loop(root='/')\n"
-        "    memory_maintenance.run()\n")
+        "    memory_maintenance.run()\n"
+        "    memory_restore.build_phase({}, root='/')\n"
+        "    memory_restore.install_phase({}, root='/', counts=None)\n")
     found = callers(tmp_path)
-    assert ("casa_core.py", "main") in found["wipe_loop"]
-    assert ("casa_core.py", "main") in found["run"]
+    for loop in ("wipe_loop", "run", "build_phase", "install_phase"):
+        assert ("casa_core.py", "main") in found[loop], loop
 
 
 def test_the_step_script_runs_the_module_entry_point():

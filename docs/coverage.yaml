@@ -177,6 +177,8 @@
   doc: architecture/memory-capture.md
 - item: casa/rootfs/opt/casa/memory/executor_block.py
   doc: architecture/memory-wipe.md
+- item: casa/rootfs/opt/casa/memory/export.py
+  doc: architecture/memory-export-restore.md
 - item: casa/rootfs/opt/casa/memory/maintenance.py
   doc: architecture/memory-wipe.md
 - item: casa/rootfs/opt/casa/memory/meter.py
@@ -195,6 +197,8 @@
   doc: architecture/memory-writer.md
 - item: casa/rootfs/opt/casa/memory/registry.py
   doc: architecture/memory-store.md
+- item: casa/rootfs/opt/casa/memory/restore.py
+  doc: architecture/memory-export-restore.md
 - item: casa/rootfs/opt/casa/memory/schema.py
   doc: architecture/memory-store.md
 - item: casa/rootfs/opt/casa/memory/search.py
@@ -573,6 +577,10 @@
   doc: architecture/observability.md
 - item: route:casa/rootfs/opt/casa/casa_core.py:GET:path
   doc: architecture/mcp-and-tools.md
+- item: route:casa/rootfs/opt/casa/casa_core.py:POST:/admin/memory/export
+  doc: architecture/memory-export-restore.md
+- item: route:casa/rootfs/opt/casa/casa_core.py:POST:/admin/memory/restore
+  doc: architecture/memory-export-restore.md
 - item: route:casa/rootfs/opt/casa/casa_core.py:POST:/admin/memory/wipe
   doc: architecture/memory-wipe.md
 - item: route:casa/rootfs/opt/casa/casa_core.py:POST:/admin/reload

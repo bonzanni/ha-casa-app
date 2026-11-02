@@ -328,6 +328,9 @@ ALLOWED = {
     ("casa_core.py", "main"): {"read_intent"},
     # the size meter reports whether one is pending; it refuses nothing
     ("memory/meter.py", "measure"): {"maintenance.json"},
+    # a restore request is refused while a wipe or restore is pending (it
+    # never replaces one); this refuses only the request, never a turn
+    ("memory/restore.py", "_refuse_if_pending"): {"read_intent"},
 }
 WATCHED = {"restart_pending", "restart_accepted_at", "read_intent",
            "maintenance.json"}

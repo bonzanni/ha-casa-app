@@ -212,6 +212,73 @@ def test_wal_failure_after_a_committed_migration_keeps_the_store_available(
         assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
 
 
+def _event_row(conn: sqlite3.Connection, text: str) -> None:
+    conn.execute(
+        "INSERT INTO events (source_key, occurred_at, tz, local_day, "
+        "recorded_at, role, channel, speaker_kind, origin_kind, text, tier, "
+        "tier_status, provenance, eligibility) VALUES (?, 't', 'UTC', "
+        "'2026-11-02', 't', 'assistant', 'telegram', 'operator', 'operator', "
+        "?, 'private', 'provisional', 'captured', 'eligible')",
+        (f"event:{secrets.token_hex(8)}", text))
+
+
+def test_a_forward_migration_runs_only_after_its_automatic_export(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """INV-MEM-033: the export of the file as it is comes first; then the
+    migration, in its transaction."""
+    from memory import export
+    canary = secrets.token_hex(8)
+    v1 = MemoryStore(str(tmp_path / "memory"))
+    assert v1.open() is True
+    with v1.transaction(write=True) as conn:
+        _event_row(conn, canary)
+    monkeypatch.setattr(store_mod, "MIGRATIONS", {
+        1: schema.V1, 2: ("CREATE TABLE added_in_v2 (x TEXT) STRICT",)})
+    later = MemoryStore(v1.directory)
+    assert later.open(before_migration=export.before_migration) is True
+    [name] = os.listdir(export.exports_dir(later))
+    assert name.startswith("premigration-v1-")
+    manifest = export.read_manifest(os.path.join(export.exports_dir(later),
+                                                 name))
+    assert manifest["schema_version"] == 1
+    assert manifest["counts"]["tables"]["events"] == 1
+    with later.transaction() as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    # A store already current takes no export.
+    again = MemoryStore(v1.directory)
+    assert again.open(before_migration=export.before_migration) is True
+    assert len(os.listdir(export.exports_dir(later))) == 1
+
+
+def test_a_failed_automatic_export_leaves_the_store_unmigrated_and_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """INV-MEM-033: no migration runs without its export, and the store is
+    then reported unavailable, never as an empty healthy one."""
+    canary = secrets.token_hex(8)
+    path = _v1_store(tmp_path / "memory", "wal", canary)
+    before = _sha256(path)
+    monkeypatch.setattr(store_mod, "MIGRATIONS", {
+        1: schema.V1, 2: ("CREATE TABLE added_in_v2 (x TEXT) STRICT",)})
+
+    def no_room(store, version):
+        raise OSError("no space left on device")
+
+    later = MemoryStore(os.path.dirname(path))
+    assert later.open(before_migration=no_room) is False
+    assert "no space left" in (later.unavailable_reason or "")
+    with pytest.raises(MemoryUnavailable):
+        with later.transaction():
+            pass
+    assert _sha256(path) == before
+    conn = _raw(path)
+    try:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
 def test_unopenable_files_report_unavailable_and_stay_unchanged(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -245,7 +245,7 @@ def test_the_done_line_is_claimed_once(tmp_path):
     assert w.run_oneshot(root, proc).stdout.strip() == "done"
     store = MemoryStore(str(w.under(root, registry.MEMORY_DIR)))
     assert store.open()
-    lines = [maintenance.claim_forgotten_notice(store) for _ in range(3)]
+    lines = [maintenance.claim_outcome_notice(store) for _ in range(3)]
     assert lines == [maintenance.FORGOTTEN_LINE, None, None]
 
 

@@ -170,6 +170,23 @@ def test_store_pin_every_table_and_path_is_registered(tmp_path: Path) -> None:
     assert search.ensure(store) is True
     assert "search.db" in os.listdir(store.directory)
     assert store_pin_violations(str(tmp_path)) == []
+    # And the export and the restore: a published export, one cut off
+    # before its publication, a staged restore source and the store a
+    # restore builds there.
+    _run_export_and_restore(store, tmp_path)
+    assert store_pin_violations(str(tmp_path)) == []
+
+
+def _run_export_and_restore(store: MemoryStore, root: Path) -> None:
+    from memory import export, maintenance, restore
+    published = export.export(store)
+    parent = export.exports_dir(store)
+    os.makedirs(os.path.join(parent, ".export-cut-off.part"))
+    assert restore.stage(published, root=str(root), confirm=True) == "staged"
+    intent = maintenance.read_intent(str(root))
+    assert restore._build(restore.source_dir(str(root)), intent, None)
+    held = set(os.listdir(restore.source_dir(str(root))))
+    assert {"built.db", "manifest.json", "events.jsonl"} <= held, held
 
 
 def test_store_pin_red_cases(tmp_path: Path) -> None:

@@ -1,5 +1,5 @@
-"""The memory wipe: its intent, the container-start step that runs it, and
-what ``casa-main`` does about an intent it finds.
+"""The memory wipe and restore: their intent, the container-start step that
+runs them, and what ``casa-main`` does about an intent it finds.
 
 **The intent.** A door that the operator consented at writes
 ``/data/memory/maintenance.json`` (kind ``wipe``) and asks the Supervisor for
@@ -27,6 +27,12 @@ step treats an absent path as already done, so a run cut off anywhere re-runs
 to the same result. Any error stops the run, is recorded in the attempt, and
 the step still exits 0.
 
+A **restore** intent (kind ``restore``, :mod:`memory.restore`) runs here too:
+in phase ``staged`` the step builds the new store beside the current one (or
+abandons the restore with memory unchanged); in phase ``wiping`` it runs the
+same wipe loop, keeping the staged source, installs the built store, and
+removes the intent, then the source.
+
 **In casa-main** (:func:`read_intent`, :func:`notification_only`,
 :func:`request_restart`): an intent with no attempt recorded has not touched
 memory, so Casa boots normally and asks for the restart again; an intent with
@@ -49,6 +55,7 @@ import shutil
 import signal
 import stat
 import sys
+import threading
 import time
 from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass
@@ -103,10 +110,32 @@ RESTART_FAILED_LINE = (
     "next app restart; you can restart the app now."
 )
 COURTESY_LINE = "Restarting to wipe memory — send it again in a minute."
+RESTART_FAILED_LINES = {
+    "wipe": RESTART_FAILED_LINE,
+    "restore": "I couldn't restart myself, so memory isn't restored yet. It "
+               "will be at the next app restart; you can restart the app now.",
+}
+COURTESY_LINES = {
+    "wipe": COURTESY_LINE,
+    "restore": "Restarting to restore memory — send it again in a minute.",
+}
 FORGOTTEN_LINE = (
     "Done. I've forgotten everything. Your reminders, triggers, files and "
     "settings are still here."
 )
+
+
+def restored_line(export_created_at: str | None) -> str:
+    when = (export_created_at or "").replace("T", " ").replace("Z", " UTC")
+    return ("Done. Memory is restored"
+            + (f" from the export of {when.strip()}." if when else "."))
+
+
+def abandoned_line(reason: str | None) -> str:
+    return (f"The restore didn't happen ({reason or 'unknown reason'}); "
+            "memory is unchanged.")
+
+
 INTERRUPTED_LINES = {
     "wipe": "The memory wipe was interrupted before it finished; restart the "
             "app to retry.",
@@ -203,17 +232,40 @@ def write_intent(intent: dict, root: str = "/") -> None:
         path, intent, mode=atomic_io.PRIVATE, prefix=INTENT_STAGING_PREFIX)
 
 
+#: Serializes the doors' check-then-write of the intent, so a wipe and a
+#: restore consented at the same moment cannot overwrite each other.
+_intent_lock = threading.Lock()
+
+
 def write_wipe_intent(root: str = "/", *, now: float | None = None) -> str:
     """Record the operator's consent. ``"written"``, ``"already"`` when a
-    wipe is pending, or ``"restore_pending"``."""
-    try:
-        existing = read_intent(root)
-    except IntentUnreadable:
-        return "already"
-    if existing is not None:
-        return "already" if existing.get("kind") == "wipe" else "restore_pending"
-    write_intent({"kind": "wipe", "requested_at": _iso(now), "attempts": [],
-                  "notified_container_ids": []}, root)
+    wipe is pending, or ``"restore_pending"``: a pending restore is never
+    replaced by a wipe."""
+    with _intent_lock:
+        try:
+            existing = read_intent(root)
+        except IntentUnreadable:
+            return "already"
+        if existing is not None:
+            return ("already" if existing.get("kind") == "wipe"
+                    else "restore_pending")
+        write_intent({"kind": "wipe", "requested_at": _iso(now),
+                      "attempts": [], "notified_container_ids": []}, root)
+    return "written"
+
+
+def write_restore_intent(intent: dict, root: str = "/") -> str:
+    """Record a staged restore. ``"written"``, or ``"wipe_pending"`` /
+    ``"restore_pending"`` when an intent already exists (it is kept)."""
+    with _intent_lock:
+        try:
+            existing = read_intent(root)
+        except IntentUnreadable:
+            return "wipe_pending"
+        if existing is not None:
+            return ("wipe_pending" if existing.get("kind") == "wipe"
+                    else "restore_pending")
+        write_intent(intent, root)
     return "written"
 
 
@@ -260,7 +312,8 @@ class Counts:
 
 def run(*, root: str = "/", proc_root: str = "/proc",
         now: float | None = None) -> str:
-    """The oneshot. ``"none"`` (no intent), ``"done"`` or ``"failed"``."""
+    """The oneshot. ``"none"`` (no intent), ``"done"``, ``"failed"``, or
+    ``"abandoned"`` (a restore that could not be built; memory unchanged)."""
     try:
         intent = read_intent(root)
     except IntentUnreadable:
@@ -272,7 +325,7 @@ def run(*, root: str = "/", proc_root: str = "/proc",
         return "failed"
     if intent is None:
         # A staged restore source without its intent is never used again.
-        _remove(under(root, f"{registry.MEMORY_DIR}/restore-source"))
+        _remove(under(root, registry.RESTORE_SOURCE))
         return "none"
 
     cid = _container_id(proc_root)
@@ -283,16 +336,27 @@ def run(*, root: str = "/", proc_root: str = "/proc",
     attempt = {"container_id": cid, "at": _iso(now), "error": None}
     intent["attempts"].append(attempt)
     write_intent(intent, root)
+    kind = intent.get("kind")
     try:
         _test_sleep()
-        if intent.get("kind") == "unreadable":
+        if kind == "unreadable":
             raise MaintenanceError(UNREADABLE_REASON)
-        if intent.get("kind") != "wipe":
+        if kind == "wipe":
+            counts = wipe_loop(root=root, now=now)
+            _fresh_store(root, now, counts)
+        elif kind == "restore":
+            from memory import restore
+            if intent.get("phase") == "staged":
+                if not restore.build_phase(intent, root=root, now=now):
+                    logger.info("memory maintenance: restore abandoned; "
+                                "memory unchanged")
+                    return "abandoned"
+            restore.check_built(intent, root=root)
+            counts = wipe_loop(root=root, now=now, restoring=True)
+            restore.install_phase(intent, root=root, counts=counts)
+        else:
             raise MaintenanceError(
-                f"{intent.get('kind')!r} is not a request this version can "
-                "carry out")
-        counts = wipe_loop(root=root, now=now)
-        _fresh_store(root, now, counts)
+                f"{kind!r} is not a request this version can carry out")
     except Exception as exc:  # noqa: BLE001 — recorded, the step exits 0
         attempt["error"] = str(exc) or type(exc).__name__
         logger.error("memory maintenance failed: %s", attempt["error"],
@@ -305,7 +369,12 @@ def run(*, root: str = "/", proc_root: str = "/proc",
         for path in _staging_matches(root, pattern):
             _remove(path)
     atomic_io.fsync_directory(under(root, registry.MEMORY_DIR))
-    logger.info("memory maintenance: wipe done %s", counts.as_dict())
+    if kind == "restore":
+        # Only after the intent: a source with no intent is deleted by the
+        # next step, never used.
+        _remove(under(root, registry.RESTORE_SOURCE))
+        atomic_io.fsync_directory(under(root, registry.MEMORY_DIR))
+    logger.info("memory maintenance: %s done %s", kind, counts.as_dict())
     return "done"
 
 
@@ -345,10 +414,23 @@ def _fresh_store(root: str, now: float | None, counts: Counts) -> None:
                 (key, json.dumps(value, sort_keys=True)))
 
 
-def claim_forgotten_notice(store) -> str | None:
-    """The done line, once: ``notice_sent`` is set in the same transaction
-    that reads it, before the line is sent, so a crash costs the line rather
-    than sending it twice."""
+def notice_for(record: dict) -> str | None:
+    """The one line a recorded maintenance outcome owes the operator."""
+    kind, outcome = record.get("kind"), record.get("outcome")
+    if kind == "wipe" and outcome == "done":
+        return FORGOTTEN_LINE
+    if kind == "restore" and outcome == "done":
+        return restored_line(record.get("export_created_at"))
+    if kind == "restore" and outcome == "abandoned":
+        return abandoned_line(record.get("reason"))
+    return None
+
+
+def claim_outcome_notice(store) -> str | None:
+    """The outcome's line (a wipe or restore done, a restore abandoned),
+    once: ``notice_sent`` is set in the same transaction that reads it,
+    before the line is sent, so a crash costs the line rather than sending
+    it twice."""
     if not store.available:
         return None
     with store.transaction(write=True) as conn:
@@ -357,21 +439,23 @@ def claim_forgotten_notice(store) -> str | None:
         if row is None:
             return None
         record = json.loads(row[0])
-        if (record.get("kind") != "wipe" or record.get("outcome") != "done"
-                or record.get("notice_sent")):
+        line = notice_for(record)
+        if line is None or record.get("notice_sent"):
             return None
         record["notice_sent"] = True
         conn.execute("UPDATE meta SET value = ? WHERE key = "
                      "'last_maintenance'", (json.dumps(record, sort_keys=True),))
-    return FORGOTTEN_LINE
+    return line
 
 
 # ---------------------------------------------------------------------------
 # The wipe loop (steps A, B and C)
 # ---------------------------------------------------------------------------
 
-def wipe_loop(*, root: str, now: float | None = None) -> Counts:
-    """Erase exactly the registry. Only :func:`run` calls this."""
+def wipe_loop(*, root: str, now: float | None = None,
+              restoring: bool = False) -> Counts:
+    """Erase exactly the registry. Only :func:`run` calls this. A restore
+    (*restoring*) keeps the rows its intent owns: the staged source."""
     counts = Counts()
     _sweep_expired_workspaces(root, now, counts)          # A
     for engagement_id, ws in _workspaces(root):           # B
@@ -379,6 +463,8 @@ def wipe_loop(*, root: str, now: float | None = None) -> Counts:
             if _locate(ws).case == 4:
                 raise Unlocatable(engagement_id)
     for entry in registry.REGISTRY:                       # C
+        if restoring and entry.wipe is Wipe.KEEP_WHILE_INTENT:
+            continue
         handler = _HANDLERS.get((entry.kind, entry.wipe))
         if handler is None:
             raise MaintenanceError(f"no wipe rule for {entry.name!r}")
@@ -674,7 +760,7 @@ _HANDLERS: dict[tuple[Kind, Wipe], Callable] = {
     (Kind.FILE, Wipe.DELETE): _delete_whole,
     (Kind.FILE, Wipe.DELETE_REBUILD): _delete_whole,
     (Kind.DIRECTORY, Wipe.DELETE): _delete_whole,
-    # A wipe intent never owns a restore source.
+    # A wipe intent never owns a restore source; a restore skips the row.
     (Kind.DIRECTORY, Wipe.KEEP_WHILE_INTENT): _delete_whole,
     (Kind.TRANSCRIPTS, Wipe.DELETE): _empty_transcript_roots,
     (Kind.POINTERS, Wipe.RESET): _reset_pointers,
@@ -754,6 +840,9 @@ def _staging_matches(root: str, pattern: str) -> list[str]:
 #: ``None``. Read only through :func:`restart_pending`, by the operator DM
 #: path and the engagement-topic path.
 restart_accepted_at: float | None = None
+#: What the last restart request was for (``wipe`` or ``restore``): the
+#: courtesy line and the failure line name it.
+_restart_kind = "wipe"
 
 _notify: Callable[[str], Awaitable[object]] | None = None
 _resume_updates: Callable[[], Awaitable[object]] | None = None
@@ -764,6 +853,11 @@ def configure(*, notify: Callable[[str], Awaitable[object]] | None) -> None:
     """How Casa sends the operator a line outside a door's own reply."""
     global _notify
     _notify = notify
+
+
+def courtesy_line() -> str:
+    """The courtesy line for the restart under way."""
+    return COURTESY_LINES.get(_restart_kind, COURTESY_LINE)
 
 
 def restart_pending() -> bool:
@@ -798,14 +892,17 @@ async def request_restart(
     *, notify: Callable[[str], Awaitable[object]] | None = None,
     pause_updates: Callable[[], Awaitable[bool]] | None = None,
     resume_updates: Callable[[], Awaitable[object]] | None = None,
+    kind: str | None = "wipe",
 ) -> bool:
-    """Ask the Supervisor for the app restart. On success the courtesy flag
+    """Ask the Supervisor for the app restart (for a ``wipe`` or a
+    ``restore``, *kind*). On success the courtesy flag
     is set for :data:`RESTART_GRACE_S`; on a failure, or when the flag
     expires with no restart, the operator gets one line and Casa keeps
     running. *pause_updates* stops update intake first (it returns whether
     it paused anything), so the update that carried the consent is confirmed
     to Telegram before the container stops; *resume_updates* undoes it."""
-    global restart_accepted_at, _resume_updates, _expiry
+    global restart_accepted_at, _resume_updates, _expiry, _restart_kind
+    _restart_kind = kind if kind in RESTART_FAILED_LINES else "wipe"
     if pause_updates is not None:
         try:
             if await pause_updates():
@@ -821,11 +918,13 @@ async def request_restart(
             _expiry.cancel()
         _expiry = asyncio.get_running_loop().create_task(
             _expire(stamp), name="memory-restart-grace")
-        logger.info("memory wipe: app restart requested (%s)", result)
+        logger.info("memory %s: app restart requested (%s)", _restart_kind,
+                    result)
         return True
-    logger.warning("memory wipe: app restart request failed: %s", result)
+    logger.warning("memory %s: app restart request failed: %s",
+                   _restart_kind, result)
     await _resume()
-    await _say(notify or _notify, RESTART_FAILED_LINE)
+    await _say(notify or _notify, RESTART_FAILED_LINES[_restart_kind])
     return False
 
 
@@ -835,10 +934,10 @@ async def _expire(stamp: float) -> None:
     if restart_accepted_at != stamp:
         return
     restart_accepted_at = None
-    logger.warning("memory wipe: no restart %.0f s after it was accepted",
-                   RESTART_GRACE_S)
+    logger.warning("memory %s: no restart %.0f s after it was accepted",
+                   _restart_kind, RESTART_GRACE_S)
     await _resume()
-    await _say(_notify, RESTART_FAILED_LINE)
+    await _say(_notify, RESTART_FAILED_LINES[_restart_kind])
 
 
 async def _resume() -> None:

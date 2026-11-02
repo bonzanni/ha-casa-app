@@ -40,6 +40,14 @@ stays available in its current journal mode and a warning is logged. Once the st
 open, the boot check rebuilds a derived file that is missing or unreadable: the search
 index, built from `events` with no model call ([`memory-tools.md`](memory-tools.md)).
 
+**A forward migration comes after an export.** `casa-main` passes the automatic export as
+`open()`'s `before_migration`: an existing file older than the code is exported as it is
+into `/data/memory/exports/` first, and only then migrated
+([`memory-export-restore.md`](memory-export-restore.md)). The restore uses the same opener
+for the store it builds: under another name (`restore-source/built.db`), at the export's
+schema version (`target`) and in a rollback journal (`journal_mode="delete"`), where a
+journal mode that cannot be set fails the open.
+
 **Unavailable, never empty, and only when unchanged.** `open()` reports the store
 unavailable only when it has left it as it was. If any step up to the migration's commit
 fails, the transaction rolls back and an existing file is left byte for byte as it was; a
@@ -47,7 +55,8 @@ file this boot was creating is removed. The store is then *unavailable*: `availa
 false, the reason is kept,
 and every `transaction()` raises `MemoryUnavailable`. `open()` never raises, so Casa boots
 without memory rather than not at all. A file written by a newer Casa is not downgraded; it
-is reported unavailable too.
+is reported unavailable too, and so is a file whose pre-migration export failed: it is left
+unmigrated.
 
 **The registry is the list the whole-memory operations walk.** `memory/registry.py` holds
 `REGISTRY`, one `Entry` per store: its name, its kind, its paths (glob patterns, or table
@@ -85,6 +94,13 @@ container-start step that carries out a wipe walks this list with no Casa proces
 staging name its atomic write leaves on a crash.
 
 ## Contracts & invariants
+
+**INV-MEM-033**: Memory that cannot be opened is reported unavailable, never as an empty healthy store: a missing FTS5, an unreadable or newer file, a failed migration or a failed pre-migration export leaves an existing file byte for byte as it was and makes every transaction raise `MemoryUnavailable`; no forward migration runs before its automatic export.
+
+Pinned on real files in WAL and in a rollback journal, with a migration that fails part-way
+and an export that fails before it. What it does not cover: how each consumer words the
+outage to the operator or a model; the tools and the served view say it with their own
+lines.
 
 **INV-MEM-025**: Export, restore and the wipe walk one registry whose every row carries an export, a restore and a wipe rule; a test fails when a fresh store has a table or a `/data/memory` path no row declares, when a named producer of memory-derived text, run as the code configures it, writes from a memory-bearing call site to a path its row does not cover or writes any other file that neither its row nor its declared list of files carrying no memory covers, when a memory-bearing call site issues no write in any run, or when a launcher configures a transcript root no row covers.
 
@@ -153,6 +169,9 @@ again.
 **The file is not a database, or is from a newer schema.** Unavailable; the file is not
 touched.
 
+**The export before a migration fails.** Unavailable; the file keeps its old schema, and
+the next boot tries the export again.
+
 **A transaction's block raises.** The transaction rolls back, the connection closes, and
 the exception propagates.
 
@@ -195,4 +214,5 @@ transcript root, which needs a row.
 - [`architecture/memory.md`](../architecture/memory.md)
 - [`architecture/memory-capture.md`](../architecture/memory-capture.md)
 - [`architecture/memory-wipe.md`](../architecture/memory-wipe.md)
+- [`architecture/memory-export-restore.md`](../architecture/memory-export-restore.md)
 <!-- END SOURCEMAP -->

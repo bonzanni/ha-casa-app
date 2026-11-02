@@ -74,6 +74,15 @@ in your own agent configuration, the tool's own gates apply: with
 `telegram_chat_id` empty nobody is the operator, so the wipe is then denied for
 everyone.)
 
+**Exporting and restoring memory.** From the add-on terminal,
+`casactl memory-export` writes a verified copy of memory into
+`/data/memory/exports/`; Casa also keeps one from each of the last seven
+nights there, so a Home Assistant backup carries them. `casactl memory-restore
+<export> --yes` replaces **all** of memory with that export's — including
+anything said or wiped since it was made — and Casa restarts to do it; without
+`--yes` it only checks the export and tells you what it would do. `<export>` is
+an export's directory, or just its name inside `/data/memory/exports/`.
+
 The following env var is **auto-derived** from `hindsight_api_url` and rarely needs
 setting by hand:
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import shutil
 
 import pytest
 
@@ -45,6 +46,19 @@ def _intent(root):
 def _wipe(root, proc, **kw):
     assert maintenance.write_wipe_intent(str(root)) in ("written", "already")
     return w.run_oneshot(root, proc, **kw)
+
+
+def _restore(root, proc):
+    """A restore of an export of an empty store: the same wipe loop, then
+    the install."""
+    from memory import export, restore
+    source = export.export(_store(root))
+    kept = shutil.move(source, str(root.parent / f"{root.name}-export"))
+    assert restore.stage(kept, root=str(root), confirm=True) == "staged"
+    return w.run_oneshot(root, proc)
+
+
+_MAINTENANCE = {"wipe": _wipe, "restore": _restore}
 
 
 def _outside(text: str) -> str:
@@ -307,11 +321,13 @@ async def test_a_forged_marker_in_the_memory_text_still_blanks_exactly(
 
 # --- orphan caches -----------------------------------------------------------------
 
+@pytest.mark.parametrize("kind", ["wipe", "restore"])
 def test_orphan_cache_left_by_a_sweep_killed_between_its_two_deletions(
-        tmp_path):
+        tmp_path, kind):
     """p4 Astra S1: the sweep removes the workspace, then the control dir;
-    killed between them it leaves a cache with no CLAUDE.md."""
-    root, proc = tmp_path, w.fake_proc(tmp_path)
+    killed between them it leaves a cache with no CLAUDE.md. The restore
+    runs the same loop and leaves no canary either."""
+    root, proc = tmp_path / "root", w.fake_proc(tmp_path)
     canary = "cb" + os.urandom(8).hex()
     w.marked_workspace(root, w.EID_EXPIRED, w.memory_block(canary),
                        retention_until="2000-01-01T00:00:00Z")
@@ -332,13 +348,15 @@ def test_orphan_cache_left_by_a_sweep_killed_between_its_two_deletions(
     assert not _ws(root, w.EID_EXPIRED).exists()
     assert canary in _cache(root, w.EID_EXPIRED).read_text()
 
-    p = _wipe(root, proc)
+    p = _MAINTENANCE[kind](root, proc)
     assert p.stdout.strip() == "done", p.stderr
     assert w.hits(root, [canary]) == []
 
 
-def test_orphan_cache_left_by_a_provisioning_killed_before_claude_md(tmp_path):
-    root, proc = tmp_path, w.fake_proc(tmp_path)
+@pytest.mark.parametrize("kind", ["wipe", "restore"])
+def test_orphan_cache_left_by_a_provisioning_killed_before_claude_md(
+        tmp_path, kind):
+    root, proc = tmp_path / "root", w.fake_proc(tmp_path)
     canary = "cc" + os.urandom(8).hex()
     hook = """
 from safe_fs import atomic_write_beneath as _awb
@@ -352,7 +370,7 @@ ws.atomic_write_beneath = _die_first
     assert not (_ws(root, w.EID_OPEN) / "CLAUDE.md").exists()
     assert canary in _cache(root, w.EID_OPEN).read_text()
 
-    p = _wipe(root, proc)
+    p = _MAINTENANCE[kind](root, proc)
     assert p.stdout.strip() == "done", p.stderr
     assert w.hits(root, [canary]) == []
 

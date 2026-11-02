@@ -33,6 +33,11 @@ from dataclasses import dataclass
 MEMORY_DIR = "/data/memory"
 MEMORY_DB_NAME = "memory.db"
 MEMORY_DB = f"{MEMORY_DIR}/{MEMORY_DB_NAME}"
+#: Where exports are published: the nightly ones, the admin ones and the one
+#: taken before a schema migration.
+EXPORTS_DIR = f"{MEMORY_DIR}/exports"
+#: The staged export a pending restore reads, and the store it builds there.
+RESTORE_SOURCE = f"{MEMORY_DIR}/restore-source"
 ENGAGEMENTS_ROOT = "/data/engagements"
 ENGAGEMENT_CONTROL_ROOT = "/data/engagement-ctl"
 RESIDENT_HOME = "/config/cc-home"
@@ -143,9 +148,9 @@ REGISTRY: tuple[Entry, ...] = (
     Entry("search index", Kind.FILE, _with_sidecars(f"{MEMORY_DIR}/search.db"),
           Export.NO, Restore.REBUILD, Wipe.DELETE_REBUILD,
           producer=("memory/search.py:catch_up",)),
-    Entry("local exports", Kind.DIRECTORY, (f"{MEMORY_DIR}/exports",),
+    Entry("local exports", Kind.DIRECTORY, (EXPORTS_DIR,),
           Export.NO, Restore.NONE, Wipe.DELETE),
-    Entry("restore source", Kind.DIRECTORY, (f"{MEMORY_DIR}/restore-source",),
+    Entry("restore source", Kind.DIRECTORY, (RESTORE_SOURCE,),
           Export.NO, Restore.SOURCE, Wipe.KEEP_WHILE_INTENT),
     Entry("legacy transcripts", Kind.DIRECTORY,
           (f"{MEMORY_DIR}/legacy-transcripts",),

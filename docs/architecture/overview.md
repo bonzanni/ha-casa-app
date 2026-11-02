@@ -76,7 +76,7 @@ about executors through the registry is the likeliest way to be wrong here;
 
 The dependency is declared in `init-setup-configs/dependencies.d` — check it there rather
 than taking this sentence's word for it. That directory also names
-`init-memory-maintenance`, the oneshot that carries out a pending memory wipe before any
+`init-memory-maintenance`, the oneshot that carries out a pending memory wipe or restore before any
 service starts ([`memory-wipe.md`](memory-wipe.md), INV-MEM-035).
 
 **INV-SYS-002**: A role claimed by both a resident and a specialist is a boot failure, raised when the role registry is built.

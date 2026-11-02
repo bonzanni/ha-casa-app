@@ -54,7 +54,9 @@ Telegram updater: in polling mode that makes one last `getUpdates` with the next
 which confirms the consent tap, so the tap is never delivered again after the restart. A
 webhook update is acknowledged when it is queued, before any handler runs. A second wipe
 while one is pending answers that it is already scheduled and asks for the restart again;
-a pending restore intent is never replaced by a wipe.
+a pending restore intent is never replaced by a wipe, and a restore is refused while a wipe
+is pending. The doors' check-then-write of the intent is serialized, so two consents at
+once cannot overwrite each other.
 
 **The window before the restart has no admission guarantee.** Nothing is refused, drained
 or fenced: turns, reminders, triggers, jobs, delegations and engagements run as usual, and
@@ -88,7 +90,9 @@ stage-2 limits.) Then the wipe loop:
   every cache emptied. A row whose rule the loop does not know fails the attempt.
 
 A fresh, empty store is then created with `meta` recording the first boot as complete and
-the outcome, and the intent is removed last. Every deletion treats an absent path as
+the outcome, and the intent is removed last. A restore intent runs in this same step, in
+two phases, the second of which is this wipe loop keeping only the staged source
+([`memory-export-restore.md`](memory-export-restore.md)). Every deletion treats an absent path as
 already done, so a run cut off anywhere re-runs to the same result. Any error stops the
 run and is recorded in the attempt; the script always exits 0, so a failure never stops the
 container from starting. Once the channels are up, `casa-main` sends "Done. I've forgotten

@@ -20,6 +20,8 @@ Usage:
     casactl specialist status <slug>
     casactl explain <correlation_id> [--show-sensitive]
     casactl memory-wipe --yes
+    casactl memory-export
+    casactl memory-restore <export directory or name> [--yes]
 """
 from __future__ import annotations
 
@@ -172,6 +174,34 @@ def _cmd_memory_wipe(args: argparse.Namespace) -> int:
     return _print_admin_result("/admin/memory/wipe", {"confirm": True})
 
 
+def _cmd_memory_export(args: argparse.Namespace) -> int:
+    """One verified export of memory into /data/memory/exports/."""
+    return _print_admin_result("/admin/memory/export", {})
+
+
+def _cmd_memory_restore(args: argparse.Namespace) -> int:
+    """Replace all memory with an export's. Without --yes the export is only
+    checked and the confirmation is printed; nothing is scheduled."""
+    body = {"path": args.export, "confirm": bool(args.yes)}
+    try:
+        status, result = _post_via_unix_socket("/admin/memory/restore", body)
+    except FileNotFoundError:
+        print(f"error: socket not found at {SOCKET_PATH} - "
+              "is casa-main running?", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(f"error: socket request failed: {exc}", file=sys.stderr)
+        return 2
+    if result.get("status") == "confirm_required":
+        print(f"{result.get('message', '')}\nThe export checks out. Re-run "
+              "with --yes to proceed.", file=sys.stderr)
+        return 2
+    stream = sys.stdout if 200 <= status < 300 else sys.stderr
+    print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True),
+          file=stream)
+    return 0 if 200 <= status < 300 else 1
+
+
 def _cmd_restart_supervised(args: argparse.Namespace) -> int:
     """Direct Supervisor POST - same as the MCP tool's out-of-engagement path."""
     import urllib.request
@@ -253,6 +283,21 @@ def main() -> int:
     wipe_p.add_argument("--yes", action="store_true",
                         help="Actually perform the wipe.")
 
+    sub.add_parser(
+        "memory-export",
+        help="Write a verified export of memory to /data/memory/exports/.",
+    )
+    restore_p = sub.add_parser(
+        "memory-restore",
+        help="Replace ALL memory with an export's; Casa restarts to do it. "
+             "Requires --yes.",
+    )
+    restore_p.add_argument(
+        "export", help="An export directory, or the name of one in "
+                       "/data/memory/exports.")
+    restore_p.add_argument("--yes", action="store_true",
+                           help="Actually perform the restore.")
+
     args = parser.parse_args()
     if args.cmd == "reload":
         return _cmd_reload(args)
@@ -266,6 +311,10 @@ def main() -> int:
         return _cmd_explain(args)
     if args.cmd == "memory-wipe":
         return _cmd_memory_wipe(args)
+    if args.cmd == "memory-export":
+        return _cmd_memory_export(args)
+    if args.cmd == "memory-restore":
+        return _cmd_memory_restore(args)
     return 1
 
 
