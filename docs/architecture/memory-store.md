@@ -66,39 +66,48 @@ the `memory` package, so it can be used while that process is not running.
 
 ## Contracts & invariants
 
-**INV-MEM-025**: Every store that holds memory is a registry row with an export, a restore and a wipe rule; a test fails when a fresh store has a table or a `/data/memory` path no row declares, when a named producer of memory-derived text, run as the code configures it, leaves that text in a file its row does not cover or in a staging file its row does not declare, when a persisting call site of a named producer is reached by no run, or when a launcher configures a transcript root no row covers.
+**INV-MEM-025**: Every store that holds memory is a registry row with an export, a restore and a wipe rule; a test fails when a fresh store has a table or a `/data/memory` path no row declares, when a named producer of memory-derived text, run as the code configures it, issues a write its row does not cover, when a memory-bearing call site of a named producer issues no write in any run, or when a launcher configures a transcript root no row covers.
 
 The store pin opens a real store and reads `sqlite_master` and the directory, once with a
 transaction open so the WAL sidecars are present. The producer pin judges what it
 observes, never a path it is told:
 
-- **Where the text lands.** Each named producer is run in a sandbox that stands in for the
-  filesystem root, with a random canary as its memory text and the configuration the code
-  gives it: the paths its class is constructed with (each construction call evaluated
-  statically, or its default), the workspace path from the engagement launch template, and
-  the module's own constants. Every file that holds the canary afterwards must lie in the
-  producer's own row, judged by its full observed path.
-- **Staging files.** Every rename during the run is watched. A staging file that holds the
-  canary at the instant it is renamed into place — the file a crash at that instant leaves
-  behind — must match one of the row's staging patterns, by its full path, including one
-  addressed relative to a directory descriptor.
-- **Reach.** A read of the producer's code follows the input that carries the memory text,
-  through assignments and into functions of the same module it is passed to, to every call
-  that writes it. Each such call site must execute during a run, so a branch the runs never
-  take fails the pin until a run takes it.
+- **Every write, as it happens.** Each named producer runs in a sandbox that stands in for
+  the filesystem root, with the configuration the code gives it — the paths its class is
+  constructed with (each construction call evaluated statically, or its default), the
+  workspace path from the engagement launch template, the module's own constants — and with
+  every memory-bearing input filled, so a write behind a condition on one of them happens.
+  An audit hook (`sys.addaudithook`) records each write the run issues at the moment it is
+  issued: an `open` for writing or creating, a rename's destination, a new directory, link
+  or symlink, a truncation, a SQLite connection. Each is recorded with its full path — an
+  `os.open` relative to a directory descriptor is placed by the rename or removal that
+  names it — and with the producer line that issued it. Nothing is inferred from what files
+  hold afterwards, so a file written and then deleted, or holding an encoded copy, is seen.
+- **Judged by where it lands.** A read of the producer's code follows the input that
+  carries the memory text, through assignments and into functions of the same module it is
+  passed to, to every call that writes it. A write issued from such a call site must land
+  in the producer's row. A file it creates and then renames into place — the file a crash
+  before the rename leaves behind — must match one of the row's staging patterns. Any other
+  write the producer issues must land in its row or on a short, explicit list of files it
+  writes that carry no memory (the rest of an engagement workspace, for the executor-memory
+  producer).
+- **Reach.** Every memory-bearing call site must issue at least one write during the runs; a
+  site no run triggers fails the pin until a run triggers it.
 - **Transcript roots.** Every launcher is scanned: each `HOME` or `CLAUDE_CONFIG_DIR` a
   shell script sets or publishes to the container environment, each literal
   `.claude/projects` path, and each one Python code sets for a launch. A value the scan
   cannot resolve fails the pin rather than passing.
 
-What it does not cover: the reach check follows memory text only within a producer's own
-module, so a producer that hands its text to another module's writer needs that writer named
-as a producer too. A write to an absolute path that bypasses the producer's configuration
-lands outside the sandbox and is not observed. The producer list is named by hand; a new
-producer of memory-derived text joins it, with a way to run it, in the change that adds it.
-Copies of `sessions.json` that the corrupt-file quarantine sets aside, and staging files the
-shared writer left before its name carried a target, are not attributed to the row: they
-hold session ids, not conversation text.
+What it does not cover: code written to evade the test — a write to a hard-coded absolute
+path outside the producer's configuration, a write through `ctypes` or a subprocess — is
+out of its reach. The reading of memory-bearing call sites follows the text only within a
+producer's own module, so memory routed through another module's writer or hidden in a
+container is judged against the no-memory list instead of the row alone; such a writer
+needs naming as a producer. The producer list, a way to run each producer, and the
+no-memory list are written by hand, in the change that adds a producer. Copies of
+`sessions.json` that the corrupt-file quarantine sets aside, and staging files the shared
+writer left before its name carried a target, are not attributed to the row: they hold
+session ids, not conversation text.
 
 ## Failure behavior
 

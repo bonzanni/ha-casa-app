@@ -7,14 +7,16 @@ would notice. Two pins keep the list complete:
 * **The store pin** reads a fresh store: every ``sqlite_master`` table and
   every path under ``/data/memory`` must belong to a row, and every row must
   carry all three rules.
-* **The producer pin** runs each named producer of memory-derived text with a
-  canary, in a sandbox standing in for the root, configured the way the code
-  configures it. Every file that holds the canary afterwards, and every
-  staging file that holds it when it is renamed into place, is judged by its
-  observed full path: the first against the producer's row, the second
-  against the row's staging patterns. A read of the producer's code finds its
-  persisting call sites, and each must be reached by a run. Every transcript
-  root a launcher configures must land on a row.
+* **The producer pin** runs each named producer of memory-derived text in a
+  sandbox standing in for the root, configured the way the code configures it
+  and with every memory-bearing input filled. An audit hook records every
+  write it issues, as it is issued, with its full path and the producer line
+  that issued it. A write from a memory-bearing call site (found by reading
+  the producer's code) must land in the producer's row, a staged one on the
+  row's staging patterns; any other write must land in the row or on the
+  short list of files the producer writes that carry no memory. Every
+  memory-bearing call site must have issued a write. Every transcript root a
+  launcher configures must land on a row.
 
 Each pin's checker is a function, and the red cases feed it a violation it
 must report, so a checker that reports nothing is caught too.
@@ -22,7 +24,6 @@ must report, so a checker that reports nothing is caught too.
 from __future__ import annotations
 
 import ast
-import fnmatch
 import os
 import re
 import secrets
@@ -51,9 +52,15 @@ EID = "0123456789abcdef0123456789abcdef"
 # Matching a production path against the rows
 # ---------------------------------------------------------------------------
 
+def _glob(path: str, pattern: str) -> bool:
+    """``*`` matches within one path segment, never across a ``/``."""
+    return re.fullmatch(re.escape(pattern).replace(r"\*", "[^/]*"),
+                        path) is not None
+
+
 def _row_matches(entry: Entry, path: str) -> bool:
     for pattern in entry.paths:
-        if fnmatch.fnmatchcase(path, pattern):
+        if _glob(path, pattern):
             return True
         if path.startswith(pattern.rstrip("/") + "/") and entry.kind in (
             Kind.DIRECTORY, Kind.TRANSCRIPTS, Kind.SERVED_COPY,
@@ -511,19 +518,40 @@ def launcher_transcript_roots() -> list[tuple[str, str]]:
     return found + python_transcript_roots(CODE_ROOT)
 
 
-# --- running the producers and watching where their text lands ---------------
+# --- running the producers and recording every write they make --------------
 #
 # Each producer is run in a sandbox that stands in for the filesystem root,
-# with a random canary as its memory text and the paths its own configuration
-# gives it (the construction sites above, the launch template, the module's
-# own constants). The pins then judge what was observed: every file that holds
-# the canary afterwards, and every file holding it at the instant it is renamed
-# into place (the staging file a crash at that instant leaves behind), each by
-# its full path. Nothing here names where a producer is expected to write.
+# with the configuration the code gives it (the construction sites above, the
+# launch template, the module's own constants) and every memory-bearing input
+# filled, so conditional writes happen. An audit hook (``sys.addaudithook``)
+# records each write as it is issued — an ``open`` for writing or creating, a
+# rename's destination, a directory, a link, a truncation, a SQLite database —
+# with its full resolved path and the producer frame (file and line) that
+# issued it. Nothing is inferred from what the files hold afterwards, so a
+# file written and then deleted, or holding an encoded copy, is still seen.
 
 #: The modules that hold the named producers.
 PRODUCER_MODULES = ("session_registry.py", "explanation_store.py",
                     "drivers/workspace.py")
+
+#: Writes a producer makes that carry no memory: everything else the
+#: workspace provisioner creates beside the executor-memory block. A write
+#: from a memory-bearing call site is never judged against this list.
+NON_MEMORY = {
+    "executor memory": (
+        f"{registry.ENGAGEMENTS_ROOT}",
+        f"{registry.ENGAGEMENTS_ROOT}/*",
+        f"{registry.ENGAGEMENTS_ROOT}/*/.claude",
+        f"{registry.ENGAGEMENTS_ROOT}/*/.claude/settings.json",
+        f"{registry.ENGAGEMENTS_ROOT}/*/.home",
+        f"{registry.ENGAGEMENTS_ROOT}/*/.home/.claude",
+        f"{registry.ENGAGEMENTS_ROOT}/*/.home/.claude/plugins",
+        f"{registry.ENGAGEMENTS_ROOT}/*/.mcp.json",
+        f"{registry.ENGAGEMENTS_ROOT}/*/..mcp.json.casa-tmp.*",
+        f"{registry.ENGAGEMENT_CONTROL_ROOT}",
+        f"{registry.ENGAGEMENT_CONTROL_ROOT}/*",
+    ),
+}
 
 
 def _load_modules(code_root: Path) -> dict:
@@ -549,83 +577,168 @@ def _load_modules(code_root: Path) -> dict:
     return mods
 
 
+@dataclass(frozen=True)
+class Write:
+    path: str          # production path, or the raw path outside the sandbox
+    event: str
+    module: str        # code-root-relative module of the issuing frame
+    line: int          # its line
+    source: str | None = None   # a rename's source, the staging file
+
+
+_WRITE_FLAGS = (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC
+                | os.O_APPEND)
+
+
+class _Recorder:
+    """What one producer run writes, from the audit events it raises."""
+
+    def __init__(self, sandbox: Path, files: dict[str, str]) -> None:
+        self.sandbox = sandbox
+        self.files = files                  # abs file -> code-root rel path
+        self.writes: list[Write] = []
+        self.pending: dict[str, tuple[str, str, int]] = {}
+        self.errors: list[str] = []
+
+    def _issuer(self):
+        frame = sys._getframe(3)            # past the hook and its dispatch
+        while frame is not None:
+            rel = self.files.get(frame.f_code.co_filename)
+            if rel is not None:
+                return rel, frame.f_lineno
+            frame = frame.f_back
+        return None
+
+    def _resolve(self, path, dir_fd) -> str | None:
+        if isinstance(path, int) or path is None:
+            return None
+        path = os.fsdecode(os.fspath(path))
+        if os.path.isabs(path):
+            return os.path.normpath(path)
+        if dir_fd is not None and dir_fd >= 0:
+            return os.path.normpath(os.path.join(
+                os.readlink(f"/proc/self/fd/{dir_fd}"), path))
+        return None
+
+    def _shown(self, path: str) -> str:
+        rel = os.path.relpath(path, self.sandbox)
+        return path if rel.startswith("..") else "/" + rel
+
+    def _record(self, path: str, event: str, issuer, source=None) -> None:
+        self.writes.append(Write(self._shown(path), event, issuer[0],
+                                 issuer[1], source))
+
+    def __call__(self, event: str, args) -> None:
+        if event not in ("open", "os.rename", "os.mkdir", "os.symlink",
+                         "os.link", "os.truncate", "os.remove",
+                         "sqlite3.connect"):
+            return
+        issuer = self._issuer()
+        if issuer is None:
+            return                          # the test's own set-up
+        if event == "open":
+            path, mode, flags = args
+            if mode is None:                # os.open: flags, maybe a dir_fd
+                if not flags & _WRITE_FLAGS:
+                    return
+                if isinstance(path, int):
+                    return
+                name = os.fsdecode(os.fspath(path))
+                if not os.path.isabs(name):
+                    # The event does not carry os.open's dir_fd; the rename
+                    # or removal of the same name, which does, places it.
+                    self.pending[name] = ("open", *issuer)
+                    return
+                self._record(os.path.normpath(name), event, issuer)
+            elif any(c in mode for c in "wax+") and not isinstance(path, int):
+                name = os.fsdecode(os.fspath(path))
+                self._record(os.path.abspath(name), event, issuer)
+        elif event in ("os.rename", "os.link"):
+            src, dst, src_dir_fd, dst_dir_fd = args
+            self._settle(src, src_dir_fd)
+            target = self._resolve(dst, dst_dir_fd)
+            source = self._resolve(src, src_dir_fd)
+            if target is not None:
+                self._record(target, event, issuer,
+                             source and self._shown(source))
+        elif event == "os.remove":
+            self._settle(*args)
+        elif event in ("os.mkdir", "os.symlink"):
+            path = args[0] if event == "os.mkdir" else args[1]
+            target = self._resolve(path, args[-1])
+            if target is not None:
+                self._record(target, event, issuer)
+        elif event == "os.truncate":
+            target = self._resolve(args[0], None)
+            if target is not None:
+                self._record(target, event, issuer)
+        elif event == "sqlite3.connect":
+            target = self._resolve(args[0], None)
+            if target is not None:
+                self._record(target, event, issuer)
+
+    def _settle(self, path, dir_fd) -> None:
+        if isinstance(path, int):
+            return
+        name = os.fsdecode(os.fspath(path))
+        if name in self.pending:
+            event, module, line = self.pending.pop(name)
+            target = self._resolve(name, dir_fd)
+            if target is not None:
+                self._record(target, event, (module, line))
+
+
+#: The recorder of the producer run in progress. An audit hook cannot be
+#: removed, so one is installed per process and does nothing in between.
+_ACTIVE: list[_Recorder | None] = [None]
+
+
+def _audit(event: str, args) -> None:
+    recorder = _ACTIVE[0]
+    if recorder is None:
+        return
+    try:
+        recorder(event, args)
+    except Exception as exc:  # noqa: BLE001 — never break the audited call
+        recorder.errors.append(f"{event}: {type(exc).__name__}: {exc}")
+
+
+_HOOKED: list[bool] = []
+
+
+def _hook() -> None:
+    if not _HOOKED:
+        sys.addaudithook(_audit)
+        _HOOKED.append(True)
+
+
 @dataclass
 class Observed:
-    persisted: set[str]        # production paths of files holding the canary
-    staged: set[str]           # ... of staging files holding it when renamed
-    lines: set[tuple[str, int]]
+    writes: list[Write]
     error: str | None = None
 
 
-class _Watch:
-    """``os.replace`` stand-in and line tracer for one producer run."""
-
-    def __init__(self, canary: bytes, files: set[str]) -> None:
-        self.canary = canary
-        self.files = files
-        self.real = os.replace
-        self.staged: set[str] = set()
-        self.lines: set[tuple[str, int]] = set()
-
-    def __call__(self, src, dst, *, src_dir_fd=None, dst_dir_fd=None):
-        src_path = os.fspath(src)
-        if src_dir_fd is not None and not os.path.isabs(src_path):
-            src_path = os.path.join(
-                os.readlink(f"/proc/self/fd/{src_dir_fd}"), src_path)
-        try:
-            if self.canary in Path(src_path).read_bytes():
-                self.staged.add(os.path.abspath(src_path))
-        except OSError:
-            pass
-        return self.real(src, dst, src_dir_fd=src_dir_fd,
-                         dst_dir_fd=dst_dir_fd)
-
-    def trace(self, frame, event, arg):
-        if frame.f_code.co_filename not in self.files:
-            return None
-
-        def local(frame, event, arg):
-            if event == "line":
-                self.lines.add((frame.f_code.co_filename, frame.f_lineno))
-            return local
-        return local
-
-
-def _production(path: str, sandbox: Path) -> str:
-    """The production path a sandbox path stands for; a path outside the
-    sandbox is returned as is, and no row covers ``/tmp``."""
-    rel = os.path.relpath(path, sandbox)
-    return path if rel.startswith("..") else "/" + rel
-
-
-async def _observe(exercise, sandbox: Path, mods: dict) -> Observed:
-    canary = secrets.token_hex(16)
-    files = {os.path.abspath(m.__file__) for m in mods.values()}
-    watch = _Watch(canary.encode(), files)
-    previous = sys.gettrace()
+async def _observe(exercise, sandbox: Path, mods: dict,
+                   code_root: Path) -> Observed:
+    _hook()
+    files = {os.path.abspath(m.__file__): rel for rel, m in mods.items()}
+    recorder = _Recorder(sandbox, files)
     error = None
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(os, "replace", watch)
-        sys.settrace(watch.trace)
+        _ACTIVE[0] = recorder
         try:
-            await exercise(sandbox, canary, mods, mp)
+            await exercise(sandbox, mods, mp, code_root)
         except Exception as exc:  # noqa: BLE001 — reported as a violation
             error = f"{type(exc).__name__}: {exc}"
         finally:
-            sys.settrace(previous)
-    persisted = set()
-    for dirpath, _, filenames in os.walk(sandbox):
-        for name in filenames:
-            full = os.path.join(dirpath, name)
-            if not stat.S_ISREG(os.lstat(full).st_mode):
-                continue        # a workspace holds a FIFO; never open one
-            try:
-                if canary.encode() in Path(full).read_bytes():
-                    persisted.add(_production(full, sandbox))
-            except OSError:
-                pass
-    return Observed(persisted, {_production(p, sandbox) for p in watch.staged},
-                    watch.lines, error)
+            _ACTIVE[0] = None
+    problems = list(recorder.errors)
+    problems += [f"{module}:{line} wrote {name!r}, whose directory the audit "
+                 "events never named" for name, (_, module, line)
+                 in recorder.pending.items()]
+    if error:
+        problems.insert(0, error)
+    return Observed(recorder.writes, "; ".join(problems) or None)
 
 
 def _sandboxed(sandbox: Path, production: str) -> Path:
@@ -646,29 +759,34 @@ def _constructed(code_root: Path, module: str, cls: str) -> list[str]:
     return paths
 
 
-async def _run_session_registry(sandbox, canary, mods, mp, code_root):
+#: Memory text the runs carry; any non-empty text does.
+MEMORY = "a sample remembered fact"
+
+
+async def _run_session_registry(sandbox, mods, mp, code_root):
     module = mods["session_registry.py"]
     for path in _constructed(code_root, "session_registry.py",
                              "SessionRegistry"):
         reg = module.SessionRegistry(str(_sandboxed(sandbox, path)))
-        reg._write({"telegram-sample": {"sdk_session_id": canary}})
+        reg._write({"telegram-sample": {"sdk_session_id": MEMORY,
+                                        "agent": "resident:assistant"}})
 
 
-async def _run_explanation_store(sandbox, canary, mods, mp, code_root):
+async def _run_explanation_store(sandbox, mods, mp, code_root):
     module = mods["explanation_store.py"]
     for path in _constructed(code_root, "explanation_store.py",
                              "ExplanationStore"):
         module.ExplanationStore(_sandboxed(sandbox, path)).record(
             module.ExplanationRecord(
                 correlation_id="a1b2c3d4", role_id="resident:assistant",
-                kind="resident", resolved_model="model", persona_ref=None,
-                role_checksum="0" * 8, binding_digest=None,
-                dependency_digests=(), effective_config_digest=None,
-                lifecycle_state=None, projection="telegram",
+                kind="resident", resolved_model="model", persona_ref="p",
+                role_checksum="0" * 8, binding_digest="d",
+                dependency_digests=("d",), effective_config_digest="d",
+                lifecycle_state="active", projection="telegram",
                 static_prompt_digest="0" * 8,
-                static_prompt_estimated_tokens=1, memory_tiers=(),
-                memory_attributions=(), tool_calls=(), denials=(),
-                memory_text=canary))
+                static_prompt_estimated_tokens=1, memory_tiers=("private",),
+                memory_attributions=("a",), tool_calls=("t",),
+                denials=("d",), system_prompt=MEMORY, memory_text=MEMORY))
 
 
 def _executor(tmp: Path, name: str, *, template: bool):
@@ -679,11 +797,12 @@ def _executor(tmp: Path, name: str, *, template: bool):
         from role_artifact_stub import STUB_ROLE_ARTIFACT
     exec_dir = tmp / name
     exec_dir.mkdir(parents=True)
-    (exec_dir / "prompt.md").write_text("TASK:{task}\nMEM:{executor_memory}\n")
+    body = ("TASK:{task}\nCTX:{context}\nWORLD:{world_state_summary}\n"
+            "MEM:{executor_memory}\n")
+    (exec_dir / "prompt.md").write_text(body)
     if template:
         (exec_dir / "workspace-template").mkdir()
-        (exec_dir / "workspace-template" / "CLAUDE.md.tmpl").write_text(
-            "TASK:{task}\nMEM:{executor_memory}\n")
+        (exec_dir / "workspace-template" / "CLAUDE.md.tmpl").write_text(body)
     return ExecutorDefinition(
         role_artifact=STUB_ROLE_ARTIFACT, type=name,
         description="a sample executor for the producer pin",
@@ -693,17 +812,24 @@ def _executor(tmp: Path, name: str, *, template: bool):
     )
 
 
+#: Every optional input filled, so a write behind a condition on one happens.
+_INPUTS = {"task": "a sample task", "context": "a sample context",
+           "world_state_summary": "a sample world"}
+
+
 def _record(engagement_id: str, executor_type: str):
     from engagement_registry import EngagementRecord
     return EngagementRecord(
         id=engagement_id, kind="executor", role_or_type=executor_type,
         driver="claude_code", status="active", topic_id=1, started_at=0.0,
         last_user_turn_ts=0.0, last_idle_reminder_ts=0.0, completed_at=None,
-        sdk_session_id=None, origin={}, task="sample task",
+        sdk_session_id=None, task=_INPUTS["task"],
+        origin={"context": _INPUTS["context"],
+                "world_state_summary": _INPUTS["world_state_summary"]},
     )
 
 
-async def _provision(sandbox, canary, mods, mp, *, template: bool) -> Path:
+async def _provision(sandbox, mods, mp, *, template: bool):
     """One workspace, legacy or template branch, at the workspace path the
     launch template uses and with the module's own control root."""
     module = mods["drivers/workspace.py"]
@@ -718,26 +844,24 @@ async def _provision(sandbox, canary, mods, mp, *, template: bool) -> Path:
                      template=template)
     path = await module.provision_workspace(
         engagements_root=str(ws.parent), engagement_id=eid,
-        engagement_auth_token="token-sample", defn=defn, task="sample task",
-        context="", casa_framework_mcp_url="http://127.0.0.1:1/mcp",
+        engagement_auth_token="token-sample", defn=defn,
+        casa_framework_mcp_url="http://127.0.0.1:1/mcp",
         workspace_template_root=(Path(defn.prompt_template_path).parent
                                  / "workspace-template") if template else None,
-        executor_memory=canary,
+        executor_memory=MEMORY, **_INPUTS,
     )
     return Path(path), defn
 
 
-async def _run_provision(sandbox, canary, mods, mp, code_root):
+async def _run_provision(sandbox, mods, mp, code_root):
     for template in (False, True):
-        await _provision(sandbox, canary, mods, mp, template=template)
+        await _provision(sandbox, mods, mp, template=template)
 
 
-async def _run_refresh(sandbox, canary, mods, mp, code_root):
+async def _run_refresh(sandbox, mods, mp, code_root):
     module = mods["drivers/workspace.py"]
     for template in (False, True):
-        ws, defn = await _provision(sandbox, canary, mods, mp,
-                                    template=template)
-        (ws / "CLAUDE.md").write_text("")
+        ws, defn = await _provision(sandbox, mods, mp, template=template)
         module.refresh_claude_md(str(ws), defn=defn,
                                  rec=_record(ws.name, defn.type))
 
@@ -761,42 +885,56 @@ async def observe_producers(code_root: Path, tmp: Path, entries=REGISTRY):
         sandbox.mkdir(parents=True)
         run = EXERCISERS.get(ref)
         if run is None:
-            out.append((entry, ref, Observed(set(), set(), set(),
-                                             "no exerciser for this producer")))
+            out.append((entry, ref, Observed([], "no way to run it")))
             continue
-
-        async def exercise(sb, canary, m, mp, _run=run):
-            await _run(sb, canary, m, mp, code_root)
-        out.append((entry, ref, await _observe(exercise, sandbox, mods)))
+        out.append((entry, ref, await _observe(run, sandbox, mods, code_root)))
     return out
 
 
 # --- the pins --------------------------------------------------------------
+
+def _covered(entry: Entry, path: str, extra=()) -> bool:
+    return _row_matches(entry, path) or any(
+        _glob(path, p)
+        for p in (*entry.staging_patterns, *extra))
+
+
+def _memory_sites(code_root: Path, entries=REGISTRY) -> dict[str, list[Site]]:
+    return {ref: producer_sites(code_root, ref)
+            for e in entries for ref in e.producer}
+
+
+def _site_of(write: Write, sites) -> Site | None:
+    return next((s for s in sites if s.module == write.module
+                 and s.line <= write.line <= s.end_line), None)
+
 
 def producer_pin_violations(code_root: Path, observations, roots,
                             entries=REGISTRY) -> list[str]:
     problems: list[str] = []
     named = {ref for e in entries for ref in e.producer}
     for ref in sorted(set(EXERCISERS) - named):
-        problems.append(f"stale exerciser, no row names {ref}")
+        problems.append(f"stale run, no row names {ref}")
+    by_ref = _memory_sites(code_root, entries)
+    every_site = [s for sites in by_ref.values() for s in sites]
     for entry, ref, seen in observations:
         if seen.error:
             problems.append(f"{ref}: {seen.error}")
-            continue
-        if not seen.persisted:
-            problems.append(f"{ref}: its run persisted no memory text")
-        for path in sorted(seen.persisted):
-            if not _row_matches(entry, path):
-                problems.append(f"{ref} persisted memory text to {path}, "
-                                f"outside row {entry.name!r}")
-        module = os.path.abspath(code_root / ref.split(":")[0])
-        for site in producer_sites(code_root, ref):
-            span = range(site.line, site.end_line + 1)
-            if not any((module, n) in seen.lines for n in span):
+        for w in seen.writes:
+            site = _site_of(w, every_site)
+            allowed = () if site else NON_MEMORY.get(entry.name, ())
+            if not _covered(entry, w.path, allowed):
+                kind = (f"memory text from {site.function} ({site.target!r})"
+                        if site else "a file it was never declared to write")
+                problems.append(f"{w.module}:{w.line} writes {w.path} "
+                                f"({w.event}): {kind}, outside row "
+                                f"{entry.name!r}")
+        for site in by_ref.get(ref, []):
+            if not any(_site_of(w, [site]) for w in seen.writes):
                 problems.append(
                     f"{site.module}:{site.line} ({site.function}) persists "
                     f"memory text to {site.target!r}, and no run of {ref} "
-                    "reached it")
+                    "made it write")
 
     transcript_rows = [e for e in entries if e.kind is Kind.TRANSCRIPTS]
     for where, root in roots:
@@ -809,15 +947,29 @@ def producer_pin_violations(code_root: Path, observations, roots,
     return problems
 
 
-def staging_violations(observations) -> list[str]:
-    problems = []
+def staged_files(code_root: Path, observations, entries=REGISTRY):
+    """``(entry, ref, path)`` for every file a memory-bearing call site
+    creates and later renames into place: the file a crash before the rename
+    leaves behind."""
+    every_site = [s for sites in _memory_sites(code_root, entries).values()
+                  for s in sites]
     for entry, ref, seen in observations:
-        for path in sorted(seen.staged):
-            if not any(fnmatch.fnmatchcase(path, p)
-                       for p in entry.staging_patterns):
-                problems.append(f"{ref} staged memory text at {path}, which "
-                                f"row {entry.name!r} does not declare")
-    return problems
+        sources = {w.source for w in seen.writes if w.source}
+        for w in seen.writes:
+            if w.event == "open" and w.path in sources \
+                    and _site_of(w, every_site):
+                yield entry, ref, w.path
+
+
+def staging_violations(code_root: Path, observations,
+                       entries=REGISTRY) -> list[str]:
+    """Each staged file must match one of its row's staging patterns."""
+    return [f"{ref} staged memory text at {path}, which row {entry.name!r} "
+            "does not declare"
+            for entry, ref, path in staged_files(code_root, observations,
+                                                 entries)
+            if not any(_glob(path, p)
+                       for p in entry.staging_patterns)]
 
 
 async def test_producer_pin_every_persisting_call_site_has_a_row(
@@ -838,14 +990,14 @@ async def test_every_producer_declares_its_staging_pattern(
     tmp_path: Path,
 ) -> None:
     observations = await observe_producers(CODE_ROOT, tmp_path)
-    staged = {ref for _, ref, seen in observations if seen.staged}
+    staged = {ref for _, ref, _ in staged_files(CODE_ROOT, observations)}
     # Every producer that writes through an atomic helper was seen staging.
     assert staged == {
         "session_registry.py:SessionRegistry._write",
         "explanation_store.py:ExplanationStore.record",
         "drivers/workspace.py:refresh_claude_md",
     }, observations
-    assert staging_violations(observations) == []
+    assert staging_violations(CODE_ROOT, observations) == []
 
 
 # --- red cases ---------------------------------------------------------------
@@ -863,15 +1015,23 @@ def _altered_tree(tmp_path: Path, module: str, old: str, new: str) -> Path:
 
 
 async def _violations(tmp_path: Path, module: str, old: str, new: str,
-                      check=producer_pin_violations) -> list[str]:
+                      staging: bool = False) -> list[str]:
     root = _altered_tree(tmp_path, module, old, new)
     observations = await observe_producers(root, tmp_path / "runs")
-    if check is producer_pin_violations:
-        return check(root, observations, [])
-    return check(observations)
+    if staging:
+        return staging_violations(root, observations)
+    return producer_pin_violations(root, observations, [])
 
 
 _PROVISION_ANCHOR = "    provision_control_dir(engagement_id)\n"
+_OUTSIDE = re.compile(
+    r"drivers/workspace\.py:\d+ writes /data/engagements/[0-9a-f]{32}/"
+    r"(?P<name>\S+) \(open\): memory text from provision_workspace "
+    r".*, outside row 'executor memory'")
+
+
+def _outside_names(problems: list[str]) -> set[str]:
+    return {m.group("name") for p in problems if (m := _OUTSIDE.fullmatch(p))}
 
 
 async def test_producer_pin_red_cases(tmp_path: Path) -> None:
@@ -880,31 +1040,68 @@ async def test_producer_pin_red_cases(tmp_path: Path) -> None:
         tmp_path / "1", "drivers/workspace.py", _PROVISION_ANCHOR,
         _PROVISION_ANCHOR
         + "    (ws / 'MEMORY.md').write_text(executor_memory)\n")
-    assert any(re.search(r"provision_workspace persisted memory text to "
-                         rf"/data/engagements/[0-9a-f]{{32}}/MEMORY\.md, "
-                         "outside row 'executor memory'", p)
-               for p in problems), problems
+    assert _outside_names(problems) == {"MEMORY.md"}, problems
 
-    # 2. The same producer and constructor, but the file it writes moved:
-    #    only the observed destination shows it.
+    # 2. The same, behind a condition on another input.
     problems = await _violations(
-        tmp_path / "2", "explanation_store.py",
-        'return self._root / f"{correlation_id}.json"',
-        'return self._root.parent / f"{correlation_id}.json"')
-    assert ("explanation_store.py:ExplanationStore.record persisted memory "
-            "text to /data/a1b2c3d4.json, outside row 'explanations'"
-            ) in problems, problems
+        tmp_path / "2", "drivers/workspace.py", _PROVISION_ANCHOR,
+        _PROVISION_ANCHOR
+        + "    if context: (ws / 'MEMORY.md').write_text(executor_memory)\n")
+    assert _outside_names(problems) == {"MEMORY.md"}, problems
 
-    # 3. A persisting site no run reaches.
+    # 3. An encoded copy: the content says nothing, the write does.
     problems = await _violations(
         tmp_path / "3", "drivers/workspace.py", _PROVISION_ANCHOR,
+        _PROVISION_ANCHOR + "    (ws / 'MEMORY.hex').write_text("
+        "executor_memory.encode().hex())\n")
+    assert _outside_names(problems) == {"MEMORY.hex"}, problems
+
+    # 4. Written, then deleted in normal flow: a crash between the two
+    #    leaves it behind.
+    problems = await _violations(
+        tmp_path / "4", "drivers/workspace.py", _PROVISION_ANCHOR,
+        _PROVISION_ANCHOR
+        + "    (ws / 'MEMORY.md').write_text(executor_memory)\n"
+        "    (ws / 'MEMORY.md').unlink()\n")
+    assert _outside_names(problems) == {"MEMORY.md"}, problems
+
+    # 5. The same constructor, but the record written beside its directory.
+    problems = await _violations(
+        tmp_path / "5", "explanation_store.py",
+        'return self._root / f"{correlation_id}.json"',
+        'return self._root.parent / f"{correlation_id}.json"')
+    assert any(re.fullmatch(
+        r"explanation_store\.py:\d+ writes /data/a1b2c3d4\.json "
+        r"\(os\.rename\): .*, outside row 'explanations'", p)
+        for p in problems), problems
+
+    # 6. A persisting site no run makes write.
+    problems = await _violations(
+        tmp_path / "6", "drivers/workspace.py", _PROVISION_ANCHOR,
         _PROVISION_ANCHOR + "    if task == 'never-run':\n"
         "        (ws / 'NEVER.md').write_text(executor_memory)\n")
     assert any("persists memory text to \"ws / 'NEVER.md'\", and no run of "
-               "drivers/workspace.py:provision_workspace reached it" in p
+               "drivers/workspace.py:provision_workspace made it write" in p
                for p in problems), problems
 
-    # 4. A launcher configuring a transcript root with no row.
+    # 7. A write that carries no memory but was never declared.
+    problems = await _violations(
+        tmp_path / "7", "drivers/workspace.py", _PROVISION_ANCHOR,
+        _PROVISION_ANCHOR + "    (ws / 'NOTES.txt').write_text('x')\n")
+    assert any(re.fullmatch(
+        r"drivers/workspace\.py:\d+ writes /data/engagements/[0-9a-f]{32}/"
+        r"NOTES\.txt \(open\): a file it was never declared to write, "
+        r"outside row 'executor memory'", p) for p in problems), problems
+
+    # 8. Memory text written into a file the producer may write for other
+    #    reasons: a memory-bearing site is judged against its row alone.
+    problems = await _violations(
+        tmp_path / "8", "drivers/workspace.py", _PROVISION_ANCHOR,
+        _PROVISION_ANCHOR + "    (ws / '.claude' / 'settings.json')"
+        ".write_text(executor_memory)\n")
+    assert _outside_names(problems) == {".claude/settings.json"}, problems
+
+    # 9. A launcher configuring a transcript root with no row.
     roots = shell_transcript_roots(
         "etc/s6-overlay/scripts/new-service.sh",
         "#!/bin/bash\nexport HOME=/data/other-home\nexec claude\n")
@@ -922,7 +1119,7 @@ async def test_staging_pin_red_case(tmp_path: Path) -> None:
     problems = await _violations(
         tmp_path / "1", "session_registry.py",
         "mode=PRIVATE, prefix=_STAGING_PREFIX)", "mode=PRIVATE)",
-        check=staging_violations)
+        staging=True)
     assert len(problems) == 1 and re.fullmatch(
         r"session_registry\.py:SessionRegistry\._write staged memory text at "
         r"/data/\.[^/]+\.tmp, which row 'session pointers' does not declare",
@@ -933,7 +1130,7 @@ async def test_staging_pin_red_case(tmp_path: Path) -> None:
         tmp_path / "2", "explanation_store.py",
         'temporary = path.with_name(f"{path.stem}.{uuid.uuid4().hex}.tmp")',
         'temporary = self._root.parent / f"{path.stem}.{uuid.uuid4().hex}.tmp"',
-        check=staging_violations)
+        staging=True)
     assert len(problems) == 1 and re.fullmatch(
         r"explanation_store\.py:ExplanationStore\.record staged memory text "
         r"at /data/a1b2c3d4\.[0-9a-f]{32}\.tmp, which row 'explanations' "
