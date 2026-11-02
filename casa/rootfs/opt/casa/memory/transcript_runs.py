@@ -32,9 +32,10 @@ name (a row whose directory is unknown holds the session it names). A
 confirmed row holds nothing. Which session a run is in is recorded for
 visibility only (:meth:`Run.name`); no deletion depends on it.
 
-Registration and naming are awaited by the run (bounded like a capture, so a
-busy store never holds a turn: a failure is logged and the run continues,
-unprotected). Confirmation and the end time are written off the run's path, in
+Registration and naming are awaited by the run, bounded like a capture: they
+wait at most :data:`LOCK_WAIT_S` on another writer's lock, and the turn waits
+at most :data:`STALL_GUARD_S` for them at all. A failure is logged and the run
+continues, unprotected. Confirmation and the end time are written off the run's path, in
 detached tasks (:func:`settle` awaits them), on one dedicated thread of this
 module's own, in order — never on the event loop's default executor, which
 the turns' bounded writes use. Other blocking store work runs in a worker
@@ -66,12 +67,15 @@ KINDS = (RESIDENT, ENGAGEMENT, DELEGATION, SUMMARY)
 #: no run outlives the process that started it.
 BOOT_ID = uuid.uuid4().hex
 
-#: Seconds a run's registration or naming waits on a busy store; the same
-#: bound a capture's store attempt has.
-BUSY_TIMEOUT_S = 0.05
-#: Seconds a turn waits for its registration or naming, whatever holds it
-#: (the store, or a thread to run on); past it the write counts as failed.
-TURN_WAIT_S = 0.05
+#: Seconds a run's registration or naming waits on another writer's lock
+#: (the store's busy timeout), as a capture's store attempt does. Not a bound
+#: on the write itself, which also takes the disk's own time.
+LOCK_WAIT_S = 0.05
+#: Seconds a turn waits, at most, for its registration or naming to come
+#: back at all: a stall guard against a starved thread or a stalled disk, not
+#: a latency target. Past it the write counts as failed for the turn (a row
+#: that commits later is adopted by the run).
+STALL_GUARD_S = 0.5
 
 RETENTION_ENV = "TRANSCRIPT_RETENTION_DAYS"
 DEFAULT_RETENTION_DAYS = 30
@@ -109,7 +113,7 @@ def directory_key(directory: str | os.PathLike | None) -> str | None:
 def register(store: MemoryStore, *, kind: str, role: str,
              directory: str | None, session_id: str | None = None,
              confirmed: bool = False, boot_id: str = BOOT_ID,
-             busy_timeout: float = BUSY_TIMEOUT_S) -> str:
+             busy_timeout: float = LOCK_WAIT_S) -> str:
     """Insert a run's row and return its id. Raises when the store cannot
     take it."""
     if kind not in KINDS:
@@ -127,7 +131,7 @@ def register(store: MemoryStore, *, kind: str, role: str,
 
 
 def name_session(store: MemoryStore, run_id: str, session_id: str, *,
-                 busy_timeout: float = BUSY_TIMEOUT_S) -> None:
+                 busy_timeout: float = LOCK_WAIT_S) -> None:
     with store.transaction(write=True, busy_timeout=busy_timeout) as conn:
         conn.execute("UPDATE transcript_runs SET session_id = ? "
                      "WHERE run_id = ?", (session_id, run_id))
@@ -286,7 +290,7 @@ _writer = concurrent.futures.ThreadPoolExecutor(
     max_workers=1, thread_name_prefix="transcript-runs")
 
 #: The threads a run's registration and naming run on, awaited by the turn
-#: for at most :data:`TURN_WAIT_S`. Neither the event loop's default executor
+#: for at most :data:`STALL_GUARD_S`. Neither the event loop's default executor
 #: (which anything may saturate) nor :data:`_writer` (whose detached writes
 #: may each wait out the store's busy timeout, and would hold every
 #: registration queued behind them past its bound).
@@ -361,7 +365,7 @@ class Run:
             session_id=session_id, confirmed=confirmed))
         try:
             run_id = await asyncio.wait_for(asyncio.shield(insert),
-                                            TURN_WAIT_S)
+                                            STALL_GUARD_S)
         except Exception as exc:  # noqa: BLE001 — never blocks the run
             logger.warning("%s run of %s not registered (%s: %s); its "
                            "transcript is not protected", kind, role,
@@ -406,7 +410,7 @@ class Run:
         try:
             await asyncio.wait_for(asyncio.get_running_loop().run_in_executor(
                 _turn_pool, name_session, self._store, self.run_id,
-                session_id), TURN_WAIT_S)
+                session_id), STALL_GUARD_S)
         except Exception as exc:  # noqa: BLE001 — never blocks the run
             logger.warning("%s run %s not named %s (%s: %s)", self.kind,
                            self.run_id[:8], session_id, type(exc).__name__,

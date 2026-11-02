@@ -261,9 +261,9 @@ async def test_detached_run_writes_never_take_a_turns_thread(env, tmp_path):
 async def test_registration_never_waits_on_a_saturated_default_executor(
         env, monkeypatch):
     """With the loop's default executor's only thread busy, a run still
-    registers inside its bound. A registration slower than the bound counts
-    as failed for the turn, which goes on at once; the row that commits
-    later is adopted by the run, so its end and close still reach it."""
+    registers at once. A registration stalled past the stall guard counts as
+    failed for the turn, which goes on; the row that commits later is
+    adopted by the run, so its end and close still reach it."""
     import concurrent.futures
     import threading
     import time as _time
@@ -284,16 +284,23 @@ async def test_registration_never_waits_on_a_saturated_default_executor(
         await busy
 
     real = transcript_runs.register
+    delay = {"s": 0.2}
 
     def slow(*a, **k):
-        _time.sleep(0.2)
+        _time.sleep(delay["s"])
         return real(*a, **k)
     monkeypatch.setattr(transcript_runs, "register", slow)
+    # a slow disk is not a stall: a 200 ms write still registers the run
+    disk = await transcript_runs.Run.start(
+        transcript_runs.DELEGATION, role="finance", directory="/d/home",
+        session_id=str(uuid.uuid4()))
+    assert disk.run_id is not None
+    delay["s"] = transcript_runs.STALL_GUARD_S + 0.3
     started = loop.time()
     late = await transcript_runs.Run.start(
         transcript_runs.DELEGATION, role="finance", directory="/d/home",
         session_id=str(uuid.uuid4()))
-    assert loop.time() - started < 0.15
+    assert loop.time() - started < transcript_runs.STALL_GUARD_S + 0.2
     assert late.run_id is None
     late.end()
     late.close()
