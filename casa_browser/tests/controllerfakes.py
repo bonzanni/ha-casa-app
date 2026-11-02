@@ -577,6 +577,11 @@ class FakeBroker:
         self.captured = []
         self.register_origins = []    # slice 5n: the login_origins of every register_item            # slice 5n: (site_id, login_origins, ref, title) per register_capture
         self.login_hook = None
+        # The lazy guest unlock: the page shows a passkey hint, so a login asked with
+        # ``guest_ask`` replies needs_guest (as the real broker does, and only then).
+        self.passkey_hint = False
+        self.guest_asks = []          # the guest_ask of every login, in order
+        self.unlock_hook = None
         self.end_run_fail = 0
         # slice 6: the sign-in code's fill
         self.fill_reply = {"status": "logged_in", "reason": "completed"}
@@ -591,8 +596,11 @@ class FakeBroker:
             self.end_run_fail -= 1
             return {"error": "unavailable"}
         if op == "login":
+            self.guest_asks.append(args.get("guest_ask"))
             if self.login_hook is not None:
                 await self.login_hook(args)
+            if self.passkey_hint and args.get("guest_ask") is True:
+                return {"status": "needs_guest", "reason": "passkey"}
             return self._named(dict(self.login_reply))
         if op == "fill_code":
             self.codes.append(args["code"])
@@ -601,6 +609,8 @@ class FakeBroker:
                 await self.fill_hook(args)
             return self._named(dict(self.fill_reply))
         if op == "unlock_guest":
+            if self.unlock_hook is not None:
+                await self.unlock_hook(args)
             return dict(self.unlock_reply)
         if op == "begin_capture":
             return dict(self.capture_reply)

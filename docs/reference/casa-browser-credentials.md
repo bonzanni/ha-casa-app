@@ -75,6 +75,9 @@ login, titles compared trimmed; the prompt shows no item id) — is tried once p
 (a code continuing that sign-in keeps it), its Sign in counting as the step's submit; a sign-in
 that answered one ends field-free as `no_form` (reason `passkey`: claims nothing), the form
 again is that form's reason, another or unmatched prompt `challenge`.
+With `guest_ask` (never on `fill_code`), a read showing a passkey hint (`passkey_hint`: a
+shown, enabled input on a login origin whose autocomplete ends with the token `webauthn`; or
+`passkey_frame`) ends the sign-in as `needs_guest`, before any further fill or choice.
 Guest bootstrap reads the driver's state and calls sign-in or unlock with credentials
 in call arguments only, within 105 s; other states, `timeout` and driver errors are logged by
 the run controller, which goes on (no live view, slice 5s).

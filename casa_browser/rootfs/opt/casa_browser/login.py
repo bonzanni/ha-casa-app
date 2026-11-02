@@ -33,6 +33,10 @@ class LoginFields:
     submit: str | None
     field_error: bool = False
     passkey_frame: bool = False
+    # A visible, enabled input on a login origin whose autocomplete ends with the token
+    # ``webauthn``: the site's passkey request, and the only sign of one while the extension's
+    # guest has never signed in (no prompt is shown then).
+    passkey_hint: bool = False
 
 @dataclass(frozen=True)
 class CapturedValue:
@@ -594,6 +598,7 @@ class DriverServer(UnixServer):
         field_error = False
         origin_ok = False
         passkey = False
+        hint = False
         for frame in s.page.frames:
             if frame.url.startswith(EXTENSION_ORIGIN + '/'):
                 # 1Password's own frames are never a login origin; only its prompt is read (5v).
@@ -610,6 +615,8 @@ class DriverServer(UnixServer):
                         not await self._checked(driver_session, element.is_enabled(), page_generation)):
                     continue
                 info = await self._checked(driver_session, element.evaluate(_DISCOVER), page_generation)
+                tokens = str(info['autocomplete'] or '').lower().split()
+                hint = hint or (bool(tokens) and tokens[-1] == 'webauthn')
                 role = await self._checked(driver_session, element.evaluate(_ROLE), page_generation)
                 if role is None:
                     continue
@@ -671,7 +678,8 @@ class DriverServer(UnixServer):
         # A field-free landing on the account origin is a valid completion.
         on_site = await self._on_site(s, driver_session)
         return dict(page_generation=page_generation, origin_ok=origin_ok or (not candidates and on_site),
-                    roles=roles, submit=submit, field_error=bool(field_error), passkey_frame=passkey)
+                    roles=roles, submit=submit, field_error=bool(field_error), passkey_frame=passkey,
+                    passkey_hint=hint)
 
     async def _on_site(self, s, sid):
         origins = s.origins | frozenset(await self._site_origins(s))

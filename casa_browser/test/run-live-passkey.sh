@@ -5,9 +5,10 @@
 #
 # The JSON line (read from stdin, held in memory, never written or printed) names a real
 # 1Password guest account and its browsing vault: {"op_token", "vault", "guest_sign_in_address",
-# "guest_email", "guest_password", "guest_secret_key", "item_id"}; item_id is the vault's
-# webauthn.io item, whose passkey must have been registered or used at webauthn.io in the last
-# 24 hours. Needs the internet. Builds the app and test images, starts the app container with its
+# "guest_email", "guest_password", "guest_secret_key", "item_id"}, optionally "password_item_id";
+# item_id is the vault's webauthn.io item, whose passkey must have been registered or used at
+# webauthn.io in the last 24 hours; password_item_id, the vault's the-internet.herokuapp.com
+# item (without it that site's run has no linked item). Needs the internet. Builds the app and test images, starts the app container with its
 # own s6 services (the enforcing proxy, the launcher, Chrome) and options holding only the account
 # host, runs tests/integration/livepasskey.py, then scans the container's log for every value.
 set -euo pipefail
@@ -48,7 +49,7 @@ printf '%s\n' "$secrets" | docker exec -i -w /opt/casa_browser_tests -e LIVE_DEB
 { printf '%s\n' "$secrets"; docker logs "$tag-app" 2>&1; } | python3 -c '
 import json, sys
 values = [v for k, v in json.loads(sys.stdin.readline()).items()
-          if k not in ("vault", "guest_sign_in_address", "item_id") and v]
+          if k not in ("vault", "guest_sign_in_address", "item_id", "password_item_id") and v]
 log = sys.stdin.read()
 leaked = any(v in log for v in values)
 print("run-live-passkey: container log", "LEAKED A VALUE" if leaked else "clean")

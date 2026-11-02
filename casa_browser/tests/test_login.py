@@ -1515,6 +1515,73 @@ async def test_only_1passwords_prompt_in_this_page_is_a_passkey_frame(tmp_path):
             await server.close_session(sid)
 
 
+class HintInput:
+    """An input as field discovery reads it: visible, enabled, its autocomplete; no role
+    (a role-less field keeps forms out of the read)."""
+    def __init__(self, autocomplete, visible=True, enabled=True):
+        self.autocomplete, self.visible, self.enabled = autocomplete, visible, enabled
+
+    async def is_visible(self):
+        return self.visible
+
+    async def is_enabled(self):
+        return self.enabled
+
+    async def evaluate(self, script, arg=None):
+        from casa_browser.login import _DISCOVER, _ROLE
+        if script == _DISCOVER:
+            return {'type': 'text', 'autocomplete': self.autocomplete, 'connected': True,
+                    'invalid': False}
+        assert script == _ROLE
+        return None
+
+
+class HintFrame(PromptFrame):
+    def __init__(self, origin, inputs):
+        super().__init__(origin + '/', None, origin)
+        self.inputs = inputs
+
+    async def query_selector_all(self, selector):
+        assert selector == 'input'
+        return list(self.inputs)
+
+
+@pytest.mark.parametrize('inputs, on_login_origin, expected', [
+    ([HintInput('webauthn')], True, True),
+    ([HintInput('nickname webauthn')], True, True),
+    ([HintInput('Nickname  WEBAUTHN')], True, True),
+    ([HintInput('off'), HintInput('webauthn')], True, True),
+    ([HintInput('webauthn', visible=False)], True, False),
+    ([HintInput('webauthn', enabled=False)], True, False),
+    ([HintInput('webauthn')], False, False),
+    ([HintInput('webauthn nickname')], True, False),
+    ([HintInput('xwebauthn')], True, False),
+    ([HintInput('')], True, False),
+    ([], True, False),
+])
+async def test_a_passkey_hint_is_a_shown_webauthn_field_on_a_login_origin(
+        tmp_path, inputs, on_login_origin, expected):
+    """The lazy guest unlock's T1: a visible, enabled input on a login origin whose autocomplete
+    ends with the token ``webauthn`` (the one sign of a passkey request while the guest has never
+    signed in); nothing else is one."""
+    from unittest.mock import AsyncMock
+    server, _, session, page, proxy = driver(tmp_path)
+    login = 'https://login.example'
+    main = HintFrame(login if on_login_origin else 'https://other.example', inputs)
+    page.main_frame, page.frames = main, [main]
+    page.on = lambda *a: None
+    proxy.status = AsyncMock(return_value={'run_id': 'run', 'site_id': 'site',
+                                           'site_origins': [login]})
+    sid = await server.open_session('login', 'run', 'site', session, proxy, (login,))
+    try:
+        fields = await driver_rpc(server, {'op': 'find_login_fields', 'driver_session': sid,
+                                           'page_generation': session.view_generation})
+        assert fields['passkey_hint'] is expected
+        assert fields['passkey_frame'] is False and fields['roles'] == {}
+    finally:
+        await server.close_session(sid)
+
+
 async def test_a_passkey_click_that_moves_the_page_still_counts(tmp_path):
     """r1 Astra: a successful assertion navigates; the click is not judged by the page it led
     to (as after submit), so the broker learns it was made."""

@@ -72,8 +72,9 @@ class BrokerClient:
         return await self.call('register_capture', site_id=site_id, login_origins=login_origins,
                                operator_ref=operator_ref, title=title)
 
-    async def login(self, run_id, site_id, driver_session):
-        return await self.call('login', run_id=run_id, site_id=site_id, driver_session=driver_session)
+    async def login(self, run_id, site_id, driver_session, guest_ask=False):
+        return await self.call('login', run_id=run_id, site_id=site_id, driver_session=driver_session,
+                               guest_ask=guest_ask)
 
     async def fill_code(self, run_id, site_id, driver_session, page_generation, code):
         """Slice 6 (S6-3): the code goes in this one call's line and nowhere else."""

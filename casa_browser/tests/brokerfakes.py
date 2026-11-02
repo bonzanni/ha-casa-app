@@ -247,6 +247,7 @@ class Step:
     submit: str | None = 'submit'
     on_site_origin: bool = True
     passkey_frame: bool = False   # 1Password's passkey prompt is shown (slice 5v)
+    passkey_hint: bool = False    # a visible webauthn field on a login origin (lazy guest)
 
 
 class FakeDriver:
@@ -280,7 +281,7 @@ class FakeDriver:
         self.calls.append(('find_login_fields', driver_session, page_generation))
         s = self.steps[self.index]
         return LoginFields(page_generation, s.origin_ok, {r: r for r in s.roles}, s.submit,
-                           s.field_error, s.passkey_frame)
+                           s.field_error, s.passkey_frame, s.passkey_hint)
 
     async def choose_passkey(self, driver_session, page_generation, title, username):
         """As the real driver (5v): Sign in on a prompt that offers ``title``/``username`` (the
