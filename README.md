@@ -127,10 +127,11 @@ the appliance a household agent should be.
 ### 🧠 Memory
 
 - **Long-term memory, built in** — agents remember what matters across conversations —
-  names, preferences, the plumber's number. Every turn is captured as it happens, and
-  agents can search, browse and correct what was said; no extra server to run.
+  names, preferences, the plumber's number. Each Telegram turn is captured as it happens,
+  and the assistant can search, browse and correct what was said; no extra server to run.
 - **Yours to keep or forget** — export memory, restore an export, or wipe it all from the
-  add-on terminal; a wipe keeps your reminders, triggers, files and settings.
+  add-on terminal; a wipe keeps your reminders, triggers, settings and files (bar finished
+  engagement workspaces already past their 7-day keep period).
 - **Privacy-tiered recall** — what your assistant knows privately is not what a
   guest-facing voice agent can repeat to whoever is in the room.
 

@@ -51,26 +51,34 @@ below).
 **Long-term memory is built in** (v0.347.0). There is nothing to install and
 no option to set: Casa keeps its own memory store under `/data/memory`.
 
-- **What is said is kept as it is said.** Each turn of a conversation on a
-  trusted channel — your messages, Ellen's replies, what she asks a specialist
+- **What is said is kept as it is said.** Each turn of a Telegram
+  conversation — your messages, Ellen's replies, what she asks a specialist
   and its answer, a finished engagement's summary — is saved while the turn
-  runs, so a restart does not lose it. Voice conversations are not
-  saved, nor is anything an untrusted webhook trigger sends.
-- **Every conversation starts knowing what matters.** In the background, Casa
-  files what was said into notes, and each new conversation starts with them:
-  all of them while they fit the agent's memory budget, and past that an index
-  of them that the agent can open. Within one conversation that view does not
-  change.
+  runs, so a restart does not lose it. Not saved: voice conversations, turns
+  started by a webhook trigger or by `/invoke`, and anything a specialist set
+  to keep no memory writes (its answers and its engagement summary).
+- **Memory-enabled conversations start knowing what matters.** In the
+  background, Casa files what was said into notes. A new conversation of an
+  agent with a memory budget (`memory.token_budget` above 0: Ellen and the
+  butler as shipped, and a specialist given one, when Ellen delegates to it)
+  starts with them: all of them while they fit that budget, and past that an
+  index of them that the agent can open. Within one conversation that view
+  does not change. An agent whose budget is 0 (the concierge as shipped), a
+  conversation with someone other than you at `public` clearance, and a
+  specialist's own engagement topic start with no notes.
 - **Correct me.** When you tell Ellen that something she remembers is wrong,
   she marks your message as a correction. Her notes are refiled from it in the
-  background, and every conversation that is open sees your correction from
-  its next turn.
+  background, and from its next turn every open conversation of a
+  memory-enabled agent — a specialist's engagement topic included — is told
+  about the correction, where that conversation's clearance may read it (the
+  butler is not told a private one).
 - **Search, browse and open.** Ellen can search what was said by its words,
   read back a day or a stretch of up to a week ("what did we say last
-  Tuesday?"), and open entries of her notes. Each saved message comes with the
-  day and time it was said, who said it, and whether one of Casa's scheduled
-  tasks started that turn. Finding nothing is not proof it was never said, and
-  every result tells the agent so.
+  Tuesday?"), and open entries of her notes. Each message a search or browse
+  returns comes with the day and time it was said, who said it, and whether
+  one of Casa's scheduled tasks started that turn. Finding nothing is not
+  proof it was never said, and every search or browse result tells the agent
+  so.
 - **Privacy tiers, and the butler's shared view.** Each saved message is
   classified into a sensitivity tier — `public`, `friends`, `family` or
   `private` — and every read checks it. Your own conversations read
@@ -79,8 +87,16 @@ no option to set: Casa keeps its own memory store under `/data/memory`.
   guest in the room may hear and never your private matters. Someone else
   messaging the bot reads `public` memory only.
 
-Conversation transcripts on disk are kept for 30 days after a conversation can
-no longer be resumed, and only once everything it said is safely in memory.
+Conversation transcripts on disk are kept for a while after their
+conversation ends: an assistant or butler conversation's for 30 days after it
+can no longer be resumed, a delegation's for 30 days after its run ended, and
+an in-Casa specialist or executor engagement's for 30 days after the
+engagement ends. A Claude Code executor engagement's
+workspace, its transcript included, is kept for 7 days after the engagement
+ends and then deleted whole. Either way, a transcript is deleted only once
+every run recorded in its folder is confirmed — that is, once everything Casa
+captured from those runs is durably stored — so it can be kept longer, never
+shorter.
 
 **Wiping memory.** From the add-on terminal, run `casactl memory-wipe --yes`
 (without the flag it refuses and prints what it would erase). Casa records the
@@ -88,9 +104,12 @@ request and restarts itself; the wipe runs as Casa starts, before anything else,
 and erases everything Casa remembers: saved conversations, its notes, the
 search index, the memory exports kept under `/data/memory/exports/`,
 conversation transcripts and conversation pointers, so every conversation
-starts fresh. **Your reminders, triggers, files, settings and prompts, pending
-tasks, plugin data and logs stay** — though one of them can still mention
-something that was forgotten. Anything said between the request and the
+starts fresh. It also deletes, whole, every finished Claude Code executor
+workspace already past its 7-day keep period — its work files and its outbox
+with it — as the regular cleanup would have soon after. **Your reminders,
+triggers, settings and prompts, pending tasks, plugin data and logs stay, and
+so do your files** other than those expired workspaces — though a kept item can
+still mention something that was forgotten. Anything said between the request and the
 restart is erased too. Copies outside Casa (a Home Assistant backup, an export
 you copied elsewhere) are not touched. When Casa is back it tells you on
 Telegram: "Done. I've forgotten everything. Your reminders, triggers, files and
