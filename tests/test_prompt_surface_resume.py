@@ -78,7 +78,6 @@ def test_changed_surface_starts_a_fresh_session_and_retains_the_old() -> None:
     assert decision.resume_sid is None
     assert decision.reason == "prompt_surface_changed"
     # Retained, not dropped — the operator's prior conversation is saved.
-    assert decision.retain_old is True
     assert decision.old is not None
     assert decision.old.sdk_session_id == "sid-1"
 
@@ -93,7 +92,6 @@ def test_entry_written_before_this_gate_is_a_mismatch_not_consent() -> None:
     decision = _decide(entry, DIGEST_A)
     assert decision.action == "new"
     assert decision.reason == "prompt_surface_changed"
-    assert decision.retain_old is True
 
 
 def test_binding_gate_is_checked_before_the_surface_gate() -> None:
@@ -197,18 +195,6 @@ async def test_build_options_splices_the_armed_surface_without_re_rendering(
         from session_reg_helpers import RESIDENT_DIGEST, resident_prov
         from session_reg_helpers import resident_role_id
 
-    class _FakeMemory:
-        async def profile(self, *a, **kw):
-            return None
-
-        async def recall(self, *a, **kw):
-            return []
-
-        def __getattr__(self, _name):
-            async def _noop(*a, **kw):
-                return None
-            return _noop
-
     cfg = AgentConfig(
         role_artifact=STUB_ROLE_ARTIFACT, role="assistant",
         model="claude-sonnet-4-6", system_prompt="You are helpful.",
@@ -224,7 +210,6 @@ async def test_build_options_splices_the_armed_surface_without_re_rendering(
         session_registry=SessionRegistry(str(tmp_path / "sessions.json")),
         mcp_registry=McpServerRegistry(),
         channel_manager=ChannelManager(),
-        semantic_memory=_FakeMemory(),
     )
 
     sentinel = agent_mod.PromptSurface(

@@ -159,10 +159,6 @@ one holding a malformed row, is left byte for byte as it is and nothing is marke
 writes the marks back as the same parsed rows with only that field added, atomically, so no
 record or field is lost.
 
-`memory_wipe.py` keeps the retain fence that long-term bank writers pass until the bank is
-removed. Its former live orchestrator is no longer called by any door, and the bank itself
-is not touched by this wipe.
-
 ## Contracts & invariants
 
 **INV-MEM-035**: The wipe loop runs only in the container-start step, which every longrun and every engagement service starts after; a later oneshot's content operation on a registry path sits behind the `maintenance.json` check.
@@ -235,7 +231,6 @@ content does so inside the `maintenance.json` guard, or the scan fails.
 - `casa/rootfs/opt/casa/memory/maintenance.py`
 - `casa/rootfs/opt/casa/memory/executor_block.py`
 - `casa/rootfs/opt/casa/supervisor_restart.py`
-- `casa/rootfs/opt/casa/memory_wipe.py::RetainFence`
 - `casa/rootfs/opt/casa/tools.py::wipe_memory`
 - `casa/rootfs/opt/casa/internal_handlers.py::build_admin_memory_wipe_handler`
 - `casa/rootfs/opt/casa/drivers/workspace.py::drop_session_without_transcript`
@@ -253,8 +248,6 @@ content does so inside the `maintenance.json` guard, or the scan fails.
 - `tests/test_wipe_door.py`
 - `tests/test_wipe_memory_tool.py`
 - `tests/test_admin_memory_wipe_route.py`
-- `tests/test_retain_fence.py`
-- `tests/test_retain_fence_writers.py`
 
 **Related**
 - [`architecture/memory-store.md`](../architecture/memory-store.md)

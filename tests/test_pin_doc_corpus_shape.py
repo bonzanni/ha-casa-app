@@ -638,21 +638,23 @@ def test_memory_labelling_and_retention_lifecycle_are_separate():
     completeness of the passages remain review obligations. The write-trust
     and completeness rules (INV-MEM-005, INV-MEM-016) later moved on to
     ``architecture/memory-capture.md`` with the rest of capture eligibility,
-    so the lifecycle set names the ids that stayed with the lifecycle.
+    so the lifecycle set names the ids that stayed with the lifecycle; and the
+    retain-path ids (the content addressing, the tag gate, the tier floor, the
+    save guard and the background reset) were retired with the retain path,
+    so each set names its surviving ids and the labelling leads are today's.
 
     Specified by **astra** in the drive red-case round.
     """
     labelling = {
         _declaring_document(inv)
         for inv in (
-            "INV-MEM-004", "INV-MEM-009",
-            "INV-MEM-012", "INV-MEM-018",
+            "INV-MEM-012", "INV-MEM-022", "INV-MEM-026",
         )
     }
     lifecycle = {
         _declaring_document(inv)
         for inv in (
-            "INV-MEM-006", "INV-MEM-013", "INV-MEM-031", "INV-MEM-023",
+            "INV-MEM-013", "INV-MEM-021", "INV-MEM-031",
         )
     }
     counts = (
@@ -662,22 +664,18 @@ def test_memory_labelling_and_retention_lifecycle_are_separate():
     )
     assert counts == (1, 1, 2), (counts, labelling, lifecycle)
 
-    owner = _declaring_document("INV-MEM-004")
+    owner = _declaring_document("INV-MEM-012")
     texts = {
         doc: _normalized((DOCS / doc).read_text())
         for doc in _text_corpus()
     }
     for lead in (
-        "**A scheduled session's output is saved dated and marked; "
-        "nothing stops being saved.**",
-        "**Each item is labelled before it is stored, and the labels "
-        "are not the caller's to choose.**",
-        "**A save can raise a memory's tier and never lowers the tier "
-        "it read.**",
-        "Content addressing only holds because the hash input is the "
-        "utterance and nothing else.",
+        "**A captured item is named by what occurred, never by what it "
+        "says.**",
+        "**A captured item starts `private` and provisional, with a "
+        "floor.**",
+        "**The classifier is given the item as data.**",
         "**Tier classification fails.**",
-        "**The stored-tier read fails.**",
     ):
         total = sum(text.count(lead) for text in texts.values())
         owned = texts[owner].count(lead)

@@ -385,7 +385,6 @@ import tools
 from engagement_registry import EngagementRegistry
 from memory import capture as cap
 driver_kind, tombstone, cwd, root, sid = sys.argv[5:10]
-agent_mod.active_semantic_memory = None
 tools.EXECUTOR_CWD = cwd
 tools._ENGAGEMENTS_ROOT = root
 real_record = cap.record
@@ -477,7 +476,6 @@ async def test_a_lost_terminal_flip_confirms_its_summary_row(home, monkeypatch):
     from engagement_registry import EngagementRegistry
     from tools import FinalizeResult, _finalize_engagement, init_tools
 
-    monkeypatch.setattr(agent_mod, "active_semantic_memory", None, raising=False)
     reg = EngagementRegistry(tombstone_path=str(home.tmp / "e.json"), bus=None)
     rec = await reg.create(kind="executor", role_or_type="configurator",
                            driver="in_casa", task="t", origin=dict(ORIGIN),
@@ -586,7 +584,6 @@ async def test_every_run_kind_registers_before_its_first_capture(
         seen.append((getattr(item, "eligibility", "summary"), open_kinds))
         return await real(item)
     monkeypatch.setattr(capture, "record", record)
-    monkeypatch.setattr(agent_mod, "active_semantic_memory", None, raising=False)
 
     sid = str(uuid.uuid4())
     await _resident_turn(home, [_init(sid), _said("resident answer", sid),
@@ -679,7 +676,6 @@ async def test_a_reload_during_finalize_never_captures_an_uncovered_summary(
     setting = {"writes": before}
     monkeypatch.setattr(delegated_memory, "role_writes_memory",
                         lambda role: setting["writes"])
-    monkeypatch.setattr(agent_mod, "active_semantic_memory", None, raising=False)
 
     async def cancel(engagement):
         setting["writes"] = during           # the reload lands in the teardown
@@ -712,7 +708,6 @@ async def test_a_finalize_cancelled_before_its_tail_confirms_its_summary_row(
     from engagement_registry import EngagementRegistry
     from tools import _finalize_engagement, init_tools
 
-    monkeypatch.setattr(agent_mod, "active_semantic_memory", None, raising=False)
     reg = EngagementRegistry(tombstone_path=str(home.tmp / "e.json"), bus=None)
     rec = await reg.create(kind="executor", role_or_type="configurator",
                            driver="in_casa", task="t", origin=dict(ORIGIN),
@@ -762,7 +757,6 @@ async def test_a_run_cancelled_during_its_registration_confirms_its_row(
         _time.sleep(0.3)                    # committed; the worker not back
         return run_id
     monkeypatch.setattr(transcript_runs, "register", register)
-    monkeypatch.setattr(agent_mod, "active_semantic_memory", None, raising=False)
 
     if path == "resident":
         sid = str(uuid.uuid4())

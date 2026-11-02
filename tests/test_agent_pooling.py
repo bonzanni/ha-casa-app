@@ -26,7 +26,6 @@ from bus import BusMessage, MessageType
 from channels import ChannelManager
 from config import AgentConfig, CharacterConfig, MemoryConfig, ToolsConfig
 from mcp_registry import McpServerRegistry
-from semantic_memory import SemanticMemory
 from session_registry import SessionRegistry, build_scoped_session_key
 from session_reg_helpers import RESIDENT_DIGEST, resident_prov, resident_role_id
 
@@ -111,41 +110,6 @@ class ScriptedFactory:
         return c
 
 
-class FakeSemanticMemory(SemanticMemory):
-    """Overlay/recall double — overlay rendered as <peer_overlay>."""
-
-    def __init__(self, overlay: str = "OV", facts: str = "") -> None:
-        self._overlay = overlay
-        self._facts = facts
-
-    async def retain(self, bank, items, *, async_=True):
-        return None
-
-    async def recall(self, bank, query, *, tags, max_tokens,
-                     types=("world", "experience", "observation"),
-                     tags_match="any", budget="mid"):
-        return self._facts
-
-    async def recall_items(self, bank, query, *, tags, max_tokens, clearance,
-                           types=("world", "experience", "observation"),
-                           tags_match="any", budget="mid"):
-        if not self._facts:
-            return ()
-        from personality_types import RecallHit
-        return (RecallHit(
-            text=self._facts, memory_type="world", sensitivity="friends",
-            application_tags=(), provenance=None, backend_id="b1", document_id=None,
-            chunk_id=None, source_fact_ids=None, metadata=None, context=None,
-            score=None,
-        ),)
-
-    async def document_tags(self, bank, document_id):
-        return None  # #1123: nothing stored here — every document reads never-saved
-
-    async def profile(self, bank):
-        return self._overlay
-
-
 @pytest.fixture
 def scripted_factory(monkeypatch):
     factory = ScriptedFactory()
@@ -172,7 +136,6 @@ async def agent_fixture(tmp_path, scripted_factory):
         session_registry=SessionRegistry(str(tmp_path / "sessions.json")),
         mcp_registry=McpServerRegistry(),
         channel_manager=ChannelManager(),
-        semantic_memory=FakeSemanticMemory(overlay="OV"),
     )
 
     async def send_turn(text, *, msg_type=MessageType.REQUEST,
@@ -557,7 +520,6 @@ async def test_facade_schema_refresh_reconnects_only_butler_with_new_config(
             session_registry=sessions,
             mcp_registry=registry,
             channel_manager=ChannelManager(),
-            semantic_memory=FakeSemanticMemory(),
         )
 
     butler = make_agent("butler")

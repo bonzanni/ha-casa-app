@@ -24,9 +24,13 @@
   kind: meta
   summary: Manifest shard — the engagement documents about files root handles from outside an engagement (born in their own shard so the E shard keeps headroom under the 40 KB index ceiling).
 
-- doc: manifest.d/architecture-f-m.yaml
+- doc: manifest.d/architecture-memory.yaml
   kind: meta
-  summary: Manifest shard — architecture documents memory through O (split from F-M at the 40 KB index ceiling).
+  summary: Manifest shard — the architecture documents about memory, except export and restore (split from memory-through-O at the 40 KB index ceiling).
+
+- doc: manifest.d/architecture-observability.yaml
+  kind: meta
+  summary: Manifest shard — the observability document (split from memory-through-O at the 40 KB index ceiling).
 
 - doc: manifest.d/architecture-f-mcp.yaml
   kind: meta
@@ -34,7 +38,7 @@
 
 - doc: manifest.d/architecture-memory-export-restore.yaml
   kind: meta
-  summary: Manifest shard — the memory export and restore document, born in its own shard because the F-M shard stands just under the 40 KB index ceiling.
+  summary: Manifest shard — the memory export and restore document, born in its own shard because the memory-through-O shard stood just under the 40 KB index ceiling.
 
 - doc: manifest.d/architecture-n-personality.yaml
   kind: meta
@@ -168,7 +172,6 @@
   summary: How an agent running inside Casa should behave, and which property of the system each rule follows from.
   when_changing: agent prompts, refusal text, or anything shaping how an agent acts at runtime
   covers:
-    - casa/rootfs/opt/casa/semantic_memory.py::RecallUnavailable
     - casa/rootfs/opt/casa/authz_grants.py::GrantKey
     - casa/rootfs/opt/casa/tools.py::emit_completion
   tests:

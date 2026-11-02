@@ -68,7 +68,7 @@ class SweepClient:
 class _Decide:
     def __call__(self, channel, entry, now):
         from agent import ResumeDecision
-        return ResumeDecision("new", None, False, None, "missing")
+        return ResumeDecision("new", None, None, "missing")
 
 
 class _Registry:

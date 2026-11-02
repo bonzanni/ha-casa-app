@@ -44,7 +44,6 @@ import engagement_quiesce
 from engagement_uids import (
     UID_BASE, UNALLOCATED_UID, UidAllocator, UidStateError, owner_uid_or_none,
 )
-from freshness_reaper import FreshnessReaper
 from ingress_identity import (
     IngressIdentityError,
     ingress_identity,
@@ -54,7 +53,6 @@ from log_cid import install_logging, new_cid
 from casa_core_middleware import cid_middleware, CasaAccessLogger
 from ha_mcp_facade import HomeAssistantFacade
 from mcp_registry import McpServerRegistry
-from semantic_memory import SemanticMemory
 from policies import load_policies
 import private_state
 from output_boundary import casa_text
@@ -191,9 +189,8 @@ async def start_internal_unix_runner(
         "/admin/reload",
         build_admin_reload_handler(runtime=runtime),
     )
-    # #411: operator memory wipe (casactl memory-wipe --yes). Root-gated by
-    # the same peercred middleware; shares memory_wipe's single-flight slot
-    # with the consented agent-tool door.
+    # Operator memory wipe (casactl memory-wipe --yes). Root-gated by the
+    # same peercred middleware.
     internal_app.router.add_post(
         "/admin/memory/wipe",
         build_admin_memory_wipe_handler(),
@@ -2062,21 +2059,11 @@ async def _drain_broker_before_channel_shutdown(channel_manager: Any) -> None:
     authorization-challenge setup driver can only find a cancelled request
     (never posts a fresh keyboard during shutdown); THEN await the coordinator
     drivers; THEN flush the broker finish hooks; THEN stop the channels.
-
-    #411 (design r3, Terra TOCTOU): wipe admission is FROZEN before any of
-    that — a consent finish hook firing during this drain can then only be
-    refused, never spawn a wipe after the wipe drain below already looked —
-    and any RUNNING wipe is drained after the hooks but before the channels
-    stop (its report edit needs the channel) and before semantic memory
-    closes (its bank delete needs the seam).
     """
-    import memory_wipe
     from verdict_broker import BROKER
-    memory_wipe.freeze_wipes()
     BROKER.cancel_all(reason="casa_shutdown")
     await CHALLENGES.drain()
     await BROKER.drain_hooks()
-    await memory_wipe.drain_wipe_task()
     await channel_manager.stop_all()
 
 
@@ -2759,48 +2746,6 @@ def build_invoke_message(
         # ``_origin_route`` above; a caller cannot reach it through the body.
         trusted_user_origin=ingress_identity("invoke"),
     )
-
-
-# ------------------------------------------------------------------
-# Memory backend selection (spec 2.2b §2)
-# ------------------------------------------------------------------
-
-from dataclasses import dataclass as _dataclass
-
-
-@_dataclass
-class _SemanticMemoryChoice:
-    """Long-term (SemanticMemory) backend pick: hindsight | noop."""
-    backend: str            # hindsight | noop
-    base_url: str = ""
-
-
-def resolve_semantic_memory_choice(env: dict[str, str]) -> _SemanticMemoryChoice:
-    """Resolve the SemanticMemory backend. ``MEMORY_BACKEND=hindsight`` requires
-    ``HINDSIGHT_API_URL`` (no hardcoded ``hindsight`` host — spec §8.8); anything
-    else → noop."""
-    backend = env.get("MEMORY_BACKEND", "").strip().lower()
-    base_url = env.get("HINDSIGHT_API_URL", "").strip()
-    if backend == "hindsight":
-        if not base_url:
-            raise ValueError(
-                "MEMORY_BACKEND=hindsight requires HINDSIGHT_API_URL "
-                "(Hindsight is reached via its hassio alias/IP, not 'hindsight')"
-            )
-        return _SemanticMemoryChoice(backend="hindsight", base_url=base_url)
-    if backend and backend != "noop":
-        logger.warning("MEMORY_BACKEND=%r unrecognized; using noop", backend)
-    return _SemanticMemoryChoice(backend="noop")
-
-
-def build_semantic_memory(choice: _SemanticMemoryChoice) -> "SemanticMemory":
-    from semantic_memory import NoOpSemanticMemory
-    if choice.backend == "hindsight":
-        from hindsight_memory import HindsightSemanticMemory
-        logger.info("Hindsight semantic memory initialized (url=%s)", choice.base_url)
-        return HindsightSemanticMemory(base_url=choice.base_url)
-    logger.info("Semantic memory: NoOp (long-term disabled)")
-    return NoOpSemanticMemory()
 
 
 # ------------------------------------------------------------------
@@ -4234,10 +4179,6 @@ async def main() -> None:
     from reload import note_boot_plugin_env as _note_boot_plugin_env
     _note_boot_plugin_env(set(_plugin_env_entries))
 
-    # 2. Long-term semantic memory (spec §5/§4.2): the only memory path —
-    # Hindsight or noop (resolve_semantic_memory_choice).
-    semantic_memory = build_semantic_memory(resolve_semantic_memory_choice(dict(os.environ)))
-
     # 2a. The memory store: FTS5 check and schema migration. A forward
     # migration runs only after an automatic export of the file as it is. A
     # failure leaves the file untouched and memory unavailable; Casa boots
@@ -4265,13 +4206,12 @@ async def main() -> None:
     memory_writer.configure(memory_store, SdkModelPort())
 
     def _agent_home_dir(role: str) -> str:
-        """Resident transcript cwd (encoded-cwd dir for get_session_messages /
-        delete_session). Matches agent.py's agent_home WHEN ``config.cwd`` is
+        """Resident transcript cwd (encoded-cwd dir for delete_session). Matches agent.py's agent_home WHEN ``config.cwd`` is
         unset — the prod default (all shipped configs have ``cwd: ""``). If a
         resident ever sets a non-empty ``config.cwd``, its transcript lands
         there instead and the reaper/save would look in the wrong dir; keep
         ``config.cwd`` empty for residents. (Formula also duplicated in
-        session_sweeper/session_saver/agent.py — consolidate in a cleanup.)
+        session_sweeper/agent.py — consolidate in a cleanup.)
 
         Task 9: the reaper/sweeper read the stored ``agent`` field, which now
         holds the canonical role_id (``resident:butler``). Route it through
@@ -4316,11 +4256,6 @@ async def main() -> None:
         webhook_session_ttl_days=_env_int_or(
             "WEBHOOK_SESSION_TTL_DAYS", 1, min_value=1,
         ),
-        directory_for=_agent_home_dir,
-    )
-    freshness_reaper = FreshnessReaper(
-        registry=session_registry,
-        semantic_memory=semantic_memory,
         directory_for=_agent_home_dir,
     )
 
@@ -4620,7 +4555,6 @@ async def main() -> None:
         agents_dir=agents_dir,
         home_root="/config/agent-home",
         defaults_root="/opt/casa",
-        semantic_memory=semantic_memory,
         job_registry=job_registry,
         explanation_store=explanation_store,
     )
@@ -4744,7 +4678,6 @@ async def main() -> None:
     for role, cfg in role_configs.items():
         agent = Agent(
             config=cfg,
-            semantic_memory=semantic_memory,
             session_registry=session_registry,
             mcp_registry=mcp_registry,
             channel_manager=channel_manager,
@@ -5012,7 +4945,6 @@ async def main() -> None:
     # can find it without circular imports.
     import agent as agent_mod
     agent_mod.active_engagement_driver = engagement_driver
-    agent_mod.active_semantic_memory = semantic_memory   # resident long-term (Hindsight seam)
 
     async def _memory_spool_notice(text: str) -> None:
         await operator_notify(channel_manager, text)
@@ -5154,7 +5086,6 @@ async def main() -> None:
         telegram_channel._engagement_driver = engagement_driver
         telegram_channel._observer = observer
         telegram_channel._session_registry = session_registry
-        telegram_channel._semantic_memory = semantic_memory
 
         async def _driver_send_user_turn(rec, text, *, tg_message_id=None,
                                          inbound_token=None, batch=None):
@@ -5373,7 +5304,6 @@ async def main() -> None:
             sse_path=voice_sse_path,
             ws_path=voice_ws_path,
             agent_configs=role_configs,
-            memory=semantic_memory,
             idle_timeout=voice_idle_timeout,
             sse_enabled=voice_sse_enabled,
             ws_enabled=voice_ws_enabled,
@@ -5468,12 +5398,6 @@ async def main() -> None:
             system_rows += _row("Public URL", public_url, "on")
         else:
             system_rows += _row("Public URL", "not set", "off")
-        try:
-            _sem_backend = resolve_semantic_memory_choice(dict(os.environ)).backend
-        except Exception:  # noqa: BLE001 — dashboard must never crash on a memory misconfig
-            _sem_backend = "noop"
-        mem_type = {"hindsight": "Hindsight", "noop": "none"}.get(_sem_backend, _sem_backend)
-        system_rows += _row("Memory", mem_type, "on" if _sem_backend != "noop" else "off")
         system_rows += _row("Webhook auth", "enabled" if webhook_secret else "disabled",
                             "on" if webhook_secret else "off")
         total_triggers = sum(len(cfg.triggers) for cfg in role_configs.values())
@@ -5913,7 +5837,6 @@ async def main() -> None:
     # raising RuntimeError on every fire (silent regression from v0.13.0).
     # Pass the coroutine functions directly with kwargs.
     session_sweeper.start()
-    freshness_reaper.start()
     # D-4 (v0.69.0): reap stale engagements FIRST, then run the idle pass —
     # a record past the reap TTL is cancelled outright and must not receive
     # a pointless idle reminder in the same daily run.
@@ -6243,14 +6166,12 @@ async def main() -> None:
         engagement_registry=engagement_registry,
         scheduler=scheduler,
         session_sweeper=session_sweeper,
-        freshness_reaper=freshness_reaper,
         runtime=runtime,
         ha_facade=ha_facade,
         bus=bus,
         loop_tasks=loop_tasks,
         channel_manager=channel_manager,
         runners=runners,
-        semantic_memory=semantic_memory,
     )
 
 
@@ -6260,14 +6181,12 @@ async def _shutdown_cleanup(
     engagement_registry: Any,
     scheduler: Any,
     session_sweeper: Any,
-    freshness_reaper: Any,
     runtime: Any,
     ha_facade: Any,
     bus: Any,
     loop_tasks: Any,
     channel_manager: Any,
     runners: Any,
-    semantic_memory: Any,
 ) -> None:
     """Casa's graceful stop, from the stop signal to "shutdown complete".
 
@@ -6325,7 +6244,6 @@ async def _shutdown_cleanup(
     logger.info("Shutting down...")
     scheduler.shutdown(wait=False)
     await session_sweeper.stop()
-    await freshness_reaper.stop()
     # NOTE: deliberately do NOT close the plugin outbox here. Its dir-FDs are
     # O_CLOEXEC and process-lived (the OS reclaims them on exit); closing the
     # live singleton during shutdown — before HTTP ingress + agent turns are
@@ -6397,7 +6315,7 @@ async def _shutdown_cleanup(
     # unix socket) BEFORE draining the force cleanups below. runner.cleanup()
     # drains in-flight requests then closes the listener, so once it returns no
     # webhook/voice/internal inbound can reach an agent. Moved AHEAD of the
-    # force-cleanup drain (and of semantic_memory.close) to make the drain point
+    # force-cleanup drain to make the drain point
     # INGRESS-QUIESCENT — see the F1 rationale below.
     for _r in runners:
         await _r.cleanup()
@@ -6413,8 +6331,7 @@ async def _shutdown_cleanup(
     # closed — so nothing can spawn a fresh force-suspend or fire an operator-
     # away clear that hands a new cleanup off after the loop-drain settles. The
     # drain itself re-snapshots both surfaces each iteration to catch a handoff
-    # that lands mid-drain. Kept BEFORE semantic_memory.close so the memory
-    # client outlives any in-flight cleanup. Bounded + truthful — never wedges
+    # that lands mid-drain. Bounded + truthful — never wedges
     # shutdown (getattr-guarded so a driver without the seam is a no-op).
     _cc_driver = getattr(runtime, "claude_code_driver", None)
     _drain_force = getattr(_cc_driver, "drain_force_cleanups", None)
@@ -6442,12 +6359,6 @@ async def _shutdown_cleanup(
     except Exception:  # noqa: BLE001 — shutdown must complete
         logger.warning("job registry close failed", exc_info=True)
 
-    # Close the shared Hindsight client session (L32) so aiohttp does not
-    # warn about an unclosed session; no-op for NoOp/other backends.
-    try:
-        await semantic_memory.close()
-    except Exception:  # noqa: BLE001
-        logger.warning("semantic memory close failed", exc_info=True)
     # #895 (INV-CONC-006): the stop cancels and gathers the bus's CONSUMER
     # tasks; every turn runs in a DISPATCH task, in a map nothing above reads.
     # So this line used to be written while turns the process had admitted were

@@ -87,11 +87,6 @@ def _butler(tmp_path, mcp_registry):
             RESIDENT_DIGEST, resident_prov, resident_role_id,
         )
 
-    class _FakeMemory:
-        def __getattr__(self, _name):
-            async def _noop(*a, **kw):
-                return None
-            return _noop
 
     cfg = AgentConfig(
         role_artifact=STUB_ROLE_ARTIFACT, role="butler",
@@ -111,7 +106,6 @@ def _butler(tmp_path, mcp_registry):
         session_registry=SessionRegistry(str(tmp_path / "sessions.json")),
         mcp_registry=mcp_registry,
         channel_manager=ChannelManager(),
-        semantic_memory=_FakeMemory(),
     )
 
 
@@ -213,7 +207,6 @@ async def test_missing_tool_refreshes_and_retires_previous_surface(tmp_path):
         decision = _decide(butler, entry, d2)
         assert decision.action == "new"
         assert decision.reason == "prompt_surface_changed"
-        assert decision.retain_old is True
         assert decision.old.sdk_session_id == "sid-before-upgrade"
     finally:
         await facade.aclose()
@@ -241,7 +234,6 @@ async def test_changed_ha_publication_changes_armed_surface(tmp_path):
         decision = _decide(butler, entry, d2)
         assert decision.action == "new"
         assert decision.reason == "prompt_surface_changed"
-        assert decision.retain_old is True
     finally:
         await facade.aclose()
 

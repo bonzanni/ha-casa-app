@@ -30,8 +30,8 @@ class TestAutomationValidation:
         )
 
     def test_automation_cannot_carry_a_human_user_id(self):
-        # user_id is what promotes a provenance to a NAMED person in
-        # recall_renderer.provenance_view. A shared secret identifies no human,
+        # user_id is what promotes a provenance to a NAMED person. A shared
+        # secret identifies no human,
         # so an automation must never be able to acquire one.
         from personality_types import SpeakerProvenance
         from speaker_provenance import validate_speaker_provenance

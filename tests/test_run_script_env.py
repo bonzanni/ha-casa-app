@@ -111,28 +111,12 @@ def test_run_script_never_exports_the_null_sentinel_as_webhook_secret():
     )
 
 
-def test_run_script_derives_memory_backend_from_hindsight_url():
-    """v0.46.1: setting `hindsight_api_url` must turn long-term memory ON.
-
-    `casa_core.resolve_semantic_memory_choice` requires
-    `MEMORY_BACKEND=hindsight` (anything else → noop) AND nothing else in the
-    add-on sets `MEMORY_BACKEND` — so `svc-casa/run` derives it inside the
-    `hindsight_api_url` conditional. Without this, the URL option alone leaves
-    casa on noop and long-term memory is unreachable. Regression guard."""
+def test_run_script_exports_no_memory_backend():
+    """Memory is built in: the run script passes no memory-server address and
+    selects no memory backend."""
     script = _read_run_script()
-    # MEMORY_BACKEND must be exported...
-    assert "export MEMORY_BACKEND=" in script, (
-        "svc-casa/run must export MEMORY_BACKEND (else hindsight is unreachable)"
-    )
-    # ...and it must be derived to "hindsight" inside the hindsight_api_url block,
-    # i.e. between the `if [ "$_hindsight_url" ... ]` guard and its closing `fi`.
-    start = script.index("_hindsight_url=")
-    block = script[start:script.index("\nfi", start)]
-    assert "export HINDSIGHT_API_URL=" in block
-    assert 'export MEMORY_BACKEND="${MEMORY_BACKEND:-hindsight}"' in block, (
-        "MEMORY_BACKEND=hindsight must be derived inside the hindsight_api_url "
-        "conditional so the URL is the single toggle"
-    )
+    assert "MEMORY_BACKEND" not in script
+    assert "_API_URL" not in script
 
 
 def test_run_script_execs_venv_python():

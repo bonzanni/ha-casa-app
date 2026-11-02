@@ -3,7 +3,7 @@
 The primary containment boundary: an untrusted webhook turn must build agent
 options that load no plugins, no external hooks, no built-in tools, and expose
 exactly two casa-framework tools — so third-party content cannot reach Bash,
-the filesystem, the network, or unauthenticated Hindsight.
+the filesystem or the network.
 """
 from __future__ import annotations
 

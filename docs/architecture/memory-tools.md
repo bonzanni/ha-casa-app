@@ -114,7 +114,7 @@ gets `search_memory` alone, at its declared clearance.
 Enforced in the search and browse tools, which attach `tools.MEMORY_READ_NOTE` to every
 `ok` result and report an unavailable or failing store as `unavailable`; in the engager
 query's unknown and unavailable arms; and in the executor archive, which puts
-`recall_renderer.READABLE_SLICE_PROMPT_LINE` under its heading. The unavailable message
+`tools.READABLE_SLICE_PROMPT_LINE` under its heading. The unavailable message
 says when to tell: a person who asked is told memory could not be checked, and an outage
 on a check nobody asked for is no reason to send anything (#1116).
 

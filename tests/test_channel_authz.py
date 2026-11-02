@@ -86,13 +86,6 @@ class _FakeAgentConfig:
     channels: list[str] = ["telegram"]  # NOT ha_voice — deliberately unauthorized
 
 
-class _DummyMemory:
-    async def ensure_session(self, *a, **kw): return None
-    async def get_context(self, *a, **kw): return ""
-    async def add_turn(self, *a, **kw): return None
-    async def profile(self, bank: str) -> str: return ""
-
-
 @pytest.fixture
 async def voice_app_unauthorized_resident():
     """A resident ('assistant') is registered on the voice config map but
@@ -113,7 +106,6 @@ async def voice_app_unauthorized_resident():
         sse_path="/api/converse",
         ws_path="/api/converse/ws",
         agent_configs={"assistant": _FakeAgentConfig()},
-        memory=_DummyMemory(),
         idle_timeout=300,
     )
     app = web.Application(middlewares=[cid_middleware])
@@ -189,7 +181,6 @@ class TestWSChannelAuthz:
             sse_path="/api/converse",
             ws_path="/api/converse/ws",
             agent_configs={"assistant": _FakeAgentConfig()},  # channels=["telegram"]
-            memory=_DummyMemory(),
             idle_timeout=300,
         )
 

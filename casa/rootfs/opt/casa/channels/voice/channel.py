@@ -38,7 +38,6 @@ from channels.voice.session import VoiceSessionPool
 from channels.voice.tts_adapter import TagDialectAdapter, has_speech
 import voice_phrases
 from job_registry import JobTransitionError, VoiceJob
-from semantic_memory import SemanticMemory
 
 logger = logging.getLogger(__name__)
 
@@ -482,7 +481,6 @@ class VoiceChannel(Channel):
         sse_path: str,
         ws_path: str,
         agent_configs: Mapping[str, Any],
-        memory: SemanticMemory,
         idle_timeout: int,
         sse_enabled: bool = True,
         ws_enabled: bool = True,
@@ -500,7 +498,6 @@ class VoiceChannel(Channel):
         self._sse_enabled = sse_enabled
         self._ws_enabled = ws_enabled
         self._agent_configs = agent_configs
-        self._memory = memory
         self.pool = VoiceSessionPool(idle_timeout=idle_timeout)
         self._sweeper: asyncio.Task | None = None
         # Per-scope_id rate limit (spec 5.2 §8). None = unlimited.

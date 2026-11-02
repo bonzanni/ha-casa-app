@@ -2778,8 +2778,6 @@ class TestHandoffLine:
                 "agent": "finance", "task": "x", "context": "", "mode": mode,
             }), origin)
             await asyncio.gather(*list(tools_mod._handoff_line_tasks))
-            await asyncio.gather(*list(tools_mod._specialist_bg_tasks),
-                                 return_exceptions=True)
         return json.loads(result["content"][0]["text"]), ch.lines
 
     async def test_an_operator_sync_delegation_shows_the_line(self, tmp_path, monkeypatch):

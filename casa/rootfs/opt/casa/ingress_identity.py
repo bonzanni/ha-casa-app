@@ -19,10 +19,8 @@ They deliberately do NOT share a peer. Both are gated by an HMAC secret, and the
 *authorization* — ``channel_trust("webhook") == "authenticated"`` is unchanged.
 Authorship is a different axis: a shared bearer secret proves possession, never
 that a particular human wrote the text. Neither peer is ever a human's. Naming
-``/invoke`` inside the ``telegram:`` namespace would alias caller-supplied text
-into a human's Hindsight document namespace (``content_document_id`` keys on
-``user_peer``), so a caller could one day upsert over the operator's own memories
-by echoing something they once said.
+``/invoke`` inside the ``telegram:`` namespace would attribute caller-supplied
+text to a human (memory keys a speaker's words on ``user_peer``).
 
 **The operator has no peer literal.** Every accepted Telegram sender — the
 configured operator included — resolves to ``telegram:<sender id>``. What
@@ -33,9 +31,7 @@ one person's name in a shipped default and made "who is the operator?" a fact
 about this module rather than about ``telegram_chat_id``. Two consequences worth
 knowing: the peer is now derived from operator-controlled configuration, so the
 boot check can no longer compare it against a literal (it checks the NAMESPACE
-instead — see :func:`validate_ingress_identity_table`), and the operator's
-Hindsight document ids moved with the peer, since ``content_document_id`` hashes
-it (a one-time re-keying, not a migration path).
+instead — see :func:`validate_ingress_identity_table`).
 
 Both automation routes yield ``speaker_kind="automation"`` (see
 ``speaker_provenance.UserProvenance.from_origin``) — honest about being

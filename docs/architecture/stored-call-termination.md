@@ -50,7 +50,7 @@ and in order, the function decides the fault (unconfirmed — a teardown itself 
 loop shutdown included — faults the desk, tells, refreshes the health report), closes the
 fds and releases the permit; nothing else in the tap performs any of these. The pinned run's
 transcript is not deleted here: like every delegated run's, it is kept for the delegated
-retention pass (INV-ENG-028, [`delegation.md`](delegation.md)). A pinned fd is dropped as extinct only on its own pidfd's evidence,
+retention pass (INV-ENG-028, [`engagement-transcript-reaping.md`](engagement-transcript-reaping.md)). A pinned fd is dropped as extinct only on its own pidfd's evidence,
 never on a `/proc` read's outcome: a descendant that is unreadable or whose descent from the
 CLI cannot be proven is kept, awaited, never signalled, and leaves the run unconfirmed. The
 controller owns the client from before its entry is awaited, so a ceiling that fires while

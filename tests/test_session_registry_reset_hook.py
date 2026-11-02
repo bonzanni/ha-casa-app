@@ -1,5 +1,4 @@
-"""AR-4: /new must flush (close) the warm client BEFORE the reset's retain
-reads the transcript from disk."""
+"""AR-4: /new closes the warm client before it drops the session pointer."""
 from __future__ import annotations
 
 import pytest
@@ -36,31 +35,19 @@ async def test_notify_reset_survives_listener_error(tmp_path):
     assert seen == ["k"]
 
 
-async def test_reset_channel_notifies_before_the_retain(tmp_path, monkeypatch):
-    """#878 retargeted the seam from save_session to retain_cold_session; the
-    ordering this test exists for — flush-close BEFORE the transcript read — is
-    unchanged, and so is the pointer removal. #1352: the retain now runs in the
-    background after the reset returns, so the test waits for it."""
-    import asyncio
+async def test_reset_channel_notifies_before_the_pointer_drops(tmp_path):
+    """The pool close runs while the pointer still names the session, and the
+    pointer is gone once the reset returns."""
+    from session_registry import reset_channel
 
-    import session_saver
-    monkeypatch.setattr(
-        session_saver, "_COLD_RETAIN_RETRY_DIR", str(tmp_path / "retry"))
     reg = SessionRegistry(str(tmp_path / "sessions.json"))
     await reg.register("telegram-1", "assistant", "sid-1", binding_digest=STUB_BINDING_DIGEST, speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV)
-    order = []
+    seen = []
 
-    async def listener(key): order.append(f"reset:{key}")
+    async def listener(key):
+        seen.append((key, (reg.get(key) or {}).get("sdk_session_id")))
     reg.add_reset_listener(listener)
 
-    async def fake_retain(old, **kw):
-        order.append("retain")
-    monkeypatch.setattr(session_saver, "retain_cold_session", fake_retain)
-
-    await session_saver.reset_channel(
-        "telegram-1", reg, object(), channel="telegram",
-    )
-    await asyncio.wait_for(asyncio.gather(
-        *list(session_saver._RESET_RETAINS)), timeout=5)
-    assert order == ["reset:telegram-1", "retain"]
+    await reset_channel("telegram-1", reg)
+    assert seen == [("telegram-1", "sid-1")]
     assert reg.get("telegram-1") is None

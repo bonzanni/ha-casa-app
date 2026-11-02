@@ -1232,12 +1232,6 @@ def _construct_agent(*, cfg, runtime, agent_registry=None):
         channel_manager=runtime.channel_manager,
         agent_registry=(agent_registry if agent_registry is not None
                         else runtime.agent_registry),
-        # H9 (v0.45.0 regression, fixed v0.49.0): reuse the boot-built
-        # long-term memory. Omitting this silently downgraded every
-        # reload-constructed resident to NoOpSemanticMemory. getattr with
-        # None default keeps runtime stand-ins without the field working
-        # (Agent maps None → NoOp).
-        semantic_memory=getattr(runtime, "semantic_memory", None),
     )
 
 

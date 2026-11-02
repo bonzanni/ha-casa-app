@@ -379,9 +379,9 @@ async def test_svc_tools_call_uses_default_forwarder_timeout() -> None:
     default instead of an explicit override.
 
     L72/L21: that default must be generous enough to comfortably exceed
-    the slowest legitimate tools/call handler (query_engager's Hindsight
-    recall + ClaudeSDKClient one-shot synthesis; emit_completion's
-    Telegram teardown + two classify_tier one-shots) — a sub-minute cap
+    the slowest legitimate tools/call handler (query_engager's memory
+    read + ClaudeSDKClient one-shot synthesis; emit_completion's
+    Telegram teardown) — a sub-minute cap
     (the old 10s) produces spurious casa_temporarily_unavailable errors
     while the server-side call is still succeeding."""
     captured: dict = {}
@@ -411,8 +411,8 @@ async def test_svc_tools_call_uses_default_forwarder_timeout() -> None:
     default = inspect.signature(_forward_to_internal).parameters["timeout_s"].default
     assert default is not None and default >= 60, (
         "the forwarder's default timeout_s must comfortably exceed "
-        "worst-case server-side tool latency (SDK one-shot + Hindsight "
-        f"recall); got {default!r}"
+        "worst-case server-side tool latency (SDK one-shot + memory "
+        f"read); got {default!r}"
     )
 
 

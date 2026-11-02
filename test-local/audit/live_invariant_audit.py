@@ -2,8 +2,7 @@
 
 Runs INSIDE the casa container (docker exec … python3 live_invariant_audit.py)
 and checks ground-truth invariants on live state, rather than driving turns.
-Catches soak-emergent drift (F1 memory duplication), config/capability
-regressions, and malformed on-disk state — the class no single-turn probe sees.
+Catches config/capability regressions and malformed on-disk state — the class no single-turn probe sees.
 Never mutates. Prints a JSON report + a PASS/WARN/FAIL summary; exit code is the
 number of FAIL-level invariants (0 = clean) so it can gate a cron.
 
@@ -15,8 +14,6 @@ Invariants:
                      (env-substituted, so model placeholders resolve).
   D sessions.json  — parses; no 'active' entry missing sdk_session_id.
   E engagements    — engagements.json parses; no active/idle entry missing topic_id.
-  F memory dup     — Hindsight bank document dup-rate (1 - distinct_content_hash
-                     / total) below THRESHOLD (F1 guard). WARN, not FAIL.
 """
 from __future__ import annotations
 
@@ -24,12 +21,9 @@ import json
 import os
 import sys
 import time
-import urllib.request
 
 CONFIG_DIR = os.environ.get("CASA_CONFIG_DIR", "/config")
 DATA_DIR = os.environ.get("CASA_DATA_DIR", "/data")
-HINDSIGHT_URL = os.environ.get("HINDSIGHT_API_URL", "").rstrip("/")
-DUP_RATE_WARN = 0.35  # tune as the bank grows; F1 was ~0.6 on the probe cluster
 
 report: dict = {"pass": [], "warn": [], "fail": []}
 
@@ -199,38 +193,9 @@ def check_engagements():
         _ok("E/engagements", f"{len(recs)} records, well-formed")
 
 
-def check_memory_dup():
-    if not HINDSIGHT_URL:
-        _warn("F/memory_dup", "HINDSIGHT_API_URL unset — skipped")
-        return
-    try:
-        total = 0
-        hashes = set()
-        offset = 0
-        while True:
-            url = f"{HINDSIGHT_URL}/v1/default/banks/casa/documents?limit=200&offset={offset}"
-            d = json.loads(urllib.request.urlopen(url, timeout=30).read())
-            items = d.get("items", [])
-            for it in items:
-                total += 1
-                hashes.add(it.get("content_hash") or it.get("id"))
-            offset += len(items)
-            if offset >= d.get("total", 0) or not items:
-                break
-    except Exception as e:
-        _warn("F/memory_dup", f"could not sample bank: {e}")
-        return
-    if total == 0:
-        _ok("F/memory_dup", "bank empty")
-        return
-    dup_rate = 1 - len(hashes) / total
-    msg = f"{total} docs, {len(hashes)} distinct content → dup_rate={dup_rate:.2f}"
-    (_warn if dup_rate > DUP_RATE_WARN else _ok)("F/memory_dup", msg)
-
-
 def main():
     for fn in (check_config_sync, check_delegates_tool, check_schema_valid,
-               check_sessions, check_engagements, check_memory_dup):
+               check_sessions, check_engagements):
         try:
             fn()
         except Exception as e:  # an auditor bug must not look like a prod fail

@@ -4,17 +4,16 @@ Two mechanisms live in :mod:`session_gate` and both are pinned here:
 
 - ``session_write_gate`` — the per-``channel_key`` write gate. Moved out of
   :mod:`agent` unchanged (it was #573's scheduled-only gate) so that
-  :mod:`memory_wipe` and :mod:`session_saver` can import it without the
-  lazy-import cycle dance those modules already do.
+  :mod:`session_registry`'s reset can import it without a lazy-import
+  cycle.
 - ``TurnAdmission`` — the process-wide readers/writer barrier over TURNS. A
   retirement takes the exclusive side to drain every in-flight turn on ANY
   path; the pool could only ever join the turns it owned.
 
-The cancellation tests are the point of this file, not decoration: the sibling
-``RetainFence`` carries a specific scar (``memory_wipe.py``,
-``_ExclusiveSection.__aenter__``) because the obvious readers/writer
-implementation left the exclusive lock held forever when the drain was
-cancelled, deadlocking every later turn AND every later wipe.
+The cancellation tests are the point of this file, not decoration: the obvious
+readers/writer implementation left the exclusive lock held forever when the
+drain was cancelled, deadlocking every later turn AND every later
+retirement.
 """
 import asyncio
 
@@ -201,10 +200,9 @@ class TestTurnAdmission:
             pass
 
     async def test_cancel_during_drain_releases_exclusive(self):
-        """Terra r2 S1 — the scar the sibling RetainFence already carries
-        (``_ExclusiveSection.__aenter__``): a retirement cancelled while
-        draining must not leave the exclusive lock held, or every later turn
-        AND every later retirement deadlocks."""
+        """Terra r2 S1: a retirement cancelled while draining must not leave
+        the exclusive lock held, or every later turn AND every later
+        retirement deadlocks."""
         adm = TurnAdmission()
         release = asyncio.Event()
 
@@ -263,8 +261,8 @@ class TestTurnAdmission:
         await asyncio.wait_for(_exclusive_roundtrip(adm), timeout=1)
 
     async def test_module_singleton_exists(self):
-        """One barrier per process, like memory_wipe.FENCE — every turn and
-        every retirement must share exactly this instance."""
+        """One barrier per process — every turn and every retirement must
+        share exactly this instance."""
         assert isinstance(TURN_ADMISSION, TurnAdmission)
 
 

@@ -56,8 +56,6 @@ class TestInProcessToolFence:
     ):
         import agent as agent_mod
         import tools
-        monkeypatch.setattr(
-            agent_mod, "active_semantic_memory", AsyncMock(), raising=False)
         reg, rec = await _pending_record(tmp_path)
         token = tools.engagement_var.set(rec)
         try:

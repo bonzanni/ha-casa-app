@@ -3,7 +3,7 @@ specialist whose ``memory.token_budget`` is 0, or a role no longer loaded — is
 never stored in ``events`` or ``engagement_summaries``, through every path its
 output reaches a capture seam; the resident's own words around it are.
 
-The notices and relays are the real producers the INV-MEM-024 tests use
+The notices and relays are the real producers
 (``Agent._synthesize_delegation_turn``, ``plugin_continuations``), and every
 seam is the real one, against a real store.
 """
@@ -38,8 +38,6 @@ def roles(monkeypatch):
          "finance": _cfg("finance", "specialist", 4000),
          "assistant": _cfg("assistant", "resident", 5000)}
     monkeypatch.setattr(tools, "_agent_role_map", m, raising=False)
-    monkeypatch.setattr(agent_mod, "active_semantic_memory", None,
-                        raising=False)
     return m
 
 
@@ -182,8 +180,6 @@ async def _finalize(tmp_path, monkeypatch, roles, role, text):
     driver.cancel = AsyncMock()
     await tools._finalize_engagement(rec, outcome="completed", text=text,
                                      artifacts=[], next_steps=[], driver=driver)
-    await asyncio.gather(*list(tools._specialist_bg_tasks),
-                         return_exceptions=True)
 
 
 async def test_an_excluded_engagement_leaves_no_summary(roles, mem, tmp_path,

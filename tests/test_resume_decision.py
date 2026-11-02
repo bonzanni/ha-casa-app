@@ -44,7 +44,6 @@ def test_binding_mismatch_retains_immutable_old_snapshot() -> None:
     )
     assert decision.action == "new"
     assert decision.reason == "binding_mismatch"
-    assert decision.retain_old is True
     assert decision.old.sdk_session_id == entry["sdk_session_id"]
     # The snapshot is an immutable copy — mutating the source dict afterwards
     # must never bleed into the retained decision.
@@ -61,7 +60,6 @@ def test_role_mismatch_still_rejects_before_digest_is_checked() -> None:
     )
     assert decision.reason == "role_mismatch"
     assert decision.action == "new"
-    assert decision.retain_old is True
 
 
 def test_matching_role_and_digest_within_window_resumes() -> None:
@@ -74,7 +72,6 @@ def test_matching_role_and_digest_within_window_resumes() -> None:
     assert decision.action == "resume"
     assert decision.reason == "fresh"
     assert decision.resume_sid == entry["sdk_session_id"]
-    assert decision.retain_old is False
 
 
 def test_missing_entry_is_new_with_no_old_snapshot() -> None:
@@ -86,7 +83,6 @@ def test_missing_entry_is_new_with_no_old_snapshot() -> None:
     assert decision.action == "new"
     assert decision.reason == "missing"
     assert decision.old is None
-    assert decision.retain_old is False
 
 
 def test_expired_matching_entry_retains_old_for_save() -> None:
@@ -102,7 +98,6 @@ def test_expired_matching_entry_retains_old_for_save() -> None:
     )
     assert decision.action == "new"
     assert decision.reason == "expired"
-    assert decision.retain_old is True
     assert decision.old.sdk_session_id == entry["sdk_session_id"]
 
 
@@ -115,7 +110,6 @@ def test_invalid_last_active_is_new_and_retains_old() -> None:
     )
     assert decision.action == "new"
     assert decision.reason == "invalid_entry"
-    assert decision.retain_old is True
 
 
 def test_naive_last_active_is_invalid_entry_not_a_crash() -> None:
@@ -129,7 +123,6 @@ def test_naive_last_active_is_invalid_entry_not_a_crash() -> None:
     )
     assert decision.action == "new"
     assert decision.reason == "invalid_entry"
-    assert decision.retain_old is True
 
 
 def test_legacy_short_role_entry_cannot_resume_under_canonical_role_id() -> None:
@@ -149,8 +142,8 @@ def test_legacy_short_role_entry_cannot_resume_under_canonical_role_id() -> None
 # I1 (final review, Task 9): agent_home_for_role_id must return EXACTLY the
 # path agent_home.py's provision_agent_home() creates (bare
 # ``<home_root>/<slot>`` for every kind — residents AND specialists; today's
-# provisioning never nests under ``{kind}s/``), since the reaper/reset/
-# cold-retain path derives its transcript directory from this function.
+# provisioning never nests under ``{kind}s/``), since the transcript
+# sweepers derive the transcript directory from this function.
 
 
 def test_agent_home_for_role_id_resident_is_bare_slug() -> None:

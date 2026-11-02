@@ -168,7 +168,7 @@ restart even though the registry file does.
 `in_casa` engagement's terminal status is on disk and the retention has passed, a separate
 pass deletes the CLI sessions that record names (INV-ENG-027,
 `architecture/engagement-transcript-reaping.md`), and a delegated session goes by its run's
-row (INV-ENG-028, `architecture/delegation.md`); sessions nothing names are not touched.
+row (INV-ENG-028, `architecture/engagement-transcript-reaping.md`); sessions nothing names are not touched.
 
 An entry also records the digest of the structural prompt surface the session was
 created with — the delegates, background jobs and executors the agent could reach at
@@ -185,11 +185,9 @@ schedule fired (a trigger or reminder prompt, a scheduled question's continuatio
 delegated result returning into such a conversation) registered it. Every registration
 writes it explicitly, from the reserved marker Casa's scheduled dispatch stamps and never
 from the message type or the speaker; once true it stays true for that entry, because a
-key is either a schedule's label or a person's chat. The durable cold-retain retry record
-carries it too. It has three read states: true, false, and absent — an entry or retry
-record written before the upgrade that added it has none, and absent is read as *unknown*,
-never as "not scheduled". Saving uses it to date and mark what the session retained
-(`architecture/memory-labelling.md`); an unknown session is saved as before.
+key is either a schedule's label or a person's chat. It has three read states: true, false,
+and absent — an entry written before the upgrade that added it has none, and absent is read
+as *unknown*, never as "not scheduled".
 
 A session entry may also carry two advisory resume-fault fields — the fault-streak state
 of the turn loop's INV-TURN-008 (`architecture/turn-loop.md`), persisted with the entry

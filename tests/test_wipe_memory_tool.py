@@ -104,7 +104,7 @@ def _set_origin(agent_mod, **overrides):
     return agent_mod.origin_var.set(origin)
 
 
-async def _invoke_raw(monkeypatch, *, channel=None, registry=None, sem=None,
+async def _invoke_raw(monkeypatch, *, channel=None, registry=None,
                       origin_overrides=None):
     import agent as agent_mod
     import tools as tools_mod
@@ -120,10 +120,6 @@ async def _invoke_raw(monkeypatch, *, channel=None, registry=None, sem=None,
     monkeypatch.setattr(
         agent_mod, "active_session_registry",
         registry if registry is not None else MagicMock(), raising=False,
-    )
-    monkeypatch.setattr(
-        agent_mod, "active_semantic_memory",
-        sem if sem is not None else MagicMock(), raising=False,
     )
     tok = _set_origin(agent_mod, **(origin_overrides or {}))
     try:

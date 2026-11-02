@@ -25,11 +25,6 @@ def served(monkeypatch, tmp_path):
     from memory_serving_support import fact, ledger_store, wire
     store = ledger_store(tmp_path, [fact("sentinel", MEMORY)])
     wire(monkeypatch, store)
-
-    async def fake_retain(sem, **kw):
-        return None
-    monkeypatch.setattr(tools_mod, "retain_delegated", fake_retain)
-    monkeypatch.setattr(agent_mod, "active_semantic_memory", object(), raising=False)
     monkeypatch.setattr(tools_mod, "_agent_role_map", {}, raising=False)
     monkeypatch.setattr(tools_mod, "ClaudeSDKClient", _FakeSpecialistClient)
     _FakeSpecialistClient.reset(response="answer")

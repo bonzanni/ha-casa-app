@@ -1,11 +1,11 @@
 """#911 defect B — a test that assigns an `agent` `active_*` singleton must not
 be able to change what a LATER test observes.
 
-`agent.py:133-140` declares six process-global references "written by
+`agent.py` declares five process-global references "written by
 `casa_core.main` so tool handlers can reach them without circular imports"
 (`active_engagement_driver`, `active_executor_registry`,
-`active_claude_code_driver`, `active_runtime`, `active_semantic_memory`,
-`active_session_registry`), and `casa_core.py:4748` writes a seventh,
+`active_claude_code_driver`, `active_runtime`, `active_session_registry`),
+and `casa_core.main` writes a sixth,
 `active_observer`, which `agent.py` does not declare at all. Every consumer
 resolves them at CALL time — `tools.py:10316-10326` and the sibling resolutions
 at :10798-10804 and :11215-11218 — and gates each use on `hasattr`, a predicate
@@ -24,14 +24,14 @@ assignments; `tests/test_requires_contract.py:780` leaks the same global and
 bites nobody today only because it sorts after the victim.
 
 `tests/conftest.py`'s `_restore_active_runtime` (#818) already did this for ONE
-of the seven. This file pins the family-wide guarantee — a D34 DECLARATION, not
+of the six. This file pins the family-wide guarantee — a D34 DECLARATION, not
 a pinning of prior support: the base establishes the discipline for
 `active_runtime` alone.
 
 Each pair is ORDERED: the first test leaks, the second measures what the next
 test actually gets. The victims assert COUNTS over object identity, in one
 assertion each so none hides another. `active_future_probe` is deliberately a
-name `agent.py` does not declare: a fixture that enumerates today's seven names
+name `agent.py` does not declare: a fixture that enumerates today's six names
 passes every other arm here and fails on it, which is the difference between a
 list that goes stale and a sweep that does not.
 """
@@ -58,7 +58,7 @@ class _Sentinel:
         return f"<sentinel {self.name}>"
 
 
-#: The seven singletons the tree actually carries, plus one name nothing
+#: The six singletons the tree actually carries, plus one name nothing
 #: declares. Ordered so the failure text reads the same way every run.
 NAMES = (
     "active_claude_code_driver",
@@ -67,7 +67,6 @@ NAMES = (
     "active_future_probe",
     "active_observer",
     "active_runtime",
-    "active_semantic_memory",
     "active_session_registry",
 )
 
@@ -139,7 +138,7 @@ def test_pair1_victim_gets_the_baseline_back(baseline, baseline_names):
     restored (`tests/conftest.py`'s #818 fixture), and `active_added_probe` is
     still on the module."""
     observed = (_restored(baseline), _introduced(baseline_names))
-    assert observed == (8, 0), (observed, sorted(_active_names()))
+    assert observed == (7, 0), (observed, sorted(_active_names()))
 
 
 # --- pair 2: deletion, which a restore must also undo -----------------------
@@ -158,7 +157,7 @@ def test_pair2_victim_gets_every_deleted_binding_back(baseline, baseline_names):
     """A teardown that only re-`setattr`s the names it saw CHANGE, rather than
     every name in its snapshot, leaves the deleted ones missing here."""
     observed = _restored(baseline)
-    assert observed == 8, (observed, sorted(_active_names()))
+    assert observed == 7, (observed, sorted(_active_names()))
 
 
 # --- the fixture in a lane that cannot import `agent` -----------------------

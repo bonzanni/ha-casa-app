@@ -77,12 +77,11 @@ tool's result tells the assistant the person now sees the answer under its name,
 buffered turn's closing silence after a delivered relay is earned (see
 [`scheduled-prompt-endings.md`](scheduled-prompt-endings.md)).
 
-**Memory is unchanged.** A delegate's answer reaches the shared bank through the delegated
-run's own retain, attributed to the delegate and gated on its memory switch
-([`memory-lifecycle.md`](memory-lifecycle.md)), not through the assistant's retelling; a
-later notice is banked as a user turn as before. The relay writes no transcript text (tool
-blocks carry none), so it adds no copy of the answer and removes none; only the duplicate
-the assistant's retelling used to add under her own name is gone.
+**Memory is unchanged.** A delegate's answer reaches memory through the delegated run's own
+capture, attributed to the delegate and gated on its memory switch
+([`memory-capture.md`](memory-capture.md)), not through the assistant's retelling; a later
+notice is captured as the opening of a turn as before. The relay posts the answer and
+captures no copy of it.
 
 **The fallback.** When `relay_answer` cannot post — nothing held, the channel unavailable, the
 send failed — its result says so, and the doctrine has the assistant pass the answer on by

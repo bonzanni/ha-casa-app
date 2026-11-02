@@ -161,8 +161,6 @@ async def test_a_delegated_specialist_gets_its_view_then_the_note(
     store = ledger_store(tmp_path, [fact("code", "4471")])
     wire(monkeypatch, store)
     _correction(store, "the code is 4417")
-    monkeypatch.setattr(agent_mod, "active_semantic_memory", None,
-                        raising=False)
     token = agent_mod.origin_var.set({
         "role": "assistant", "channel": "telegram", "chat_id": "42",
         "cid": "c", "delegation_depth": 0})

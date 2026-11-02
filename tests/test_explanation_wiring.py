@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 from aiohttp import web
@@ -30,7 +30,7 @@ from explanation_store import ExplanationStore
 from log_cid import cid_var
 from mcp_registry import McpServerRegistry
 from personality_binding import BindingRecord
-from personality_types import RecallHit, SpeakerProvenance
+from personality_types import SpeakerProvenance
 from prompt_compiler import CompiledProjection, CompiledPromptBundle
 from session_registry import SessionRegistry
 
@@ -116,13 +116,12 @@ def _resident_config(semantic_hint="You are Ellen (legacy).") -> AgentConfig:
     )
 
 
-def _make_agent(tmp_path, *, semantic_memory) -> agent_mod.Agent:
+def _make_agent(tmp_path) -> agent_mod.Agent:
     return agent_mod.Agent(
         config=_resident_config(),
         session_registry=SessionRegistry(str(tmp_path / "sessions.json")),
         mcp_registry=McpServerRegistry(),
         channel_manager=ChannelManager(),
-        semantic_memory=semantic_memory,
     )
 
 
@@ -138,7 +137,7 @@ def _admin_app(store: ExplanationStore) -> web.Application:
     return app
 
 
-def _drive_turn(agent, monkeypatch, store, *, cid, semantic_memory):
+def _drive_turn(agent, monkeypatch, store, *, cid):
     """Run one telegram turn through the production _process path with the CLI
     stubbed and the module-global runtime pointed at ``store``."""
     monkeypatch.setattr(
@@ -165,16 +164,10 @@ def test_turn_records_explanation_roundtrips_via_admin_route(tmp_path, monkeypat
     """The record lands under the turn's real cid → GET /admin/explain returns
     200 with the honest projection/model/binding, sensitive fields stripped."""
     store = ExplanationStore(tmp_path / "explanations")
-    sm = AsyncMock()
-    sm.profile.return_value = ""
-    # No memory backend hits: a fresh text turn's auto-recall runs but finds an
-    # unavailable backend → the record's memory fields stay empty (honest).
-    from semantic_memory import RecallUnavailable
-    sm.recall_items.side_effect = RecallUnavailable("not_configured")
-    agent = _make_agent(tmp_path, semantic_memory=sm)
+    agent = _make_agent(tmp_path)
 
     cid = "c-explain-roundtrip-1"
-    _drive_turn(agent, monkeypatch, store, cid=cid, semantic_memory=sm)
+    _drive_turn(agent, monkeypatch, store, cid=cid)
 
     # The store now holds the record (proves record() was called on the turn).
     raw = store.get(cid, show_sensitive=False)
@@ -213,11 +206,10 @@ def test_turn_records_the_served_view_its_ledger_and_base(tmp_path, monkeypatch)
     commit_no, _ = add(memory, [fact("venue", "the office")])
     wire(monkeypatch, memory)
     store = ExplanationStore(tmp_path / "explanations")
-    sm = AsyncMock()
-    agent = _make_agent(tmp_path, semantic_memory=sm)
+    agent = _make_agent(tmp_path)
 
     cid = "c-explain-memory-1"
-    _drive_turn(agent, monkeypatch, store, cid=cid, semantic_memory=sm)
+    _drive_turn(agent, monkeypatch, store, cid=cid)
 
     full = store.get(cid, show_sensitive=True)
     assert full["memory_tiers"] == ["private"]
@@ -226,7 +218,6 @@ def test_turn_records_the_served_view_its_ledger_and_base(tmp_path, monkeypatch)
     assert full["memory_text"].startswith("<memory>")
     assert "decided to ship Friday" in full["memory_text"]
     assert "decided to ship Friday" in full["system_prompt"]
-    sm.recall_items.assert_not_called()
     default = store.get(cid, show_sensitive=False)
     assert "memory_text" not in default and "memory_tiers" not in default
     assert default["memory_ledger"] == "private"
@@ -261,11 +252,7 @@ def test_explanation_store_failure_never_fails_the_turn(tmp_path, monkeypatch):
         def record(self, record):
             raise RuntimeError("disk full")
 
-    sm = AsyncMock()
-    sm.profile.return_value = ""
-    from semantic_memory import RecallUnavailable
-    sm.recall_items.side_effect = RecallUnavailable("not_configured")
-    agent = _make_agent(tmp_path, semantic_memory=sm)
+    agent = _make_agent(tmp_path)
 
     monkeypatch.setattr(
         agent_mod, "active_runtime",
@@ -307,11 +294,7 @@ def test_explanation_record_runs_off_the_event_loop(tmp_path, monkeypatch):
             # fail-safe try/except — it must NOT fail the turn.
             raise RuntimeError("boom in worker thread")
 
-    sm = AsyncMock()
-    sm.profile.return_value = ""
-    from semantic_memory import RecallUnavailable
-    sm.recall_items.side_effect = RecallUnavailable("not_configured")
-    agent = _make_agent(tmp_path, semantic_memory=sm)
+    agent = _make_agent(tmp_path)
 
     monkeypatch.setattr(
         agent_mod, "active_runtime",

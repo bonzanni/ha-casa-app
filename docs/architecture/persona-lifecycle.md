@@ -167,12 +167,11 @@ gate compares: each stored session's digest against the promoted one, never agai
 identity being left behind. So a conversation last held under the persona now being
 promoted RESUMES — an A-to-B-to-A round trip is the reachable case — which is why the
 notice says *a different persona identity* rather than *every conversation*, and says
-only that in the ordinary case those are the same set. Voice is not a bank-writable channel, so a voice
-conversation is lost outright. A Telegram transcript is *offered* to long-term memory on
-the way out, which is a weaker thing than being kept: memory is off by default, and even
-configured the cold retain discards behind the wipe fence, retains nothing for a snapshot
-without usable provenance, and gives up after bounded retries. That is why the notice the
-operator is shown says nothing about recovery — see below.
+only that in the ordinary case those are the same set. What a conversation said reaches
+memory through live capture as it happens, on the channels capture admits, and voice is
+not one ([`memory-capture.md`](memory-capture.md)); a session starting fresh is still a lost
+conversation. That is why the notice the operator is shown says nothing about recovery —
+see below.
 
 Staging is the last moment the telling is worth anything: the operator is about to order
 the restart themselves, and afterwards the notice is an apology rather than a warning.

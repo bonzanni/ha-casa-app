@@ -1162,13 +1162,6 @@ class _FakeAgentConfig:
     channels: list[str] = ["ha_voice"]
 
 
-class _DummyMemory:
-    async def ensure_session(self, *a, **kw): return None
-    async def get_context(self, *a, **kw): return ""
-    async def add_turn(self, *a, **kw): return None
-    async def profile(self, bank: str) -> str: return ""
-
-
 class _ProgressTwiceAgent:
     """Calls _progress_sink twice — the sink itself must enforce
     exactly-once; a second call must not write a second block."""
@@ -1286,8 +1279,7 @@ class TestVoiceProgressSink:
         channel = VoiceChannel(
             bus=bus, default_agent="butler", webhook_secret=VOICE_TEST_SECRET,
             sse_path="/api/converse", ws_path="/api/converse/ws",
-            agent_configs={"butler": _FakeAgentConfig()},
-            memory=_DummyMemory(), idle_timeout=300,
+            agent_configs={"butler": _FakeAgentConfig()}, idle_timeout=300,
         )
         app = web.Application(middlewares=[cid_middleware])
         channel.register_routes(app)
@@ -1313,8 +1305,7 @@ class TestVoiceProgressSink:
         channel = VoiceChannel(
             bus=bus, default_agent="butler", webhook_secret=VOICE_TEST_SECRET,
             sse_path="/api/converse", ws_path="/api/converse/ws",
-            agent_configs={"butler": _FakeAgentConfig()},
-            memory=_DummyMemory(), idle_timeout=300,
+            agent_configs={"butler": _FakeAgentConfig()}, idle_timeout=300,
         )
         app = web.Application(middlewares=[cid_middleware])
         channel.register_routes(app)
@@ -1362,8 +1353,7 @@ class TestVoiceProgressSink:
         channel = VoiceChannel(
             bus=bus, default_agent="butler", webhook_secret=VOICE_TEST_SECRET,
             sse_path="/api/converse", ws_path="/api/converse/ws",
-            agent_configs={"butler": _FakeAgentConfig()},
-            memory=_DummyMemory(), idle_timeout=300,
+            agent_configs={"butler": _FakeAgentConfig()}, idle_timeout=300,
         )
         app = web.Application(middlewares=[cid_middleware])
         channel.register_routes(app)
@@ -1396,8 +1386,7 @@ class TestVoiceProgressSink:
         channel = VoiceChannel(
             bus=bus, default_agent="butler", webhook_secret=VOICE_TEST_SECRET,
             sse_path="/api/converse", ws_path="/api/converse/ws",
-            agent_configs={"butler": _FakeAgentConfig()},
-            memory=_DummyMemory(), idle_timeout=300,
+            agent_configs={"butler": _FakeAgentConfig()}, idle_timeout=300,
         )
         ws = _BarrierWS(barrier_reached, release)
         try:

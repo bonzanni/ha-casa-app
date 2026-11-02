@@ -134,7 +134,6 @@ def _stop(monkeypatch, tmp_path, *, release: bool, with_bus: bool,
                 engagement_registry=engagement_registry,
                 scheduler=MagicMock(shutdown=MagicMock()),
                 session_sweeper=MagicMock(stop=AsyncMock()),
-                freshness_reaper=MagicMock(stop=AsyncMock()),
                 runtime=MagicMock(agents={}, claude_code_driver=None),
                 ha_facade=None,
                 bus=bus if bus is not None else MagicMock(
@@ -144,7 +143,6 @@ def _stop(monkeypatch, tmp_path, *, release: bool, with_bus: bool,
                 loop_tasks=[],
                 channel_manager=cm,
                 runners=[],
-                semantic_memory=MagicMock(close=AsyncMock()),
             )
 
     asyncio.run(_main())

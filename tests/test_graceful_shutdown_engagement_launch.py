@@ -500,7 +500,6 @@ def _run_stop(monkeypatch, tmp_path, latency, *, meta_write_fails=False,
                 engagement_registry=registry,
                 scheduler=MagicMock(shutdown=MagicMock()),
                 session_sweeper=MagicMock(stop=AsyncMock()),
-                freshness_reaper=MagicMock(stop=AsyncMock()),
                 runtime=MagicMock(agents={}, claude_code_driver=None),
                 ha_facade=None,
                 bus=MagicMock(begin_shutdown=MagicMock(),
@@ -509,7 +508,6 @@ def _run_stop(monkeypatch, tmp_path, latency, *, meta_write_fails=False,
                 loop_tasks=[],
                 channel_manager=cm,
                 runners=[],
-                semantic_memory=MagicMock(close=AsyncMock()),
             )
         # main() returns here. Everything after this point is asyncio.run's own
         # shutdown, whose _cancel_all_tasks is the edge a stop really delivers —
@@ -1025,7 +1023,6 @@ def _run_delegation_stop(monkeypatch, tmp_path, *, late_pair: bool,
             engagement_registry=engagement_registry,
             scheduler=MagicMock(shutdown=MagicMock()),
             session_sweeper=MagicMock(stop=AsyncMock()),
-            freshness_reaper=MagicMock(stop=AsyncMock()),
             runtime=MagicMock(agents={"assistant": _Agent()},
                               claude_code_driver=_Driver()),
             ha_facade=None,
@@ -1033,7 +1030,6 @@ def _run_delegation_stop(monkeypatch, tmp_path, *, late_pair: bool,
             loop_tasks=[],
             channel_manager=cm,
             runners=[],
-            semantic_memory=MagicMock(close=AsyncMock()),
         )
         # main() returns here; asyncio.run's _cancel_all_tasks is next.
 

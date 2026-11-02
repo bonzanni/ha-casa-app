@@ -655,8 +655,8 @@ class InstalledSpecialistIndex:
 
 
 # Module-level accessor over the ONE process-wide index casa_core.py constructs at
-# boot — mirrors the established module-level pattern (e.g. tools.active_semantic_memory,
-# tools.py:3549) other registries in this codebase already use for tool-module access
+# boot — mirrors the established module-level pattern (e.g. agent.active_runtime)
+# other registries in this codebase already use for tool-module access
 # without threading a runtime object through every call. Plan 2's N1 and Task 14's
 # admin handlers read through this seam.
 _active_index: "InstalledSpecialistIndex | None" = None

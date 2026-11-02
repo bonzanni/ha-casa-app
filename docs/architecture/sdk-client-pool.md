@@ -47,11 +47,11 @@ binds the child's context to a frozen copy around `create_task` (INV-OUT-004 in
 Without the lock, a freshness expiry and an interleaved turn on the same channel can fork a
 conversation or hand a turn a stale client. A mismatched entry is closed and rebuilt rather
 than reused. Know the lock's reach, though: it serializes the *decision* against the
-registry's current contents, not a multi-step mutation of them — a `/new` reset retains the
-old session and only afterwards removes the pointer, none of it under a pool entry lock.
+registry's current contents, not a multi-step mutation of them — a `/new` reset closes the
+warm client and only afterwards removes the pointer, none of it under a pool entry lock.
 What covers that window is the retirement claim
-([`architecture/memory-lifecycle.md`](memory-lifecycle.md), INV-MEM-013): while a reset or
-wipe holds one, this decision — and the bypass path's — is forced to fresh, so a turn
+([`architecture/memory-lifecycle.md`](memory-lifecycle.md), INV-MEM-013): while a reset
+holds one, this decision — and the bypass path's — is forced to fresh, so a turn
 dispatched before the reset began starts a new conversation instead of resuming the dying
 one, and the registry refuses to re-register the dying id. The decision reports such a
 steer as its own reason, so observability tells the truth about why a session was fresh.
@@ -90,7 +90,7 @@ finishing old turn could otherwise re-register the session the reset just remove
 What it does not cover: it joins *invalidation* generations only, and only for clients this
 pool owns — a turn on a path the pool never saw has no entry lock to join. Ordering against
 turns in general is not this hook's job: a reset takes the per-key write gate and turn
-admission for its whole body (INV-CONC-004, INV-CONC-005), which is what orders it against
+admission (shared) for its whole body (INV-CONC-004), which is what orders it against
 turns dispatched before or after it on the same key, on any path.
 
 **INV-TURN-010**: The pool's drain timeout bounds every generation, invalidated ones included: an entry whose lock an invalidation closer still cannot acquire when the drain window ends is force-closed — its transport disconnected — and the closer is neither cancelled nor waited on further. The bound is on the lock wait, not on transport I/O.

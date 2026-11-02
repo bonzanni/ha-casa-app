@@ -58,8 +58,7 @@ the appliance a household agent should be.
   - [3. Connect Telegram](#3-connect-telegram)
   - [4. Enable engagements](#4-enable-engagements)
   - [5. Add voice *(optional)*](#5-add-voice-optional--talk-to-the-fleet-through-home-assistant-assist)
-  - [6. Turn on long-term memory *(optional)*](#6-turn-on-long-term-memory-optional--the-fleet-works-without-it-but-forgets-between-conversations)
-  - [7. Reference secrets from 1Password *(optional)*](#7-reference-secrets-from-1password-optional--for-the-security-conscious)
+  - [6. Reference secrets from 1Password *(optional)*](#6-reference-secrets-from-1password-optional--for-the-security-conscious)
   - [Requirements recap](#requirements-recap)
 - [The fleet](#the-fleet)
 - [Growing your own fleet](#growing-your-own-fleet)
@@ -127,15 +126,9 @@ the appliance a household agent should be.
 
 ### 🧠 Memory
 
-- **Long-term memory** *(optional)* — agents remember what matters across conversations —
-  names, preferences, the plumber's number — backed by a
-  [Hindsight](https://github.com/vectorize-io/hindsight) server,
-  [itself installable as a Home Assistant app](#companion-apps--integrations).
-- **Memory that understands, not just stores** — Hindsight extracts durable facts from
-  conversation and recalls them by meaning, so "what did we decide about the kitchen?"
-  works without magic keywords.
-- **Inspectable** — Hindsight's control-plane UI lets you see and curate what the fleet
-  has remembered about your household.
+- **Long-term memory, built in** — agents remember what matters across conversations —
+  names, preferences, the plumber's number. Every turn is captured as it happens, and
+  agents can search, browse and correct what was said; no extra server to run.
 - **Privacy-tiered recall** — what your assistant knows privately is not what a
   guest-facing voice agent can repeat to whoever is in the room.
 
@@ -246,15 +239,7 @@ including verification and automatic topic cleanup.
 
 Details, transports and troubleshooting: [voice pipeline](casa/DOCS.md#voice-pipeline).
 
-### 6. Turn on long-term memory *(optional — the fleet works without it, but forgets between conversations)*
-
-1. Install [`ha-hindsight-app`](https://github.com/bonzanni/ha-hindsight-app) — a
-   Hindsight memory server packaged as a Home Assistant app — and start it.
-2. Set `hindsight_api_url` to its internal address (e.g. `http://<app-hostname>:8888`).
-   That single option is the switch: set it and agents start remembering across
-   sessions; leave it empty and short-term continuity still works.
-
-### 7. Reference secrets from 1Password *(optional — for the security-conscious)*
+### 6. Reference secrets from 1Password *(optional — for the security-conscious)*
 
 Instead of pasting tokens into the configuration, set
 `onepassword_service_account_token` (from a
@@ -271,8 +256,8 @@ startup; plaintext never lands in your config. Details:
 - A **Claude Max subscription** for the OAuth token the agents run on.
 - A **Telegram bot** (free, two minutes with @BotFather) and a forum supergroup for
   engagements.
-- Optional, per the steps above: the companion voice integration, a Hindsight server, a
-  1Password service account.
+- Optional, per the steps above: the companion voice integration and a 1Password service
+  account.
 
 Full configuration reference, every option explained: [Casa documentation](casa/DOCS.md).
 
@@ -343,7 +328,6 @@ by asking the configurator in chat.
 | Repository | What it gives you |
 |---|---|
 | [`ha-casa-integration`](https://github.com/bonzanni/ha-casa-integration) | The voice bridge — routes Home Assistant's Assist pipeline to the fleet, so any voice satellite reaches an agent. |
-| [`ha-hindsight-app`](https://github.com/bonzanni/ha-hindsight-app) | Long-term memory as a Home Assistant app — a Hindsight server (API, control-plane UI, embedded Postgres) running next to Casa. |
 
 ### Specialists
 

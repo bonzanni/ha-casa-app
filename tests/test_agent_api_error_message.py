@@ -644,12 +644,12 @@ async def test_delegated_specialist_api_error_is_not_its_answer(
 async def test_delegated_specialist_partial_text_before_an_api_error_is_dropped(
     tmp_path, monkeypatch,
 ):
-    """Half an answer is not an answer — and must not be retained as one."""
+    """Half an answer is not an answer — and must not be captured as one."""
     import tools
 
     from error_kinds import ApiErrorTurn
 
-    retained: list = []
+    captured: list[str] = []
     monkeypatch.setattr(
         tools, "ClaudeSDKClient",
         _FakeSdkClient.of(
@@ -657,17 +657,33 @@ async def test_delegated_specialist_partial_text_before_an_api_error_is_dropped(
             _parsed(_refusal_envelope()),
         ),
     )
-    monkeypatch.setattr(
-        tools, "retain_delegated",
-        lambda *a, **k: retained.append(a) or _noop(),
-    )
 
+    async def _record(item):
+        captured.append(item.text)
+        return object()
+    from memory import capture
+    monkeypatch.setattr(capture, "record", _record)
+
+    try:
+        from tests.test_delegate_to_agent import (
+            _origin, _specialist_cfg, _with_origin,
+        )
+    except ImportError:
+        from test_delegate_to_agent import (
+            _origin, _specialist_cfg, _with_origin,
+        )
+    cfg = _specialist_cfg()
+    cfg.memory.token_budget = 4000              # a role whose exchange is captured
     with pytest.raises(ApiErrorTurn):
-        await _run_delegated()
+        await _with_origin(
+            tools._run_delegated_agent(cfg, "question", "", resolution=None),
+            _origin(),
+        )
 
-    # The run raises before the retain, so no half-exchange is written to the
-    # memory bank as a completed one.
-    assert retained == []
+    # The request is captured before the run; the run raises before the
+    # answer's capture, so no half-answer is written to memory as a completed
+    # one.
+    assert captured == ["question"]
 
 
 async def test_delegate_to_agent_reports_an_api_error_as_a_failed_delegation(

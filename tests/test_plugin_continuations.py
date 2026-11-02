@@ -20,6 +20,7 @@ from authz_grants import GrantIdentity
 from config import AgentConfig, CharacterConfig, MemoryConfig
 from plugin_registry import ResolutionResult, ResolvedPlugin
 from tools import DelegatedOutput
+from test_memory_capture import events, mem  # noqa: F401 — fixture
 
 try:
     from tests.role_artifact_stub import STUB_ROLE_ARTIFACT
@@ -320,15 +321,9 @@ async def test_shutdown_cancels_a_running_continuation_turn(roles, desks, announ
 
 
 @pytest.mark.asyncio
-async def test_a_relayed_answer_is_not_banked_as_the_requesters_task(roles, monkeypatch):
-    """INV-MEM-024: finance's relay turn banks its own answer, never Fido's."""
-    banked: list = []
-
-    async def _retain(sem, *, origin_channel, turns, **kw):
-        banked.extend(t.text for t in turns)
-
-    monkeypatch.setattr(tools_mod, "retain_delegated", _retain)
-    monkeypatch.setattr(agent_mod, "active_semantic_memory", object(), raising=False)
+async def test_a_relayed_answer_is_not_banked_as_the_requesters_task(roles, monkeypatch,
+                                                                    mem):
+    """INV-MEM-032: finance's relay turn captures its own answer, never Fido's."""
 
     class _Client:
         def __init__(self, options): pass
@@ -349,7 +344,7 @@ async def test_a_relayed_answer_is_not_banked_as_the_requesters_task(roles, monk
         await tools_mod._run_delegated_agent(roles["finance"], "Fido's secret answer", "")
     finally:
         agent_mod.origin_var.reset(tok)
-    await asyncio.gather(*list(tools_mod._specialist_bg_tasks), return_exceptions=True)
+    banked = [e["text"] for e in events(mem)]
     assert "Fido's secret answer" not in banked
     assert "finance answer" in banked
 
@@ -685,17 +680,11 @@ async def test_a_relay_whose_author_is_no_longer_loaded_is_not_banked(roles, mon
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("composed", [True, False], ids=["inside-relay", "plain-hand-on"])
-async def test_no_task_inside_a_relay_is_banked_however_deep(roles, monkeypatch, composed):
+async def test_no_task_inside_a_relay_is_banked_however_deep(roles, monkeypatch, composed,
+                                                             mem):
     """p3r4c: a hand-off made from inside a relay turn (Fido → a memory-writing
-    specialist) banks the target's answer, never the task — the rule reads the
-    chain's shape and Casa's marker, nothing a nested run could carry over."""
-    banked: list = []
-
-    async def _retain(sem, *, origin_channel, turns, **kw):
-        banked.extend(t.text for t in turns)
-
-    monkeypatch.setattr(tools_mod, "retain_delegated", _retain)
-    monkeypatch.setattr(agent_mod, "active_semantic_memory", object(), raising=False)
+    specialist) captures the target's answer, never the task — the rule reads
+    the chain's shape and Casa's marker, nothing a nested run could carry over."""
 
     class _Client:
         def __init__(self, options): pass
@@ -721,7 +710,7 @@ async def test_no_task_inside_a_relay_is_banked_however_deep(roles, monkeypatch,
         await tools_mod._run_delegated_agent(roles["finance"], "FIDO CANARY", "")
     finally:
         agent_mod.origin_var.reset(tok)
-    await asyncio.gather(*list(tools_mod._specialist_bg_tasks), return_exceptions=True)
+    banked = [e["text"] for e in events(mem)]
     assert "FIDO CANARY" not in banked and "target answer" in banked
 
 

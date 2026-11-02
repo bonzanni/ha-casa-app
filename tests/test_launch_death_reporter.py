@@ -1399,7 +1399,6 @@ async def _wire_the_real_funnel(ch, reg, *, post_confirms):
     cm.get.return_value = ch
     bus = MagicMock()
     bus.notify = AsyncMock()
-    agent_mod.active_semantic_memory = None
     init_tools(
         channel_manager=cm, bus=bus, specialist_registry=MagicMock(),
         mcp_registry=MagicMock(), trigger_registry=MagicMock(),

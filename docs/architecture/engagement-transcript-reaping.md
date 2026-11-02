@@ -2,7 +2,7 @@
 last_reviewed: 2026-11-02
 ---
 
-# Engagement transcript reaping: deleting a finished engagement's CLI transcripts
+# Transcript reaping: a finished engagement's and a delegation's CLI transcripts
 
 > Code is the source of truth. This file is a map; when it and the code disagree, the code wins.
 
@@ -10,7 +10,8 @@ last_reviewed: 2026-11-02
 
 Where a finished engagement's CLI transcripts are deleted: the pass that removes the files a
 terminal `in_casa` record attributes to it once their retention has passed, the gate it and the
-`claude_code` workspace sweep ask first, what it never selects, and what it retries.
+`claude_code` workspace sweep ask first, what it never selects, and what it retries — and
+the delegated retention pass, which deletes an ephemeral delegation's session the same way.
 How a durable engagement ends — the terminal transition whose on-disk status this pass waits
 for — is [`architecture/engagement-finalization.md`](engagement-finalization.md).
 
@@ -74,12 +75,29 @@ What it does not cover, and these are gaps rather than retention: it never lists
 so sessions no record names stay — any plugin-job folder whose record is gone, and the
 sessions of a specialist that has since been uninstalled (its folder can no longer be
 derived) or given another working directory. (A delegation's session is deleted by the
-delegated retention pass and a utility one-shot writes none: INV-ENG-028, in
-[`architecture/delegation.md`](delegation.md).) A terminal `in_casa` record's row stays in
+delegated retention pass and a utility one-shot writes none: INV-ENG-028, below.) A terminal `in_casa` record's row stays in
 the tombstone until the pass has found nothing left of its transcripts to delete (all
 removed, already absent, or none it could ever find) and marked it `transcripts_reaped`, and
 only then ages out at its 30 days — so downtime past the retention, a failed removal or a
 held transcript keeps the record, and the pass deletes the transcript once it can.
+
+**INV-ENG-028**: An ephemeral delegation runs under a session id Casa chooses for that launch, registered in `transcript_runs` before its request is captured and before its client starts; the run is confirmed only once its request's and its answer's captures are durable or the live rules capture nothing; its transcript is deleted only by the delegated retention pass or a wipe — that one session, in its own project folder, once the run is confirmed and `TRANSCRIPT_RETENTION_DAYS` have passed since it ended — and an unconfirmed run's transcript never by retention; the utility one-shots (the observer, the tier classifier, `query_engager`'s synthesis, run admission's reading) persist no transcript at all.
+
+Every delegation — synchronous, asynchronous, both voice paths and a stored-call tap — goes
+through one runner, which registers the run (`tools.py::_register_delegated_run`) and starts
+a fresh CLI session in the specialist's working directory. The folder is shared with the
+specialist's other sessions, so the runner names its session on its own copy of the options
+(the shared builder carries no id: engagements launch and resume through it). The runner's
+outermost `finally` encloses the answer's capture and confirms the run; its client's exit
+records the end the retention counts from (an earlier process's run that never ended counts
+from its start). A role whose exchange is never captured registers already confirmed: its
+row is only the retention pass's index. The pass (`memory/transcript_runs.py::retention_pass`,
+scheduled with the engagement reaper) deletes the session a row names through the SDK, never
+from a folder listing, and asks the gate (INV-MEM-031) first. The one-shots pass
+`--no-session-persistence`.
+
+What it does not cover: a run whose registration failed has no row, so its transcript is
+never deleted.
 
 ## Failure behavior
 
@@ -103,12 +121,14 @@ deleter of engagement transcripts** asks `transcript_runs.blocked` at its delete
 **Source**
 - `casa/rootfs/opt/casa/engagement_transcript_reaper.py::reap_engagement_transcripts`
 - `casa/rootfs/opt/casa/engagement_transcript_reaper.py::transcript_cwd`
+- `casa/rootfs/opt/casa/tools.py::_register_delegated_run`
 
 **Tests**
 - `tests/test_engagement_transcript_reaper.py`
 - `tests/test_engagement_transcript_reaper_pins.py`
 - `tests/test_transcript_confirmation.py`
 - `tests/test_transcript_retention.py`
+- `tests/test_delegated_transcript_retention.py`
 
 **Related**
 - [`architecture/engagement-finalization.md`](../architecture/engagement-finalization.md)

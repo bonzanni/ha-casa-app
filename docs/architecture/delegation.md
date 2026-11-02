@@ -234,24 +234,6 @@ its record exists — answers `job_busy` (INV-BGJOB-006). A resident-hosted job 
 `<role>:engagement` slot, so running one never makes the resident unavailable
 ([`background-job-occupancy.md`](background-job-occupancy.md)).
 
-**INV-ENG-028**: An ephemeral delegation runs under a session id Casa chooses for that launch, registered in `transcript_runs` before its request is captured and before its client starts; the run is confirmed only once its request's and its answer's captures are durable or the live rules capture nothing; its transcript is deleted only by the delegated retention pass or a wipe — that one session, in its own project folder, once the run is confirmed and `TRANSCRIPT_RETENTION_DAYS` have passed since it ended — and an unconfirmed run's transcript never by retention; the utility one-shots (the observer, the tier classifier, `query_engager`'s synthesis, run admission's reading) persist no transcript at all.
-
-Every delegation — synchronous, asynchronous, both voice paths and a stored-call tap — goes
-through one runner, which registers the run (`tools.py::_register_delegated_run`) and starts
-a fresh CLI session in the specialist's working directory. The folder is shared with the
-specialist's other sessions, so the runner names its session on its own copy of the options
-(the shared builder carries no id: engagements launch and resume through it). The runner's
-outermost `finally` encloses the answer's capture and confirms the run; its client's exit
-records the end the retention counts from (an earlier process's run that never ended counts
-from its start). A role whose exchange is never captured registers already confirmed: its
-row is only the retention pass's index. The pass (`memory/transcript_runs.py::retention_pass`,
-scheduled with the engagement reaper) deletes the session a row names through the SDK, never
-from a folder listing, and asks the gate (INV-MEM-031) first. The one-shots pass
-`--no-session-persistence`.
-
-What it does not cover: a run whose registration failed has no row, so its transcript is
-never deleted.
-
 **INV-ENG-024**: A delegated run that the wall-clock ceiling ends, or that is cancelled from outside, leaves no proven descendant of its CLI running once the runner has raised — a process a plugin server started after the session began included — and a process it cannot confirm gone is logged at ERROR with the role and the pids.
 
 Desk replies and every delegation go through `_run_delegated_agent_bounded`, which owns a
@@ -335,14 +317,12 @@ the agent-spawn cap. Never copy the marker into a synthesized or scheduled turn'
 - `casa/rootfs/opt/casa/tools.py::_is_agent_context`
 - `casa/rootfs/opt/casa/specialist_limits.py::AgentSpawnLimiter`
 - `casa/rootfs/opt/casa/specialist_limits.py::SpawnToken`
-- `casa/rootfs/opt/casa/tools.py::_register_delegated_run`
 - `casa/rootfs/opt/casa/tools.py::_reap_bounded_tree`
 - `casa/rootfs/opt/casa/pinned_run.py::ProcessTree`
 - `casa/rootfs/opt/casa/tools.py::_post_handoff_line`
 
 **Tests**
 - `tests/test_delegate_to_agent.py::TestHandoffLine`
-- `tests/test_delegated_transcript_retention.py`
 - `tests/test_bounded_run_processes.py`
 - `tests/test_delegation_acl.py`
 - `tests/test_delegates_block_live_names.py`
@@ -355,4 +335,5 @@ the agent-spawn cap. Never copy the marker into a synthesized or scheduled turn'
 - [`architecture/engagement-finalization.md`](../architecture/engagement-finalization.md)
 - [`architecture/engagement-completion-gate.md`](../architecture/engagement-completion-gate.md)
 - [`architecture/agent-taxonomy.md`](../architecture/agent-taxonomy.md)
+- [`architecture/engagement-transcript-reaping.md`](../architecture/engagement-transcript-reaping.md)
 <!-- END SOURCEMAP -->

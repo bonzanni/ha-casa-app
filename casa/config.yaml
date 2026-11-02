@@ -31,7 +31,6 @@ options:
   telegram_engagement_supergroup_id: 0
   telegram_bot_api_base: ""
   telegram_transport: "polling"
-  hindsight_api_url: ""
   onepassword_service_account_token: ""
   onepassword_default_vault: "Casa"
   webhook_secret: ""
@@ -68,7 +67,6 @@ schema:
   telegram_engagement_supergroup_id: int?
   telegram_bot_api_base: "str?"
   telegram_transport: "list(polling|webhook)?"
-  hindsight_api_url: str?
   onepassword_service_account_token: password?
   onepassword_default_vault: str?
   webhook_secret: password?

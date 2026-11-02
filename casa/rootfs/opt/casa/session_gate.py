@@ -22,8 +22,8 @@ cannot replace them and no turn path can route around them:
 - :func:`session_write_gate` — per-``channel_key`` serialization, held across
   the SDK attempt AND the registry publish. Introduced by #573 for scheduled
   turns only, in :mod:`agent`; now unconditional and moved here so
-  :mod:`memory_wipe` and :mod:`session_saver` can import it without the
-  lazy-import cycle those modules already work around.
+  :mod:`session_registry`'s reset can import it without a lazy-import
+  cycle.
 - :class:`TurnAdmission` — process-wide, over turns. A retirement takes the
   exclusive side and drains every in-flight turn regardless of path. This is
   what covers a FIRST-EVER turn on a key: it holds admission before it has any
@@ -31,11 +31,10 @@ cannot replace them and no turn path can route around them:
 
 Lock order, global and mandatory:
 
-    TurnAdmission -> session_write_gate -> RetainFence -> pool entry lock
+    TurnAdmission -> session_write_gate -> pool entry lock
 
-Never the reverse. An earlier revision of this design had a retirement take the
-RetainFence before a session gate while ``/new`` took them the other way round,
-which is a permanent resident deadlock.
+Never the reverse: taking them in two orders is a permanent resident
+deadlock.
 """
 from __future__ import annotations
 
@@ -133,6 +132,6 @@ class TurnAdmission:
             self._barrier.release_exclusive()
 
 
-# The process-wide instance (module singleton, like memory_wipe.FENCE): every
-# turn and every retirement share exactly this one.
+# The process-wide instance (module singleton): every turn and every
+# retirement share exactly this one.
 TURN_ADMISSION = TurnAdmission()

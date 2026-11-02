@@ -120,15 +120,15 @@ def _snap(entry):
 
 def _resume_dec(entry):
     return ResumeDecision(
-        "resume", entry["sdk_session_id"], False, _snap(entry), "fresh",
+        "resume", entry["sdk_session_id"], _snap(entry), "fresh",
     )
 
 
-def _new_dec(entry=None, *, retain_old=False):
+def _new_dec(entry=None, *, expired=False):
     return ResumeDecision(
-        "new", None, retain_old,
-        _snap(entry) if retain_old else None,
-        "expired" if retain_old else "missing",
+        "new", None,
+        _snap(entry) if expired else None,
+        "expired" if expired else "missing",
     )
 
 
@@ -161,7 +161,7 @@ async def test_cold_hit_connects_with_resume_and_touches():
         return await pool.turn(
             channel_key="voice-s1", channel="voice", prompt="hi",
             origin={}, cid="c", build_options=build_options,
-            on_stale_old=lambda s, g=None: None, on_message=on_message)
+            on_message=on_message)
 
     t = asyncio.create_task(go())
     await asyncio.sleep(0.01)
@@ -200,7 +200,6 @@ async def test_cold_connect_logs_monotonic_elapsed_ms(caplog):
             origin={},
             cid="c",
             build_options=build_options,
-            on_stale_old=lambda _sid, _g=None: None,
             on_message=on_message,
         )
 
@@ -244,7 +243,6 @@ async def test_session_publish_logs_monotonic_elapsed_ms(caplog):
                 origin={},
                 cid="c",
                 build_options=lambda _fresh, _resume: _async_result({}),
-                on_stale_old=lambda _sid, _g=None: None,
                 on_message=lambda _message: _async_result(None),
                 on_success=on_success,
             )
@@ -299,7 +297,6 @@ async def test_session_publish_failure_logs_sanitized_elapsed_and_drops(caplog):
                     origin={},
                     cid="c",
                     build_options=lambda _fresh, _resume: _async_result({}),
-                    on_stale_old=lambda _sid, _g=None: None,
                     on_message=lambda _message: _async_result(None),
                     on_success=on_success,
                 )
@@ -355,7 +352,6 @@ async def test_cancelled_session_publish_logs_elapsed_and_drops(caplog):
                 origin={},
                 cid="c",
                 build_options=lambda _fresh, _resume: _async_result({}),
-                on_stale_old=lambda _sid, _g=None: None,
                 on_message=lambda _message: _async_result(None),
                 on_success=on_success,
             ))
@@ -400,7 +396,6 @@ async def test_warm_reuse_skips_connect_and_build_options():
         return await pool.turn(channel_key="voice-s1", channel="voice",
                                prompt="hi", origin={}, cid="c",
                                build_options=build_options,
-                               on_stale_old=lambda s, g=None: None,
                                on_message=on_message)
     t = asyncio.create_task(go()); await asyncio.sleep(0.01)
     made[0].script = [[_mk_result("sid-0")]]
@@ -435,7 +430,6 @@ async def test_on_decision_fires_on_cold_connect_and_warm_reuse():
         return await pool.turn(channel_key="voice-s1", channel="voice",
                                prompt="hi", origin={}, cid="c",
                                build_options=build_options,
-                               on_stale_old=lambda s, g=None: None,
                                on_message=on_message,
                                on_decision=on_decision)
     # Turn 1 — cold connect (resume sid-0 from the registry).
@@ -451,14 +445,14 @@ async def test_on_decision_fires_on_cold_connect_and_warm_reuse():
     assert decisions == [("sid-0", False, 7), ("sid-0", False, 7)]
 
 
-async def test_decision_new_closes_old_awaits_disconnect_then_stale_cb():
-    """AR-3 + AR-4 ordering: old entry fully disconnected BEFORE
-    on_stale_old fires (cold-retain reads the flushed transcript)."""
+async def test_decision_new_closes_old_awaits_disconnect_then_builds():
+    """AR-3 + AR-4 ordering: old entry fully disconnected BEFORE the new
+    client's options are built."""
     reg = FakeRegistry()
     reg.data["tg-1"] = {"sdk_session_id": "sid-old", "last_active": "x"}
     order = []
     def decide(channel, entry, now):
-        return _resume_dec(entry) if not order else _new_dec(entry, retain_old=True)
+        return _resume_dec(entry) if not order else _new_dec(entry, expired=True)
     pool = _mk_pool(reg, decide=decide)
     made = []
     def mk(opts):
@@ -470,13 +464,14 @@ async def test_decision_new_closes_old_awaits_disconnect_then_stale_cb():
         c.disconnect = d
         made.append(c); return c
     pool._make_client = mk
-    async def build_options(is_fresh, resume_sid): return {}
+    async def build_options(is_fresh, resume_sid):
+        order.append(f"build:{is_fresh}")
+        return {}
     async def on_message(m): pass
     async def go():
         return await pool.turn(channel_key="tg-1", channel="telegram",
                                prompt="p", origin={}, cid="c",
                                build_options=build_options,
-                               on_stale_old=lambda s, g=None: order.append(f"stale:{s.sdk_session_id}"),
                                on_message=on_message)
     t = asyncio.create_task(go()); await asyncio.sleep(0.01)
     made[0].script = [[_mk_result("sid-old")]]
@@ -487,7 +482,7 @@ async def test_decision_new_closes_old_awaits_disconnect_then_stale_cb():
     res = await t
     assert res.is_fresh is True
     after_turn2 = order[order.index("turn2") + 1:]
-    assert after_turn2[:2] == ["disconnect", "stale:sid-old"]  # AR-4 ordering
+    assert after_turn2[:2] == ["disconnect", "build:True"]  # AR-4 ordering
 
 
 async def test_sid_mismatch_reconnects_on_registry_sid():
@@ -503,7 +498,6 @@ async def test_sid_mismatch_reconnects_on_registry_sid():
         return await pool.turn(channel_key="tg-1", channel="telegram",
                                prompt="p", origin={}, cid="c",
                                build_options=build_options,
-                               on_stale_old=lambda s, g=None: None,
                                on_message=on_message)
     t = asyncio.create_task(go()); await asyncio.sleep(0.01)
     made[0].script = [[_mk_result("sid-A")]]
@@ -548,7 +542,7 @@ async def test_turn_failure_invalidates_entry_so_next_attempt_reconnects():
     async def go():
         return await pool.turn(channel_key="v-1", channel="voice", prompt="p",
                                origin={}, cid="c", build_options=build_options,
-                               on_stale_old=lambda s, g=None: None, on_message=on_message)
+                               on_message=on_message)
     t = asyncio.create_task(go())
     await connected.wait()
 
@@ -574,7 +568,7 @@ async def test_concurrent_first_turns_single_connect():
     async def go():
         return await pool.turn(channel_key="v-1", channel="voice", prompt="p",
                                origin={}, cid="c", build_options=build_options,
-                               on_stale_old=lambda s, g=None: None, on_message=on_message)
+                               on_message=on_message)
     t1 = asyncio.create_task(go())
     t2 = asyncio.create_task(go())
     await asyncio.sleep(0.01)
@@ -659,7 +653,6 @@ async def test_invalidation_serializes_same_key_until_active_turn_releases():
             origin={},
             cid="c",
             build_options=build_options,
-            on_stale_old=lambda _sid, _g=None: None,
             on_message=on_message,
         )
 
@@ -845,7 +838,7 @@ async def test_turn_on_closing_pool_raises_poolunavailable():
     with pytest.raises(PoolUnavailable):
         await pool.turn(channel_key="v-1", channel="voice", prompt="p",
                         origin={}, cid="c", build_options=build_options,
-                        on_stale_old=lambda s, g=None: None, on_message=on_message)
+                        on_message=on_message)
     # Finding 2: sweeper should not be created on turn() after aclose()
     assert pool._sweeper is None
 
@@ -864,7 +857,6 @@ async def test_per_agent_cap_lru_evicts(monkeypatch):
         return await pool.turn(channel_key=f"v-{i}", channel="voice",
                                prompt="p", origin={}, cid="c",
                                build_options=build_options,
-                               on_stale_old=lambda s, g=None: None,
                                on_message=on_message)
     for i in range(3):
         t = asyncio.create_task(go(i)); await asyncio.sleep(0.01)
@@ -887,7 +879,7 @@ async def test_sweeper_closes_idle_and_overage(monkeypatch):
     async def go():
         return await pool.turn(channel_key="v-1", channel="voice", prompt="p",
                                origin={}, cid="c", build_options=build_options,
-                               on_stale_old=lambda s, g=None: None, on_message=on_message)
+                               on_message=on_message)
     t = asyncio.create_task(go()); await asyncio.sleep(0.01)
     made[0].script = [[_mk_result("sid-1")]]
     await t
@@ -917,7 +909,6 @@ async def test_idle_bound_clamped_to_freshness(monkeypatch):
         return await pool.turn(channel_key="voice-1", channel="voice",
                                prompt="p", origin={}, cid="c",
                                build_options=build_options,
-                               on_stale_old=lambda s, g=None: None,
                                on_message=on_message)
     t = asyncio.create_task(go()); await asyncio.sleep(0.01)
     made[0].script = [[_mk_result("s")]]
@@ -941,7 +932,7 @@ async def test_fleet_cap_across_pools(monkeypatch):
     async def go(pool, key):
         return await pool.turn(channel_key=key, channel="voice", prompt="p",
                                origin={}, cid="c", build_options=build_options,
-                               on_stale_old=lambda s, g=None: None, on_message=on_message)
+                               on_message=on_message)
     t = asyncio.create_task(go(p1, "a-1")); await asyncio.sleep(0.01)
     made[-1].script = [[_mk_result("s1")]]
     await t
@@ -981,7 +972,7 @@ async def test_fleet_cap_lru_tie_across_pools(monkeypatch):
     async def go(pool, key):
         return await pool.turn(channel_key=key, channel="voice", prompt="p",
                                origin={}, cid="c", build_options=build_options,
-                               on_stale_old=lambda s, g=None: None, on_message=on_message)
+                               on_message=on_message)
     # Turn 1: p1 gets "a-1" — fleet=1, no eviction.
     t = asyncio.create_task(go(p1, "a-1")); await asyncio.sleep(0.01)
     made[-1].script = [[_mk_result("s1")]]
@@ -1018,7 +1009,7 @@ async def test_evict_waits_for_entry_lock():
     async def go():
         return await pool.turn(channel_key="v-1", channel="voice", prompt="p",
                                origin={}, cid="c", build_options=build_options,
-                               on_stale_old=lambda s, g=None: None, on_message=on_message)
+                               on_message=on_message)
     t = asyncio.create_task(go()); await asyncio.sleep(0.01)
     made[0].script = [[_mk_result("s")]]
     await t
@@ -1074,7 +1065,7 @@ async def test_close_key_joins_inflight_invalidation_flush():
         return await pool.turn(
             channel_key="voice-same", channel="voice", prompt=prompt,
             origin={}, cid="c", build_options=build_options,
-            on_stale_old=lambda _sid, _g=None: None, on_message=on_message,
+            on_message=on_message,
         )
 
     first = asyncio.create_task(go("first"))
@@ -1128,17 +1119,15 @@ class RetiringRegistry(FakeRegistry):
         return key in self.retiring
 
 
-async def test_retirement_steers_turn_fresh_and_skips_stale_retain():
+async def test_retirement_steers_turn_fresh():
     """#290 red case: a fresh registry entry would resume, but a live
-    retirement claim must force a FRESH session, never resume the dying sid,
-    and must NOT run on_stale_old (the retiring caller owns the retain)."""
+    retirement claim must force a FRESH session, never resume the dying sid."""
     reg = RetiringRegistry()
     reg.data["tg-1"] = {"sdk_session_id": "sid-dying", "last_active": "x"}
     reg.retiring.add("tg-1")
     pool = _mk_pool(reg)
     made = []
     pool._make_client = lambda opts: made.append(ScriptedClient(opts)) or made[-1]
-    stale_calls = []
     decisions = []
 
     async def build_options(is_fresh, resume_sid):
@@ -1151,7 +1140,6 @@ async def test_retirement_steers_turn_fresh_and_skips_stale_retain():
         return await pool.turn(
             channel_key="tg-1", channel="telegram", prompt="hi",
             origin={}, cid="c", build_options=build_options,
-            on_stale_old=lambda s, g=None: stale_calls.append(s),
             on_message=on_message,
             on_decision=lambda sid, fresh, gen: decisions.append((sid, fresh)),
         )
@@ -1162,7 +1150,6 @@ async def test_retirement_steers_turn_fresh_and_skips_stale_retain():
     res = await t
     assert res.is_fresh is True and res.resume_sid is None
     assert made[0].options == {"fresh": True, "resume": None}
-    assert stale_calls == []          # no duplicate retain of the dying session
     assert decisions == [(None, True)]
     await pool.aclose()
 
@@ -1186,52 +1173,13 @@ async def test_no_retirement_resumes_normally_on_same_registry():
         return await pool.turn(
             channel_key="tg-1", channel="telegram", prompt="hi",
             origin={}, cid="c", build_options=build_options,
-            on_stale_old=lambda s, g=None: None, on_message=on_message)
+            on_message=on_message)
 
     t = asyncio.create_task(go())
     await asyncio.sleep(0.01)
     made[0].script = [[_mk_result("sid-live")]]
     res = await t
     assert res.resume_sid == "sid-live" and res.is_fresh is False
-    await pool.aclose()
-
-
-async def test_on_stale_old_receives_decisions_fence_generation():
-    """#411 (design r4, Sol): the fence generation travels FROM THE DECISION
-    into on_stale_old — the pool must pass through whatever the decide
-    callback captured, not re-sample after the close await."""
-    reg = FakeRegistry()
-    reg.data["tg-1"] = {"sdk_session_id": "sid-old", "last_active": "x"}
-    import dataclasses as _dc
-
-    def decide_new_retain(channel, entry, now):
-        return _dc.replace(
-            _new_dec(entry, retain_old=True), fence_generation=41,
-        )
-
-    pool = _mk_pool(reg, decide=decide_new_retain)
-    made = []
-    pool._make_client = lambda opts: made.append(ScriptedClient(opts)) or made[-1]
-    received = []
-
-    async def build_options(is_fresh, resume_sid):
-        return {}
-
-    async def on_message(m):
-        pass
-
-    async def go():
-        return await pool.turn(
-            channel_key="tg-1", channel="telegram", prompt="hi",
-            origin={}, cid="c", build_options=build_options,
-            on_stale_old=lambda s, g=None: received.append(g),
-            on_message=on_message)
-
-    t = asyncio.create_task(go())
-    await asyncio.sleep(0.01)
-    made[0].script = [[_mk_result("sid-f")]]
-    await t
-    assert received == [41]
     await pool.aclose()
 
 
@@ -1702,7 +1650,6 @@ def _start_turn(pool, key, *, binding_digest="", release_options=None):
         return await pool.turn(
             channel_key=key, channel="voice", prompt="p", origin={}, cid="c",
             build_options=build_options,
-            on_stale_old=lambda snapshot, generation=None: None,
             on_message=on_message, binding_digest=binding_digest,
         )
 
@@ -2372,7 +2319,6 @@ async def test_an_exhausted_retry_while_closing_refuses_AS_closing():
         await pool.turn(
             channel_key=key, channel="voice", prompt="p", origin={}, cid="c",
             build_options=build_options,
-            on_stale_old=lambda snapshot, generation=None: None,
             on_message=on_message,
         )
     assert isinstance(caught.value, PoolClosing)

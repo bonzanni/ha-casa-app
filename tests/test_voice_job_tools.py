@@ -384,7 +384,7 @@ async def test_channel_handoff_commits_real_job_before_cancelling_outer_request(
     channel = VoiceChannel(
         bus=bus, default_agent="concierge", webhook_secret="",
         sse_path="/api/converse", ws_path="/api/converse/ws",
-        agent_configs={"concierge": concierge_cfg}, memory=None,
+        agent_configs={"concierge": concierge_cfg},
         idle_timeout=300,
     )
     ws = _Ws()

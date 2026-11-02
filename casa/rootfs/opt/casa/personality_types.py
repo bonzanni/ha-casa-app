@@ -1,7 +1,5 @@
 from dataclasses import dataclass
-from datetime import datetime
-from types import MappingProxyType
-from typing import Literal, Mapping
+from typing import Literal
 
 
 SpeakerKind = Literal[
@@ -20,45 +18,6 @@ class SpeakerProvenance:
     binding_digest: str | None = None
     user_peer: str | None = None
     user_id: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class RetainedTurn:
-    text: str
-    provenance: SpeakerProvenance
-    # #471: the turn's wall-clock time (ISO string) parsed from the sent query
-    # text's <current_time> envelope, preserved OUT-OF-BAND once the envelope
-    # is stripped from the hashed/stored content. None when the source carried
-    # no envelope (agent turns, delegated writes).
-    timestamp: str | None = None
-    # #1117: application tags for THIS turn only, added to the batch's
-    # ``application_tags`` (the scheduled mark rides here). Same reserved-family
-    # rules as the batch tags; empty for every writer that does not set it.
-    application_tags: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class RecallHit:
-    text: str
-    memory_type: str
-    sensitivity: SensitivityTier
-    application_tags: tuple[str, ...]
-    provenance: SpeakerProvenance | None
-    backend_id: str | None
-    document_id: str | None
-    chunk_id: str | None
-    source_fact_ids: tuple[str, ...] | None
-    metadata: Mapping[str, object] | None
-    context: str | None
-    score: float | None
-    # #1117: when the backend recorded this memory (Hindsight ``mentioned_at``:
-    # the retain item's timestamp when one was sent, else the save time).
-    # ``None`` when the result carried no usable tz-aware date.
-    mentioned_at: datetime | None = None
-
-    @staticmethod
-    def freeze_metadata(value: dict[str, object] | None):
-        return None if value is None else MappingProxyType(dict(value))
 
 
 @dataclass(frozen=True, slots=True)

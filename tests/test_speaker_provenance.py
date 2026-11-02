@@ -1,9 +1,9 @@
 """Strict codec tests for the immutable speaker-provenance contract.
 
 Covers the reserved `casa-source-v1.` tag codec (canonical RFC 8785 JSON,
-base64url unpadded), the frozen `SpeakerProvenance`/`RetainedTurn` snapshot
-types, and the `UserProvenance.from_origin` factory contract: an anonymous
-voice speaker never acquires a name, and an authenticated transport
+base64url unpadded), the frozen `SpeakerProvenance` snapshot type, and the
+`UserProvenance.from_origin` factory contract: an anonymous voice speaker
+never acquires a name, and an authenticated transport
 identity is the ONLY name source (no caller-supplied display name can be
 injected through the factory).
 """
@@ -36,7 +36,6 @@ from speaker_provenance import (
 from canonical_bytes import canonical_json_bytes
 from personality_types import (
     AuthenticatedUser,
-    RetainedTurn,
     SpeakerProvenance,
     TrustedOrigin,
 )
@@ -167,13 +166,6 @@ def test_all_speaker_kinds_round_trip(value: SpeakerProvenance) -> None:
     assert tag.startswith(RESERVED_SOURCE_PREFIX)
     assert "=" not in tag
     assert decode_provenance_tag(tag) == value
-
-
-def test_retained_turn_is_frozen_and_holds_provenance() -> None:
-    turn = RetainedTurn(text="hello", provenance=resident())
-    assert turn.provenance == resident()
-    with pytest.raises(FrozenInstanceError):
-        turn.text = "changed"
 
 
 # ---------------------------------------------------------------------------

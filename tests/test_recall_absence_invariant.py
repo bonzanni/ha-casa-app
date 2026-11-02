@@ -4,18 +4,15 @@
 unavailable — because an agent that says "I have no record of that" when the
 store merely timed out is lying to the operator.
 
-A blank query was a silent fourth case wearing the second one's clothes:
-`delegated_recall` short-circuited it to `""`, the value its own docstring
-reserves for a *genuine* zero-hit search. That reached a speaking surface —
-`query_engager` accepted a blank question and returned `status="unknown"`,
-which its tool description defines as "the memory was searched and holds
-nothing relevant". No search had run.
+A blank query was a silent fourth case wearing the second one's clothes: it
+reached a speaking surface — `query_engager` accepted a blank question and
+returned `status="unknown"`, which its tool description defines as "the memory
+was searched and holds nothing relevant". No search had run.
 
 The fix has two halves, and this module guards both:
 
-1. **The blank query is now a caller bug**, not an outcome. `delegated_recall`
-   raises `ValueError`; `query_engager` rejects it as `empty_query` at the tool
-   boundary.
+1. **The blank query is a caller bug**, not an outcome: `query_engager`
+   rejects it as `empty_query` at the tool boundary.
 2. **Empty renders as silence.** `_fetch_executor_archive` returns `""` when
    the memory store is unavailable and runs cold, which is safe *only* because its result
    lands in the `{executor_memory}` prompt slot, where empty means the section
@@ -245,23 +242,6 @@ def test_memory_slot_is_never_introduced_by_a_label():
                 )
 
     assert not offenders, "\n  ".join(["memory slot is labelled:", *offenders])
-
-
-@pytest.mark.asyncio
-async def test_delegated_recall_rejects_a_blank_query():
-    """A blank query performs no search, so it has no result to report."""
-    from delegated_memory import delegated_recall
-
-    class _ShouldNotBeCalled:
-        async def recall_items(self, *a, **k):  # pragma: no cover
-            raise AssertionError("no recall may run for a blank query")
-
-    for blank in ("", "   ", "\n\t "):
-        with pytest.raises(ValueError, match="non-blank query"):
-            await delegated_recall(
-                _ShouldNotBeCalled(), query=blank,
-                origin_channel="telegram", max_tokens=100,
-            )
 
 
 @pytest.mark.asyncio

@@ -20,7 +20,7 @@ AUDITOR = Path(__file__).resolve().parents[1] / "test-local" / "audit" / "live_i
 
 def test_auditor_runs_and_degrades_gracefully(tmp_path):
     """Against empty/absent inputs the auditor must not crash: it WARNs/skips
-    (no config-sync report, no hindsight url, validator import unavailable off
+    (no config-sync report, validator import unavailable off
     the container) and prints a SUMMARY. Exit code = FAIL count."""
     env = {
         "CASA_CONFIG_DIR": str(tmp_path / "config"),

@@ -64,13 +64,12 @@ from sensitivity import clearance_for_origin
 from personality_types import SpeakerProvenance
 from speaker_provenance import UserProvenance, provenance_from_mapping
 from provenance import ANSWERED_BY_OPERATOR
-from session_saver import freshness_window, retain_cold_session, save_session
-from semantic_memory import NoOpSemanticMemory, SemanticMemory
 from session_gate import session_write_gate
 from session_registry import (
     SessionRegistry,
     _is_uuid_scope,
     build_scoped_session_key,
+    freshness_window,
 )
 from sdk_client_pool import (
     ManagedSdkClient,
@@ -131,8 +130,8 @@ def process_stopping() -> bool:
 # #573/#578/#579: the per-session-key write gate and the process-wide turn
 # admission barrier both live in `session_gate` — module scope a reload cannot
 # replace and no turn path can route around. Imported here (rather than
-# defined here) so `memory_wipe` and `session_saver` can reach the same
-# instances without the lazy-import cycle this module already works around.
+# defined here) so `session_registry`'s reset can reach the same instances
+# without the lazy-import cycle this module already works around.
 #
 # #573 introduced the gate for SCHEDULED turns only. v0.208.0 makes it
 # unconditional: the pool entry lock serializes turns within ONE pool, and a
@@ -146,7 +145,6 @@ active_engagement_driver = None   # InCasaDriver | None, set by casa_core.main
 active_executor_registry = None   # ExecutorRegistry | None, set by casa_core.main
 active_claude_code_driver = None  # ClaudeCodeDriver | None, set by casa_core.main
 active_runtime = None             # CasaRuntime | None, set by casa_core.main (Task C.3)
-active_semantic_memory = None     # SemanticMemory | None, set by casa_core.main
 active_session_registry = None    # SessionRegistry | None, set by casa_core.main (#411)
 
 # Phase 3.1: delegating-turn origin. Set by Agent._process for the
@@ -514,28 +512,21 @@ class SessionEntrySnapshot:
 
 @dataclass(frozen=True, slots=True)
 class ResumeDecision:
-    """The structured outcome of the resume gate (replaces the former
-    ``(decision, save_old)`` tuple). ``retain_old``/``old`` drive
-    save-before-overwrite of a superseded cold session.
+    """The structured outcome of the resume gate. ``old`` is the stored
+    session the gate judged (``None`` when there was none).
 
-    ``reason="retiring"`` (#290/#411) is never produced by
+    ``reason="retiring"`` (#290) is never produced by
     :func:`_resume_decision` itself — it is the steer applied on top of it
-    (by the pool, or by the bypass path) while a reset/wipe holds a
-    retirement claim on the key. ``fence_generation`` (#411) is the retain
-    fence generation captured in the same no-await block as the decision;
-    a cold retain spawned from this decision passes it to the fence so a
-    wipe that completed between decision and retain makes the retain
-    discard instead of restoring pre-wipe content."""
+    (by the pool, or by the bypass path) while a reset holds a retirement
+    claim on the key."""
     action: Literal["resume", "new"]
     resume_sid: str | None
-    retain_old: bool
     old: SessionEntrySnapshot | None
     reason: Literal[
         "missing", "role_mismatch", "binding_mismatch",
         "prompt_surface_changed",
-        "fresh", "expired", "invalid_entry", "retiring",
+        "fresh", "expired", "invalid_entry", "retiring", "fault_streak",
     ]
-    fence_generation: int | None = None
 
 
 def _decode_provenance(raw: object) -> SpeakerProvenance | None:
@@ -566,23 +557,9 @@ def snapshot_session_entry(entry: dict | None) -> SessionEntrySnapshot | None:
     )
 
 
-def _proven_scheduled(
-    old: SessionEntrySnapshot, turn_scheduled: bool,
-) -> SessionEntrySnapshot:
-    """#1117: the superseded session's marker, completed from the turn that
-    superseded it. An entry written before the marker existed reads UNKNOWN;
-    if the incoming turn on the SAME key is one Casa's schedule fired, the key
-    is a schedule's label, so the old session on it was scheduled too. An
-    unmarked incoming turn proves nothing, and a known marker is never
-    overridden."""
-    if old.scheduled is None and turn_scheduled:
-        return dataclasses.replace(old, scheduled=True)
-    return old
-
-
 def agent_home_for_role_id(role_id: str) -> str:
     """Map a canonical ``kind:slot`` role id to its on-disk agent home — the
-    transcript cwd ``get_session_messages``/``delete_session`` read.
+    transcript cwd ``delete_session`` reads.
 
     Bare ``/config/agent-home/<slot>`` for EVERY kind (resident, specialist,
     executor) — this MUST stay byte-for-byte consistent with the actual
@@ -664,8 +641,7 @@ def _resume_decision(
 ) -> ResumeDecision:
     """Spec §3.3/§4.2 + personality Task 9: resume iff a stored entry exists,
     matches this config's ``{role_id, binding_digest}`` identity, AND is within
-    its channel freshness window. A role or binding mismatch — or a stale but
-    present session — signals save-before-overwrite via ``retain_old``/``old``.
+    its channel freshness window; anything else starts a new session.
 
     The role gate is checked BEFORE the digest gate so a legacy short-role
     entry (``"butler"``) is reported as ``role_mismatch`` against a canonical
@@ -675,16 +651,16 @@ def _resume_decision(
     role-id-only gating, byte-for-byte matching the prior behavior."""
     old = snapshot_session_entry(entry)
     if old is None:
-        return ResumeDecision("new", None, False, None, "missing")
+        return ResumeDecision("new", None, None, "missing")
     if old.agent != role_id:
-        return ResumeDecision("new", None, True, old, "role_mismatch")
+        return ResumeDecision("new", None, old, "role_mismatch")
     if (old.binding_digest or "") != (binding_digest or ""):
-        return ResumeDecision("new", None, True, old, "binding_mismatch")
+        return ResumeDecision("new", None, old, "binding_mismatch")
     # #1029: the structural prompt surface gate, sibling to the binding gate
     # above and checked after it so an identity change keeps reporting itself.
     # A session's system prompt is pinned by the CLI at creation, so a surface
     # that no longer matches cannot be corrected in place — the session has to
-    # go, with retain_old so the conversation is saved rather than dropped.
+    # go.
     # A stored digest of None is a MISMATCH, not consent: every entry written
     # before this gate may be carrying exactly the stale prompt this closes,
     # and retiring it once is what lets an already-stuck conversation recover
@@ -693,7 +669,7 @@ def _resume_decision(
     if prompt_surface_digest is not None:
         if (old.prompt_surface_digest or "") != prompt_surface_digest:
             return ResumeDecision(
-                "new", None, True, old, "prompt_surface_changed",
+                "new", None, old, "prompt_surface_changed",
             )
     try:
         last = (
@@ -707,18 +683,17 @@ def _resume_decision(
         # would raise — treat it as invalid rather than guessing its zone.
         last = None
     if last is None:
-        return ResumeDecision("new", None, True, old, "invalid_entry")
+        return ResumeDecision("new", None, old, "invalid_entry")
     if (now - last) <= freshness_window(channel):
         # #650: a fresh, identity-matching session that has repeatedly
         # evidenced SDK faults on resumed trusted-ingress turns is not
-        # resumed again — fresh WITH retain, exactly like an expired entry,
-        # so the old conversation's snapshot is saved rather than cleared.
+        # resumed again — it starts fresh, exactly like an expired entry.
         # The streak is advisory registry state written by
         # SessionRegistry.note_resume_health under the session write gate.
         if _resume_fault_streak(entry, old.sdk_session_id) >= RESUME_FAULT_LIMIT:
-            return ResumeDecision("new", None, True, old, "fault_streak")
-        return ResumeDecision("resume", old.sdk_session_id, False, old, "fresh")
-    return ResumeDecision("new", None, True, old, "expired")
+            return ResumeDecision("new", None, old, "fault_streak")
+        return ResumeDecision("resume", old.sdk_session_id, old, "fresh")
+    return ResumeDecision("new", None, old, "expired")
 
 
 @dataclass(frozen=True)
@@ -733,13 +708,6 @@ class PluginBindingSnapshot:
     resolution: "plugin_registry.ResolutionResult"
     binding: "Mapping[str, str]"
     generation: int
-
-
-def _retain_fence():
-    """The process-wide retain fence (#411). Imported lazily so tests that
-    stub agent's collaborators need not know the fence exists."""
-    from memory_wipe import FENCE
-    return FENCE
 
 
 def _turn_admission():
@@ -907,7 +875,7 @@ def build_restricted_webhook_options(
     leave Bash reachable), NO skills, strict MCP config (no ambient ``.mcp.json``),
     ``permission_mode="dontAsk"``, and exactly two casa-framework tools. ``Agent``/
     ``Task`` are additionally disallowed (they bypass ``allowed_tools``). This
-    closes the Bash→(unauthenticated)Hindsight, Bash→transcript-file, and
+    closes the Bash→memory-store, Bash→transcript-file, and
     pre-tool-decision-hook bypasses that application-level memory gates cannot.
 
     #1142 (INV-TRIG-018): a ``deliver: operator`` turn's final reply is its
@@ -1216,15 +1184,12 @@ class Agent:
         mcp_registry: McpServerRegistry,
         channel_manager: ChannelManager,
         agent_registry=None,
-        semantic_memory: SemanticMemory | None = None,
     ) -> None:
         self.config = config
-        self._semantic_memory: SemanticMemory = semantic_memory or NoOpSemanticMemory()
         self._session_registry = session_registry
         self._mcp_registry = mcp_registry
         self._channel_manager = channel_manager
         self._agent_registry = agent_registry
-        self._bg_tasks: set[asyncio.Task] = set()  # background cold-session retains
         # Per-(session_id) over-budget streak tracker (spec 5.2 §5.2).
         # Per-instance so assistant (4000) and butler (800) budgets stay
         # isolated even when the same channel serves both roles.
@@ -1277,21 +1242,14 @@ class Agent:
             # mismatch (another resident's entry under the same channel_key,
             # impossible post-A2 collision-safety, but defense-in-depth) never
             # resumes.
-            # #411: fence_generation is captured INSIDE the lambda — the pool
-            # invokes decide synchronously in its decision block (AR-3), so
-            # the capture lands in the same no-await block as the registry
-            # read, per the fence's capture-point contract.
             # #1029: the surface digest comes from the TURN's armed carrier,
             # read here inside the pool's no-await decision block — the same
             # object `_build_options` splices and `register` stores.
-            decide=lambda ch, entry, now: dataclasses.replace(
-                _resume_decision(
-                    ch, entry, now,
-                    role_id=self.config.role_id,
-                    binding_digest=self.config.binding_digest,
-                    prompt_surface_digest=_armed_surface_digest(),
-                ),
-                fence_generation=_retain_fence().generation(),
+            decide=lambda ch, entry, now: _resume_decision(
+                ch, entry, now,
+                role_id=self.config.role_id,
+                binding_digest=self.config.binding_digest,
+                prompt_surface_digest=_armed_surface_digest(),
             ),
             origin_ctxvar=origin_var, cid_ctxvar=cid_var,
             engagement_ctxvar=_engagement_var,
@@ -2387,11 +2345,6 @@ class Agent:
                     prompt=prompt_text, origin=origin_snapshot,
                     cid=cid_var.get(), build_options=_build,
                     binding_digest=self.config.binding_digest,
-                    on_stale_old=lambda old, fence_gen=None: self._spawn_cold_retain(
-                        _proven_scheduled(old, turn_scheduled),
-                        directory=agent_home, channel=msg.channel,
-                        fence_generation=fence_gen,
-                    ),
                     on_message=on_message,
                     on_success=_publish,
                     # Finding 2 (final-review): fires for EVERY turn (warm
@@ -2421,11 +2374,11 @@ class Agent:
                 )
                 existing = self._session_registry.get(channel_key)
                 # #526: same no-await block as the entry snapshot (see the
-                # pooled path's on_decision). #290/#411: the retirement check
-                # and the fence-generation capture share that block too — the
-                # bypass path is a full resume-decision site and gets the
-                # same steer the pool applies, so no path can resume a
-                # session a reset/wipe is retiring.
+                # pooled path's on_decision). #290: the retirement check
+                # shares that block too — the bypass path is a full
+                # resume-decision site and gets the same steer the pool
+                # applies, so no path can resume a session a reset is
+                # retiring.
                 existing_generation = self._session_registry.generation(
                     channel_key,
                 )
@@ -2433,7 +2386,6 @@ class Agent:
                     self._session_registry, "retirement_pending",
                     lambda _k: False,
                 )(channel_key)
-                _fence_gen = _retain_fence().generation()
                 decision = _resume_decision(
                     msg.channel, existing, datetime.now(timezone.utc),
                     role_id=self.config.role_id,
@@ -2443,7 +2395,7 @@ class Agent:
                 if _retiring:
                     decision = dataclasses.replace(
                         decision, action="new", resume_sid=None,
-                        retain_old=False, old=None, reason="retiring",
+                        old=None, reason="retiring",
                     )
                 resume_sid = (
                     decision.resume_sid if decision.action == "resume" else None
@@ -2451,18 +2403,6 @@ class Agent:
                 last_resume.update(sid=resume_sid, gen=existing_generation)
                 if decision.action == "resume":
                     await self._session_registry.touch(channel_key)
-                elif decision.retain_old and decision.old is not None:
-                    # next-turn-after-gap: register() below overwrites this
-                    # channel's pointer, so retain the OLD immutable snapshot in
-                    # the BACKGROUND (claim-free / registry-decoupled — cannot
-                    # race register(); per-item classification runs off the hot
-                    # path, tier §2.4).
-                    self._spawn_cold_retain(
-                        _proven_scheduled(decision.old, turn_scheduled),
-                        directory=agent_home, channel=msg.channel,
-                        fence_generation=_fence_gen,
-                    )
-                # else ("new", retain_old=False): no prior entry → nothing to save
                 options = await self._build_options(
                     channel=msg.channel, channel_key=channel_key,
                     is_fresh=resume_sid is None, resume_sid=resume_sid,
@@ -2585,9 +2525,9 @@ class Agent:
             # session (#579).
             #
             # #578: admission is held across the same window, OUTSIDE the gate
-            # (the order is TurnAdmission -> session_write_gate -> RetainFence
-            # -> pool entry lock, and inverting it deadlocks). It is what lets
-            # a memory wipe drain an in-flight turn on ANY path, including one
+            # (the order is TurnAdmission -> session_write_gate -> pool entry
+            # lock, and inverting it deadlocks). It is what lets
+            # a retirement drain an in-flight turn on ANY path, including one
             # the client pool never owned and one whose key has no registry
             # entry yet to enumerate. Deliberately NOT the whole of _process:
             # both resume decisions live inside this block (the pooled one
@@ -3890,34 +3830,7 @@ class Agent:
             self._unsub_reset()
         except Exception:  # noqa: BLE001
             pass
-        # Sol r1 (#345): settle detached background cold-retains while the
-        # loop is still alive — cancelling here runs retain_cold_session's
-        # CancelledError arm (a synchronous spool write) deterministically,
-        # instead of relying on the runtime's final task-cancellation sweep.
-        #
-        # #881: that settle is an await, and it is BEFORE the pool close, so a
-        # cancellation delivered there — which is exactly what the loop's final
-        # sweep does to a reload's background "agent-pool-close" task — used to
-        # end this call without the pool ever being entered, leaving its warm
-        # client connected with nothing left to reclaim it. Hold the
-        # cancellation, close the pool anyway, then propagate. force=True
-        # because nobody is waiting for this call any more: a graceful lock
-        # wait here would hang the sweep that is gathering it, so the pool goes
-        # straight to its bounded, concurrent cut.
-        cancelled: BaseException | None = None
-        try:
-            for task in list(self._bg_tasks):
-                task.cancel()
-            if self._bg_tasks:
-                await asyncio.gather(*list(self._bg_tasks),
-                                     return_exceptions=True)
-        except asyncio.CancelledError as exc:
-            cancelled = exc
-        if cancelled is None:
-            await self._pool.aclose()
-        else:
-            await self._pool.aclose(force=True)
-            raise cancelled
+        await self._pool.aclose()
 
     async def _maybe_prepend_health_notice(
         self, text: str,
@@ -4036,41 +3949,6 @@ class Agent:
                     "plugin resolution degraded for %s: %s", target,
                     [(i.name, i.reason_code) for i in resolution.issues])
             return resolution
-
-    def _spawn_cold_retain(
-        self, old: SessionEntrySnapshot, *, directory: str, channel: str,
-        fence_generation: int | None = None,
-    ) -> None:
-        """Retain a cold prior session in the background (claim-free; cannot race
-        register()). Tracked so it isn't GC'd; failures are swallowed in
-        retain_cold_session and never reach the turn.
-
-        Task 9/10: takes the immutable ``SessionEntrySnapshot`` the resume gate
-        produced (``decision.old``) and passes it straight through to the reduced
-        ``retain_cold_session``, which reads the speaker/user provenance off the
-        snapshot itself. A legacy/corrupt snapshot with no usable provenance
-        retains nothing (never invents authorship).
-
-        ``fence_generation`` (#411) is the retain-fence generation captured at
-        the RESUME DECISION that produced ``old`` — not here, and not inside
-        the spawned coroutine: awaits (the pool's client close) sit between
-        the decision and this call, and the task body may not run until later
-        still; a memory wipe completing in either window must make the retain
-        DISCARD rather than restore pre-wipe content. ``None`` (legacy/test
-        callers) falls back to capturing now, which is still before the
-        coroutine body runs."""
-        if fence_generation is None:
-            fence_generation = _retain_fence().generation()
-        task = asyncio.create_task(
-            retain_cold_session(
-                old, directory=directory, channel=channel,
-                semantic_memory=self._semantic_memory,
-                fence_generation=fence_generation,
-            ),
-            name=f"cold-retain-{old.sdk_session_id}",
-        )
-        self._bg_tasks.add(task)
-        task.add_done_callback(self._bg_tasks.discard)
 
     def _log_retry(self, attempt: int, exc: Exception, delay_ms: int) -> None:
         """Emit a single WARNING per retry event (spec 5.2 §3.2)."""

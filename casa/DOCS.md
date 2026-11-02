@@ -46,12 +46,8 @@ Short-term conversation continuity works via the Claude Agent SDK session,
 with one exception worth knowing: changing a resident's identity — its persona,
 or the model it runs on — starts that resident's conversations fresh at the
 next restart (see *Changing a resident's persona costs you its conversations*,
-below). **Long-term** memory (cross-session recall) is off by default and
-is enabled by pointing Casa at a self-hosted **Hindsight** app.
-
-| Option | Description |
-|--------|-------------|
-| `hindsight_api_url` | Internal base URL for the self-hosted Hindsight app (e.g. `http://5884eb17-hindsight:8888` or its IP), reached via the app's hassio network alias/IP — not the bare host `hindsight`. **This is the single toggle for long-term memory: set it to turn long-term semantic memory ON** (the app auto-derives `MEMORY_BACKEND=hindsight`) — the freshness reaper then retains ended conversations to it, each item tier-classified. **Leave empty to keep long-term memory disabled** (short-term continuity still works via the SDK session, except across a resident identity change — and with this empty, nothing an ended conversation held is recoverable afterwards). |
+below). **Long-term** memory is built in, with no option to set: Casa
+captures each turn as it happens into its own store under `/data/memory`.
 
 **Wiping long-term memory** (v0.194.0): one supported operation deletes the whole
 bank, drops any pending durable retry records, and forgets every conversation
@@ -82,13 +78,6 @@ nights there, so a Home Assistant backup carries them. `casactl memory-restore
 anything said or wiped since it was made — and Casa restarts to do it; without
 `--yes` it only checks the export and tells you what it would do. `<export>` is
 an export's directory, or just its name inside `/data/memory/exports/`.
-
-The following env var is **auto-derived** from `hindsight_api_url` and rarely needs
-setting by hand:
-
-| Env var | Purpose | Default |
-|---|---|---|
-| `MEMORY_BACKEND` | Long-term memory backend: `hindsight` or `noop` (disabled). **Auto-set to `hindsight` by the app whenever `hindsight_api_url` is non-empty**; otherwise unset → `noop`. Any unrecognized value → `noop`. You normally just set `hindsight_api_url`. | derived from `hindsight_api_url` |
 
 ### Optional -- Agents
 
@@ -638,7 +627,6 @@ The terminal is an unauthenticated **root** shell, so it is reachable only throu
 - **App won't start**: Check the log for "claude_oauth_token is required". You must set the token before starting.
 - **No Telegram messages**: Verify `telegram_bot_token` and `telegram_chat_id` are correct. The bot must have been started (`/start` in Telegram).
 - **Engagements won't open (`engagement_not_configured`)**: See the "Troubleshooting engagements" subsection under [Engagements (v0.11.0)](#engagements-v0110) — most common cause is the bot missing "Manage topics" admin permission in the engagement supergroup.
-- **Long-term memory not working**: Long-term recall requires the `hindsight_api_url` option to be set to a reachable Hindsight app (which auto-enables `MEMORY_BACKEND=hindsight`). If recall is empty, check that `hindsight_api_url` is set and the Hindsight app is running, and check container logs for Hindsight connection errors. With `hindsight_api_url` empty, only short-term per-session continuity works.
 - **502 errors on ingress**: The Python process may still be starting. Wait up to 60 seconds after app start.
 
 ## DM button questions (v0.76.0)

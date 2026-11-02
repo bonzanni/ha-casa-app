@@ -34,8 +34,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Callable
 
 from memory import transcript_runs
-from session_registry import SessionRegistry
-from session_saver import freshness_window
+from session_registry import SessionRegistry, freshness_window
 
 logger = logging.getLogger(__name__)
 

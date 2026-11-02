@@ -6,11 +6,10 @@ reporting helper to ``outcome="completed"``, or routing it through
 ``test_in_casa_launch_terminal_artifact.py`` still passes.
 
 Why it matters, stated as the outcome it protects: ``_finalize_engagement``
-retains a tier-classified engagement summary onto the SHARED ``casa`` memory
-bank on every outcome (casa/rootfs/opt/casa/tools.py:8087-8105 and
-:8153-8180@03abe710), a store with no other copy. A launch death recorded as
-``completed`` with empty text would write a FALSE SUCCESS there — silent
-corruption, top of the H2 band — turning an H3 fix into an H2 regression.
+captures an engagement summary into memory on every outcome, a store with no
+other copy. A launch death recorded as ``completed`` with empty text would
+write a FALSE SUCCESS there — silent corruption, top of the H2 band — turning
+an H3 fix into an H2 regression.
 A green suite is not evidence of its absence, which is why the counts below
 are asserted rather than the statuses.
 
@@ -40,7 +39,6 @@ pytestmark = [pytest.mark.asyncio]
 async def test_mid_tool_loop_cutoff_never_completes_or_retains(
     tmp_path, monkeypatch,
 ):
-    import agent as agent_mod
     import tools as tools_mod
 
     probe = _Probe()
@@ -68,23 +66,6 @@ async def test_mid_tool_loop_cutoff_never_completes_or_retains(
 
     monkeypatch.setattr(tools_mod, "_finalize_engagement", spy_finalize)
 
-    retain_calls: list[tuple] = []
-
-    async def spy_retain(sem, **kw):
-        retain_calls.append((sem, kw))
-        return None
-
-    monkeypatch.setattr(tools_mod, "retain_delegated", spy_retain)
-
-    sem_retains: list[tuple] = []
-
-    class _Sem:
-        async def retain(self, *a, **kw):
-            sem_retains.append((a, kw))
-
-    monkeypatch.setattr(
-        agent_mod, "active_semantic_memory", _Sem(), raising=False)
-
     envelope = await _launch(engage_executor)
 
     payload = json.loads(envelope["content"][0]["text"])
@@ -107,8 +88,5 @@ async def test_mid_tool_loop_cutoff_never_completes_or_retains(
     assert matching[0]["status"] == "error"
     assert matching[0]["origin"]["error_kind"] == "launch_turn_incomplete"
 
-    # Nothing reached the funnel, and nothing reached the shared bank.
+    # Nothing reached the funnel, which is the one writer of the summary.
     assert finalize_calls == []
-    assert retain_calls == []
-    assert sem_retains == []
-    assert len(tools_mod._specialist_bg_tasks) == 0

@@ -85,9 +85,9 @@ async def _forward_to_internal(
     for tools/call, fail-closed deny for hooks/resolve).
 
     The 180s default bounds model-driven tools/call forwarding — long
-    enough for server-side LLM work (query_engager = Hindsight recall +
+    enough for server-side LLM work (query_engager = a memory read +
     ClaudeSDKClient one-shot synthesis; emit_completion = Telegram topic
-    teardown + s6 stop + two classify_tier one-shots) yet finite. casa-main
+    teardown + s6 stop) yet finite. casa-main
     downness is detected instantly via ClientConnectorError on the
     missing/refused socket, not by this timeout, so restart-resilience is
     unchanged.

@@ -22,7 +22,7 @@ import pytest
 import tools
 from memory import transcript_runs
 from session_registry import SessionRegistry
-from session_saver import freshness_window
+from session_registry import freshness_window
 from session_sweeper import SessionSweeper
 from test_memory_capture import mem  # noqa: F401 — a fixture
 from transcript_runs_support import rows, write_transcript

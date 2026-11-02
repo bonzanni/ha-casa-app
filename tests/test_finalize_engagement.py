@@ -756,7 +756,6 @@ async def _build_finalize(tmp_path, *, rich_returns=None, rich_raises=None,
     cm.get.return_value = telegram
     bus = MagicMock()
     bus.notify = AsyncMock()
-    agent_mod.active_semantic_memory = None
 
     init_tools(
         channel_manager=cm, bus=bus, specialist_registry=MagicMock(),

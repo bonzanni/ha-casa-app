@@ -251,7 +251,7 @@ time. Nothing after the launch reads it again ([`engagements.md`](engagements.md
 - `casa/rootfs/opt/casa/executor_epoch.py::epoch_application_tag`
 - `casa/rootfs/opt/casa/tools.py::_fetch_executor_archive`
 - `casa/rootfs/opt/casa/tools.py::_read_executor_archive`
-- `casa/rootfs/opt/casa/delegated_memory.py::delegated_recall`
+- `casa/rootfs/opt/casa/channel_trust.py`
 - `casa/rootfs/opt/casa/tools.py::_origin_clearance_markers`
 - `casa/rootfs/opt/casa/tools.py::inherit_origin_markers`
 - `casa/rootfs/opt/casa/tools.py::_engagement_rebuild_fence`

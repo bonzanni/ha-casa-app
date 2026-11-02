@@ -21,8 +21,8 @@ to the run's binding (``plugin_bindings``):
   durable announcement every async delegation has); or, when a specialist
   asked, first to a turn of that specialist with the answer as its task, whose
   own answer goes on up the same way. A relay's task is Casa's text around
-  another role's answer and is never banked as the requester's words
-  (INV-MEM-024: only a resident's own task on a turn Casa did not compose is).
+  another role's answer and is never captured as the requester's words
+  (INV-MEM-032: only a resident's own task on a turn Casa did not compose is).
   A continuation answer that is exactly ``<silent/>`` (an empty one is not) is the specialist's own
   declaration of progress: it climbs no further and is announced to nobody
   (C4a, INV-PLUG-054).

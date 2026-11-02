@@ -62,15 +62,15 @@ admission is taken later, under the engagement's per-turn lock.
 run non-blocking, so nothing about arrival order survives dispatch on its own. Engagement
 topics re-serialize under a per-topic handler lock (a quiet scheduled job run, which has no
 topic, under one keyed by its record), and direct messages re-serialize per
-chat: `/new` holds its chat's lock across the whole reset (retry record, then pointer
-removal; the retain itself runs in the background afterwards, INV-MEM-023),
+chat: `/new` holds its chat's lock across the whole reset (the pool close, then the pointer
+removal, INV-MEM-013),
 so once the reset holds the lock, no same-chat follow-up can be enqueued — let alone resume
 the dying session — until it finished. Distinct chats never contend. Two boundaries to keep
 in view: the lock serializes in *acquisition* order, which matches arrival order except in
 the brief window between handler dispatch and the acquire, where near-simultaneous updates
 can in principle swap; and a message dispatched *before* the `/new` is not ordered by the
 lock at all — an already-in-flight turn races the reset and is handled by the session
-registry's session-id checks instead (INV-MEM-006).
+registry's session-id checks instead: the reset removes only the session it snapshotted.
 
 **Ordering in a topic is a property of the sequencer, not of Telegram sends.** An engagement
 topic is a causal log: a single serialized writer keeps narration, discrete posts and edits

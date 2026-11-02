@@ -212,6 +212,40 @@ async def test_internal_retry_output_is_captured(mem, tmp_path):
     assert len({e["source_key"] for e in resident}) == 2
 
 
+async def test_casas_notes_never_reach_the_captured_text(mem, tmp_path,
+                                                       monkeypatch):
+    """INV-MEM-022 at the capture boundary: a turn whose sent query carries
+    Casa's notes block (a front-desk line and a reply note) captures only the
+    operator's own words, never a note."""
+    import result_broker as rb
+    import specialist_desk as sd
+    monkeypatch.setattr(sd, "DESK_ECHO", rb.PostLedger(max_events=64))
+    sd.record_echo(int(CHAT), "📊 Finance answered your reply (1 page).")
+    note = sd.reply_note("a message Casa posted for 📊 Finance",
+                         "2026-10-06 21:40", "📊 Finance\nWhich quarter?")
+    FakeClient.reset()
+    agent = _make_agent(tmp_path)
+    sent: list[str] = []
+    real_query = FakeClient.query
+
+    async def _recording_query(self, text):
+        sent.append(text)
+        return await real_query(self, text)
+
+    monkeypatch.setattr(FakeClient, "query", _recording_query)
+    with patch("sdk_client_pool._default_make_client", FakeClient):
+        await agent._process(_operator_msg("start from Q2 2026", "811",
+                                           _reply_note=note))
+    # The precondition: the notes really were in what the model was sent.
+    assert len(sent) == 1
+    assert "<casa_notes>" in sent[0] and "(front desk)" in sent[0]
+    operator = [e["text"] for e in events(mem)
+                if e["speaker_kind"] == "operator"]
+    assert operator == ["start from Q2 2026"]
+    assert not any("front desk" in e["text"] or "Which quarter" in e["text"]
+                   for e in events(mem))
+
+
 # --- durability: the store, the spool and the drain -------------------------
 
 async def test_store_failure_spools_and_never_drops_a_turn(mem, tmp_path,
@@ -283,14 +317,12 @@ async def test_old_spool_sends_one_private_notice(mem):
 async def test_no_model_call_on_capture(mem, tmp_path, monkeypatch):
     """Capture — stored, spooled and drained — calls no model: the turn's
     own SDK client is the only one built, and no classifier runs."""
-    import delegated_memory
     import tier_classifier
 
     def _no_model(*_a, **_k):
         raise AssertionError("a model was called on the capture path")
 
     monkeypatch.setattr(tier_classifier, "classify_tier", _no_model)
-    monkeypatch.setattr(delegated_memory, "classify_tier", _no_model)
     monkeypatch.setattr("claude_agent_sdk.query", _no_model)
     FakeClient.reset()
     agent = _make_agent(tmp_path)
@@ -653,8 +685,6 @@ async def test_model_output_floor_is_session_clearance(mem, tmp_path,
     with patch("sdk_client_pool._default_make_client", FakeClient):
         await agent._process(msg)
 
-    monkeypatch.setattr(agent_mod, "active_semantic_memory", None,
-                        raising=False)
     token = agent_mod.origin_var.set({
         "role": "assistant", "channel": "telegram", "chat_id": CHAT,
         "cid": "c", "delegation_depth": 0, "_origin_route": "telegram",
@@ -679,8 +709,6 @@ async def test_model_output_floor_is_session_clearance(mem, tmp_path,
 async def test_delegated_request_captured_before_the_run(mem, monkeypatch):
     """The raw task is an event before the specialist's client exists; the
     answer follows when the run completes."""
-    monkeypatch.setattr(agent_mod, "active_semantic_memory", None,
-                        raising=False)
     seen_at_launch: list[list[str]] = []
 
     class _Client(_FakeSDKClient):
@@ -744,8 +772,6 @@ async def test_a_turn_a_delegation_and_an_engagement_turn_each_capture(
         ("operator", "write_trusted_turn"), ("resident", "resident_message")]
 
     # A delegation: its request and its answer.
-    monkeypatch.setattr(agent_mod, "active_semantic_memory", None,
-                        raising=False)
     token = agent_mod.origin_var.set({
         "role": "assistant", "channel": "telegram", "chat_id": CHAT,
         "cid": "c", "delegation_depth": 0})

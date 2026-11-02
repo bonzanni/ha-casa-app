@@ -46,8 +46,8 @@ provides them, the pass logs one WARNING and deletes no transcript, while
 Casa boots and the job keeps its schedule (an import at module load would crash boot —
 ``casa_core.main`` imports this module before scheduling it).
 
-Takes neither ``RetainFence`` nor ``TURN_ADMISSION``: it deletes local files
-and retains nothing.
+Does not take ``TURN_ADMISSION``: it deletes local files and writes no
+memory.
 """
 
 from __future__ import annotations

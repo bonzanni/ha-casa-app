@@ -1330,12 +1330,11 @@ class TestEmitCompletionCancellation:
         driver = _Driver()
         monkeypatch.setattr(agent_mod, "active_engagement_driver", driver,
                             raising=False)
-        monkeypatch.setattr(agent_mod, "active_semantic_memory", object(),
-                            raising=False)
 
-        async def _retain(sem, **kwargs):
-            events.append("retain")
-        monkeypatch.setattr(tools_mod, "retain_delegated", _retain)
+        async def _capture(frozen, text, *, allowed):
+            events.append("capture")
+            return True
+        monkeypatch.setattr(tools_mod, "_capture_summary", _capture)
 
         tools_mod._ENGAGEMENTS_DEFERRED_HARD_RELOAD.add(rec.id)
 
@@ -1378,15 +1377,15 @@ class TestEmitCompletionCancellation:
         assert _Driver.cancel_calls == 1
         assert bus.notify.await_count == 1
         assert events.count("notify") == 1
-        assert events.count("retain") == 2
+        assert events.count("capture") == 2
         assert events.count("post") == 1
         assert events.count("final-log") == 1
         assert rec.id not in tools_mod._ENGAGEMENTS_DEFERRED_HARD_RELOAD
         assert events.index("cancel") < events.index("notify")
         assert events.index("notify") < min(
-            i for i, e in enumerate(events) if e == "retain")
+            i for i, e in enumerate(events) if e == "capture")
         assert max(
-            i for i, e in enumerate(events) if e == "retain"
+            i for i, e in enumerate(events) if e == "capture"
         ) < events.index("post")
         assert events.index("post") < events.index("final-log")
 
@@ -1423,8 +1422,6 @@ class TestFinalizeTailObservability:
         if quiesce is not None:
             monkeypatch.setattr(reg, "await_quiesce", quiesce)
         monkeypatch.setattr(agent_mod, "active_engagement_driver", driver,
-                            raising=False)
-        monkeypatch.setattr(agent_mod, "active_semantic_memory", None,
                             raising=False)
         token = engagement_var.set(rec)
         try:
@@ -1494,7 +1491,7 @@ class TestFinalizeTailObservability:
         """Terra seam F3: a post-terminal ``lower_origin_clearance`` (real
         mutator — no terminal refusal) lands during the funnel's quiesce
         await; the DelegationComplete must still carry the flip-time origin
-        and the retained summary the flip-time task."""
+        and the captured summary the flip-time task."""
         import tools as tools_mod
         seen: dict = {}
 
@@ -1514,11 +1511,12 @@ class TestFinalizeTailObservability:
             async def cancel(self, engagement):
                 return None
 
-        retained: list = []
+        captured: list[str] = []
 
-        async def _retain(sem, **kwargs):
-            retained.append(kwargs)
-        monkeypatch.setattr(tools_mod, "retain_delegated", _retain)
+        async def _capture(frozen, text, *, allowed):
+            captured.append(text)
+            return True
+        monkeypatch.setattr(tools_mod, "_capture_summary", _capture)
 
         import agent as agent_mod
         tools_mod_, reg, rec, bus, host = await self._launch(
@@ -1527,8 +1525,6 @@ class TestFinalizeTailObservability:
         # _launch built reg/rec before quiesce could reference them:
         reg_box["reg"] = reg
         rec_box["rec"] = rec
-        monkeypatch.setattr(agent_mod, "active_semantic_memory", object(),
-                            raising=False)
         payload = json.loads((await host)["content"][0]["text"])
         assert payload["status"] == "acknowledged"
         # The real mutator DID fire post-flip:
@@ -1536,10 +1532,9 @@ class TestFinalizeTailObservability:
         assert rec.task != "pay rent"
         # ...and the completion payloads carry the flip-time values:
         assert seen["origin"]["_origin_clearance"] == "private"
-        for kwargs in retained:
-            for turn in kwargs.get("turns", []):
-                if "engagement_summary" in turn.text:
-                    assert json.loads(turn.text)["task"] == "pay rent"
+        tasks = [json.loads(t)["task"] for t in captured
+                 if json.loads(t)["kind"] == "engagement_summary"]
+        assert tasks == ["pay rent"]
 
     async def test_claude_code_emit_stays_synchronous(
             self, tmp_path, monkeypatch):
@@ -1572,8 +1567,6 @@ class TestFinalizeTailObservability:
         )
         monkeypatch.setattr(agent_mod, "active_claude_code_driver",
                             MagicMock(spec=[]), raising=False)
-        monkeypatch.setattr(agent_mod, "active_semantic_memory", None,
-                            raising=False)
         token = engagement_var.set(rec)
         try:
             host = asyncio.get_running_loop().create_task(

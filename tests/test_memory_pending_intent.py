@@ -187,7 +187,7 @@ def test_no_attempt_boots_normally_and_requests_the_restart_again():
 
 #: Everything that reads memory or lets anything run, which must come after
 #: the intent check.
-CONSUMERS = ("_read_plugin_env", "build_semantic_memory", "MemoryStore",
+CONSUMERS = ("_read_plugin_env", "MemoryStore",
              "replay_undergoing_engagements", "start_all",
              "start_internal_unix_runner", "AppRunner", "start_agent_loop")
 

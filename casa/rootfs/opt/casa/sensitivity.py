@@ -5,8 +5,8 @@
 Tiers are an access ladder, ascending sensitivity:
     public  <  friends  <  family  <  private
 A context's CLEARANCE is the highest tier it may read; it reads its own tier and all
-LESS-sensitive tiers. Facts are tagged with a tier; recall filters to tiers <= clearance.
-Retrieval relevance is Hindsight's job (semantic) — these tiers are purely access control.
+LESS-sensitive tiers. Facts are tagged with a tier; reads filter to tiers <= clearance.
+These tiers are purely access control.
 """
 from __future__ import annotations
 

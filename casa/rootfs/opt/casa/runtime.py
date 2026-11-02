@@ -30,7 +30,6 @@ if TYPE_CHECKING:
     from prompt_compiler import CompiledPromptBundle
     from role_slot import RoleSlot
     from explanation_store import ExplanationStore
-    from semantic_memory import SemanticMemory
     from session_registry import SessionRegistry
     from specialist_registry import SpecialistRegistry
     from trigger_registry import TriggerRegistry
@@ -84,13 +83,6 @@ class CasaRuntime:
     agents_dir: str
     home_root: str | Path
     defaults_root: str | Path
-
-    # Long-term memory (boot-fixed). H9 (v0.49.0): reload._construct_agent
-    # passes this into every Agent it builds — omitting it silently
-    # downgraded reload-constructed residents to NoOpSemanticMemory.
-    # Defaulted, so it MUST stay the LAST field (dataclass rule); test
-    # stand-ins that skip it get None → Agent maps None to NoOp.
-    semantic_memory: "SemanticMemory | None" = None
 
     # Durable delegated execution + delivery state. Defaulted for existing
     # narrow test stand-ins; production always injects the boot-loaded owner.

@@ -175,8 +175,6 @@ def env(tmp_path, monkeypatch, mem):  # noqa: F811 — the imported fixture
     other = _project(str(tmp_path / "elsewhere"))
     monkeypatch.setattr(tools, "_specialist_telemetry", None, raising=False)
     import agent as agent_mod
-    monkeypatch.setattr(agent_mod, "active_semantic_memory", None,
-                        raising=False)
     return SimpleNamespace(tools=tools, cfg=cfg, folder=folder, other=other,
                            store=mem)
 
@@ -243,7 +241,6 @@ from memory import capture as cap, transcript_runs
 from test_delegated_transcript_retention import _Harness, _project, _write_session
 from test_delegate_to_agent import _origin, _specialist_cfg, _with_origin
 point, cwd = sys.argv[5], sys.argv[6]
-agent_mod.active_semantic_memory = None
 tools._specialist_telemetry = None
 cfg = _specialist_cfg()
 cfg.cwd = cwd

@@ -23,7 +23,7 @@ import sys
 import types
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -141,14 +141,10 @@ async def test_resident_options(tmp_path, monkeypatch):
         tools=ToolsConfig(allowed=["Read"], disallowed=[]),
         memory=MemoryConfig(token_budget=800, read_strategy="cached"),
     )
-    memory = AsyncMock()
-    memory.profile.return_value = ""
-    memory.recall.return_value = ""
     resident = Agent(
         config=cfg,
         session_registry=SessionRegistry(str(tmp_path / "sessions.json")),
         mcp_registry=McpServerRegistry(), channel_manager=ChannelManager(),
-        semantic_memory=memory,
     )
     for channel in ("telegram", "voice"):
         opts = await resident._build_options(

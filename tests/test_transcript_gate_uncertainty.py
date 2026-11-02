@@ -264,7 +264,6 @@ import tools
 from engagement_registry import EngagementRegistry
 from memory import capture as cap
 tombstone, cwd, sid = sys.argv[5:8]
-agent_mod.active_semantic_memory = None
 tools.EXECUTOR_CWD = cwd
 real_register = tools._register_summary_run
 real_record = cap.record

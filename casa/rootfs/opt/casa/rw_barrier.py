@@ -1,25 +1,15 @@
 # casa/rootfs/opt/casa/rw_barrier.py
-"""#578: the readers/writer core shared by the two process-wide barriers.
+"""#578: the readers/writer core of :class:`session_gate.TurnAdmission`.
 
-Two barriers in Casa have the same shape — many concurrent participants on the
-SHARED side, one draining exclusive holder — over two different populations:
+Many concurrent participants on the SHARED side (turns), one draining
+exclusive holder (a retirement).
 
-- :class:`memory_wipe.RetainFence` over long-term-bank WRITERS, plus a wipe
-  generation that makes a pre-wipe writer discard.
-- :class:`session_gate.TurnAdmission` over TURNS, so a retirement can drain
-  every in-flight turn on any path (the client pool could only ever join the
-  turns it owned).
+The core carries one scar: a barrier of this shape once released its
+exclusive lock only on the timeout path, so a CANCELLATION during the drain
+left the lock held forever and everything after it deadlocked.
+:meth:`RwBarrier.acquire_exclusive` releases on every exceptional exit.
 
-The core lives here because of one scar, not for tidiness. ``RetainFence``
-originally released its exclusive lock only on the timeout path, so a
-CANCELLATION during the drain (shutdown killing the wipe task, an admin client
-dropping) left the lock held forever and every later retain and wipe
-deadlocked. Duplicating a readers/writer implementation duplicates the
-opportunity to omit that release, so both barriers acquire exclusivity through
-:meth:`RwBarrier.acquire_exclusive` and inherit the repair.
-
-Leaf module: no Casa imports, so both sides can import it without the
-lazy-import cycle dance ``agent``/``memory_wipe``/``session_saver`` already do.
+Leaf module: no Casa imports.
 """
 from __future__ import annotations
 

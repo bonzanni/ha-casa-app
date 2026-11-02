@@ -711,10 +711,10 @@ class TestIngress:
 
 
 try:
-    from tests.test_voice_context_sanitize import _CapturingAgent, _DummyMemory, _FakeAgentConfig
+    from tests.test_voice_context_sanitize import _CapturingAgent, _FakeAgentConfig
     from tests.voice_auth_helpers import VOICE_TEST_SECRET, voice_signature
 except ImportError:
-    from test_voice_context_sanitize import _CapturingAgent, _DummyMemory, _FakeAgentConfig
+    from test_voice_context_sanitize import _CapturingAgent, _FakeAgentConfig
     from voice_auth_helpers import VOICE_TEST_SECRET, voice_signature
 
 
@@ -732,7 +732,7 @@ async def voice():
     channel = VoiceChannel(
         bus=bus, default_agent="butler", webhook_secret=VOICE_TEST_SECRET,
         sse_path="/api/converse", ws_path="/api/converse/ws",
-        agent_configs={"butler": _FakeAgentConfig()}, memory=_DummyMemory(), idle_timeout=300)
+        agent_configs={"butler": _FakeAgentConfig()}, idle_timeout=300)
     yield captor, channel
     loop_task.cancel()
 

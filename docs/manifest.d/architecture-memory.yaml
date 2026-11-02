@@ -1,28 +1,14 @@
-# Manifest shard (#367, split #1131) — architecture documents memory through O. Loaded with
-# the root docs/manifest.yaml by scripts/verify_docs.py; same entry format.
+# Manifest shard (#367, split #1131, then from memory-through-O) — the architecture
+# documents about memory, except export and restore (their own shard). Loaded with the root
+# docs/manifest.yaml by scripts/verify_docs.py; same entry format.
 
 - doc: architecture/memory.md
-  summary: The long-term memory backend seam — how a stored fact is rendered on the way back out, and the three outcomes of a recall.
-  when_changing: the memory backend seam, its recall outcomes or its rendering
-  covers:
-    - casa/rootfs/opt/casa/semantic_memory.py::SemanticMemory
-    - casa/rootfs/opt/casa/semantic_memory.py::RecallUnavailable
-    - casa/rootfs/opt/casa/semantic_memory.py::RecallProtocolError
-    - casa/rootfs/opt/casa/semantic_memory.py::NoOpSemanticMemory
-    - casa/rootfs/opt/casa/hindsight_memory.py::HindsightSemanticMemory.recall_items
-    - casa/rootfs/opt/casa/hindsight_memory.py::HindsightSemanticMemory.document_tags
-    - casa/rootfs/opt/casa/recall_renderer.py::render_recall
-    - casa/rootfs/opt/casa/recall_health.py::observed_recall
-    - casa/rootfs/opt/casa/delegated_memory.py::delegated_recall
-  tests:
-    - tests/test_recall_absence_invariant.py
-    - tests/test_recall_health.py::test_breaker_opens_after_threshold_failures
-    - tests/test_1123_tier_floor_regressions.py
-  related: [architecture/overview.md, architecture/turn-loop.md, architecture/memory-lifecycle.md, architecture/memory-serving.md, architecture/memory-scoping.md, architecture/memory-wipe.md, architecture/memory-tools.md]
-  defines_invariants: [INV-MEM-001, INV-MEM-002]
-  invariant_tests:
-    INV-MEM-001: [tests/test_pin_memory_invariants.py::test_pin_inv_mem_001_failures_raise_never_return_empty, tests/test_hindsight_memory.py::test_recall_unrenderable_results_are_unavailable_not_zero_hits]
-    INV-MEM-002: [tests/test_pin_memory_invariants.py::test_pin_inv_mem_002_exactly_one_readable_tier]
+  summary: A one-hop map of Casa's built-in long-term memory — capture, the store, the writer and its ledgers, scoping, serving, the tools, and the whole-memory operations — and which document owns each.
+  when_changing: which document owns a part of memory, or how the parts of memory fit together
+  covers: []
+  tests: []
+  related: [architecture/memory-capture.md, architecture/memory-store.md, architecture/memory-writer.md, architecture/memory-labelling.md, architecture/memory-scoping.md, architecture/memory-serving.md, architecture/memory-tools.md, architecture/memory-wipe.md, architecture/memory-export-restore.md, architecture/memory-lifecycle.md]
+  defines_invariants: []
 
 - doc: architecture/memory-tools.md
   summary: The memory tools — search the saved conversation (and the derived search index behind it), browse a day, open ledger entries by id, mark a correction — and the engager query's read, each filtered per object at the reader's clearance.
@@ -52,7 +38,7 @@
   related: [architecture/memory-serving.md, architecture/memory-scoping.md, architecture/memory-writer.md, architecture/memory-store.md, architecture/memory-capture.md, architecture/tools-interface.md]
   defines_invariants: [INV-MEM-010, INV-MEM-019]
   invariant_tests:
-    INV-MEM-010: [tests/test_memory_search_tool.py::test_every_result_carries_one_note_at_every_clearance, tests/test_memory_search_tool.py::test_an_unreadable_store_is_never_an_empty_result, tests/test_memory_search_tool.py::test_a_page_with_more_behind_it_says_so, tests/test_memory_search_tool.py::test_query_engager_unknown_carries_guidance, tests/test_memory_browse.py::test_an_empty_day_is_bounded_not_absence, tests/test_memory_browse.py::test_an_unavailable_store_is_never_an_empty_day, tests/test_query_engager_tiers.py::test_nothing_readable_is_unknown_not_absence, tests/test_query_engager_tiers.py::test_an_unreadable_store_is_unavailable_not_unknown, tests/test_resident_memory_tools.py::test_unavailable_memory_qualifies_when_to_tell, tests/test_recall_readable_slice_framing.py::TestExecutorArchiveBlock::test_lessons_block_carries_the_note, tests/test_recall_readable_slice_framing.py::TestExecutorArchiveBlock::test_empty_archive_stays_silent, tests/test_recall_readable_slice_framing.py::test_every_slice_consumer_is_declared]
+    INV-MEM-010: [tests/test_memory_search_tool.py::test_every_result_carries_one_note_at_every_clearance, tests/test_memory_search_tool.py::test_an_unreadable_store_is_never_an_empty_result, tests/test_memory_search_tool.py::test_a_page_with_more_behind_it_says_so, tests/test_memory_search_tool.py::test_query_engager_unknown_carries_guidance, tests/test_memory_browse.py::test_an_empty_day_is_bounded_not_absence, tests/test_memory_browse.py::test_an_unavailable_store_is_never_an_empty_day, tests/test_query_engager_tiers.py::test_nothing_readable_is_unknown_not_absence, tests/test_query_engager_tiers.py::test_an_unreadable_store_is_unavailable_not_unknown, tests/test_resident_memory_tools.py::test_unavailable_memory_qualifies_when_to_tell, tests/test_recall_readable_slice_framing.py::TestExecutorArchiveBlock::test_lessons_block_carries_the_note, tests/test_recall_readable_slice_framing.py::TestExecutorArchiveBlock::test_empty_archive_stays_silent]
     INV-MEM-019: [tests/test_memory_period.py::test_a_range_keeps_only_events_said_inside_it, tests/test_memory_period.py::test_the_range_runs_before_paging, tests/test_memory_period.py::test_the_range_and_the_clearance_both_filter, tests/test_memory_period.py::test_an_empty_range_result_is_bounded_not_absence, tests/test_memory_period.py::test_an_unreadable_or_inverted_range_is_refused_unsearched, tests/test_memory_period.py::test_named_periods_resolve_in_the_operator_zone, tests/test_memory_period.py::test_a_search_without_a_range_reads_every_day]
 
 - doc: architecture/memory-serving.md
@@ -89,7 +75,7 @@
     - casa/rootfs/opt/casa/executor_epoch.py::epoch_application_tag
     - casa/rootfs/opt/casa/tools.py::_fetch_executor_archive
     - casa/rootfs/opt/casa/tools.py::_read_executor_archive
-    - casa/rootfs/opt/casa/delegated_memory.py::delegated_recall
+    - casa/rootfs/opt/casa/channel_trust.py
     - casa/rootfs/opt/casa/tools.py::_origin_clearance_markers
     - casa/rootfs/opt/casa/tools.py::inherit_origin_markers
     - casa/rootfs/opt/casa/tools.py::_engagement_rebuild_fence
@@ -114,46 +100,31 @@
     INV-MEM-003: [tests/test_sensitivity.py::test_unknown_channel_fails_closed_to_public]
     INV-MEM-008: [tests/test_memory_search_tool.py::test_an_engagement_reads_at_its_own_records_clearance, tests/test_telegram_sender_identity.py::test_a_lowered_engagement_recalls_at_the_lower_tier, tests/test_query_engager_tiers.py::test_non_operator_engagement_queries_at_public_only, tests/test_engagement_rebuild_fences.py::TestInCasaClampMidRead::test_every_memory_tool_rereads_at_the_clamped_record]
     INV-MEM-011: [tests/test_engagement_context_rebuild.py::TestClampSetsRebuildPending::test_lowering_clearance_sets_the_flag_durably, tests/test_engagement_context_rebuild.py::TestClampSetsRebuildPending::test_clamp_withholds_the_launch_materials, tests/test_steering_downgrade_rebuild.py::TestDowngradeTearsDownAndRebuilds::test_downgrade_invalidates_clears_sid_rebuilds_then_delivers, tests/test_steering_downgrade_rebuild.py::TestDowngradeTearsDownAndRebuilds::test_failed_rebuild_refuses_delivery_and_keeps_the_flag, tests/test_engagement_rebuild_fences.py::TestInProcessToolFence::test_pending_record_refuses_the_tool, tests/test_engagement_rebuild_fences.py::TestChokePointFence::test_internal_tools_call_refuses_pending_engagement, tests/test_engagement_rebuild_fences.py::TestInFlightReFilter::test_clamp_during_recall_filters_this_result, tests/test_engagement_rebuild_fences.py::TestInCasaLaunchGate::test_clamp_during_client_open_aborts_the_stale_prompt, tests/test_background_jobs_loop.py::test_the_teardown_waits_for_the_running_turn_and_spares_a_replacement, tests/test_background_jobs_loop.py::test_a_message_queued_before_the_downgrade_goes_to_the_fresh_session, tests/test_background_jobs_loop.py::test_an_interactive_turn_running_at_the_downgrade_completes]
-    INV-MEM-015: [tests/test_executor_memory_tiers.py::test_operator_launch_reads_its_role_and_epoch_oldest_first, tests/test_executor_memory_tiers.py::test_a_record_without_an_epoch_gets_nothing, tests/test_executor_memory_tiers.py::test_a_finalized_summary_carries_its_records_epoch, tests/test_executor_epoch.py::TestDigestInputs::test_doctrine_edit_changes_epoch, tests/test_executor_epoch.py::TestDigestInputs::test_prompt_indirection_changes_epoch, tests/test_executor_epoch.py::TestDigestInputs::test_workspace_template_source_is_input_for_claude_code, tests/test_engagement_summary_retain.py::test_executor_summary_stamped_with_launch_epoch_tag, tests/test_engagement_summary_retain.py::test_executor_summary_without_epoch_retains_untagged]
+    INV-MEM-015: [tests/test_executor_memory_tiers.py::test_operator_launch_reads_its_role_and_epoch_oldest_first, tests/test_executor_memory_tiers.py::test_a_record_without_an_epoch_gets_nothing, tests/test_executor_memory_tiers.py::test_a_finalized_summary_carries_its_records_epoch, tests/test_executor_epoch.py::TestDigestInputs::test_doctrine_edit_changes_epoch, tests/test_executor_epoch.py::TestDigestInputs::test_prompt_indirection_changes_epoch, tests/test_executor_epoch.py::TestDigestInputs::test_workspace_template_source_is_input_for_claude_code]
 
 - doc: architecture/memory-lifecycle.md
-  summary: Retention lifecycle — how a conversation becomes long-term memory, how a reset retires it, how a failed retain is retried durably, and how long a transcript is kept (run confirmation and retention).
-  when_changing: session persistence, the save/reset guard protocol, the retirement claims, the retry spool, run registration and confirmation, or transcript retention
+  summary: Session lifecycle — the freshness windows, how an explicit reset retires a session under its retirement claim, and how long an SDK transcript is kept (run confirmation and retention).
+  when_changing: the freshness windows, the explicit reset, the retirement claims, run registration and confirmation, or transcript retention
   covers:
-    - casa/rootfs/opt/casa/memory_provenance.py::build_retain_items
-    - casa/rootfs/opt/casa/session_saver.py::save_session
-    - casa/rootfs/opt/casa/session_saver.py::reset_channel
-    - casa/rootfs/opt/casa/session_saver.py::retain_cold_session
-    - casa/rootfs/opt/casa/session_saver.py::retry_spooled_cold_retains
-    - casa/rootfs/opt/casa/session_saver.py::freshness_window
+    - casa/rootfs/opt/casa/session_registry.py::reset_channel
+    - casa/rootfs/opt/casa/session_registry.py::freshness_window
     - casa/rootfs/opt/casa/session_registry.py::SessionRegistry.begin_retirement
     - casa/rootfs/opt/casa/session_registry.py::SessionRegistry.end_retirement
     - casa/rootfs/opt/casa/session_registry.py::SessionRegistry.retirement_pending
-    - casa/rootfs/opt/casa/freshness_reaper.py::FreshnessReaper.sweep_once
-    - casa/rootfs/opt/casa/delegated_memory.py::retain_delegated
     - casa/rootfs/opt/casa/session_sweeper.py::SessionSweeper._sweep_once
-    - casa/rootfs/opt/casa/delegated_memory.py::role_writes_memory
-    - casa/rootfs/opt/casa/delegated_memory.py::notice_from_excluded_role
-    - casa/rootfs/opt/casa/session_saver.py::transcript_to_items
     - casa/rootfs/opt/casa/memory/transcript_runs.py
   tests:
-    - tests/test_session_saver.py
-    - tests/test_no_retain_specialist.py
-    - tests/test_freshness_reaper.py
     - tests/test_retirement_claims.py
     - tests/test_reset_channel_retirement.py
-    - tests/test_reset_background_save.py
-    - tests/test_memory_provenance.py
+    - tests/test_session_registry_reset_hook.py
     - tests/test_session_sweeper.py
     - tests/test_transcript_confirmation.py
     - tests/test_transcript_retention.py
     - tests/test_transcript_gate_uncertainty.py
   related: [architecture/memory.md, architecture/memory-capture.md, architecture/memory-labelling.md, architecture/memory-wipe.md, architecture/turn-loop.md, architecture/sdk-client-pool.md, architecture/persistent-state.md]
-  defines_invariants: [INV-MEM-006, INV-MEM-013, INV-MEM-021, INV-MEM-023, INV-MEM-031]
+  defines_invariants: [INV-MEM-013, INV-MEM-021, INV-MEM-031]
   invariant_tests:
-    INV-MEM-006: [tests/test_session_saver.py::test_save_session_expected_sid_mismatch_releases_claim, tests/test_session_saver.py::test_reset_channel_trailing_remove_spares_follow_up_session, tests/test_session_registry.py::test_remove_with_stale_expected_sid_spares_newer_session, tests/test_freshness_reaper.py::test_sweep_passes_cold_snapshot_sid_to_save]
-    INV-MEM-013: [tests/test_sdk_client_pool_pool.py::test_retirement_steers_turn_fresh_and_skips_stale_retain, tests/test_sdk_client_pool_pool.py::test_no_retirement_resumes_normally_on_same_registry, tests/test_retirement_claims.py::TestClaimSet::test_pending_while_any_claim_live, tests/test_retirement_claims.py::TestRegisterRefusal::test_dying_sid_refused_other_sids_proceed, tests/test_reset_channel_retirement.py::test_racing_fresh_registration_survives_reset, tests/test_reset_channel_retirement.py::test_sidless_entry_rederives_and_retires_materialized_session, tests/test_reset_channel_retirement.py::test_claim_released_when_the_retain_raises]
-    INV-MEM-023: [tests/test_reset_background_save.py::test_the_next_message_is_dispatched_while_the_save_still_runs, tests/test_reset_background_save.py::test_the_record_is_on_disk_before_the_pointer_is_dropped, tests/test_reset_background_save.py::test_a_restart_before_the_background_save_still_banks_it, tests/test_reset_background_save.py::test_a_landed_save_removes_its_record_and_a_failed_one_keeps_it, tests/test_reset_background_save.py::test_the_record_stays_until_the_retain_has_landed, tests/test_reset_background_save.py::test_a_recall_only_channel_records_and_retains_nothing]
+    INV-MEM-013: [tests/test_sdk_client_pool_pool.py::test_retirement_steers_turn_fresh, tests/test_sdk_client_pool_pool.py::test_no_retirement_resumes_normally_on_same_registry, tests/test_retirement_claims.py::TestClaimSet::test_pending_while_any_claim_live, tests/test_retirement_claims.py::TestRegisterRefusal::test_dying_sid_refused_other_sids_proceed, tests/test_reset_channel_retirement.py::test_racing_fresh_registration_survives_reset, tests/test_reset_channel_retirement.py::test_sidless_entry_rederives_and_retires_materialized_session, tests/test_reset_channel_retirement.py::test_claim_released_when_the_body_raises]
     INV-MEM-021: [tests/test_cross_session_tools.py::test_query_engager_synthesis_options, tests/test_cross_session_tools.py::test_observer_decider_options, tests/test_cross_session_tools.py::test_tier_classifier_options, tests/test_cross_session_tools.py::test_resident_options, tests/test_cross_session_tools.py::test_restricted_webhook_options, tests/test_cross_session_tools.py::test_specialist_and_executor_options, tests/test_plugin_job_launch.py::test_worker_options_record_and_topic, tests/test_cross_session_tools.py::test_run_admission_options, tests/test_cross_session_tools.py::test_memory_writer_options]
     INV-MEM-031: [tests/test_transcript_confirmation.py::test_kill_between_reply_and_capture_keeps_the_transcript_unresolved, tests/test_transcript_confirmation.py::test_transcript_content_is_never_captured, tests/test_transcript_confirmation.py::test_an_unconfirmed_run_holds_its_directory, tests/test_transcript_confirmation.py::test_a_fresh_session_is_named_before_its_first_capture, tests/test_transcript_confirmation.py::test_a_retry_into_a_new_session_moves_the_row, tests/test_transcript_confirmation.py::test_cancelled_and_failed_turns_confirm, tests/test_transcript_confirmation.py::test_a_capture_that_cannot_spool_leaves_the_run_unconfirmed, tests/test_transcript_confirmation.py::test_ineligible_turns_register_nothing, tests/test_transcript_confirmation.py::test_a_summary_row_blocks_until_its_summaries_are_captured, tests/test_transcript_confirmation.py::test_the_capture_path_list_is_complete, tests/test_transcript_confirmation.py::test_every_run_kind_registers_before_its_first_capture, tests/test_transcript_retention.py::test_a_resident_transcript_lives_its_retention_after_it_can_no_longer_resume, tests/test_transcript_retention.py::test_an_unconfirmed_resident_run_keeps_its_transcript, tests/test_transcript_retention.py::test_a_transcript_with_no_registered_run_follows_retention, tests/test_transcript_retention.py::test_the_retention_variable_is_read_at_each_use, tests/test_memory_capture.py::test_append_during_a_drain_is_kept, tests/test_transcript_gate_uncertainty.py::test_a_resumed_resident_run_killed_before_streaming_keeps_its_transcript, tests/test_transcript_gate_uncertainty.py::test_a_failed_naming_keeps_the_resident_transcript, tests/test_transcript_gate_uncertainty.py::test_a_failed_naming_keeps_the_engagement_transcript, tests/test_transcript_gate_uncertainty.py::test_a_session_published_after_the_summary_row_is_kept, tests/test_transcript_gate_uncertainty.py::test_an_unnamed_row_holds_a_shared_folder_until_it_is_confirmed, tests/test_transcript_gate_uncertainty.py::test_a_run_that_moved_to_a_session_it_could_not_name_keeps_it, tests/test_transcript_gate_uncertainty.py::test_a_held_session_keeps_its_pointer_and_goes_on_a_later_sweep, tests/test_transcript_retention.py::test_registration_never_waits_on_a_saturated_default_executor, tests/test_transcript_retention.py::test_detached_run_writes_never_take_a_turns_thread, tests/test_transcript_confirmation.py::test_a_reload_during_finalize_never_captures_an_uncovered_summary, tests/test_transcript_gate_uncertainty.py::test_no_run_of_the_session_starts_between_the_sweeps_check_and_delete, tests/test_transcript_confirmation.py::test_a_run_cancelled_during_its_registration_confirms_its_row]
 
@@ -179,36 +150,29 @@
     - tests/test_channel_policy.py
     - tests/test_specialist_memory_tiers.py
   related: [architecture/memory-store.md, architecture/memory-labelling.md, architecture/memory-lifecycle.md, architecture/memory-scoping.md, architecture/turn-loop.md, architecture/delegation.md]
-  defines_invariants: [INV-MEM-005, INV-MEM-016, INV-MEM-024, INV-MEM-032]
+  defines_invariants: [INV-MEM-005, INV-MEM-016, INV-MEM-032]
   invariant_tests:
-    INV-MEM-005: [tests/test_delegated_memory.py::test_retain_delegated_voice_writes_nothing]
-    INV-MEM-016: [tests/test_specialist_memory_tiers.py::test_pin_inv_mem_016_aborted_run_retains_only_caller_task, tests/test_specialist_memory_tiers.py::test_pin_inv_mem_016_null_subtype_on_a_parsed_result_is_an_abort, tests/test_specialist_memory_tiers.py::test_write_retain_telegram, tests/test_specialist_memory_tiers.py::test_empty_answer_submits_caller_turn_whether_or_not_run_aborted, tests/test_specialist_memory_tiers.py::test_red_incomplete_stop_reason_withholds_only_the_answer, tests/test_specialist_memory_tiers.py::test_stop_reason_matrix, tests/test_specialist_memory_tiers.py::test_malformed_stop_reason_withholds_the_answer, tests/test_specialist_memory_tiers.py::test_whitespace_only_task_submits_nothing, tests/test_specialist_memory_tiers.py::test_a_success_subtype_is_not_enough_to_call_the_turn_complete, tests/test_specialist_memory_tiers.py::test_a_genuinely_completed_run_still_retains_both_turns]
-    INV-MEM-024: [tests/test_specialist_memory_tiers.py::test_token_budget_zero_no_sem_calls, tests/test_no_retain_specialist.py::test_only_a_zero_budget_specialist_is_kept_out, tests/test_no_retain_specialist.py::test_every_notice_branch_names_its_role, tests/test_no_retain_specialist.py::test_cold_save_drops_the_notice_and_keeps_the_relay, tests/test_no_retain_specialist.py::test_specialist_engagement_summary_follows_the_switch, tests/test_plugin_continuations.py::test_a_relayed_answer_is_not_banked_as_the_requesters_task, tests/test_no_retain_specialist.py::test_a_notice_from_a_role_no_longer_loaded_is_kept_out, tests/test_no_retain_specialist.py::test_a_handoff_task_written_by_a_zero_budget_specialist_is_not_banked, tests/test_plugin_continuations.py::test_a_relay_whose_author_is_no_longer_loaded_is_not_banked, tests/test_plugin_continuations.py::test_no_task_inside_a_relay_is_banked_however_deep]
+    INV-MEM-005: [tests/test_specialist_memory_tiers.py::test_voice_writes_nothing, tests/test_specialist_memory_tiers.py::test_aborted_voice_run_writes_nothing_and_claims_nothing, tests/test_webhook_store_guardrail.py::test_webhook_channel_is_not_writable, tests/test_memory_eligibility.py::test_eligibility_matrix]
+    INV-MEM-016: [tests/test_specialist_memory_tiers.py::test_pin_inv_mem_016_aborted_run_captures_only_caller_task, tests/test_specialist_memory_tiers.py::test_pin_inv_mem_016_null_subtype_on_a_parsed_result_is_an_abort, tests/test_specialist_memory_tiers.py::test_write_capture_telegram, tests/test_specialist_memory_tiers.py::test_empty_answer_submits_caller_turn_whether_or_not_run_aborted, tests/test_specialist_memory_tiers.py::test_red_incomplete_stop_reason_withholds_only_the_answer, tests/test_specialist_memory_tiers.py::test_stop_reason_matrix, tests/test_specialist_memory_tiers.py::test_malformed_stop_reason_withholds_the_answer, tests/test_specialist_memory_tiers.py::test_whitespace_only_task_submits_nothing, tests/test_specialist_memory_tiers.py::test_a_success_subtype_is_not_enough_to_call_the_turn_complete, tests/test_specialist_memory_tiers.py::test_a_genuinely_completed_run_still_captures_both_turns]
     INV-MEM-032: [tests/test_memory_excluded_specialist.py::test_the_notice_is_not_captured_and_the_relay_is, tests/test_memory_excluded_specialist.py::test_an_excluded_delegation_captures_nothing, tests/test_memory_excluded_specialist.py::test_a_handoff_task_from_an_excluded_specialist_is_not_captured, tests/test_memory_excluded_specialist.py::test_no_task_inside_a_relay_is_captured, tests/test_memory_excluded_specialist.py::test_an_excluded_engagement_leaves_no_summary, tests/test_memory_excluded_specialist.py::test_an_excluded_specialists_engagement_turn_captures_nothing, tests/test_memory_eligibility.py::test_eligibility_matrix, tests/test_memory_excluded_specialist.py::test_the_ledger_never_holds_excluded_output, tests/test_memory_excluded_specialist.py::test_search_never_returns_excluded_output]
 
 - doc: architecture/memory-labelling.md
-  summary: Item labelling — how each item is labelled on the way in to long-term memory, with its sensitivity tier and the floor a stored tier sets, its speaker provenance, the scheduled mark, and the content addressing that deduplicates it.
-  when_changing: tier classification or the stored-tier floor, provenance, the scheduled mark, or content addressing on a stored fact
+  summary: Item labelling — how each captured item is labelled, with its occurrence key, its tier classification, and the notes and time envelope that never reach it.
+  when_changing: tier classification, an item's occurrence key, or what of a sent query reaches a captured item
   covers:
-    - casa/rootfs/opt/casa/memory_provenance.py::build_retain_items
     - casa/rootfs/opt/casa/timekeeping.py::compose_time_envelope
     - casa/rootfs/opt/casa/timekeeping.py::split_time_envelope
     - casa/rootfs/opt/casa/timekeeping.py::compose_turn_preamble
     - casa/rootfs/opt/casa/memory/occurrence.py
   tests:
-    - tests/test_memory_provenance.py
     - tests/test_time_envelope.py
-    - tests/test_pin_1123_tier_floor.py
     - tests/test_memory_capture.py
   related: [architecture/memory-lifecycle.md, architecture/memory-capture.md, architecture/memory.md, architecture/persistent-state.md]
-  defines_invariants: [INV-MEM-004, INV-MEM-009, INV-MEM-012, INV-MEM-018, INV-MEM-022, INV-MEM-026]
+  defines_invariants: [INV-MEM-012, INV-MEM-022, INV-MEM-026]
   invariant_tests:
     INV-MEM-026: [tests/test_memory_capture.py::test_repeats_stay_distinct_retry_collapses, tests/test_memory_capture.py::test_two_turns_with_one_log_cid_stay_distinct, tests/test_memory_capture.py::test_telegram_redelivery_collapses, tests/test_memory_capture.py::test_redelivery_with_a_regenerated_answer_keeps_both_answers, tests/test_memory_capture.py::test_internal_retry_output_is_captured, tests/test_memory_capture.py::test_spool_drain_rerun_adds_each_item_once, tests/test_memory_capture.py::test_a_turn_a_delegation_and_an_engagement_turn_each_capture]
-    INV-MEM-004: [tests/test_pin_memory_invariants.py::test_pin_inv_mem_004_reserved_tags_refused_before_io, tests/test_pin_1123_tier_floor.py::test_rc5_callers_cannot_supply_tier_namespace]
-    INV-MEM-009: [tests/test_time_envelope.py::TestDedupAcrossTimestamps::test_same_utterance_two_timestamps_is_one_document, tests/test_time_envelope.py::TestDedupAcrossTimestamps::test_timestamp_survives_out_of_band, tests/test_time_envelope.py::TestComposeStripPair::test_round_trip_is_identity_on_the_raw_text]
-    INV-MEM-022: [tests/test_time_envelope.py::test_the_pair_strips_the_notes_with_the_envelope, tests/test_time_envelope.py::test_a_notes_block_the_operator_typed_after_no_notes_is_their_text_mid_message, tests/test_time_envelope.py::TestNotesNeverRetained::test_notes_and_text_retain_only_the_text, tests/test_time_envelope.py::TestNotesNeverRetained::test_a_whitespace_body_after_notes_retains_nothing, tests/test_desk_echo_prompt.py::test_the_residents_next_turn_carries_the_echo_once_then_nothing]
+    INV-MEM-022: [tests/test_memory_capture.py::test_casas_notes_never_reach_the_captured_text, tests/test_time_envelope.py::test_the_pair_strips_the_notes_with_the_envelope, tests/test_time_envelope.py::test_a_notes_block_the_operator_typed_after_no_notes_is_their_text_mid_message, tests/test_desk_echo_prompt.py::test_the_residents_next_turn_carries_the_echo_once_then_nothing]
     INV-MEM-012: [tests/test_sensitivity.py::test_parse_tier_rejects_a_tier_word_inside_a_chatty_reply, tests/test_sensitivity.py::test_parse_tier_accepts_labeled_final_line_after_verbose_reply, tests/test_sensitivity.py::test_parse_tier_answer_line_is_the_literal_labeled_form_only, tests/test_sensitivity.py::test_parse_tier_conflicting_answer_lines_are_ambiguous, tests/test_sensitivity.py::test_parse_tier_agreeing_prior_answer_lines_parse, tests/test_tier_classifier.py::test_classify_chatty_reply_with_tier_words_defaults_private, tests/test_tier_classifier.py::test_classify_verbose_reply_with_labeled_final_line_parses, tests/test_tier_classifier.py::test_classify_word_plus_answer_line_parses, tests/test_tier_classifier.py::test_classify_conflicting_answer_lines_still_default]
-    INV-MEM-018: [tests/test_pin_1123_tier_floor.py::test_rc1_stored_real_tier_never_lowers, tests/test_pin_1123_tier_floor.py::test_rc2_unmarked_existing_document_has_floor, tests/test_pin_1123_tier_floor.py::test_rc3_fallback_preserves_real_floor_unmarked, tests/test_pin_1123_tier_floor.py::test_rc4_unreadable_floor_prevents_entire_save, tests/test_pin_1123_tier_floor.py::test_rc6_cross_ask_conflict_establishes_real_floor, tests/test_pin_1123_tier_floor.py::test_rc7_first_fallback_is_provisional, tests/test_1123_tier_floor_regressions.py::test_hindsight_read_only_the_document_not_found_404_is_never_saved, tests/test_1123_tier_floor_regressions.py::test_hindsight_read_fails_on_every_other_answer]
 
 - doc: architecture/memory-wipe.md
   summary: The operator-consented memory wipe — its three doors and the consent each demands, the intent and the app restart, the container-start step that erases exactly the registry, notification-only boot after a failed attempt, and the courtesy line in the window before the restart.
@@ -217,7 +181,6 @@
     - casa/rootfs/opt/casa/memory/maintenance.py
     - casa/rootfs/opt/casa/memory/executor_block.py
     - casa/rootfs/opt/casa/supervisor_restart.py
-    - casa/rootfs/opt/casa/memory_wipe.py::RetainFence
     - casa/rootfs/opt/casa/tools.py::wipe_memory
     - casa/rootfs/opt/casa/internal_handlers.py::build_admin_memory_wipe_handler
     - casa/rootfs/opt/casa/drivers/workspace.py::drop_session_without_transcript
@@ -234,8 +197,6 @@
     - tests/test_wipe_door.py
     - tests/test_wipe_memory_tool.py
     - tests/test_admin_memory_wipe_route.py
-    - tests/test_retain_fence.py
-    - tests/test_retain_fence_writers.py
   related: [architecture/memory-store.md, architecture/memory-capture.md, architecture/memory-lifecycle.md, architecture/memory.md, architecture/persistent-state.md, architecture/engagement-workspace-access.md]
   defines_invariants: [INV-MEM-035, INV-MEM-036, INV-MEM-038]
   invariant_tests:
@@ -286,30 +247,3 @@
   invariant_tests:
     INV-MEM-027: [tests/test_memory_pending.py::test_deferred_counts_as_pending, tests/test_memory_pending.py::test_eligibility_by_tier_and_classification, tests/test_memory_pending.py::test_a_mark_reopens_a_filed_event, tests/test_memory_pending.py::test_counters_are_derived_from_the_rows, tests/test_memory_pending.py::test_no_second_processed_state, tests/test_memory_pending.py::test_no_second_processed_state_red_case, tests/test_memory_writer_crash.py::test_mark_behind_a_commit_reopens_and_queues, tests/test_memory_writer_crash.py::test_mark_on_a_long_filed_event_reopens, tests/test_memory_writer_crash.py::test_retried_mark_is_idempotent, tests/test_memory_writer_crash.py::test_a_mark_and_its_correction_job_are_stored_together]
     INV-MEM-028: [tests/test_memory_writer_crash.py::test_kill_after_model_call, tests/test_memory_writer_crash.py::test_kill_mid_commit, tests/test_memory_writer_crash.py::test_running_job_requeued_at_boot, tests/test_memory_writer_crash.py::test_stale_base_rejected, tests/test_memory_writer_crash.py::test_mark_mid_job_rejects_and_requeues, tests/test_memory_writer_crash.py::test_mark_during_assembly_is_seen_or_rejected, tests/test_memory_writer_crash.py::test_failed_job_retry_reassembles, tests/test_memory_writer_crash.py::test_condense_from_a_stale_base_is_rejected, tests/test_memory_writer_crash.py::test_only_the_commit_marks_a_job_committed, tests/test_memory_writer_crash.py::test_only_the_commit_marks_a_job_committed_red_case, tests/test_memory_writer_crash.py::test_two_writers_never_file_an_event_twice, tests/test_memory_writer_crash.py::test_a_second_writer_filing_some_events_makes_the_run_stale]
-
-- doc: architecture/observability.md
-  summary: How work is traced across components, what reaches a log, and what the health surfaces actually assert.
-  when_changing: logging, correlation ids, redaction, or a health surface
-  covers:
-    - casa/rootfs/opt/casa/log_cid.py::install_logging
-    - casa/rootfs/opt/casa/log_cid.py::WaitingStreamHandler
-    - casa/rootfs/opt/casa/log_cid.py::new_cid
-    - casa/rootfs/opt/casa/log_cid.py::HumanFormatter
-    - casa/rootfs/opt/casa/log_cid.py::JsonFormatter
-    - casa/rootfs/opt/casa/log_cid.py::_RedactingRenderMixin
-    - casa/rootfs/opt/casa/log_redact.py::RedactingFilter
-    - casa/rootfs/opt/casa/log_redact.py::redact
-    - casa/rootfs/opt/casa/log_redact.py::redact_extras
-    - casa/rootfs/opt/casa/casa_core.py::healthz
-    - casa/rootfs/opt/casa/drivers/in_casa_driver.py::_EngagementTurn
-  tests:
-    - tests/test_log_redact.py
-    - tests/test_log_cid.py
-    - tests/test_job_turn_identity.py
-  related: [architecture/http-surface.md, architecture/overview.md]
-  defines_invariants: [INV-OBS-001, INV-OBS-003, INV-OBS-004, INV-OBS-005]
-  invariant_tests:
-    INV-OBS-005: [tests/test_job_turn_identity.py::TestEngagementTurnCid::test_turn_cids_ignore_engaging_box, tests/test_job_turn_identity.py::TestEngagementTurnCid::test_batch_cid_from_empty_context, tests/test_job_turn_identity.py::TestEngagementTurnCid::test_reader_records_follow_current_turn]
-    INV-OBS-001: [tests/test_pin_g5_invariants.py::test_pin_inv_obs_001_header_cid_validated_payload_cid_not]
-    INV-OBS-004: [tests/test_pin_g5_invariants.py::test_pin_inv_obs_004_rendered_output_redacts_exceptions_and_extras]
-    INV-OBS-003: [tests/test_pin_g5_invariants.py::test_pin_inv_obs_003_healthz_is_fixed_and_reads_nothing]

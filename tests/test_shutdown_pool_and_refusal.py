@@ -32,7 +32,6 @@ from bus import BusMessage, MessageType
 from channels import ChannelManager
 from config import AgentConfig, CharacterConfig, MemoryConfig, ToolsConfig
 from mcp_registry import McpServerRegistry
-from semantic_memory import NoOpSemanticMemory
 from session_registry import SessionRegistry
 from session_reg_helpers import RESIDENT_DIGEST, resident_prov, resident_role_id
 
@@ -136,7 +135,6 @@ def _make_agent(tmp_path, role: str = "assistant") -> Agent:
         session_registry=SessionRegistry(str(tmp_path / f"sessions-{role}.json")),
         mcp_registry=McpServerRegistry(),
         channel_manager=ChannelManager(),
-        semantic_memory=NoOpSemanticMemory(),
     )
 
 
@@ -171,14 +169,15 @@ class _FastWaitForAsyncio:
 
 
 async def _shutdown(runtime, *, bound: float = 0.05, bus=None,
-                   semantic_memory=None, ha_facade=None):
+                   job_registry_close=None, ha_facade=None):
     """Run the production ``_shutdown_cleanup`` over ``runtime``'s agents, with
     every unrelated subsystem doubled and the AR-9 bound shortened.
 
-    ``bus`` and ``semantic_memory`` default to the doubles #881/#882 use. #895
-    passes a REAL ``MessageBus`` (the defect is invisible to a bus double whose
-    task lists are empty) and a real coroutine for the last cleanup await (the
-    count the completion record must carry is the one true AFTER it)."""
+    ``bus`` and ``job_registry_close`` default to the doubles #881/#882 use.
+    #895 passes a REAL ``MessageBus`` (the defect is invisible to a bus double
+    whose task lists are empty) and a real coroutine for the last cleanup
+    await, the job registry's close (the count the completion record must
+    carry is the one true AFTER it)."""
     import casa_core
     import tools
 
@@ -207,19 +206,16 @@ async def _shutdown(runtime, *, bound: float = 0.05, bus=None,
              patch.object(casa_core, "_drain_broker_before_channel_shutdown",
                           AsyncMock()):
             await casa_core._shutdown_cleanup(
-                job_registry=MagicMock(close=AsyncMock()),
+                job_registry=MagicMock(close=job_registry_close or AsyncMock()),
                 engagement_registry=engagement_registry,
                 scheduler=MagicMock(shutdown=MagicMock()),
                 session_sweeper=MagicMock(stop=AsyncMock()),
-                freshness_reaper=MagicMock(stop=AsyncMock()),
                 runtime=runtime,
                 ha_facade=ha_facade,
                 bus=bus,
                 loop_tasks=[],
                 channel_manager=cm,
                 runners=[],
-                semantic_memory=(semantic_memory
-                                 or MagicMock(close=AsyncMock())),
             )
     finally:
         casa_core.asyncio = real_asyncio
@@ -325,43 +321,6 @@ async def test_the_real_shutdown_closes_the_agents_concurrently(tmp_path):
                 entry.lock.release()
         _drop_pool(first)
         _drop_pool(second)
-
-
-async def test_agent_close_cancelled_before_it_reaches_the_pool_still_cuts(
-    tmp_path,
-):
-    """#881, the ordering neither issue names: ``Agent.aclose`` cancels and
-    gathers its background cold-retains BEFORE it reaches the pool close. A
-    cancellation delivered at that gather — which is exactly what the loop's
-    final sweep does to a reload's background close — used to leave the pool
-    untouched, so no salvage inside the pool could ever see the client.
-
-    Base: ``(1, 1, 0, 1)`` — connected, never disconnected, still live."""
-    CountingClient.reset()
-    agent = _make_agent(tmp_path, role="assistant")
-    try:
-        assert await _warm_pooled_turn(agent) == "pong"
-        entered = asyncio.Event()
-
-        async def slow_retain():
-            try:
-                await asyncio.Event().wait()
-            except asyncio.CancelledError:
-                entered.set()                    # the settle tail is running
-                await asyncio.Event().wait()     # and it does not finish
-                raise
-
-        agent._bg_tasks.add(asyncio.create_task(slow_retain()))
-        closing = asyncio.create_task(agent.aclose())
-        await asyncio.wait_for(entered.wait(), timeout=2)
-        closing.cancel()
-        await asyncio.gather(closing, return_exceptions=True)
-        assert (CountingClient.connects, CountingClient.disconnect_starts,
-                CountingClient.disconnects, CountingClient.live) == (1, 1, 1, 0)
-    finally:
-        for task in list(agent._bg_tasks):
-            task.cancel()
-        _drop_pool(agent)
 
 
 # --- #882 -------------------------------------------------------------------
@@ -634,7 +593,7 @@ async def test_the_completion_record_counts_the_turns_the_stop_leaves_running():
             await _shutdown(
                 SimpleNamespace(agents={}, claude_code_driver=None),
                 bus=bus,
-                semantic_memory=SimpleNamespace(close=_close_and_let_one_finish))
+                job_registry_close=_close_and_let_one_finish)
 
         # Exactly one record carries a count, and it is the one carrying the
         # completion phrase.

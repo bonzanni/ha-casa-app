@@ -260,11 +260,11 @@ else failing closed), and the kind persisted on the durable row is the kind the 
 was told, never an exception class name. A specialist abort keeps precedence: an error
 flag beside a non-success subtype does not flatten the abort taxonomy. None of these
 verdicts is ever keyed on empty answer text — a completed run with an empty answer stays
-a success. Memory admission is per turn: the caller's own non-blank request turn, which
-nothing else records, is submitted regardless of the answer; the answer itself needs the
-completeness predicate, including a stop reason on the finished list — an answer the
-model did not finish (output tokens exhausted among the reasons) stays a caller-visible
-success whose text is withheld from the bank, audibly (INV-MEM-016, and see
+a success. Memory admission is per turn: the caller's own non-blank request is captured
+before the run, regardless of the answer; the answer itself needs the completeness
+predicate, including a stop reason on the finished list — an answer the model did not
+finish (output tokens exhausted among the reasons) stays a caller-visible success whose
+text is withheld from memory, audibly (INV-MEM-016, and see
 [`memory-capture.md`](memory-capture.md); the ledger and reconciliation rules are in
 [`jobs-and-delivery.md`](jobs-and-delivery.md)).
 

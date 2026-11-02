@@ -30,11 +30,12 @@ and a reload builds a second pool over the same keys, so it cannot be the author
 distinction matters because the paths that never enter a pool — a scheduled turn, a webhook
 one-shot, a `PoolUnavailable` fallback — are ordered by the gate and by nothing else.
 
-**A retirement excludes turns rather than ordering against them.** A memory wipe or an
-explicit reset takes a process-wide turn-admission barrier exclusively, so that no turn is
-running anywhere and none can start before any session pointer is dropped. A per-key gate
-cannot do this job: a first-ever turn on a key is running before the key has a registry
-entry to look up.
+**A retirement excludes turns rather than ordering against them.** A retirement takes a
+process-wide turn-admission barrier exclusively, so that no turn is running anywhere and
+none can start before any session pointer is dropped. A per-key gate cannot do this job: a
+first-ever turn on a key is running before the key has a registry entry to look up. An
+explicit reset is not such a retirement: it holds admission shared, with its key's write
+gate, and the memory wipe runs at container start, before any turn exists.
 
 **The lock inventory is small, and each lock guards one thing.** The pool has two layers —
 a pool-wide bookkeeping lock (entries, invalidation barriers, closing state) that is
@@ -144,29 +145,32 @@ pool entry lock already covered ordinary ones. It does not: across a reload ther
 pools and two entry locks, and a turn reaching the replacement pool reads the registry and
 resumes the session id the old pool's turn is still using.
 
-What it does not cover: a retirement — a memory wipe or an explicit reset — which must
-exclude turns it has never seen rather than order against them. That is INV-CONC-005.
+What it does not cover: a retirement, which must exclude turns it has never seen rather
+than order against them. That is INV-CONC-005.
 
 **INV-CONC-005**: A retirement runs with turn admission held exclusively: no turn is running on any path, and none can start, before any session pointer is dropped.
 
 Enforced by `TurnAdmission`, a process-wide readers/writer barrier over turns. Turns hold
-the shared side across the same window as their write gate; a wipe or reset holds it
+the shared side across the same window as their write gate; a retirement holds it
 exclusively. Its drain is bounded and fails closed — turns that do not finish in time abort
-the retirement with nothing deleted, because a wipe that cannot prove it drained everything
-must not report its deletions as complete.
+the retirement with nothing deleted. Pinned on the barrier itself: exclusivity waits for an
+admitted turn, refuses admission while held, and is released by a drain timeout and by a
+cancellation during the drain.
 
-Joining an in-flight turn used to be the client pool's job, through the session registry's
-reset listener. That listener has exactly one subscriber, the pool's `close_key`, so a turn
-the pool never owned was never joined: it published its session id after the wipe's
-retirement claims had been released, re-arming a pointer to a transcript the wipe had just
-reported deleting. Enumerating the registry cannot fix this, because a *first-ever* turn on
-a key is running before any entry exists to enumerate — which is why admission closes before
-keys are discovered rather than per key.
+Joining an in-flight turn through the session registry's reset listener is not enough: that
+listener has exactly one subscriber, the pool's `close_key`, so a turn the pool never owned
+is never joined. Enumerating the registry cannot fix this either, because a *first-ever*
+turn on a key is running before any entry exists to enumerate — which is why admission
+closes before keys are discovered rather than per key.
 
 Ordering is part of the invariant. The global order is
-`TurnAdmission → session_write_gate → RetainFence → pool entry lock`; a retirement that took
-the fence before a session gate, while a reset took them in the opposite order, is a
-permanent deadlock rather than a lost wipe.
+`TurnAdmission → session_write_gate → pool entry lock`; taking two of them in opposite
+orders on two paths is a permanent deadlock.
+
+Today no production caller takes the exclusive side. The memory wipe that did now runs at
+container start, before any turn exists ([`memory-wipe.md`](memory-wipe.md)), and the
+explicit reset holds admission shared (INV-MEM-013 in
+[`memory-lifecycle.md`](memory-lifecycle.md)).
 
 What it does not cover: engagement and executor turns, which run their own clients and
 persist engagement session ids rather than `SessionRegistry` pointers, so a retirement has

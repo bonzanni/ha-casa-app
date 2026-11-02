@@ -129,9 +129,6 @@ FILE_GLOBS: tuple[Entry, ...] = (
 # Tightening the directory alone is sufficient: without `x` for others nothing
 # beneath it is reachable by name.
 DIRS: tuple[Entry, ...] = (
-    Entry("/data/cold-retain-retry", 0o700, PRIVATE,
-          "Pending cold-retain records: SDK session ids, transcript dirs and "
-          "speaker provenance."),
     Entry("/data/agent-inbox", 0o700, PRIVATE,
           "Files the operator sent the assistant in Telegram — invoices, "
           "letters, screenshots — kept up to seven days."),

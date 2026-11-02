@@ -67,11 +67,6 @@ async def _pinned_prompt(env, tmp_path, monkeypatch):
         recalls.append({"role": cfg.role})
         return f"<memory_context>{MEMORY_SENTINEL}</memory_context>\n\n"
     monkeypatch.setattr(tools_mod, "_delegated_memory_block", fake_memory)
-
-    async def fake_retain(sem, **kw):
-        return None
-    monkeypatch.setattr(tools_mod, "retain_delegated", fake_retain)
-    monkeypatch.setattr(agent_mod, "active_semantic_memory", object(), raising=False)
     monkeypatch.setattr(tools_mod, "_run_delegated_agent", REAL_RUNNER)
 
     prompts: list[str] = []

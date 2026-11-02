@@ -36,30 +36,26 @@ def _decide(entry, channel="voice"):
 def test_resume_when_fresh():
     decision = _decide(_entry("s", timedelta(minutes=5)))
     assert decision.action == "resume"
-    assert decision.retain_old is False
     assert decision.resume_sid == "s"
 
 
-def test_new_and_save_old_when_cold():
-    # voice window 30m; idle 1h → start new AND save the old session first
+def test_new_when_cold():
+    # voice window 30m; idle 1h → start new
     decision = _decide(_entry("s", timedelta(hours=1)))
     assert decision.action == "new"
-    assert decision.retain_old is True
     assert decision.reason == "expired"
 
 
-def test_new_no_save_when_no_entry():
+def test_new_when_no_entry():
     decision = _decide(None)
     assert decision.action == "new"
-    assert decision.retain_old is False
     assert decision.reason == "missing"
 
 
-def test_new_no_save_when_entry_has_no_sid():
+def test_new_when_entry_has_no_sid():
     decision = _resume_decision(
         "telegram", {"last_active": NOW.isoformat()}, NOW,
         role_id=ROLE, binding_digest=DIGEST,
     )
     assert decision.action == "new"
-    assert decision.retain_old is False
     assert decision.reason == "missing"

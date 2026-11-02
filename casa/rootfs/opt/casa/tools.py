@@ -45,7 +45,6 @@ from plugin_grants import (
     sanitized_env_for_resolution,
 )
 from authz_grants import CHALLENGES, GRANTS, normalize_role
-from delegated_memory import retain_delegated
 from handoff import child_chain, requester_of
 from memory.eligibility import Source as _CaptureSource
 
@@ -1825,6 +1824,20 @@ MEMORY_READ_NOTE = (
     "never said: say you found nothing you can share, never that it didn't "
     "happen."
 )
+#: #581: the note a clearance- and epoch-filtered slice injected into a
+#: prompt carries (the executor lessons block): a slice is bounded whether it
+#: is empty or large, so a topic it does not mention is not a topic Casa has
+#: nothing on.
+READABLE_SLICE_NOTE = (
+    "Use relevant entries normally. This is the bounded view readable at this "
+    "surface, not a complete inventory of Casa's memory. If it does not answer "
+    "the request, do not say Casa has no record of it or does not know it — "
+    "say you have nothing you can share on that here. Do not repeat or "
+    "paraphrase this guidance to the user."
+)
+#: The same note as a line inside an injected prompt block, marked as an
+#: instruction so it cannot read as one of the facts beside it.
+READABLE_SLICE_PROMPT_LINE = f"[memory-use instruction: {READABLE_SLICE_NOTE}]"
 #: #1116: says WHEN to tell, so an outage on a check nobody asked for (a
 #: scheduled briefing) does not become a message.
 _MEMORY_UNAVAILABLE = (
@@ -3838,16 +3851,9 @@ def _build_world_state_summary() -> str:
     return "\n".join(lines)
 
 
-# Specialist memory write-path bg-task anchoring (parity with Agent._bg_tasks
-# at agent.py:133). Module-level so it persists across delegate_to_agent calls.
-_specialist_bg_tasks: set[asyncio.Task[Any]] = set()
-
 # #701: the delegation SETTLE tails — persist the terminal, announce it, and
-# let the delivery acknowledgement clear the durable obligation. A separate set
-# from `_specialist_bg_tasks` on purpose: that one anchors `retain_delegated`
-# writes downstream of a terminal already told, and its absence from the
-# shutdown drain is a committed contract. These are anchored for the same
-# reason (asyncio may collect an unreferenced task mid-flight) and, since #767,
+# let the delivery acknowledgement clear the durable obligation. Anchored
+# because asyncio may collect an unreferenced task mid-flight, and, since #767,
 # they ARE drained at the graceful stop — `drain_delegation_settlements`, called
 # twice from `casa_core._shutdown_cleanup` — because INV-JOB-009 publishes that
 # a success or non-cancellation verdict still commits mid-stop, and this tail is
@@ -4575,9 +4581,9 @@ async def _capture_delegated(
     speaker_kind: str, speaker_id: str, resident_request: bool = True,
     answer_incomplete: bool = False, session_id: str | None = None,
 ) -> bool:
-    """Capture one side of a delegated exchange into memory, under the gate
-    the exchange's retain uses: a memory-writing role (``token_budget > 0``),
-    no stored call, a write-trusted originating channel. Its floor is the
+    """Capture one side of a delegated exchange into memory, under its
+    gate: a memory-writing role (``token_budget > 0``), no stored call, a
+    write-trusted originating channel. Its floor is the
     delegating turn's read clearance — the clearance the run reads at. A
     capture failure is logged and never fails the run. Returns whether the
     capture was kept: a receipt, or nothing to capture."""
@@ -4717,17 +4723,7 @@ async def _run_delegated_turn(
 ) -> DelegatedOutput:
     """The body of :func:`_run_delegated_agent`, as one registered run."""
     import agent as agent_mod
-    from personality_types import RetainedTurn, SpeakerProvenance
 
-    # Task 10: the caller's REAL identity, read back off the origin snapshot
-    # Agent._process now stamps. Absent (a legacy/test ingress that predates this
-    # wiring, or the caller is itself an executor/unbound specialist) → the
-    # explicit unattributed "system" identity (every field null is a VALID
-    # provenance, speaker_provenance.py's system branch). NEVER fabricate a
-    # persona for the caller.
-    caller_provenance = parent.get("speaker_provenance")
-    if not isinstance(caller_provenance, SpeakerProvenance):
-        caller_provenance = SpeakerProvenance(speaker_kind="system")
     # The EXECUTING agent's own identity, via the SAME cfg.kind-based fallback
     # policy SessionRegistry.register's callers use (Task 9): a resident (or a
     # bound specialist, once Plan 2 lands) keeps its real persona; an executor
@@ -5083,19 +5079,13 @@ async def _run_delegated_turn(
     # `specialist_limits.truncate_output` at the sync-result / async-
     # DelegationComplete assembly sites) rather than here, so the
     # `output_truncated` flag survives this task's str boundary and reaches
-    # the wire. The raw text is returned; the memory retain below offers it as
-    # exchanged, and only when the run completed (#699) (the bound is a
-    # caller-facing surface concern, not a memory one — and token_budget>0
-    # specialists are rare).
+    # the wire. The raw text is returned; memory captures it as exchanged,
+    # and only when the run completed (#699) (the bound is a caller-facing
+    # surface concern, not a memory one).
 
-    # #699: the terminal verdict is constructed HERE, before the retain, rather
-    # than seventeen lines below it. The gate used to read only the token budget
-    # and the text while `result_msg` sat unread in scope, so a run the CLI
-    # aborted had its accumulated partial answer written to the shared bank as an
-    # ordinary provenance-attributed exchange, indistinguishable at every reader
-    # from a completed one. Reading this object's own `run_aborted` rather than
-    # re-expressing the predicate keeps the gate and the returned verdict
-    # single-sourced. The no-subtype-is-completed asymmetry now lives ONLY on
+    # #699: the terminal verdict is constructed HERE, before the capture.
+    # Reading this object's own `run_aborted` rather than re-expressing the
+    # predicate keeps the gate and the returned verdict single-sourced. The no-subtype-is-completed asymmetry now lives ONLY on
     # direct `DelegatedOutput` constructions (the field default): on a PARSED
     # result `subtype` is a required field, so null is malformed evidence and
     # captures as the sentinel, i.e. an abort (Sol review r2, S1).
@@ -5138,7 +5128,7 @@ async def _run_delegated_turn(
     # non-completed terminal_reason under `subtype="success"` is a failing
     # run, not an empty success — end it as a typed caller fault, exactly as
     # the #568 refusal raise above already ends a result-only refusal. The
-    # raise PRECEDES the retain below, so a half-finished exchange is never
+    # raise PRECEDES the capture below, so a half-finished exchange is never
     # written to memory as a complete one; every consumer's existing exception
     # arm classifies `ApiErrorTurn` by its carried kind. CLI aborts do NOT
     # raise here — `caller_error_kind` yields to the specialist abort
@@ -5167,97 +5157,26 @@ async def _run_delegated_turn(
         speaker_id=cfg.role, answer_incomplete=output.answer_incomplete,
         session_id=own_sid))
 
-    # Specialist write: one explicit tier-classified retain of the exchange
-    # OFFERED to the shared bank, gated by the PARENT channel's write-trust
-    # (voice → no write) — design §3, plan 3. Ephemeral specialists have no
-    # session registry, so the freshness reaper never sees them; the retain is
-    # explicit. It is best-effort and detached: reaching this block is not
-    # evidence that anything was stored.
-    # S5 §5.2.5: a stored-call turn retains NOTHING — the resident could
-    # otherwise learn model-authored content through the shared bank, outside
-    # the body-free echo; the operator sees the receipt, nothing else.
-    if cfg.memory.token_budget > 0 and not parent.get("stored_call"):
-        sem = getattr(agent_mod, "active_semantic_memory", None)
-        if sem is not None:
-            # INV-MEM-016: admission is PER TURN (#708) — the CALLER's task
-            # turn is submitted whenever it is non-blank, independent of the
-            # answer: it is a true utterance the caller genuinely made, and
-            # this is the ONLY writer of it (the resident's own session save
-            # never sees the paraphrase it sent to the specialist). The old
-            # outer `and text` gate keyed the WHOLE retain on answer text, so
-            # an empty answer silently discarded the caller turn too. The two
-            # items are independent content-addressed documents rather than a
-            # paired record, so withholding one is well defined. Suppressing
-            # the whole retain would lose the caller turn; marking the answer
-            # instead would not suppress anything, because recall runs
-            # `tags_match="any"` (an additive tag BROADENS) and the
-            # mental-model overlay is a bank-wide `profile()` with no filter
-            # hook at all. Writer-side exclusion is the only shape that
-            # protects every reader by construction.
-            #
-            # SUBMITTED, not written: what is assembled here is an ARGUMENT to a
-            # best-effort writer that can still decline it — a voice or webhook
-            # origin returns before writing anything, a wipe landing first
-            # discards the whole retain (#411), and a backend failure is
-            # swallowed by design. Whether the caller's turn reaches the bank is
-            # therefore not this site's to assert, and the log below deliberately
-            # claims only what this site DECIDES.
-            #
-            # The answer is admitted only when `answer_incomplete` is false —
-            # the single memory-boundary predicate on the evidence-carrying
-            # output object, strictly wider than `run_aborted` by
-            # construction. The `is_error` / non-completed-terminal_reason
-            # arms raise upstream now (#709) and cannot reach this block; they
-            # stay in the predicate so the gate's width never depends on
-            # call-order. The `stop_reason` arm is the memory-only one (#710):
-            # a `max_tokens`-truncated answer is a caller-visible success
-            # whose unfinished text must not be banked as a completed,
-            # provenance-attributed document.
-            turns = []
-            # Browser executor §5.4 (INV-MEM-024): the task is banked as the
-            # caller's words only when the caller is the resident the chain
-            # started from, on a turn Casa did not compose. A specialist's
-            # hand-off task (perhaps the browsing specialist's own report) and
-            # a continuation's or relay's task (Casa's text around another
-            # role's answer) are never banked — decided by the chain's shape,
-            # not by markers a nested run could inherit (p3r2a, p3r3c, p3r4c).
-            _chain_now = child_origin["_handoff_chain"]
-            _resident_task = (len(_chain_now) <= 2
-                              and parent.get("synthetic") != "continuation")
-            if task_text.strip() and _resident_task:
-                turns.append(RetainedTurn(task_text, caller_provenance))
-            if text and not output.answer_incomplete:
-                turns.append(RetainedTurn(text, executing_provenance))
-            elif text:
-                if output.run_aborted:
-                    logger.warning(
-                        "delegated agent %s run did not complete (kind=%s) — "
-                        "its partial answer is excluded from the memory "
-                        "retain",
-                        _known_role(getattr(cfg, "role", None)),
-                        _run_abort_kind(output.run_subtype),
-                    )
-                else:
-                    logger.warning(
-                        "delegated agent %s answer did not finish "
-                        "(stop_reason=%s) — its partial answer is excluded "
-                        "from the memory retain",
-                        _known_role(getattr(cfg, "role", None)),
-                        _known_token(output.run_stop_reason,
-                                     _KNOWN_STOP_REASONS),
-                    )
-            if turns:
-                # #411: fence generation captured synchronously with the
-                # exchange content — the detached task may not run until
-                # after a wipe.
-                from memory_wipe import FENCE
-                bg = asyncio.create_task(retain_delegated(
-                    sem, origin_channel=str(parent.get("channel", "")),
-                    turns=turns,
-                    fence_generation=FENCE.generation(),
-                ))
-                _specialist_bg_tasks.add(bg)
-                bg.add_done_callback(_specialist_bg_tasks.discard)
+    # An unfinished answer is not captured (``answer_incomplete`` above,
+    # INV-MEM-016); say why once, where the run's own evidence is read. A
+    # stored-call turn captures nothing either way.
+    if (cfg.memory.token_budget > 0 and not parent.get("stored_call")
+            and text and output.answer_incomplete):
+        if output.run_aborted:
+            logger.warning(
+                "delegated agent %s run did not complete (kind=%s) — "
+                "its partial answer is excluded from memory",
+                _known_role(getattr(cfg, "role", None)),
+                _run_abort_kind(output.run_subtype),
+            )
+        else:
+            logger.warning(
+                "delegated agent %s answer did not finish "
+                "(stop_reason=%s) — its partial answer is excluded "
+                "from memory",
+                _known_role(getattr(cfg, "role", None)),
+                _known_token(output.run_stop_reason, _KNOWN_STOP_REASONS),
+            )
 
     return output
 
@@ -5415,8 +5334,7 @@ async def _settle_then_announce(
     mid-stop"). `casa_core._shutdown_cleanup` therefore awaits every anchored
     tail through `drain_delegation_settlements`, first while the bus
     consumers and resident pools are still up, and again immediately before
-    the job ledger closes. `_specialist_bg_tasks` — whose non-drain is a
-    different, committed contract about `retain_delegated` — is not involved.
+    the job ledger closes.
     """
     row = await settle
     if row is not None and row.execution_state is ExecutionState.CANCELLED:
@@ -10364,7 +10282,6 @@ async def _fetch_executor_archive(
     # #581: the block is a clearance-filtered AND epoch-filtered slice, so an
     # executor reading it must not conclude that a topic it does not mention
     # is a topic Casa has nothing on.
-    from recall_renderer import READABLE_SLICE_PROMPT_LINE
     return (
         "## Prior engagements (lessons learned)\n"
         "These are observations from prior engagements. Where they disagree "
@@ -12981,17 +12898,10 @@ async def _finalize_engagement_funnel(
     # before the first await after the flip. ``lower_origin_clearance`` has
     # no terminal-state refusal and rewrites the live record's ``origin`` and
     # ``task``; this funnel suspends (quiesce wait, broker drain, topic
-    # round-trips) between the flip and the notification/retain reads, so
+    # round-trips) between the flip and the notification/summary reads, so
     # without this snapshot a post-terminal clamp lands in the
-    # DelegationComplete and retained-summary payloads. The completion
-    # records carry the values that won the flip. ``_snapshot_origin()``
-    # freezes only ambient provenance, so it is resolved here too (Task 10
-    # semantics unchanged: current-origin identity when present, else the
-    # honest unattributed "system" — never a fabricated persona).
-    from personality_types import SpeakerProvenance
-    _prov = _snapshot_origin().get("speaker_provenance")
-    if not isinstance(_prov, SpeakerProvenance):
-        _prov = SpeakerProvenance(speaker_kind="system")
+    # DelegationComplete and summary payloads. The completion records carry
+    # the values that won the flip.
     frozen: dict[str, Any] = {
         "id": engagement.id,
         "kind": engagement.kind,
@@ -13002,7 +12912,6 @@ async def _finalize_engagement_funnel(
         "procedural_epoch": getattr(engagement, "procedural_epoch", "") or "",
         "origin": dict(engagement.origin),
         "task": engagement.task,
-        "summary_prov": _prov,
         "summary_allowed": summary_allowed,
     }
 
@@ -13496,7 +13405,7 @@ async def _capture_summary(frozen: dict[str, Any], text: str, *,
     ``engagement_summaries``, at the origin's tier and stamped with the
     record's epoch. ``allowed`` is the summary's own switch (a specialist
     that writes no memory leaves none); the origin channel's write-trust
-    gates it as it gates the retain. A failure is logged, never raised.
+    gates it. A failure is logged, never raised.
     Returns whether it was kept: a receipt, or nothing to capture."""
     from channel_policy import writes_to_bank
     from memory import capture, eligibility
@@ -13623,33 +13532,14 @@ async def _finalize_engagement_tail(
                 engagement.id[:8], exc,
             )
 
-    # 5. Retain a structured engagement summary on the shared `casa` bank,
-    #    tier-classified and gated by the origin channel's write-trust (voice →
-    #    nothing) — design §3, plan 3. The NOTIFICATION above is not itself the
-    #    durable record for the engager — it is a queue entry, and believing
-    #    otherwise was #766. What is durable is the record's
-    #    `terminal_notification_pending`, which that notice's delivery
-    #    acknowledgement clears and a boot replay honours; this retain is the
-    #    structured one-shot the maintainer chose to keep.
-    # L33: retain_delegated internally runs an LLM tier-classification per item
-    # (a claude-CLI subprocess spawn + round trip) — off the turn's critical
-    # path per tier_classifier's own doctrine. Run both retains as background
-    # tasks (mirroring _run_delegated_agent) so emit_completion / cancel return
-    # promptly; the deferred-reload path below drains them first (H-1).
-    retain_tasks: list[asyncio.Task] = []
-    import agent as agent_mod
-    from personality_types import RetainedTurn
-    # Task 10: the structured summary is a platform record authored on behalf
-    # of the finalized engagement — provenance resolved at the terminal flip
-    # (#632: with the rest of the frozen payload inputs), current-origin
-    # identity when one was present, else the honest, unattributed "system"
-    # identity — NEVER a fabricated persona.
-    _summary_prov = frozen["summary_prov"]
-    sem = getattr(agent_mod, "active_semantic_memory", None)
+    # 5. Capture a structured engagement summary into memory. The
+    #    NOTIFICATION above is not itself the durable record for the engager —
+    #    it is a queue entry, and believing otherwise was #766. What is durable
+    #    is the record's `terminal_notification_pending`, which that notice's
+    #    delivery acknowledgement clears and a boot replay honours.
     # Browser executor §5.4: a specialist that writes no memory leaves no
     # summary either — decided once before the terminal flip (the summary
-    # run's registration read the same decision). ``sem`` stays bound for
-    # the executor summary below, which no specialist reaches.
+    # run's registration read the same decision).
     _summary_allowed = frozen["summary_allowed"]
     summary = json.dumps({
         "kind": "engagement_summary",
@@ -13665,22 +13555,9 @@ async def _finalize_engagement_tail(
         "next_steps": next_steps,
     })
     # The summary's memory capture, awaited: a local append (or spool) that
-    # returns a receipt, under the same switch as the retain below — an
-    # obligation of the finalize's summary run.
+    # returns a receipt — an obligation of the finalize's summary run.
     await summary_run.kept(
         _capture_summary(frozen, summary, allowed=_summary_allowed))
-    if sem is not None and _summary_allowed:
-        # #411: fence generation captured synchronously with the summary
-        # assembly — the detached task may not run until after a wipe.
-        from memory_wipe import FENCE as _FENCE
-        bg = asyncio.create_task(retain_delegated(
-            sem, origin_channel=str(frozen["origin"].get("channel", "")),
-            turns=[RetainedTurn(summary, _summary_prov)],
-            fence_generation=_FENCE.generation(),
-        ))
-        _specialist_bg_tasks.add(bg)
-        bg.add_done_callback(_specialist_bg_tasks.discard)
-        retain_tasks.append(bg)
 
     # Plan 4a.1 §8.4: update .casa-meta.json with terminal status + retention_until.
     if frozen["driver"] == "claude_code":
@@ -13735,11 +13612,8 @@ async def _finalize_engagement_tail(
                 engagement.id[:8], exc,
             )
 
-    # Per-executor-type structured summary (only kind=executor), retained
-    # tier-tagged on the shared bank. Its content differs from the engagement
-    # summary above, so its content-addressed document_id (Task 10) is distinct
-    # and the two never clobber each other.
-    # `sem` is the active_semantic_memory resolved in step 5 above.
+    # Per-executor-type structured summary (only kind=executor), captured
+    # beside the engagement summary above.
     if frozen["kind"] == "executor":
         type_summary = json.dumps({
             "kind": "executor_engagement_summary",
@@ -13761,32 +13635,8 @@ async def _finalize_engagement_tail(
     # Both summaries have returned: the summary run is confirmed when each
     # was kept, and the engagement's transcripts follow retention.
     summary_run.close()
-    if frozen["kind"] == "executor" and sem is not None:
-        # #215: stamp the summary with the epoch persisted on the RECORD at
-        # launch (never the finalize-time definition — a reload may have
-        # moved it). A legacy record without one retains untagged; the
-        # archive filter then drops it, by design. #411: the fence
-        # generation is captured HERE, synchronously with the summary
-        # assembly — the detached task below may not run until after a wipe.
-        from executor_epoch import epoch_application_tag
-        from memory_wipe import FENCE
-        _epoch = frozen["procedural_epoch"]
-        _tags = (
-            [epoch_application_tag(frozen["role_or_type"], _epoch)]
-            if _epoch else []
-        )
-        bg = asyncio.create_task(retain_delegated(
-            sem, origin_channel=str(frozen["origin"].get("channel", "")),
-            turns=[RetainedTurn(type_summary, _summary_prov)],
-            application_tags=_tags,
-            fence_generation=FENCE.generation(),
-        ))
-        _specialist_bg_tasks.add(bg)
-        bg.add_done_callback(_specialist_bg_tasks.discard)
-        retain_tasks.append(bg)
-
-    # H-1 (v0.34.0): honor deferred hard-reload now that all bus +
-    # retain writes have landed. Only on outcome=completed — per
+    # H-1 (v0.34.0): honor deferred hard-reload now that all bus and
+    # memory writes have landed. Only on outcome=completed — per
     # ``completion.md`` doctrine line 61, a cancelled engagement does
     # NOT need a reload (artifact is operator-pending). On
     # outcome=error the engagement bailed; the reload decision is the
@@ -13803,12 +13653,8 @@ async def _finalize_engagement_tail(
     _ENGAGEMENTS_PENDING_RELOAD.discard(eng_id)
     _ENGAGEMENTS_PREACTIVATED.discard(eng_id)
     if outcome == "completed" and deferred_pending:
-        # H-1: the Supervisor container-kill must be sequenced AFTER the retain
-        # writes have landed. Since L33 moved the retains to background tasks,
-        # drain them here (only on this rare deferred-reload path) so the
-        # invariant "all retain writes have landed" still holds before restart.
-        if retain_tasks:
-            await asyncio.gather(*retain_tasks, return_exceptions=True)
+        # H-1: the Supervisor container-kill is sequenced AFTER the summary
+        # captures above, which are awaited.
         result = await _post_supervisor_restart()
         if result.get("status") == "error":
             logger.warning(
@@ -19455,12 +19301,10 @@ async def persona_install_commit(args: dict) -> dict:
 # (personality_binding.compute_binding_digest), and that digest is a resume
 # precondition — agent._resume_decision refuses a stored session whose digest
 # differs from the freshly loaded resident's, returning
-# ("new", retain_old=True, "binding_mismatch") after the role check and BEFORE
-# the freshness window, so the refusal is channel-agnostic. Telegram
-# transcripts survive as recall (Agent._spawn_cold_retain -> retain_cold_session);
-# voice is not a bank-writable channel (channel_policy.writes_to_bank), so
-# session_saver.save_session returns False without persisting and a voice
-# conversation is lost outright rather than demoted to recall.
+# ("new", "binding_mismatch") after the role check and BEFORE the freshness
+# window, so the refusal is channel-agnostic. What a conversation said reaches
+# memory through live capture as it happens, on the channels capture admits —
+# voice is not one (channel_policy.writes_to_bank).
 #
 # Staging is the LAST moment the operator can be told, because the promotion
 # happens at a restart they are about to order. One constant, shared by every
@@ -19492,15 +19336,11 @@ async def persona_install_commit(args: dict) -> dict:
 #     apparently unchanged persona never implied continuity in the first place.
 #   r4 (Astra, S2) the same overclaiming, now about the CONSOLATION rather
 #     than the loss: the sentence said Telegram history "stays recallable",
-#     which is false on a default install. Long-term memory is OFF by default,
-#     the backend is then NoOpSemanticMemory, whose `retain` is silent and
-#     whose `recall` raises `not_configured` (semantic_memory.py:147-167).
-#     Qualified with "only if long-term memory is configured".
-#   r5 (Terra, S2) that qualification was STILL a guarantee. Even with memory
-#     configured, retain_cold_session DISCARDS behind the wipe fence, retains
-#     nothing for a legacy/corrupt snapshot, and gives up after bounded
-#     retries (session_saver.py:410-432). "Written out" promises what the code
-#     does not.
+#     which was false on a default install of the time (long-term memory was
+#     off by default). Qualified with "only if long-term memory is configured".
+#   r5 (Terra, S2) that qualification was STILL a guarantee: the save path of
+#     the time could discard, skip or give up. "Written out" promises what the
+#     code does not.
 #
 #   r8 (Astra, S2) the CENTRAL claim was itself too strong. "Every
 #     conversation starts fresh" is false: `_resume_decision` compares the
@@ -22322,8 +22162,7 @@ async def vault_drop_off(args: dict) -> dict:
 # resident's very first load only — a personality-identity change is
 # restart-to-swap on disk and in memory alike, and the persona reference scan
 # keeps pinning what a resident serves until the restart. `active_runtime` is
-# the established module-level accessor (mirrors active_semantic_memory), set
-# by casa_core as `agent.active_runtime = runtime`.
+# the established module-level accessor, set by casa_core as `agent.active_runtime = runtime`.
 
 def _persona_roots() -> tuple[Path, ...]:
     """#323: resolve the approved persona roots through the SAME seams the

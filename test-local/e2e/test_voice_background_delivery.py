@@ -10,7 +10,6 @@ import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import aiohttp
 import pytest
@@ -236,24 +235,6 @@ class _GarySdkFactory:
         return client
 
 
-class _GaryMemory:
-    async def retain(self, *args, **kwargs):
-        return None
-
-    async def recall(self, *args, **kwargs):
-        return ""
-
-    async def recall_items(self, *args, **kwargs):
-        # Task 11: typed recall — a genuine zero-hit is the empty tuple.
-        return ()
-
-    async def document_tags(self, *args, **kwargs):
-        return None  # #1123: the seam's stored-tag read; voice never writes
-
-    async def profile(self, *args, **kwargs):
-        return ""
-
-
 class _Stack:
     def __init__(self) -> None:
         self.announces: list[dict] = []
@@ -408,7 +389,6 @@ async def stack(tmp_path, monkeypatch):
         session_registry=SessionRegistry(str(tmp_path / "sessions.json")),
         mcp_registry=McpServerRegistry(),
         channel_manager=result.channel_manager,
-        semantic_memory=_GaryMemory(),
     )
     result.bus.register("concierge", result.gary.handle_message)
     result.bus_loop = result.bus.start_agent_loop("concierge")
@@ -433,7 +413,6 @@ async def stack(tmp_path, monkeypatch):
         sse_path="/api/converse",
         ws_path="/api/converse/ws",
         agent_configs={"concierge": caller},
-        memory=AsyncMock(),
         idle_timeout=300,
         delivery_coordinator=result.coordinator,
     )

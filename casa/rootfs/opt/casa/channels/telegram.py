@@ -1151,7 +1151,6 @@ class TelegramChannel(Channel):
         self._finalize_cancel = None
         self._finalize_complete_user = None
         self._session_registry = None   # wired in main() (Task 9); /new reset
-        self._semantic_memory = None    # wired in main() (Task 9); /new reset
         self._main_feed_redirect_seen: set[int] = set()
         # Per-topic handler lock (Bug 10, v0.14.7). aiohttp dispatches
         # handle_update concurrently per Bot-API update; without this,
@@ -1910,11 +1909,9 @@ class TelegramChannel(Channel):
                 )
                 GRANTS.purge_chat(_chat_int)
             # M29: ack BEFORE the reset so the user gets instant feedback.
-            # reset_channel stays awaited, but it no longer contains the save
-            # (#1352): it writes the conversation's retry record, drops the
-            # pointer and starts the retain in the background, so the next
-            # message is not held behind classification and the memory write.
-            # Handlers dispatch with block=False (H5), so PTB no longer
+            # reset_channel is awaited; it only drops the pointer (live
+            # capture already holds what the conversation said). Handlers
+            # dispatch with block=False (H5), so PTB no longer
             # serializes updates; the per-chat lock held by _handle (#317) is
             # what guarantees no same-chat follow-up can resume the old
             # session mid-reset.
@@ -1926,16 +1923,14 @@ class TelegramChannel(Channel):
                     )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("/new ack send to chat_id=%s failed: %s", chat_id, exc)
-            if self._session_registry is not None and self._semantic_memory is not None:
-                from session_registry import build_scoped_session_key
-                from session_saver import reset_channel
+            if self._session_registry is not None:
+                from session_registry import (
+                    build_scoped_session_key, reset_channel,
+                )
                 channel_key = build_scoped_session_key(
                     "telegram", self.default_agent, chat_id,
                 )
-                await reset_channel(
-                    channel_key, self._session_registry, self._semantic_memory,
-                    channel="telegram",
-                )
+                await reset_channel(channel_key, self._session_registry)
             return  # do NOT feed /new to the agent
 
         await self._dispatch_dm_turn(update, chat_id, update.message.text,

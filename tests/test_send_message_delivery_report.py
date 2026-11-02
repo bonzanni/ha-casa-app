@@ -109,8 +109,7 @@ def _voice_channel():
 
     return VoiceChannel(
         bus=None, default_agent="assistant", webhook_secret="s",
-        sse_path="/voice/sse", ws_path="/voice/ws", agent_configs={},
-        memory=None, idle_timeout=60,
+        sse_path="/voice/sse", ws_path="/voice/ws", agent_configs={}, idle_timeout=60,
     )
 
 
