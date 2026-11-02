@@ -26,16 +26,19 @@ Nothing is selected by the absence of a record or by listing a dir.
 A record is acted on only once its terminal status is also on disk: an
 in-memory terminal status whose write failed, or that a strict transition will
 roll back, is not yet a decision (``_durable_terminal_ids``). Every pass
-re-visits every terminal record — there is no "reaped" marker — so a session
-named after a pass, or a removal that failed, is handled by the next one.
+re-visits every terminal record — the ``transcripts_reaped`` mark below only
+lets the tombstone age out, it skips nothing — so a session named after a
+pass, or a removal that failed, is handled by the next one.
 
 A record's transcripts are kept for ``TRANSCRIPT_RETENTION_DAYS`` after its
 ``completed_at`` (a record with no usable time keeps them), and then deleted
-only where the run-confirmation gate passes (``memory/transcript_runs.py``):
-no unconfirmed run names the session, and no unconfirmed finalize summary
-names the folder (for a whole folder, no unconfirmed run names it at all). The
-gate is asked at each delete; after a delete the rows that named it go. The
-pass reads no transcript.
+only where the run-confirmation gate passes. Once all of them are gone (or
+the record names none this pass can find) the pass marks the record
+``transcripts_reaped``, and only then may its tombstone age out; a held
+transcript keeps it until a later pass deletes it. The gate
+(``memory/transcript_runs.py``) passes while no run registered in the folder
+is unconfirmed. It is asked at each delete; after a delete the rows that
+named it go. The pass reads no transcript.
 
 The project dir is resolved by the SDK's own (private) cwd → dir helpers,
 imported per pass and never at module scope: if an SDK version no longer
@@ -219,23 +222,28 @@ def _remove_tree(path: str, counts: _Counts) -> None:
     counts.deleted += 1
 
 
-def _reap_transcripts(t: _Target, lookup, counts: _Counts) -> None:
+def _reap_transcripts(t: _Target, lookup, counts: _Counts) -> bool:
+    """Delete *t*'s transcripts; whether all of them are now gone (removed,
+    or already absent), so the record has nothing left to reap. A held one
+    waits for a later pass."""
     from memory import transcript_runs
     canonicalize, find_project_dir = lookup
     project = find_project_dir(canonicalize(t.cwd))
     if t.whole_dir:
         if transcript_runs.blocked(directory=t.cwd):
             counts.unconfirmed += 1
-            return
+            return False
         if project is None:
             counts.absent += 1
         else:
             _remove(str(project), counts)
         transcript_runs.forget_deleted(directory=t.cwd)
-        return
+        return True
+    done = True
     for sid in t.sids:
         if transcript_runs.blocked(directory=t.cwd, session_id=sid):
             counts.unconfirmed += 1
+            done = False
             continue
         if project is None:
             counts.absent += 1
@@ -245,10 +253,14 @@ def _reap_transcripts(t: _Target, lookup, counts: _Counts) -> None:
             if os.path.lexists(sibling):
                 _remove(sibling, counts)
         transcript_runs.forget_deleted(directory=t.cwd, session_id=sid)
+    return done
 
 
 def _reap(targets: list[_Target], tombstone_path: str, counts: _Counts,
-          now: float | None = None) -> None:
+          now: float | None = None,
+          reaped: set[str] | None = None) -> None:
+    """One pass over *targets*; the id of every record whose transcripts are
+    all gone after it is added to *reaped*."""
     try:
         from claude_agent_sdk._internal.sessions import (
             _canonicalize_path,
@@ -294,7 +306,8 @@ def _reap(targets: list[_Target], tombstone_path: str, counts: _Counts,
             counts.retained += 1
             continue
         try:
-            _reap_transcripts(t, lookup, counts)
+            if _reap_transcripts(t, lookup, counts) and reaped is not None:
+                reaped.add(t.engagement_id)
         except Exception as exc:  # noqa: BLE001 — one record never stops the pass
             counts.errors += 1
             logger.warning(
@@ -307,6 +320,8 @@ async def reap_engagement_transcripts(registry, *,
     """One pass. Scheduled every six hours, first at scheduler start. *now*
     (epoch seconds, default the current time) is when retention is judged."""
     counts = _Counts()
+    # Records with nothing left to reap: their tombstones may now age out.
+    reaped: set[str] = set()
     try:
         targets = []
         for rec in registry.terminal_records():
@@ -319,11 +334,16 @@ async def reap_engagement_transcripts(registry, *,
                 logger.warning("engagement transcript reap: %s skipped",
                                str(rec.id)[:8], exc_info=True)
                 continue
-            if target is not None:
-                target.completed_at = rec.completed_at
-                targets.append(target)
+            if target is None:
+                reaped.add(rec.id)       # nothing this pass could ever reap
+                continue
+            target.completed_at = rec.completed_at
+            targets.append(target)
         await asyncio.to_thread(_reap, targets, registry._tombstone_path, counts,
-                                now)
+                                now, reaped)
+        mark = getattr(registry, "mark_transcripts_reaped", None)
+        if reaped and callable(mark):
+            await mark(reaped)
     except Exception:  # noqa: BLE001 — the scheduled job must survive
         counts.errors += 1
         logger.warning("engagement transcript reap failed", exc_info=True)

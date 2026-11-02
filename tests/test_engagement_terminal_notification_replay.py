@@ -1070,7 +1070,9 @@ def _retention_row(**over):
             "driver": "in_casa", "status": "completed", "topic_id": None,
             "started_at": 1.0, "last_user_turn_ts": 1.0,
             "completed_at": None, "origin": {}, "task": "t",
-            "auth_token": "tok-" + "a" * 40}
+            "auth_token": "tok-" + "a" * 40,
+            # its transcripts already reaped: only the age is under test
+            "transcripts_reaped": True}
     base.update(over)
     return base
 
@@ -1106,7 +1108,7 @@ async def test_retention_ages_only_a_usable_time(tmp_path, value, extra, kept):
     import engagement_registry as er
     from engagement_registry import EngagementRegistry
 
-    old = time.time() - (er._terminal_retention_days() + 1) * 86400
+    old = time.time() - (er._TERMINAL_RETENTION_DAYS + 1) * 86400
     completed_at = value(old)
     tombstone = tmp_path / "engagements.json"
     rows = [_retention_row(id="subject", completed_at=completed_at, **extra),

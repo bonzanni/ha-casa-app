@@ -386,11 +386,12 @@ class TestTheObligationIsArmedWithTheTerminalAndClearedOnlyByDelivery:
                 next_steps=[], driver=_driver_double())
         await reg.ack_terminal_notification(settled.id)
 
-        # Age both past the terminal retention, then force a rewrite.
-        from engagement_registry import _terminal_retention_days
-        old = time.time() - (_terminal_retention_days() + 1) * 86400
+        # Age both past the 30-day terminal retention (their transcripts
+        # already reaped), then force a rewrite.
+        old = time.time() - 31 * 86400
         for rec in (owing, settled):
             reg.get(rec.id).completed_at = old
+            reg.get(rec.id).transcripts_reaped = True
         # Any later write re-runs the expiry filter over the whole set.
         await reg.create(
             kind="specialist", role_or_type="finance", driver="in_casa",

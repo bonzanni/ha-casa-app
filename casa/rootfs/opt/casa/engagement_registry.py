@@ -4,7 +4,7 @@ Symmetric with :mod:`specialist_registry`. Owns:
 - EngagementRecord (one in-flight engagement)
 - EngagementRegistry (in-memory dict + ``/data/engagements.json``: in-flight
   records for crash recovery PLUS terminal tombstones, which age out after
-  ``_terminal_retention_days()`` — D-4, v0.69.0)
+  ``_TERMINAL_RETENTION_DAYS`` — D-4, v0.69.0)
 - Idle sweep (fires ``idle_detected`` bus events + session-suspends live clients)
 - Orphan recovery (startup: load the file; "active" rows are reconciled to
   idle — no driver survives a restart — and remain dormant until the next
@@ -48,18 +48,6 @@ _IDLE_SWEEP_CRON = "0 8 * * *"            # daily 08:00 user TZ
 # the snapshot on the next write — bounds the file while keeping the P32
 # duplicate-task guard and post-mortems working across restarts.
 _TERMINAL_RETENTION_DAYS = 30
-# A tombstone also outlives its engagement's transcript retention by this
-# margin, so the transcript reaper (every six hours, acting only on a terminal
-# status on disk) still finds the record when the retention ends.
-_TRANSCRIPT_REAP_MARGIN_DAYS = 2
-
-
-def _terminal_retention_days() -> int:
-    """Days a terminal tombstone is kept: ``_TERMINAL_RETENTION_DAYS``, or the
-    transcript retention plus the reap margin when that is longer."""
-    from memory import transcript_runs
-    return max(_TERMINAL_RETENTION_DAYS,
-               transcript_runs.retention_days() + _TRANSCRIPT_REAP_MARGIN_DAYS)
 # #1162: the key, inside ``origin["job"]``, of the list of every SDK session a
 # background job's client served. Its writer rotates a job's sessions; the
 # transcript reaper reads it to delete each one once the job is terminal. Both
@@ -402,6 +390,11 @@ class EngagementRecord:
     # ``quiesce_pending`` is: ageing the row out would drop the obligation with
     # it, leaving the party that asked for the work permanently untold.
     terminal_notification_pending: bool = False
+    # This in_casa record's CLI transcripts are all gone: the transcript
+    # reaper found none left to delete (or none it could ever find). Until it
+    # is set the record's tombstone does not age out — the record is the
+    # reaper's only index of its sessions. Never cleared.
+    transcripts_reaped: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -578,6 +571,8 @@ class EngagementRegistry:
                     # the first boot after upgrade.
                     terminal_notification_pending=bool(
                         row.get("terminal_notification_pending", False)),
+                    transcripts_reaped=bool(
+                        row.get("transcripts_reaped", False)),
                     context_generation=int(
                         row.get("context_generation", 0) or 0),
                 )
@@ -747,7 +742,7 @@ class EngagementRegistry:
         Includes completed / cancelled / errored engagements: they stay
         in ``_records`` for the process lifetime and (since D-4,
         v0.69.0) persist on disk as tombstones for
-        ``_terminal_retention_days()``, so the guard also holds across
+        ``_TERMINAL_RETENTION_DAYS``, so the guard also holds across
         restarts. The duplicate-task guard at the ``engage_executor``
         call site uses this to refuse spawns that overlap with whichever
         task was spawned last.
@@ -780,7 +775,7 @@ class EngagementRegistry:
         Terminal records are persisted as real tombstones (D-4, v0.69.0) —
         they used to be silently dropped, so the P32 duplicate-task guard
         forgot recent spawns across restarts and the file never matched its
-        name. Tombstones age out after ``_terminal_retention_days()`` to bound
+        name. Tombstones age out after ``_TERMINAL_RETENTION_DAYS`` to bound
         the file.
 
         ``strict`` (B3, Sol r1): when True, a persistence failure PROPAGATES
@@ -808,7 +803,7 @@ class EngagementRegistry:
         # verdict in place, and a strict caller consulting it would skip a
         # rollback it owes — no write happened at all.
         self._last_tombstone_ok = False
-        cutoff = time.time() - _terminal_retention_days() * 86400
+        cutoff = time.time() - _TERMINAL_RETENTION_DAYS * 86400
         snapshot = []
         for rec in self._records.values():
             if (rec.status in ("completed", "cancelled", "error")
@@ -831,7 +826,12 @@ class EngagementRegistry:
                     # the obligation AND the origin the replay is addressed
                     # from, so the party that asked for the work would be
                     # permanently untold — the harm the marker exists to close.
-                    and not rec.terminal_notification_pending):
+                    and not rec.terminal_notification_pending
+                    # An in_casa record is the transcript reaper's only index
+                    # of its sessions: it ages out only once the reaper has
+                    # found nothing left to delete (whatever downtime came
+                    # between), never at a fixed age alone.
+                    and (rec.driver != "in_casa" or rec.transcripts_reaped)):
                 continue
             snapshot.append({
                 "id": rec.id,
@@ -866,6 +866,7 @@ class EngagementRegistry:
                 "quiesce_pending": rec.quiesce_pending,
                 "terminal_notification_pending":
                     rec.terminal_notification_pending,
+                "transcripts_reaped": rec.transcripts_reaped,
                 "context_generation": rec.context_generation,
             })
         write = asyncio.ensure_future(
@@ -1331,6 +1332,22 @@ class EngagementRegistry:
                 return
             rec.quiesce_pending = False
             await self._write_tombstone_locked()
+
+    async def mark_transcripts_reaped(self, engagement_ids) -> None:
+        """The transcript reaper found nothing left to delete for these
+        terminal records: their tombstones may now age out. Best-effort
+        persistence — a failed write leaves the mark for the next pass to
+        set again."""
+        async with self._lock:
+            changed = False
+            for engagement_id in engagement_ids:
+                rec = self._records.get(engagement_id)
+                if (rec is not None and not rec.transcripts_reaped
+                        and rec.status in ("completed", "cancelled", "error")):
+                    rec.transcripts_reaped = True
+                    changed = True
+            if changed:
+                await self._write_tombstone_locked()
 
     def records_owing_quiesce(self) -> list["EngagementRecord"]:
         """Every record whose uid-quiesce obligation is still outstanding —

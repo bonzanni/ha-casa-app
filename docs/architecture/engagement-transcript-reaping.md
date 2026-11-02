@@ -75,10 +75,11 @@ so sessions no record names stay — any plugin-job folder whose record is gone,
 sessions of a specialist that has since been uninstalled (its folder can no longer be
 derived) or given another working directory. (A delegation's session is deleted by the
 delegated retention pass and a utility one-shot writes none: INV-ENG-028, in
-[`architecture/delegation.md`](delegation.md).) A terminal record's row stays in the
-tombstone for the retention plus a two-day margin (`_terminal_retention_days`), and the pass
-never selects a record without one, so a removal that fails for that long, or a transcript
-an unconfirmed run kept, is not retried; it stays until a wipe.
+[`architecture/delegation.md`](delegation.md).) A terminal `in_casa` record's row stays in
+the tombstone until the pass has found nothing left of its transcripts to delete (all
+removed, already absent, or none it could ever find) and marked it `transcripts_reaped`, and
+only then ages out at its 30 days — so downtime past the retention, a failed removal or a
+held transcript keeps the record, and the pass deletes the transcript once it can.
 
 ## Failure behavior
 

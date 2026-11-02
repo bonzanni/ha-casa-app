@@ -14,6 +14,7 @@ import asyncio
 import time
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -152,15 +153,106 @@ async def test_a_claude_code_workspace_keeps_its_seven_day_retention_once_gated(
     assert not ws.exists() and rows(env) == []
 
 
-async def test_a_tombstone_outlives_its_transcripts_retention(monkeypatch):
-    """The reaper acts only on a terminal status on disk, so a record's
-    tombstone stays past its transcripts' retention."""
-    import engagement_registry as er
-    monkeypatch.delenv(transcript_runs.RETENTION_ENV, raising=False)
-    assert er._terminal_retention_days() >= (
-        transcript_runs.retention_days() + er._TRANSCRIPT_REAP_MARGIN_DAYS)
-    monkeypatch.setenv(transcript_runs.RETENTION_ENV, "45")
-    assert er._terminal_retention_days() == 45 + er._TRANSCRIPT_REAP_MARGIN_DAYS
+async def _terminal_engagement(tmp_path, monkeypatch, *, cwd, days_ago):
+    from engagement_registry import EngagementRegistry
+    from test_engagement_transcript_reaper import _specialists
+
+    _specialists(monkeypatch, researcher=SimpleNamespace(role="researcher",
+                                                          cwd=cwd))
+    path = str(tmp_path / "e.json")
+    reg = EngagementRegistry(tombstone_path=path, bus=None)
+    rec = await reg.create(kind="specialist", role_or_type="researcher",
+                           driver="in_casa", task="t", origin={}, topic_id=None)
+    sid = str(uuid.uuid4())
+    await reg.persist_session_id(rec.id, sid)
+    done = time.time() - days_ago * 86400
+    await reg.mark_completed(rec.id, done)
+    return reg, rec, sid, done, path
+
+
+async def _reloaded(path):
+    from engagement_registry import EngagementRegistry
+    reg = EngagementRegistry(tombstone_path=path, bus=None)
+    await reg.load()
+    return reg
+
+
+async def _rewrite(reg) -> None:
+    """Any write re-runs the tombstone's expiry over every record (startup
+    reconciliation, a new engagement)."""
+    await reg.create(kind="specialist", role_or_type="researcher",
+                     driver="in_casa", task="later", origin={}, topic_id=None)
+
+
+def _on_disk(path, rec_id) -> bool:
+    import json
+    return any(r["id"] == rec_id for r in json.loads(Path(path).read_text()))
+
+
+async def test_a_tombstone_waits_for_its_transcripts_across_downtime(
+        env, tmp_path, monkeypatch):
+    """Swept at day 29 (inside retention), Casa is down until day 33; at
+    restart a write runs the tombstone expiry before the reaper's first
+    pass. The record survives it, the reaper then deletes the transcript and
+    marks the record reaped, and only then does the tombstone age out. Red
+    case: a tombstone aged out at a fixed margin past retention, which
+    strands the transcript for good."""
+    from engagement_transcript_reaper import reap_engagement_transcripts
+
+    cwd = str(tmp_path / "agent-home" / "researcher")
+    reg, rec, sid, done, path = await _terminal_engagement(
+        tmp_path, monkeypatch, cwd=cwd, days_ago=33)
+    transcript = write_transcript(cwd, sid)
+    await reap_engagement_transcripts(reg, now=done + 29 * 86400)
+    assert transcript.exists()
+
+    restarted = await _reloaded(path)            # day 33, after downtime
+    await _rewrite(restarted)
+    assert _on_disk(path, rec.id)
+    await reap_engagement_transcripts(restarted)
+    assert not transcript.exists()
+    assert restarted.get(rec.id).transcripts_reaped is True
+    await _rewrite(restarted)
+    assert not _on_disk(path, rec.id)
+
+
+async def test_a_held_transcript_keeps_its_tombstone_until_it_goes(
+        env, tmp_path, monkeypatch):
+    from engagement_transcript_reaper import reap_engagement_transcripts
+
+    cwd = str(tmp_path / "agent-home" / "researcher")
+    reg, rec, sid, _done, path = await _terminal_engagement(
+        tmp_path, monkeypatch, cwd=cwd, days_ago=40)
+    transcript = write_transcript(cwd, sid)
+    run = transcript_runs.register(env, kind="engagement", role="researcher",
+                                   directory=cwd)
+    await reap_engagement_transcripts(reg)
+    await _rewrite(reg)
+    assert transcript.exists() and _on_disk(path, rec.id)
+    transcript_runs.confirm(env, run)
+    await reap_engagement_transcripts(reg)
+    await _rewrite(reg)
+    assert not transcript.exists() and not _on_disk(path, rec.id)
+
+
+@pytest.mark.parametrize("case", ["folder_gone", "uninstalled"])
+async def test_a_record_with_nothing_to_reap_still_ages_out(
+        env, tmp_path, monkeypatch, case):
+    """A record whose folder is already gone, or whose specialist is
+    uninstalled with no launch cwd recorded, has nothing the reaper could
+    ever delete: it is marked reaped and its tombstone ages out."""
+    from engagement_transcript_reaper import reap_engagement_transcripts
+    from test_engagement_transcript_reaper import _specialists
+
+    cwd = str(tmp_path / "agent-home" / "researcher")
+    reg, rec, _sid, _done, path = await _terminal_engagement(
+        tmp_path, monkeypatch, cwd=cwd, days_ago=40)
+    if case == "uninstalled":
+        _specialists(monkeypatch)
+    await reap_engagement_transcripts(reg)
+    assert reg.get(rec.id).transcripts_reaped is True
+    await _rewrite(reg)
+    assert not _on_disk(path, rec.id)
 
 
 @pytest.mark.parametrize("raw,days", [("", 30), ("x", 30), ("0", 30),
