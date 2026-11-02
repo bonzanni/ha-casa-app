@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import pathlib
 
 import pytest
 
@@ -377,3 +378,37 @@ def test_marker_parsing_refuses_unpaired_or_misordered_markers():
     assert maintenance._marker_spans(b"plain") == []
     for bad in (o, c, c + o, o + o + c + c, o + c + c, o + c + o + c):
         assert maintenance._marker_spans(b"a" + bad + b"b") is None
+
+
+# --- a plain-copy CLAUDE.md goes through the one writer too --------------------------
+
+async def test_a_plain_template_claude_md_is_rendered_and_its_markers_kept(
+        tmp_path, monkeypatch):
+    """r3 Astra S1: a ``workspace-template/CLAUDE.md`` (no ``.tmpl``) that
+    writes the markers around kept text. It is rendered and neutralised like
+    a template, so the wipe keeps that text."""
+    from drivers import workspace
+    root, proc = tmp_path, w.fake_proc(tmp_path)
+    kept = "fc" + os.urandom(8).hex()
+    monkeypatch.setattr(workspace, "CONTROL_ROOT",
+                        str(w.under(root, "/data/engagement-ctl")))
+    tdir = root / "defs" / "x" / "workspace-template"
+    w.write(tdir / "CLAUDE.md", f"# Notes for {{task}}\n{OPEN}{kept}{CLOSE}\n")
+    w.write(tdir / "notes" / "CLAUDE.md", "a nested file, copied as it is\n")
+    defn = w._defn(root / "defs" / "x", w.TEMPLATE)
+    ws = await workspace.provision_workspace(
+        engagements_root=str(w.under(root, "/data/engagements")),
+        engagement_id=w.EID_OPEN, engagement_auth_token="tok", defn=defn,
+        task="the garden", context="c", executor_memory="",
+        casa_framework_mcp_url="http://127.0.0.1:8100/mcp/casa-framework",
+        workspace_template_root=tdir)
+    ws = pathlib.Path(ws)
+    text = (ws / "CLAUDE.md").read_text()
+    assert text.startswith("# Notes for the garden\n")
+    assert OPEN not in text and f"&lt;{OPEN[1:]}{kept}" in text
+    assert (ws / "notes" / "CLAUDE.md").read_text() == (
+        "a nested file, copied as it is\n")
+
+    p = _wipe(root, proc)
+    assert p.stdout.strip() == "done", p.stderr
+    assert kept in (ws / "CLAUDE.md").read_text()

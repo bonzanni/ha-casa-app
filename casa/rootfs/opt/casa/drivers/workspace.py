@@ -743,8 +743,7 @@ async def provision_workspace(
         and workspace_template_root.is_dir()
     )
     if use_template:
-        tmpl = workspace_template_root / "CLAUDE.md.tmpl"
-        template_text = _read_text(str(tmpl)) if tmpl.is_file() else ""
+        template_text = template_instruction_source(workspace_template_root) or ""
     else:
         template_text = _read_text(defn.prompt_template_path)
 
@@ -786,15 +785,11 @@ async def provision_workspace(
         )
     else:
         # 1. CLAUDE.md — the executor prompt, interpolated (legacy path).
-        # Written atomically, so a crash leaves no file or a whole one.
-        prompt_interpolated = executor_block.render(
-            template_text,
+        write_claude_md(
+            str(ws), template_text,
             {"{task}": task or "", "{context}": context or "(none)",
              "{executor_type}": defn.type},
-            executor_memory,
-        )
-        atomic_write_beneath(
-            str(ws), "CLAUDE.md", prompt_interpolated, mode=0o644)
+            executor_memory)
 
         # .claude/settings.json with translated hooks (legacy path).
         (ws / ".claude").mkdir(exist_ok=True)
@@ -885,6 +880,31 @@ def _read_text(path: str) -> str:
         return fh.read()
 
 
+def template_instruction_source(template_root: Path) -> str | None:
+    """The text a workspace template's ``CLAUDE.md`` is rendered from:
+    ``CLAUDE.md.tmpl`` when present, else a plain ``CLAUDE.md`` (the same
+    selection ``executor_epoch`` hashes), else ``None``."""
+    for name in ("CLAUDE.md.tmpl", "CLAUDE.md"):
+        path = Path(template_root) / name
+        if path.is_file():
+            return path.read_text(encoding="utf-8")
+    return None
+
+
+def write_claude_md(ws_dir: str, template_text: str, values: dict[str, str],
+                    executor_memory: str, *, owner_uid: int | None = None
+                    ) -> None:
+    """The one writer of a workspace's root ``CLAUDE.md``: *template_text*
+    rendered by ``executor_block.render`` (every marker outside the memory
+    block neutralised, the block between its markers) and written atomically
+    without following a symlink, so a crash leaves no file or a whole one.
+    The memory wipe relies on nothing else writing that file."""
+    atomic_write_beneath(
+        ws_dir, "CLAUDE.md",
+        executor_block.render(template_text, values, executor_memory),
+        owner_uid=owner_uid, mode=0o644)
+
+
 def refresh_claude_md(ws_dir: str, *, defn, rec) -> None:
     """Re-render an existing workspace's CLAUDE.md from the engagement record
     (W3/Sol r8-B5, Task 8).
@@ -939,29 +959,26 @@ def refresh_claude_md(ws_dir: str, *, defn, rec) -> None:
     template_root = exec_dir / "workspace-template"
 
     if template_root.is_dir():
-        # Mirror render_workspace_template (workspace.py:489-496) EXACTLY.
-        text = (template_root / "CLAUDE.md.tmpl").read_text(encoding="utf-8")
-        text = executor_block.render(
-            text,
+        # Mirror render_workspace_template EXACTLY: the same source and the
+        # same writer. A template tree with no instruction file has nothing
+        # to refresh.
+        text = template_instruction_source(template_root)
+        if text is None:
+            return
+        write_claude_md(
+            str(ws), text,
             {"{executor_type}": defn.type, "{task}": task,
              "{context}": context,
              "{world_state_summary}": world_state_summary},
-            executor_memory,
-        )
-        atomic_write_beneath(
-            str(ws), "CLAUDE.md", text, owner_uid=owner_uid, mode=0o644)
+            executor_memory, owner_uid=owner_uid)
     else:
-        # Mirror the legacy provision branch (workspace.py:245-253) EXACTLY.
+        # Mirror the legacy provision branch EXACTLY.
         prompt_text = _read_text(defn.prompt_template_path)
-        prompt_interpolated = executor_block.render(
-            prompt_text,
+        write_claude_md(
+            str(ws), prompt_text,
             {"{task}": task or "", "{context}": context or "(none)",
              "{executor_type}": defn.type},
-            executor_memory,
-        )
-        atomic_write_beneath(
-            str(ws), "CLAUDE.md", prompt_interpolated,
-            owner_uid=owner_uid, mode=0o644)
+            executor_memory, owner_uid=owner_uid)
 
 
 def write_casa_meta(
@@ -1334,30 +1351,29 @@ def render_workspace_template(
 
     dest.mkdir(parents=True, exist_ok=True)
 
-    # Copy every file under template_root except CLAUDE.md.tmpl (handled below).
+    # Copy every file under template_root except CLAUDE.md.tmpl and the root
+    # CLAUDE.md: the workspace's own instruction file is only ever written by
+    # write_claude_md, below.
     for src in template_root.rglob("*"):
         if src.is_dir():
             continue
         rel = src.relative_to(template_root)
+        if rel.name == "CLAUDE.md.tmpl" or rel == Path("CLAUDE.md"):
+            continue
         target = dest / rel
         target.parent.mkdir(parents=True, exist_ok=True)
-        if rel.name == "CLAUDE.md.tmpl":
-            continue
         shutil.copy2(src, target)
 
-    # Interpolate CLAUDE.md.
-    tmpl = template_root / "CLAUDE.md.tmpl"
-    if tmpl.is_file():
-        text = tmpl.read_text(encoding="utf-8")
-        text = executor_block.render(
-            text,
+    # Render CLAUDE.md from CLAUDE.md.tmpl, or from a plain CLAUDE.md, which is
+    # rendered and neutralised the same way (no memory slot unless it has one).
+    text = template_instruction_source(template_root)
+    if text is not None:
+        write_claude_md(
+            str(dest), text,
             {"{executor_type}": executor_type, "{task}": task,
              "{context}": context,
              "{world_state_summary}": world_state_summary},
-            executor_memory,
-        )
-        # Atomic, so a crash leaves no file or a whole one.
-        atomic_write_beneath(str(dest), "CLAUDE.md", text, mode=0o644)
+            executor_memory)
 
     # Generate .claude/settings.json (hooks + permissions only).
     # §3.3: no enabledPlugins — executor plugins load via --plugin-dir.

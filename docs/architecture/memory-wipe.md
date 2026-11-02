@@ -103,8 +103,11 @@ one pass with the task, context and other values — a value is never scanned fo
 placeholders again — with a unique sentinel in the slot; the whole joined text then has
 every marker string neutralised (its `<` written as `&lt;`), and only then does the
 sentinel become the marked block. However a marker might be assembled from template text
-and values, the one pair in the file comes only from the slot. A template with no slot
-caches nothing. The step classifies each file:
+and values, the one pair in the file comes only from the slot. The workspace's root
+`CLAUDE.md` is written only by `drivers.workspace.write_claude_md`, which renders it this
+way: a template's plain `CLAUDE.md` (with no `.tmpl`) is rendered and neutralised like any
+template rather than copied, and a scan fails on any other code that writes the file. A
+template with no slot caches nothing. The step classifies each file:
 
 1. **One marker pair**, in order: the content between them is emptied.
 2. **No marker pair**: the file holds no executor memory and is left as it is.
@@ -220,12 +223,14 @@ content does so inside the `maintenance.json` guard, or the scan fails.
 - `casa/rootfs/opt/casa/tools.py::wipe_memory`
 - `casa/rootfs/opt/casa/internal_handlers.py::build_admin_memory_wipe_handler`
 - `casa/rootfs/opt/casa/drivers/workspace.py::drop_session_without_transcript`
+- `casa/rootfs/opt/casa/drivers/workspace.py::write_claude_md`
 - `casa/rootfs/etc/s6-overlay/scripts/memory-maintenance.sh`
 
 **Tests**
 - `tests/test_memory_wipe.py`
 - `tests/test_memory_wipe_crash.py`
 - `tests/test_executor_memory_blank.py`
+- `tests/test_claude_md_one_writer.py`
 - `tests/test_memory_pending_intent.py`
 - `tests/test_memory_maintenance_only_in_oneshot.py`
 - `tests/test_s6_memory_maintenance_graph.py`
