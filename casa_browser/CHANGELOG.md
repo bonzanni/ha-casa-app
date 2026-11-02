@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.5] - 2026-11-03
+
+### Changed
+
+- Nothing changes in the app itself. Maintenance: a proxy test of the sign-in rule (a request that only the sign-in allowed is cut when the sign-in ends) failed about one run in four, because its held request sometimes went through while the sign-in was still on, which the rule allows. The test now holds the request until the sign-in has ended.
+
 ## [0.1.4] - 2026-11-02
 
 ### Changed

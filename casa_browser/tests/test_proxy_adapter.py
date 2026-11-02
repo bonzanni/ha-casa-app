@@ -1726,6 +1726,8 @@ def test_lease_only_mark_ends_only_with_a_close_of_every_connection(tmp_path, th
                 a.arm_login_close('l')
                 assert (await hz.fetch('GET', 'https://login.example/landing', headers=NAV))[0] == 200
                 assert a.policy.login_lease is None and a.lease_only_admitted
+                # still held: the provider request has not reached the site
+                assert not any(r[1] == 'provider.example' for r in hz.fixture.receipts.requests)
                 if then == 'next_lease':
                     a.begin_login(Lease('m', 'r1', 's1', 1, 'login'))
                     a.end_login('m')

@@ -107,7 +107,10 @@ class Fixture:
         self.request_seen = asyncio.Event()
         self.response_hold: asyncio.Event | None = None
         self.hold_paths: set[str] | None = None   # with response_hold: hold only these paths
-        self.hold: asyncio.Event | None = None  # set: the relay forwards nothing until it fires
+        # Set: a connection the relay accepts forwards nothing until it fires. Read at the accept
+        # that counts the connection, so clearing it once ``receipts.connections`` moved still
+        # holds that connection (read later, a hold cleared meanwhile was missed).
+        self.hold: asyncio.Event | None = None
         # path -> (content type, body, extra headers): fixed test pages, any host.
         self.pages: dict[str, tuple[str, bytes, dict]] = {}
         self.status: dict[str, int] = {}  # path -> status of its fixed page (default 200)
@@ -148,6 +151,7 @@ class Fixture:
 
         async def relay(reader, writer):
             self.receipts.connections += 1
+            hold = self.hold
             try:
                 ur, uw = await asyncio.open_connection("127.0.0.1", self._app_port)
             except OSError:
@@ -156,8 +160,8 @@ class Fixture:
 
             async def pump(src, dst, count):
                 try:
-                    if count and self.hold is not None:
-                        await self.hold.wait()
+                    if count and hold is not None:
+                        await hold.wait()
                     while data := await src.read(65536):
                         if count:
                             self.receipts.bytes += len(data)
