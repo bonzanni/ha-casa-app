@@ -163,8 +163,13 @@ def mem(tmp_path, monkeypatch):
 
 
 def _captured(store) -> list[str]:
-    """The texts captured into ``events``, in capture order."""
+    """The texts captured into ``events``, in capture order. A capture that
+    met a busy store (a loaded machine holds the write lock past capture's
+    50 ms bound) is durable in the spool instead; it is drained first, so the
+    question is what was captured, not where it waited."""
     import sqlite3
+    from memory import capture
+    capture.drain_waiting(store)
     conn = sqlite3.connect(store.path)
     try:
         return [r[0] for r in conn.execute(
@@ -765,7 +770,9 @@ async def test_stop_reason_matrix(
 
 
     expected = ["Q1 cashflow?", "partial answer"][:expected_items]
-    assert _captured(mem) == expected
+    # Which items were captured is the point (#710), not their order: a drain
+    # after a busy store can store the request after the answer.
+    assert sorted(_captured(mem)) == sorted(expected)
 
     withheld = [r.getMessage() for r in caplog.records
                 if "excluded from memory" in r.getMessage()]
