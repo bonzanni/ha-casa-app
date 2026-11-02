@@ -14,9 +14,12 @@ every transaction is begun explicitly.
 (0700), checks that SQLite has FTS5, and brings the file to the current schema
 version in one transaction: a fresh file is migrated from version 0, an older
 one forward. Only after that succeeds is the file switched to WAL, since a
-journal-mode change cannot sit inside the transaction. Any failure leaves an
-existing file byte for byte as it was, removes a file (and directory) this
-call created, and makes the store *unavailable*:
+journal-mode change cannot sit inside the transaction; WAL is a performance
+setting, so if the switch fails the store stays available in its current
+journal mode and a warning is logged. ``open`` reports the store unavailable
+only when it has left it unchanged: any failure up to the migration's commit
+leaves an existing file byte for byte as it was, removes a file (and
+directory) this call created, and makes the store *unavailable*:
 :attr:`MemoryStore.available` is false, the reason is kept, and
 :meth:`MemoryStore.transaction` raises :class:`MemoryUnavailable`. ``open``
 never raises, so Casa boots without memory rather than not at all.
@@ -107,7 +110,6 @@ class MemoryStore:
         created_file = not os.path.lexists(self.path)
         try:
             self._migrate()
-            self._enable_wal()
         except BaseException:
             if created_file:
                 for name in (self.path, *(self.path + s for s in
@@ -122,6 +124,15 @@ class MemoryStore:
                 except OSError:
                     pass
             raise
+        # WAL is a performance setting, not a correctness one. Once the
+        # migration has committed, the store is current and usable in any
+        # journal mode, so a failure here never makes it unavailable.
+        try:
+            self._enable_wal()
+        except Exception as exc:  # noqa: BLE001 — logged, store stays usable
+            logger.warning(
+                "memory store stays in its current journal mode (%s): %s",
+                self.path, exc)
 
     def _migrate(self) -> None:
         """Bring the file to :func:`schema_version` in one transaction."""
@@ -166,7 +177,7 @@ class MemoryStore:
         finally:
             conn.close()
         if str(mode).lower() != "wal":
-            raise MemoryUnavailable(f"journal mode {mode!r}, not WAL")
+            raise sqlite3.OperationalError(f"journal mode {mode!r}, not WAL")
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(

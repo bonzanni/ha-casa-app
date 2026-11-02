@@ -30,10 +30,14 @@ table, creates the directory, and brings the file to the current schema version 
 transaction. A fresh file counts as version 0, so creating a store and migrating one are
 the same loop over `memory/schema.py`'s `MIGRATIONS`. The schema version is SQLite's
 `user_version`. Only then is the file switched to WAL, because a journal-mode change cannot
-sit inside the transaction.
+sit inside the transaction. WAL is a performance setting: if the switch fails, the store
+stays available in its current journal mode and a warning is logged.
 
-**Unavailable, never empty.** If any step fails, the transaction rolls back and an existing
-file is left byte for byte as it was; a file this boot was creating is removed. The store is then *unavailable*: `available` is false, the reason is kept,
+**Unavailable, never empty, and only when unchanged.** `open()` reports the store
+unavailable only when it has left it as it was. If any step up to the migration's commit
+fails, the transaction rolls back and an existing file is left byte for byte as it was; a
+file this boot was creating is removed. The store is then *unavailable*: `available` is
+false, the reason is kept,
 and every `transaction()` raises `MemoryUnavailable`. `open()` never raises, so Casa boots
 without memory rather than not at all. A file written by a newer Casa is not downgraded; it
 is reported unavailable too.
@@ -119,6 +123,10 @@ unavailable before creating anything.
 content and journal mode byte for byte, and the store is unavailable; a store this boot was
 creating is removed rather than left empty. The file is switched to WAL only after the
 schema is current. The error is logged with the reason.
+
+**The switch to WAL fails after a migration has committed.** The store is current, so it
+stays available in the journal mode it has; a warning is logged and the next boot tries
+again.
 
 **The file is not a database, or is from a newer schema.** Unavailable; the file is not
 touched.

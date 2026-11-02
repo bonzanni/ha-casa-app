@@ -180,6 +180,38 @@ def test_failed_migration_keeps_the_old_file_and_reports_unavailable(
     assert not fresh.exists()
 
 
+def test_wal_failure_after_a_committed_migration_keeps_the_store_available(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``open`` reports unavailable only when the store is unchanged. Once a
+    migration has committed, a failed switch to WAL (a performance setting)
+    leaves the store current and usable in its journal mode."""
+    def refuse(self):
+        raise sqlite3.OperationalError("journal mode change refused")
+
+    # A v1 store in a rollback journal, migrated to v2 while WAL fails.
+    canary = secrets.token_hex(8)
+    path = _v1_store(tmp_path / "existing", "delete", canary)
+    monkeypatch.setattr(store_mod, "MIGRATIONS", {
+        1: schema.V1, 2: ("CREATE TABLE added_in_v2 (x TEXT) STRICT",)})
+    monkeypatch.setattr(MemoryStore, "_enable_wal", refuse)
+    later = MemoryStore(os.path.dirname(path))
+    assert later.open() is True, later.unavailable_reason
+    with later.transaction(write=True) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+        conn.execute("INSERT INTO added_in_v2 (x) VALUES ('ok')")
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key = 'canary'").fetchone()
+        assert json.loads(row[0]) == canary
+
+    # A store created while WAL fails is kept, too.
+    fresh = MemoryStore(str(tmp_path / "fresh"))
+    assert fresh.open() is True, fresh.unavailable_reason
+    with fresh.transaction() as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+
+
 def test_unopenable_files_report_unavailable_and_stay_unchanged(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
