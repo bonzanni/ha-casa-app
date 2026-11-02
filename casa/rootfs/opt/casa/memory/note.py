@@ -18,8 +18,9 @@ Each is the operator's own words, verbatim, with the local time he said
 them. The note is the same one rule on every turn, not a one-off: so
 compaction, a reconnect or a resume cannot drop it, and nothing records that
 a correction was "shown". An in-casa engagement is served no view; its base
-is derived from its own start time, never recorded (:func:`for_engagement`),
-so it is owed (a) and (b) like any other. A resident session whose view could not be recorded (the store was
+is derived from its own start time, never recorded, and taken a margin
+early (:func:`for_engagement`), so it is owed (a) and (b) like any other,
+at worst with a correction it already reflects. A resident session whose view could not be recorded (the store was
 unavailable) gets (a) only; its next reconnect starts it afresh.
 
 A resident session's base is read only from a record bound to the SDK
@@ -42,6 +43,13 @@ from memory import pending, sessions
 from memory.store import MemoryStore
 from memory import view as view_mod
 from memory.view import BUSY_TIMEOUT_S, View, ledger_for
+
+#: An engagement's base is taken this many seconds before its start. A
+#: commit stamps its time inside its transaction, before it lands, and two
+#: clocks are compared; a correction committed close to the start is
+#: therefore counted as after it and noted. An engagement shows no view
+#: text, so a correction it may already reflect, repeated, is harmless.
+ENGAGEMENT_BASE_MARGIN_S = 300.0
 
 HEAD = ("[Corrections he made that your memory above does not show yet. "
         "They override it.]")
@@ -136,17 +144,20 @@ def for_turn(store: MemoryStore, *, clearance: str,
 def for_engagement(store: MemoryStore, *, clearance: str,
                    started_at: float) -> Note:
     """The note for one turn of an in-casa engagement, which is served no
-    view. Its base is derived, never recorded: the newest commit at or
-    before the engagement's own start (*started_at*, the epoch time its
-    record was created with, durable before any turn), so no store failure
-    at any turn can move it. Read in one snapshot with the corrections:
-    every one pending, and every one committed after that base. Raises when
-    the store is unavailable or fails."""
+    view. Its base is derived, never recorded, so no store failure at any
+    turn can move it, and it is deliberately conservative: the newest
+    commit at or before :data:`ENGAGEMENT_BASE_MARGIN_S` before the
+    engagement's own start (*started_at*, the epoch time its record was
+    created with, durable before any turn). It may over-include a
+    correction the engagement already reflects; it never leaves one out.
+    Read in one snapshot with the corrections: every one pending, and every
+    one committed after that base. Raises when the store is unavailable or
+    fails."""
     ledger = ledger_for(clearance)
     if ledger is None:
         return Note("")
-    at = datetime.fromtimestamp(started_at, timezone.utc).isoformat(
-        timespec="microseconds")
+    at = datetime.fromtimestamp(started_at - ENGAGEMENT_BASE_MARGIN_S,
+                                timezone.utc).isoformat(timespec="microseconds")
     with store.transaction(busy_timeout=BUSY_TIMEOUT_S) as conn:
         base = pending.commit_no_at(conn, at)
         items = corrections(conn, ledger=ledger, clearance=clearance,

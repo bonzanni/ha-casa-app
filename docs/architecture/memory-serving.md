@@ -92,11 +92,15 @@ block, which is stripped from what is captured, on every turn — fresh, warm, a
 reconnect or a resume, on any channel — so neither compaction nor a reconnect can drop it,
 and nothing records that a correction was "shown". A delegated specialist's note is in its
 prompt with its view. An in-casa engagement of a memory-role specialist is served no view,
-and its base is derived, never recorded: the newest commit at or before the engagement's own
-start, found by comparing its record's creation time with the times the writer stamps on
-every commit's revisions and dispositions (one wall clock, in one process). No failure at any
-turn can move it, so every engagement turn carries the corrections pending and those
-committed since the engagement started, ahead of its message. A resident session with no record bound to it is
+and its base is derived, never recorded, and deliberately conservative: the newest commit at
+or before five minutes before the engagement's own start, found by comparing its record's
+creation time with the times the writer stamps on every commit's revisions and dispositions.
+A commit stamps its time before it lands, and the two times come from a wall clock; the margin
+absorbs both, so a correction committed close to the start is counted as after it. No
+failure at any turn can move the base, and every engagement turn carries the corrections
+pending and those committed since the engagement started, ahead of its message. Since an
+engagement shows no view text, the note may repeat a correction it already reflects; it
+never leaves one out. A resident session with no record bound to it is
 owed the pending corrections only, until its next reconnect starts it afresh. A turn that starts a session reads its note first, and its view is rendered as of that
 note's own snapshot, so the two describe one state of the store: a correction filed while
 the session starts is after its base, and owed to its next turn. On that first turn the note

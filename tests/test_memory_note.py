@@ -380,12 +380,59 @@ async def test_a_session_kept_while_the_store_cannot_be_read(
     assert len(_QueryClient.options) == 1
 
 
+def _backdate_commits(store, seconds: float) -> None:
+    """Move every commit so far *seconds* into the past."""
+    from datetime import datetime, timedelta, timezone
+    at = (datetime.now(timezone.utc) - timedelta(seconds=seconds)).isoformat(
+        timespec="microseconds")
+    with store.transaction(write=True) as conn:
+        for table in ("dispositions", "revisions"):
+            conn.execute(f"UPDATE {table} SET committed_at = ? "
+                         "WHERE committed_at IS NOT NULL", (at,))
+
+
+async def test_an_engagement_owes_a_correction_committed_as_it_started(
+        tmp_path, monkeypatch):
+    """A commit can be stamped before an engagement starts and land after it
+    (the stamp is taken inside the commit's transaction). The engagement's
+    base is therefore conservative: commits within ENGAGEMENT_BASE_MARGIN_S
+    of its start count as after it, and their corrections are noted, at
+    worst once more than needed. Red case: a base taken at the start itself
+    includes that commit, and no turn ever notes its correction."""
+    import time as _time
+    from drivers.in_casa_driver import InCasaDriver
+    from engagement_registry import EngagementRecord
+    from test_memory_capture import _TopicStream
+    store = ledger_store(tmp_path)
+    wire(monkeypatch, store)
+    monkeypatch.setattr(tools, "_agent_role_map", {}, raising=False)
+    _correction(store, "the city is Milan")
+    await _run_jobs(store, no_change_all)          # stamped just before the start
+    rec = EngagementRecord(
+        id="b" * 32, kind="specialist", role_or_type="finance",
+        driver="in_casa", status="active", topic_id=99,
+        started_at=_time.time(), last_user_turn_ts=0.0,
+        last_idle_reminder_ts=0.0, completed_at=None, sdk_session_id=None,
+        task="t", origin={"channel": "telegram", "_origin_route": "telegram",
+                          "_origin_clearance": "private"})
+    drv = InCasaDriver(topic_stream_factory=lambda tid: _TopicStream())
+    _EngagementClient.prompts = []
+    drv._clients[rec.id] = _EngagementClient()
+    drv._locks[rec.id] = asyncio.Lock()
+    for i, text in enumerate(("launch", "second")):
+        ticket = drv.admit_inbound(rec.id, text)
+        await drv.send_user_turn(rec, text, tg_message_id=i,
+                                 inbound_token=ticket)
+    for prompt in _EngagementClient.prompts:
+        assert 'his words: "the city is Milan"' in prompt
+
+
 async def test_an_engagement_owes_every_correction_filed_since_it_started(
         tmp_path, monkeypatch):
     """An engagement's base is the newest commit at or before its own start,
     derived, never recorded, so no store failure at its launch can move it:
     a correction filed after the engagement started is owed to every later
-    turn, and one filed before it is not. Red case: a base recorded at the
+    turn, and one filed well before it is not. Red case: a base recorded at the
     first turn whose write succeeds (here the launch's write is locked out)
     lands after the correction, and no turn ever notes it."""
     import sqlite3
@@ -397,7 +444,8 @@ async def test_an_engagement_owes_every_correction_filed_since_it_started(
     wire(monkeypatch, store)
     monkeypatch.setattr(tools, "_agent_role_map", {}, raising=False)
     _correction(store, "the code is 4417")
-    await _run_jobs(store, no_change_all)          # filed before the start
+    await _run_jobs(store, no_change_all)
+    _backdate_commits(store, 3600)                 # filed long before the start
     drv = InCasaDriver(topic_stream_factory=lambda tid: _TopicStream())
     rec = EngagementRecord(
         id="a" * 32, kind="specialist", role_or_type="finance",
