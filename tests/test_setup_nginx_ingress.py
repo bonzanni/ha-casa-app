@@ -49,7 +49,7 @@ def test_external_api_server_unaffected():
 def test_external_api_server_blocks_internal_mcp_and_hooks():
     """v0.97.0 SECURITY: the public 18065 server must NOT proxy the
     unauthenticated internal fallback endpoints /mcp/ and /hooks/ (they
-    dispatch CASA_TOOLS — recall_memory returns private memory, plugin_add
+    dispatch CASA_TOOLS — search_memory returns private memory, plugin_add
     installs plugins). They must return 404 externally; loopback (in-container
     workspace subprocesses on 127.0.0.1:8099) is unaffected."""
     text = _SCRIPT.read_text()

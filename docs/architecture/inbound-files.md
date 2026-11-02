@@ -101,8 +101,9 @@ dispatch tail the text handler uses (`TelegramChannel._dispatch_dm_turn`) — th
 the typed-answer ask cancellation, the operator's trusted identity, the typing lease, one bus
 message. The lock is taken only after the file is stored, so a download never holds the chat;
 a text sent while the download runs can therefore reach the agent first, and each turn still
-names only its own file. When no turn is dispatched — the rate limiter refused it, the
-agent's queue did not accept it, or the dispatch failed — the file is acknowledged as an uncaptioned one is, so the operator is never
+names only its own file. When no turn is dispatched — the rate limiter refused it, a memory
+wipe's restart is under way ([`memory-wipe.md`](memory-wipe.md)), the agent's queue did not
+accept it, or the dispatch failed — the file is acknowledged as an uncaptioned one is, so the operator is never
 left without a reply. A refused upload with nothing else kept runs no turn whatever its caption. In an album Telegram
 puts the caption on one message, and it is about the album: the captioned file claims its
 album at arrival, before any download, the turn waits until every file of the album has
