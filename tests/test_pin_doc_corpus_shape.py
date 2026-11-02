@@ -909,11 +909,10 @@ def test_mental_model_overlay_and_recall_are_separate():
         for doc in _text_corpus()
     }
     for lead in (
-        "**Mental-model overlays cannot be tier-filtered at all**",
-        "**The overlay is the backend's mental models, each dated, framed "
-        "as leads.**",
+        "**The mental-model overlay is shown only at `private`, because it "
+        "cannot be tier-filtered.**",
         "**Casa declares two of those models and keeps them reconciled.**",
-        "**A reconcile pass fails.**",
+        "**A mental-model reconcile pass fails.**",
         "**A new declared mental model**",
     ):
         total = sum(text.count(lead) for text in texts.values())
