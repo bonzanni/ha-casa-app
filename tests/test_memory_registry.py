@@ -9,7 +9,7 @@ would notice. Two pins keep the list complete:
   carry all three rules.
 * **The producer pin** runs each named producer of memory-derived text in a
   sandbox standing in for the root, configured the way the code configures it
-  and with every memory-bearing input filled. An audit hook records every
+  and with its optional memory-bearing inputs filled. An audit hook records every
   write it issues, as it is issued, with its full path and the producer line
   that issued it. A write from a memory-bearing call site (found by reading
   the producer's code) must land in the producer's row, a staged one on the
@@ -17,6 +17,10 @@ would notice. Two pins keep the list complete:
   short list of files the producer writes that carry no memory. Every
   memory-bearing call site must have issued a write. Every transcript root a
   launcher configures must land on a row.
+
+  It catches memory written to a new or moved location. Memory placed inside a
+  file on the no-memory list, and a write that happens only under inputs the
+  runs do not produce, are left to code review.
 
 Each pin's checker is a function, and the red cases feed it a violation it
 must report, so a checker that reports nothing is caught too.
@@ -536,7 +540,9 @@ PRODUCER_MODULES = ("session_registry.py", "explanation_store.py",
 
 #: Writes a producer makes that carry no memory: everything else the
 #: workspace provisioner creates beside the executor-memory block. A write
-#: from a memory-bearing call site is never judged against this list.
+#: from a memory-bearing call site is never judged against this list. The pin
+#: judges where a write lands, not what it holds, so memory placed inside one
+#: of these files through some other route is code review's to catch.
 NON_MEMORY = {
     "executor memory": (
         f"{registry.ENGAGEMENTS_ROOT}",
@@ -812,7 +818,8 @@ def _executor(tmp: Path, name: str, *, template: bool):
     )
 
 
-#: Every optional input filled, so a write behind a condition on one happens.
+#: The optional inputs the runs fill, so a write behind a condition on one of
+#: them happens. A write behind any other condition is code review's to find.
 _INPUTS = {"task": "a sample task", "context": "a sample context",
            "world_state_summary": "a sample world"}
 

@@ -70,7 +70,7 @@ the `memory` package, so it can be used while that process is not running.
 
 ## Contracts & invariants
 
-**INV-MEM-025**: Every store that holds memory is a registry row with an export, a restore and a wipe rule; a test fails when a fresh store has a table or a `/data/memory` path no row declares, when a named producer of memory-derived text, run as the code configures it, issues a write its row does not cover, when a memory-bearing call site of a named producer issues no write in any run, or when a launcher configures a transcript root no row covers.
+**INV-MEM-025**: Export, restore and the wipe walk one registry whose every row carries an export, a restore and a wipe rule; a test fails when a fresh store has a table or a `/data/memory` path no row declares, when a named producer of memory-derived text, run as the code configures it, writes from a memory-bearing call site to a path its row does not cover or writes any other file that neither its row nor its declared list of files carrying no memory covers, when a memory-bearing call site issues no write in any run, or when a launcher configures a transcript root no row covers.
 
 The store pin opens a real store and reads `sqlite_master` and the directory, once with a
 transaction open so the WAL sidecars are present. The producer pin judges what it
@@ -80,7 +80,8 @@ observes, never a path it is told:
   the filesystem root, with the configuration the code gives it — the paths its class is
   constructed with (each construction call evaluated statically, or its default), the
   workspace path from the engagement launch template, the module's own constants — and with
-  every memory-bearing input filled, so a write behind a condition on one of them happens.
+  its optional memory-bearing inputs filled, so a write behind a condition on one of them
+  happens.
   An audit hook (`sys.addaudithook`) records each write the run issues at the moment it is
   issued: an `open` for writing or creating, a rename's destination, a new directory, link
   or symlink, a truncation, a SQLite connection. Each is recorded with its full path — an
@@ -104,7 +105,11 @@ observes, never a path it is told:
 
 What it does not cover: code written to evade the test — a write to a hard-coded absolute
 path outside the producer's configuration, a write through `ctypes` or a subprocess — is
-out of its reach. The reading of memory-bearing call sites follows the text only within a
+out of its reach. The pin catches memory written to a new or moved location; two things are
+left to code review. One is memory placed inside a file a producer legitimately writes for
+another purpose — anything on the no-memory list, such as an engagement's
+`.claude/settings.json` — since the pin judges where a write lands, not what it holds. The
+other is a write that happens only under inputs the runs do not produce. The reading of memory-bearing call sites follows the text only within a
 producer's own module, so memory routed through another module's writer or hidden in a
 container is judged against the no-memory list instead of the row alone; such a writer
 needs naming as a producer. The producer list, a way to run each producer, and the
