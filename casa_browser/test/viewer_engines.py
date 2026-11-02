@@ -33,6 +33,7 @@ Checks (live view K and the casa-test findings):
 * F18/F33 — the toast in the bar; F37/F38 — every line fits, two lines at most, by measurement;
 * F19 — one finger; − · Fit · + zoom the picture (taps follow it); the page never scrolls; Done resets it;
 * F24 — after a reconnect only the new picture is on screen;
+* the picture shows and takes taps only once the first state named Chrome's toolbar, cropped;
 * F29 — Home Assistant is asked to hide its header again at every viewport change, not after
   Done.
 """
@@ -219,6 +220,23 @@ async def _scenario(pw, engine: str, problems: list[str]) -> None:
         ctl[-1].send(json.dumps(state(fields, ack=maxq(), **kw)))
 
     ws = ctl[-1]
+    # the picture connected before the first state (as when the controller's first probe is
+    # slow): hidden and deaf to taps until a state names Chrome's toolbar, so it never shows
+    # uncropped and then jumps by the toolbar's height under a finger
+    if not await until(v, "() => __lv.open()[1]"):
+        return bad("the picture never connected")
+    taps = len([m for m in sent if m.get("t") == "tap"])
+    await page.touchscreen.tap(*(await v.evaluate(AT, [250, 400])))
+    await asyncio.sleep(0.25)
+    early = [await v.evaluate("getComputedStyle(document.querySelector('#screen')).visibility"),
+             await v.evaluate("__lv.pan()"), len([m for m in sent if m.get("t") == "tap"]) - taps]
+    if early != ["hidden", None, 0]:
+        bad(f"before the first state the picture was [visibility, pan, taps sent] {early}")
+    confirm([], toolbar=87)
+    await asyncio.sleep(0.4)
+    if (shown := [await v.evaluate("getComputedStyle(document.querySelector('#screen')).visibility"),
+                  await v.evaluate("__lv.pan()")]) != ["visible", [87, 87]]:
+        bad(f"after the first state the picture was [visibility, pan] {shown}")
     confirm([])
     await asyncio.sleep(0.4)
 

@@ -31,8 +31,13 @@ const stats = window.__lv = {ctl: 0, vnc: 0, reconnects: 0, sent: [], states: 0,
   zoom: () => ({z: zoom.z, x: zoom.x, y: zoom.y}), box: () => visibleBox(),
   kb: () => ({sess: sess && {mode: sess.mode, ok: sess.ok, key: sess.key}, want, type: kb.type, focused: document.activeElement === kb}),
   at: (X, Y) => toClient(X, Y), trace: () => lines.slice(),
+  // [row shown, row wanted] while the picture is visible; wanted is unknown (-1) before a state
+  pan: () => (rfbConnected && screenEl.style.visibility !== 'hidden' ? [vp().y, CROP ? (state ? toolbarH() : -1) : 0] : null),
   toast: msg => toast(msg)};
 let CROP = true;
+// The picture shows, and takes taps, only from the first state on: until Chrome's toolbar height
+// is known it could only be shown uncropped, then jump up by that height under a finger.
+screenEl.style.visibility = 'hidden';
 let ended = false;   // done, ended or opened elsewhere: no more reconnects
 
 // ---------------------------------------------------------------- status
@@ -131,7 +136,12 @@ function openVnc() {
   r._screenSize = function () { return {w: this._screen.clientWidth, h: this._screen.clientHeight}; };
   r.viewOnly = true; r.focusOnClick = false; r.background = '#111'; r.qualityLevel = 7;
   r.scaleViewport = false; r.clipViewport = true; r.resizeSession = false;
-  r.addEventListener('connect', () => { if (rfb !== r) return; stats.vnc++; rfbConnected = true; vncBackoff = 1500; refreshStatus(); setTimeout(() => fit(true), 300); });
+  r.addEventListener('connect', () => {
+    if (rfb !== r) return;
+    stats.vnc++; rfbConnected = true; vncBackoff = 1500;
+    panTo(0, CROP ? toolbarH() : 0);   // the first picture is already below Chrome's toolbar
+    refreshStatus(); setTimeout(() => fit(true), 300);
+  });
   r.addEventListener('disconnect', () => {
     if (rfb !== r) return;
     rfbConnected = false; rfb = null; refreshStatus();
@@ -294,10 +304,12 @@ function fit(force, q) {
   lastFit = key;
   // noVNC re-reads its size when the clip is toggled — and puts its viewport back at (0, 0), so
   // only a fit that re-pans below Chrome's toolbar toggles it (casa-test F36: the typing box
-  // opening or closing made the picture jump by the toolbar's height).
+  // opening or closing made the picture jump by the toolbar's height). The pan follows in the
+  // same task, so no picture at (0, 0) is ever drawn or tapped: a tap aimed at the picture
+  // once landed a toolbar's height off when a later pan moved it before the finger came down.
   if (rfb) { rfb.clipViewport = !rfb.clipViewport; rfb.clipViewport = !rfb.clipViewport; }
+  panTo(0, CROP ? tb : 0);
   send(q === undefined ? {t: 'fit', w, h: h + tb} : {t: 'fit', w, h: h + tb, q});
-  setTimeout(() => panTo(0, CROP ? tb : 0), 250);
   // A field the operator is typing into stays in sight once the keyboard took its room: the
   // controller scrolls the remote focused element into view (casa-test F6).
   if (sess && sess.mode === 'field' && document.activeElement === kb) setTimeout(() => send({t: 'reveal'}), 350);
@@ -327,6 +339,7 @@ function onState(m) {
   const host = /^[\w.-]+(:\d+)?$/.test(m.host) && m.host !== 'chromewebdata' ? m.host : 'Chrome';
   $('#host').textContent = CROP ? host + '  ▾' : T('js.hide_toolbar', 'hide toolbar ▴');
   if (first || prevTb !== toolbarH()) fit(true);
+  if (first) screenEl.style.visibility = '';      // cropped by the fit above
   // A state probed before the controller took the tap says nothing about where it went.
   if (want && typeof m.ack === 'number' && m.ack >= want.q) want = null;
   kbState(m);
@@ -357,7 +370,7 @@ touch.addEventListener('pointerdown', ev => {
   ev.preventDefault();
   ptrs.set(ev.pointerId, {x: ev.clientX, y: ev.clientY});
   if (ptrs.size > 1) { if (!multi) trace('two fingers: gesture cancelled'); multi = true; cancelGesture(); return; }
-  if (multi) return;
+  if (multi || !state) return;                  // no picture yet (see screenEl's visibility)
   const [rx, ry] = toRemote(ev.clientX, ev.clientY) || [0, 0];
   stopFling();
   g0 = {x0: ev.clientX, y0: ev.clientY, lx: ev.clientX, ly: ev.clientY, rx, ry, mode: null, acc: 0, hist: [], scrolled: false};

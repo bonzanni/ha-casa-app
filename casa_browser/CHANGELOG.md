@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.2] - 2026-11-02
+
+### Fixed
+
+- A tap in the live view right after it opens or reconnects (after you switch apps and come back) now presses what you aimed at. For about half a second the picture showed Chrome's toolbar and then jumped up by its height, so a quick tap could press something a toolbar's height away from what you aimed at, such as another button. The picture now appears already in place.
+
 ## [0.1.1] - 2026-11-02
 
 ### Fixed
