@@ -128,7 +128,11 @@ def _status_reply(user: str, path: str) -> str:
          "--inh-caps=-all", "--bounding-set=-all", PY, "-c",
          "import socket,sys,json\ns=socket.socket(socket.AF_UNIX)\ns.settimeout(5)\n"
          "try:\n    s.connect(sys.argv[1])\nexcept OSError:\n    print('refused'); raise SystemExit\n"
-         "s.sendall(json.dumps({'op': 'status'}).encode() + b'\\n')\n"
+         # A refused peer's connection can be closed by the server before the request is
+         # written; sendall then meets the closed end (measured under load: EPIPE). That is the
+         # refusal, not a crash. Only those two errors are a verdict; any other ends as crashed.
+         "try:\n    s.sendall(json.dumps({'op': 'status'}).encode() + b'\\n')\n"
+         "except (BrokenPipeError, ConnectionResetError):\n    print('unanswered'); raise SystemExit\n"
          "try:\n    d = s.recv(65536)\nexcept OSError:\n    d = b''\n"
          "print('answered' if b'\"ok\": true' in d else 'unanswered')", path],
         capture_output=True, text=True, timeout=30, env={"PATH": "/usr/bin:/bin"})
