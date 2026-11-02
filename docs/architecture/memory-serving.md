@@ -88,9 +88,10 @@ prompt with its view. An in-casa engagement of a memory-role specialist is serve
 but its session is recorded at its first turn, keyed by the engagement, with that turn's
 `commit_no` as its base, so every engagement turn carries the corrections pending and those
 committed since, ahead of its message. A resident session whose view could not be recorded
-is owed the pending corrections only, until its next reconnect starts it afresh. On the first turn of a new session the note can name a
-correction that its view does reflect, read just before the view was built; that is
-redundant, never wrong.
+is owed the pending corrections only, until its next reconnect starts it afresh. A turn that starts a session reads its note first, and its view is rendered as of that
+note's own snapshot, so the two describe one state of the store: a correction filed while
+the session starts is after its base, and owed to its next turn. On that first turn the note
+may also name a correction the view already reflects; that is redundant, never wrong.
 
 **The doctrine says how to use what is served.** The view opens with a fixed head saying
 what it is: the operator's own record, dated, current value first, an earlier value noted

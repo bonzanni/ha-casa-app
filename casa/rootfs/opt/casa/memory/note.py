@@ -23,6 +23,11 @@ base (:func:`for_session_without_view`), so it is owed (a) and (b) like any
 other. A resident session whose view could not be recorded (the store was
 unavailable) gets (a) only; its next reconnect starts it afresh.
 
+A turn that starts a session reads its note before its view is built, so
+the view is rendered as of the note's own snapshot
+(``Note.snapshot_commit_no``): a correction filed in between is then after
+the session's base, and owed to its next turn.
+
 Blocking; async callers use ``asyncio.to_thread``.
 """
 from __future__ import annotations
@@ -48,6 +53,10 @@ class Note:
     text: str
     ledger: str | None = None
     base_commit_no: int | None = None
+    #: The ``commit_no`` of the snapshot the note was read in. A session
+    #: whose view is served on this same turn renders it as of this commit,
+    #: so the view and the turn's note describe one state of the store.
+    snapshot_commit_no: int | None = None
 
 
 def _local(occurred_at: str, tz: str) -> str:
@@ -113,7 +122,9 @@ def for_turn(store: MemoryStore, *, clearance: str,
         base = _base(row, ledger, clearance)
         items = corrections(conn, ledger=ledger, clearance=clearance,
                             base_commit_no=base)
-    return Note(render(items), ledger=ledger, base_commit_no=base)
+        snapshot = pending.current_commit_no(conn)
+    return Note(render(items), ledger=ledger, base_commit_no=base,
+                snapshot_commit_no=snapshot)
 
 
 def for_session_without_view(store: MemoryStore, *, session_key: str,

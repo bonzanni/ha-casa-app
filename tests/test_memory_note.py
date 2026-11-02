@@ -247,3 +247,34 @@ async def test_an_engagement_sees_corrections_filed_between_its_turns(
     assert "4417" not in first
     for prompt in (second, third):
         assert 'his words: "the code is 4417"' in prompt
+
+
+async def test_a_correction_filed_while_a_session_starts_is_never_lost(
+        tmp_path, monkeypatch):
+    """The view a session starts on is read as of the same snapshot as its
+    first turn's note, so a correction marked and filed between the two
+    (here with ``no_change``, which changes no entry) is owed to the next
+    turn. Red case: a view rendered from a later snapshot puts that commit
+    under the session's base, and no note ever shows it."""
+    store = ledger_store(tmp_path, [fact("code", "4471")])
+    wire(monkeypatch, store)
+    _QueryClient.options, _QueryClient.queries = [], []
+    with patch("sdk_client_pool._default_make_client", _QueryClient):
+        agent = _agent(tmp_path)
+        real_serve = agent._serve_memory_view
+        filed = []
+
+        async def serve_after_a_correction(**kw):
+            if not filed:
+                filed.append(_correction(store, "the code is 4417"))
+                await _run_jobs(store, no_change_all)
+            return await real_serve(**kw)
+
+        monkeypatch.setattr(agent, "_serve_memory_view",
+                            serve_after_a_correction)
+        await agent._process(_msg())                   # the view is served
+        await agent._process(_msg())                   # a warm turn
+        await agent.aclose()
+    first, second = _QueryClient.queries
+    assert "4417" not in first
+    assert 'his words: "the code is 4417"' in second

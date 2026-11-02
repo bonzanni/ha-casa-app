@@ -2868,14 +2868,20 @@ class Agent:
             memory_view.serve, store, channel_key,
             clearance=_current_origin_clearance(channel),
             budget=self.config.memory.token_budget)
+        # A new session's view is rendered as of the snapshot this turn's
+        # correction note was read in, so the two describe one state of the
+        # store and a correction filed in between is after the base.
+        draft = _explain_draft_var.get(None) or {}
+        as_of = draft.get("memory_snapshot_commit_no")
         try:
             served = await asyncio.to_thread(
-                serve, resume=resume_sid is not None)
+                serve, resume=resume_sid is not None, as_of=as_of)
             if served.reset:
                 await self._session_registry.clear_sdk_session(
                     channel_key, expected_sid=resume_sid)
                 resume_sid = None
-                served = await asyncio.to_thread(serve, resume=False)
+                served = await asyncio.to_thread(
+                    serve, resume=False, as_of=as_of)
         except Exception:  # noqa: BLE001 — the turn runs without memory
             logger.warning("memory view not served role=%s",
                            self.config.role, exc_info=True)
@@ -2909,6 +2915,7 @@ class Agent:
         if draft is not None and note.ledger is not None:
             draft["memory_ledger"] = note.ledger
             draft["memory_base_commit_no"] = note.base_commit_no
+            draft["memory_snapshot_commit_no"] = note.snapshot_commit_no
         return note.text
 
     async def _record_turn_explanation(

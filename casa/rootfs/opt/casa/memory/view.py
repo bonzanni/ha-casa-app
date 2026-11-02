@@ -483,7 +483,8 @@ class Served:
 
 
 def serve(store: MemoryStore, session_key: str, *, clearance: str,
-          budget: int, resume: bool = False) -> Served:
+          budget: int, resume: bool = False,
+          as_of: int | None = None) -> Served:
     """The frozen view of session *session_key*.
 
     For a new session (``resume`` false) the view is rendered from the
@@ -494,6 +495,10 @@ def serve(store: MemoryStore, session_key: str, *, clearance: str,
     rendered or recorded and ``Served(None, reset=True)`` comes back: the
     caller drops the resume pointer first, so no later attempt can resume
     that session, and only then serves a new session.
+
+    A new session's view is rendered as of commit *as_of* when given (the
+    snapshot its first turn's correction note was read in, so view and note
+    describe one state of the store), else as of the current commit.
 
     ``Served(None)`` when the session reads no ledger. Raises when the store
     is unavailable or fails."""
@@ -515,7 +520,10 @@ def serve(store: MemoryStore, session_key: str, *, clearance: str,
             "no record" if row is None else "changed")
         return Served(None, reset=True)
     with store.transaction(busy_timeout=BUSY_TIMEOUT_S) as conn:
-        view = render(conn, ledger, budget)
+        if as_of is None:
+            view = render(conn, ledger, budget)
+        else:
+            view = render_as_of(conn, ledger, as_of, budget)
     with store.transaction(write=True, busy_timeout=BUSY_TIMEOUT_S) as conn:
         sessions.put(conn, sessions.SessionView(
             session_key=session_key, ledger=ledger,
