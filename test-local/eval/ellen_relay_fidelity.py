@@ -12,7 +12,13 @@ FAKES carrying the PRODUCTION descriptions and input schemas from
 ``tools.py``; the fake ``delegate_to_agent`` answers with the case's desk text
 in the production sync result shape. Nothing is started, asked or posted.
 
-A run passes when the resident's reply is exactly the case's expected
+Since slice 5l the sync result carries Casa's relay hint and a fake
+``relay_answer`` answers with the production ``RELAY_SILENCE_NOTE``: a case with
+an expected answer passes when the resident relays it exactly once, by the
+result's delegation id, and writes nothing beside it (``_judge_relayed``); the
+judges below remain the yardstick of the fallback, a reply passed on by hand.
+
+Before 5l a run passed when the resident's reply was exactly the case's expected
 answer — the delegate's text attributed "Alex: " exactly, then word for word,
 in order (case, whitespace and the punctuation that only joins or ends a clause
 aside: ``_words``), or,
@@ -73,15 +79,18 @@ ANCHOR = "When a request falls within what one of your delegates owns"
 # Kept identical to the paragraph the change adds to the role doctrine; the
 # prompt test pins the shipped text, this copy only feeds the doctrine variant.
 DOCTRINE_PARAGRAPH = (
-    "When a delegate's result answers the person, that answer is your whole "
-    "reply: pass it on in the delegate's own words, introduced only by its "
-    "name (\"Alex: …\") so that its \"I\" and \"me\" stay the delegate's. "
-    "Write nothing of your own around it: do not announce that you are asking "
-    "the delegate, and add no rewrite or restatement, no question, offer or "
-    "next step it did not make, no note on what you will do. A line meant for "
-    "you rather than the person is not passed on, except a question or request "
-    "it asks you to put to them: put that to them. Your other rules on what a "
-    "reply may hold still apply to what you pass on."
+    "When a delegate's result answers the person, pass that answer on with "
+    "relay_answer: Casa posts the delegate's whole answer to them, in its own "
+    "words and under its name, and that post is your whole reply to it. Write "
+    "nothing of your own around it: do not announce that you are asking the "
+    "delegate, and add no rewrite or restatement, no question, offer or next "
+    "step it did not make, no note on what you will do. A result meant for you "
+    "rather than the person is not relayed, except that a question or request "
+    "it asks you to put to them is put to them. If relay_answer cannot post it, "
+    "pass it on yourself in the delegate's own words, introduced only by its "
+    "name (\"Alex: …\") so that its \"I\" and \"me\" stay the delegate's; your "
+    "other rules on what a reply may hold still apply to what you pass on "
+    "yourself."
 )
 
 SURFACE = (
@@ -160,6 +169,7 @@ _ANSWER_HEAD = re.compile(
     r"(?:fit|could match|match) the €120 payment (?:of|from|on) 3 september"
     r"(?:\.|,|:| —| –| -) ", re.IGNORECASE)
 ASK_OPTIONS = {"snelstart", "moneybird"}
+DELEGATION_ID = "0f3c9a2e-eval"
 CASES = [
     {"id": "q1-not-in-books", "user": "do Q1 2026", "desk": Q1,
      "expect": [f"Alex: {Q1}", f'Alex: "{Q1}"']},
@@ -306,11 +316,18 @@ def _judge_asked(case: dict, reply: str, asked: dict) -> tuple[bool, str]:
 
 async def _one(case: dict, system_prompt: str, model: str) -> tuple[bool, str, list, str]:
     captured: list = []
-    result = json.dumps({"status": "ok", "delegation_id": "0f3c9a2e-eval",
-                         "agent": "finance", "elapsed_s": 6.2, "text": case["desk"],
-                         "output_truncated": False}, ensure_ascii=False)
+    payload = {"status": "ok", "delegation_id": DELEGATION_ID,
+               "agent": "finance", "elapsed_s": 6.2, "text": case["desk"],
+               "output_truncated": False}
+    if not case.get("silent"):
+        # slice 5l: the production hint, present whenever an answer is held
+        payload["relay"] = casa_tools.RELAY_HINT.format(id=DELEGATION_ID, name="Alex")
+    result = json.dumps(payload, ensure_ascii=False)
+    relayed = ("Posted Alex's answer. "
+               + casa_tools.RELAY_SILENCE_NOTE.format(name="Alex"))
     fakes = [
         _fake(casa_tools.delegate_to_agent, captured, result),
+        _fake(casa_tools.relay_answer, captured, relayed),
         # #1348: the production live-DM result, Casa's silence note included
         _fake(casa_tools.ask_user, captured, json.dumps({
             "status": "awaiting_user", "request_id": "5d1e0c7aeval",
@@ -339,18 +356,45 @@ async def _one(case: dict, system_prompt: str, model: str) -> tuple[bool, str, l
     delegated = any(name == "delegate_to_agent" for name, _ in captured)
     if not delegated:
         return False, "never delegated", captured, reply
+    relays = [args for name, args in captured if name == "relay_answer"]
     if case.get("silent"):
         from output_boundary import strips_to_silence
-        ok = strips_to_silence(reply)
-        return ok, "silent" if ok else "spoke", captured, reply
+        ok = strips_to_silence(reply) and not relays
+        return ok, "silent" if ok else "spoke or relayed", captured, reply
     asks = [args for name, args in captured if name == "ask_user"]
-    if asks:
-        if "question" not in case or len(asks) != 1:
-            return False, "asked", captured, reply
-        ok, why = _judge_asked(case, reply, asks[0])
-        return ok, why, captured, reply
-    ok, why = _judge(case, reply)
+    ok, why = _judge_relayed(case, reply, relays, asks)
     return ok, why, captured, reply
+
+
+def _judge_relayed(case: dict, reply: str, relays: list, asks: list) -> tuple[bool, str]:
+    """Slice 5l: the answer is relayed once, by the result's id, and nothing
+    of the resident's restates it. For the case whose delegate asks her to put
+    a question, the question still reaches the person: with ``ask_user`` (its
+    two names as buttons, only asking which one) or as her reply alone."""
+    from output_boundary import strips_to_silence
+    if len(relays) != 1:
+        return False, f"relayed {len(relays)} times"
+    if str(relays[0].get("delegation_id", "")).strip() != DELEGATION_ID:
+        return False, "relayed another id"
+    if "question" not in case:
+        if asks:
+            return False, "asked"
+        ok = strips_to_silence(reply)
+        return ok, "relayed" if ok else "relayed and spoke"
+    if asks:
+        if len(asks) != 1:
+            return False, "asked more than once"
+        options = asks[0].get("options") or []
+        names = {re.sub(r"\s+invoice$", "", _norm(str(o)).lower()) for o in options}
+        if len(options) != 2 or names != ASK_OPTIONS:
+            return False, "buttons are not the two invoices"
+        question = _norm(str(asks[0].get("question", "")))
+        head = _ANSWER_HEAD.match(question)
+        q = question[head.end():] if head is not None else question
+        ok = _is_which_question(q) and strips_to_silence(reply)
+        return ok, "relayed, then asked" if ok else "question not the delegate's"
+    ok = _is_which_question(_norm(reply))
+    return ok, "relayed, then put the question" if ok else "reply holds more than the question"
 
 
 async def _run(variant: str, runs: int) -> bool:

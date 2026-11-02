@@ -213,6 +213,20 @@ def _response_shape_body(role: RoleSlot, surface: str) -> str:
     return "\n".join(lines)
 
 
+_SURFACE_SECTIONS = {
+    "text": ("Core doctrine", "Text projection"),
+    "voice": ("Core doctrine", "Voice projection"),
+    "restricted_webhook": ("Core doctrine", "Restricted webhook projection"),
+}
+
+
+def doctrine_for_surface(doctrine: str, surface: str) -> str:
+    """The part of *doctrine* a *surface*'s projection carries: its core and its own
+    projection section, every other projection subtree excluded (#355)."""
+    return select_markdown_sections(doctrine, _SURFACE_SECTIONS[surface],
+                                    exclude=_PROJECTION_HEADINGS)
+
+
 def compile_projection_set(
     *, role: RoleSlot, persona, platform_frame: str, safety_kernel: str,
 ) -> dict[str, CompiledProjection]:
@@ -224,11 +238,7 @@ def compile_projection_set(
         # surface's instructions into every projection (and the selected
         # surface twice). Excluding ALL projection subtrees scopes Core to
         # the shared text; the surface's own section is selected separately.
-        doctrine = select_markdown_sections(role.doctrine, {
-            "text": ("Core doctrine", "Text projection"),
-            "voice": ("Core doctrine", "Voice projection"),
-            "restricted_webhook": ("Core doctrine", "Restricted webhook projection"),
-        }[surface], exclude=_PROJECTION_HEADINGS)
+        doctrine = doctrine_for_surface(role.doctrine, surface)
         parts = [
             ("platform_frame", canonical_text(platform_frame)),
             ("role_identity", f"id: {role.role_id}\nkind: {role.kind}\nmission: {role.mission}\n"),

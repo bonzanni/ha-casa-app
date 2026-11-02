@@ -1133,12 +1133,12 @@ def verify(repo_root: Path, base: str | None = None) -> list[str]:
 
         parts = Path(doc).parts
         top = parts[0] if len(parts) > 1 else ""
-        if top == "manifest.d":
-            # #367: manifest shards only. A document hidden here would escape
-            # the routing table and the generated index.
+        if top in ("manifest.d", "coverage.d"):
+            # #367: manifest (and coverage ledger) shards only. A document hidden here
+            # would escape the routing table and the generated index.
             if kind in DOCUMENT_KINDS:
                 problems.append(
-                    f"{doc}: manifest.d/ holds manifest shards only — a document "
+                    f"{doc}: {top}/ holds index shards only — a document "
                     f"must live under one of {', '.join(sorted(ALLOWED_TOP_DIRS))}/"
                 )
         elif top and top not in ALLOWED_TOP_DIRS:

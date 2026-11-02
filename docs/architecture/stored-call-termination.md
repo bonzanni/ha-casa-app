@@ -38,7 +38,9 @@ descendants (SIGKILL), seals its own hook callbacks — a callback entering afte
 no effect; one already inside is drained — waits for every pidfd under 10 s, discards the
 confirmed-dead CLI from the SDK's reaper set, and only then releases the desk and the
 permit. A receipt captured during the hold is still posted — or, for a tap that answered
-`in_place`, shown as the edited card ([`stored-call-next-card.md`](stored-call-next-card.md)).
+`in_place`, shown as the edited card ([`stored-call-next-card.md`](stored-call-next-card.md)),
+and for a receipt marked `on_card`, written as the card's last line when that edit lands
+(posted as before when it does not; [`plugin-result-contract.md`](plugin-result-contract.md)).
 
 **One release path.** Every end of a pinned run — the normal end, the ceiling and a
 cancellation (a Casa stop cancels the turn's task) — goes through one settle function, run

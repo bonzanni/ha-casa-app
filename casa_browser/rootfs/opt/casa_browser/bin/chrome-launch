@@ -1,0 +1,9 @@
+#!/opt/venv/bin/python
+"""The "browser executable" Patchright starts in the controller: it hands its descriptors to
+the browser user's launcher, which runs Chrome (see casa_browser/launcher.py)."""
+import sys
+
+sys.path.insert(0, "/opt")
+from casa_browser.launcher import client_main  # noqa: E402
+
+raise SystemExit(client_main(sys.argv))

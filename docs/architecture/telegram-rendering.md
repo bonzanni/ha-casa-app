@@ -57,7 +57,10 @@ display that would not fit one message is not used and the text goes out as auth
 of a single message. A text whose spans exist but cannot be sent is different: it is over the
 length or entity budget, or it cannot be converted. Its markers are the only record of its
 formatting and of its link addresses, so it goes out as authored. The once-only retry after
-the platform refuses a message's entities also sends the authored text, as described next.
+the platform refuses a message's entities also sends the authored text, as described next —
+except a photo card's caption, whose retry sends its rendered display without entities (the
+authored markers could push it past the caption limit), so a link in a caption can lose its
+address there.
 
 **A page whose formatting is refused, or cannot be expressed, still carries its link
 destinations.** Formatting fails in two ways. The platform can REFUSE a message's
@@ -131,7 +134,8 @@ no-entities branch uses.
 
 What it does not cover: a text whose spans exist but cannot be sent (over the budgets, or
 not convertible), which goes out as authored; the retry after the platform refuses a
-message's entities, which re-sends the authored text; and the plain transports used for
+message's entities, which re-sends the authored text (a photo card's caption re-sends its
+rendered display instead); and the plain transports used for
 tool output, notices and error text, which never parse markdown.
 
 ## Failure behavior

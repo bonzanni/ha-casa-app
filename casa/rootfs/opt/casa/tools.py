@@ -390,6 +390,166 @@ async def send_message(args: dict) -> dict:
     return _text_result(f"Message sent via {channel}.")
 
 
+def _proven_unsent(exc: BaseException) -> bool:
+    """Slice 5l r1: a send failure that proves nothing reached Telegram — a
+    server refusal, or a request that never connected (the channel's own
+    taxonomy). A lost acknowledgement (a read timeout, a network error after
+    the request went out) proves nothing and is not this."""
+    try:
+        from telegram.error import TelegramError
+        from channels.telegram import _SERVER_REFUSALS, _established_unsent
+    except Exception:  # noqa: BLE001 — no transport taxonomy: prove nothing
+        return False
+    return isinstance(exc, TelegramError) and (
+        isinstance(exc, _SERVER_REFUSALS) or _established_unsent(exc))
+
+
+def _relay_operator_for(ch: Any, chat_id: Any) -> "int | None":
+    """The operator a relayed post is filed under when the origin names none:
+    the configured operator, and only when the post's chat resolves to that
+    operator's own DM."""
+    try:
+        from channels.telegram import _resolve_chat_id
+        from trigger_consent import operator_identity
+        op = operator_identity(ch)
+        target = _resolve_chat_id({"chat_id": chat_id}, getattr(ch, "chat_id", ""))
+        if op is not None and str(target) == str(op[0]):
+            return op[1]
+    except Exception:  # noqa: BLE001 — no record is the plain-reply fallback
+        logger.warning("relay_answer: operator not resolved", exc_info=True)
+    return None
+
+
+_RELAY_PASS_ON_YOURSELF = (
+    "pass it on yourself in the delegate's own words, introduced only by its "
+    "name")
+
+
+@tool(
+    "relay_answer",
+    "Pass a delegate's answer on to the person: Casa posts the delegate's "
+    "answer — the message it closed its turn with, whole and in its own words, "
+    "never what it wrote before — in the person's chat under the delegate's name "
+    "(the header its own posts carry). Give the delegation_id the delegation "
+    "result or notification names. Posted once; then reply only with what you "
+    "add of your own, or with exactly <silent/>.",
+    {"delegation_id": str},
+)
+async def relay_answer(args: dict) -> dict:
+    """Slice 5l: post a held delegate answer verbatim as ``📊 <name>`` + the
+    words, once. The resident decides whether; code checks only mechanical
+    facts — the id is held for this conversation and not yet posted."""
+    import result_broker as _rb
+
+    _did = args.get("delegation_id")
+    did = _did.strip() if isinstance(_did, str) else ""
+    origin = _snapshot_origin()
+    scope = _current_scope(origin)
+    if scope is None:
+        return _text_result(f"Error: {_NO_SCOPE_MESSAGE}.", is_error=True)
+    if scope.delivers_to_operator:
+        return _text_result(f"Error: {_DELIVERS_TO_OPERATOR_REFUSAL}.",
+                            is_error=True)
+    entry = _RELAYABLE.get(did) if did else None
+    if entry is None:
+        return _text_result(
+            f"Error: no answer is held for that delegation id; "
+            f"{_RELAY_PASS_ON_YOURSELF}.", is_error=True)
+    if (str(origin.get("chat_id")) != str(entry.chat_id)
+            or str(origin.get("role") or "") != entry.resident_role):
+        return _text_result(
+            "Error: that answer belongs to another conversation; nothing was "
+            "posted.", is_error=True)
+    name = entry.name or _display_name_for_role(entry.role)
+    if entry.state != "held":
+        return _text_result(
+            f"{name}'s answer is already posted; do not post or retell it "
+            f"again. {RELAY_SILENCE_NOTE.format(name=name)}")
+    if entry.incomplete:
+        return _text_result(
+            f"Error: {name}'s answer was cut off before it finished, so it is not "
+            f"posted under its name; {_RELAY_PASS_ON_YOURSELF}, and say it was "
+            "cut off.", is_error=True)
+    if entry.approval_waiting:
+        # parity with the #1252 cut: the resident's words after this delegate
+        # are withheld while its call waits on the operator; so is the answer
+        return _text_result(
+            "Error: the person sees the approval request this work is waiting "
+            "on; this answer is not posted.", is_error=True)
+    ch = _channel_manager.get("telegram") if _channel_manager is not None else None
+    if ch is None or getattr(ch, "send_response", None) is None:
+        return _text_result(
+            f"Error: the Telegram channel is unavailable, so the answer did NOT "
+            f"reach the person; {_RELAY_PASS_ON_YOURSELF}.", is_error=True)
+
+    entry.state = "posting"          # claimed before the first await
+    # Admit the LABELLED text: a Casa line the admission prepends sits above
+    # the delegate's header, never under it (design d1, Astra S1).
+    admitted = scope.admit(IntentKind.DISCRETE,
+                           f"{entry.label or _rb.post_label(entry.role)}\n{entry.text}")
+    owner = f"relay:{did}"
+    try:
+        operator_id = int(entry.operator_id)
+    except (TypeError, ValueError):
+        operator_id = None
+    if operator_id is None:
+        # r4, Astra S2: a scheduled turn's origin carries a session label, not
+        # the operator — its post lands in the configured operator DM, so it
+        # is filed under that operator, as any DM relay is
+        operator_id = _relay_operator_for(ch, entry.chat_id)
+    # a swipe-reply on it reaches the delegate's desk, as on its own posts
+    post = (_rb.PostRecord(role=entry.role, operator_id=operator_id, plugin="",
+                           slot="relay", tool_use_id=did, owner=owner,
+                           posted_at=time.time(), kind="relayed_answer")
+            if operator_id is not None else None)
+    ctx: dict[str, Any] = {"chat_id": entry.chat_id, "cid": owner}
+    if post is not None:
+        ctx["_post"] = post
+
+    def _landed() -> bool:
+        return bool(ctx.get("_delivery_head_sent")) or (
+            post is not None and any(r is post for r in _rb.POST_MAP.owned(owner)))
+
+    try:
+        outcome = await ch.send_response(admitted, ctx)
+    except asyncio.CancelledError:
+        # a cancel mid-send may follow a request Telegram accepted: not retried
+        _mark_posted(entry)
+        raise
+    except Exception as exc:  # noqa: BLE001 — a send fault is a tool result
+        logger.warning("relay_answer: send failed: %s", type(exc).__name__)
+        if not _landed() and _proven_unsent(exc):
+            # refused, or never connected: nothing reached the person
+            entry.state = "held"
+            return _text_result(
+                f"Error: {name}'s answer did NOT reach the person "
+                f"({type(exc).__name__}); call relay_answer once more, and if "
+                f"that fails too, {_RELAY_PASS_ON_YOURSELF}.", is_error=True)
+        # a page landed, or a lost acknowledgement (Telegram may have shown
+        # it): never posted again, so the person never sees it twice
+        _mark_posted(entry)
+        return _text_result(
+            f"Error: delivery of {name}'s answer could not be confirmed "
+            f"({type(exc).__name__}); it may well have reached the person. Do "
+            "not post or retell it unless they say they did not get it.",
+            is_error=True)
+    if outcome is DeliveryOutcome.NOT_DELIVERED and not _landed():
+        entry.state = "held"
+        return _text_result(
+            f"Error: {name}'s answer did NOT reach the person; call "
+            f"relay_answer once more, and if that fails too, "
+            f"{_RELAY_PASS_ON_YOURSELF}.", is_error=True)
+    _mark_posted(entry)
+    if outcome is DeliveryOutcome.DELIVERED:
+        admitted.mark_delivered()
+    note = RELAY_SILENCE_NOTE.format(name=name)
+    if admitted.annotations:
+        lines = "”, “".join(admitted.annotations)
+        return _text_result(
+            f"Posted {name}'s answer. Casa prefixed: “{lines}” {note}")
+    return _text_result(f"Posted {name}'s answer. {note}")
+
+
 # ---------------------------------------------------------------------------
 # send_media — reusable agent->channel media delivery (v0.73.0, spec §3).
 # ---------------------------------------------------------------------------
@@ -467,35 +627,53 @@ HANDOFF_SHOWN_NOTE = (
     "announce or repeat the hand-off. If you have nothing else for them, reply "
     "with exactly <silent/>.)")
 
+# Slice 5f: a sync delegation that outlives its 60 s wait goes pending after the
+# person already saw the hand-off line (and often a card the specialist posted).
+# Said explicitly, since the doctrine's own pending rule asks for a holding line:
+# measured on casa-test, the plain HANDOFF_SHOWN_NOTE left it in 2 of 10 runs.
+PENDING_HANDOFF_SHOWN_NOTE = (
+    "(Casa: the person is shown a line saying this was passed to {name}, so they "
+    "are not waiting in silence: do not say that it is still running, and do not "
+    "announce or repeat the hand-off. If you have nothing else for them, reply "
+    "with exactly <silent/>.)")
+
 _handoff_line_tasks: set[asyncio.Task[Any]] = set()
 
 
-def _post_handoff_line(origin: dict, line: str) -> bool:
+def _post_handoff_line(origin: dict, line: str) -> "asyncio.Task[bool] | None":
     """#1350: post ``line`` — a past-tense record of a hand-off that has
     already happened — to the chat of the operator's own Telegram turn,
     silently, without awaiting it. Only a live operator turn (not an
     engagement's, a delegated, a scheduled or a notice turn: the spawn cap's
-    ``_is_agent_context``) on Telegram gets one. Returns whether it was
-    spawned; a send failure is logged and nothing more happens."""
+    ``_is_agent_context``) on Telegram gets one. Returns the spawned send
+    (truthy) or None; the send's result says whether the line was posted
+    (slice 5f reads it), and a failure is logged and nothing more happens."""
     origin = origin or {}
     if str(origin.get("channel", "")) != "telegram" or _is_agent_context(origin):
-        return False
+        return None
     chat_id = origin.get("chat_id")
     channel = _channel_manager.get("telegram") if _channel_manager is not None else None
     send = getattr(channel, "send_handoff_line", None)
     if chat_id in (None, "") or send is None:
-        return False
+        return None
 
-    async def _post() -> None:
+    async def _post() -> bool:
         try:
-            await asyncio.wait_for(send(chat_id, line), 10.0)
+            return await asyncio.wait_for(send(chat_id, line), 10.0) is True
         except Exception as exc:  # noqa: BLE001 — a status line is never the work's fault
             logger.info("hand-off line not posted: %s", type(exc).__name__)
+            return False
 
     task = asyncio.ensure_future(_post())
     _handoff_line_tasks.add(task)
     task.add_done_callback(_handoff_line_tasks.discard)
-    return True
+    return task
+
+
+def _handoff_line_posted(task: "asyncio.Task[bool] | None") -> bool:
+    """Slice 5f: whether the hand-off send has finished and posted the line."""
+    return (isinstance(task, asyncio.Future) and task.done() and not task.cancelled()
+            and task.result() is True)
 
 
 def _with_post_echo_payload(payload: dict, owner: str) -> dict:
@@ -517,6 +695,160 @@ def _with_post_echo(text: str, owner: str) -> str:
     if not lines:
         return text
     return (f"{text}\n\n" if text else "") + "\n".join([*lines, POST_ECHO_SILENCE_NOTE])
+
+
+# ---------------------------------------------------------------------------
+# Slice 5l: a delegate's answer, posted by Casa under the delegate's header.
+# The resident chooses whether to pass an answer on; Casa posts the delegate's
+# answer — the message it closed its turn with (5p) — verbatim, once, as `📊 <name>` + the words — the same header a
+# specialist's own posts carry. Held memory-only, per delegation id.
+# ---------------------------------------------------------------------------
+
+RELAY_HELD_MAX = 256
+# a posted entry keeps only its id, name and state (its words are dropped), so
+# a later call learns it was posted; bounded far above any chat's pace
+RELAY_SPENT_MAX = 10_000
+
+RELAY_HINT = (
+    "(Casa: to pass this answer on to the person, call relay_answer with "
+    "delegation_id {id}; Casa posts it under {name}'s name.)")
+
+RELAY_SILENCE_NOTE = (
+    "(Casa: the person now sees {name}'s answer under its name in their chat. "
+    "Do not repeat or retell it. If you have nothing of your own to add, reply "
+    "with exactly <silent/>.)")
+
+
+# Slice 5t: the note a delegation result or notice carries when the delegate
+# closed its turn with `<silent/>` (casa-test 2026-11-01: Fido posted a start
+# card, narrated a line, closed silent; the assistant read the narration as
+# progress and wrote "Fido is still on it."). The delegate's closing silence is
+# its answer to the person: nothing.
+SILENT_CLOSE_NOTE = (
+    "(Casa: {name} closed its turn with <silent/>: it has nothing for the person "
+    "now, and what it wrote before that is not for them. Do not pass it on, "
+    "narrate it, or say {name} is still working. If you have nothing else for "
+    "them, reply with exactly <silent/>.)")
+
+
+def _with_silent_close_note(text: str, output: "DelegatedOutput", role: str) -> str:
+    """Slice 5t: *text* with :data:`SILENT_CLOSE_NOTE` after it when the
+    delegate's closing message (:func:`_relay_words`) is silence with a
+    sentinel in it — the same message whose silence holds nothing for relay.
+    An empty closing message is not a closing silence. Never raises."""
+    from output_boundary import SILENCE_SENTINEL, strips_to_silence
+    try:
+        words = _relay_words(output)
+        if SILENCE_SENTINEL not in words or not strips_to_silence(words):
+            return text
+        note = SILENT_CLOSE_NOTE.format(name=_display_name_for_role(role))
+        return f"{text}\n\n{note}" if text else note
+    except Exception:  # noqa: BLE001 — a steer, never the work's fault
+        logger.warning("silent-close note not added", exc_info=True)
+        return text
+
+
+@dataclass
+class Relayable:
+    """One delegate answer the resident may pass on: the delegate's bounded
+    words (never Casa's echo lines or notes), whose answer it is, and the
+    conversation it belongs to. ``state`` is ``held`` → ``posting`` →
+    ``posted``; a send that landed nothing returns it to ``held``."""
+    delegation_id: str
+    role: str
+    resident_role: str
+    chat_id: Any
+    operator_id: Any
+    text: str
+    approval_waiting: bool = False
+    # r6 (Terra S1): an answer the run did not finish (`answer_incomplete`,
+    # e.g. cut off at max_tokens) is never banked, so it is not offered for
+    # relay either: the resident passes it on herself and can say so
+    incomplete: bool = False
+    state: str = "held"
+    # the header and name as they stood when the delegate wrote the answer
+    # (r1, Terra S1: a reload or persona change before the relay must not
+    # put another name over these words)
+    label: str = ""
+    name: str = ""
+
+
+_RELAYABLE: "OrderedDict[str, Relayable]" = OrderedDict()
+
+
+def _relay_words(output: "DelegatedOutput") -> str:
+    """Slice 5p: the answer a delegate closed its turn with — its last
+    text-bearing message, bounded — never the narration it wrote between tool
+    calls. A closing ``<silent/>`` is that message, so a turn of narration
+    then silence offers nothing (the #1075 closing-silence rule, judged on the
+    last message alone). Never raises — holding is never the work's fault:
+    an output it cannot read offers nothing."""
+    try:
+        final = getattr(output, "final_message", None)
+        words = output.text if final is None else final
+        return specialist_limits.truncate_output(words)[0] if isinstance(words, str) else ""
+    except Exception:  # noqa: BLE001
+        logger.warning("delegate answer not read for relay", exc_info=True)
+        return ""
+
+
+def _hold_answer(delegation_id: str, role: str, origin: dict, text: str, *,
+                 approval_waiting: bool = False, incomplete: bool = False) -> bool:
+    """Hold *text* — the delegate's bounded closing message
+    (:func:`_relay_words`), never Casa's echo — for ``relay_answer``, when the
+    delegating turn was a resident's own turn on Telegram (a chat to post to,
+    no delegation depth) and the message is not silence. A sentinel beside its
+    words is dropped, the words held (#1342). Returns whether it was held AND
+    is offered for relay (not while an approval waits, not for an unfinished
+    answer). Never raises."""
+    from output_boundary import strips_to_silence, without_sentinels
+    try:
+        origin = origin or {}
+        if str(origin.get("channel", "")) != "telegram":
+            return False
+        chat_id = origin.get("chat_id")
+        if chat_id in (None, "") or int(origin.get("delegation_depth") or 0) > 0:
+            return False
+        if not isinstance(text, str) or strips_to_silence(text):
+            return False
+        text = without_sentinels(text)
+        import result_broker as _rb
+        _RELAYABLE[delegation_id] = Relayable(
+            delegation_id=delegation_id, role=role,
+            resident_role=str(origin.get("role") or ""), chat_id=chat_id,
+            operator_id=origin.get("user_id"), text=text,
+            approval_waiting=approval_waiting, incomplete=incomplete,
+            label=_rb.post_label(role),
+            name=_display_name_for_role(role))
+        _RELAYABLE.move_to_end(delegation_id)
+        _evict_relayable()
+        return not (approval_waiting or incomplete)   # offered for relay
+    except Exception:  # noqa: BLE001 — holding is a convenience, never the work's fault
+        logger.warning("delegate answer not held for relay", exc_info=True)
+        return False
+
+
+def _evict_relayable() -> None:
+    """Only a never-posted answer is ever evicted (oldest first), so a call for
+    an id Casa forgot is one whose answer the person has not seen — the
+    hand-passed fallback is then right (r1 Terra, r2 Astra: evicting an
+    in-flight or posted entry made the fallback a duplicate). Posted entries
+    keep no words and are bounded separately, far above any chat's pace."""
+    held = [k for k, e in _RELAYABLE.items() if e.state == "held"]
+    for key in held[:max(0, len(held) - RELAY_HELD_MAX)]:
+        del _RELAYABLE[key]
+    spent = [k for k, e in _RELAYABLE.items() if e.state == "posted"]
+    for key in spent[:max(0, len(spent) - RELAY_SPENT_MAX)]:
+        del _RELAYABLE[key]
+
+
+def _mark_posted(entry: "Relayable") -> None:
+    entry.state = "posted"
+    entry.text = ""
+
+
+def _relay_hint(delegation_id: str, role: str) -> str:
+    return RELAY_HINT.format(id=delegation_id, name=_display_name_for_role(role))
 
 
 async def _classify_send(ch, content, kind, filename, origin, caption) -> dict:
@@ -3326,6 +3658,11 @@ class DelegatedOutput:
     # closing-silence rule. Empty from a producer that does not report them,
     # which leaves the reply judged on its whole text.
     reply_messages: tuple[str, ...] = ()
+    # Slice 5p: the last text-bearing message of the turn, whole — never cut
+    # by #1252 — the answer the delegate closed its turn with; what Casa holds
+    # for relay_answer. ``None`` from a producer that does not report its
+    # messages, whose whole text is then that one message.
+    final_message: str | None = field(default=None, compare=False)
 
     @property
     def run_aborted(self) -> bool:
@@ -4408,6 +4745,7 @@ async def _run_delegated_agent(
         ),
         tool_calls=dict(tool_counts or {}),
         reply_messages=tuple(messages),
+        final_message=messages[-1] if messages else "",
     )
 
     # Cluster S (#709): a terminal result that carries `is_error=True` or a
@@ -4806,9 +5144,17 @@ def _attach_completion_callback(
                         "(spec §4.6)", record.agent, len(text),
                         specialist_limits._MAX_OUTPUT_CHARS,
                     )
+                # Slice 5l: the delegate's words alone — its closing message
+                # (5p) — held for relay_answer, never Casa's echo. No approval
+                # refusal here: a notification has no #1252 cut, and relaying
+                # keeps parity.
+                relayable = _hold_answer(record.id, record.agent,
+                                         record.origin, _relay_words(output),
+                                         incomplete=bool(output.answer_incomplete))
                 # S3 §6: the echo rides the notice, after the bounded answer
                 # (Casa's lines are not the delegate's text the cap bounds).
                 bounded = _with_post_echo(bounded, record.id)
+                bounded = _with_silent_close_note(bounded, output, record.agent)
                 complete = DelegationComplete(
                     delegation_id=record.id,
                     agent=record.agent,
@@ -4817,6 +5163,7 @@ def _attach_completion_callback(
                     origin=record.origin,
                     elapsed_s=time.time() - record.started_at,
                     output_truncated=output_truncated,
+                    relayable=relayable,
                 )
                 settle = _complete_delegation_durably(record.id, bounded)
         except Exception as exc:
@@ -5183,6 +5530,28 @@ def _log_delegation_denial(caller_role: str, agent_name: str,
     )
 
 
+def _continues_its_own_work(cfg, resolution=None) -> bool:
+    """Whether a plugin resolved for *cfg* (*resolution*, else resolved now)
+    declares ``casa.driverSweep``: its runs outlive a turn and are carried on
+    by continuation turns of *cfg* (``plugin_continuations``). A resolution or
+    declaration that cannot be read answers False, as the sweep then sweeps
+    nothing."""
+    from plugin_store import manifest_driver_sweep
+    try:
+        plugins = (resolution if resolution is not None
+                   else _delegated_resolution(cfg)).plugins
+    except Exception:  # noqa: BLE001
+        return False
+    for rp in plugins:
+        manifest = rp.manifest if isinstance(getattr(rp, "manifest", None), dict) else {}
+        try:
+            if manifest_driver_sweep(manifest):
+                return True
+        except Exception:  # noqa: BLE001 — an invalid declaration sweeps nothing
+            continue
+    return False
+
+
 async def _requires_gate(agent_name: str, cfg) -> tuple[Any, "dict | None"]:
     """The A5 requires gate, shared by ``_prelaunch`` and ``hand_off``:
     ``(resolution, None)`` — ``resolution`` ``None`` when ``cfg`` declares no
@@ -5268,6 +5637,7 @@ async def _prelaunch(
         depth cap -> mode gate (voice; setup turns sync-only, #1015) ->
         target resolution ->
         resident-interactive-compat -> requires (Task 5) ->
+        continued-work-interactive ->
         concurrency (Task 6, spec §4.6) -> progress -> launch
 
     The input-size bounds run AFTER the ACL (so an unauthorized caller is
@@ -5544,6 +5914,29 @@ async def _prelaunch(
     resolution, _requires_error = await _requires_gate(agent_name, cfg)
     if _requires_error is not None:
         return None, None, None, None, _requires_error
+
+    # A specialist whose plugin's work outlives a turn (it declares
+    # ``casa.driverSweep``) is carried on by continuation turns of its own,
+    # whose answers reach the resident's DM, and it asks the person itself
+    # with its own cards — so it is never engaged in a topic. Read from the
+    # declaration, never from a role name — the requires gate's resolution
+    # when it took one. A job launch (the job start stamps ``plugin_job``
+    # first, for the resident's start and the specialist's own alike) is not
+    # a delegation and is not refused here.
+    if (mode == "interactive" and "plugin_job" not in (origin or {})
+            and await asyncio.to_thread(_continues_its_own_work, cfg, resolution)):
+        _name = _display_name_for_role(agent_name)
+        return None, None, None, None, _result({
+            "status": "error",
+            "kind": "interactive_not_supported",
+            "message": (
+                f"{_name} is not engaged in a topic: its work outlives one turn "
+                f"and is carried on in its own later turns, and {_name} asks the "
+                "person itself, with its own cards in this chat, whenever it "
+                "needs them. Delegate the whole task once with mode='sync', also "
+                "when the person asked to be asked first."
+            ),
+        })
 
     # Task 6 concurrency gate (spec §4.6): AFTER requires, BEFORE progress —
     # a denied gate must never speak the "checking" line, and a delegation
@@ -7724,6 +8117,8 @@ async def delegate_to_agent(args: dict) -> dict:
                     "Delegation %s → %s timed out at 60s — degraded to pending",
                     delegation_id[:8], agent_name,
                 )
+                # Slice 5f: the person already sees the hand-off line, so no
+                # "still on it" line under it (or under a card it posted).
                 return _result({
                     "status": "pending",
                     "delegation_id": delegation_id,
@@ -7732,6 +8127,8 @@ async def delegate_to_agent(args: dict) -> dict:
                     "note": (
                         "Delegation continues in background; you will receive a "
                         "NOTIFICATION when complete."
+                        + (" " + PENDING_HANDOFF_SHOWN_NOTE.format(name=_handoff_name)
+                           if _handoff_line_posted(_handoff_shown) else "")
                     ),
                     **({"casa_note": _note} if _note else {}),
                 })
@@ -7920,9 +8317,21 @@ async def delegate_to_agent(args: dict) -> dict:
                 "delegated agent %s output truncated: %d > %d chars (spec §4.6)",
                 agent_name, original_text_length, specialist_limits._MAX_OUTPUT_CHARS,
             )
+        # Slice 5l: the delegate's words alone — its closing message (5p),
+        # bounded, never Casa's echo lines — are held for relay_answer; a voice
+        # run holds nothing. The child's approval wait is read HERE: the
+        # resident's fold pops `delegated_approvals` at this result, before
+        # any later call of hers.
+        _held = (not is_voice) and _hold_answer(
+            delegation_id, agent_name, origin, _relay_words(delegated_output),
+            approval_waiting=bool(isinstance(_child_scope, TurnScope)
+                                  and _child_scope.approval_waiting),
+            incomplete=bool(delegated_output.answer_incomplete))
         # S3 §6: what the plugin posted under this delegation, as body-free
         # Casa lines after the answer (after the cap: not the delegate's text).
         text = _with_post_echo(text, delegation_id)
+        if not is_voice:
+            text = _with_silent_close_note(text, delegated_output, agent_name)
         if not is_voice:
             # #321: the specialist's work is DONE and its answer is in hand —
             # a failed terminal snapshot write must not raise it away (the
@@ -7959,6 +8368,9 @@ async def delegate_to_agent(args: dict) -> dict:
             "elapsed_s": elapsed,
             "text": text,
             "output_truncated": output_truncated,
+            # not advertised while the child's approval waits or for an
+            # unfinished answer: relay refuses both
+            **({"relay": _relay_hint(delegation_id, agent_name)} if _held else {}),
             **voice_meta,
         })
     finally:
@@ -18097,6 +18509,16 @@ def _pending_resume_inputs(inspection, receipt, *, tool_name: str) -> dict:
             "root_digest": inspection.root_digest, "tool": tool_name}
 
 
+def _activation_error_disclosure(instance) -> dict:
+    """The library's own reason a commit did not activate cleanly — an upgrade
+    whose prompt compile failed (state "error"), a pending-configuration
+    candidate's missing names, operational files left to reconcile — passed
+    through verbatim. Without it the configurator saw state "error" and
+    nothing to tell the operator (2026-11-01)."""
+    error = instance.last_activation_error
+    return {"last_activation_error": error} if error else {}
+
+
 @tool(
     "specialist_install_commit",
     "Persist an INSPECTED specialist component to CAS, compile, and activate it — REFUSES unless "
@@ -18203,6 +18625,7 @@ async def specialist_install_commit(args: dict) -> dict:
         return {"ok": True, "slug": instance.slug, "state": instance.state,
                 "activation_committed": instance.state == "active",
                 "reloaded": seq["reloaded"], "verify": seq["verify"],
+                **_activation_error_disclosure(instance),
                 # #499: parity with plugin_add's required_env_vars — the
                 # bundled plugins' declared env names, per plugin, so the
                 # install recipe wires them in THIS engagement instead of
@@ -18363,6 +18786,7 @@ async def specialist_upgrade(args: dict) -> dict:
             specialist_install_mod.reclaim_staging_tree(staged_dir)
         return {"ok": True, "slug": instance.slug, "state": instance.state,
                 "reloaded": seq["reloaded"], "verify": seq["verify"],
+                **_activation_error_disclosure(instance),
                 # #929: parity with specialist_install_commit — an upgrade that
                 # lands pending-configuration keeps its receipt and staging
                 # tree, and names the five inputs the follow-up re-commit takes.
@@ -22046,6 +22470,7 @@ async def persona_ack_revoke(args: dict) -> dict:
 # transports automatically.
 CASA_TOOLS: tuple = (
     send_message,
+    relay_answer,                  # slice 5l — a delegate's answer under its header
     send_media,
     react,
     ask_user,
@@ -22200,7 +22625,8 @@ del _tool_obj
 # SendAttempt on the scope it commits under, because a send refused before
 # admission opens no OperatorSend at all — and a buffered turn that closes in
 # `<silent/>` may drop its earlier text only when every send it tried went out.
-_ACCOUNTED_SENDS = frozenset({"send_message", "send_media", "ask_user"})
+_ACCOUNTED_SENDS = frozenset({"send_message", "send_media", "ask_user",
+                              "relay_answer"})
 
 
 def _account_send_attempts(tool_obj) -> None:

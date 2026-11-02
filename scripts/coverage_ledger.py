@@ -435,21 +435,48 @@ def enumerate_items(repo_root: Path) -> list[str]:
 # --- the check ------------------------------------------------------------------------
 
 def _load_ledger(repo_root: Path) -> tuple[list[dict], list[str]]:
-    path = repo_root / "docs" / "coverage.yaml"
-    try:
-        raw = yaml.safe_load(path.read_text())
-    except OSError:
-        return [], ["docs/coverage.yaml is missing — the coverage ledger is mandatory"]
-    except yaml.YAMLError as exc:
-        return [], [f"docs/coverage.yaml is not valid YAML: {exc}"]
-    if not isinstance(raw, list):
-        return [], ["docs/coverage.yaml must be a list of entries"]
+    """The root ``docs/coverage.yaml`` plus every ``docs/coverage.d/*.yaml`` shard (the ledger
+    shards at its index ceiling, as the manifest does); every entry counts the same wherever
+    it sits, and an item listed in two places is refused like one listed twice."""
+    docs_dir = repo_root / "docs"
+    path = docs_dir / "coverage.yaml"
     entries, problems = [], []
-    for index, entry in enumerate(raw):
-        if not isinstance(entry, dict) or not isinstance(entry.get("item"), str):
-            problems.append(f"coverage entry {index} is not a mapping with a string `item`")
+    shard_dir = docs_dir / "coverage.d"
+    shards: list[Path] = []
+    if shard_dir.exists() or shard_dir.is_symlink():
+        # Listed with an operation that raises, unlike glob: an unreadable shard directory is
+        # a problem, never an empty set of shards.
+        # Nothing in the shard directory is skipped silently: every entry is a .yaml file
+        # (symlinks followed) that is loaded, or a reported problem.
+        try:
+            for entry in sorted(shard_dir.iterdir()):
+                if entry.is_file() and entry.name.endswith(".yaml"):
+                    shards.append(entry)
+                else:
+                    problems.append(f"docs/coverage.d/{entry.name} is not a .yaml ledger shard")
+        except OSError:
+            problems.append("docs/coverage.d is unreadable")
+    sources = [path] + shards
+    for source in sources:
+        name = source.relative_to(repo_root).as_posix()
+        try:
+            raw = yaml.safe_load(source.read_text())
+        except OSError:
+            if source == path:
+                return [], ["docs/coverage.yaml is missing — the coverage ledger is mandatory"]
+            problems.append(f"{name} is unreadable")
             continue
-        entries.append(entry)
+        except yaml.YAMLError as exc:
+            problems.append(f"{name} is not valid YAML: {exc}")
+            continue
+        if not isinstance(raw, list):
+            problems.append(f"{name} must be a list of entries")
+            continue
+        for index, entry in enumerate(raw):
+            if not isinstance(entry, dict) or not isinstance(entry.get("item"), str):
+                problems.append(f"{name}: coverage entry {index} is not a mapping with a string `item`")
+                continue
+            entries.append(entry)
     return entries, problems
 
 

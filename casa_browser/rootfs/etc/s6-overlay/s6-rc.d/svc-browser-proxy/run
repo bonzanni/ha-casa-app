@@ -1,0 +1,21 @@
+#!/command/with-contenv bash
+# The enforcing TLS proxy (casa-proxy). /run/casa-browser/proxy holds the control socket
+# (peer-checked); /run/casa-browser/proxy-private (0700, made by root bootstrap) the per-boot
+# CA key and the account host. Only the CA's public certificate is exported.
+# The environment is reduced to an allowlist before the privilege drop. The process runs under
+# a 1 GiB data limit (RLIMIT_DATA: private writable mappings, used or not; the inaccessible
+# reservations each resolver thread's malloc arena makes fall outside it, so unlike an
+# address-space cap it does not break ordinary browsing) with two
+# malloc arenas and a fixed mmap threshold (a freed request body goes back to the system at
+# once; glibc's moving threshold let the data segment ratchet up under repeated uploads). A
+# buffer mitmproxy grows without a bound of its own (docs/reference/casa-browser.md, "Known
+# limits") ends at the limit: the proxy exits on its first MemoryError and s6 restarts it
+# holding no policy, instead of pressing the host.
+set -euo pipefail
+install -d -o root -g root -m 0755 /run/casa-browser/ca
+install -d -o casa-proxy -g casa-proxy -m 0755 /run/casa-browser/proxy
+chown casa-proxy:casa-proxy /run/casa-browser/ca
+exec env -i PATH=/command:/usr/bin:/bin TZ="${TZ:-UTC}" LANG=C.UTF-8 PYTHONPATH=/opt \
+  HOME=/run/casa-browser/proxy MALLOC_ARENA_MAX=2 MALLOC_MMAP_THRESHOLD_=262144 \
+  prlimit --data=1073741824 \
+  s6-setuidgid casa-proxy /opt/venv/bin/python -m casa_browser.proxy_main

@@ -1,0 +1,48 @@
+name: "Casa Browser"
+description: "A sandboxed browser that Casa's browsing specialist drives on your registered sites and the open web"
+version: "0.1.0"
+slug: casa_browser
+url: https://github.com/bonzanni/ha-casa-app
+image: "ghcr.io/bonzanni/casa_browser"
+stage: experimental
+init: false
+arch:
+  - amd64
+# The one Home Assistant permission: root bootstrap reads HA's configured language from
+# the Core API once per start. No Supervisor API, no host network, no port mapping, no
+# shared folders. NET_ADMIN lets root init install the fixed egress firewall before any
+# service starts; there is no SYS_ADMIN (the Chromium namespace sandbox does not need it).
+homeassistant_api: true
+ingress: true
+panel_icon: mdi:web
+panel_title: Casa Browser
+video: true
+privileged:
+  - NET_ADMIN
+# Browser profiles and the proxy's binding key stay out of HA backups.
+backup_exclude:
+  - "profiles/*"
+  - "downloads/*"
+  - "proxy/*"
+options:
+  onepassword_service_account_token: ""
+  onepassword_vault: "Casa Browser"
+  guest_sign_in_address: ""
+  guest_email: ""
+  guest_password: ""
+  guest_secret_key: ""
+  retention_days: 30
+  log_level: "info"
+# NOTE: removing an option below leaves its stored value behind; HA logs a boot WARN
+# until the stored options are cleaned by hand. The app ignores unknown option keys.
+schema:
+  onepassword_service_account_token: password
+  onepassword_vault: str
+  guest_sign_in_address: str
+  guest_email: str
+  guest_password: password
+  guest_secret_key: password
+  language: str?
+  timezone: str?
+  retention_days: "int(1,3650)"
+  log_level: "list(debug|info|warning|error)"

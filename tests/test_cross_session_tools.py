@@ -340,6 +340,29 @@ async def _admission_launches(monkeypatch) -> list:
     return launches
 
 
+async def _judgement_launches(monkeypatch) -> list:
+    """Casa Browser action model: the clean-context check of one action."""
+    import action_judgement
+    import claude_agent_sdk
+
+    launches = []
+    fake = types.ModuleType("claude_agent_sdk")
+    fake.ClaudeAgentOptions = claude_agent_sdk.ClaudeAgentOptions
+    fake.AssistantMessage = claude_agent_sdk.AssistantMessage
+    fake.ResultMessage = claude_agent_sdk.ResultMessage
+
+    async def query(*, prompt, options):
+        launches.append(options)
+        if False:
+            yield None
+
+    fake.query = query
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake)
+    with pytest.raises(action_judgement.CheckFailed):     # no terminal result: no answer
+        await action_judgement._ask_check(action_judgement.RULEBOOKS["action"], "{}")
+    return launches
+
+
 # Every launch each one-shot makes for one call: the classifier re-asks an
 # empty reply once (#508), so it launches twice and both launches count.
 _ONE_SHOTS = {
@@ -347,6 +370,7 @@ _ONE_SHOTS = {
     "observer": (_observer_launches, 1),
     "classifier": (_classifier_launches, 2),
     "admission": (_admission_launches, 1),
+    "action_judgement": (_judgement_launches, 1),
 }
 
 
@@ -378,6 +402,18 @@ async def test_run_admission_options(monkeypatch):
     _assert_locked(launches[0])
     _assert_loads_no_settings_source(launches[0])
     assert launches[0].tools == [] and launches[0].allowed_tools == []
+
+
+async def test_action_judgement_options(monkeypatch):
+    import action_judgement
+
+    launches = await _judgement_launches(monkeypatch)
+    assert len(launches) == 1
+    _assert_locked(launches[0])
+    _assert_loads_no_settings_source(launches[0])
+    assert launches[0].tools == [] and launches[0].allowed_tools == []
+    assert launches[0].system_prompt == action_judgement.RULEBOOKS["action"]
+    assert launches[0].max_turns == 4
 
 
 @pytest.mark.parametrize("one_shot", sorted(_ONE_SHOTS))
@@ -454,6 +490,7 @@ EXPECTED_SITES = {
         "test_observer_decider_options",
     ("tier_classifier.py", "classify_tier"): "test_tier_classifier_options",
     ("run_admission.py", "_ask_model"): "test_run_admission_options",
+    ("action_judgement.py", "_ask_check"): "test_action_judgement_options",
 }
 
 # The calls whose result carries the denial: the helper itself, and the

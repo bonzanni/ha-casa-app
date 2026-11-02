@@ -43,7 +43,10 @@ can no longer talk with the specialist in its topic, and that where the summary 
 specialist's own words — says the topic or the conversation is still open, that is not passed
 on as fact (#1411: a specialist's summary said its topic "will stay open" in the very call
 that ended it, and the resident relayed it). It claims nothing about the topic's close, which
-is best-effort. A delegation's notice carries no such line, and a replayed engagement outcome takes the
+is best-effort. A live notice whose answer Casa holds for relaying also names the full
+delegation id and `relay_answer` ([`delegate-answer-relay.md`](delegate-answer-relay.md)); a
+boot replay holds none, so that line is one of the in-process instructions INV-JOB-016
+allows. A delegation's notice carries no such line about an engagement, and a replayed engagement outcome takes the
 answerless arm, so INV-JOB-016's live/replay pairs are unchanged.
 
 ## Contracts & invariants

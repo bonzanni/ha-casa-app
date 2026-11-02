@@ -1,0 +1,131 @@
+# Casa Browser's AppArmor profile, validated on a Home Assistant OS test host (kernel
+# 6.18, 2026-10-23): the whole app ran first with `complain` added to the flags, then enforced,
+# through boot, pairing, open-web and account runs, a public-session download, login and
+# assist live views with a vault save, Chrome session switches and a floor probe per
+# service user. The kernel audit log asked for nothing beyond the rules below (Chrome's
+# namespace sandbox, the GPU, the nftables floor, the proxy, the broker's 1Password traffic and
+# the live view's Xvfb, x11vnc, nginx, xdotool and xclip all worked under enforce).
+#
+# Until this file existed Supervisor ran the app under Docker's `docker-default` profile. This
+# profile starts from the same rules and narrows two things: capabilities (only what root
+# bootstrap, the egress floor, s6 and the privilege drops use; `sys_admin` and `sys_chroot`
+# only for Chrome's namespace sandbox, in its own child profile) and sockets (no raw or packet
+# sockets for anyone). File access stays as broad as `docker-default`'s, with the same denials
+# under /proc and /sys.
+#
+# Supervisor loads this file instead of `docker-default` and renames the first profile to the
+# app's full slug, so peers are matched by a glob on the slug's end.
+#
+# If the host's AppArmor mediates user namespaces (AppArmor 4 with unprivileged user
+# namespaces restricted), Chrome's sandbox also needs a `userns,` rule in the child profile;
+# the rule is left out because an older parser refuses it and `docker-default` did not need
+# it on the measured host.
+
+#include <tunables/global>
+
+profile casa_browser flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+
+  file,
+  umount,
+  # inet/inet6 for the proxy, the API, nginx and Chrome; unix for every local socket; netlink
+  # for nftables and interface lookups. Never raw or packet sockets.
+  network inet stream,
+  network inet dgram,
+  network inet6 stream,
+  network inet6 dgram,
+  network unix,
+  network netlink,
+  deny network raw,
+  deny network packet,
+
+  # Root bootstrap (ownership and modes of /data and /run), the floor (net_admin), s6 and
+  # setpriv/s6-setuidgid privilege drops, signals to the service users' processes.
+  capability chown,
+  capability dac_override,
+  capability dac_read_search,
+  capability fowner,
+  capability fsetid,
+  capability kill,
+  capability setgid,
+  capability setuid,
+  capability setpcap,
+  capability net_admin,
+  capability sys_resource,
+  # The launcher's scan of Chrome's processes in /proc (chrome_alive, process_group_running)
+  # asks for sys_ptrace on Chrome's sandboxed, non-dumpable processes at every session stop or
+  # switch. Refused, and harmless: the scan treats an unreadable entry as alive and looks
+  # again (measured on the test host). Denied explicitly so the refusal is on record here and
+  # not audited each time.
+  deny capability sys_ptrace,
+
+  # Chrome runs in its own child profile, the only one with the sandbox's capabilities.
+  /opt/google/chrome/chrome cx -> chrome,
+
+  signal (receive) peer=unconfined,
+  signal (send, receive) peer=*casa_browser,
+  signal (send) peer=*casa_browser//chrome,
+  ptrace (read, trace, readby, tracedby) peer=*casa_browser,
+  ptrace (read) peer=*casa_browser//chrome,
+
+  deny mount,
+  deny @{PROC}/* w,
+  deny @{PROC}/{[^1-9],[^1-9][^0-9],[^1-9s][^0-9y][^0-9s],[^1-9][^0-9][^0-9][^0-9/]*}/** w,
+  deny @{PROC}/sys/[^k]** w,
+  deny @{PROC}/sys/kernel/{?,??,[^s][^h][^m]**} w,
+  deny @{PROC}/sysrq-trigger rwklx,
+  deny @{PROC}/kcore rwklx,
+  deny /sys/[^f]*/** wklx,
+  deny /sys/f[^s]*/** wklx,
+  deny /sys/fs/[^c]*/** wklx,
+  deny /sys/fs/c[^g]*/** wklx,
+  deny /sys/fs/cg[^r]*/** wklx,
+  deny /sys/firmware/** rwklx,
+  deny /sys/devices/virtual/powercap/** rwklx,
+  deny /sys/kernel/security/** rwklx,
+
+  profile chrome flags=(attach_disconnected,mediate_deleted) {
+    #include <abstractions/base>
+
+    file,
+    network inet stream,
+    network inet dgram,
+    network inet6 stream,
+    network inet6 dgram,
+    network unix,
+    network netlink,
+    deny network raw,
+    deny network packet,
+
+    # The namespace sandbox: a user namespace (uid/gid maps), then chroot into an empty
+    # directory and a PID and network namespace for its renderers. No mount.
+    capability sys_admin,
+    capability sys_chroot,
+    capability setgid,
+    capability setuid,
+    capability sys_ptrace,
+
+    # Chrome's helpers (crashpad, the zygote) stay in this profile.
+    /opt/google/chrome/** ix,
+
+    signal (receive) peer=*casa_browser,
+    signal (receive) peer=unconfined,
+    signal (send, receive) peer=@{profile_name},
+    ptrace (read, trace, readby, tracedby) peer=@{profile_name},
+    ptrace (readby) peer=*casa_browser,
+
+    deny mount,
+    deny @{PROC}/* w,
+    deny @{PROC}/{[^1-9],[^1-9][^0-9],[^1-9s][^0-9y][^0-9s],[^1-9][^0-9][^0-9][^0-9/]*}/** w,
+    deny @{PROC}/sys/[^k]** w,
+    deny @{PROC}/sys/kernel/{?,??,[^s][^h][^m]**} w,
+    deny @{PROC}/sysrq-trigger rwklx,
+    deny @{PROC}/kcore rwklx,
+    deny /sys/[^f]*/** wklx,
+    deny /sys/f[^s]*/** wklx,
+    deny /sys/fs/** wklx,
+    deny /sys/firmware/** rwklx,
+    deny /sys/devices/virtual/powercap/** rwklx,
+    deny /sys/kernel/security/** rwklx,
+  }
+}

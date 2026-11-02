@@ -1,5 +1,9 @@
 # Publication allowlist (git-tracked only). Verify: python -m scripts.verify_docs .
 
+- doc: manifest.d/casa_browser.yaml
+  kind: meta
+  summary: Manifest shard — the optional Casa Browser app's reference documents.
+
 - doc: manifest.d/architecture-a-d.yaml
   kind: meta
   summary: Manifest shard — architecture documents A-D, except the background-jobs documents.
@@ -79,6 +83,10 @@
 - doc: coverage.yaml
   kind: meta
   summary: Code-derived coverage ledger — every enumerated surface maps to a document or an explicit exclusion.
+
+- doc: coverage.d/casa_browser.yaml
+  kind: meta
+  summary: Coverage ledger shard — the optional Casa Browser app's surfaces.
 
 - doc: README.md
   kind: index

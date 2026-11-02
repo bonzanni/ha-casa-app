@@ -33,7 +33,11 @@ to the run's binding (``plugin_bindings``):
   returns whose binding belongs to that plugin. The plugin's own predicate
   decides which runs need a driver; the sweep is what makes a lost hand-over
   (a turn cut at its ceiling, a crash, a Casa restart) cost a minute rather
-  than the run.
+  than the run. An entry may name the deposits whose delivery the plugin has
+  not confirmed yet (``unless_delivered``): Casa delivered them, so it skips
+  the run when each reached the operator. An answer may ask for one more pass
+  soon (``sweep_again_s``, slice 5k: the operator's Done in a live view reaches
+  no one, so the plugin looks again every few seconds while a view is open).
 
 Restart: the queue is memory-only; the sweep re-finds anything it loses."""
 from __future__ import annotations
@@ -59,6 +63,10 @@ CONTINUATION_MARKER = "continuation"
 SWEEP_INTERVAL_S = 60
 SWEEP_CALL_TIMEOUT_S = 30.0
 SWEEP_MAX_RESULTS = 50
+# Slice 5k: an extra pass a plugin asks for comes at the earliest this soon; a request of a
+# minute or more is the minute pass itself. At most this many deposits name one entry's hold.
+SWEEP_AGAIN_MIN_S = 5.0
+UNLESS_DELIVERED_MAX = 4
 # A pending continuation that cannot get its desk or a concurrency slot is
 # retried at this pace, and dropped after the bound (the sweep re-finds it).
 RETRY_EVERY_S = 10.0
@@ -281,6 +289,9 @@ async def run_continuation(pending: Pending, *, on_start) -> None:
     if cfg is None:
         logger.warning("continuation: role %s is not loaded — dropped", role)
         return
+    if getattr(cfg, "kind", "") != "specialist":
+        logger.warning("continuation: role %s is not a specialist — dropped", role)
+        return
     deadline = time.monotonic() + GIVE_UP_AFTER_S
     first = binding.chain[1] if len(binding.chain) > 1 else role
     fido_done = asyncio.Event()
@@ -388,8 +399,9 @@ def sweep_server(rp) -> "dict | None":
             "env": {**env, **server_env}, "cwd": str(rp.path)}
 
 
-async def call_sweep_tool(server: dict, tool: str) -> list[dict]:
-    """Start the server, call *tool* with no arguments, read its JSON text."""
+async def call_sweep_tool(server: dict, tool: str) -> tuple[list[dict], float | None]:
+    """Start the server, call *tool* with no arguments, read its JSON text: the entries, and
+    the extra pass it asks for (seconds, or None)."""
     from mcp import ClientSession
     from mcp.client.stdio import StdioServerParameters, stdio_client
 
@@ -405,12 +417,36 @@ async def call_sweep_tool(server: dict, tool: str) -> list[dict]:
     text = "".join(getattr(c, "text", "") for c in (result.content or []))
     data = json.loads(text) if text else {}
     runs = data.get("runs") if isinstance(data, dict) else None
-    return [r for r in (runs or [])[:SWEEP_MAX_RESULTS] if isinstance(r, dict)]
+    again = data.get("sweep_again_s") if isinstance(data, dict) else None
+    if (not isinstance(again, int) or isinstance(again, bool)
+            or not 0 < again < SWEEP_INTERVAL_S):
+        again = None
+    entries = runs if isinstance(runs, list) else []
+    return ([r for r in entries[:SWEEP_MAX_RESULTS] if isinstance(r, dict)],
+            None if again is None else max(float(again), SWEEP_AGAIN_MIN_S))
+
+
+def _held_by_delivery(refs, *, plugin: str, operator_id: int, artifact_id: str) -> bool:
+    """Slice 5k: True when *refs* names 1..UNLESS_DELIVERED_MAX deposits and Casa delivered
+    every one of them, for this plugin and operator, from this artifact. Anything else — one
+    pending, withheld or forgotten (a Casa restart), a malformed field — holds nothing."""
+    import result_broker
+    if not isinstance(refs, list) or not 0 < len(refs) <= UNLESS_DELIVERED_MAX:
+        return False
+    return all(result_broker.is_reference(ref) and result_broker.DELIVERY_OUTCOMES.status(
+        ref, plugin=plugin, operator_id=operator_id, artifact_id=artifact_id
+    ).get("status") == "delivered" for ref in refs)
 
 
 async def sweep_once() -> int:
     """One pass over every loaded specialist's resolved plugins; returns how
     many continuations it queued."""
+    queued, _again = await _sweep_pass()
+    return queued
+
+
+async def _sweep_pass() -> tuple[int, float | None]:
+    """One pass: the continuations it queued, and the soonest extra pass a plugin asked for."""
     import tools as tools_mod
     from operator_calls import is_configured_operator
     from plugin_bindings import BINDINGS
@@ -419,6 +455,7 @@ async def sweep_once() -> int:
     from text_util import sanitize_segment
 
     queued = 0
+    again: float | None = None
     seen: set[str] = set()
     for role, cfg in list((tools_mod._agent_role_map or {}).items()):
         if getattr(cfg, "kind", "") != "specialist":
@@ -445,11 +482,13 @@ async def sweep_once() -> int:
             from plugin_registry import runtime_name
             seg = sanitize_segment(runtime_name(rp))
             try:
-                runs = await asyncio.wait_for(call_sweep_tool(server, tool),
-                                              SWEEP_CALL_TIMEOUT_S)
+                runs, soon = await asyncio.wait_for(call_sweep_tool(server, tool),
+                                                    SWEEP_CALL_TIMEOUT_S)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("driver sweep of %s failed (%s)", seg, type(exc).__name__)
                 continue
+            if soon is not None:
+                again = soon if again is None else min(again, soon)
             for r in runs:
                 run_ref, ref = r.get("run_ref"), r.get("binding_ref")
                 if not isinstance(run_ref, str) or not 0 < len(run_ref) <= 64:
@@ -459,18 +498,79 @@ async def sweep_once() -> int:
                     continue
                 if not is_configured_operator(binding.chat_id, binding.operator_id):
                     continue
+                if "unless_delivered" in r and _held_by_delivery(
+                        r["unless_delivered"], plugin=seg, operator_id=binding.operator_id,
+                        artifact_id=str(getattr(rp, "artifact_id", "") or "")):
+                    continue        # the operator has the card or link it waits on
                 if CONTINUATIONS.request(binding, run_ref, "sweep") == "queued":
                     queued += 1
-    return queued
+    return queued, again
+
+
+# One pass at a time (the minute pass and an extra pass); at most one extra pass pending;
+# none at all once Casa is stopping (a minute pass still in flight then arms nothing).
+_passing = False
+_stopping = False
+_extra: dict[str, Any] = {"handle": None, "when": None, "loop": None}
+_extra_tasks: set[asyncio.Task] = set()
+
+
+def _arm_extra_pass(delay: float) -> None:
+    """Arm one extra pass *delay* seconds from now, unless one is already armed sooner."""
+    if _stopping:
+        return
+    loop = asyncio.get_running_loop()
+    when = loop.time() + delay
+    handle = _extra["handle"]
+    if handle is not None and _extra["loop"] is loop and not handle.cancelled():
+        if _extra["when"] <= when:
+            return
+        handle.cancel()
+    _extra.update(handle=loop.call_at(when, _start_extra_pass), when=when, loop=loop)
+
+
+def _start_extra_pass() -> None:
+    _extra.update(handle=None, when=None, loop=None)
+    task = asyncio.get_running_loop().create_task(sweep_job())
+    _extra_tasks.add(task)
+    task.add_done_callback(_extra_tasks.discard)
+
+
+def stop_sweep() -> None:
+    """Casa's stop: no pass starts or arms another from now on, and the armed extra pass and
+    one already running are cancelled."""
+    global _stopping
+    _stopping = True
+    cancel_extra_pass()
+
+
+def cancel_extra_pass() -> None:
+    """The armed extra pass, and one already running, are cancelled."""
+    handle = _extra["handle"]
+    if handle is not None:
+        handle.cancel()
+    _extra.update(handle=None, when=None, loop=None)
+    for task in list(_extra_tasks):
+        task.cancel()
 
 
 async def sweep_job() -> None:
+    """One pass, unless one is running (that one arms any extra pass still asked for)."""
+    global _passing
+    if _passing or _stopping:
+        return
+    _passing = True
+    again = None
     try:
-        n = await sweep_once()
+        n, again = await _sweep_pass()
         if n:
             logger.info("driver sweep queued %d continuation(s)", n)
     except Exception:  # noqa: BLE001 — a failed pass waits for the next
         logger.warning("driver sweep pass failed", exc_info=True)
+    finally:
+        _passing = False
+    if again is not None:
+        _arm_extra_pass(again)
 
 
 def register_sweep(scheduler) -> None:

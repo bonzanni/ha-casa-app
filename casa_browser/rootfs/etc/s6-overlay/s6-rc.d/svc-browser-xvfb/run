@@ -1,0 +1,21 @@
+#!/command/with-contenv bash
+# The virtual display Chrome draws on (and the live view reads): 1920x1080x24 at
+# normal density, no TCP listener, an X cookie readable by the browser user only.
+# Readiness: Xvfb writes the display number to fd 3 once it accepts connections.
+set -euo pipefail
+install -d -m 1777 /tmp/.X11-unix
+install -d -o casa-browser -g casa-browser -m 0700 /run/casa-browser/x
+rm -f /run/casa-browser/x/Xauthority
+cookie="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+s6-setuidgid casa-browser xauth -q -f /run/casa-browser/x/Xauthority add :99 . "$cookie"
+# The live view's two other readers of the display (Task 13), each with its own copy: x11vnc
+# (the picture) and the controller (xdotool input, xclip selection), 0600 to each.
+for reader in vnc:casa-vnc ctl:casa-controller; do
+  dir="/run/casa-browser/x-${reader%%:*}"; user="${reader#*:}"
+  install -d -o "$user" -g "$user" -m 0700 "$dir"
+  rm -f "$dir/Xauthority"
+  s6-setuidgid "$user" xauth -q -f "$dir/Xauthority" add :99 . "$cookie"
+done
+exec env -i PATH=/command:/usr/bin:/bin HOME=/run/casa-browser/x \
+  s6-setuidgid casa-browser Xvfb :99 -screen 0 1920x1080x24 -dpi 96 -nolisten tcp \
+  -auth /run/casa-browser/x/Xauthority -displayfd 3

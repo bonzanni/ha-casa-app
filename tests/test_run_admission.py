@@ -315,6 +315,43 @@ async def test_the_route_validates_then_decides(wired, monkeypatch):
         "status"] == "admitted"
 
 
+# -- his words, kept per spec digest for the action check ---------------------------------
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reply,status", [
+    ('{"runs": [{"site": "RunPod"}, {"site": "Bergfreunde"}]}', "admitted"),
+    ('{"runs": []}', "confirmation_pending"),
+])
+async def test_words_are_kept_per_admitted_digest(wired, monkeypatch, reply, status):
+    import action_judgement
+    monkeypatch.setattr(action_judgement, "WORDS", action_judgement.OperatorWords())
+    ask, _ = _model(reply)
+    monkeypatch.setattr(run_admission, "_ask_model", ask)
+    runs = [RUNPOD, _run(("Bergfreunde", "account"), digest="sha256:bb")]
+    out = await run_admission.request_admission(_call(), runs, "k1")
+    assert out["status"] == status
+    for digest in ("sha256:aa", "sha256:bb"):
+        assert action_judgement.WORDS.get(plugin="browser", operator_id=100,
+                                          spec_digest=digest) == (
+            "download my latest RunPod invoice")
+    assert action_judgement.WORDS.get(plugin="bank", operator_id=100,
+                                      spec_digest="sha256:aa") is None
+    assert action_judgement.WORDS.get(plugin="browser", operator_id=999,
+                                      spec_digest="sha256:aa") is None
+
+
+@pytest.mark.asyncio
+async def test_no_words_keeps_nothing(wired, monkeypatch):
+    import action_judgement
+    monkeypatch.setattr(action_judgement, "WORDS", action_judgement.OperatorWords())
+    ask, _ = _model('{"runs": [{"site": "RunPod"}]}')
+    monkeypatch.setattr(run_admission, "_ask_model", ask)
+    out = await run_admission.request_admission(_call(words=None), [RUNPOD], "k1")
+    assert out["status"] == "confirmation_pending"
+    assert action_judgement.WORDS.get(plugin="browser", operator_id=100,
+                                      spec_digest="sha256:aa") is None
+
+
 # -- one answer per request key, kept (P3-R1, P3-R2) ------------------------------------
 
 @pytest.mark.asyncio

@@ -1,0 +1,24 @@
+:root{color-scheme:light dark;--fg:#1f1f1f;--bg:#fafafa;--muted:#5f6368;--line:#dadce0;--accent:#1a73e8;--warn:#b3261e;--ok:#137333}
+@media (prefers-color-scheme:dark){:root{--fg:#e8eaed;--bg:#1f1f1f;--muted:#9aa0a6;--line:#3c4043;--accent:#8ab4f8;--warn:#f28b82;--ok:#81c995}}
+body{margin:0;font:15px/1.45 system-ui,sans-serif;color:var(--fg);background:var(--bg)}
+nav{display:flex;gap:16px;padding:10px 16px;border-bottom:1px solid var(--line)}
+nav a{color:var(--accent);text-decoration:none;font-weight:600}
+main{padding:8px 16px 32px;max-width:960px}
+h1{font-size:22px}h2{font-size:17px;margin-top:24px}
+table{border-collapse:collapse;width:100%;font-size:14px}
+/* a wide table (the step log on a phone) scrolls inside the page, not the page itself */
+main table{display:block;max-width:100%;overflow-x:auto}
+td,th{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}
+button{font:inherit;padding:6px 12px;border-radius:8px;border:1px solid var(--line);background:transparent;color:var(--fg);cursor:pointer}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+form.inline{display:inline}
+label{display:block;margin:8px 0}
+input,textarea{font:inherit;width:100%;max-width:520px;box-sizing:border-box;padding:6px;border:1px solid var(--line);border-radius:6px;background:transparent;color:var(--fg)}
+input[type=checkbox]{width:auto}
+textarea{min-height:56px}
+.waits li{margin:8px 0}
+.warn{color:var(--warn)}.ok{color:var(--ok)}.small{color:var(--muted);font-size:13px}
+img.shot{display:block;max-width:240px;margin-top:4px;border:1px solid var(--line)}
+.task{white-space:pre-wrap;color:var(--muted)}
+code.copy{cursor:pointer;display:inline-block;margin:2px 4px 2px 0;padding:1px 6px;border:1px solid var(--line);border-radius:6px;font-size:13px;word-break:break-all}
+code.copy.copied{color:var(--ok);border-color:var(--ok)}

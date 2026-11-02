@@ -86,8 +86,9 @@ EDIT_DM_MESSAGE_CALLERS = {
     ("scheduled_asks.py", "_replay_terminal_edit"): {"derived"},   # the persisted terminal_edit of that body
     ("authz_grants.py", "_finish_inner"): {"status"},              # retired / denied / delivery-failed statuses
     ("authz_grants.py", "_deliver"): {"status"},                   # #1049: the delivery-failed status, moved out of _finish_inner
-    ("channels/telegram.py", "_finish"): {"status"},               # S5: the proposal keyboard settled (☑ label / ⌛ expired / ↻ replaced / ✖ failed)
-    ("channels/telegram.py", "mark_proposal"): {"status"},         # S5: ✖ <reason> / ✖ busy / ✖ faulted / ⌛ expired on the keyboard
+    # S5 + slice 5b: the proposal's text with its settle line (☑ label / ⌛ expired / ↻ replaced /
+    # ✖ <reason> / ☑ <receipt>), for the finish hook and mark_proposal; a photo card's caption
+    ("channels/telegram.py", "_edit_proposal_message"): {"status"},
     ("callback_consent.py", "_finish"): {"plugin"},                # consent bodies are plugin-authored
     ("event_consent.py", "_finish"): {"plugin"},
     ("persona_install_consent.py", "_finish_inner"): {"plugin"},
@@ -155,6 +156,7 @@ CHANNEL_METHOD_CALLERS = {
     ("channels/telegram.py", "finalize_stream"): "forward",
     ("channels/telegram.py", "send_response"): "forward",
     ("tools.py", "send_message"): "admitted",
+    ("tools.py", "relay_answer"): "admitted",          # slice 5l: the labelled delegate answer, admitted on the relaying turn
     ("tools.py", "_classify_send"): "admitted",                 # the caption, admitted by send_media
     ("tools.py", "_post"): "admitted",                          # ask_user (both arms) and wipe_memory (casa_text)
     ("specialist_desk.py", "handle_reply"): "admitted",         # S4: the desk reply, the specialist's admitted text

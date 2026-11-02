@@ -243,6 +243,28 @@ class TestDoctrineRejection:
         with pytest.raises(ValueError, match="role doctrine is empty"):
             load_role_artifact(d)
 
+    @pytest.mark.parametrize("doctrine_text", [
+        "# Fido doctrine\n\n## 1. Start\n\nCall browser_status first.\n",
+        "Plain prose with no heading at all.\n",
+        "# Core doctrine\n",
+    ])
+    def test_doctrine_without_a_core_section_raises(self, tmp_path, doctrine_text):
+        """The prompt compiler selects only "# Core doctrine": a doctrine titled
+        anything else (the browser specialist's "# Fido doctrine") compiled to an
+        empty <role_doctrine> and reached no model. The loader refuses it."""
+        d = write_role_dir(tmp_path, role=valid_role(), doctrine_text=doctrine_text)
+        with pytest.raises(ValueError, match="no '# Core doctrine' or projection section"):
+            load_role_artifact(d)
+
+    def test_projection_only_doctrine_still_loads(self, tmp_path):
+        """A doctrine of projection sections and no shared core compiles a doctrine for
+        each surface, so it is not refused (slice 5d r1, Astra A1)."""
+        text = ("# Text projection\n\nAnswer scoped questions precisely.\n\n"
+                "# Voice projection\n\nLead with the result.\n\n"
+                "# Restricted webhook projection\n\nDo not expose persona identity.\n")
+        d = write_role_dir(tmp_path, role=valid_role(), doctrine_text=text)
+        assert load_role_artifact(d).doctrine.startswith("# Text projection")
+
     def test_doctrine_is_canonicalized(self, tmp_path):
         """CRLF + trailing whitespace + missing final newline in doctrine.md
         must come back through canonical_text (NFC, LF-only, no trailing

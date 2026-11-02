@@ -1929,6 +1929,13 @@ class Agent:
                 # folded into that one statement, never a separate line.
                 body += _replay_statement(_REPLAY_REANNOUNCEMENT, complete)
             body += f"Result text from {complete.agent}:\n{complete.text}\n"
+            if complete.relayable:
+                # Slice 5l: the full id (the header above shows 8 characters).
+                body += (
+                    "\nTo pass this answer on to the person, call relay_answer "
+                    f"with delegation_id {complete.delegation_id}; Casa posts "
+                    "it under the delegate's name.\n"
+                )
             if msg.context.get("engagement_id"):
                 # #1411: an engagement's summary is the specialist's own
                 # words, and live it said its topic "will stay open" — written

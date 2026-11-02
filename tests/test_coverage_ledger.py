@@ -7,6 +7,8 @@ exclusion. Both directions are checked, like the manifest.
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 # Loaded by explicit path for the same reason as test_verify_docs.py: the app code root
 # on sys.path contains its own scripts/ directory which shadows the repo-root one.
 _spec = importlib.util.spec_from_file_location(
@@ -188,6 +190,49 @@ def test_a_fully_assigned_ledger_passes(tmp_path):
     root = _repo(tmp_path)
     (root / "docs" / "coverage.yaml").write_text(_full_ledger_for(root))
     assert coverage_ledger.check(root) == []
+
+
+def test_ledger_shards_count_like_the_root(tmp_path):
+    """At the index ceiling the ledger shards: docs/coverage.d/*.yaml entries count exactly
+    like the root's, and an item assigned twice across them is refused."""
+    root = _repo(tmp_path)
+    full = _full_ledger_for(root)
+    first, rest = full.split("- item: ", 2)[1], "- item: " + full.split("- item: ", 2)[2]
+    (root / "docs" / "coverage.yaml").write_text("- item: " + first)
+    (root / "docs" / "coverage.d").mkdir()
+    (root / "docs" / "coverage.d" / "app.yaml").write_text(rest)
+    assert coverage_ledger.check(root) == []
+    (root / "docs" / "coverage.d" / "dup.yaml").write_text("- item: " + first)
+    assert any("listed twice" in p for p in coverage_ledger.check(root))
+    (root / "docs" / "coverage.d" / "dup.yaml").write_text("not: [a, list]\n")
+    assert any("coverage.d/dup.yaml" in p for p in coverage_ledger.check(root))
+
+
+def test_unreadable_ledger_shards_fail_the_check(tmp_path):
+    """A shard directory or shard file that cannot be read is a problem, never an empty set
+    (otherwise a stale or incomplete ledger would pass)."""
+    import os
+    root = _repo(tmp_path)
+    full = _full_ledger_for(root)
+    first, rest = full.split("- item: ", 2)[1], "- item: " + full.split("- item: ", 2)[2]
+    (root / "docs" / "coverage.yaml").write_text("- item: " + first)
+    shards = root / "docs" / "coverage.d"
+    shards.mkdir()
+    shard = shards / "app.yaml"
+    shard.write_text(rest)
+    assert coverage_ledger.check(root) == []
+    if os.geteuid() == 0:
+        pytest.skip("root reads unreadable files")
+    shard.chmod(0)
+    try:
+        assert any("coverage.d/app.yaml" in p and "unreadable" in p for p in coverage_ledger.check(root))
+    finally:
+        shard.chmod(0o644)
+    shards.chmod(0)
+    try:
+        assert any("coverage.d" in p and "unreadable" in p for p in coverage_ledger.check(root))
+    finally:
+        shards.chmod(0o755)
 
 
 def test_an_unassigned_enumerated_item_is_refused(tmp_path):
@@ -472,3 +517,22 @@ def test_a_second_app_item_must_be_ledgered_like_any_other(tmp_path):
     (root / "docs" / "coverage.yaml").write_text(ledger)
     problems = coverage_ledger.check(root)
     assert any("option:casa_browser:log_level" in p for p in problems), problems
+
+
+
+@pytest.mark.parametrize("name", [".yaml", "extra.yml", "notes.txt", "nested"])
+def test_every_entry_of_the_shard_directory_is_loaded_or_reported(tmp_path, name):
+    root = _repo(tmp_path)
+    (root / "docs" / "coverage.yaml").write_text(_full_ledger_for(root))
+    shards = root / "docs" / "coverage.d"
+    shards.mkdir()
+    stale = "- item: tool:vanished\n  doc: architecture/thing.md\n"
+    if name == "nested":
+        (shards / name).mkdir()
+        (shards / name / "x.yaml").write_text(stale)
+    else:
+        (shards / name).write_text(stale)
+    problems = coverage_ledger.check(root)
+    assert problems, name                       # never silently skipped
+    if name == ".yaml":
+        assert any("tool:vanished" in p for p in problems)

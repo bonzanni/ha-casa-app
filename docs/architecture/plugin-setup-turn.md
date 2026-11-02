@@ -24,7 +24,9 @@ keeps a resident row consumed; anything less returns it to `pending` with its re
 verdict kept, under a bounded budget, and exhaustion fails it with a note naming the
 manual run. A courier turn — the assistant
 delegating a specialist's setup — is judged on its delegation, by target, and on nothing
-else. An ordinary turn in which the resident ran the setup tool itself settles the row
+else; its instruction then asks the assistant to pass the specialist's answer on with
+`relay_answer`, so the report reaches the operator under the specialist's own header
+([`delegate-answer-relay.md`](delegate-answer-relay.md)), and that relay settles nothing. An ordinary turn in which the resident ran the setup tool itself settles the row
 from that evidence, so the next reload does not ask again.
 
 **The turn carries the operator's identity, for exactly the role it is addressed to.**

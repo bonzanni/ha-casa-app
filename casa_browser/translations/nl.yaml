@@ -1,0 +1,54 @@
+configuration:
+  onepassword_service_account_token:
+    name: Token van het 1Password-serviceaccount
+    description: >-
+      Token van een 1Password-serviceaccount dat alleen de browserkluis ziet. De
+      inloggegevensbroker van de app gebruikt het om inlogs van sites te lezen en op te
+      slaan; geen ander deel van de app kan het lezen. Nodig voor elke inlog op een site.
+  onepassword_vault:
+    name: Browserkluis
+    description: >-
+      Naam van de 1Password-kluis met de inlogs van de sites die de browser mag gebruiken.
+      De broker leest nooit een andere kluis en verwijdert nooit een item.
+  guest_sign_in_address:
+    name: Inlogadres van de 1Password-gast
+    description: >-
+      Het eigen inlogadres van het 1Password-account, zoals 1Password het toont in de
+      instellingen van je account (bijvoorbeeld yourteam.1password.eu; het algemene
+      my.1password.eu wordt niet geaccepteerd). De 1Password-extensie van de browser logt
+      daar in als gast met alleen-lezen toegang tot de browserkluis, en de proxy van de app
+      laat alleen dit adres toe voor de extensie en de broker.
+  guest_email:
+    name: E-mailadres van de 1Password-gast
+    description: >-
+      E-mailadres van die 1Password-gast.
+  guest_password:
+    name: Wachtwoord van de 1Password-gast
+    description: >-
+      Wachtwoord van die 1Password-gast.
+  guest_secret_key:
+    name: Secret Key van de 1Password-gast
+    description: >-
+      Secret Key van die 1Password-gast.
+  language:
+    name: Browsertaal
+    description: >-
+      Optioneel. Overschrijft de browsertaal, die anders de ingestelde taal van Home
+      Assistant volgt (gelezen bij het starten van de app) en ook de taal van de pagina's
+      van de app bepaalt. Een taalcode zoals en-GB of nl.
+  timezone:
+    name: Tijdzone van de browser
+    description: >-
+      Optioneel. Overschrijft de tijdzone van de browser, die anders die van Home
+      Assistant volgt (een IANA-naam zoals Europe/Amsterdam).
+  retention_days:
+    name: Bewaartermijn (dagen)
+    description: >-
+      Hoe lang stappenlogs, schermafbeeldingen, gedownloade bestanden en taakverslagen
+      bewaard blijven nadat een taak is beëindigd. Geregistreerde sites, goedkeuringen en
+      opgeslagen inlogs vallen hier niet onder.
+  log_level:
+    name: Logniveau
+    description: >-
+      Hoe uitgebreid het eigen log van de app is. Logs bevatten nooit wachtwoorden, codes,
+      cookies of paginaadressen.

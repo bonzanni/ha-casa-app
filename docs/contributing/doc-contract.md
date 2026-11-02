@@ -163,7 +163,11 @@ The manifest itself splits the same way it makes documents split: at its index c
 entries move to `manifest.d/<name>.yaml` shards — each a plain top-level list loaded
 together with the root by the verifier and the coverage ledger, and each shard file
 carrying its own `kind: meta` entry in the allowlist. Documents never live under
-`manifest.d/`; the verifier refuses one there.
+`manifest.d/`; the verifier refuses one there. The coverage ledger shards the same way:
+`docs/coverage.d/<name>.yaml` files (symlinks followed) are plain lists in the root ledger's
+format, loaded with `docs/coverage.yaml` by `scripts/coverage_ledger.py`, an item listed in two of
+them refused like one listed twice, any other entry of the directory reported, and each carrying
+its own `kind: meta` entry.
 
 The coverage ledger enumerates every app folder the release pipeline ships
 (`scripts/coverage_ledger.py`'s `APPS`; see

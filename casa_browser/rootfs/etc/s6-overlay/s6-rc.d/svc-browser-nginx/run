@@ -1,0 +1,12 @@
+#!/command/with-contenv bash
+# The ingress listener (casa-ingress, uid 1105): nginx on port 8099, answering only Home
+# Assistant's ingress peer (the address is rendered by casa_browser.ui at start; a missing
+# file stops nginx from starting), proxying to the controller's UI socket. No access log;
+# errors at "crit" only (an error line can quote a request).
+set -euo pipefail
+install -d -o casa-ingress -g casa-ingress -m 0700 /run/casa-browser/nginx
+PYTHONPATH=/opt /opt/venv/bin/python -m casa_browser.ui ingress-peer > /run/casa-browser/nginx/ingress-peer.conf.tmp
+chmod 0644 /run/casa-browser/nginx/ingress-peer.conf.tmp
+mv /run/casa-browser/nginx/ingress-peer.conf.tmp /run/casa-browser/nginx/ingress-peer.conf
+exec env -i PATH=/command:/usr/sbin:/usr/bin:/bin \
+  s6-setuidgid casa-ingress nginx -c /etc/nginx/casa_browser.conf -e stderr

@@ -147,7 +147,7 @@ def rollback(monkeypatch):
         state.calls += 1
         if state.during is not None:
             state.during()
-        return (SimpleNamespace(slug="fin", state="active"),
+        return (SimpleNamespace(slug="fin", state="active", last_activation_error=None),
                 SimpleNamespace(slug="fin", removed_artifact_ids=(), journal_path=None))
     monkeypatch.setattr(specialist_install, "rollback_specialist", lib)
 
@@ -250,7 +250,7 @@ def upgrade(monkeypatch):
     def lib(**kw):
         state.calls += 1
         st = state.states.pop(0) if state.states else "active"
-        return (SimpleNamespace(slug="fin", state=st),
+        return (SimpleNamespace(slug="fin", state=st, last_activation_error=None),
                 SimpleNamespace(slug="fin", removed_artifact_ids=(), journal_path=None))
     monkeypatch.setattr(specialist_install, "upgrade_specialist", lib)
 

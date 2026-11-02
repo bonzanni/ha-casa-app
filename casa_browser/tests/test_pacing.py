@@ -1,0 +1,233 @@
+"""The pacer's gate (action model slice 2: F9, S2-4, G1 c): a judged press awaits its guard
+after the pointer moved and immediately before ``mouse.down()``; typing checks the focus
+before every character and never sends Enter; Enter goes only through ``press_enter``'s
+guard; scrolling never wheels over a form control. The real ``Pacer`` over a recording page."""
+from __future__ import annotations
+
+import random
+
+import pytest
+
+from casa_browser import pacing
+from casa_browser.pacing import ActionError, GuardRefused
+
+pytestmark = pytest.mark.asyncio
+
+
+class Page:
+    def __init__(self, editable=lambda x, y: False):
+        self.log = []
+        self.editable = editable
+        page = self
+
+        class Mouse:
+            async def move(self, x, y):
+                page.log.append(("move", round(x), round(y)))
+
+            async def down(self):
+                page.log.append(("down",))
+
+            async def up(self):
+                page.log.append(("up",))
+
+            async def wheel(self, dx, dy):
+                page.log.append(("wheel", page.pointer))
+
+        class Keyboard:
+            async def type(self, ch):
+                page.log.append(("key", ch))
+
+            async def press(self, key):
+                page.log.append(("press", key))
+
+            async def insert_text(self, text):
+                page.log.append(("insert", text))
+        self.mouse, self.keyboard = Mouse(), Keyboard()
+        self.pointer = None
+
+    async def evaluate(self, expr, arg=None):
+        if "elementFromPoint" in expr:
+            return self.editable(*arg)
+        if "innerWidth" in expr:
+            return [1000, 800]
+        return None
+
+
+class Locator:
+    def __init__(self, page):
+        self.page = page
+
+    async def scroll_into_view_if_needed(self, timeout=None):
+        return None
+
+    async def is_visible(self):
+        return True
+
+    async def is_enabled(self):
+        return True
+
+    async def bounding_box(self):
+        return {"x": 100, "y": 100, "width": 80, "height": 30}
+
+
+async def _no_sleep(_s):
+    return None
+
+
+def pacer(page):
+    p = pacing.Pacer(page, rng=random.Random(3), sleep=_no_sleep)
+    real_move = page.mouse.move
+
+    async def move(x, y):
+        page.pointer = (round(x), round(y))
+        await real_move(x, y)
+    page.mouse.move = move
+    return p
+
+
+async def test_guard_runs_after_move_before_mousedown():
+    page = Page()
+    seen = []
+
+    async def guard(point):
+        page.log.append(("guard", round(point[0]), round(point[1])))
+        seen.append(point)
+        return "ok"
+    await pacer(page).click(Locator(page), guard=guard,
+                            on_dispatch=lambda: page.log.append(("dispatch",)))
+    kinds = [e[0] for e in page.log]
+    assert kinds[-4:] == ["guard", "dispatch", "down", "up"]
+    assert kinds.index("guard") > max(i for i, k in enumerate(kinds) if k == "move")
+    last_move = [e for e in page.log if e[0] == "move"][-1]
+    assert last_move[1:] == page.log[kinds.index("guard")][1:]   # the point it moved to
+
+
+@pytest.mark.parametrize("answer", ["moved", "changed", "anything"])
+async def test_guard_failure_presses_nothing(answer):
+    page = Page()
+
+    async def guard(point):
+        return answer
+    with pytest.raises(GuardRefused) as err:
+        await pacer(page).click(Locator(page), guard=guard,
+                                on_dispatch=lambda: page.log.append(("dispatch",)))
+    assert err.value.code == ("moved" if answer == "moved" else "changed")
+    assert not [e for e in page.log if e[0] in ("down", "up", "dispatch")]
+
+
+async def test_type_clicks_through_guard():
+    page = Page()
+
+    async def guard(point):
+        page.log.append(("guard",))
+        return "changed"
+    with pytest.raises(GuardRefused):
+        await pacer(page).type(Locator(page), "hello", guard=guard)
+    assert not [e for e in page.log if e[0] in ("down", "key")]
+
+
+async def test_type_checks_focus_before_every_character():
+    page = Page()
+    checks = []
+
+    async def focus():
+        checks.append(len([e for e in page.log if e[0] == "key"]))
+        return len(checks) < 3          # the focus moves after two characters
+
+    async def guard(point):
+        return "ok"
+    with pytest.raises(GuardRefused, match="changed"):
+        await pacer(page).type(Locator(page), "a b", guard=guard, focus=focus)
+    assert [e for e in page.log if e[0] == "key"] == [("key", "a"), ("key", " ")]
+    assert checks == [0, 1, 2]
+
+
+async def test_enter_only_through_press_enter_guard():
+    page = Page()
+
+    async def guard(point=None):
+        page.log.append(("guard",))
+        return "ok"
+    p = pacer(page)
+    await p.type(Locator(page), "zoek", guard=guard)
+    assert not [e for e in page.log if e[0] == "press"]       # type never sends Enter
+    assert [e[1] for e in page.log if e[0] == "key"] == list("zoek")
+    page.log.clear()
+    await p.press_enter(guard, on_dispatch=lambda: page.log.append(("dispatch",)))
+    assert page.log == [("guard",), ("dispatch",), ("press", "Enter")]
+    page.log.clear()
+
+    async def refuse():
+        return "changed"
+    with pytest.raises(GuardRefused):
+        await p.press_enter(refuse)
+    assert page.log == []
+
+
+async def test_a_line_break_is_inserted_as_text_only_when_allowed():
+    """Slice 6b: a line break is never a key. With ``line_breaks`` it is inserted as text (no
+    key event, so a page's Enter handler never sees it), behind the same focus check as every
+    character; without it the text is refused before anything is clicked or sent."""
+    page = Page()
+    checks = []
+
+    async def focus():
+        checks.append(len([e for e in page.log if e[0] in ("key", "insert")]))
+        return True
+
+    async def guard(point):
+        return "ok"
+    await pacer(page).type(Locator(page), "a\nb", guard=guard, focus=focus, line_breaks=True)
+    assert [e for e in page.log if e[0] in ("key", "insert", "press")] == [
+        ("key", "a"), ("insert", "\n"), ("key", "b")]
+    assert checks == [0, 1, 2]
+    page.log.clear()
+    with pytest.raises(ActionError, match="unsupported"):
+        await pacer(page).type(Locator(page), "a\nb", guard=guard, focus=focus)
+    assert not [e for e in page.log if e[0] in ("move", "down", "key", "insert", "press")]
+
+
+async def test_a_line_break_waits_for_the_focus_check():
+    page = Page()
+
+    async def focus():
+        return not [e for e in page.log if e[0] == "key"]   # lost after the first character
+
+    async def guard(point):
+        return "ok"
+    with pytest.raises(GuardRefused, match="changed"):
+        await pacer(page).type(Locator(page), "a\nb", guard=guard, focus=focus,
+                               line_breaks=True)
+    assert [e for e in page.log if e[0] in ("key", "insert")] == [("key", "a")]
+
+
+async def test_scroll_checks_every_wheel_step():
+    """G1 c: before every step, the point under the pointer is no form control; over one the
+    pointer moves to a point that is none, and with no such point the scroll is refused."""
+    page = Page(editable=lambda x, y: 450 <= x <= 550 and 350 <= y <= 450)   # a number input
+    p = pacer(page)
+    p.pointer = (500, 400)                       # resting over the input
+    await p.scroll("down", "page")
+    wheels = [e[1] for e in page.log if e[0] == "wheel"]
+    assert len(wheels) >= 3
+    assert all(not (450 <= x <= 550 and 350 <= y <= 450) for x, y in wheels)
+    # The control scrolls under the pointer after each step: every later step moves first.
+    last = {"at": None}
+
+    def under_last_wheel(x, y):
+        return (round(x), round(y)) == last["at"]
+    page2 = Page(editable=under_last_wheel)
+    p2 = pacer(page2)
+    real = page2.mouse.wheel
+
+    async def wheel(dx, dy):
+        await real(dx, dy)
+        last["at"] = page2.pointer
+    page2.mouse.wheel = wheel
+    await p2.scroll("down", "page")
+    w2 = [e[1] for e in page2.log if e[0] == "wheel"]
+    assert len(w2) >= 3 and all(a != b for a, b in zip(w2, w2[1:]))
+    page3 = Page(editable=lambda x, y: True)
+    with pytest.raises(ActionError, match="unsupported"):
+        await pacer(page3).scroll("down", "step")
+    assert not [e for e in page3.log if e[0] == "wheel"]

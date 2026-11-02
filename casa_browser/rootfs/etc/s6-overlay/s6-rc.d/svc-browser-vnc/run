@@ -1,0 +1,19 @@
+#!/command/with-contenv bash
+# The live view's picture (casa-vnc, uid 1104): x11vnc serves display :99 VIEW-ONLY on a Unix
+# socket — no TCP listener (-rfbport 0 and -rfbportv6 -1: libvncserver opens an IPv6
+# listener on 5900 otherwise, measured), no input from any client (the operator's input goes
+# through the controller's /ctl channel). Only the controller may connect (the socket's
+# directory); the network floor gives this user no connection at all. -noshm: the X server
+# (the browser user) may not attach this user's shared memory, so frames are read over the
+# socket.
+set -euo pipefail
+install -d -o casa-vnc -g casa-vncview -m 0750 /run/casa-browser/vnc
+rm -f /run/casa-browser/vnc/vnc.sock
+# The socket is created world-writable; its directory (0750 casa-vnc:casa-vncview) admits
+# only the controller.
+umask 000
+exec env -i PATH=/command:/usr/bin:/bin HOME=/run/casa-browser/vnc \
+  s6-setuidgid casa-vnc x11vnc -display :99 -auth /run/casa-browser/x-vnc/Xauthority \
+  -viewonly -shared -forever -nopw -norc -rfbport 0 -rfbportv6 -1 \
+  -unixsock /run/casa-browser/vnc/vnc.sock \
+  -noshm -noipv6 -nolookup -nossl -quiet

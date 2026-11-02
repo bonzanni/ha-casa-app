@@ -115,6 +115,10 @@ class DelegationComplete:
     # read only when that flag is True: a timestamp on its own never marks a
     # prompt.
     terminal_at: float | None = None
+    # Slice 5l: True when Casa holds this answer for ``relay_answer`` (a live
+    # notice of a resident's Telegram delegation); the synthesized turn then
+    # names the full delegation id. A replay never holds one.
+    relayable: bool = False
 
 
 # ---------------------------------------------------------------------------

@@ -62,7 +62,10 @@ browser app's is the `browser-unit` job (Python 3.13, `venv_browser/` from
 `docker` and `slow`. `make test-unit` and `make test-unit-serial` run Casa's suite and then
 `make test-browser`, as two separate invocations under the suite lock and memory cage, so
 the lock is never taken while held. `make test-browser-integration` runs the browser app's
-integration tests in its built test image. The app linter in `.github/workflows/lint.yml`
+integration tests in its built test image; the `browser-integration` job runs the same script
+(`casa_browser/test/run-integration.sh`) on every push and pull request, with the app
+container started as Supervisor starts it (`NET_ADMIN` only, `seccomp=unconfined`), then the
+live view's viewer in WebKit and Chromium (`run-viewer-engines.sh`, Playwright's image). The app linter in `.github/workflows/lint.yml`
 runs once per app. Until `casa_browser/` exists, every browser lane and target states that
 there is nothing to run and succeeds; once it exists, a lane that collects no test fails.
 

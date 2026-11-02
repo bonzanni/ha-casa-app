@@ -176,13 +176,15 @@ async def test_delivered_link_posts_once_to_the_identity_chat_and_returns_the_re
     assert len(recorder.deliveries) == 1 and recorder.other_sends == []
     chat_id, text, entities, plain = recorder.deliveries[0]
     assert chat_id == 4242
-    assert text == ("Approve at Rabobank (bank.example.com)\n"
+    # slice 5r: under the specialist's label line, as its messages are
+    assert text == ("\U0001F4CA finance\nApprove at Rabobank (bank.example.com)\n"
                     "Rabobank, NL — one-time link, 30 minutes")
     assert len(entities) == 1
     ent = entities[0]
+    # the head's glyph is a surrogate pair: offset 11 UTF-16 units, 10 code points
     assert (str(ent.type), ent.offset, ent.length, ent.url) == (
-        "text_link", 0, utf16_len("Approve at Rabobank (bank.example.com)"), URL)
-    assert plain == ("Approve at Rabobank (bank.example.com): " + URL +
+        "text_link", 11, utf16_len("Approve at Rabobank (bank.example.com)"), URL)
+    assert plain == ("\U0001F4CA finance\nApprove at Rabobank (bank.example.com): " + URL +
                      "\nRabobank, NL — one-time link, 30 minutes")
     # the receipt: every producer field, the reference, the claim, no URL byte
     body = _replacement(out)
@@ -210,9 +212,10 @@ async def test_entity_offsets_are_utf16_units_on_a_non_bmp_label(recorder):
     await hook(_post(LINK, json.dumps({SLOT: ref})), "call-1", {})
     _chat, text, entities, _plain = recorder.deliveries[0]
     link_text = f"{label} ({HOST})"
-    assert text == link_text
+    head = rb.post_label("finance")
+    assert text == f"{head}\n{link_text}"
     assert entities[0].length == utf16_len(link_text) == len(link_text) + 1
-    assert entities[0].offset == 0
+    assert entities[0].offset == utf16_len(head) + 1 == len(head) + 2
 
 
 @pytest.mark.asyncio
@@ -223,14 +226,15 @@ async def test_host_is_printed_from_the_url_never_from_the_label(recorder):
     ref, _ = store.deposit(client_id="c1", slot=SLOT, value=URL, label="Approve here")
     await hook(_post(LINK, json.dumps({SLOT: ref})), "call-1", {})
     _chat, text, _entities, plain = recorder.deliveries[0]
-    assert text == f"Approve here ({HOST})"
+    head = rb.post_label("finance")
+    assert text == f"{head}\nApprove here ({HOST})"
     assert text.count("Bank.Example.com") == 0          # lower-cased hostname
-    assert plain.startswith(f"Approve here ({HOST}): https://")
+    assert plain.startswith(f"{head}\nApprove here ({HOST}): https://")
     # default label when the producer sends none
     _open(store, call="call-2")
     ref2, _ = store.deposit(client_id="c1", slot=SLOT, value=URL)
     await hook(_post(LINK, json.dumps({SLOT: ref2})), "call-2", {})
-    assert recorder.deliveries[1][1] == f"Open ({HOST})"
+    assert recorder.deliveries[1][1] == f"{head}\nOpen ({HOST})"
 
 
 # --- every ordinary failure branch withholds and drops --------------------------
@@ -377,14 +381,19 @@ async def test_the_real_channel_method_sends_once_and_falls_back_plain():
     assert await ch.deliver_operator_link(42, text, entities, plain) is DeliveryOutcome.DELIVERED
     assert app.bot.send_message.await_count == 1
     kw = app.bot.send_message.await_args.kwargs
-    # exactly these three: no parse_mode, and no message_thread_id — a thread
-    # id would post the link into a topic, the defect #1015 exists to remove
+    # exactly these: no parse_mode, and no message_thread_id — a thread id
+    # would post the link into a topic, the defect #1015 exists to remove;
+    # and no link preview (slice 5g)
+    preview = kw.pop("link_preview_options")
+    assert preview.is_disabled is True
     assert kw == {"chat_id": 42, "text": text, "entities": entities}
     # the platform refuses the entity: one plain retry spelling the URL out
     app.bot.send_message = AsyncMock(side_effect=[BadRequest("can't parse entities"), True])
     assert await ch.deliver_operator_link(42, text, entities, plain) is DeliveryOutcome.DELIVERED
     assert app.bot.send_message.await_count == 2
-    assert app.bot.send_message.await_args.kwargs == {"chat_id": 42, "text": plain}
+    kw = dict(app.bot.send_message.await_args.kwargs)
+    assert kw.pop("link_preview_options").is_disabled is True
+    assert kw == {"chat_id": 42, "text": plain}
     # a TimedOut propagates: the broker reads it as not proven
     app.bot.send_message = AsyncMock(side_effect=TimedOut())
     with pytest.raises(TimedOut):

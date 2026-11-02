@@ -263,7 +263,10 @@ other refusal, and a second failure, is logged and the edit reports that it did 
 
 What it does not cover: it does not make the edit *succeed*. A settlement whose edit fails
 in transport leaves the keyboard standing, and the failure is logged rather than retried
-(INV-TG-003's caveat applies here too). A tap on such a keyboard is still refused by the
+(INV-TG-003's caveat applies here too). A specialist's picture card is the exception: when
+its caption edit does not land, its keyboard is still removed by a markup-only edit
+(`_edit_proposal_message` calling `clear_dm_keyboard`, best effort, logged when it fails), so
+only its text stays as posted. A tap on such a keyboard is still refused by the
 broker as stale, so what survives is a misleading display, never a wrong outcome.
 
 **INV-TG-009**: The Telegram channel's configured request replaces every surrogate code point in a serialized form-parameter value with one U+FFFD before HTTP encoding, preserving every other character and all multipart file data.

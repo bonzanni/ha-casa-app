@@ -1221,11 +1221,24 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # person's words or Casa's question, specialists settle between themselves
 # first, say what was chosen. Exactly ONE `insert` on `assistant:text`; the
 # eight other carriers byte-identical. No retention claim.
+# MOVED 2026-10-31 (browser executor slice 5h), `assistant:text` only: that
+# browsing paragraph gains one sentence — a browsing task is one `sync`
+# delegation, also when the person asks to be asked first, since the browsing
+# specialist asks them itself in this chat. Measured with `difflib` over
+# base-vs-new compiled text, word by word: exactly ONE `insert` on
+# `assistant:text`, that sentence; the eight other carriers byte-identical. No
+# retention claim.
+# MOVED 2026-11-01 (browser executor slice 5l), `assistant:text` only: the
+# #1332 relay paragraph is rewritten — a delegate's answer is passed on with
+# relay_answer (Casa posts it under the delegate's name), passing it on by hand
+# ("Alex: …") only when relay_answer cannot post it. ONE `replace` on
+# `assistant:text`, that paragraph; the eight other carriers byte-identical. No
+# retention claim.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
         "fe02798ee4a6221d05e9b65d31ff11181bb4116faa688abb89b11ef2171a1a71",
     "assistant:text":
-        "15d029571748c7541cc34066f0d4f3ceb787f02b96c1bbc142a91d085180a6c3",
+        "f760b6ba9d9b46ef14752028ebdb74e063c7cb38fa6b58ca5327c50e4c007d64",
     "assistant:voice":
         "3ec576745d3234f0c5b198afffcf4e067abe8eefacc3cd56078fa931bfd3c053",
     "butler:restricted_webhook":
@@ -1733,21 +1746,25 @@ def test_the_eval_measures_the_shipped_rule():
 # ---------------------------------------------------------------------------
 # #1332: a delegate's answer reaches the person once, in the delegate's own
 # words, attributed by name — not rewritten into a second version with a
-# question added. The rule reaches only the assistant's text projection and
+# question added. Slice 5l: Casa posts it under the delegate's header when the
+# assistant relays it (relay_answer); passing it on by hand is the fallback. The rule reaches only the assistant's text projection and
 # the legacy carrier, once each. Its live effect is measured by
 # test-local/eval/ellen_relay_fidelity.py.
 # ---------------------------------------------------------------------------
 
 _RELAY_DOCTRINE = (
-    "When a delegate's result answers the person, that answer is your whole "
-    "reply: pass it on in the delegate's own words, introduced only by its "
-    "name (\"Alex: …\") so that its \"I\" and \"me\" stay the delegate's. Write "
+    "When a delegate's result answers the person, pass that answer on with "
+    "relay_answer: Casa posts the delegate's whole answer to them, in its own "
+    "words and under its name, and that post is your whole reply to it. Write "
     "nothing of your own around it: do not announce that you are asking the "
     "delegate, and add no rewrite or restatement, no question, offer or next "
-    "step it did not make, no note on what you will do. A line meant for you "
-    "rather than the person is not passed on, except a question or request it "
-    "asks you to put to them: put that to them. Your other rules on what a "
-    "reply may hold still apply to what you pass on."
+    "step it did not make, no note on what you will do. A result meant for you "
+    "rather than the person is not relayed, except that a question or request "
+    "it asks you to put to them is put to them. If relay_answer cannot post it, "
+    "pass it on yourself in the delegate's own words, introduced only by its "
+    "name (\"Alex: …\") so that its \"I\" and \"me\" stay the delegate's; your "
+    "other rules on what a reply may hold still apply to what you pass on "
+    "yourself."
 )
 
 
@@ -2207,3 +2224,27 @@ def test_the_topic_purge_channel_rule_reaches_every_assistant_projection():
     assert {slot: _collapse_ws(body).count(needle)
             for slot, body in _legacy_prompt_carriers()} == {
         slot: int(slot == "assistant") for slot in _RESIDENT_SLOTS}
+
+
+# ---------------------------------------------------------------------------
+# Slice 5h (phone round 7): "ask me before you submit" made the assistant open an
+# interactive topic for a browsing task, where the specialist asked in plain text and its
+# own question card never came. A browsing task is one sync delegation. Pinned on the
+# compiled text projection (once there, nowhere else), the carrier a persona-bound
+# assistant actually reads.
+# ---------------------------------------------------------------------------
+
+ASK_FIRST_IS_SYNC_SENTENCES = (
+    "A browsing task is one delegation in `sync` mode, also when the person asks to be asked "
+    "first (\"ask me before you submit\"): the browsing specialist asks them itself, in this "
+    "chat (a question with buttons, or a link to take over), so that is never a reason for an "
+    "`interactive` delegation.",
+)
+
+
+def test_asking_first_is_a_sync_delegation_on_the_assistants_text_projection():
+    compiled = _compiled_resident_carriers()
+    for sentence in ASK_FIRST_IS_SYNC_SENTENCES:
+        needle = _collapse_ws(sentence)
+        assert {name: _collapse_ws(body).count(needle) for name, body in compiled} == {
+            name: int(name == "assistant:text") for name, _ in compiled}, sentence

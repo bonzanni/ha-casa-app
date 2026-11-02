@@ -127,6 +127,56 @@ async def test_admission_records_the_call_with_the_turns_facts():
     assert operator_calls.CALLS.find("c1") == (None, "no_call_in_flight")
 
 
+# An interactive engagement's turns run under the ambient origin of the
+# resident's turn that launched it (in_casa_driver: the SDK's read task
+# snapshots origin_var at open): no execution_role, no stamped chain.
+ENGAGEMENT_TURN = {"role": "assistant", "channel": "telegram", "chat_id": "42",
+                   "user_id": 100, "cid": "ellen-turn", "message_type": "channel_in",
+                   "source": "telegram", "_operator_turn": True,
+                   "_origin_route": "telegram", "_origin_clearance": "private",
+                   "user_text": "order the pizza, ask me before you submit",
+                   "_operator_words": "order the pizza, ask me before you submit",
+                   "delegation_depth": 1}
+
+
+@pytest.mark.asyncio
+async def test_a_bindings_chain_ends_with_the_agent_that_made_the_call():
+    """Phone round 7: in an engagement the binding's chain was ("assistant",),
+    so every sweep continued the run as a turn of the resident, once a
+    minute. Whatever the origin, the chain ends with the calling role, and a
+    sync delegation's, a desk turn's and a resident's own facts are unchanged."""
+    hook = rb.make_plugin_admission_hook("browser", _map(), client_id="c1",
+                                         store=rb.ReferenceStore())
+    engagement = SimpleNamespace(id="e-1", kind="specialist", status="active", topic_id=7,
+                                 role_or_type="browser",
+                                 origin={**ENGAGEMENT_TURN, "chat_id": 42})
+    with _Origin(ENGAGEMENT_TURN):
+        etok = tools_mod.engagement_var.set(engagement)
+        try:
+            assert await hook(_pre(START), "tu-1", {}) == {}
+        finally:
+            tools_mod.engagement_var.reset(etok)
+    call, _ = operator_calls.CALLS.find("c1")
+    assert call.identity.engagement_id == "e-1"
+    assert call.chain == ("assistant", "browser") and call.requester == "assistant"
+    facts = operator_calls.requester_facts(call)
+    assert facts["chain"] == ["assistant", "browser"]
+    assert (facts["requester_id"], facts["requester_kind"]) == ("assistant",
+                                                                "operator_resident")
+    operator_calls.CALLS.close("c1", "tu-1")
+    for origin, role, chain in (
+            (FIDO_RUN, "browser", ("assistant", "browser")),                 # sync
+            ({**FIDO_RUN, "_handoff_chain": ("assistant", "finance", "browser")},
+             "browser", ("assistant", "finance", "browser")),                # hand-off
+            ({**ENGAGEMENT_TURN, "execution_role": "browser"},
+             "browser", ("assistant", "browser")),                           # desk turn
+            (ENGAGEMENT_TURN, "assistant", ("assistant",))):                  # resident
+        call = operator_calls.OperatorCalls().open(
+            client_id="cx", tool_use_id="t", tool_name=START, role=role,
+            plugin="browser", identity=_identity(), origin=dict(origin))
+        assert call.chain == chain, (origin, role)
+
+
 @pytest.mark.asyncio
 async def test_failure_hook_forgets_the_call():
     hook = rb.make_plugin_admission_hook("browser", _map(), client_id="c1",

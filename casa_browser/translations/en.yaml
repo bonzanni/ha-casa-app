@@ -1,0 +1,53 @@
+configuration:
+  onepassword_service_account_token:
+    name: 1Password service account token
+    description: >-
+      Token of a 1Password service account that can see only the browsing vault.
+      The app's credential broker uses it to read and save site logins; no other part
+      of the app can read it. Required before any site login.
+  onepassword_vault:
+    name: Browsing vault
+    description: >-
+      Name of the 1Password vault that holds the logins of the sites the browser may
+      use. The broker never reads another vault and never deletes an item.
+  guest_sign_in_address:
+    name: 1Password guest sign-in address
+    description: >-
+      The 1Password account's own sign-in address, as 1Password shows it under
+      your account's settings (for example yourteam.1password.eu; the generic
+      my.1password.eu is not accepted). The browser's 1Password extension signs in
+      there as a guest with read-only access to the browsing vault, and the app's
+      proxy admits this one address for the extension and the broker.
+  guest_email:
+    name: 1Password guest email
+    description: >-
+      Email address of that 1Password guest.
+  guest_password:
+    name: 1Password guest password
+    description: >-
+      Password of that 1Password guest.
+  guest_secret_key:
+    name: 1Password guest Secret Key
+    description: >-
+      Secret Key of that 1Password guest.
+  language:
+    name: Browser language
+    description: >-
+      Optional. Overrides the browser language, which otherwise follows Home
+      Assistant's configured language (read when the app starts) and also sets the
+      language of the app's own pages. A language tag such as en-GB or it.
+  timezone:
+    name: Browser time zone
+    description: >-
+      Optional. Overrides the browser time zone, which otherwise follows Home
+      Assistant's (an IANA name such as Europe/Amsterdam).
+  retention_days:
+    name: Retention (days)
+    description: >-
+      How long step logs, screenshots, downloaded files and run records are kept after
+      a run ends. Registered sites, approvals and saved logins are not affected.
+  log_level:
+    name: Log level
+    description: >-
+      Verbosity of the app's own log. Logs never contain passwords, codes, cookies or
+      page addresses.

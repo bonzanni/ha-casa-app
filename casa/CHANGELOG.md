@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.346.0] - 2026-11-02
+
+### Added
+
+- Casa checks browsing steps for the optional Casa Browser app: before the browsing specialist does something on a website, Casa judges whether it only reads or would change something, so a change is put to you first.
+- A specialist's answer reaches you in its own words: when the assistant passes it on, Casa posts the answer the specialist ended its turn with, once, headed by `📊` and the specialist's name, and a swipe-reply to it reaches that specialist. When that post cannot be made (for example an answer cut off before its end, or after a restart), the assistant passes the answer on itself as "Alex: …"; an answer whose work still waits on your approval is not passed on, and you see the approval request instead.
+- A specialist's card can be one message with a picture (a screenshot of the page a question is about, say), its text as the caption, and can carry one link button. A tap's receipt can be written as the card's last line instead of a new message.
+
+### Changed
+
+- A link a plugin sends you now starts with a label line (`📊` and the name of the agent whose plugin sent it), like a specialist's other posts, and shows no link preview.
+- A browsing task is always one synchronous delegation, also when you ask to be asked first: the browsing specialist asks you itself in your chat. A plugin whose runs Casa keeps driving can no longer be started as an interactive topic.
+- When a specialist upgrade ends in an error, the configurator is told the reason and can tell you, instead of only "error".
+
+### Fixed
+
+- A browsing run started inside a topic is continued by the specialist that runs it. Before, it was continued every minute as a turn of the assistant, whose answer reached your chat each time.
+- When a specialist's task runs past the assistant's wait, the assistant no longer adds that it is still on it: the line saying the task was passed on is already in your chat.
+- When a specialist ended its turn silently after a line of its own working notes, the assistant read the notes as progress and wrote that the specialist was still on it. Casa now tells her that the specialist has nothing for you, so she stays silent unless she has something else to say.
+- A specialist doctrine whose headings select nothing for any surface is refused when it is loaded, instead of leaving the specialist with no doctrine at all.
 ## [0.345.5] - 2026-10-31
 
 ### Changed
