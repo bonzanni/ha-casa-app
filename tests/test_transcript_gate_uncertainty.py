@@ -417,3 +417,82 @@ async def test_a_run_that_moved_to_a_session_it_could_not_name_keeps_it(home):
     path_b = write_transcript(AGENT_HOME, b)
     await _sweep_resident(child_home / "sessions.json")
     assert path_b.exists()
+
+
+async def test_a_cwd_reload_never_moves_where_an_engagement_is_held(
+        home, monkeypatch):
+    """A specialist engagement opens in folder A; a configuration reload
+    then points the specialist at B before the finalize. The summary run
+    registers A (the cwd persisted at the first open), and with the
+    configuration back at A the real reaper keeps A's transcript while that
+    run is unconfirmed. Red case: the folder read from the configuration at
+    registration (B)."""
+    from claude_agent_sdk import ClaudeAgentOptions
+
+    import drivers.in_casa_driver as drv_mod
+    from drivers.in_casa_driver import InCasaDriver
+    from engagement_registry import LAUNCH_CWD_KEY, EngagementRegistry
+    from engagement_transcript_reaper import reap_engagement_transcripts
+    from test_engagement_transcript_reaper import _specialists
+
+    a = str(home.tmp / "agent-home" / "finance-a")
+    b = str(home.tmp / "agent-home" / "finance-b")
+
+    class _Client:
+        def __init__(self, options):
+            self.options = options
+
+        async def __aenter__(self):
+            return self
+
+    monkeypatch.setattr(drv_mod, "ClaudeSDKClient", _Client)
+    _specialists(monkeypatch, finance=SimpleNamespace(role="finance", cwd=a))
+    reg = EngagementRegistry(tombstone_path=str(home.tmp / "e.json"), bus=None)
+    rec = await reg.create(kind="specialist", role_or_type="finance",
+                           driver="in_casa", task="t", origin=dict(ORIGIN),
+                           topic_id=None)
+    await InCasaDriver(topic_stream_factory=lambda tid: None).open(
+        rec, ClaudeAgentOptions(cwd=a))
+    sid = str(uuid.uuid4())
+    await reg.persist_session_id(rec.id, sid)          # persists the origin
+    assert rec.origin[LAUNCH_CWD_KEY] == a
+
+    _specialists(monkeypatch, finance=SimpleNamespace(role="finance", cwd=b))
+    run = await tools._register_summary_run(rec, allowed=True)
+    assert [r["directory"] for r in rows(home.store)] == [a]
+    await reg.mark_completed(rec.id, time.time())
+    _specialists(monkeypatch, finance=SimpleNamespace(role="finance", cwd=a))
+    reloaded = EngagementRegistry(tombstone_path=str(home.tmp / "e.json"),
+                                  bus=None)
+    await reloaded.load()
+    path = write_transcript(a, sid)
+    await reap_engagement_transcripts(reloaded, now=time.time() + 400 * 86400)
+    assert path.exists()
+    run.close()
+
+
+async def test_a_held_session_keeps_its_pointer_and_goes_on_a_later_sweep(home):
+    """An expired, confirmed resident session is due while another turn in
+    the same folder is unconfirmed: the sweep keeps its pointer and its
+    transcript; once that turn is confirmed, the next sweep deletes both.
+    Red case: the pointer dropped at the first sweep, so nothing ever
+    revisits the transcript."""
+    sid = str(uuid.uuid4())
+    path = write_transcript(AGENT_HOME, sid)
+    reg_path = home.tmp / "sessions.json"
+    reg = SessionRegistry(str(reg_path))
+    async with reg._lock:
+        reg._data["telegram-held"] = {
+            "agent": "assistant", "sdk_session_id": sid,
+            "last_active": (datetime.now(timezone.utc)
+                            - timedelta(days=60)).isoformat()}
+        await reg._save_locked()
+    other = transcript_runs.register(home.store, kind="resident",
+                                     role="assistant", directory=AGENT_HOME,
+                                     session_id=str(uuid.uuid4()))
+    sweeper = SessionSweeper(registry=reg, directory_for=lambda role: AGENT_HOME)
+    await sweeper._sweep_once()
+    assert reg.get("telegram-held") is not None and path.exists()
+    transcript_runs.confirm(home.store, other)
+    await sweeper._sweep_once()
+    assert reg.get("telegram-held") is None and not path.exists()

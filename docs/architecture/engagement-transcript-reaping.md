@@ -45,8 +45,9 @@ the session's working directory; a `claude_code` engagement keeps its transcript
 workspace, which goes with the workspace. Nothing resumes or reads an `in_casa` transcript
 once its record is terminal, so the pass deletes the files the record attributes to it. The
 folder comes from the launch's own working-directory constructor
-(`engagement_transcript_reaper.py::transcript_cwd`, the same one a run registers under) run
-through the SDK's lookup — a plugin job's folder is unique to the engagement, so it goes whole with every
+(`engagement_transcript_reaper.py::transcript_cwd`, the same one a run registers under:
+the cwd persisted on the record at its first open, which a configuration reload cannot
+move) run through the SDK's lookup — a plugin job's folder is unique to the engagement, so it goes whole with every
 batch's session in it; a specialist's folder (its configured working directory, else its
 agent home) and the executors' shared `/config` folder hold other sessions, so only the
 named ones go, a zero-byte file included. A clearance downgrade (INV-MEM-011) records the

@@ -701,3 +701,40 @@ async def test_a_reload_during_finalize_never_captures_an_uncovered_summary(
         assert len(summaries(home.store)) == 1
     else:
         assert rows(home.store) == [] and summaries(home.store) == []
+
+
+async def test_a_finalize_cancelled_before_its_tail_confirms_its_summary_row(
+        home, monkeypatch):
+    """The flip lands, then the finalize is cancelled while it waits on the
+    driver (before the tail exists): no capture is outstanding, so the
+    summary run is confirmed rather than left holding its folder. Red case:
+    a row whose cleanup started only with the tail."""
+    from engagement_registry import EngagementRegistry
+    from tools import _finalize_engagement, init_tools
+
+    monkeypatch.setattr(agent_mod, "active_semantic_memory", None, raising=False)
+    reg = EngagementRegistry(tombstone_path=str(home.tmp / "e.json"), bus=None)
+    rec = await reg.create(kind="executor", role_or_type="configurator",
+                           driver="in_casa", task="t", origin=dict(ORIGIN),
+                           topic_id=None)
+    init_tools(channel_manager=MagicMock(), bus=MagicMock(notify=AsyncMock()),
+               specialist_registry=MagicMock(), mcp_registry=MagicMock(),
+               trigger_registry=MagicMock(), engagement_registry=reg)
+    waiting = asyncio.Event()
+
+    async def finalize_summary(engagement, outcome):
+        waiting.set()
+        await asyncio.Event().wait()
+    driver = MagicMock(cancel=AsyncMock(), finalize_summary=finalize_summary)
+    task = asyncio.create_task(_finalize_engagement(
+        rec, outcome="completed", text="done", artifacts=[], next_steps=[],
+        driver=driver))
+    await asyncio.wait_for(waiting.wait(), 5)
+    assert reg.get(rec.id).status == "completed"      # the flip landed
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await transcript_runs.settle()
+    (row,) = rows(home.store)
+    assert row["kind"] == "summary" and row["confirmed_at"] is not None
+    assert summaries(home.store) == []

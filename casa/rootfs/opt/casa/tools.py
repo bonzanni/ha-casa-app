@@ -4896,7 +4896,10 @@ async def _run_delegated_turn(
         # HERE and never in `_build_specialist_options`: in_casa engagements
         # launch and resume through that builder, and a fixed id there would
         # collide with `resume`. The project folder is the launch's own cwd.
-        options = replace(options, session_id=run.session_id)
+        # The cwd is the one the run registered (its row's directory): the
+        # retention pass deletes in that folder, so the launch is held to it.
+        options = replace(options, session_id=run.session_id,
+                          cwd=run.directory or options.cwd)
         own_sid = options.session_id
         _ph["options"] = time.monotonic()
         token = agent_mod.origin_var.set(child_origin)
@@ -12637,6 +12640,54 @@ async def _finalize_engagement(
     guard; ``PERSIST_FAILED`` means the tombstone write rolled back and the
     record is STILL LIVE (retryable).
     """
+    # Browser executor §5.4: a specialist that writes no memory leaves no
+    # summary either — the summary is its own output. Decided ONCE, here,
+    # and frozen: the summary run's registration and the tail's captures
+    # both read this decision, never the setting again (a reload during the
+    # teardown must not make a summary capture that no run covers).
+    from delegated_memory import role_writes_memory
+    summary_allowed = (engagement.kind != "specialist"
+                       or role_writes_memory(engagement.role_or_type))
+    # The finalize summaries are captures: their run's row exists before the
+    # terminal flip that makes the engagement's transcripts deletable
+    # (INV-ENG-027). This ``finally`` covers the row's whole life after its
+    # registration — a lost flip, a failure, a cancellation anywhere before
+    # the tail — unless a detached tail has taken it over; with no capture
+    # outstanding, closing confirms it.
+    summary_run = await _register_summary_run(engagement,
+                                              allowed=summary_allowed)
+    handed: list = []
+    try:
+        return await _finalize_engagement_funnel(
+            engagement, outcome=outcome, text=text, artifacts=artifacts,
+            next_steps=next_steps, driver=driver, stale_before=stale_before,
+            output_truncated=output_truncated, inbound_gate=inbound_gate,
+            detach_teardown_tail=detach_teardown_tail,
+            summary_allowed=summary_allowed, summary_run=summary_run,
+            handed=handed)
+    finally:
+        if not handed:
+            summary_run.close()
+
+
+async def _finalize_engagement_funnel(
+    engagement: EngagementRecord,
+    *,
+    outcome: str,
+    text: str,
+    artifacts: list[str],
+    next_steps: list[dict],
+    driver: Any | None,
+    stale_before: float | None,
+    output_truncated: bool,
+    inbound_gate: bool,
+    detach_teardown_tail: bool,
+    summary_allowed: bool,
+    summary_run: Any,
+    handed: list,
+) -> "FinalizeResult":
+    """The body of :func:`_finalize_engagement`, holding its summary run.
+    *handed* receives the detached tail when one takes the run over."""
     last_summary = engagement.origin.get("job", {}).get("last_summary")
     if outcome in ("cancelled", "error") and last_summary:
         text += f"\nLast progress: {last_summary}"
@@ -12879,19 +12930,6 @@ async def _finalize_engagement(
                     f"in_flight={blocking} reservations={resv}")
         return None
 
-    # The finalize summaries are captures: their run's row exists before the
-    # terminal flip that makes the engagement's transcripts deletable, and a
-    # lost flip confirms it at once (INV-ENG-027).
-    # Browser executor §5.4: a specialist that writes no memory leaves no
-    # summary either — the summary is its own output. Decided ONCE, here,
-    # and frozen: the summary run's registration and the tail's captures
-    # both read this decision, never the setting again (a reload during the
-    # teardown must not make a summary capture that no run covers).
-    from delegated_memory import role_writes_memory
-    summary_allowed = (engagement.kind != "specialist"
-                       or role_writes_memory(engagement.role_or_type))
-    summary_run = await _register_summary_run(engagement,
-                                              allowed=summary_allowed)
     if _engagement_registry is not None:
         try:
             won = await _engagement_registry.try_transition_terminal(
@@ -12910,16 +12948,11 @@ async def _finalize_engagement(
                 owes_terminal_notification=not _told_nowhere(engagement.origin, outcome),
             )
         except TerminalPreconditionFailed as exc:
-            summary_run.close()
             logger.info(
                 "Engagement %s completion vetoed by inbound gate: %s",
                 engagement.id[:8], exc)
             return FinalizeResult.PRECONDITION_FAILED
-        except asyncio.CancelledError:
-            summary_run.close()             # a cancelled run confirms
-            raise
         except Exception as exc:  # noqa: BLE001 — strict persist failed + rolled back
-            summary_run.close()
             logger.warning(
                 "Engagement %s terminal transition failed to persist "
                 "(rolled back, left live): %s",
@@ -12927,7 +12960,6 @@ async def _finalize_engagement(
             )
             return FinalizeResult.PERSIST_FAILED
         if not won:
-            summary_run.close()
             logger.info(
                 "Engagement %s not finalized — already terminal or revived "
                 "since snapshot (outcome=%s)",
@@ -13410,22 +13442,20 @@ async def _finalize_engagement(
             output_truncated=output_truncated, frozen=frozen,
             summary_run=summary_run,
         ))
-        # The tail's end is the summary run's outermost end: a tail that
-        # ended without a summary capture interrupted still confirms it.
+        # The tail now owns the summary run: its end is the run's outermost
+        # end, and a tail that ended with no capture interrupted confirms it.
+        handed.append(tail)
         tail.add_done_callback(lambda _t: summary_run.close())
         _finalize_tail_tasks.add(tail)
         tail.add_done_callback(
             lambda t, _eid=engagement.id: _finalize_tail_done(_eid, t))
         return await asyncio.shield(tail)
-    try:
-        return await _finalize_engagement_tail(
-            engagement, outcome=outcome, text=text, artifacts=artifacts,
-            next_steps=next_steps, driver=driver, now=now,
-            output_truncated=output_truncated, frozen=frozen,
-            summary_run=summary_run,
-        )
-    finally:
-        summary_run.close()
+    return await _finalize_engagement_tail(
+        engagement, outcome=outcome, text=text, artifacts=artifacts,
+        next_steps=next_steps, driver=driver, now=now,
+        output_truncated=output_truncated, frozen=frozen,
+        summary_run=summary_run,
+    )
 
 
 def _told_nowhere(origin: Any, outcome: str) -> bool:

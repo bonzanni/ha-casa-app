@@ -256,3 +256,47 @@ async def test_detached_run_writes_never_take_a_turns_thread(env, tmp_path):
     delegated = [r for r in rows(env) if r["kind"] == "delegation"]
     assert len(delegated) == 8
     assert all(r["confirmed_at"] and r["ended_at"] for r in delegated)
+
+
+async def test_registration_never_waits_on_a_saturated_default_executor(
+        env, monkeypatch):
+    """With the loop's default executor's only thread busy, a run still
+    registers inside its bound. A registration slower than the bound counts
+    as failed for the turn, which goes on at once; the row that commits
+    later is adopted by the run, so its end and close still reach it."""
+    import concurrent.futures
+    import threading
+    import time as _time
+
+    loop = asyncio.get_running_loop()
+    loop.set_default_executor(concurrent.futures.ThreadPoolExecutor(1))
+    gate = threading.Event()
+    busy = loop.run_in_executor(None, gate.wait, 30)
+    try:
+        started = loop.time()
+        run = await transcript_runs.Run.start(
+            transcript_runs.DELEGATION, role="finance", directory="/d/home",
+            session_id=str(uuid.uuid4()))
+        assert loop.time() - started < 0.2
+        assert run.run_id is not None
+    finally:
+        gate.set()
+        await busy
+
+    real = transcript_runs.register
+
+    def slow(*a, **k):
+        _time.sleep(0.2)
+        return real(*a, **k)
+    monkeypatch.setattr(transcript_runs, "register", slow)
+    started = loop.time()
+    late = await transcript_runs.Run.start(
+        transcript_runs.DELEGATION, role="finance", directory="/d/home",
+        session_id=str(uuid.uuid4()))
+    assert loop.time() - started < 0.15
+    assert late.run_id is None
+    late.end()
+    late.close()
+    await transcript_runs.settle()
+    (row,) = [r for r in rows(env) if r["session_id"] == late.session_id]
+    assert row["confirmed_at"] is not None and row["ended_at"] is not None

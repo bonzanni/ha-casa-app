@@ -26,7 +26,7 @@ from drivers.driver_protocol import DriverProtocol, StaleLaunchError
 from error_kinds import (
     ApiErrorTurn, ErrorKind, api_error_kind, result_api_error_kind,
 )
-from engagement_registry import JOB_SIDS_KEY, EngagementRecord
+from engagement_registry import JOB_SIDS_KEY, LAUNCH_CWD_KEY, EngagementRecord
 import sdk_logging
 from log_cid import cid_var, new_cid
 from output_boundary import ApprovalCut
@@ -556,6 +556,12 @@ class InCasaDriver(DriverProtocol):
         # circular import (tools imports engagement_registry).
         from tools import engagement_var
 
+        # The cwd this engagement's sessions run in, recorded at its first
+        # open and persisted with the record's next write: every run and
+        # every reap of its transcripts reads it, never the configuration a
+        # reload may change (engagement_registry.LAUNCH_CWD_KEY).
+        if getattr(options, "cwd", None):
+            engagement.origin.setdefault(LAUNCH_CWD_KEY, str(options.cwd))
         client = ClaudeSDKClient(
             sdk_logging.with_stderr_callback(
                 options, engagement_id=engagement.id[:8],

@@ -69,6 +69,9 @@ BOOT_ID = uuid.uuid4().hex
 #: Seconds a run's registration or naming waits on a busy store; the same
 #: bound a capture's store attempt has.
 BUSY_TIMEOUT_S = 0.05
+#: Seconds a turn waits for its registration or naming, whatever holds it
+#: (the store, or a thread to run on); past it the write counts as failed.
+TURN_WAIT_S = 0.05
 
 RETENTION_ENV = "TRANSCRIPT_RETENTION_DAYS"
 DEFAULT_RETENTION_DAYS = 30
@@ -282,6 +285,14 @@ _background: set[asyncio.Task] = set()
 _writer = concurrent.futures.ThreadPoolExecutor(
     max_workers=1, thread_name_prefix="transcript-runs")
 
+#: The threads a run's registration and naming run on, awaited by the turn
+#: for at most :data:`TURN_WAIT_S`. Neither the event loop's default executor
+#: (which anything may saturate) nor :data:`_writer` (whose detached writes
+#: may each wait out the store's busy timeout, and would hold every
+#: registration queued behind them past its bound).
+_turn_pool = concurrent.futures.ThreadPoolExecutor(
+    max_workers=4, thread_name_prefix="transcript-runs-turn")
+
 
 def _detach(fn, *args) -> None:
     async def write() -> None:
@@ -299,11 +310,18 @@ def _detach(fn, *args) -> None:
     task.add_done_callback(_background.discard)
 
 
+#: Registrations a run stopped waiting for, still in flight.
+_late: set[asyncio.Future] = set()
+
+
 async def settle() -> None:
-    """Wait for every detached run write in flight."""
+    """Wait for every detached run write, and every late registration, in
+    flight."""
     loop = asyncio.get_running_loop()
-    while pending := [t for t in _background if t.get_loop() is loop]:
+    while pending := [t for t in (*_background, *_late)
+                      if t.get_loop() is loop]:
         await asyncio.gather(*pending, return_exceptions=True)
+        await asyncio.sleep(0)
 
 
 class Run:
@@ -320,6 +338,7 @@ class Run:
         self._open = 0
         self._failed = False
         self._closed = False
+        self._ended = False
 
     @property
     def run_id(self) -> str | None:
@@ -336,19 +355,44 @@ class Run:
         store = _store()
         if store is None:
             return run
+        loop = asyncio.get_running_loop()
+        insert = loop.run_in_executor(_turn_pool, functools.partial(
+            register, store, kind=kind, role=role, directory=run.directory,
+            session_id=session_id, confirmed=confirmed))
         try:
-            run.run_ids = [await asyncio.to_thread(
-                register, store, kind=kind, role=role,
-                directory=run.directory, session_id=session_id,
-                confirmed=confirmed)]
+            run_id = await asyncio.wait_for(asyncio.shield(insert),
+                                            TURN_WAIT_S)
         except Exception as exc:  # noqa: BLE001 — never blocks the run
             logger.warning("%s run of %s not registered (%s: %s); its "
                            "transcript is not protected", kind, role,
                            type(exc).__name__, exc)
+            # An insert still in flight may yet commit: its row is then
+            # adopted by the run, or confirmed once the run has closed, so
+            # no row this run never owned is left holding a directory.
+            _late.add(insert)
+            insert.add_done_callback(_late.discard)
+            insert.add_done_callback(
+                lambda fut: run._late_row(fut, store, confirmed))
             return run
+        run.run_ids = [run_id]
         run._store = store
         run._closed = confirmed
         return run
+
+    def _late_row(self, fut: asyncio.Future, store: MemoryStore,
+                  confirmed: bool) -> None:
+        """An insert that committed after the run stopped waiting for it:
+        the run adopts the row, and whatever the run already did to its row
+        (its end, its close) is applied to it now."""
+        if fut.cancelled() or fut.exception() is not None:
+            return
+        self.run_ids = [fut.result()]
+        self._store = store
+        if self._ended:
+            _detach(end, store, *self.run_ids)
+        if self._closed and not confirmed:
+            self._closed = False
+            self.close()
 
     async def name(self, session_id: str | None) -> None:
         """Record the session the run's captures come from, for visibility
@@ -360,8 +404,9 @@ class Run:
             self.session_id = session_id
             return
         try:
-            await asyncio.to_thread(name_session, self._store, self.run_id,
-                                    session_id)
+            await asyncio.wait_for(asyncio.get_running_loop().run_in_executor(
+                _turn_pool, name_session, self._store, self.run_id,
+                session_id), TURN_WAIT_S)
         except Exception as exc:  # noqa: BLE001 — never blocks the run
             logger.warning("%s run %s not named %s (%s: %s)", self.kind,
                            self.run_id[:8], session_id, type(exc).__name__,
@@ -399,6 +444,7 @@ class Run:
     def end(self) -> None:
         """Record when a delegated run's client exited (its retention
         clock)."""
+        self._ended = True
         if self.run_ids and self._store is not None:
             _detach(end, self._store, *self.run_ids)
 

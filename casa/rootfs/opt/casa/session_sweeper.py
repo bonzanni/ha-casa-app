@@ -169,9 +169,13 @@ class SessionSweeper:
             return
 
     async def _sweep_once(self) -> None:
-        """Run one full sweep: classify + evict under lock, then reap transcripts."""
+        """Run one full sweep: classify under the lock; ask the confirmation
+        gate for each due transcript outside it; evict under the lock the
+        entries whose transcript may go (a held one keeps its pointer, so a
+        later sweep deletes it once the hold clears); then reap transcripts."""
         now = self._now()
-        to_evict: list[tuple[str, str, str]] = []  # (key, sdk_session_id, role)
+        # (key, sdk_session_id, role, last_active as stored)
+        due_entries: list[tuple[str, str, str, object]] = []
         retention = transcript_runs.retention()
 
         async with self._registry._lock:
@@ -215,12 +219,36 @@ class SessionSweeper:
                 if not due:
                     continue
 
-                to_evict.append((key, sid, role))
+                due_entries.append((key, sid, role, entry.get("last_active")))
 
-            if to_evict:
-                for key, _sdk_sid, _role in to_evict:
+        # The confirmation gate, asked outside the registry lock. An entry
+        # whose transcript is held stays, pointer and all, for a later sweep.
+        cleared: list[tuple[str, str, str, object]] = []
+        for key, sid, role, stamp in due_entries:
+            if sid and await asyncio.to_thread(
+                    transcript_runs.blocked, directory=self._dir_for(role),
+                    session_id=sid):
+                logger.warning(
+                    "Session sweep kept %s (session %s): a run in its folder "
+                    "is not confirmed; retried next sweep", key, sid)
+                continue
+            cleared.append((key, sid, role, stamp))
+
+        to_evict: list[tuple[str, str, str]] = []  # (key, sdk_session_id, role)
+        if cleared:
+            async with self._registry._lock:
+                for key, sid, role, stamp in cleared:
+                    entry = self._registry._data.get(key)
+                    # Only the entry the gate was asked about: one a turn
+                    # re-registered or touched since stays.
+                    if (entry is None
+                            or str(entry.get("sdk_session_id") or "") != sid
+                            or entry.get("last_active") != stamp):
+                        continue
                     self._registry._data.pop(key, None)
-                await self._registry._save_locked()
+                    to_evict.append((key, sid, role))
+                if to_evict:
+                    await self._registry._save_locked()
 
         if not to_evict:
             return  # no save, no transcript-reap work
@@ -230,19 +258,11 @@ class SessionSweeper:
         # Transcript reap happens OUTSIDE the lock — best-effort, never
         # blocks the registry. The INFO is emitted from the reaper's own
         # report of a completed delete, never from the await returning: a
-        # swallowed failure returns exactly like a success. The confirmation
-        # gate is asked here, at the delete.
+        # swallowed failure returns exactly like a success.
         for key, sdk_sid, role in to_evict:
             if not sdk_sid:
                 continue
             directory = self._dir_for(role)
-            if await asyncio.to_thread(
-                    transcript_runs.blocked, directory=directory,
-                    session_id=sdk_sid):
-                logger.warning(
-                    "Session sweep kept the transcript of %s (session %s): a "
-                    "run in it is not confirmed", key, sdk_sid)
-                continue
             if await _reap_transcript(sdk_sid, directory):
                 logger.info(
                     "Session sweep deleted transcript for %s (session %s, role %s)",

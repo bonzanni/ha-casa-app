@@ -476,3 +476,24 @@ async def test_only_the_named_session_is_deleted(env, monkeypatch):
     assert _artifacts(env.folder, SIBLING) == 2
     assert _snapshot(env.folder, SIBLING) == sibling_before
     assert _artifacts(env.other, sid) == 2
+
+
+async def test_a_delegated_run_launches_in_the_folder_its_row_names(
+        env, monkeypatch, tmp_path):
+    """A configuration reload between the run's registration and its options
+    build cannot move the CLI out of the folder its row names: the launch
+    takes the row's directory, where the retention pass deletes."""
+    original = env.cfg.cwd
+    real = env.tools._build_specialist_options
+
+    def build(cfg, **kw):
+        cfg.cwd = str(tmp_path / "moved")           # the reload lands here
+        return real(cfg, **kw)
+    monkeypatch.setattr(env.tools, "_build_specialist_options", build)
+    h = _Harness()
+    _install(monkeypatch, env.tools, h)
+    await _finish(await _run(env.tools, env.cfg, h), h)
+    await transcript_runs.settle()
+    (row,) = rows(env.store)
+    assert row["directory"] == original
+    assert h.launches[0].cwd == original

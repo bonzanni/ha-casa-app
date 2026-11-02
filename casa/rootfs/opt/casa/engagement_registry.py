@@ -70,6 +70,12 @@ JOB_SIDS_KEY = "sids"
 # own write; the transcript reaper reads the list to delete each one once the
 # engagement is terminal. Both sides name it through this constant.
 RETIRED_SIDS_KEY = "retired_sids"
+# The key, on the record's ``origin``, of the working directory the
+# engagement's CLI was first opened in (its sessions' transcript folder). Set
+# once, at the first open, persisted with the record, and read — never the
+# current configuration — by everything that registers or reaps the
+# engagement's transcripts (``engagement_transcript_reaper.transcript_cwd``).
+LAUNCH_CWD_KEY = "launch_cwd"
 
 
 def _usable_time(value: object) -> bool:

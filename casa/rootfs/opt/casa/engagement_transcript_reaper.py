@@ -59,7 +59,7 @@ import sys
 import time
 from dataclasses import dataclass
 
-from engagement_registry import JOB_SIDS_KEY, RETIRED_SIDS_KEY
+from engagement_registry import JOB_SIDS_KEY, LAUNCH_CWD_KEY, RETIRED_SIDS_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -122,11 +122,15 @@ def _named_sids(rec) -> tuple[str, ...]:
 def transcript_cwd(rec) -> str | None:
     """The working directory *rec*'s sessions ran in: the key its transcript
     folder is resolved from, and the directory its runs and its finalize
-    summary are registered under. A claude_code engagement's is its
-    workspace. ``None`` for an uninstalled specialist, whose launch cwd can
-    no longer be derived."""
+    summary are registered under. The cwd persisted at the engagement's first
+    open wins over anything derived from the current configuration, which a
+    reload can change. A claude_code engagement's is its workspace. ``None``
+    for an uninstalled specialist with no persisted cwd."""
     import tools
 
+    launched = (getattr(rec, "origin", None) or {}).get(LAUNCH_CWD_KEY)
+    if isinstance(launched, str) and launched:
+        return launched
     if getattr(rec, "driver", None) == "claude_code":
         return os.path.join(tools._ENGAGEMENTS_ROOT, rec.id)
     if rec.kind == "plugin":
