@@ -1,23 +1,32 @@
 """Per-turn durable capture into ``memory.db``, with the spool fallback.
 
-:func:`append` stores one item in one local transaction and returns a
-:class:`Receipt`. A receipt means the item is durable: committed to the store,
-or written to ``/data/memory/spool.jsonl`` and fsynced. A store that is
-unavailable, or busy past :data:`CAPTURE_BUSY_TIMEOUT_S`, never drops a turn:
-the item goes to the spool, and the next append that reaches a healthy store
-drains the spool into it (:func:`drain_spool`). Only a failure to write even
-the spool returns no receipt.
+:func:`append` makes one item durable and returns a :class:`Receipt`. A
+receipt means the item is durable: committed to the store, or written to
+``/data/memory/spool.jsonl`` and fsynced. That write is all a seam waits for:
+one store attempt bounded by :data:`CAPTURE_BUSY_TIMEOUT_S`, and, when the
+store is unavailable or busy past it, one fsynced spool line. Only a failure
+to write even the spool returns no receipt.
+
+Everything else runs detached, never awaited by a turn (:func:`record`):
+draining the spool into a healthy store, which the first append to reach one
+starts (one drain at a time), and the private notice an old spool earns, sent
+under its own bound. :func:`settle` awaits whatever is in flight.
 
 Every spool line carries its item's ``source_key``, and the drain inserts with
-an ``INSERT`` that ignores a key already stored, so a drain cut off after its
-commit and run again adds each item once. Appends to the spool and the drain
-are serialized by one process-wide lock, :data:`_spool_lock`:
+an ``INSERT`` that ignores a key already stored, in batches of
+:data:`DRAIN_BATCH` lines per transaction with the store left free for
+:data:`DRAIN_PAUSE_S` between them, so a drain cut off after any commit and run
+again adds each item once, and the captures of running turns reach the store
+while a long drain runs. Appends to the spool and the drain are
+serialized by one process-wide lock, :data:`_spool_lock`:
 
 * a spool write takes it before it opens or creates the file and holds it
   through the write, the fsync and the close (and the directory fsync when it
   created the file); no descriptor is kept across acquisitions;
-* a drain holds it from its read of the spool, through its commit, to the
-  spool's removal and the directory fsync.
+* a drain holds it from its read of the spool, through its commits, to the
+  spool's removal and the directory fsync. It waits on the store no longer
+  than a capture does, so a capture that has to spool is never held behind a
+  drain that is itself waiting for the store.
 
 A line is therefore removed only by the drain that stored it, and a line
 written while a drain runs lands in a spool the next drain reads. A
@@ -55,8 +64,23 @@ logger = logging.getLogger(__name__)
 
 SPOOL_NAME = "spool.jsonl"
 
-#: Seconds an append waits on a busy store before it spools instead.
-CAPTURE_BUSY_TIMEOUT_S = 1.0
+#: Seconds an append (or a drain batch) waits on a busy store before it
+#: spools instead (or gives up until the next healthy append). The store's own
+#: writers hold its lock for milliseconds — a capture is one row, a drain batch
+#: a few hundred — so 50 ms rides out ordinary contention, and a lock held for
+#: longer costs a turn at most this per captured item before the item spools.
+CAPTURE_BUSY_TIMEOUT_S = 0.05
+
+#: Spool lines a drain stores per transaction.
+DRAIN_BATCH = 500
+
+#: Seconds a drain leaves the store free between its batches. A capture
+#: waiting on the store polls it at intervals of at most about 20 ms inside its
+#: bound, so a gap this long lets it in; back-to-back batches would starve it.
+DRAIN_PAUSE_S = 0.03
+
+#: Seconds the detached old-spool notice may take before it counts as failed.
+SPOOL_NOTICE_TIMEOUT_S = 60.0
 
 #: A spool whose oldest line is older than this earns one private notice.
 SPOOL_NOTICE_AFTER_S = 3600.0
@@ -198,8 +222,9 @@ def _insert(conn: sqlite3.Connection, item: Event | Summary) -> int:
 def append(store: MemoryStore, item: Event | Summary) -> Receipt | None:
     """Make *item* durable: store it, or spool it. Blocking; never raises.
 
-    After a healthy store write, a spool left by earlier failures is drained.
-    ``None`` means not even the spool could be written."""
+    It does nothing else: draining a spool left by earlier failures is
+    :func:`record`'s detached follow-up. ``None`` means not even the spool
+    could be written."""
     try:
         with store.transaction(
                 write=True, busy_timeout=CAPTURE_BUSY_TIMEOUT_S) as conn:
@@ -214,12 +239,6 @@ def append(store: MemoryStore, item: Event | Summary) -> Receipt | None:
         logger.warning("memory capture: store not writable (%s: %s); "
                        "spooling %s", type(exc).__name__, exc, item.source_key)
         return _spool(store.directory, item)
-    if os.path.exists(spool_path(store.directory)):
-        try:
-            drain_spool(store)
-        except Exception:  # noqa: BLE001 — the spool stays for the next one
-            logger.warning("memory capture: spool drain failed; kept for the "
-                           "next healthy append", exc_info=True)
     return Receipt(item.source_key, STORED)
 
 
@@ -305,9 +324,10 @@ def _parse(raw: bytes) -> tuple[list[Event | Summary], int]:
 def drain_spool(store: MemoryStore) -> int:
     """Store every spooled item, then remove the spool. Blocking.
 
-    Returns the number of rows added. Raises when the store cannot take them
-    (the spool is then left as it was). The export drains through this too;
-    no caller holds :data:`_spool_lock` when calling it."""
+    Returns the number of rows added. Raises when the store cannot take them;
+    the spool is then left whole (batches already committed are ignored when
+    it is drained again). The export drains through this too; no caller holds
+    :data:`_spool_lock` when calling it."""
     path = spool_path(store.directory)
     with _spool_lock:
         try:
@@ -317,13 +337,16 @@ def drain_spool(store: MemoryStore) -> int:
             return 0
         items, torn = _parse(raw)
         added = refused = 0
-        with store.transaction(
-                write=True, busy_timeout=CAPTURE_BUSY_TIMEOUT_S) as conn:
-            for item in items:
-                try:
-                    added += _insert(conn, item)
-                except sqlite3.IntegrityError:
-                    refused += 1
+        for start in range(0, len(items), DRAIN_BATCH):
+            if start:
+                time.sleep(DRAIN_PAUSE_S)
+            with store.transaction(
+                    write=True, busy_timeout=CAPTURE_BUSY_TIMEOUT_S) as conn:
+                for item in items[start:start + DRAIN_BATCH]:
+                    try:
+                        added += _insert(conn, item)
+                    except sqlite3.IntegrityError:
+                        refused += 1
         os.unlink(path)
         _fsync_dir(store.directory)
     if torn or refused:
@@ -340,6 +363,10 @@ _UNSET = object()
 _wiring: dict[str, object] = {"store": None, "notify": None}
 #: Spools (by their oldest line's time) the operator was already told about.
 _noticed: set[float] = set()
+#: Detached follow-ups (drains, notices), referenced until they finish.
+_background: set[asyncio.Task] = set()
+#: The one drain that may run at a time.
+_drain: list[asyncio.Task | None] = [None]
 
 
 def configure(*, store: MemoryStore | None | object = _UNSET,
@@ -359,27 +386,75 @@ def active_store() -> MemoryStore | None:
     return store if isinstance(store, MemoryStore) else None
 
 
+def _durable_write(store: MemoryStore, item: Event | Summary
+                   ) -> tuple[Receipt | None, bool]:
+    """The item's own durable write, and whether a spool now waits for a
+    store that just took a write."""
+    receipt = append(store, item)
+    waiting = (receipt is not None and receipt.outcome == STORED
+               and os.path.exists(spool_path(store.directory)))
+    return receipt, waiting
+
+
 async def record(item: Event | Summary) -> Receipt | None:
-    """Capture *item* off the event loop; the seams await this. Returns the
-    receipt, or ``None`` when nothing is wired or not even the spool took
-    it. Never raises, except the caller's own cancellation."""
+    """Capture *item*; the seams await this. Awaited is only the item's own
+    durable write, off the event loop; a drain it makes due and a notice it
+    makes due are detached. Returns the receipt, or ``None`` when nothing is
+    wired or not even the spool took it. Never raises, except the caller's
+    own cancellation."""
     store = active_store()
     if store is None:
         return None
-    receipt = await asyncio.to_thread(append, store, item)
+    receipt, spool_waiting = await asyncio.to_thread(_durable_write, store, item)
+    if spool_waiting:
+        _start_drain(store)
     if receipt is not None and receipt.outcome == SPOOLED:
-        await _notice_if_old(receipt.spool_since)
+        _start_notice(receipt.spool_since)
     return receipt
 
 
-async def _notice_if_old(since: float | None) -> None:
+def _detach(coro) -> asyncio.Task:
+    task = asyncio.get_running_loop().create_task(coro)
+    _background.add(task)
+    task.add_done_callback(_background.discard)
+    return task
+
+
+def _start_drain(store: MemoryStore) -> None:
+    running = _drain[0]
+    if (running is not None and not running.done()
+            and running.get_loop() is asyncio.get_running_loop()):
+        return
+    _drain[0] = _detach(_drain_detached(store))
+
+
+async def _drain_detached(store: MemoryStore) -> None:
+    try:
+        await asyncio.to_thread(drain_spool, store)
+    except Exception:  # noqa: BLE001 — the spool stays for the next one
+        logger.warning("memory capture: spool drain failed; kept for the "
+                       "next healthy append", exc_info=True)
+
+
+def _start_notice(since: float | None) -> None:
     notify = _wiring["notify"]
     if (since is None or notify is None or since in _noticed
             or time.time() - since <= SPOOL_NOTICE_AFTER_S):
         return
     _noticed.add(since)
+    _detach(_send_notice(notify, since))
+
+
+async def _send_notice(notify, since: float) -> None:
     try:
-        await notify(SPOOL_NOTICE)  # type: ignore[operator]
+        await asyncio.wait_for(notify(SPOOL_NOTICE), SPOOL_NOTICE_TIMEOUT_S)
     except Exception:  # noqa: BLE001 — told on a later spooled append instead
         _noticed.discard(since)
         logger.warning("memory spool notice could not be sent", exc_info=True)
+
+
+async def settle() -> None:
+    """Wait for every detached drain and notice in flight."""
+    loop = asyncio.get_running_loop()
+    while pending := [t for t in _background if t.get_loop() is loop]:
+        await asyncio.gather(*pending, return_exceptions=True)

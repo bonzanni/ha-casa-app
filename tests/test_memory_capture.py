@@ -49,6 +49,8 @@ def mem(tmp_path, monkeypatch):
     monkeypatch.setitem(capture._wiring, "store", store)
     monkeypatch.setitem(capture._wiring, "notify", None)
     monkeypatch.setattr(capture, "_noticed", set())
+    monkeypatch.setattr(capture, "_background", set())
+    monkeypatch.setattr(capture, "_drain", [None])
     return store
 
 
@@ -250,15 +252,19 @@ async def test_spool_drains_at_next_healthy_append(mem):
     assert {r.outcome for r in spooled} == {capture.SPOOLED}
     assert len(spool_lines(mem)) == 3
     _up(mem)
-    receipt = capture.append(mem, _item("healthy"))
+    receipt = await capture.record(_item("healthy"))
     assert receipt.outcome == capture.STORED
+    assert [e["text"] for e in events(mem)] == ["healthy"]   # receipt first
+    await capture.settle()                                  # then the drain
     assert sorted(e["text"] for e in events(mem)) == [
         "healthy", "spooled 0", "spooled 1", "spooled 2"]
     assert not os.path.exists(capture.spool_path(mem.directory))
 
 
 async def test_old_spool_sends_one_private_notice(mem):
-    notify = AsyncMock()
+    """One notice per old spool, sent detached; a send that fails is tried
+    again at the next spooled append, and then no more."""
+    notify = AsyncMock(side_effect=[RuntimeError("telegram not ready"), None])
     capture.configure(notify=notify)
     _down(mem)
     await capture.record(_item("first"))
@@ -267,9 +273,11 @@ async def test_old_spool_sends_one_private_notice(mem):
     first = json.loads(path.read_text())
     first["spooled_at"] -= capture.SPOOL_NOTICE_AFTER_S + 60
     path.write_text(json.dumps(first) + "\n")
-    await capture.record(_item("second"))
-    await capture.record(_item("third"))
-    notify.assert_awaited_once_with(capture.SPOOL_NOTICE)
+    for later in ("second", "third", "fourth"):
+        await capture.record(_item(later))
+        await capture.settle()
+    assert notify.await_count == 2
+    notify.assert_awaited_with(capture.SPOOL_NOTICE)
 
 
 async def test_no_model_call_on_capture(mem, tmp_path, monkeypatch):
@@ -292,7 +300,8 @@ async def test_no_model_call_on_capture(mem, tmp_path, monkeypatch):
         await agent._process(_operator_msg("again", "802"))
         _up(mem)
     assert FakeClient.attempts == 1                  # the turns' own warm client
-    capture.append(mem, _item("drains the spool"))
+    await capture.record(_item("drains the spool"))
+    await capture.settle()
     assert [e["text"] for e in events(mem)] == [
         "ping", "pong", "drains the spool", "again", "pong"]
 
@@ -546,3 +555,135 @@ async def test_a_turn_a_delegation_and_an_engagement_turn_each_capture(
     assert rows[4]["source_key"] == occurrence.provider_key(
         "telegram", f"engagement:{rec.id}", "55")
     assert summaries(mem) == []
+
+
+# --- the turn is never held by capture --------------------------------------
+
+#: What capture may add to one turn (its opening and its one answer) while
+#: the store is locked, the spool is old and its notice never resolves, or a
+#: large spool waits to be drained. The awaited part of a capture is only the
+#: item's own durable write: one store attempt bounded by
+#: ``CAPTURE_BUSY_TIMEOUT_S``, else one fsynced spool line.
+CAPTURE_OVERHEAD_BOUND_S = 0.5
+
+#: Spool lines for the large-spool case; drained synchronously, this many
+#: took well over a second on real SQLite.
+LARGE_SPOOL = 100_000
+
+
+
+
+async def _timed_turn(agent, message_id: str, limit: float = 5.0) -> float:
+    start = asyncio.get_running_loop().time()
+    with patch("sdk_client_pool._default_make_client", FakeClient):
+        await asyncio.wait_for(
+            agent._process(_operator_msg(f"turn {message_id}", message_id)),
+            limit)
+    return asyncio.get_running_loop().time() - start
+
+
+def _write_spool(store: MemoryStore, lines: int, *, age_s: float = 0.0) -> None:
+    import dataclasses
+    import time as _time
+    template = _item("spooled long ago")
+    os.makedirs(store.directory, exist_ok=True)
+    with open(capture.spool_path(store.directory), "wb") as f:
+        for i in range(lines):
+            record = {"table": "events", "spooled_at": _time.time() - age_s,
+                      "item": dataclasses.asdict(dataclasses.replace(
+                          template, source_key=f"event:{i:032x}"))}
+            f.write((json.dumps(record) + "\n").encode())
+
+
+@pytest.mark.parametrize("case", ["store_locked", "old_spool_notice_hangs",
+                                  "large_spool", "drain_running"])
+async def test_capture_never_holds_a_turn(mem, tmp_path, monkeypatch, case):
+    """A real ``Agent._process`` turn's capture overhead stays under
+    ``CAPTURE_OVERHEAD_BOUND_S`` against a warm baseline turn of the same
+    agent, whatever state the store and spool are in: a write lock another
+    connection holds, an old spool whose notice never resolves, or a large
+    spool waiting to be drained — the turn's own capture starting the drain,
+    or a drain already storing batches when the turn arrives. Each item still
+    gets its receipt."""
+    FakeClient.reset()
+    agent = _make_agent(tmp_path)
+    baseline = await _timed_turn(agent, "1")            # warm, healthy
+    receipts: list = []
+    real_record = capture.record
+
+    async def _recording(item):
+        receipt = await real_record(item)
+        receipts.append(receipt)
+        return receipt
+
+    monkeypatch.setattr(capture, "record", _recording)
+    holder = None
+    never = asyncio.Event()
+    if case == "store_locked":
+        holder = sqlite3.connect(mem.path, isolation_level=None)
+        holder.execute("BEGIN IMMEDIATE")
+    elif case == "old_spool_notice_hangs":
+        async def _never_delivered(_text):
+            await never.wait()
+        capture.configure(notify=_never_delivered)
+        _write_spool(mem, 1, age_s=capture.SPOOL_NOTICE_AFTER_S + 60)
+        _down(mem)
+    else:
+        _write_spool(mem, LARGE_SPOOL)
+        if case == "drain_running":
+            inserted: list[int] = []
+            real_insert = capture._insert
+
+            def _counting(conn, item):
+                inserted.append(1)
+                return real_insert(conn, item)
+
+            monkeypatch.setattr(capture, "_insert", _counting)
+            await real_record(_item("starts the drain"))
+            for _ in range(500):                   # the drain is storing
+                if len(inserted) > 500:
+                    break
+                await asyncio.sleep(0.01)
+            else:
+                pytest.fail("the drain never started storing")
+    try:
+        elapsed = await _timed_turn(agent, "2")
+    finally:
+        if holder is not None:
+            holder.execute("ROLLBACK")
+            holder.close()
+        _up(mem)
+        never.set()
+        await capture.settle()
+    assert elapsed - baseline < CAPTURE_OVERHEAD_BOUND_S, (case, elapsed,
+                                                           baseline)
+    assert len(receipts) == 2 and all(r is not None for r in receipts)
+    expected = (capture.STORED if case in ("large_spool", "drain_running")
+                else capture.SPOOLED)
+    assert {r.outcome for r in receipts} == {expected}
+
+
+async def test_one_background_drain_at_a_time(mem, monkeypatch):
+    """Healthy appends while a spool waits start one detached drain, not one
+    each, and none of them waits for it."""
+    import threading as _threading
+    _write_spool(mem, 3)
+    release = _threading.Event()
+    calls: list[int] = []
+    real_drain = capture.drain_spool
+
+    def _slow_drain(store):
+        calls.append(1)
+        assert release.wait(10)
+        return real_drain(store)
+
+    monkeypatch.setattr(capture, "drain_spool", _slow_drain)
+    for i in range(3):
+        receipt = await asyncio.wait_for(
+            capture.record(_item(f"healthy {i}")), 2)
+        assert receipt.outcome == capture.STORED
+    await asyncio.sleep(0.05)
+    assert calls == [1]
+    release.set()
+    await capture.settle()
+    assert len(events(mem)) == 6
