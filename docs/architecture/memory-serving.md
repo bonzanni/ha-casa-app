@@ -59,10 +59,15 @@ session, the id of that SDK session: the record belongs to that one session. A c
 the base never changes what the session was served. Every rendering goes through one function
 that rebuilds the ledger *as of* a commit from `revisions` (each revision row holds an
 object's whole state), so a reconnecting session renders its view again from its base and
-checks the hash. A session resumes only on a record bound to its own id, made for the same
-ledger, clearance, budget and renderer, whose hash verifies. Any other session — one whose
-record was never written or never bound, or was replaced by another session's — starts
-afresh, once, and the reason is logged. The session's resume pointer is dropped durably before the new view is rendered and
+checks the hash. A session is used again — resumed, or its warm client reused — only on a
+record bound to its own id, made for the same ledger, clearance, budget and renderer; a
+resume also re-renders the view and checks its hash. The rule is checked when a session
+connects and again at the end of every turn, inside the turn's session gate: a session
+without such a record (its view could not be recorded or bound, or its record was replaced
+by another session's) has its warm client released then, and any session that cannot resume
+on its record starts afresh, once, and the reason is logged. The one exception is a store
+that cannot be read at all: that is no verdict, and the session is kept on its own frozen
+view. The session's resume pointer is dropped durably before the new view is rendered and
 recorded, so a retry of that turn (a connect that times out) starts a session too and never
 resumes the old one on the new view. The
 turn's explanation record names the ledger and the base.
@@ -126,18 +131,18 @@ unavailable carries no note, and logs that it could not read one.
 resumed session keeps resuming, on its own frozen view: the CLI pinned its system prompt, the
 view included, when the session was created, so it keeps exactly what it was served and
 keeps its conversation through the outage. A new session starts with no memory block and no
-record bound to it, so its next reconnect starts it afresh. A delegated specialist is told
+record bound to it, so at the end of the first turn after the store can be read again its
+warm client is released, and its next turn starts afresh on a view. A delegated specialist is told
 memory could not be checked.
 
 **The store is unavailable or fails while the note is read.** The turn runs without the note
 and the failure is logged. The note comes back on the next turn the store answers.
 
-**A view's record cannot be written or bound** (the store's write lock is busy past a second).
-A view that could not be recorded is not served; one recorded but not bound to its session
-was served, and that session's warm client is released after the turn. Either way no record
-is bound to the session, so its next turn's reconnect starts it afresh on a current view.
-A session that started with no view (the store was unavailable) runs on, with a note that
-owes the pending corrections only, until its next reconnect.
+**A view's record cannot be written or bound** (another connection holds the store's write
+lock past 50 ms, the same bound capture waits). A view that could not be recorded is not
+served, and the turn runs at once without one; one recorded but not bound to its session was
+served. Either way no record is bound to the session, so its warm client is released after
+the turn and its next turn starts afresh on a current view.
 
 **The ledger is too large for the coarsest index level.** The view is served over budget, with
 a line saying every entry is still reachable; the meter reports the overflow and the nightly

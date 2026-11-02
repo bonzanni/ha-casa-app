@@ -325,3 +325,55 @@ async def test_a_session_whose_view_could_not_be_bound_is_not_kept_warm(
     first, second = _QueryClient.options
     assert "Rome" in first.system_prompt
     assert second.resume is None and "- city: Milan" in second.system_prompt
+
+
+async def test_a_session_whose_view_could_not_be_recorded_is_not_kept_warm(
+        tmp_path, monkeypatch):
+    """A session used again (warm or resumed) must have a record bound to
+    it. When a new session's view cannot be recorded (the store's write lock
+    is held through its first turn), it has none, so its warm client is let
+    go after the turn and the next turn starts afresh on a current view.
+    Red case: keeping the warm client leaves the session without a base, and
+    a correction committed meanwhile never reaches it."""
+    import sqlite3
+    from memory_serving_support import add
+    store = ledger_store(tmp_path)
+    _, [city] = add(store, [fact("city", "Rome")])
+    wire(monkeypatch, store)
+    _QueryClient.options, _QueryClient.queries = [], []
+    with patch("sdk_client_pool._default_make_client", _QueryClient):
+        agent = _agent(tmp_path)
+        lock = sqlite3.connect(store.path, isolation_level=None)
+        lock.execute("BEGIN IMMEDIATE")
+        try:
+            await agent._process(_msg())
+        finally:
+            lock.execute("ROLLBACK")
+            lock.close()
+        seq = _correction(store, "no, the city is Milan")
+        await _run_jobs(store, lambda p: reply(
+            {e["seq"]: "patched" for e in p["events"]},
+            [{"op": "replace", "object_id": city, "body": "Milan",
+              "source_seqs": [seq]}]))
+        await agent._process(_msg())
+        await agent.aclose()
+    first, second = _QueryClient.options
+    assert "<memory>" not in first.system_prompt
+    assert second.resume is None and "- city: Milan" in second.system_prompt
+
+
+async def test_a_session_kept_while_the_store_cannot_be_read(
+        tmp_path, monkeypatch):
+    """The settled exception: when the store cannot be read at all, the
+    session is kept on its own pinned view rather than reset."""
+    store = ledger_store(tmp_path, [fact("city", "Rome")])
+    wire(monkeypatch, store)
+    _QueryClient.options, _QueryClient.queries = [], []
+    with patch("sdk_client_pool._default_make_client", _QueryClient):
+        agent = _agent(tmp_path)
+        await agent._process(_msg())
+        store._unavailable_reason = "a simulated outage"
+        await agent._process(_msg())
+        await agent._process(_msg())
+        await agent.aclose()
+    assert len(_QueryClient.options) == 1

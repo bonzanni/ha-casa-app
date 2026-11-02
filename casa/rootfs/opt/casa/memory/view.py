@@ -52,9 +52,11 @@ logger = logging.getLogger(__name__)
 #: earlier renderer is not mistaken for this one's.
 RENDERER_VERSION = "1"
 
-#: Seconds a serving transaction waits on another connection's lock. A view
-#: is built at session start on the turn's path, so it never waits long.
-BUSY_TIMEOUT_S = 1.0
+#: Seconds a serving transaction waits on another connection's lock. Serving
+#: runs on the turn's path, so it waits no longer than capture does
+#: (``memory.capture.CAPTURE_BUSY_TIMEOUT_S``): a contended store degrades the
+#: turn to no view at once.
+BUSY_TIMEOUT_S = 0.05
 
 WHOLE = "whole"
 INDEX = "index"
@@ -537,6 +539,34 @@ def serve(store: MemoryStore, session_key: str, *, clearance: str,
             budget=budget, renderer_version=view.renderer_version,
             block_hash=view.block_hash))
     return Served(view)
+
+
+def settle(store: MemoryStore, session_key: str, sdk_session_id: str, *,
+           clearance: str, budget: int, served: View | None = None) -> bool:
+    """End of a turn of session *session_key*, run as SDK session
+    *sdk_session_id*: bind the view this turn served, if any, then say
+    whether the session may be used again — warm or resumed. It may only
+    when a record bound to exactly that SDK session exists, made for this
+    session's ledger, clearance, budget and renderer (its block hash is
+    verified when a session connects). A view that could not be bound
+    (the write lock was busy) leaves the record unbound, so the answer is
+    no. Raises only when the store cannot be read: the caller then cannot
+    tell, and keeps the session on its own frozen view."""
+    ledger = ledger_for(clearance)
+    if ledger is None or budget <= 0:
+        return True
+    if served is not None:
+        try:
+            bind(store, session_key, served, sdk_session_id)
+        except Exception:  # noqa: BLE001 — unbound; the read below decides
+            logger.warning("memory view of session %s could not be bound",
+                           session_key, exc_info=True)
+    with store.transaction(busy_timeout=BUSY_TIMEOUT_S) as conn:
+        row = sessions.get(conn, session_key)
+    return (row is not None and row.sdk_session_id == sdk_session_id
+            and row.ledger == ledger and row.clearance == clearance
+            and row.budget == budget
+            and row.renderer_version == RENDERER_VERSION)
 
 
 def bind(store: MemoryStore, session_key: str, view: View,

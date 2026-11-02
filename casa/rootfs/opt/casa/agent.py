@@ -2654,8 +2654,11 @@ class Agent:
                         scheduled=turn_scheduled,
                     )
                 # The view this turn served belongs to the session the turn
-                # published, pooled or not; inside the same gate.
-                await self._bind_memory_view(sdk_session_id)
+                # published, pooled or not, and that session is kept only on
+                # a record bound to it; inside the same gate.
+                await self._settle_memory_session(
+                    channel=msg.channel, channel_key=channel_key,
+                    sdk_session_id=sdk_session_id)
 
                 # #650: return-path health note — after the registration step
                 # (the published successor sid must precede the strike that
@@ -2895,37 +2898,41 @@ class Agent:
             return None, resume_sid
         if draft is not None and served.view is not None:
             # Bound to the SDK session once its id is known
-            # (``_bind_memory_view``), after the turn.
+            # (``_settle_memory_session``), after the turn.
             draft["memory_view_binding"] = (channel_key, served.view)
         return served.view, resume_sid
 
-    async def _bind_memory_view(self, sdk_session_id: str | None) -> None:
-        """Bind the view this turn served to the SDK session it was served
-        to, so only that session may resume on it and its note has a base.
-
-        Called after the turn, inside its session gate. When the binding
-        fails or finds its record replaced, the session's warm client is let
-        go, so its next turn reconnects, finds no record bound to it and
-        starts afresh on a current view, instead of running on with a note
-        that owes no committed correction."""
-        draft = _explain_draft_var.get(None)
-        binding = (draft or {}).get("memory_view_binding")
-        if not sdk_session_id or binding is None:
+    async def _settle_memory_session(
+        self, *, channel: str, channel_key: str, sdk_session_id: str | None,
+    ) -> None:
+        """End of every turn, inside its session gate: bind the view this turn
+        served (if it served one) to the SDK session that ran the turn, then
+        keep that session for its next turn — warm reuse, like a resume —
+        only if a record bound to exactly it exists. One that has none (its
+        view could not be recorded or bound) has its warm client released,
+        so the next turn reconnects, finds no record bound to it and starts
+        afresh on a current view. A store that cannot be read is not a
+        verdict: the session is kept, on its own frozen view."""
+        if self.config.memory.token_budget <= 0 or not sdk_session_id:
             return
         from memory import capture
         from memory import view as memory_view
-        channel_key, served = binding
+        draft = _explain_draft_var.get(None)
+        binding = (draft or {}).get("memory_view_binding")
+        served = binding[1] if binding and binding[0] == channel_key else None
         store = capture.active_store()
-        bound = False
+        if store is None or not store.available:
+            return
         try:
-            if store is not None and store.available:
-                bound = await asyncio.to_thread(
-                    memory_view.bind, store, channel_key, served,
-                    sdk_session_id)
-        except Exception:  # noqa: BLE001 — the reconnect resets instead
-            logger.warning("memory view not bound role=%s",
-                           self.config.role, exc_info=True)
-        if bound:
+            kept = await asyncio.to_thread(
+                memory_view.settle, store, channel_key, sdk_session_id,
+                clearance=_current_origin_clearance(channel),
+                budget=self.config.memory.token_budget, served=served)
+        except Exception:  # noqa: BLE001 — unreadable: keep the session
+            logger.warning("memory session %s not checked; kept on its own "
+                           "view", channel_key, exc_info=True)
+            return
+        if kept:
             return
         logger.warning("memory view of session %s is not bound to it; the "
                        "session reconnects at its next turn", channel_key)

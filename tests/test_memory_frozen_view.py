@@ -363,3 +363,45 @@ async def test_a_session_whose_view_was_never_recorded_never_resumes_another(
     assert "<memory>" not in two.system_prompt           # never recorded
     assert three.resume is None                          # not sid-2
     assert "a cat" in three.system_prompt
+
+
+#: What serving may add to a turn that starts a session while another
+#: connection holds the store's write lock: its record write gives up at
+#: serving's short busy bound and the turn runs without a view.
+SERVING_OVERHEAD_BOUND_S = 0.5
+
+
+async def test_a_held_write_lock_never_holds_a_starting_turn(
+        tmp_path, monkeypatch):
+    """Serving's store transactions on the turn path wait no longer than
+    capture's: a contended store degrades a starting turn to no view at
+    once. Red case: a one-second busy timeout on the record write holds the
+    turn past the bound."""
+    import asyncio
+    import sqlite3
+    store = ledger_store(tmp_path, [fact("city", "Rome")])
+    wire(monkeypatch, store)
+    loop = asyncio.get_running_loop()
+
+    async def timed(agent, chat):
+        start = loop.time()
+        msg = _msg()
+        msg.context["chat_id"] = chat
+        await agent._process(msg)
+        return loop.time() - start
+
+    _Client.options = []
+    with patch("sdk_client_pool._default_make_client", _Client):
+        agent = _agent(tmp_path)
+        await timed(agent, "warm-up")
+        baseline = await timed(agent, "baseline")
+        lock = sqlite3.connect(store.path, isolation_level=None)
+        lock.execute("BEGIN IMMEDIATE")
+        try:
+            held = await timed(agent, "held")
+        finally:
+            lock.execute("ROLLBACK")
+            lock.close()
+        await agent.aclose()
+    assert "<memory>" not in _Client.options[-1].system_prompt
+    assert held - baseline < SERVING_OVERHEAD_BOUND_S, (held, baseline)
