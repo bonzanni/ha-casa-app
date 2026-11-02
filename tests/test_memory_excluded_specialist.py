@@ -47,9 +47,11 @@ def events(store) -> list[dict]:
     """The captured events. A capture that met a busy store (a loaded machine
     holds the write lock past capture's 50 ms bound) waits durably in the
     spool; it is drained first, since every question here is what was
-    captured, not where it waited — and a canary waiting in the spool counts."""
+    captured, not where it waited — and a canary waiting in the spool counts.
+    A drained item is stored after the items that followed it, so the events
+    are returned in the order they occurred, not the order they were stored."""
     capture.drain_waiting(store)
-    return _stored_events(store)
+    return sorted(_stored_events(store), key=lambda e: e["occurred_at"])
 
 
 def _stored_text(store) -> list[str]:
