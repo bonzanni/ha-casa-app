@@ -51,8 +51,10 @@ transaction on one connection: the pending events, each one's correction mark, a
 window of earlier events from the same sessions, the ledger's objects, and the revision of
 every object (the *base*). The job row's `input_seqs`, `base_revisions` and `mark_seen`
 record that run only. In the `private` job each provisional event is classified with Casa's
-tier classifier. The model is then called through the model port (Opus 5.5, effort medium,
-no tools, a 600-second bound), outside any transaction. Its answer is a list of id-addressed
+tier classifier, each call bounded to a minute. The model is then called through the model
+port (Opus 5.5, effort medium, no tools), outside any transaction; the worker bounds that
+call to 600 seconds itself, whatever port it is given, so no model call can hold the one
+worker indefinitely. Its answer is a list of id-addressed
 operations — `add`, `replace`, `retire`, `split`, `merge`, `add_cue`, `set_line`, `move` —
 and an outcome per event. What the conversation means, and how the ledger should change, is
 the model's judgement; code checks only that each operation is well formed and stays in the
@@ -128,8 +130,9 @@ pass sends the job back to the queue once a night; failing again sends no second
 `deferred`, so pending; the next batch shows it again. An outcome for an event the run was
 not given is ignored: a disposition is written only for the run's own input.
 
-**Classification falls back.** The event stays provisional `private`: pending in no lower
-ledger, counted by the meter, never re-classified.
+**Classification falls back** (the classifier's own fallback, an error, or a call still
+running after a minute). The event stays provisional `private`: pending in no lower ledger,
+counted by the meter, never re-classified. The run goes on to the model and commits.
 
 **The store fails under the worker.** Recovery is the worker's own, in the running
 process, on every pass:

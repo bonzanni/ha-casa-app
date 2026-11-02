@@ -89,7 +89,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from memory import capture, classify, meter, patches, pending
-from memory.model_port import ModelPort, ModelReply
+from memory.model_port import TIMEOUT_S, ModelPort, ModelReply
 from memory.store import MemoryStore
 
 logger = logging.getLogger(__name__)
@@ -111,6 +111,11 @@ TICK_S = 30.0
 MAX_ATTEMPTS = 3
 #: Seconds before the first retry of a failed run; doubled for the next.
 BACKOFF_S = 60.0
+#: Seconds the worker waits for the model's answer before the run fails.
+#: The worker bounds every model await itself, whatever port it is given
+#: (the classification's bound is :data:`memory.classify.TIMEOUT_S`); the
+#: production port carries the same bound inside it.
+MODEL_TIMEOUT_S = TIMEOUT_S
 #: Seconds before the worker first retries opening an unavailable store;
 #: doubled after each failure, up to :data:`REOPEN_MAX_S`.
 REOPEN_FIRST_S = 30.0
@@ -640,8 +645,10 @@ class Writer:
                     plan.verdicts = await classify.classify_events(
                         inp.events, self.classifier)
                 system = await asyncio.to_thread(system_prompt)
-                reply = await self.port.complete(system=system,
-                                                 prompt=render_prompt(inp))
+                reply = await asyncio.wait_for(
+                    self.port.complete(system=system,
+                                       prompt=render_prompt(inp)),
+                    MODEL_TIMEOUT_S)
                 _hooks["after_model"]()
                 parsed = parse_reply(reply.text, inp)
                 plan.ops, plan.outcomes = parsed.ops, parsed.outcomes

@@ -15,6 +15,7 @@ permission flip on the store file.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import sqlite3
 import threading
@@ -347,3 +348,25 @@ async def test_an_event_the_snapshot_missed_is_still_due(tmp_path,
     [due] = w.schedule_due()
     assert await w.run_job(due) == writer.COMMITTED
     assert pending_seqs(store) == []
+
+
+async def test_a_stalled_model_call_fails_the_run(tmp_path, monkeypatch):
+    """The worker bounds the model call itself, whatever port it was given:
+    a call that never answers fails the run once the bound passes, the job
+    backs off as for any failure, and nothing is written."""
+    monkeypatch.setattr(writer, "MODEL_TIMEOUT_S", 0.05)
+    store = new_store(tmp_path)
+    e = seed(store, "x")
+
+    class Stalled:
+        async def complete(self, *, system, prompt):
+            await asyncio.Event().wait()
+
+    job = writer.enqueue(store, "private", writer.ORDINARY)
+    outcome = await asyncio.wait_for(
+        new_writer(store, Stalled()).run_job(job), 10)
+    assert outcome == writer.RETRY
+    assert [(j["state"], j["attempts"]) for j in job_rows(store)] == [
+        ("queued", 1)]
+    assert "TimeoutError" in job_rows(store)[0]["last_error"]
+    assert dispositions(store) == [] and pending_seqs(store) == [e]

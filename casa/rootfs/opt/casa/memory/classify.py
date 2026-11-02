@@ -15,6 +15,7 @@ Casa process.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Iterable
 
@@ -24,6 +25,14 @@ logger = logging.getLogger(__name__)
 
 #: Text to a tier, or ``None`` when the classification fell back.
 Classifier = Callable[[str], Awaitable["str | None"]]
+
+#: Seconds one event's classification may take before it counts as a
+#: fallback. Its own bound, not the writer call's: Casa's classifier is a
+#: short call on a small model, re-asked at most a few times with a
+#: two-second pause, so a minute is generous for one event, while a stalled
+#: call held to the writer's bound would hold the one worker that long per
+#: event.
+TIMEOUT_S = 60.0
 
 
 async def default_classifier(text: str) -> str | None:
@@ -45,15 +54,16 @@ def floor(verdict: str, origin_tier: str | None) -> str:
 async def classify_events(events: Iterable[dict],
                           classifier: Classifier) -> dict[int, str]:
     """The tier to write for each provisional event in *events*, by ``seq``.
-    An event whose classification fell back, or raised, is left out: it stays
-    provisional."""
+    An event whose classification fell back, raised or took longer than
+    :data:`TIMEOUT_S` is left out: it stays provisional."""
     verdicts: dict[int, str] = {}
     for event in events:
         if event["tier_status"] != "provisional":
             continue
         try:
-            verdict = await classifier(event["text"])
-        except Exception:  # noqa: BLE001 — a failed call is a fallback
+            verdict = await asyncio.wait_for(classifier(event["text"]),
+                                             TIMEOUT_S)
+        except Exception:  # noqa: BLE001 — failed or stalled: a fallback
             logger.warning("memory classify: event %s left provisional",
                            event["seq"], exc_info=True)
             continue

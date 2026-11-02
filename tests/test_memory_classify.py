@@ -7,6 +7,8 @@ ledger. A run that does not commit writes no verdict.
 """
 from __future__ import annotations
 
+import asyncio
+
 from memory import classify, pending, writer
 from memory_writer_support import (
     ScriptedPort, classifier_of, keep_provisional, new_store, new_writer,
@@ -105,3 +107,27 @@ async def test_the_default_classifier_adapts_casas_classifier(monkeypatch):
     assert await classify.default_classifier("x") == "friends"
     monkeypatch.setattr(tier_classifier, "classify_tier", fallback)
     assert await classify.default_classifier("x") is None
+
+
+async def test_a_stalled_classifier_leaves_the_event_provisional(
+        tmp_path, monkeypatch):
+    """A classification call that never completes counts as a fallback once
+    its bound passes: the event stays provisional ``private`` at its floor,
+    the run goes on to the model and commits, and the worker is free.
+    (Unbounded, the run would hold the one worker forever.)"""
+    monkeypatch.setattr(classify, "TIMEOUT_S", 0.05)
+    store = new_store(tmp_path)
+    a = seed(store, "the alarm is set to 6", origin_tier="family")
+
+    async def stalled(text):
+        await asyncio.Event().wait()
+
+    port = ScriptedPort(no_change_all)
+    job = writer.enqueue(store, "private", writer.ORDINARY)
+    outcome = await asyncio.wait_for(
+        new_writer(store, port, classifier=stalled).run_job(job), 10)
+    assert outcome == writer.COMMITTED
+    assert len(port.prompts) == 1
+    assert _tiers(store) == [(a, "private", "provisional")]
+    assert rows(store, "SELECT outcome FROM dispositions") == [
+        {"outcome": "no_change"}]
