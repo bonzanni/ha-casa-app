@@ -24,7 +24,7 @@ import tools as tools_mod
 from plugin_grants import ProfilePlan
 from plugin_registry import ResolutionResult, ResolvedPlugin
 from test_delegate_to_agent import _specialist_cfg
-from test_delegated_transcript_delete import _Harness
+from test_delegated_transcript_retention import _Harness
 from test_desk_tap import APPLY, ART, CANON, _map, _tap, _tool, env  # noqa: F401
 from test_pinned_wiring import _install, bound  # noqa: F401
 

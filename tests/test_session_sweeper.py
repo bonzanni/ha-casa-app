@@ -7,7 +7,6 @@ import json
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock
 
 import pytest
 
@@ -116,18 +115,22 @@ class TestEvictionPolicy:
         assert reg.get("voice-x") is not None
 
     async def test_scope_class_marker_uses_short_ttl(self, tmp_path):
+        """The one-shot TTL applies to a pointer that names no transcript; one
+        that names a transcript is kept for the transcript's retention."""
         path = str(tmp_path / "sessions.json")
         reg = SessionRegistry(path)
         now = datetime(2026, 4, 18, tzinfo=timezone.utc)
-        one_shot = str(uuid.uuid4())
+        one_shot, named = str(uuid.uuid4()), str(uuid.uuid4())
         # 2 days old: under the 30-day standard TTL, OVER the 1-day webhook TTL.
         await _seed(
-            reg, f"webhook-{one_shot}", "sdk-uuid",
+            reg, f"webhook-{one_shot}", "",
             now - timedelta(days=2),
         )
+        await _seed(reg, f"webhook-{named}", "sdk-uuid", now - timedelta(days=2))
         # The short TTL is granted by the persisted scope_class marker that
         # register() stamps on a one-shot — never re-derived from the key.
         reg._data[f"webhook-{one_shot}"]["scope_class"] = "webhook_oneshot"
+        reg._data[f"webhook-{named}"]["scope_class"] = "webhook_oneshot"
 
         sweeper = SessionSweeper(
             registry=reg,
@@ -139,6 +142,7 @@ class TestEvictionPolicy:
         await sweeper._sweep_once()
 
         assert reg.get(f"webhook-{one_shot}") is None
+        assert reg.get(f"webhook-{named}") is not None
 
     async def test_absent_scope_class_gets_the_standard_ttl(self, tmp_path):
         """register() drops a None scope_class, so every ordinary session
@@ -216,7 +220,9 @@ class TestEvictionPolicy:
         assert reg.get(f"voice-{coincidental_uuid}") is not None
 
     async def test_unparseable_last_active_is_evicted(self, tmp_path):
-        """A corrupt / missing last_active is treated as stale garbage."""
+        """A corrupt / missing last_active is treated as stale garbage when
+        the entry names no transcript; one that names a transcript is kept,
+        since its retention cannot be measured."""
         path = str(tmp_path / "sessions.json")
         reg = SessionRegistry(path)
         async with reg._lock:
@@ -230,6 +236,11 @@ class TestEvictionPolicy:
                 "sdk_session_id": "sdk-missing",
                 # no last_active field
             }
+            reg._data["voice-bad-sidless"] = {
+                "agent": "assistant",
+                "sdk_session_id": "",
+                "last_active": "not-a-date",
+            }
             await reg._save_locked()
 
         now = datetime(2026, 4, 18, tzinfo=timezone.utc)
@@ -242,8 +253,9 @@ class TestEvictionPolicy:
         )
         await sweeper._sweep_once()
 
-        assert reg.get("voice-bad") is None
-        assert reg.get("voice-missing") is None
+        assert reg.get("voice-bad-sidless") is None
+        assert reg.get("voice-bad") is not None
+        assert reg.get("voice-missing") is not None
 
     async def test_no_evictions_triggers_no_save(self, tmp_path, monkeypatch):
         """If nothing needs eviction, the sweep must not rewrite the file."""
@@ -401,11 +413,8 @@ class TestSdkSessionPrune:
         updated to the new contract where _sdk_delete_session is the test seam
         and the call is dispatched via asyncio.to_thread, §3.4.1.)
 
-        Seeded on an EVICTION-ELIGIBLE channel deliberately: since INV-MEM-017
-        a bank-writable channel's entry is never reaped, so seeding telegram
-        here would assert the seam fires for a class it must never fire for.
-        The telegram entry below is the other half of the same statement — one
-        reap per eligible eviction, zero for a protected entry.
+        The telegram entry below, far past its retention with no run
+        registered, is reaped like any other (INV-MEM-031).
         """
         import session_sweeper
 
@@ -432,11 +441,9 @@ class TestSdkSessionPrune:
         )
         await sweeper._sweep_once()
 
-        # Both eligible entries are evicted; the bank-writable one is kept.
-        assert set(reg.all_entries()) == {"telegram-kept"}
-        # And the delete seam is called once per evicted session id — never for
-        # the kept one (INV-MEM-017).
-        assert sorted(calls) == ["sdk-1", "sdk-2"]
+        assert set(reg.all_entries()) == set()
+        # The delete seam is called once per evicted session id.
+        assert sorted(calls) == ["sdk-1", "sdk-2", "sdk-kept"]
 
     async def test_prune_missing_method_is_silent_noop(
         self, tmp_path, monkeypatch,
@@ -647,13 +654,9 @@ class TestTranscriptReaper:
     ):
         """The sweep must pass each evicted entry's role directory to the reaper.
 
-        Seeds two cold EVICTION-ELIGIBLE entries with distinct agent roles,
-        constructs the sweeper with a directory_for lambda, and asserts the
-        recorded (session_id, directory) pairs match each entry's role. A
-        bank-writable entry with a third role is seeded alongside and must
-        contribute no pair at all (INV-MEM-017) — otherwise this test would
-        pass while the sweep threaded a directory into a reap that must never
-        happen.
+        Seeds three cold entries with distinct agent roles, constructs the
+        sweeper with a directory_for lambda, and asserts the recorded
+        (session_id, directory) pairs match each entry's role.
         """
         import session_sweeper
 
@@ -698,183 +701,12 @@ class TestTranscriptReaper:
         )
         await sweeper._sweep_once()
 
-        # Both eligible entries are evicted; the bank-writable one is kept.
-        assert set(reg.all_entries()) == {"telegram-sdk-c"}
+        assert set(reg.all_entries()) == set()
 
         # Reaper must have received the per-role directory for each evicted
-        # session, and nothing at all for the kept one.
+        # session.
         assert sorted(recorded) == [
             ("sdk-a", "/home/assistant"),
             ("sdk-b", "/home/butler"),
+            ("sdk-c", "/home/concierge"),
         ]
-
-
-# ---------------------------------------------------------------------------
-# INV-MEM-017 — the sweep never destroys a conversation whose retention is
-# still owed. Red case for #886 (specified by the red-case reviewer).
-# ---------------------------------------------------------------------------
-
-
-class TestRetentionOwedIsNeverDestroyed:
-    """A bank-writable channel's entry that names a transcript is neither
-    evicted nor reaped, whatever its age, provenance, claims or timestamp.
-
-    Every arm asserts a COUNT PAIR ``(delete-seam calls, surviving entries)``,
-    never a status. At the base tree each red arm produces ``(1, 0)``.
-    """
-
-    @staticmethod
-    async def _seed_owed(reg, monkeypatch, key, sid, now, **overrides):
-        """Seed a never-banked telegram entry 31 days stale, with usable
-        provenance, at the shipped TTL defaults."""
-        from speaker_provenance import provenance_mapping
-
-        monkeypatch.delenv("FRESHNESS_TELEGRAM_HOURS", raising=False)
-        await _seed(reg, key, sid, now - timedelta(days=31))
-        # _seed overwrites the whole entry, so the provenance and any claim
-        # marker are applied AFTER it, never before.
-        reg._data[key].update(
-            binding_digest=STUB_BINDING_DIGEST,
-            speaker_provenance=provenance_mapping(STUB_SPEAKER_PROV),
-            user_provenance=provenance_mapping(STUB_USER_PROV),
-        )
-        reg._data[key].update(**overrides)
-        await reg.save()
-
-    @staticmethod
-    def _record_deletes(monkeypatch):
-        import session_sweeper
-
-        calls: list[tuple[str, str | None]] = []
-        monkeypatch.setattr(
-            session_sweeper, "_sdk_delete_session",
-            lambda session_id, directory=None: calls.append((session_id, directory)),
-        )
-        return calls
-
-    @staticmethod
-    def _default_sweeper(reg, now):
-        """Constructed with NO TTL arguments — the shipped defaults are the
-        configuration under test, and they are asserted, not assumed."""
-        sweeper = SessionSweeper(registry=reg, now=lambda: now)
-        assert (sweeper._session_ttl.days, sweeper._webhook_ttl.days) == (30, 1)
-        return sweeper
-
-    async def test_ttl_preserves_never_banked_telegram(self, tmp_path, monkeypatch):
-        reg = SessionRegistry(str(tmp_path / "sessions.json"))
-        now = datetime(2026, 4, 18, tzinfo=timezone.utc)
-        await self._seed_owed(reg, monkeypatch, "telegram-017", "sdk-never-banked", now)
-        calls = self._record_deletes(monkeypatch)
-
-        await self._default_sweeper(reg, now)._sweep_once()
-
-        assert (len(calls), len(reg.all_entries())) == (0, 1)
-
-    async def test_ttl_preserves_telegram_during_reset_notify(self, tmp_path, monkeypatch):
-        """Swept inside _reset_locked's notify_reset await window, with the
-        reset's retirement claim live on the snapshotted sid."""
-        import session_saver
-
-        reg = SessionRegistry(str(tmp_path / "sessions.json"))
-        now = datetime(2026, 4, 18, tzinfo=timezone.utc)
-        key, sid = "telegram-017", "sdk-never-banked"
-        await self._seed_owed(reg, monkeypatch, key, sid, now)
-        calls = self._record_deletes(monkeypatch)
-        sweeper = self._default_sweeper(reg, now)
-
-        entered, release = asyncio.Event(), asyncio.Event()
-
-        async def listener(channel_key):
-            entered.set()
-            await release.wait()
-
-        unsubscribe = reg.add_reset_listener(listener)
-        task = asyncio.create_task(
-            session_saver._reset_locked(key, reg, AsyncMock(), channel="telegram")
-        )
-        try:
-            await asyncio.wait_for(entered.wait(), 2)
-            # The claim is live and names the snapshotted sid — assertions stay
-            # OUT of the listener, whose exceptions notify_reset swallows.
-            assert len(reg._retirements.get(key, {})) == 1
-            assert sum(s == sid for s in reg._retirements[key].values()) == 1
-
-            await sweeper._sweep_once()
-
-            # Counted while the reset is still suspended: letting it finish
-            # would measure the reset's own intentional removal instead.
-            assert (len(calls), len(reg.all_entries())) == (0, 1)
-        finally:
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-            unsubscribe()
-
-    async def test_ttl_preserves_telegram_with_inflight_save_claim(self, tmp_path, monkeypatch):
-        reg = SessionRegistry(str(tmp_path / "sessions.json"))
-        now = datetime(2026, 4, 18, tzinfo=timezone.utc)
-        await self._seed_owed(
-            reg, monkeypatch, "telegram-017", "sdk-never-banked", now,
-            consolidated_at=now.isoformat(),
-        )
-        calls = self._record_deletes(monkeypatch)
-
-        await self._default_sweeper(reg, now)._sweep_once()
-
-        assert (len(calls), len(reg.all_entries())) == (0, 1)
-
-    async def test_ttl_preserves_telegram_with_unparseable_last_active(self, tmp_path, monkeypatch):
-        """Protection wins over the malformed-timestamp eviction arm."""
-        reg = SessionRegistry(str(tmp_path / "sessions.json"))
-        now = datetime(2026, 4, 18, tzinfo=timezone.utc)
-        await self._seed_owed(
-            reg, monkeypatch, "telegram-017", "sdk-never-banked", now,
-            last_active="not-a-date",
-        )
-        calls = self._record_deletes(monkeypatch)
-
-        await self._default_sweeper(reg, now)._sweep_once()
-
-        assert (len(calls), len(reg.all_entries())) == (0, 1)
-
-    async def test_ttl_preserves_telegram_with_missing_last_active(self, tmp_path, monkeypatch):
-        reg = SessionRegistry(str(tmp_path / "sessions.json"))
-        now = datetime(2026, 4, 18, tzinfo=timezone.utc)
-        await self._seed_owed(reg, monkeypatch, "telegram-017", "sdk-never-banked", now)
-        reg._data["telegram-017"].pop("last_active")
-        await reg.save()
-        calls = self._record_deletes(monkeypatch)
-
-        await self._default_sweeper(reg, now)._sweep_once()
-
-        assert (len(calls), len(reg.all_entries())) == (0, 1)
-
-    async def test_ttl_preserves_telegram_without_provenance(self, tmp_path, monkeypatch):
-        """Protection does not depend on provenance: an entry Casa cannot
-        attribute still names the only copy of a real conversation."""
-        reg = SessionRegistry(str(tmp_path / "sessions.json"))
-        now = datetime(2026, 4, 18, tzinfo=timezone.utc)
-        monkeypatch.delenv("FRESHNESS_TELEGRAM_HOURS", raising=False)
-        await _seed(reg, "telegram-017", "sdk-never-banked", now - timedelta(days=31))
-        calls = self._record_deletes(monkeypatch)
-
-        await self._default_sweeper(reg, now)._sweep_once()
-
-        assert (len(calls), len(reg.all_entries())) == (0, 1)
-
-    async def test_ttl_still_evicts_a_sidless_telegram_pointer(self, tmp_path, monkeypatch):
-        """A pointer that names NO transcript stays TTL-eligible — protecting
-        it would accumulate a registry entry and protect no bytes."""
-        reg = SessionRegistry(str(tmp_path / "sessions.json"))
-        now = datetime(2026, 4, 18, tzinfo=timezone.utc)
-        await self._seed_owed(
-            reg, monkeypatch, "telegram-017", "sdk-never-banked", now,
-            sdk_session_id="",
-        )
-        calls = self._record_deletes(monkeypatch)
-
-        await self._default_sweeper(reg, now)._sweep_once()
-
-        assert (len(calls), len(reg.all_entries())) == (0, 0)

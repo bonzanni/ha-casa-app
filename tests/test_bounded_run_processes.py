@@ -169,8 +169,6 @@ def _use(monkeypatch, client_cls):
     monkeypatch.setattr(tools, "ClaudeSDKClient", client_cls)
     monkeypatch.setattr(tools, "_build_specialist_options",
                         lambda *_a, **_k: ClaudeAgentOptions())
-    monkeypatch.setattr(tools, "_delete_own_delegated_transcript",
-                        lambda *_a, **_k: asyncio.sleep(0))
     monkeypatch.setattr(pr.ProcessTree, "GRACE_S", 1.0)
     monkeypatch.setattr(pr.ProcessTree, "EXIT_WAIT_S", 5.0)
     return tools

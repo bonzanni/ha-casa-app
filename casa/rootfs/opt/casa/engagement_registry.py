@@ -4,7 +4,7 @@ Symmetric with :mod:`specialist_registry`. Owns:
 - EngagementRecord (one in-flight engagement)
 - EngagementRegistry (in-memory dict + ``/data/engagements.json``: in-flight
   records for crash recovery PLUS terminal tombstones, which age out after
-  ``_TERMINAL_RETENTION_DAYS`` — D-4, v0.69.0)
+  ``_terminal_retention_days()`` — D-4, v0.69.0)
 - Idle sweep (fires ``idle_detected`` bus events + session-suspends live clients)
 - Orphan recovery (startup: load the file; "active" rows are reconciled to
   idle — no driver survives a restart — and remain dormant until the next
@@ -48,6 +48,18 @@ _IDLE_SWEEP_CRON = "0 8 * * *"            # daily 08:00 user TZ
 # the snapshot on the next write — bounds the file while keeping the P32
 # duplicate-task guard and post-mortems working across restarts.
 _TERMINAL_RETENTION_DAYS = 30
+# A tombstone also outlives its engagement's transcript retention by this
+# margin, so the transcript reaper (every six hours, acting only on a terminal
+# status on disk) still finds the record when the retention ends.
+_TRANSCRIPT_REAP_MARGIN_DAYS = 2
+
+
+def _terminal_retention_days() -> int:
+    """Days a terminal tombstone is kept: ``_TERMINAL_RETENTION_DAYS``, or the
+    transcript retention plus the reap margin when that is longer."""
+    from memory import transcript_runs
+    return max(_TERMINAL_RETENTION_DAYS,
+               transcript_runs.retention_days() + _TRANSCRIPT_REAP_MARGIN_DAYS)
 # #1162: the key, inside ``origin["job"]``, of the list of every SDK session a
 # background job's client served. Its writer rotates a job's sessions; the
 # transcript reaper reads it to delete each one once the job is terminal. Both
@@ -729,7 +741,7 @@ class EngagementRegistry:
         Includes completed / cancelled / errored engagements: they stay
         in ``_records`` for the process lifetime and (since D-4,
         v0.69.0) persist on disk as tombstones for
-        ``_TERMINAL_RETENTION_DAYS``, so the guard also holds across
+        ``_terminal_retention_days()``, so the guard also holds across
         restarts. The duplicate-task guard at the ``engage_executor``
         call site uses this to refuse spawns that overlap with whichever
         task was spawned last.
@@ -762,7 +774,7 @@ class EngagementRegistry:
         Terminal records are persisted as real tombstones (D-4, v0.69.0) —
         they used to be silently dropped, so the P32 duplicate-task guard
         forgot recent spawns across restarts and the file never matched its
-        name. Tombstones age out after ``_TERMINAL_RETENTION_DAYS`` to bound
+        name. Tombstones age out after ``_terminal_retention_days()`` to bound
         the file.
 
         ``strict`` (B3, Sol r1): when True, a persistence failure PROPAGATES
@@ -790,7 +802,7 @@ class EngagementRegistry:
         # verdict in place, and a strict caller consulting it would skip a
         # rollback it owes — no write happened at all.
         self._last_tombstone_ok = False
-        cutoff = time.time() - _TERMINAL_RETENTION_DAYS * 86400
+        cutoff = time.time() - _terminal_retention_days() * 86400
         snapshot = []
         for rec in self._records.values():
             if (rec.status in ("completed", "cancelled", "error")

@@ -24,6 +24,13 @@ from claude_agent_sdk import project_key_for_directory
 from engagement_registry import EngagementRegistry
 
 
+def after_retention() -> float:
+    """A time past every transcript's retention: the reaper deletes a
+    terminal record's transcripts only once it has passed."""
+    from memory import transcript_runs
+    return time.time() + (transcript_runs.retention_days() + 1) * 86400
+
+
 def _projects(home: Path) -> Path:
     return home / ".claude" / "projects"
 
@@ -76,7 +83,8 @@ async def _run_periodic_passes(registry, tmp_path: Path, monkeypatch) -> None:
         engagements_root=str(engagements_root), log_root=str(tmp_path / "logs"))
     if importlib.util.find_spec("engagement_transcript_reaper") is not None:
         reaper = importlib.import_module("engagement_transcript_reaper")
-        await reaper.reap_engagement_transcripts(registry)
+        await reaper.reap_engagement_transcripts(
+            registry, now=after_retention())
 
 
 async def _terminal(registry, rec_id: str, outcome: str) -> None:

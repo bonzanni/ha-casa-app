@@ -25,7 +25,7 @@ import tools as tools_mod
 from plugin_grants import ProfilePlan, protected_map, result_contract_map
 from plugin_registry import ResolutionResult, ResolvedPlugin
 from test_delegate_to_agent import _specialist_cfg, _with_origin
-from test_delegated_transcript_delete import _Harness, _project, _write_session
+from test_delegated_transcript_retention import _Harness, _project, _write_session
 
 MISSING = "S5_WIRING_MISSING_VAR"
 
@@ -198,8 +198,7 @@ async def test_the_pinned_runner_hands_its_client_to_the_controller_and_retains_
         assert out.text == "answer"
         assert len(h.launches) == 1 and h.exits_done == 0        # entered by the controller, never exited here
         assert h.launches[0].hooks["PreToolUse"][0].hooks == [owner.pin_hook]
-        assert owner.transcript == (h.launches[0].session_id, cfg.cwd)
-        assert h.deletes == []                                   # the controller deletes after termination
+        assert h.deletes == []                                   # nothing deletes it on the run's path
         assert owner.pinned_pids() == {cli.pid} and owner.alive()
         for _ in range(3):
             await asyncio.sleep(0)
@@ -208,7 +207,7 @@ async def test_the_pinned_runner_hands_its_client_to_the_controller_and_retains_
         assert await owner.finish() is True
         assert h.exits_done == 1 and owner.alive() is False and owner.sealed
         assert len(h.written) == 1                               # the CLI flushed its transcript on exit…
-        assert h.deletes == []                                   # …and the desk deletes it, not the runner
+        assert h.deletes == []                                   # …kept for the retention pass
     finally:
         try:
             os.kill(cli.pid, 9)
@@ -217,14 +216,14 @@ async def test_the_pinned_runner_hands_its_client_to_the_controller_and_retains_
         cli.wait(timeout=5)
 
 
-async def test_the_unpinned_runner_still_exits_its_client_retains_and_deletes(runner_env):
+async def test_the_unpinned_runner_still_exits_its_client_retains_and_keeps_its_transcript(runner_env):
     cfg, monkeypatch = runner_env.cfg, runner_env.monkeypatch
     h = _Harness()
     _install(monkeypatch, h)
     out = await _with_origin(tools_mod._run_delegated_agent(cfg, "task", "", resolution=None),
                              _origin())
     assert out.text == "answer"
-    assert h.exits_done == 1 and len(h.deletes) == 1
+    assert h.exits_done == 1 and len(h.written) == 1 and h.deletes == []
     for _ in range(3):
         await asyncio.sleep(0)
     assert len(runner_env.retains) == 1                          # the positive control retains

@@ -652,7 +652,7 @@ def test_memory_labelling_and_retention_lifecycle_are_separate():
     lifecycle = {
         _declaring_document(inv)
         for inv in (
-            "INV-MEM-006", "INV-MEM-013", "INV-MEM-017", "INV-MEM-023",
+            "INV-MEM-006", "INV-MEM-013", "INV-MEM-031", "INV-MEM-023",
         )
     }
     counts = (
@@ -1092,7 +1092,8 @@ def test_transcript_reaping_and_durable_finalization_are_separate():
     transcripts are deleted"; the row's ``when_changing``
     (``docs/manifest.d/architecture-e.yaml:131-133``) ends "or deleting a
     finished engagement's transcripts", while ``defines_invariants``
-    (``:154``) lists INV-ENG-022 beside INV-ENG-001/002/005/010 on one
+    (``:154``) lists the reaper's invariant (INV-ENG-027 today) beside
+    INV-ENG-001/002/005/010 on one
     document. The document is past the 25 KB ceiling at that base and
     INV-DOC-007 (``docs/contributing/doc-contract.md:75``) owes the split.
 
@@ -1105,7 +1106,7 @@ def test_transcript_reaping_and_durable_finalization_are_separate():
 
     Specified by **astra** in the drive red-case round.
     """
-    moved = _declaring_document("INV-ENG-022")
+    moved = _declaring_document("INV-ENG-027")
     retained = {_declaring_document(inv)
                 for inv in ("INV-ENG-001", "INV-ENG-002",
                             "INV-ENG-005", "INV-ENG-010")}

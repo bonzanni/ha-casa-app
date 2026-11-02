@@ -9,8 +9,10 @@ coarsest index level overflows the role's budget), the twenty largest entries
 (ids and sizes only) and the week's growth,
 and from the one pending view the pending events (count and the oldest), the
 pending corrections and the failed jobs. Across the store it counts the
-events left provisional, the spool, each open session's ``base_commit_no``
-and whether a wipe or restore intent is pending.
+events left provisional, the spool, the transcript runs an earlier process
+left unconfirmed (unresolved, :mod:`memory.transcript_runs`), each open
+session's ``base_commit_no`` and whether a wipe or restore intent is
+pending.
 
 Thresholds only start jobs; the meter deletes nothing. Its values are
 counts, ids and times, never memory text.
@@ -21,7 +23,7 @@ import json
 import os
 from datetime import datetime, timedelta, timezone
 
-from memory import capture, pending, view
+from memory import capture, pending, transcript_runs, view
 from memory.store import MemoryStore
 
 META_KEY = "meter"
@@ -109,6 +111,7 @@ def measure(store: MemoryStore) -> dict:
         sessions = {r[0]: r[1] for r in conn.execute(
             "SELECT session_key, base_commit_no FROM session_views")}
         commit_no = pending.current_commit_no(conn)
+        unresolved = transcript_runs.unresolved_count(conn)
     intent = os.path.join(store.directory, "maintenance.json")
     return {
         "measured_at": now.isoformat(timespec="seconds"),
@@ -118,6 +121,7 @@ def measure(store: MemoryStore) -> dict:
         "spool_bytes": _file_size(capture.spool_path(store.directory)),
         "spool_snapshot_bytes": _file_size(
             capture.snapshot_path(store.directory)),
+        "unresolved_runs": unresolved,
         "sessions": sessions,
         "maintenance_intent": os.path.lexists(intent),
     }

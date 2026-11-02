@@ -134,6 +134,10 @@ REGISTRY: tuple[Entry, ...] = (
           Export.YES, Restore.LOAD, Wipe.DELETE),
     Entry("session views", Kind.TABLE, ("session_views",),
           Export.NO, Restore.NONE, Wipe.DELETE),
+    # Run registration and confirmation: ids and times, no content. A restore
+    # wipes every transcript first, so nothing is loaded back.
+    Entry("transcript runs", Kind.TABLE, ("transcript_runs",),
+          Export.NO, Restore.NONE, Wipe.DELETE),
     Entry("meta", Kind.TABLE, ("meta",),
           Export.NO, Restore.FRESH, Wipe.FRESH),
     Entry("backfill run", Kind.TABLE, ("backfill_run",),

@@ -5,7 +5,7 @@ Before #1181 two documents said that cleanup "never fires under Casa's SDK
 invocation" while three launch sites made it fire. The statement is true now
 only because of a reason — no launch loads the user settings source or passes
 ``cleanupPeriodDays`` — so both places must carry that reason, where a reader
-deciding whether Casa can rely on the hold of INV-MEM-017 will look.
+deciding whether Casa can rely on the retention of INV-MEM-031 will look.
 """
 from __future__ import annotations
 
@@ -35,9 +35,9 @@ def test_memory_lifecycle_declares_why_the_cli_cleanup_is_off():
     assert "never enabled by a Casa launch" in para
 
 
-def test_memory_lifecycle_inv_mem_017_names_the_cli_cleanup():
+def test_memory_lifecycle_inv_mem_031_names_the_cli_cleanup():
     text = (DOCS / "memory-lifecycle.md").read_text(encoding="utf-8")
-    para = _paragraph(text, "The sweep is Casa's only deleter of resident transcripts")
+    para = _paragraph(text, "What it does not cover: a transcript no pointer")
     assert "INV-MEM-021" in para
 
 

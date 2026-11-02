@@ -688,43 +688,41 @@ async def test_a_cancel_while_waiting_for_the_desk_releases_the_place(env):
 
 @pytest.fixture
 def deleter(monkeypatch):
+    """Records every SDK transcript delete. The desk makes none: a pinned
+    run's transcript, like every delegated run's, is kept for the retention
+    pass (INV-ENG-028)."""
+    import claude_agent_sdk
     deletes = []
-
-    async def fake_delete(sid, directory, role):
-        deletes.append((sid, directory, role, list(env_terminated)))
-    env_terminated = []
-    monkeypatch.setattr(tools_mod, "_delete_own_delegated_transcript", fake_delete)
-    return SimpleNamespace(deletes=deletes, terminated=env_terminated)
+    monkeypatch.setattr(claude_agent_sdk, "delete_session",
+                        lambda sid, directory=None: deletes.append((sid, directory)))
+    return SimpleNamespace(deletes=deletes)
 
 
-async def test_the_desk_deletes_the_pinned_runs_transcript_after_the_controller_finished(env, deleter):
+async def test_the_desk_keeps_the_pinned_runs_transcript_after_the_controller_finished(env, deleter):
     async def respond(call):
-        call.owner.transcript = ("sid-1", "/agent-home/finance")
         call.owner.resolve(pr.Capture("receipt", "applied"))
         return tools_mod.DelegatedOutput(text="")
     env.respond = respond
     await _tap(env)
-    assert deleter.deletes == [("sid-1", "/agent-home/finance", "finance", [])]
+    assert deleter.deletes == []
     assert env.calls[0].owner.sealed is True            # finish(): sealed and drained
 
 
-async def test_the_transcript_is_deleted_only_after_termination_on_the_ceiling(env, deleter, monkeypatch):
+async def test_the_transcript_is_kept_after_termination_on_the_ceiling(env, deleter, monkeypatch):
     monkeypatch.setattr(tools_mod, "_DELEGATION_CEILING_S", 0.05)
 
     async def respond(call):
-        call.owner.transcript = ("sid-2", "/agent-home/finance")
         await asyncio.sleep(30)
     env.respond = respond
+    terminated = []
     real_terminate = pr.PinnedRun.terminate
 
     async def terminate(self, task=None):
-        deleter.terminated.append(self.run_id)
+        terminated.append(self.run_id)
         return await real_terminate(self, task)
     monkeypatch.setattr(pr.PinnedRun, "terminate", terminate)
     await asyncio.wait_for(_tap(env), 5)
-    (delete,) = deleter.deletes
-    assert delete[:3] == ("sid-2", "/agent-home/finance", "finance")
-    assert delete[3] == [env.calls[0].owner.run_id]      # terminate ran BEFORE the delete
+    assert terminated == [env.calls[0].owner.run_id] and deleter.deletes == []
 
 
 async def test_processes_still_alive_after_an_orderly_close_enter_the_termination_path(env, monkeypatch):
@@ -855,8 +853,8 @@ async def test_a_cancel_whose_termination_is_unconfirmed_faults_the_desk(env, ca
 
 async def test_a_second_cancellation_as_the_termination_completes_still_runs_the_cleanup(env, monkeypatch, deleter):
     """Terra diff r2 S2: a cancellation arriving exactly when the shielded
-    termination finishes must not skip the fault decision, the transcript
-    delete and the fd close."""
+    termination finishes must not skip the fault decision and the fd
+    close."""
     closed = []
     monkeypatch.setattr(pr.PinnedRun, "close_fds", lambda self: closed.append(self))
     env.confirm = False
@@ -874,7 +872,6 @@ async def test_a_second_cancellation_as_the_termination_completes_still_runs_the
     started = asyncio.Event()
 
     async def respond(call):
-        call.owner.transcript = ("sid-c", "/agent-home/finance")
         started.set()
         await asyncio.sleep(30)
     env.respond = respond
@@ -884,7 +881,7 @@ async def test_a_second_cancellation_as_the_termination_completes_still_runs_the
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(holder["tap"], 5)
     assert env.desk.faulted                                  # the fault decision ran
-    assert [d[:3] for d in deleter.deletes] == [("sid-c", "/agent-home/finance", "finance")]
+    assert deleter.deletes == []
     assert closed == [env.calls[0].owner]
     assert not env.desk.lock.locked() and env.desk.waiting == 0
 
@@ -907,8 +904,8 @@ def _calls_in(node):
 
 def test_the_pinned_runs_release_is_reachable_only_through_the_one_settle_function():
     """Structural pin: every act that ends a pinned run's hold — the
-    confirmation (`finish`/`terminate`), the fault decision, the transcript
-    delete, the fd close and the permit release — lives in ONE function,
+    confirmation (`finish`/`terminate`), the fault decision, the fd close
+    and the permit release — lives in ONE function,
     `_settle_pinned_run`, and `handle_tap` reaches it on every path only
     through `_shielded`; nothing else in `handle_tap` performs any of them."""
     import ast
@@ -916,8 +913,7 @@ def test_the_pinned_runs_release_is_reachable_only_through_the_one_settle_functi
     tree = ast.parse(inspect.getsource(sd))
     fns = {n.name: n for n in tree.body if isinstance(n, ast.AsyncFunctionDef)}
     settle, tap = fns["_settle_pinned_run"], fns["handle_tap"]
-    RELEASING = {"owner.finish", "owner.terminate", "owner.close_fds", "permit.release",
-                 "tools_mod._delete_own_delegated_transcript"}
+    RELEASING = {"owner.finish", "owner.terminate", "owner.close_fds", "permit.release"}
     in_settle = set(_calls_in(settle))
     assert RELEASING <= in_settle, RELEASING - in_settle
     in_tap = [c for c in _calls_in(tap) if c in RELEASING]
@@ -1000,46 +996,25 @@ async def test_the_shield_hands_back_the_works_own_cancellation_without_spinning
     assert await asyncio.wait_for(t2, 1) == ("settled", True)   # …still gets the result, and knows it was cancelled
 
 
-async def test_an_unconfirmed_teardown_deletes_the_transcript_only_after_the_writer_left(env, monkeypatch, deleter):
-    """Astra A1b diff r3 S2: a CLI whose exit is unconfirmed may still flush its
-    transcript; the delete is owned by a detached waiter that runs after the
-    pinned fds report exit — the desk's bounded hold is not extended."""
+async def test_an_unconfirmed_teardown_closes_the_fds_and_deletes_no_transcript(env, monkeypatch, deleter):
+    """A CLI whose exit is unconfirmed may still flush its transcript; the
+    desk deletes none (the retention pass owns it) and keeps no deferred
+    waiter, so the fds are closed with the settle."""
     monkeypatch.setattr(tools_mod, "_DELEGATION_CEILING_S", 0.05)
     env.confirm = False
-    waiters = []
-    real = pr.PinnedRun.schedule_after_exit
-
-    def schedule(self, coro_factory):
-        t = real(self, coro_factory)
-        waiters.append(t)
-        return t
-    monkeypatch.setattr(pr.PinnedRun, "schedule_after_exit", schedule)
-
-    import subprocess
-    import sys
-    cli = subprocess.Popen([sys.executable, "-c", "import time\nwhile True: time.sleep(1)"])
+    closed = []
+    monkeypatch.setattr(pr.PinnedRun, "close_fds", lambda self: closed.append(self))
+    scheduled = []
+    monkeypatch.setattr(pr.PinnedRun, "schedule_after_exit",
+                        lambda self, f: scheduled.append(f))
 
     async def respond(call):
-        call.owner._pin_tree(cli.pid, None)                 # the writer, still alive after the hold
-        call.owner.transcript = ("sid-late", "/agent-home/finance")
         await asyncio.sleep(30)
     env.respond = respond
-    try:
-        await asyncio.wait_for(_tap(env), 5)
-        assert env.desk.faulted and env.terminated
-        assert deleter.deletes == []                         # not while the writer may be alive
-        (waiter,) = waiters
-        await asyncio.sleep(0.1)
-        assert not waiter.done()
-        cli.kill()
-        await asyncio.wait_for(waiter, 5)                    # the writer left: the delete runs
-        assert [d[:3] for d in deleter.deletes] == [("sid-late", "/agent-home/finance", "finance")]
-    finally:
-        try:
-            cli.kill()
-        except ProcessLookupError:
-            pass
-        cli.wait(timeout=5)
+    await asyncio.wait_for(_tap(env), 5)
+    assert env.desk.faulted and env.terminated
+    assert deleter.deletes == [] and scheduled == []
+    assert closed == [env.calls[0].owner]
 
 
 async def test_a_cancellation_during_the_settlement_still_propagates_after_it(env, monkeypatch):

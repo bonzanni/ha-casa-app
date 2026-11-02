@@ -1079,7 +1079,13 @@ class _TurnCapture:
     at admission, and each text-bearing message the resident writes, as it
     is emitted (``memory/capture.py``). Built only for a turn on a
     write-trusted channel; every event's floor is the turn's read clearance.
-    A capture failure is logged and never fails the turn."""
+    A capture failure is logged and never fails the turn.
+
+    The turn is a run (``memory/transcript_runs.py``): :meth:`register` puts
+    its row in place before the opening's capture, :meth:`observe` names the
+    session each stream message comes from before anything is captured from
+    it, every capture is awaited as one of the run's obligations, and
+    :meth:`close` (the turn's outermost ``finally``) confirms it."""
 
     def __init__(self, *, role: str, msg: BusMessage, user_text: str,
                  origin: Mapping[str, Any], scheduled: bool,
@@ -1101,13 +1107,41 @@ class _TurnCapture:
         #: The key of the operator message this turn opened with, once
         #: captured; ``None`` for a turn no message of his opened.
         self.operator_key: str | None = None
+        from memory import transcript_runs
+        self.run = transcript_runs.unregistered(transcript_runs.RESIDENT,
+                                                role=role)
 
     @classmethod
     def for_turn(cls, **kw) -> "_TurnCapture | None":
         from channel_policy import writes_to_bank
         return cls(**kw) if writes_to_bank(kw["msg"].channel) else None
 
+    async def register(self, directory: str) -> None:
+        """The turn's row, before its first capture."""
+        from memory import transcript_runs
+        self.run = await transcript_runs.Run.start(
+            transcript_runs.RESIDENT, role=self._role, directory=directory)
+
+    async def observe(self, sdk_msg: Any) -> None:
+        """Name the session *sdk_msg* comes from, before anything of it is
+        captured (the init message is the first that names one)."""
+        from memory import transcript_runs
+        await self.run.name(transcript_runs.session_of(sdk_msg))
+
+    async def name(self, sid: str | None) -> None:
+        """Name *sid* before a pointer to it is published."""
+        await self.run.name(sid)
+
+    def close(self) -> None:
+        self.run.close()
+
     async def opening(self) -> None:
+        await self.run.kept(self._opening())
+
+    async def message(self, text: str, sdk_msg: Any) -> None:
+        await self.run.kept(self._message(text, sdk_msg))
+
+    async def _opening(self) -> bool:
         from delegated_memory import notice_from_excluded_role
         from memory import capture, eligibility, occurrence
         msg = self._msg
@@ -1117,7 +1151,7 @@ class _TurnCapture:
                 channel_writes=True, scheduled=self._scheduled,
                 excluded_notice=notice_from_excluded_role(self._user_text))
             if rule is None:
-                return
+                return True
             ctx = msg.context
             provider_id = ctx.get("message_id") if self._operator_authored \
                 else None
@@ -1143,21 +1177,22 @@ class _TurnCapture:
                 else str(provider_id))
         except Exception:  # noqa: BLE001 — capture never fails a turn
             logger.exception("memory capture of a turn's opening failed")
-            return
+            return False
         receipt = await capture.record(item)
         if receipt is not None and speaker == "operator":
             # The message correct_memory marks when he corrects memory in
             # this turn.
             self.operator_key = receipt.source_key
+        return receipt is not None
 
-    async def message(self, text: str, sdk_msg: Any) -> None:
+    async def _message(self, text: str, sdk_msg: Any) -> bool:
         from memory import capture, eligibility
         try:
             rule = eligibility.admit(
                 eligibility.Source.RESIDENT_MESSAGE, text=text,
                 channel_writes=True)
             if rule is None:
-                return
+                return True
             sid = getattr(sdk_msg, "session_id", None)
             item = capture.event(
                 role=self._role, channel=self._msg.channel,
@@ -1167,8 +1202,8 @@ class _TurnCapture:
                 session_id=sid if isinstance(sid, str) and sid else None)
         except Exception:  # noqa: BLE001 — capture never fails a turn
             logger.exception("memory capture of a resident message failed")
-            return
-        await capture.record(item)
+            return False
+        return await capture.record(item) is not None
 
 
 class Agent:
@@ -2160,6 +2195,7 @@ class Agent:
         explain_draft: dict[str, Any] = {}
         explain_token = _explain_draft_var.set(explain_draft)
         turn_state: dict[str, Any] = {}
+        turn_capture: _TurnCapture | None = None
         try:
             # Resolve cwd to the agent-home (Plan 4b §5.1). Residents live at
             # /config/agent-home/<role>/; configured cwd on
@@ -2210,6 +2246,8 @@ class Agent:
                 origin=origin_snapshot, scheduled=turn_scheduled,
                 delegated_result=origin_question is not None)
             capture_message = (turn_capture.message
+                               if turn_capture is not None else None)
+            capture_observe = (turn_capture.observe
                                if turn_capture is not None else None)
 
             # <current_time> rides on the per-turn query text (NOT the cached
@@ -2303,6 +2341,7 @@ class Agent:
                     settle_evidence=(
                         msg.context.get("synthetic") != "plugin_setup"),
                     scope=scope, capture=capture_message,
+                    observe=capture_observe,
                 )
                 turn_state["state"] = state
                 # #521: keep EVERY attempt's state — a setup tool can run in
@@ -2326,6 +2365,8 @@ class Agent:
 
                 async def _publish(sid):
                     nonlocal session_published
+                    if turn_capture is not None:
+                        await turn_capture.name(sid)
                     await self._session_registry.register(
                         channel_key=channel_key,
                         agent=self.config.role_id,
@@ -2436,6 +2477,7 @@ class Agent:
                     settle_evidence=(
                         msg.context.get("synthetic") != "plugin_setup"),
                     scope=scope, capture=capture_message,
+                    observe=capture_observe,
                 )
                 turn_state["state"] = state
                 turn_state.setdefault("states", []).append(state)
@@ -2571,9 +2613,10 @@ class Agent:
                             _episode, self.config.role)
                         return None
                 # A turn that captures is registered before its first
-                # capture; that registration belongs here, ahead of this one.
-                # The opening is captured raw, before the model is called.
+                # capture. The opening is captured raw, before the model is
+                # called.
                 if turn_capture is not None:
+                    await turn_capture.register(agent_home)
                     await turn_capture.opening()
                     if turn_capture.operator_key is not None:
                         origin_snapshot[MEMORY_OPENING_KEY] = \
@@ -2656,6 +2699,8 @@ class Agent:
                 # 9. SessionRegistry — record the SDK session id for resume +
                 # save. Inside the gate; see the note above.
                 if sdk_session_id and not session_published:
+                    if turn_capture is not None:
+                        await turn_capture.name(sdk_session_id)
                     await self._session_registry.register(
                         channel_key=channel_key,
                         agent=self.config.role_id,
@@ -2756,6 +2801,10 @@ class Agent:
             # result answers the waiting episode now (same contract).
             import plugin_erasure
             plugin_erasure.turn_ended(msg.context)
+            # The turn's run is confirmed once every capture it made was
+            # kept (memory/transcript_runs.py); never awaited by the turn.
+            if turn_capture is not None:
+                turn_capture.close()
             _explain_draft_var.reset(explain_token)
             origin_var.reset(origin_token)
 
@@ -3500,12 +3549,15 @@ class Agent:
         settle_evidence: bool = True,
         scope: TurnScope | None = None,
         capture: Callable[[str, Any], Awaitable[None]] | None = None,
+        observe: Callable[[Any], Awaitable[None]] | None = None,
     ):
         """Build the per-turn ``on_message(sdk_msg)`` handler + its ``state``.
 
         ``capture``, when given, is awaited with each text-bearing message's
         folded text (and the message) before that text is emitted: the
-        turn's memory capture of what the resident wrote.
+        turn's memory capture of what the resident wrote. ``observe``, when
+        given, is awaited first with every message: it names the session the
+        turn's run captures from before anything of it is captured.
 
         Reproduces today's per-message body VERBATIM (Phase 4b sdk_logging
         dispatch wrapped in try/except, tool_names_by_id, idx counter,
@@ -3613,6 +3665,8 @@ class Agent:
             state["last_emitted"] = emitted
 
         async def on_message(sdk_msg: Any) -> None:
+            if observe is not None:
+                await observe(sdk_msg)
             # Voice partial streaming — handled EARLY so a StreamEvent never
             # falls through to the phase4b dispatch below (no per-token log
             # lines, no idx/tool bookkeeping). AR-E: defensive parsing — the

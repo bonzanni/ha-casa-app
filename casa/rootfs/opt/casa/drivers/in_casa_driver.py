@@ -101,17 +101,26 @@ class _EngagementCapture:
     and each text-bearing message the specialist writes. Executors and plugin
     jobs are not memory-writing specialists and capture nothing. Every
     event's floor is the engagement's read clearance. A capture failure is
-    logged and never fails the turn."""
+    logged and never fails the turn.
+
+    The turn is a run (``memory/transcript_runs.py``): :meth:`register` puts
+    its row in place before the operator's capture, naming the session the
+    turn resumes; ``_observe_session_id`` names every later one first; each
+    capture is one of the run's obligations, and the turn's outermost
+    ``finally`` confirms it (:attr:`run`)."""
 
     CHANNEL = "telegram"
 
     def __init__(self, engagement: EngagementRecord) -> None:
+        from memory import transcript_runs
         from sensitivity import clearance_for_origin
         origin = getattr(engagement, "origin", None) or {}
         self._engagement = engagement
         self._floor = clearance_for_origin(
             origin.get("_origin_route"), origin.get("_origin_clearance"),
             str(origin.get("channel", "")))
+        self.run = transcript_runs.unregistered(
+            transcript_runs.ENGAGEMENT, role=engagement.role_or_type)
 
     @classmethod
     def for_turn(cls, engagement: EngagementRecord) -> "_EngagementCapture | None":
@@ -123,12 +132,28 @@ class _EngagementCapture:
             return None
         return cls(engagement)
 
+    async def register(self, session_id: str | None) -> None:
+        """The turn's row, before its first capture, naming the session the
+        turn continues (``None`` for a fresh one, named when it reports)."""
+        from engagement_transcript_reaper import transcript_cwd
+        from memory import transcript_runs
+        try:
+            directory = transcript_cwd(self._engagement)
+        except Exception:  # noqa: BLE001 — the row then names no directory
+            directory = None
+        self.run = await transcript_runs.Run.start(
+            transcript_runs.ENGAGEMENT, role=self._engagement.role_or_type,
+            directory=directory, session_id=session_id)
+
     async def _record(self, source, text: str, **fields) -> None:
+        await self.run.kept(self._kept(source, text, **fields))
+
+    async def _kept(self, source, text: str, **fields) -> bool:
         from memory import capture, eligibility
         try:
             rule = eligibility.admit(source, text=text, channel_writes=True)
             if rule is None:
-                return
+                return True
             item = capture.event(
                 role=self._engagement.role_or_type, channel=self.CHANNEL,
                 origin_kind="operator", text=text, eligibility=rule,
@@ -136,8 +161,8 @@ class _EngagementCapture:
         except Exception:  # noqa: BLE001 — capture never fails a turn
             logger.exception("memory capture in engagement %s failed",
                              self._engagement.id[:8])
-            return
-        await capture.record(item)
+            return False
+        return await capture.record(item) is not None
 
     async def operator(self, text: str, tg_message_id: int) -> None:
         from memory import eligibility, occurrence
@@ -152,6 +177,9 @@ class _EngagementCapture:
             speaker_kind=("operator" if self._floor == "private"
                           else "third_party"),
             session_id=self._engagement.sdk_session_id)
+
+    def close(self) -> None:
+        self.run.close()
 
     async def answer(self, sdk_msg: Any, session_id: str | None) -> None:
         from memory import eligibility
@@ -1118,11 +1146,12 @@ class InCasaDriver(DriverProtocol):
     # -- internal ---------------------------------------------------------
 
     async def _observe_session_id(
-        self, engagement: EngagementRecord, sdk_msg: Any,
+        self, engagement: EngagementRecord, sdk_msg: Any, run: Any = None,
     ) -> None:
         """Record the session id a stream message carries — every turn's and
         a conversation reset's alike: the in-memory map, the registry's resume
-        pointer and, for a fresh job, the append-only sid ledger."""
+        pointer and, for a fresh job, the append-only sid ledger. A turn's
+        run (*run*) is named first, before anything else names the session."""
         sid = _session_id_from_message(sdk_msg)
         if (not sid and isinstance(sdk_msg, ConversationResetMessage)
                 and _is_fresh_job(engagement)):
@@ -1139,6 +1168,8 @@ class InCasaDriver(DriverProtocol):
                 sid = reset_sid
         if not sid:
             return
+        if run is not None:
+            await run.name(sid)
         self._session_ids[engagement.id] = sid
         # INV-BGJOB-005: every sid a fresh job's client reports — the launch
         # sid and each post-reset sid — is appended once to the ledger and
@@ -1174,7 +1205,7 @@ class InCasaDriver(DriverProtocol):
                 engagement.sdk_session_id = sid
 
     async def _reset_conversation(
-        self, engagement: EngagementRecord, client: Any,
+        self, engagement: EngagementRecord, client: Any, run: Any = None,
     ) -> None:
         """INV-BGJOB-005: reset the conversation of the engagement's OWN
         client in place with :data:`RESET_COMMAND` and drain it to its
@@ -1191,7 +1222,7 @@ class InCasaDriver(DriverProtocol):
         try:
             await client.query(RESET_COMMAND)
             async for sdk_msg in client.receive_response():
-                await self._observe_session_id(engagement, sdk_msg)
+                await self._observe_session_id(engagement, sdk_msg, run)
                 if isinstance(sdk_msg, ConversationResetMessage):
                     reset_seen = True
                 elif isinstance(sdk_msg, ResultMessage):
@@ -1322,6 +1353,7 @@ class InCasaDriver(DriverProtocol):
         # call's result from the hook's record on the turn holder.
         messages: list[str] = []
         approval_cut = ApprovalCut()
+        eng_capture: _EngagementCapture | None = None
         token = engagement_var.set(engagement)
         try:
             async with lock:
@@ -1344,9 +1376,10 @@ class InCasaDriver(DriverProtocol):
                 # This turn's memory capture: the operator's message as it was
                 # admitted (its ticket's text, never a preamble Casa adds),
                 # here, before the fence below whose window must not await.
-                # A turn that captures is registered before its first
-                # capture; that registration belongs here, ahead of this one.
+                # A turn that captures is registered before its first capture.
                 eng_capture = _EngagementCapture.for_turn(engagement)
+                if eng_capture is not None:
+                    await eng_capture.register(self.get_session_id(engagement))
                 if (eng_capture is not None and tg_message_id is not None
                         and inbound_token is not None):
                     admitted = self._admitted_text(engagement.id, inbound_token)
@@ -1422,7 +1455,9 @@ class InCasaDriver(DriverProtocol):
                 # so the reset can never land inside another turn. The launch
                 # turn holds no ticket and gets neither reset nor brief.
                 if inbound_token is not None and _is_fresh_job(engagement):
-                    await self._reset_conversation(engagement, client)
+                    await self._reset_conversation(
+                        engagement, client,
+                        eng_capture.run if eng_capture is not None else None)
                     # The drain above AWAITED, so a terminal transition (a
                     # /cancel) can have committed during it: re-run the #690
                     # fence synchronously before anything is accepted or sent.
@@ -1447,7 +1482,9 @@ class InCasaDriver(DriverProtocol):
                     prompt = f"{memory_note}\n\n{prompt}"
                 await client.query(prompt)
                 async for sdk_msg in client.receive_response():
-                    await self._observe_session_id(engagement, sdk_msg)
+                    await self._observe_session_id(
+                        engagement, sdk_msg,
+                        eng_capture.run if eng_capture is not None else None)
                     # Phase 4b dispatch — wrapped in try/except so a
                     # malformed block does not abort the rest of the turn.
                     try:
@@ -1615,6 +1652,9 @@ class InCasaDriver(DriverProtocol):
                 turn.batch = None
                 turn.approvals = None
             engagement_var.reset(token)
+            # The turn's run is confirmed once every capture it made was kept.
+            if eng_capture is not None:
+                eng_capture.close()
         # #1207 (ruling #1252): a turn that ended with a call still waiting on
         # the operator's approval shows the keyboard and the words written
         # before that call — under the same cap and marker as the stream.

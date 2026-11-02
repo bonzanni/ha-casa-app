@@ -250,16 +250,21 @@ class TestWebhookOneshotScopeClassSurvivesV2:
         key = build_scoped_session_key("webhook", "assistant", uuid_scope)
         await reg.register(key, "assistant", "sid-1", scope_class="webhook_oneshot", binding_digest=STUB_BINDING_DIGEST, speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV)
 
-        # Backdate last_active so it's older than the webhook TTL (1 day)
-        # but younger than the general session TTL (30 days).
-        old = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
-        reg._data[key]["last_active"] = old
-
+        assert reg.get(key)["scope_class"] == "webhook_oneshot"
+        # A one-shot naming a transcript is kept for the transcript's
+        # retention (INV-MEM-031), not just the short webhook TTL; past it,
+        # it goes. The short TTL itself is pinned in test_session_sweeper.
         sweeper = SessionSweeper(
             registry=reg, session_ttl_days=30, webhook_session_ttl_days=1,
         )
+        reg._data[key]["last_active"] = (
+            datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
         await sweeper._sweep_once()
-        assert reg.get(key) is None, "v2 webhook one-shot must be evicted under the SHORT webhook TTL"
+        assert reg.get(key) is not None
+        reg._data[key]["last_active"] = (
+            datetime.now(timezone.utc) - timedelta(days=40)).isoformat()
+        await sweeper._sweep_once()
+        assert reg.get(key) is None, "v2 webhook one-shot must be evicted once retention passed"
 
     async def test_stored_webhook_entry_is_purged_at_boot(self, tmp_path):
         # Release A / Layer 4: ANY persisted webhook entry is DROPPED at

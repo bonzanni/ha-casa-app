@@ -514,7 +514,6 @@ class PinnedRun(ProcessTree):
         self._drain: asyncio.Future | None = None
         self._capture: Capture | None = None
         self.close_task: asyncio.Task | None = None
-        self.transcript: tuple[str, str] | None = None   # (session id, cwd) the runner records
 
     def _close_started(self) -> bool:
         # the SDK's close (the normal end's teardown, which stops the servers)

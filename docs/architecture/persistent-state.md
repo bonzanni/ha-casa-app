@@ -150,25 +150,25 @@ writes the artifacts a dropped engagement must load, so private call sites opt i
 **A state file is absent.** Almost always treated as empty, and often created on first write.
 
 **Session pointers are actively reaped, and webhook sessions never survive a boot.** A
-six-hour sweep removes expired entries and any with malformed or missing activity
-timestamps, hard-deleting their SDK transcripts best-effort — a stored pointer is not
-indefinitely durable. With one exception, and it is not storage hygiene: an entry that
-names a transcript on a bank-writable channel is held back however stale it is, because a
-successful retain would have removed the entry, so one that is still here is a conversation
-that never reached long-term memory and whose transcript is its only copy
-(INV-MEM-017, `architecture/memory-lifecycle.md`). Such an entry stays until the retain
-succeeds or the operator resets or wipes it, and each sweep says so. A reset
-does remove it, but it does not lose the conversation: the reset retains that
-session itself and, on failure, leaves a durable retry record in its place
+six-hour sweep removes expired entries, and entries with malformed or missing activity
+timestamps that name no transcript, hard-deleting their SDK transcripts best-effort — a
+stored pointer is not indefinitely durable. An entry naming a transcript is never removed
+before the session's freshness window plus the transcript retention
+(`TRANSCRIPT_RETENTION_DAYS`, default 30) has passed, and its transcript is deleted only
+where no unconfirmed run names it (INV-MEM-031, `architecture/memory-lifecycle.md`); the
+run registrations themselves live in `memory.db`'s `transcript_runs` table (ids and times,
+no content). A reset removes an entry without losing the conversation: the reset retains
+that session itself and, on failure, leaves a durable retry record in its place
 (`architecture/memory-lifecycle.md`). The TTLs are environment-tunable: `SESSION_TTL_DAYS` (default 30)
 and the much shorter `WEBHOOK_SESSION_TTL_DAYS` (default 1). And a boot-time purge drops *every* webhook-scoped session
 unconditionally, so webhook conversation continuity deliberately does not survive a
 restart even though the registry file does.
 
 **Engagement transcripts are reaped by the engagement's record, not by a pointer.** Once an
-`in_casa` engagement's terminal status is on disk, a separate pass deletes the CLI sessions
-that record names (INV-ENG-022, `architecture/engagement-transcript-reaping.md`); sessions no
-record names are not touched by either pass.
+`in_casa` engagement's terminal status is on disk and the retention has passed, a separate
+pass deletes the CLI sessions that record names (INV-ENG-027,
+`architecture/engagement-transcript-reaping.md`), and a delegated session goes by its run's
+row (INV-ENG-028, `architecture/delegation.md`); sessions nothing names are not touched.
 
 An entry also records the digest of the structural prompt surface the session was
 created with — the delegates, background jobs and executors the agent could reach at

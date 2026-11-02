@@ -47,9 +47,9 @@ _COLD_RETAIN_RETRY_DIR = "/data/cold-retain-retry"
 # Hourly reaper cadence → ~2 days of retries before a poison record — one
 # naming a transcript that can no longer be read, e.g. because the session it
 # superseded was itself superseded and its file rotated away — is dropped,
-# loudly. Casa's own TTL sweeper is NOT such a producer: it holds back any
-# entry whose conversation is not yet in the bank (INV-MEM-017, #886), so this
-# bound must never be read as absorbing a delete Casa chose to perform.
+# loudly. Casa's own TTL sweeper removes a transcript only after the
+# retention (INV-MEM-031); this bound must never be read as absorbing a
+# delete Casa chose to perform.
 _COLD_RETAIN_MAX_ATTEMPTS = 48
 
 # M29: bound the concurrency of per-item tier classification (each is a full

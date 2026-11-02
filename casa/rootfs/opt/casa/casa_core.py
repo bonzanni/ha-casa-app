@@ -5998,6 +5998,30 @@ async def main() -> None:
         max_instances=1,
         misfire_grace_time=3600,
     )
+    # INV-ENG-028: a delegated run's transcript is deleted only by this pass
+    # (or a wipe) — the session its confirmed row names, once its retention
+    # has passed — on the same cadence, first at scheduler start.
+    from memory import transcript_runs as _transcript_runs
+
+    async def _delegated_transcript_retention() -> None:
+        try:
+            await asyncio.to_thread(_transcript_runs.retention_pass,
+                                    memory_store)
+        except Exception:  # noqa: BLE001 — the next pass retries
+            logger.warning("delegated transcript retention pass failed",
+                           exc_info=True)
+
+    scheduler.add_job(
+        _delegated_transcript_retention,
+        trigger="interval",
+        id="delegated_transcript_retention",
+        hours=6,
+        next_run_time=_dt.now(_tz.utc),
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+        misfire_grace_time=3600,
+    )
     # Authorization-callback spool maintenance.
     #
     # LOCK-STALL AVOIDANCE: the callback HTTP handler runs

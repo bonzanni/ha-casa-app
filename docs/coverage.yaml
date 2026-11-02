@@ -207,6 +207,8 @@
   doc: architecture/memory-serving.md
 - item: casa/rootfs/opt/casa/memory/store.py
   doc: architecture/memory-store.md
+- item: casa/rootfs/opt/casa/memory/transcript_runs.py
+  doc: architecture/memory-lifecycle.md
 - item: casa/rootfs/opt/casa/memory/view.py
   doc: architecture/memory-serving.md
 - item: casa/rootfs/opt/casa/memory/writer.py
@@ -793,6 +795,8 @@
   doc: reference/operator-options.md
 - item: env:TELEGRAM_TRANSPORT
   doc: reference/operator-options.md
+- item: env:TRANSCRIPT_RETENTION_DAYS
+  doc: architecture/memory-lifecycle.md
 - item: env:TZ
   doc: reference/operator-options.md
 - item: env:VOICE_IDLE_TIMEOUT_SECONDS

@@ -1247,6 +1247,15 @@ def _sweep_one_workspace(
         return
     if retention_until > now_iso:
         return
+    # The run-confirmation gate, asked at the delete: while a run naming the
+    # workspace (its finalize summary) is unconfirmed, it is kept whole for
+    # a later sweep (memory/transcript_runs.py). One indexed WAL read.
+    from memory import transcript_runs
+    if transcript_runs.blocked(directory=entry.path):
+        logger.warning(
+            "workspace sweep: kept %s past retention — a run in it is not "
+            "confirmed", entry.name)
+        return
     try:
         shutil.rmtree(entry.path)
     except OSError as exc:
@@ -1259,6 +1268,7 @@ def _sweep_one_workspace(
             "workspace sweep: removed %s (status=%s, past retention)",
             entry.name, status,
         )
+        transcript_runs.forget_deleted(directory=entry.path)
         log_dir = engagement_log_dir(entry.name, root=log_root)
         try:
             if os.path.isdir(log_dir):

@@ -4553,43 +4553,34 @@ async def _refresh_health_after_setup_cleared() -> None:
         logger.debug("plugin health refresh wait failed", exc_info=True)
 
 
-def _sdk_delete_session(session_id: str, directory: str) -> None:
-    from claude_agent_sdk import delete_session
-    delete_session(session_id, directory)
-
-
-async def _delete_own_delegated_transcript(
-    session_id: str, directory: str, role: str | None,
-) -> None:
-    """Delete the one session an ephemeral delegation launched (INV-ENG-023):
-    its ``<sid>.jsonl`` and ``<sid>/`` in the launch's own project folder,
-    through the SDK. Never lists the folder, which the specialist's other
-    sessions share. Best-effort: a failure is logged and the file kept.
-
-    A cancellation landing during the await interrupts only the await; the
-    worker thread still finishes the delete."""
-    try:
-        await asyncio.to_thread(_sdk_delete_session, session_id, directory)
-    except FileNotFoundError:
-        # The CLI never wrote one (it failed before its first message).
-        logger.debug("delegated transcript %s: none written", session_id)
-    except Exception as exc:  # noqa: BLE001 — never fails the delegation
-        logger.warning(
-            "delegated agent %s: transcript delete failed (%s); kept",
-            _known_role(role), type(exc).__name__,
-        )
+async def _register_delegated_run(cfg, parent: dict):
+    """A delegated run's row (``memory/transcript_runs.py``), registered
+    before its request is captured and before its client starts, under the
+    session id Casa chooses for this launch, in the launch's own cwd. A role
+    whose exchange is never captured (no memory budget, a stored call, an
+    originating channel that is not write-trusted) registers confirmed: its
+    row is only the retention pass's index."""
+    from channel_policy import writes_to_bank
+    from memory import transcript_runs
+    captures = (cfg.memory.token_budget > 0 and not parent.get("stored_call")
+                and writes_to_bank(str(parent.get("channel", ""))))
+    return await transcript_runs.Run.start(
+        transcript_runs.DELEGATION, role=cfg.role,
+        directory=specialist_cwd(cfg), session_id=str(uuid.uuid4()),
+        confirmed=not captures)
 
 
 async def _capture_delegated(
     source: _CaptureSource, cfg, parent: dict, text: str, *,
     speaker_kind: str, speaker_id: str, resident_request: bool = True,
     answer_incomplete: bool = False, session_id: str | None = None,
-) -> None:
+) -> bool:
     """Capture one side of a delegated exchange into memory, under the gate
     the exchange's retain uses: a memory-writing role (``token_budget > 0``),
     no stored call, a write-trusted originating channel. Its floor is the
     delegating turn's read clearance — the clearance the run reads at. A
-    capture failure is logged and never fails the run."""
+    capture failure is logged and never fails the run. Returns whether the
+    capture was kept: a receipt, or nothing to capture."""
     from channel_policy import writes_to_bank
     from memory import capture, eligibility
     from sensitivity import clearance_for_origin
@@ -4602,7 +4593,7 @@ async def _capture_delegated(
             resident_request=resident_request,
             answer_incomplete=answer_incomplete)
         if rule is None:
-            return
+            return True
         route, clearance = _origin_clearance_markers(parent)
         scheduled = parent.get("_scheduled_delivery") is True
         origin_kind = ("delegated_result"
@@ -4620,8 +4611,8 @@ async def _capture_delegated(
     except Exception:  # noqa: BLE001 — capture never fails a delegation
         logger.exception("memory capture of a delegated %s failed",
                          source.value)
-        return
-    await capture.record(item)
+        return False
+    return await capture.record(item) is not None
 
 
 # #1220: how often a pinned turn asks the CLI whether its MCP servers settled
@@ -4700,12 +4691,32 @@ async def _run_delegated_agent(
     so the gate's decision and what actually launches can never drift.
     ``None`` (the common no-``requires`` case) lets the options builder
     resolve fresh, exactly as before Task 5.
+
+    The run is registered (INV-ENG-028) before its request is captured and
+    before its client starts, and this ``finally`` — the run's outermost,
+    enclosing the answer's capture — confirms it once every capture it made
+    was kept. Its transcript is kept; only the retention pass or a wipe
+    deletes it.
     """
-    import agent as agent_mod
     # AR-2: snapshot BEFORE any await — this coroutine outlives the parent
     # turn (async delegations especially), and a pooled client's origin_var
     # holder can be rewritten by the NEXT turn while this one is in flight.
     parent = _snapshot_origin()
+    run = await _register_delegated_run(cfg, parent)
+    try:
+        return await _run_delegated_turn(
+            cfg, task_text, context_text, resolution, output_format,
+            tool_counts, parent=parent, run=run)
+    finally:
+        run.close()
+
+
+async def _run_delegated_turn(
+    cfg, task_text: str, context_text: str, resolution, output_format,
+    tool_counts: dict[str, int] | None, *, parent: dict, run,
+) -> DelegatedOutput:
+    """The body of :func:`_run_delegated_agent`, as one registered run."""
+    import agent as agent_mod
     from personality_types import RetainedTurn, SpeakerProvenance
 
     # Task 10: the caller's REAL identity, read back off the origin snapshot
@@ -4814,13 +4825,12 @@ async def _run_delegated_agent(
     )
 
     # The request is captured raw, before the run starts, and never depends
-    # on the answer (INV-MEM-016). A run that captures is registered before
-    # its first capture; that registration belongs here, ahead of this one.
-    await _capture_delegated(
+    # on the answer (INV-MEM-016); the run's row already exists.
+    await run.kept(_capture_delegated(
         _CaptureSource.DELEGATED_REQUEST, cfg, parent, task_text,
         speaker_kind="resident", speaker_id=caller_role,
         resident_request=(len(child_origin["_handoff_chain"]) <= 2
-                          and parent.get("synthetic") != "continuation"))
+                          and parent.get("synthetic") != "continuation")))
 
     # Off-loop: _build_specialist_options resolves the registry (file IO) —
     # keep it off the shared event loop (H2/M20).
@@ -4863,11 +4873,8 @@ async def _run_delegated_agent(
     messages: list[str] = []
     approval_cut = ApprovalCut()
     approval_scope: TurnScope | None = None
-    # #1168 (INV-ENG-023): the session this call launches, and the folder its
-    # transcript lands in — set together, before the client exists, so the
-    # delete in `finally` names exactly what was launched or nothing at all.
+    # INV-ENG-028: the session this call launches, chosen with its row.
     own_sid: str | None = None
-    own_dir: str | None = None
     # S5 §5.2.4: a pinned one-call turn's controller, when this run is one
     _owner = _pinned_run.get()
     # #1212: the bounded runner's process owner for this run, cleared here so
@@ -4885,12 +4892,12 @@ async def _run_delegated_agent(
                  for rp in (getattr(res, "plugins", None) or [])})
     try:
         options, binding = await asyncio.to_thread(_options_and_binding)
-        # One Casa-chosen session per launch, set HERE and never in
-        # `_build_specialist_options`: in_casa engagements launch and resume
-        # through that builder, and a fixed id there would collide with
-        # `resume`. The project folder is the launch's own cwd.
-        options = replace(options, session_id=str(uuid.uuid4()))
-        own_sid, own_dir = options.session_id, options.cwd
+        # One Casa-chosen session per launch — the one its row names — set
+        # HERE and never in `_build_specialist_options`: in_casa engagements
+        # launch and resume through that builder, and a fixed id there would
+        # collide with `resume`. The project folder is the launch's own cwd.
+        options = replace(options, session_id=run.session_id)
+        own_sid = options.session_id
         _ph["options"] = time.monotonic()
         token = agent_mod.origin_var.set(child_origin)
         approval_scope = resolve_scope(child_origin)
@@ -4911,7 +4918,6 @@ async def _run_delegated_agent(
                 # same client down concurrently). The transcript is the
                 # controller's to delete after termination is confirmed.
                 client = await _owner.enter(client_options, client_factory=ClaudeSDKClient)
-                _owner.transcript = (own_sid, own_dir) if own_sid and own_dir else None
                 _client_cm = nullcontext(client)
             else:
                 _client_cm = ClaudeSDKClient(client_options)
@@ -5044,13 +5050,10 @@ async def _run_delegated_agent(
             _specialist_telemetry.record_cost(
                 cfg.role, cost_usd=cost_usd, usage=usage,
             )
-        # #1168 (INV-ENG-023): LAST in this `finally`, so it runs only after
-        # the `async with` above has exited — the CLI writes its transcript
-        # until its process ends — on return, raise and cancel alike, and an
-        # await here can never skip the log or the origin reset above.
-        if own_sid and own_dir and _owner is None:
-            await _delete_own_delegated_transcript(
-                own_sid, own_dir, getattr(cfg, "role", None))
+        # INV-ENG-028: the client has exited — on return, raise and cancel
+        # alike — so the run's retention clock starts here. The transcript
+        # is kept: only the retention pass or a wipe deletes it.
+        run.end()
 
     # #568: the CLI ended this run by reporting an API-level fault (a safety
     # refusal included) — this specialist never answered. RAISE rather than
@@ -5154,12 +5157,12 @@ async def _run_delegated_agent(
 
     # The answer is captured at completion — the whole live fold — only when
     # the run's own evidence says it is complete (INV-MEM-016).
-    await _capture_delegated(
+    await run.kept(_capture_delegated(
         _CaptureSource.DELEGATED_ANSWER, cfg, parent, text,
         speaker_kind=("resident" if getattr(cfg, "kind", "") == "resident"
                       else "specialist"),
         speaker_id=cfg.role, answer_incomplete=output.answer_incomplete,
-        session_id=own_sid)
+        session_id=own_sid))
 
     # Specialist write: one explicit tier-classified retain of the exchange
     # OFFERED to the shared bank, gated by the PARENT channel's write-trust
@@ -12876,6 +12879,10 @@ async def _finalize_engagement(
                     f"in_flight={blocking} reservations={resv}")
         return None
 
+    # The finalize summaries are captures: their run's row exists before the
+    # terminal flip that makes the engagement's transcripts deletable, and a
+    # lost flip confirms it at once (INV-ENG-027).
+    summary_run = await _register_summary_run(engagement)
     if _engagement_registry is not None:
         try:
             won = await _engagement_registry.try_transition_terminal(
@@ -12894,11 +12901,16 @@ async def _finalize_engagement(
                 owes_terminal_notification=not _told_nowhere(engagement.origin, outcome),
             )
         except TerminalPreconditionFailed as exc:
+            summary_run.close()
             logger.info(
                 "Engagement %s completion vetoed by inbound gate: %s",
                 engagement.id[:8], exc)
             return FinalizeResult.PRECONDITION_FAILED
+        except asyncio.CancelledError:
+            summary_run.close()             # a cancelled run confirms
+            raise
         except Exception as exc:  # noqa: BLE001 — strict persist failed + rolled back
+            summary_run.close()
             logger.warning(
                 "Engagement %s terminal transition failed to persist "
                 "(rolled back, left live): %s",
@@ -12906,6 +12918,7 @@ async def _finalize_engagement(
             )
             return FinalizeResult.PERSIST_FAILED
         if not won:
+            summary_run.close()
             logger.info(
                 "Engagement %s not finalized — already terminal or revived "
                 "since snapshot (outcome=%s)",
@@ -13385,16 +13398,24 @@ async def _finalize_engagement(
             engagement, outcome=outcome, text=text, artifacts=artifacts,
             next_steps=next_steps, driver=driver, now=now,
             output_truncated=output_truncated, frozen=frozen,
+            summary_run=summary_run,
         ))
+        # The tail's end is the summary run's outermost end: a tail that
+        # ended without a summary capture interrupted still confirms it.
+        tail.add_done_callback(lambda _t: summary_run.close())
         _finalize_tail_tasks.add(tail)
         tail.add_done_callback(
             lambda t, _eid=engagement.id: _finalize_tail_done(_eid, t))
         return await asyncio.shield(tail)
-    return await _finalize_engagement_tail(
-        engagement, outcome=outcome, text=text, artifacts=artifacts,
-        next_steps=next_steps, driver=driver, now=now,
-        output_truncated=output_truncated, frozen=frozen,
-    )
+    try:
+        return await _finalize_engagement_tail(
+            engagement, outcome=outcome, text=text, artifacts=artifacts,
+            next_steps=next_steps, driver=driver, now=now,
+            output_truncated=output_truncated, frozen=frozen,
+            summary_run=summary_run,
+        )
+    finally:
+        summary_run.close()
 
 
 def _told_nowhere(origin: Any, outcome: str) -> bool:
@@ -13404,13 +13425,40 @@ def _told_nowhere(origin: Any, outcome: str) -> bool:
     return outcome == "completed" and background_jobs.is_quiet_origin(origin)
 
 
+async def _register_summary_run(engagement: EngagementRecord):
+    """The ``summary`` run of a finalize that will write a summary
+    (``memory/transcript_runs.py``): registered before the terminal flip,
+    naming the engagement's transcript directory and no session. A finalize
+    that writes none holds a run with no row. The switches are the
+    summaries' own: the engagement summary of any kind but a specialist
+    that writes no memory, the executor summary, each under the origin
+    channel's write-trust."""
+    from channel_policy import writes_to_bank
+    from delegated_memory import role_writes_memory
+    from engagement_transcript_reaper import transcript_cwd
+    from memory import transcript_runs
+    role = engagement.role_or_type
+    origin = getattr(engagement, "origin", None) or {}
+    writes = (engagement.kind == "executor"
+              or engagement.kind != "specialist" or role_writes_memory(role))
+    if not (writes and writes_to_bank(str(origin.get("channel", "")))):
+        return transcript_runs.unregistered(transcript_runs.SUMMARY, role=role)
+    try:
+        directory = transcript_cwd(engagement)
+    except Exception:  # noqa: BLE001 — the row then names no directory
+        directory = None
+    return await transcript_runs.Run.start(
+        transcript_runs.SUMMARY, role=role, directory=directory)
+
+
 async def _capture_summary(frozen: dict[str, Any], text: str, *,
-                           allowed: bool) -> None:
+                           allowed: bool) -> bool:
     """Capture one finalized engagement's summary into memory's
     ``engagement_summaries``, at the origin's tier and stamped with the
     record's epoch. ``allowed`` is the summary's own switch (a specialist
     that writes no memory leaves none); the origin channel's write-trust
-    gates it as it gates the retain. A failure is logged, never raised."""
+    gates it as it gates the retain. A failure is logged, never raised.
+    Returns whether it was kept: a receipt, or nothing to capture."""
     from channel_policy import writes_to_bank
     from memory import capture, eligibility
     from sensitivity import clearance_for_origin
@@ -13421,7 +13469,7 @@ async def _capture_summary(frozen: dict[str, Any], text: str, *,
                 _CaptureSource.ENGAGEMENT_SUMMARY, text=text,
                 channel_writes=writes_to_bank(channel),
                 role_writes_memory=allowed) is None:
-            return
+            return True
         item = capture.summary(
             role=frozen["role_or_type"],
             procedural_epoch=frozen.get("procedural_epoch") or "",
@@ -13430,8 +13478,8 @@ async def _capture_summary(frozen: dict[str, Any], text: str, *,
             text=text, engagement_id=frozen["id"])
     except Exception:  # noqa: BLE001 — capture never fails a finalize
         logger.exception("memory capture of an engagement summary failed")
-        return
-    await capture.record(item)
+        return False
+    return await capture.record(item) is not None
 
 
 async def _finalize_engagement_tail(
@@ -13445,6 +13493,7 @@ async def _finalize_engagement_tail(
     now: float,
     output_truncated: bool,
     frozen: dict[str, Any],
+    summary_run: Any = None,
 ) -> "FinalizeResult":
     """#632: the finalize funnel's post-topic tail — driver teardown, bus
     notification, retains, terminal meta rewrite, reload-marker drain,
@@ -13458,6 +13507,10 @@ async def _finalize_engagement_tail(
     record) and for log lines reading immutable identity only.
     """
     eng_id: str = frozen["id"]
+    if summary_run is None:
+        from memory import transcript_runs
+        summary_run = transcript_runs.unregistered(
+            transcript_runs.SUMMARY, role=frozen["role_or_type"])
     # 3. Tear down driver client
     if driver is not None:
         try:
@@ -13574,8 +13627,10 @@ async def _finalize_engagement_tail(
         "next_steps": next_steps,
     })
     # The summary's memory capture, awaited: a local append (or spool) that
-    # returns a receipt, under the same switch as the retain below.
-    await _capture_summary(frozen, summary, allowed=_summary_allowed)
+    # returns a receipt, under the same switch as the retain below — an
+    # obligation of the finalize's summary run.
+    await summary_run.kept(
+        _capture_summary(frozen, summary, allowed=_summary_allowed))
     if sem is not None and _summary_allowed:
         # #411: fence generation captured synchronously with the summary
         # assembly — the detached task may not run until after a wipe.
@@ -13663,7 +13718,11 @@ async def _finalize_engagement_tail(
         })
         # The executor summary's memory capture, awaited, stamped with the
         # record's epoch (the archive an executor is served is per epoch).
-        await _capture_summary(frozen, type_summary, allowed=True)
+        await summary_run.kept(
+            _capture_summary(frozen, type_summary, allowed=True))
+    # Both summaries have returned: the summary run is confirmed when each
+    # was kept, and the engagement's transcripts follow retention.
+    summary_run.close()
     if frozen["kind"] == "executor" and sem is not None:
         # #215: stamp the summary with the epoch persisted on the RECORD at
         # launch (never the finalize-time definition — a reload may have

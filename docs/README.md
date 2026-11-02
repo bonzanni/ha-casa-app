@@ -77,7 +77,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | reminder creation or cancellation, the reminder sweep, or recurrence derivation | [`architecture/reminders.md`](architecture/reminders.md) |
 | root's access into a workspace, or where root-only engagement run-state lives | [`architecture/engagement-workspace-access.md`](architecture/engagement-workspace-access.md) |
 | search_memory, browse_memory_day, open_memory or correct_memory, the search index, or what the engager query reads | [`architecture/memory-tools.md`](architecture/memory-tools.md) |
-| session persistence, the save/reset guard protocol, the retirement claims, or the retry spool | [`architecture/memory-lifecycle.md`](architecture/memory-lifecycle.md) |
+| session persistence, the save/reset guard protocol, the retirement claims, the retry spool, run registration and confirmation, or transcript retention | [`architecture/memory-lifecycle.md`](architecture/memory-lifecycle.md) |
 | specialist install identity, consent, or materialization | [`architecture/specialist-lifecycle.md`](architecture/specialist-lifecycle.md) |
 | the HA facade, HA tool exposure, or anything about what an agent may control | [`architecture/home-assistant-control.md`](architecture/home-assistant-control.md) |
 | the MCP bridge service (svc-casa-mcp), its hook-resolution route's refusals, the window in which the main application is unreachable, or the environment variables that move the MCP topology | [`architecture/mcp-bridge.md`](architecture/mcp-bridge.md) |

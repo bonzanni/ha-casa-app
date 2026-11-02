@@ -3,18 +3,19 @@
 Stops `SessionRegistry.sessions.json` from growing unbounded. Every
 `sweep_interval_hours` (default 6) a background task wakes up, iterates
 the registry under its 5.1 lock, drops entries whose `last_active` is
-older than the configured TTL (or freshness window, whichever is larger —
-spec §3.4(3)), persists the reduced registry, and hard-deletes the
-on-disk transcript via the SDK's ``delete_session(sid, directory)``
-(spec §3.4.1 — Casa owns transcript reaping; the CLI's cleanupPeriodDays
-sweep never fires under Casa's SDK invocation, §8.6).
+older than the configured TTL — and never before the session's freshness
+window plus the transcript retention (``TRANSCRIPT_RETENTION_DAYS``) has
+passed, so a session is never removed while it can resume, and its
+transcript is kept that long after it can no longer resume — persists the
+reduced registry, and hard-deletes the on-disk transcript via the SDK's
+``delete_session(sid, directory)`` (spec §3.4.1 — Casa owns transcript
+reaping; the CLI's cleanupPeriodDays sweep never fires under Casa's SDK
+invocation, §8.6).
 
-One class of entry is exempt and is never evicted or reaped, however
-stale: one that names a transcript on a channel whose conversations are
-written to the long-term bank (INV-MEM-017, #886). Such an entry has
-not been banked — a successful retain removes the entry — so deleting
-its transcript would destroy the only copy of a conversation whose
-retention Casa still owes.
+The transcript is deleted only where the run-confirmation gate passes
+(``memory/transcript_runs.py``), asked at the delete, outside the registry
+lock: while a run in the session is unconfirmed its transcript is kept
+(until a wipe). The rows that named a deleted session go with it.
 
 Pure policy module — no transport imports. Reaches into internal
 `SessionRegistry` attributes (`_lock`, `_data`, `_save_locked`) by
@@ -30,7 +31,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Callable
 
-from channel_policy import writes_to_bank
+from memory import transcript_runs
 from session_registry import SessionRegistry
 from session_saver import freshness_window
 
@@ -171,9 +172,7 @@ class SessionSweeper:
         """Run one full sweep: classify + evict under lock, then reap transcripts."""
         now = self._now()
         to_evict: list[tuple[str, str, str]] = []  # (key, sdk_session_id, role)
-        # Entries that were DUE for eviction and are held back by INV-MEM-017:
-        # (key, sdk_session_id, staleness or None when last_active is garbage).
-        protected: list[tuple[str, str, timedelta | None]] = []
+        retention = transcript_runs.retention()
 
         async with self._registry._lock:
             for key, entry in self._registry._data.items():
@@ -183,7 +182,10 @@ class SessionSweeper:
                 last_active = _parse_last_active(entry.get("last_active"))
 
                 if last_active is None:
-                    due, stale_for = True, None
+                    # No usable time: a transcript's retention cannot be
+                    # measured, so an entry naming one is kept; a sid-less
+                    # entry names nothing and goes.
+                    due = not sid
                 else:
                     # A2: v2 keys are channel-role-scope hashes — the raw
                     # remainder is never uuid-shaped, so the webhook-one-shot
@@ -202,32 +204,15 @@ class SessionSweeper:
                         guard = max(ttl, freshness_window(channel))
                     else:
                         guard = ttl
+                    # The transcript outlives the session's resumability by
+                    # the retention: never removed before the freshness
+                    # window (the resume test's own bound) plus it.
+                    if sid:
+                        guard = max(guard, freshness_window(channel) + retention)
                     stale_for = now - last_active
                     due = stale_for > guard
 
                 if not due:
-                    continue
-
-                # INV-MEM-017 (#886). The property that licenses destroying a
-                # conversation's only copy is that its retention is no longer
-                # owed — never the age of its pointer. On a bank-writable
-                # channel the entry's own SURVIVAL is that fact: `finish_save`
-                # REMOVES the entry on a successful retain while
-                # `clear_save_claim` KEEPS it on a failed one, so an entry that
-                # is still here was never banked. Hold it back, whatever its
-                # age, provenance, claims, or timestamp.
-                #
-                # A sid-less entry stays evictable: it names no transcript, so
-                # keeping it would protect no bytes and accumulate a pointer.
-                #
-                # This reads a frozenset and a dict already in hand. It takes
-                # no second lock and awaits nothing, so the sweeper stays
-                # OUTSIDE the global lock order (INV-CONC-004/005) rather than
-                # becoming a new participant in it — taking a gate here, inside
-                # `registry._lock`, would be a permanent deadlock by that
-                # invariant's own text.
-                if sid and writes_to_bank(channel):
-                    protected.append((key, sid, stale_for))
                     continue
 
                 to_evict.append((key, sid, role))
@@ -237,17 +222,6 @@ class SessionSweeper:
                     self._registry._data.pop(key, None)
                 await self._registry._save_locked()
 
-        # The retention debt is said out loud, once per held-back entry per
-        # sweep: a bank that has been failing for a month is the only way an
-        # entry gets here, and nothing else in Casa reports it.
-        for key, sid, stale_for in protected:
-            logger.warning(
-                "Session sweep kept %s (session %s, stale %s) — its conversation "
-                "is not in long-term memory yet, so its transcript is not deleted",
-                key, sid,
-                f"{stale_for.days}d" if stale_for is not None else "unknown",
-            )
-
         if not to_evict:
             return  # no save, no transcript-reap work
 
@@ -256,10 +230,24 @@ class SessionSweeper:
         # Transcript reap happens OUTSIDE the lock — best-effort, never
         # blocks the registry. The INFO is emitted from the reaper's own
         # report of a completed delete, never from the await returning: a
-        # swallowed failure returns exactly like a success.
+        # swallowed failure returns exactly like a success. The confirmation
+        # gate is asked here, at the delete.
         for key, sdk_sid, role in to_evict:
-            if sdk_sid and await _reap_transcript(sdk_sid, self._dir_for(role)):
+            if not sdk_sid:
+                continue
+            directory = self._dir_for(role)
+            if await asyncio.to_thread(
+                    transcript_runs.blocked, directory=directory,
+                    session_id=sdk_sid):
+                logger.warning(
+                    "Session sweep kept the transcript of %s (session %s): a "
+                    "run in it is not confirmed", key, sdk_sid)
+                continue
+            if await _reap_transcript(sdk_sid, directory):
                 logger.info(
                     "Session sweep deleted transcript for %s (session %s, role %s)",
                     key, sdk_sid, role,
                 )
+                await asyncio.to_thread(
+                    transcript_runs.forget_deleted, directory=directory,
+                    session_id=sdk_sid)

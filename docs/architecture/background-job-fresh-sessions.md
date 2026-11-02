@@ -29,7 +29,7 @@ launch context — recorded verbatim at launch in `origin["job"]["brief_context"
 batch rules.
 Every session id a fresh job's client reports, the launch's and each reset's, is appended
 once to `origin["job"]["sids"]` (`engagement_registry.JOB_SIDS_KEY`) and persisted when first
-seen — the list the transcript reaper reads (INV-ENG-022).
+seen — the list the transcript reaper reads (INV-ENG-027).
 That includes the outgoing id a reset confirmation carries, which is the only frame naming a
 clearance-rebuilt client's own session, and a clearance downgrade leaves the list in place.
 A restart resumes the recorded session exactly as for any job, and the first turn's reset

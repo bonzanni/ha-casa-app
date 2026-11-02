@@ -201,6 +201,26 @@ V1: tuple[str, ...] = (
         at TEXT NOT NULL
     ) STRICT
     """,
+    # Every run that can capture, registered before its first capture and
+    # confirmed once each capture it made is durable (memory/transcript_runs.py).
+    # Ids and times only, never content. ``directory`` is the run's working
+    # directory, the key a deleter resolves the transcript folder from.
+    """
+    CREATE TABLE transcript_runs (
+        run_id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL CHECK (kind IN
+            ('resident', 'engagement', 'delegation', 'summary')),
+        role TEXT NOT NULL,
+        directory TEXT,
+        session_id TEXT,
+        boot_id TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        confirmed_at TEXT,
+        ended_at TEXT
+    ) STRICT
+    """,
+    "CREATE INDEX transcript_runs_session ON transcript_runs (session_id)",
+    "CREATE INDEX transcript_runs_directory ON transcript_runs (directory)",
     # The one-off transcript backfill's own record: its cutoff, the legacy
     # source with its file manifest, and how far it got. At most one row.
     """

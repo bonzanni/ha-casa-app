@@ -162,7 +162,8 @@ no state beyond the job's id.
 `meta` the per-ledger entry count and tokens, unreachable objects, each served role's view of
 the ledger (whole or index, its size, and whether it overflows the role's budget at the
 coarsest level), the twenty largest entries (ids and sizes), the week's growth, pending events with the oldest, pending corrections and
-failed jobs, plus provisional events, the spool's size, each open session's
+failed jobs, plus provisional events, the spool's size, the transcript runs an earlier
+process left unconfirmed (unresolved, INV-MEM-031), each open session's
 `base_commit_no` and whether a maintenance intent is pending. A meter that cannot be stored
 never fails a job.
 

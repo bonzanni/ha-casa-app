@@ -75,7 +75,7 @@ def _assert_loads_no_settings_source(opts) -> None:
     ``cleanupPeriodDays``. The pinned CLI runs its own age sweep over the
     whole projects root only when user settings are loaded or a loaded source
     sets ``cleanupPeriodDays`` — and that sweep would delete a resident
-    transcript INV-MEM-017 holds. A project source is no better: its file
+    transcript INV-MEM-031 keeps. A project source is no better: its file
     could carry the key."""
     assert opts.setting_sources == [], opts.setting_sources
     assert sum(k == "cleanupPeriodDays" for k in json.loads(opts.settings)) == 0

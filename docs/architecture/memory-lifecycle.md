@@ -10,8 +10,9 @@ last_reviewed: 2026-11-02
 
 How a conversation becomes long-term memory and how it stops being one: the
 freshness windows that make a session save-eligible, the claim-and-guard
-protocol that retains it exactly once, the explicit reset, and the durable
-retry spool. Which text may be stored at all — write-trust, the completeness
+protocol that retains it exactly once, the explicit reset, the durable
+retry spool, and how long an SDK transcript is kept: run confirmation and
+retention. Which text may be stored at all — write-trust, the completeness
 of a delegated answer, the specialists whose output is kept out — and Casa's
 per-turn capture into the memory store are
 [`architecture/memory-capture.md`](memory-capture.md); how the memory store's
@@ -146,38 +147,46 @@ longer the load-bearing protection: turn admission (INV-CONC-005) is, and it
 holds until every turn has drained. The claims remain because they still
 cover the background retain paths, which are not turns.
 
-**INV-MEM-017**: The time-to-live sweep neither evicts nor reaps a session entry that names a transcript on a bank-writable channel, whatever its age, provenance, claims, or activity timestamp.
+**INV-MEM-031**: No SDK transcript is deleted while a run registered in it is unconfirmed: every run that can capture — an eligible resident turn, an engagement turn of a memory-writing specialist, every delegated run, an engagement's finalize summaries — registers its row before its first capture, names its session before anything is captured from it, and is confirmed only once every capture it made returned a durable receipt (a spool line is never removed by a drain that did not store it); no transcript's content is ever read into memory; and once every run in it is confirmed a transcript is deleted no sooner than `TRANSCRIPT_RETENTION_DAYS` (default 30) after its session can no longer resume.
 
-The sweep is Casa's only deleter of resident transcripts — the CLI's own
-age-based cleanup is never enabled by a Casa SDK launch (INV-MEM-021) — and a
-transcript is the only copy of a conversation's turns; the property that licenses deleting it is
-that the conversation's retention is no longer owed, never the age of its
-pointer. On a bank-writable channel the entry's own survival *is* that
-fact: a successful retain removes the entry, a failed one keeps it, so an
-entry still present at its time-to-live was never banked. The sweep holds
-it back and says so — one warning per held-back entry per pass, which is
-the only place the retention debt is reported. Enforced inside the sweep's
-existing registry-lock block by reading data already in hand: the guard
-takes no second lock and awaits nothing, so the sweep stays outside the
-global lock order (INV-CONC-004, INV-CONC-005) rather than becoming a
-participant in it.
+Casa's live capture ([`architecture/memory-capture.md`](memory-capture.md)) is the only
+source of memory; a transcript is kept as a debug copy and as the record that a run's capture
+is still owed. `memory/transcript_runs.py` owns the `transcript_runs` table in `memory.db`
+(ids and times, no content): `Run.start` registers a run with this process's id, `Run.name`
+moves it to the session each stream message comes from before anything of it is captured
+(the init message is the first that names one, and a resident turn names it again before
+its pointer is published), every capture is awaited through `Run.kept`, and `Run.close` in
+the run's outermost `finally` confirms it when each capture was kept — a cancelled or failed
+run included, since the live rules capture nothing more for it. Registration and naming wait
+on the store no longer than a capture does; a registration that fails is logged and the run
+goes on unprotected. Confirmation is written off the run's path. A row left unconfirmed by an
+earlier process is *unresolved*: the size meter counts it (`unresolved_runs`), its
+transcript is kept until a wipe, and nothing resolves or reads it. A crash between a reply
+and its capture therefore loses that reply from memory, by design.
 
-What it does not cover: it is a rule about this sweep, not a promise that
-the conversation is eventually banked, and not a bound on how much
-transcript storage a long backend outage accumulates. A pointer that names
-no session id stays evictable — it can protect no bytes. And a transcript
-no pointer names at all is beyond the sweep entirely, so it is neither
-protected nor deleted by this rule: a resumed session's predecessor, a
-pointer whose session id was cleared, and a *successfully* retained
-session all leave one behind. Nor does it bind the CLI's own cleanup, which
-knows nothing of this hold and would delete a held transcript by age alone;
-INV-MEM-021 is what keeps that cleanup off.
+Every deleter asks the gate (`transcript_runs.blocked`) at its delete, outside any registry
+lock, and removes the rows that named what it deleted. The resident time-to-live sweep
+removes a pointer and its transcript only once both its time-to-live and the session's
+freshness window plus the retention have passed, so a session is never removed while it can
+resume; a pointer whose activity time is unusable is kept when it names a transcript. A
+blocked transcript is kept when its pointer goes. The engagement transcripts and the
+`claude_code` workspace are INV-ENG-027's, in
+[`architecture/engagement-transcript-reaping.md`](engagement-transcript-reaping.md); the
+delegated sessions are INV-ENG-028's, in [`architecture/delegation.md`](delegation.md).
+Rows a deleter never reaches (a resident session a later one replaced) are dropped by the
+delegated retention pass once confirmed for the retention: a confirmed row blocks nothing.
+
+What it does not cover: a transcript no pointer, record or row names is beyond every deleter
+and stays — a resident session a later session replaced, and a webhook one-shot whose
+pointer the boot purge dropped. A run whose registration failed and that then crashed
+before its capture leaves a transcript that normal retention deletes. The CLI's own cleanup
+knows nothing of this gate; INV-MEM-021 is what keeps it off.
 
 **INV-MEM-021**: No CLI launch Casa makes through the SDK loads the user settings source or passes `cleanupPeriodDays` on its settings flag, and the utility one-shots load no settings source at all, so the pinned CLI's own age-based transcript cleanup is never enabled by a Casa launch through the SDK.
 
 When the CLI enables that cleanup it walks the whole projects root and
 deletes every transcript older than `cleanupPeriodDays` (30 days unless
-set), a transcript INV-MEM-017 holds included. The pinned CLI enables it
+set), a transcript INV-MEM-031 keeps included. The pinned CLI enables it
 only when the user settings source is loaded or a loaded source sets
 `cleanupPeriodDays`. Residents, specialists, `in_casa` executors, plugin
 jobs and the restricted webhook pin their sources without the user source; the six
@@ -202,9 +211,9 @@ not cleaned.
 
 **Saving a session fails.** The save is abandoned, its claim is released —
 including when the failure is a cancellation at shutdown — and the entry
-stays for the next freshness sweep to retry. The time-to-live sweep does
-not take it away in the meantime, however long the retries go on
-(INV-MEM-017).
+stays for the next freshness sweep to retry, until the time-to-live sweep's
+retention removes it (INV-MEM-031); the memory store's own capture never
+depends on it.
 
 **An explicit reset's retain fails, or never gets to run.** The reset drops
 the pointer either way — that is its contract, and the fresh conversation the
@@ -286,6 +295,7 @@ the wipe do — the claim is what keeps racing turns off the dying session.
 - `casa/rootfs/opt/casa/delegated_memory.py::role_writes_memory`
 - `casa/rootfs/opt/casa/delegated_memory.py::notice_from_excluded_role`
 - `casa/rootfs/opt/casa/session_saver.py::transcript_to_items`
+- `casa/rootfs/opt/casa/memory/transcript_runs.py`
 
 **Tests**
 - `tests/test_session_saver.py`
@@ -296,6 +306,8 @@ the wipe do — the claim is what keeps racing turns off the dying session.
 - `tests/test_reset_background_save.py`
 - `tests/test_memory_provenance.py`
 - `tests/test_session_sweeper.py`
+- `tests/test_transcript_confirmation.py`
+- `tests/test_transcript_retention.py`
 
 **Related**
 - [`architecture/memory.md`](../architecture/memory.md)

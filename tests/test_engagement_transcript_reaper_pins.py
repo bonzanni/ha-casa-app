@@ -29,6 +29,7 @@ from test_engagement_transcript_reaper import (  # noqa: F401 — home is a fixt
     _seed_session,
     _specialists,
     _terminal,
+    after_retention,
     home,
 )
 
@@ -58,7 +59,7 @@ def _sid() -> str:
 
 async def _reap(registry) -> dict:
     from engagement_transcript_reaper import reap_engagement_transcripts
-    return await reap_engagement_transcripts(registry)
+    return await reap_engagement_transcripts(registry, now=after_retention())
 
 
 async def test_named_sessions_go_in_the_record_dir_zero_byte_included(
@@ -379,7 +380,8 @@ async def test_an_unavailable_private_surface_deletes_nothing_and_retries(
             counts = await _reap(registry)
 
     assert counts == {"deleted": 0, "absent": 0, "skipped": 0,
-                      "unsettled": 0, "errors": 1}
+                      "unsettled": 0, "errors": 1, "retained": 0,
+                      "unconfirmed": 0}
     assert sorted(str(p) for p in _projects(home).rglob("*")) == before
     warnings = [r for r in caplog.records
                 if r.name == "engagement_transcript_reaper"
@@ -462,7 +464,8 @@ def test_the_e2e_mock_lookup_matches_the_pinned_sdk(
 
 # --- Cluster R (#1167, #1170, #1174): red cases, specified by Astra --------
 
-_ZERO = {"deleted": 0, "absent": 0, "skipped": 0, "unsettled": 0, "errors": 0}
+_ZERO = {"deleted": 0, "absent": 0, "skipped": 0, "unsettled": 0, "errors": 0,
+         "retained": 0, "unconfirmed": 0}
 
 
 def _tombstone_row(tmp_path: Path, rec_id: str) -> dict:

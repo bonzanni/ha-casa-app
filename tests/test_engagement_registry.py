@@ -252,18 +252,20 @@ class TestRegistryStateTransitions:
         assert reg.get(rec.id) is rec
 
     async def test_terminal_tombstones_pruned_after_retention(self, tmp_path):
-        """D-4: terminal tombstones age out of the file (30d) so it can't
+        """D-4: terminal tombstones age out of the file (30d, and never
+        before the transcript retention plus its reap margin) so it can't
         grow unboundedly; in-flight records are never pruned."""
-        from engagement_registry import EngagementRegistry
+        from engagement_registry import EngagementRegistry, _terminal_retention_days
 
         reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
         old = await reg.create("executor", "configurator", "claude_code", "t1", {}, 1)
-        await reg.mark_completed(old.id, completed_at=time.time() - 31 * 86400)
+        await reg.mark_completed(
+            old.id, completed_at=time.time() - (_terminal_retention_days() + 1) * 86400)
         fresh = await reg.create("specialist", "finance", "in_casa", "t2", {}, 2)
         rows = json.loads((tmp_path / "e.json").read_text())
         ids = [r["id"] for r in rows]
         assert fresh.id in ids
-        assert old.id not in ids, "31d-old terminal tombstone must be pruned"
+        assert old.id not in ids, "an aged-out terminal tombstone must be pruned"
 
     async def test_load_reconciles_active_to_idle(self, tmp_path):
         """D-4 boot reconcile: a record loaded as 'active' cannot have a live
