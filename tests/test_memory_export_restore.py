@@ -484,3 +484,94 @@ def test_an_admin_export_missing_an_exported_table_fails(tmp_path, monkeypatch):
     with pytest.raises(export.ExportFailed, match="future_rows"):
         export.export(store)
     assert os.listdir(export.exports_dir(store)) == []
+
+
+# --- an older export must hold exactly its schema's exported tables (S7 r2) ------------
+
+def _drop_table(directory: Path, table: str) -> None:
+    (directory / f"{table}.jsonl").unlink()
+
+    def change(m):
+        del m["counts"]["tables"][table]
+        del m["files"][f"{table}.jsonl"]
+    _rewrite_manifest(directory, change)
+
+
+def test_an_older_export_missing_one_of_its_schemas_tables_is_refused(
+        tmp_path, monkeypatch):
+    """A v1 export whose manifest and files both omit a table v1 has is
+    refused at the request, and at the build if staged anyway."""
+    root, proc, store, _ = _setup(tmp_path)
+    path = Path(_saved(export.export(store), tmp_path))     # complete, v1
+    _drop_table(path, "engagement_summaries")
+    _v2_adds_an_exported_table(monkeypatch)                 # now it is older
+    with pytest.raises(restore.Refused, match="engagement_summaries"):
+        r.stage(root, str(path))
+    assert r.nothing_scheduled(root)
+
+    # Staged behind the request's back: the build abandons it.
+    monkeypatch.setattr(restore, "validate", _lenient(restore.validate))
+    assert r.stage(root, str(path)) == "staged"
+    monkeypatch.undo()
+    _v2_adds_an_exported_table(monkeypatch)
+    assert maintenance.run(root=str(root), proc_root=str(proc)) == "abandoned"
+    assert r.table_lines(store.path, "engagement_summaries") != b""
+
+
+def _lenient(real):
+    def validate(directory):
+        try:
+            return real(directory)
+        except restore.Refused:
+            manifest = export.read_manifest(directory)
+            return manifest, r.sha(Path(directory) / export.MANIFEST)
+    return validate
+
+
+def test_a_complete_older_export_restores(tmp_path, monkeypatch):
+    root, proc, store, _ = _setup(tmp_path)
+    path = _saved(export.export(store), tmp_path)
+    _v2_adds_an_exported_table(monkeypatch)
+    assert export.exported_tables_at(1) == [
+        t for t in export.exported_tables() if t != "future_rows"]
+    assert r.stage(root, path) == "staged"
+    assert maintenance.run(root=str(root), proc_root=str(proc)) == "done"
+    r.assert_store_equals_export(store.path, path)
+
+
+def test_the_tables_of_each_version_come_from_its_migrations(monkeypatch):
+    from memory import schema, store as store_mod
+    monkeypatch.setattr(store_mod, "MIGRATIONS", {
+        1: schema.V1,
+        2: ("CREATE TABLE future_rows (id INTEGER PRIMARY KEY) STRICT",
+            "DROP TABLE engagement_summaries")})
+    assert "future_rows" not in store_mod.tables_at(1)
+    assert "engagement_summaries" in store_mod.tables_at(1)
+    assert "future_rows" in store_mod.tables_at(2)
+    assert "engagement_summaries" not in store_mod.tables_at(2)
+
+
+def test_an_older_export_holding_a_later_table_or_a_stray_file_is_refused(
+        tmp_path, monkeypatch):
+    root, _, store, _ = _setup(tmp_path)
+    good = Path(_saved(export.export(store), tmp_path))     # v1
+    _v2_adds_an_exported_table(monkeypatch)
+
+    later = _copy_export(str(good), tmp_path, "later")
+    (later / "future_rows.jsonl").write_text("")
+    _rewrite_manifest(later, lambda m: (
+        m["counts"]["tables"].__setitem__("future_rows", 0),
+        m["files"].__setitem__("future_rows.jsonl",
+                               r.sha(later / "future_rows.jsonl"))))
+    with pytest.raises(restore.Refused, match="future_rows, which schema v1 "
+                                              "does not have"):
+        r.stage(root, str(later))
+
+    stray = _copy_export(str(good), tmp_path, "stray")
+    (stray / "notes.jsonl").write_text("")
+    _rewrite_manifest(stray, lambda m: m["files"].__setitem__(
+        "notes.jsonl", r.sha(stray / "notes.jsonl")))
+    with pytest.raises(restore.Refused, match="notes.jsonl, which is no "
+                                              "table of schema v1"):
+        r.stage(root, str(stray))
+    assert r.nothing_scheduled(root)

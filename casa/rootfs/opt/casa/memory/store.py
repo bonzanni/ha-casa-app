@@ -63,6 +63,23 @@ def schema_version() -> int:
     return max(MIGRATIONS)
 
 
+def tables_at(version: int) -> set[str]:
+    """The tables schema *version* has, derived from the migrations alone:
+    their statements up to *version* applied in order to a scratch in-memory
+    database, so a table created, renamed or dropped by any version is where
+    the code puts it. No store is opened."""
+    conn = sqlite3.connect(":memory:")
+    try:
+        for v in range(1, version + 1):
+            for statement in MIGRATIONS[v]:
+                conn.execute(statement)
+        return {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' "
+            "AND name NOT LIKE 'sqlite_%'")}
+    finally:
+        conn.close()
+
+
 def fts5_available() -> bool:
     """Whether this SQLite can create and query an FTS5 table."""
     try:

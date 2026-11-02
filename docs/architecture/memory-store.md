@@ -46,7 +46,9 @@ into `/data/memory/exports/` first, and only then migrated
 ([`memory-export-restore.md`](memory-export-restore.md)). The restore uses the same opener
 for the store it builds: under another name (`restore-source/built.db`), at the export's
 schema version (`target`) and in a rollback journal (`journal_mode="delete"`), where a
-journal mode that cannot be set fails the open.
+journal mode that cannot be set fails the open. `tables_at(version)` names the tables a
+schema version has, by applying the migrations up to it to a scratch in-memory database;
+the export and the restore use it to know which tables an export of that version holds.
 
 **Unavailable, never empty, and only when unchanged.** `open()` reports the store
 unavailable only when it has left it as it was. If any step up to the migration's commit

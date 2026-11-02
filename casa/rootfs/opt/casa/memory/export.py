@@ -51,7 +51,7 @@ from collections.abc import Iterator
 
 from memory import capture, pending, registry, view
 from memory.registry import Export, Kind
-from memory.store import MemoryStore
+from memory.store import MemoryStore, schema_version, tables_at
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +91,13 @@ def exported_tables() -> list[str]:
     return [t for e in registry.REGISTRY
             if e.kind is Kind.TABLE and e.export is Export.YES
             for t in e.paths]
+
+
+def exported_tables_at(version: int) -> list[str]:
+    """The exported tables schema *version* has (from its migrations): an
+    export of a store at that version holds exactly these."""
+    have = tables_at(version)
+    return [t for t in exported_tables() if t in have]
 
 
 # --- what an export holds, shared with the restore's check -------------------
@@ -274,18 +281,24 @@ def export(store: MemoryStore, *, kind: str = ADMIN, drain: bool = True,
         _one_at_a_time.release()
 
 
-def _tables_in(conn: sqlite3.Connection, *, as_found: bool) -> list[str]:
-    """The registered exported tables this export copies, read inside its
-    transaction."""
+def _tables_in(conn: sqlite3.Connection, version: int, *,
+               as_found: bool) -> list[str]:
+    """The exported tables this export copies: exactly those schema
+    *version* has, each of which the file must hold. Outside a migration
+    (*as_found* false) that must be every registered exported table."""
+    expected = exported_tables_at(version)
+    if not as_found:
+        lacking = [t for t in exported_tables() if t not in expected]
+        if lacking or version != schema_version():
+            raise ExportFailed(
+                f"the store is at schema v{version} and has no "
+                f"{', '.join(lacking) or 'current'} table")
     have = {r[0] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type = 'table'")}
-    tables = exported_tables()
-    if as_found:
-        return [t for t in tables if t in have]
-    missing = [t for t in tables if t not in have]
+    missing = [t for t in expected if t not in have]
     if missing:
         raise ExportFailed(f"the store has no {', '.join(missing)} table")
-    return tables
+    return expected
 
 
 def _export(store: MemoryStore, *, kind: str, drain: bool, as_found: bool,
@@ -311,7 +324,7 @@ def _export(store: MemoryStore, *, kind: str, drain: bool, as_found: bool,
         files: dict[str, str] = {}
         with store.transaction() as conn:   # one read snapshot
             version = conn.execute("PRAGMA user_version").fetchone()[0]
-            tables = _tables_in(conn, as_found=as_found)
+            tables = _tables_in(conn, version, as_found=as_found)
             for table in tables:
                 files[f"{table}.jsonl"] = _write(
                     part, f"{table}.jsonl", dump_table(conn, table))

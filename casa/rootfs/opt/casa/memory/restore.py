@@ -135,10 +135,23 @@ def validate(directory: str) -> tuple[dict, str]:
     if unregistered:
         raise Refused(f"it holds {', '.join(unregistered)}, which this Casa "
                       "has no restore rule for")
-    if version == current:
-        missing = [t for t in mexport.exported_tables() if t not in tables]
-        if missing:
-            raise Refused(f"it lacks {', '.join(missing)}")
+    # Exactly the exported tables its schema version has, each with its file
+    # and no other table file: an export that leaves one out would restore
+    # it empty.
+    expected = mexport.exported_tables_at(version)
+    missing = [t for t in expected if t not in tables]
+    if missing:
+        raise Refused(f"it lacks {', '.join(missing)}, which schema "
+                      f"v{version} has")
+    extra = sorted(set(tables) - set(expected))
+    if extra:
+        raise Refused(f"it holds {', '.join(extra)}, which schema "
+                      f"v{version} does not have")
+    stray = sorted(n for n in manifest["files"] if n.endswith(".jsonl")
+                   and n[:-len(".jsonl")] not in expected)
+    if stray:
+        raise Refused(f"it lists {', '.join(stray)}, which is no table of "
+                      f"schema v{version}")
     try:
         mexport.verify_files(directory, manifest)
     except ValueError as exc:

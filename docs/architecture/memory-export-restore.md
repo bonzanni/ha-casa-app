@@ -40,8 +40,8 @@ are kept, and `premigration-v<n>-<time>` before a schema migration. A wipe delet
 **A forward schema migration runs only after an automatic export.** `casa-main` opens the
 store with the export as its pre-migration step (`MemoryStore.open(before_migration=…)`):
 an existing file older than the code is exported as it is, then migrated in one
-transaction. That export copies the registered exported tables its own schema has (the
-migration may be about to add one) and records that schema's version; every other export
+transaction. That export copies exactly the exported tables its own schema version has
+(the migration may be about to add one) and records that version; every other export
 fails on a registered exported table the store lacks. It does not drain the spool, because the spool holds rows in the
 code's newer shape, which the older schema may not take; the spool is drained after the
 migration, as at every boot. If the export fails, nothing is migrated and memory is
@@ -56,8 +56,10 @@ local export. The only door is the terminal: `casactl memory-restore <export> [-
 
 - **The request** (`memory.restore.request_restore`, in `casa-main`). The export is
   validated at once: its manifest is one this Casa reads, every table it holds is
-  registered with a restore rule (and an export of the current schema holds every exported
-  table), its schema is one this Casa can migrate, and every file matches its hash. A
+  registered with a restore rule, its schema is one this Casa can migrate, it holds exactly
+  the exported tables its schema version has (one left out would be restored empty), with a
+  file for each and no other table file, and every file matches its hash. The tables each
+  version has are derived from the migrations alone (`memory.store.tables_at`). A
   pending wipe or restore refuses it too; neither is ever replaced. Any refusal answers
   "The restore was refused: <reason>. Nothing was scheduled." Without `--yes` the answer
   is the confirmation — "This replaces all current memory with this export's, including
