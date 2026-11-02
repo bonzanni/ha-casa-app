@@ -6,12 +6,20 @@ fixed markers, so the wipe can find the section again and empty it while
 keeping every other byte of the file. Memory text can never forge a marker:
 both marker strings are removed from the block before it is wrapped.
 
+Every other input — the template text and the task, context and world-state
+values — has any marker string neutralised (its ``<`` written as ``&lt;``,
+which reads the same), and the template is filled in one pass, so a value is
+never scanned for placeholders again. A marker pair in a file this release
+writes therefore comes only from the memory slot.
+
 Files written before this release carry the block with no markers. The wipe
 then locates it through the control directory's cached copy, and uses
 :data:`LEGACY_HEADER` to tell an empty block from a cache that was cut off
 while it was being written (``memory.maintenance``).
 """
 from __future__ import annotations
+
+import re
 
 OPEN = "<!-- casa:executor-memory -->"
 CLOSE = "<!-- /casa:executor-memory -->"
@@ -37,6 +45,27 @@ def marked(block: str) -> str:
     return OPEN + strip_markers(block or "") + CLOSE
 
 
-def fill(template_text: str, block: str) -> str:
-    """*template_text* with every slot replaced by the marked *block*."""
-    return template_text.replace(SLOT, marked(block))
+#: The placeholders the executor templates use.
+PLACEHOLDERS = ("{executor_type}", "{task}", "{context}",
+                "{world_state_summary}", SLOT)
+_PLACEHOLDER = re.compile("|".join(re.escape(p) for p in PLACEHOLDERS))
+
+
+def neutralise(text: str) -> str:
+    """*text* with every marker string made inert: its leading ``<`` becomes
+    ``&lt;``. Nothing is removed, and no new ``<`` appears, so no marker can
+    form."""
+    return (text.replace(OPEN, "&lt;" + OPEN[1:])
+                .replace(CLOSE, "&lt;" + CLOSE[1:]))
+
+
+def render(template_text: str, values: dict[str, str], block: str) -> str:
+    """*template_text* filled in one pass: the slot becomes the marked
+    *block*, each placeholder in *values* its neutralised value, and any other
+    placeholder is left as written. Values are never scanned again."""
+    def _one(match: re.Match) -> str:
+        token = match.group(0)
+        if token == SLOT:
+            return marked(block)
+        return neutralise(values[token]) if token in values else token
+    return _PLACEHOLDER.sub(_one, neutralise(template_text))

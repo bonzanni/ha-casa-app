@@ -73,10 +73,12 @@ print("RESULT " + json.dumps({{"opens": opens, "binds": binds,
 _RUNS = [0]
 
 
-def run_main(tmp: Path, intent: dict | None, *, cid: str) -> tuple[dict, list[str]]:
+def run_main(tmp: Path, intent: dict | bytes | None, *, cid: str) -> tuple[dict, list[str]]:
     """``casa_core.main()`` in its own process until it idles, then SIGTERM."""
     path = tmp / "memory" / "maintenance.json"
-    if intent is not None:
+    if isinstance(intent, bytes):
+        w.write(path, intent)
+    elif intent is not None:
         w.write(path, json.dumps(intent))
     _RUNS[0] += 1
     sent = tmp / f"sent-{_RUNS[0]}.txt"
@@ -437,3 +439,31 @@ def test_without_the_guard_the_migration_copies_during_a_pending_wipe(tmp_path):
         "if true; then")
     _run_migration(tmp_path, script)
     assert w.hits(tmp_path / "config/cc-home", [canary]) != []
+
+
+INVALID_UTF8 = b'{"kind": "wipe", "requested_at": "\xff", "attempts": []}'
+
+
+def test_an_intent_that_is_not_utf8_is_unreadable_in_the_step(tmp_path):
+    """r1 Astra S1: a byte that does not decode is an unreadable record,
+    not a crash: the step deletes nothing and records why."""
+    root, proc = tmp_path / "root", w.fake_proc(tmp_path)
+    w.write(w.under(root, "/data/memory/memory.db"), "a store")
+    w.write(w.under(root, "/data/memory/maintenance.json"), INVALID_UTF8)
+    p = w.run_oneshot(root, proc)
+    assert (p.returncode, p.stdout.strip()) == (0, "failed"), p.stderr
+    assert w.under(root, "/data/memory/memory.db").exists()
+    intent = maintenance.read_intent(str(root))
+    assert intent["attempts"][-1]["error"] == maintenance.UNREADABLE_REASON
+
+
+def test_casa_main_meeting_an_intent_that_is_not_utf8_tells_and_waits(tmp_path):
+    """The real startup check, on the undecodable file itself: notification
+    only, with the line that names the fix, on every start."""
+    result, lines = run_main(tmp_path, INVALID_UTF8, cid="c2")
+    assert lines == ["Memory maintenance could not read its record, so "
+                     "nothing was deleted. Remove /data/memory/maintenance.json, "
+                     "then restart the app."]
+    assert result == {"opens": [], "binds": [], "replays": 0, "restarts": 0}
+    _, again = run_main(tmp_path, None, cid="c3")
+    assert len(again) == 1

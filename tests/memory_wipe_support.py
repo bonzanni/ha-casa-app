@@ -143,10 +143,21 @@ def legacy_workspace(root: Path, eid: str, block: str, *, cache: str | None,
     if cache is not None:
         write(ctl / ".executor_memory", cache)
     write(ctl / ".casa-meta.json", json.dumps({
-        "engagement_id": eid, "status": status,
+        "engagement_id": eid, "executor_type": EXECUTOR_TYPE, "status": status,
         "retention_until": retention_until if status != "UNDERGOING" else None,
     }))
+    install_template(root)
     return ws
+
+
+#: The executor type the stand-in workspaces were provisioned for, and where
+#: its template sits on the stand-in install.
+EXECUTOR_TYPE = "garden-notes"
+
+
+def install_template(root: Path, text: str = TEMPLATE) -> Path:
+    return write(under(root, f"/config/agents/executors/{EXECUTOR_TYPE}/prompt.md"),
+                 text)
 
 
 # --- a real process, killable at a chosen point -------------------------------

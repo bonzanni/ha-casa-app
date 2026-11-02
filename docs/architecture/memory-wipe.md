@@ -98,19 +98,26 @@ the same transaction that marks it sent.
 **The executor-memory section keeps every other byte.** From this release
 `provision_workspace` writes the cache before any `CLAUDE.md`, writes `CLAUDE.md`
 atomically, and both it and `refresh_claude_md` wrap the block between two fixed markers
-with every marker string removed from the block first, so memory text cannot forge one. A
+with every marker string removed from the block first, so memory text cannot forge one.
+Every other input — the template text, the task, the context — has any marker string
+neutralised (its `<` written as `&lt;`), and the template is filled in one pass, so a value
+is never scanned for placeholders again: the one marker pair comes only from the slot. A
 template with no slot caches nothing. The step classifies each file:
 
-1. **Markers** — the content between each pair is emptied.
-2. **A legacy block found through its cache** — no markers, and the non-empty cached text
-   occurs exactly once: it is replaced by an empty marked section, so a re-run after a
-   crash finds case 1.
+1. **Markers** — exactly one pair, in order: the content between them is emptied.
+2. **A legacy block found through its cache** — no markers, the non-empty cached text
+   occurs exactly once, and it sits exactly between the template's own text on each side
+   of its slot (up to the neighbouring placeholder, or the template's edge), read from the
+   executor type the engagement recorded. A cache cut off mid-write still occurs once, as a
+   prefix, but the template's text does not follow it. The block is replaced by an empty
+   marked section, so a re-run after a crash finds case 1.
 3. **An empty legacy block** — no markers, an empty cache, and no
    `## Prior engagements (lessons learned)` line, which opens every non-empty block the
    pre-release producer wrote: nothing to blank.
-4. **Not locatable** — anything else, including an empty cache beside a file that holds
-   that line (the cache was cut off while it was written). The attempt fails and names the
-   engagement.
+4. **Not locatable** — anything else: more than one marker pair, a cached text whose
+   boundaries the template does not confirm (a truncated cache, a template edited since, an
+   executor type or template that is gone), or an empty cache beside a file that holds
+   that line. The attempt fails and names the engagement.
 
 A cache is emptied only after its file is blank. Every cache is also enumerated on its
 own: one with no `CLAUDE.md` beside it is an orphan, left by a sweep or a provisioning cut

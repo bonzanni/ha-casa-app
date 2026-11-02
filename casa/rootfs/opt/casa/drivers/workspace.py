@@ -787,11 +787,10 @@ async def provision_workspace(
     else:
         # 1. CLAUDE.md — the executor prompt, interpolated (legacy path).
         # Written atomically, so a crash leaves no file or a whole one.
-        prompt_interpolated = executor_block.fill(
-            template_text
-            .replace("{task}", task or "")
-            .replace("{context}", context or "(none)")
-            .replace("{executor_type}", defn.type),
+        prompt_interpolated = executor_block.render(
+            template_text,
+            {"{task}": task or "", "{context}": context or "(none)",
+             "{executor_type}": defn.type},
             executor_memory,
         )
         atomic_write_beneath(
@@ -942,11 +941,11 @@ def refresh_claude_md(ws_dir: str, *, defn, rec) -> None:
     if template_root.is_dir():
         # Mirror render_workspace_template (workspace.py:489-496) EXACTLY.
         text = (template_root / "CLAUDE.md.tmpl").read_text(encoding="utf-8")
-        text = executor_block.fill(
-            text.replace("{executor_type}", defn.type)
-                .replace("{task}", task)
-                .replace("{context}", context)
-                .replace("{world_state_summary}", world_state_summary),
+        text = executor_block.render(
+            text,
+            {"{executor_type}": defn.type, "{task}": task,
+             "{context}": context,
+             "{world_state_summary}": world_state_summary},
             executor_memory,
         )
         atomic_write_beneath(
@@ -954,11 +953,10 @@ def refresh_claude_md(ws_dir: str, *, defn, rec) -> None:
     else:
         # Mirror the legacy provision branch (workspace.py:245-253) EXACTLY.
         prompt_text = _read_text(defn.prompt_template_path)
-        prompt_interpolated = executor_block.fill(
-            prompt_text
-            .replace("{task}", task or "")
-            .replace("{context}", context or "(none)")
-            .replace("{executor_type}", defn.type),
+        prompt_interpolated = executor_block.render(
+            prompt_text,
+            {"{task}": task or "", "{context}": context or "(none)",
+             "{executor_type}": defn.type},
             executor_memory,
         )
         atomic_write_beneath(
@@ -1351,11 +1349,11 @@ def render_workspace_template(
     tmpl = template_root / "CLAUDE.md.tmpl"
     if tmpl.is_file():
         text = tmpl.read_text(encoding="utf-8")
-        text = executor_block.fill(
-            text.replace("{executor_type}", executor_type)
-                .replace("{task}", task)
-                .replace("{context}", context)
-                .replace("{world_state_summary}", world_state_summary),
+        text = executor_block.render(
+            text,
+            {"{executor_type}": executor_type, "{task}": task,
+             "{context}": context,
+             "{world_state_summary}": world_state_summary},
             executor_memory,
         )
         # Atomic, so a crash leaves no file or a whole one.
