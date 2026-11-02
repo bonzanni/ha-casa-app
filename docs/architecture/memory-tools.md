@@ -138,17 +138,23 @@ message above; nothing is reported as empty. The engager query returns `unavaila
 missing one itself. An index that cannot be opened during a run makes that search report
 `unavailable` until the next boot rebuilds it.
 
-**The index lags.** Every search catches it up first; a catch-up waits a bounded time on
-another's, and a search that cannot get it reports `unavailable`.
+**A lock is held.** Every connection a memory tool or the engager query opens — the store's
+reads, the index's catch-up and its reads, the correction mark — waits for another
+connection's lock no longer than the turn-path bound, `memory.view.BUSY_TIMEOUT_S` (50 ms),
+whatever the store's journal mode. Past it the tool answers `unavailable` at once; a turn
+never waits on a writer, a drain or another search's catch-up. Only boot's rebuild of the
+index waits the store's own, longer bound.
 
 **A correction cannot be marked.** No message of his in the turn: an error that says so,
-nothing marked. His message not yet stored and the spool not drained, or the store down:
-`unavailable` — the conversation itself still carries his words.
+nothing marked. His message not yet stored and the spool not drained, the store down or
+busy: `unavailable`, worded so the model does not claim memory was updated — the
+conversation itself still carries his words.
 
 ## Extension points
 
-**A new memory read** resolves clearance through `_memory_reader`, runs its blocking read
-through `_read_memory` (off the event loop, re-run on a clamp), filters every returned
+**A new memory read** opens every connection with the turn-path bound and joins the timing
+pin in `tests/test_memory_tools_busy.py`, resolves clearance through `_memory_reader`, runs
+its blocking read through `_read_memory` (off the event loop, re-run on a clamp), filters every returned
 object by its own tier or ledger before paging or counting, and frames its `ok` result with
 the shared note.
 
@@ -180,6 +186,7 @@ the shared note.
 - `tests/test_memory_browse.py`
 - `tests/test_memory_open.py`
 - `tests/test_correct_memory_tool.py`
+- `tests/test_memory_tools_busy.py`
 - `tests/test_query_engager_tiers.py`
 - `tests/test_recall_readable_slice_framing.py`
 

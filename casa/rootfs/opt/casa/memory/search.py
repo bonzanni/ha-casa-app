@@ -35,7 +35,9 @@ from dataclasses import dataclass, field
 from datetime import date
 
 from memory import browse, pending, registry
+from memory.store import BUSY_TIMEOUT_S as BOOT_BUSY_TIMEOUT_S
 from memory.store import MemoryStore
+from memory.view import BUSY_TIMEOUT_S as TURN_BUSY_TIMEOUT_S
 
 logger = logging.getLogger(__name__)
 
@@ -43,8 +45,6 @@ SEARCH_DB_NAME = "search.db"
 #: Bumped whenever the index's layout changes; an index of another version
 #: is rebuilt.
 SCHEMA_VERSION = 1
-#: Seconds a search waits on another connection's catch-up of the index.
-BUSY_TIMEOUT_S = 5.0
 #: Hits per page.
 PAGE_SIZE = 5
 #: Characters of a hit's text shown; the day's browse shows it whole.
@@ -67,8 +67,8 @@ def path_for(store: MemoryStore) -> str:
     return os.path.join(store.directory, SEARCH_DB_NAME)
 
 
-def _connect(path: str) -> sqlite3.Connection:
-    return sqlite3.connect(path, timeout=BUSY_TIMEOUT_S, isolation_level=None)
+def _connect(path: str, busy_timeout: float) -> sqlite3.Connection:
+    return sqlite3.connect(path, timeout=busy_timeout, isolation_level=None)
 
 
 def _remove(path: str) -> None:
@@ -109,10 +109,10 @@ def _create(conn: sqlite3.Connection) -> None:
         raise
 
 
-def _open(store: MemoryStore) -> sqlite3.Connection:
+def _open(store: MemoryStore, busy_timeout: float) -> sqlite3.Connection:
     """A connection to an index of this layout, created when missing."""
     path = path_for(store)
-    conn = _connect(path)
+    conn = _connect(path, busy_timeout)
     try:
         if not _current(conn):
             if conn.execute("SELECT count(*) FROM sqlite_master"
@@ -125,11 +125,14 @@ def _open(store: MemoryStore) -> sqlite3.Connection:
     return conn
 
 
-def catch_up(store: MemoryStore) -> int:
+def catch_up(store: MemoryStore, *,
+             busy_timeout: float = TURN_BUSY_TIMEOUT_S) -> int:
     """Index every event above the high-water mark, in one transaction of
-    the index. Returns the number of events added. Raises when the store or
-    the index cannot be read."""
-    conn = _open(store)
+    the index. Every wait on the index's or the store's lock is bounded by
+    *busy_timeout* (the turn-path bound, unless boot passes its own).
+    Returns the number of events added. Raises when the store or the index
+    cannot be read, or is locked past the bound."""
+    conn = _open(store, busy_timeout)
     added = 0
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -137,7 +140,7 @@ def catch_up(store: MemoryStore) -> int:
             through = conn.execute(
                 "SELECT through FROM indexed WHERE id = 1").fetchone()[0]
             while True:
-                with store.transaction() as mconn:
+                with store.transaction(busy_timeout=busy_timeout) as mconn:
                     rows = mconn.execute(
                         "SELECT seq, text, local_day FROM events "
                         "WHERE seq > ? ORDER BY seq LIMIT ?",
@@ -164,7 +167,7 @@ def catch_up(store: MemoryStore) -> int:
 def rebuild(store: MemoryStore) -> int:
     """Delete the index and build it afresh from ``events``."""
     _remove(path_for(store))
-    return catch_up(store)
+    return catch_up(store, busy_timeout=BOOT_BUSY_TIMEOUT_S)
 
 
 def ensure(store: MemoryStore) -> bool:
@@ -180,7 +183,7 @@ def ensure(store: MemoryStore) -> bool:
     try:
         if os.path.lexists(path):
             try:
-                conn = _connect(path)
+                conn = _connect(path, BOOT_BUSY_TIMEOUT_S)
                 try:
                     usable = _current(conn) and conn.execute(
                         "PRAGMA quick_check").fetchone()[0] == "ok"
@@ -193,7 +196,7 @@ def ensure(store: MemoryStore) -> bool:
                                "rebuilt", path)
                 _remove(path)
         rebuilt = not os.path.lexists(path)
-        added = catch_up(store)
+        added = catch_up(store, busy_timeout=BOOT_BUSY_TIMEOUT_S)
         if rebuilt:
             logger.info("memory search index built (%d events)", added)
     except Exception:  # noqa: BLE001 — search retries on first use
@@ -285,9 +288,9 @@ def search(store: MemoryStore, query: str, *, clearance: str,
     sql += " ORDER BY rank"
     wanted = max(page, 1) * PAGE_SIZE + 1
     kept: list[dict] = []
-    index = _open(store)
+    index = _open(store, TURN_BUSY_TIMEOUT_S)
     try:
-        with store.transaction() as conn:
+        with store.transaction(busy_timeout=TURN_BUSY_TIMEOUT_S) as conn:
             cursor = index.execute(sql, args)
             while len(kept) < wanted:
                 seqs = [r[0] for r in cursor.fetchmany(CANDIDATE_BATCH)]

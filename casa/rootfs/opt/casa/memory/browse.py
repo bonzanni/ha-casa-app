@@ -24,6 +24,7 @@ from zoneinfo import ZoneInfo
 
 from memory import pending
 from memory.store import MemoryStore
+from memory.view import BUSY_TIMEOUT_S
 
 #: The longest stretch one browse covers.
 MAX_DAYS = 7
@@ -130,7 +131,7 @@ def browse(store: MemoryStore, *, clearance: str, first_day: date,
         raise ValueError(f"a browse covers at most {MAX_DAYS} days")
     start = (first_day.isoformat(), from_time or time(0))
     end = (last_day.isoformat(), to_time or time(23, 59, 59, 999999))
-    with store.transaction() as conn:
+    with store.transaction(busy_timeout=BUSY_TIMEOUT_S) as conn:
         found = rows(
             conn, f"SELECT {', '.join('e.' + c for c in EVENT_COLUMNS)} "
             "FROM events AS e WHERE e.local_day BETWEEN ? AND ? "

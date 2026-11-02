@@ -31,7 +31,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from memory import capture, pending, writer
+from memory import capture, pending, view, writer
 from memory.store import MemoryStore
 
 
@@ -78,9 +78,9 @@ def mark(store: MemoryStore, seq: int, *,
 
 
 #: Seconds ``correct_memory`` waits for the store's lock: the turn-path bound
-#: serving uses (``memory.view.BUSY_TIMEOUT_S``), so a tool call never holds
-#: a turn behind a writer; a busy store answers "could not mark" instead.
-TOOL_BUSY_TIMEOUT_S = 0.05
+#: (``memory.view.BUSY_TIMEOUT_S``), so a tool call never holds a turn behind
+#: a writer; a busy store answers "could not mark" instead.
+TOOL_BUSY_TIMEOUT_S = view.BUSY_TIMEOUT_S
 
 
 def _operator_seq(store: MemoryStore, source_key: str) -> int | None:

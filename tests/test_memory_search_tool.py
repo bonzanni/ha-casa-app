@@ -257,10 +257,17 @@ async def test_an_engagement_reads_at_its_own_records_clearance(
     assert sorted(h["text"] for h in out["hits"]) == sorted(seen)
 
 
-async def test_two_first_searches_build_one_index(mem, turn):
-    """Two searches that each find no index build it once between them."""
+async def test_two_first_catch_ups_build_one_index(mem):
+    """Catch-ups that each find no index build it once between them: the
+    one that waits sees the other's tables and does not create them again.
+    (Run with the boot bound so they wait for each other; on a turn's path
+    a catch-up that would wait answers unavailable instead.)"""
     import asyncio
+    from memory.store import BUSY_TIMEOUT_S
     store_event(mem, "the boiler service is booked")
-    turn("private")
-    outs = await asyncio.gather(*(_search(query="boiler") for _ in range(4)))
-    assert [len(o["hits"]) for o in outs] == [1, 1, 1, 1]
+    added = await asyncio.gather(*(asyncio.to_thread(
+        memory_search.catch_up, mem, busy_timeout=BUSY_TIMEOUT_S)
+        for _ in range(4)))
+    assert sorted(added) == [0, 0, 0, 1]
+    found = memory_search.search(mem, "boiler", clearance="private")
+    assert [h["text"] for h in found.hits] == ["the boiler service is booked"]

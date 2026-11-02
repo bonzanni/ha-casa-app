@@ -56,8 +56,9 @@ logger = logging.getLogger(__name__)
 #: earlier renderer is not mistaken for this one's.
 RENDERER_VERSION = "1"
 
-#: Seconds a serving transaction waits on another connection's lock. Serving
-#: runs on the turn's path, so it waits no longer than capture does
+#: The turn-path bound: seconds any connection on a turn's path — serving,
+#: the correction note, and every memory tool's store and index connection —
+#: waits on another connection's lock. It waits no longer than capture does
 #: (``memory.capture.CAPTURE_BUSY_TIMEOUT_S``): a contended store degrades the
 #: turn to no view at once.
 BUSY_TIMEOUT_S = 0.05

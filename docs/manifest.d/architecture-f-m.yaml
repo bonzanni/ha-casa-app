@@ -46,6 +46,7 @@
     - tests/test_memory_browse.py
     - tests/test_memory_open.py
     - tests/test_correct_memory_tool.py
+    - tests/test_memory_tools_busy.py
     - tests/test_query_engager_tiers.py
     - tests/test_recall_readable_slice_framing.py
   related: [architecture/memory-serving.md, architecture/memory-scoping.md, architecture/memory-writer.md, architecture/memory-store.md, architecture/memory-capture.md, architecture/tools-interface.md]
