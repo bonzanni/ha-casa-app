@@ -114,7 +114,10 @@ before every frame: the moment its page is no longer the current viewer, it forw
 noVNC runs `viewOnly`. Chrome's window — only the window; the X screen stays 1920×1080 — is fitted to the
 viewer through CDP `Browser.setWindowBounds` (at least 500 px wide: a narrower phone scales the
 picture by width/500; at most 1080 px tall: a tall phone is letterboxed). Chrome's toolbar is
-cropped and replaced by the viewer's bar (site, Done); tapping the site shows the toolbar.
+cropped and replaced by the viewer's bar (site, Done); tapping the site shows the toolbar. The picture
+shows, and takes taps, only from the first state on (it names the toolbar's height); the crop is applied
+the moment the picture connects and again in the same step as every refit: the picture never shows the
+toolbar for a moment and then jumps (a tap aimed just before the jump landed a toolbar's height off).
 The viewer asks Home Assistant's panel to hide its header (`home-assistant/subscribe-properties`
 with `kioskMode`) — again at every viewport change, since Home Assistant enables its kiosk mode
 only when it is off — and undoes it at Done or when the page closes. It places itself in the part

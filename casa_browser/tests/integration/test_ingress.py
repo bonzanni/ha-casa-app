@@ -360,6 +360,7 @@ async def _viewer_scenario(probe: Probe, run_id: str) -> dict:
             raise AssertionError("Open did not reach the viewer: " + page.url + " "
                                  + (await page.content())[:800]) from None
         await page.evaluate("window.__marker = 'same-page'", isolated_context=False)
+        await page.evaluate(PAN_SAMPLER, isolated_context=False)
         await _until(page, "window.__lv && __lv.open()[0] && __lv.open()[1] && __lv.state() && __lv.status() === ''")
         state = await page.evaluate("__lv.state()", isolated_context=False)
         result["fields"] = sorted(f["type"] for f in state["fields"])
@@ -429,6 +430,7 @@ async def _viewer_scenario(probe: Probe, run_id: str) -> dict:
         await asyncio.sleep(2.0)
         result["overlap"] = await page.evaluate(
             "[__lv.open(), __lv.status(), document.querySelector('#cover').hidden]", isolated_context=False)
+        result["pan_frames"] = await _pan_frames(page)      # the toolbar shown and hidden, two reconnects
         # Done (one tap, slice 5g): the sockets close, the window is restored, the run goes on
         # and the closing page says so
         await page.click("#done")
@@ -454,11 +456,28 @@ TYPING_PAGE = (
     b"<br><button id='go'>Go</button></form>")
 
 
+# Every frame the viewer draws while its picture is connected, from the page's first frames on:
+# how many, and each one whose picture sat elsewhere than below Chrome's toolbar (cropped) or at
+# the top (shown) — where taps are mapped and aimed. A pan that comes a moment after the
+# picture moved shows up here as frames at (0, 0), not only as a tap that sometimes lands
+# a toolbar's height off.
+PAN_SAMPLER = """() => { window.__frames = 0; window.__unpanned = [];
+    const tick = () => { const p = window.__lv && __lv.pan && __lv.pan();
+      if (p) { __frames++; if (p[0] !== p[1] && __unpanned.length < 20) __unpanned.push(p); }
+      requestAnimationFrame(tick); };
+    requestAnimationFrame(tick); }"""
+
+
 async def _open_viewer(page, base: str, run_id: str) -> None:
     await page.goto(base + "/")
     await page.click("form[action$='/open'] button")
     await _url(page, "**/view/" + run_id)
+    await page.evaluate(PAN_SAMPLER, isolated_context=False)
     await _until(page, "window.__lv && __lv.open()[0] && __lv.open()[1] && __lv.state() && __lv.status() === ''")
+
+
+async def _pan_frames(page) -> list:
+    return await page.evaluate("[window.__frames, window.__unpanned]", isolated_context=False)
 
 
 async def _value(probe: Probe, index: int, want: str, timeout: float = 20) -> list:
@@ -571,6 +590,7 @@ async def _typing_scenario(probe: Probe, run_id: str) -> dict:
         await asyncio.sleep(1.0)
         out["bind_values"] = probe.ask("values")
         out["bind_note"] = await page.evaluate("document.querySelector('#toast').textContent", isolated_context=False)
+        out["pan_frames"] = await _pan_frames(page)
         await browser.close()
     await standin.stop()
     return out
@@ -612,6 +632,7 @@ def test_keys_go_to_the_tapped_field(ingress_peer, tmp_path):
     assert out["omni_url"] == "https://site-a.example/typing", out       # nothing typed in the bar
     assert out["bind_values"] == ["q1", "", "tom+34", "pw-canary-35"], out    # nothing typed anywhere
     assert "missed" in out["bind_note"], out
+    assert out["pan_frames"][0] > 100 and out["pan_frames"][1] == [], out   # no frame at (0, 0)
 
 
 def test_viewer_end_to_end(ingress_peer, tmp_path):
@@ -656,6 +677,7 @@ def test_viewer_end_to_end(ingress_peer, tmp_path):
     assert out["window_initial"]["bounds"][2] >= 1919
     assert out["window_review"]["screen"][:2] == [1920, 1080]
     assert out["state_done"] == "running"
+    assert out["pan_frames"][0] > 100 and out["pan_frames"][1] == [], out   # no frame at (0, 0)
 
 
 @pytest.mark.parametrize("shadow", [False, True])
