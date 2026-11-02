@@ -1996,7 +1996,10 @@ class TestCancelDrainsReanchorOwner:
                 await asyncio.sleep(0)
             # Release the child so its drained completion re-creates the pair.
             release.set()
-            await asyncio.wait_for(cancel_task, timeout=1.0)
+            # A hang guard, not a latency bound: past the drain, cancel() goes
+            # on to its s6 teardown (thread hops and subprocess spawns), which
+            # a loaded machine has stretched past one second.
+            await asyncio.wait_for(cancel_task, timeout=30.0)
         await asyncio.gather(owner, return_exceptions=True)
 
         # The re-created record was seen by teardown: dropped + logged, never
