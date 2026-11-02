@@ -139,3 +139,57 @@ async def test_every_memory_tool_answers_at_once_on_a_locked_store(
         assert holder.in_transaction, "the lock was never held"
     assert all(t < ANSWER_WITHIN_S for t in timings.values()), timings
     assert memory_view.BUSY_TIMEOUT_S <= 0.05
+
+
+async def test_every_memory_tool_answers_at_once_while_a_drain_runs(
+        tmp_path, monkeypatch):
+    """His message went to the spool, and another drain holds the drain lock
+    (a long spool being stored): correct_memory, which would drain it first,
+    does not wait for that drain — it answers ``unavailable`` at once and
+    marks nothing — and no other tool waits either. Once the drain lock is
+    free the same call stores his message and marks it."""
+    import dataclasses
+    store = new_store(tmp_path)
+    monkeypatch.setitem(capture._wiring, "store", store)
+    monkeypatch.setitem(capture._wiring, "notify", None)
+    store_event(store, "the boiler service is booked", day="2026-10-05")
+    _, (entry,) = add(store, [fact("boiler", "serviced in May")])
+    memory_search.ensure(store)
+    item = dataclasses.replace(capture.event(
+        role="assistant", channel="telegram", speaker_kind="operator",
+        origin_kind="operator", text="no, the boiler is serviced in June",
+        eligibility="write_trusted_turn", origin_tier="private",
+        source_key=KEY))
+    store._unavailable_reason = "busy"
+    try:
+        assert capture.append(store, item).outcome == capture.SPOOLED
+    finally:
+        store._unavailable_reason = None
+
+    async def synth(question, context, max_tokens):
+        return "UNKNOWN"
+    monkeypatch.setattr(tools, "_synthesize_answer", synth)
+    monkeypatch.setattr(tools, "_bus", None)
+    _engager.tmp = str(tmp_path)
+    agent_mod.origin_var.set({
+        "role": "assistant", "channel": "telegram", "chat_id": "4242",
+        "_origin_route": "telegram", "_origin_clearance": "private",
+        agent_mod.MEMORY_OPENING_KEY: KEY})
+
+    timings, outs = {}, {}
+    assert capture._drain_lock.acquire(timeout=1)
+    try:
+        for name, call in _calls(entry):
+            started = time.monotonic()
+            outs[name] = await call()
+            timings[name] = round(time.monotonic() - started, 3)
+    finally:
+        capture._drain_lock.release()
+    assert all(t < ANSWER_WITHIN_S for t in timings.values()), timings
+    assert outs["correct_memory"]["status"] == "unavailable"
+    with store.transaction() as conn:
+        assert conn.execute(
+            "SELECT count(*) FROM correction_marks").fetchone()[0] == 0
+    again = json.loads((await tools.correct_memory.handler(
+        {"what": "the boiler"}))["content"][0]["text"])
+    assert again["status"] == "queued"

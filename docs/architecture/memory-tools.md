@@ -141,8 +141,10 @@ missing one itself. An index that cannot be opened during a run makes that searc
 **A lock is held.** Every connection a memory tool or the engager query opens — the store's
 reads, the index's catch-up and its reads, the correction mark — waits for another
 connection's lock no longer than the turn-path bound, `memory.view.BUSY_TIMEOUT_S` (50 ms),
-whatever the store's journal mode. Past it the tool answers `unavailable` at once; a turn
-never waits on a writer, a drain or another search's catch-up. Only boot's rebuild of the
+whatever the store's journal mode. The correction's drain of a waiting spool takes the
+drain lock within the same bound, so it never waits behind another drain. Past it the tool
+answers `unavailable` at once; a turn never waits on a writer, a drain or another search's
+catch-up. Only boot's rebuild of the
 index waits the store's own, longer bound.
 
 **A correction cannot be marked.** No message of his in the turn: an error that says so,

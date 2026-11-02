@@ -339,7 +339,12 @@ def _parse(raw: bytes) -> tuple[list[Event | Summary], int]:
     return items, torn
 
 
-def drain_spool(store: MemoryStore) -> int:
+class DrainBusy(RuntimeError):
+    """Another drain held the drain lock past the caller's bound."""
+
+
+def drain_spool(store: MemoryStore, *,
+                lock_timeout: float | None = None) -> int:
     """Store every spooled item. Blocking.
 
     A snapshot a cut-off drain left behind is finished first. Then, holding
@@ -350,12 +355,17 @@ def drain_spool(store: MemoryStore) -> int:
 
     Returns the number of rows added. Raises when the store cannot take them;
     the snapshot is then left for the next drain, which adds nothing twice.
-    Drains are serialized among themselves (:data:`_drain_lock`). The export
-    drains through this too; no caller holds :data:`_spool_lock` when calling
-    it."""
+    Drains are serialized among themselves (:data:`_drain_lock`); a caller
+    on a turn's path passes *lock_timeout* and gets :class:`DrainBusy`, with
+    nothing drained, when another drain holds the lock past it (``None``
+    waits). The export drains through this too; no caller holds
+    :data:`_spool_lock` when calling it."""
     directory = store.directory
     snapshot = snapshot_path(directory)
-    with _drain_lock:
+    if not _drain_lock.acquire(
+            timeout=-1 if lock_timeout is None else lock_timeout):
+        raise DrainBusy("another drain holds the spool")
+    try:
         added = 0
         if os.path.lexists(snapshot):
             added += _store_snapshot(store, snapshot)
@@ -365,18 +375,22 @@ def drain_spool(store: MemoryStore) -> int:
             _rename(spool_path(directory), snapshot)
             _fsync_dir(directory)
         return added + _store_snapshot(store, snapshot)
+    finally:
+        _drain_lock.release()
 
 
-def drain_waiting(store: MemoryStore) -> int:
+def drain_waiting(store: MemoryStore, *,
+                  lock_timeout: float | None = None) -> int:
     """Drain the spool (or a cut-off drain's snapshot) when one is waiting;
     0 when none is. Blocking; raises as :func:`drain_spool` does. The writer
     calls this on each pass, so a spool is stored once the store is back even
-    when no further capture comes to start a drain."""
+    when no further capture comes to start a drain. *lock_timeout* as in
+    :func:`drain_spool`."""
     directory = store.directory
     if not (os.path.lexists(spool_path(directory))
             or os.path.lexists(snapshot_path(directory))):
         return 0
-    return drain_spool(store)
+    return drain_spool(store, lock_timeout=lock_timeout)
 
 
 def _read(path: str) -> bytes:

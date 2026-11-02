@@ -257,17 +257,42 @@ async def test_an_engagement_reads_at_its_own_records_clearance(
     assert sorted(h["text"] for h in out["hits"]) == sorted(seen)
 
 
-async def test_two_first_catch_ups_build_one_index(mem):
+async def test_two_first_catch_ups_build_one_index(tmp_path):
     """Catch-ups that each find no index build it once between them: the
-    one that waits sees the other's tables and does not create them again.
+    one that waits sees the other's tables and does not create them again,
+    and none mistakes a creation it sees half committed for a foreign file.
     (Run with the boot bound so they wait for each other; on a turn's path
     a catch-up that would wait answers unavailable instead.)"""
     import asyncio
     from memory.store import BUSY_TIMEOUT_S
-    store_event(mem, "the boiler service is booked")
-    added = await asyncio.gather(*(asyncio.to_thread(
-        memory_search.catch_up, mem, busy_timeout=BUSY_TIMEOUT_S)
-        for _ in range(4)))
-    assert sorted(added) == [0, 0, 0, 1]
-    found = memory_search.search(mem, "boiler", clearance="private")
+    for round_no in range(3):
+        store = new_store(tmp_path / f"r{round_no}")
+        store_event(store, "the boiler service is booked")
+        added = await asyncio.gather(*(asyncio.to_thread(
+            memory_search.catch_up, store, busy_timeout=BUSY_TIMEOUT_S)
+            for _ in range(8)))
+        assert sorted(added) == [0] * 7 + [1]
+    found = memory_search.search(store, "boiler", clearance="private")
     assert [h["text"] for h in found.hits] == ["the boiler service is booked"]
+
+
+async def test_an_index_seen_half_created_is_judged_again_under_the_lock(
+        mem, monkeypatch):
+    """Two reads outside a transaction can straddle another caller's
+    creating commit (no layout version yet, then its tables): the open
+    must not take that for a foreign file, but judge the file again under
+    the write lock, where it is one consistent state."""
+    store_event(mem, "the boiler service is booked")
+    assert memory_search.ensure(mem) is True
+    real = memory_search._current
+    seen = []
+
+    def half_created_once(conn):
+        if not seen:
+            seen.append(1)
+            return False
+        return real(conn)
+    monkeypatch.setattr(memory_search, "_current", half_created_once)
+    assert memory_search.catch_up(mem) == 0
+    found = memory_search.search(mem, "boiler", clearance="private")
+    assert len(found.hits) == 1

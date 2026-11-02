@@ -89,12 +89,16 @@ def _current(conn: sqlite3.Connection) -> bool:
 
 
 def _create(conn: sqlite3.Connection) -> None:
-    """Create the index's tables, unless a concurrent caller did first."""
+    """Create the index's tables, unless a concurrent caller did first. The
+    file is judged inside the write lock, in one consistent state: a file
+    that holds anything but an index of this layout is refused."""
     conn.execute("BEGIN IMMEDIATE")
     try:
         if _current(conn):
             conn.execute("COMMIT")
             return
+        if conn.execute("SELECT count(*) FROM sqlite_master").fetchone()[0]:
+            raise sqlite3.DatabaseError("not an index of this layout")
         conn.execute(
             "CREATE VIRTUAL TABLE docs USING fts5(text, local_day UNINDEXED, "
             "tokenize = 'unicode61 remove_diacritics 2')")
@@ -115,9 +119,8 @@ def _open(store: MemoryStore, busy_timeout: float) -> sqlite3.Connection:
     conn = _connect(path, busy_timeout)
     try:
         if not _current(conn):
-            if conn.execute("SELECT count(*) FROM sqlite_master"
-                            ).fetchone()[0]:
-                raise sqlite3.DatabaseError("not an index of this layout")
+            # Read outside a transaction, this can see a creation half
+            # committed; _create judges again under the write lock.
             _create(conn)
     except BaseException:
         conn.close()

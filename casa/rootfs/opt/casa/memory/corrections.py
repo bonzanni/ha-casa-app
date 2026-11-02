@@ -95,10 +95,13 @@ def mark_operator_event(store: MemoryStore, source_key: str) -> MarkResult:
     """Mark the operator message stored under *source_key*, draining a
     waiting spool first when it is not stored yet. ``found`` is false when
     no operator message is stored under that key. Every store wait is
-    bounded by :data:`TOOL_BUSY_TIMEOUT_S`; a store busy past it raises
-    ``sqlite3.OperationalError`` and nothing is marked."""
+    bounded by :data:`TOOL_BUSY_TIMEOUT_S` — the store's lock, and the drain
+    lock another drain may hold; a store busy past it raises
+    ``sqlite3.OperationalError``, a drain lock held past it
+    :class:`memory.capture.DrainBusy`, and nothing is marked."""
     seq = _operator_seq(store, source_key)
-    if seq is None and capture.drain_waiting(store):
+    if seq is None and capture.drain_waiting(
+            store, lock_timeout=TOOL_BUSY_TIMEOUT_S):
         seq = _operator_seq(store, source_key)
     if seq is None:
         return MarkResult(marked=False, found=False)
