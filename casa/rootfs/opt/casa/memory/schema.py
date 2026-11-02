@@ -52,7 +52,7 @@ V1: tuple[str, ...] = (
             ('provisional', 'classified')),
         origin_tier TEXT CHECK (origin_tier IN {_TIERS}),
         provenance TEXT NOT NULL CHECK (provenance IN
-            ('told', 'backfill', 'captured')),
+            ('told', 'captured')),
         eligibility TEXT NOT NULL
     ) STRICT
     """,
@@ -221,19 +221,8 @@ V1: tuple[str, ...] = (
     """,
     "CREATE INDEX transcript_runs_session ON transcript_runs (session_id)",
     "CREATE INDEX transcript_runs_directory ON transcript_runs (directory)",
-    # The one-off transcript backfill's own record: its cutoff, the legacy
-    # source with its file manifest, and how far it got. At most one row.
-    """
-    CREATE TABLE backfill_run (
-        id INTEGER PRIMARY KEY CHECK (id = 1),
-        cutoff TEXT NOT NULL,
-        source TEXT NOT NULL,
-        manifest TEXT NOT NULL,
-        phase TEXT NOT NULL
-    ) STRICT
-    """,
-    # Content-free operational markers (first-boot done, the last
-    # maintenance outcome). Values are JSON.
+    # Content-free operational markers (the last maintenance outcome).
+    # Values are JSON.
     """
     CREATE TABLE meta (
         key TEXT PRIMARY KEY,

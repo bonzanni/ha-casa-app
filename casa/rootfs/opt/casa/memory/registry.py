@@ -140,8 +140,6 @@ REGISTRY: tuple[Entry, ...] = (
           Export.NO, Restore.NONE, Wipe.DELETE),
     Entry("meta", Kind.TABLE, ("meta",),
           Export.NO, Restore.FRESH, Wipe.FRESH),
-    Entry("backfill run", Kind.TABLE, ("backfill_run",),
-          Export.NO, Restore.NONE, Wipe.DELETE),
     # --- the rest of /data/memory -------------------------------------------
     # The capture spool, and the snapshot a drain renames it to and stores.
     Entry("spool", Kind.FILE, (f"{MEMORY_DIR}/spool.jsonl",
@@ -156,9 +154,6 @@ REGISTRY: tuple[Entry, ...] = (
           Export.NO, Restore.NONE, Wipe.DELETE),
     Entry("restore source", Kind.DIRECTORY, (RESTORE_SOURCE,),
           Export.NO, Restore.SOURCE, Wipe.KEEP_WHILE_INTENT),
-    Entry("legacy transcripts", Kind.DIRECTORY,
-          (f"{MEMORY_DIR}/legacy-transcripts",),
-          Export.NO, Restore.NONE, Wipe.DELETE),
     Entry("maintenance intent", Kind.FILE, (f"{MEMORY_DIR}/maintenance.json",),
           Export.NO, Restore.NONE, Wipe.REMOVE_LAST,
           staging_patterns=(f"{MEMORY_DIR}/.maintenance.json.*.tmp",)),

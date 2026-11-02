@@ -406,12 +406,10 @@ def _fresh_store(root: str, now: float | None, counts: Counts) -> None:
               "at": _iso(now), "counts": counts.as_dict(),
               "notice_sent": False}
     with store.transaction(write=True) as conn:
-        for key, value in (("first_boot", {"complete": True, "at": _iso(now)}),
-                           ("last_maintenance", record)):
-            conn.execute(
-                "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key)"
-                " DO UPDATE SET value = excluded.value",
-                (key, json.dumps(value, sort_keys=True)))
+        conn.execute(
+            "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key)"
+            " DO UPDATE SET value = excluded.value",
+            ("last_maintenance", json.dumps(record, sort_keys=True)))
 
 
 def notice_for(record: dict) -> str | None:

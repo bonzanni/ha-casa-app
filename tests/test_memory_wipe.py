@@ -2,8 +2,7 @@
 
 A canary goes into every registry row (the store's tables, the spool and its
 drain snapshot, the search index, a finished and an in-progress export, a
-staged restore source, legacy transcripts with an unfinished backfill record,
-a transcript of every role and of an engagement, the root's own transcript
+staged restore source, a transcript of every role and of an engagement, the root's own transcript
 directory, the session pointers, an explanation record, and the
 executor-memory block of an open and of a completed retained engagement),
 plus a staging file each named producer's atomic helper leaves when a real
@@ -11,8 +10,8 @@ process is killed between its write and its rename. A further canary is
 captured after consent, in the window before the restart.
 
 After the step: 0 canary bytes anywhere, every kept item byte-identical,
-the session pointers reset, and nothing left that a spool drain, backfill or
-reaper could bring back (INV-MEM-038)."""
+the session pointers reset, and nothing left that a spool drain or a reaper
+could bring back (INV-MEM-038)."""
 from __future__ import annotations
 
 import json
@@ -64,15 +63,12 @@ async def build(tree: w.Tree, monkeypatch) -> dict:
     u = lambda p: w.under(root, p)            # noqa: E731
     facts = {}
 
-    # memory.db: an event, an engagement summary, an unfinished backfill
+    # memory.db: an event and an engagement summary
     store = MemoryStore(str(u(registry.MEMORY_DIR)))
     assert store.open()
     assert capture.append(store, _event("told " + tree.canary())).outcome == (
         capture.STORED)
     with store.transaction(write=True) as conn:
-        conn.execute(
-            "INSERT INTO backfill_run (id, cutoff, source, manifest, phase) "
-            "VALUES (1, '2026-01-01', 'legacy', '[]', 'importing')")
         conn.execute(
             "INSERT INTO engagement_summaries (source_key, role, "
             "procedural_epoch, tier, text, engagement_id, at) VALUES "
@@ -92,9 +88,6 @@ async def build(tree: w.Tree, monkeypatch) -> dict:
     w.write(u(f"{registry.MEMORY_DIR}/exports/.memory-2026-11-02.tar.part"),
             tree.canary())
     w.write(u(f"{registry.MEMORY_DIR}/restore-source/built.db"), tree.canary())
-    # legacy transcripts (the unfinished backfill_run row is above)
-    w.write(u(f"{registry.MEMORY_DIR}/legacy-transcripts/assistant/a.jsonl"),
-            tree.canary())
     # transcripts of every role, and the root's own real directory
     for role in ("assistant", "butler", "finance", "configurator"):
         w.write(u(f"/config/cc-home/.claude/projects/-config-agent-home-"
@@ -207,8 +200,7 @@ async def test_wipe_erases_every_registry_row_and_keeps_the_rest(
     u = lambda p: w.under(root, p)            # noqa: E731
     assert json.loads(u("/data/sessions.json").read_text()) == {}
     for gone in ("spool.jsonl", "spool.draining.jsonl", "search.db",
-                 "search.db-wal", "exports", "restore-source",
-                 "legacy-transcripts"):
+                 "search.db-wal", "exports", "restore-source"):
         assert not (u(registry.MEMORY_DIR) / gone).exists(), gone
     assert not u("/data/explanations").exists()
     assert list(u("/data").glob(".sessions.json.*.tmp")) == []
@@ -227,15 +219,13 @@ async def test_wipe_erases_every_registry_row_and_keeps_the_rest(
     conn = sqlite3.connect(store.path)
     try:
         assert conn.execute("SELECT count(*) FROM events").fetchone() == (0,)
-        assert conn.execute(
-            "SELECT count(*) FROM backfill_run").fetchone() == (0,)
         meta = dict(conn.execute("SELECT key, value FROM meta"))
     finally:
         conn.close()
     record = json.loads(meta["last_maintenance"])
     assert (record["kind"], record["outcome"], record["notice_sent"]) == (
         "wipe", "done", False)
-    assert json.loads(meta["first_boot"])["complete"] is True
+    assert set(meta) == {"last_maintenance"}
     assert capture.drain_spool(store) == 0
 
 

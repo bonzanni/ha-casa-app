@@ -22,7 +22,7 @@ with their writers ([`memory-capture.md`](memory-capture.md),
 intent and asks the Supervisor to restart the app; the wipe itself runs in
 `init-memory-maintenance`, an s6-rc oneshot that starts before every service that can read
 or write memory. `casa-main` never runs it. It erases every row of the registry: `memory.db`
-whole, the capture spool, the search index, local exports, legacy transcripts, every SDK
+whole, the capture spool, the search index, local exports, every SDK
 transcript of every role and engagement, the session pointers, the explanation records and
 each engagement's executor-memory block. Reminders, triggers, files, settings and prompts,
 pending tasks, plugin data and logs stay; a kept item can still mention something erased.
@@ -89,8 +89,8 @@ stage-2 limits.) Then the wipe loop:
   producer's declared staging files deleted, every executor-memory section blanked and
   every cache emptied. A row whose rule the loop does not know fails the attempt.
 
-A fresh, empty store is then created with `meta` recording the first boot as complete and
-the outcome, and the intent is removed last. A restore intent runs in this same step, in
+A fresh, empty store is then created with `meta` recording the outcome, and the intent is
+removed last. A restore intent runs in this same step, in
 two phases, the second of which is this wipe loop keeping only the staged source
 ([`memory-export-restore.md`](memory-export-restore.md)). Every deletion treats an absent path as
 already done, so a run cut off anywhere re-runs to the same result. Any error stops the
@@ -186,7 +186,7 @@ are measured on a test install, not here.
 **INV-MEM-038**: The wipe executes only on consent at one of its doors, and erases exactly the registry: every row's path and declared staging pattern ends empty or reset, and every byte of a workspace `CLAUDE.md` outside its executor-memory section is kept.
 
 Pinned by canaries in every row — the store's tables, the spool and its drain snapshot, an
-in-progress export, legacy transcripts with an unfinished backfill record, a transcript of
+in-progress export, a transcript of
 every role and of an engagement, the session pointers, an explanation record, the
 executor-memory block of an open and of a retained completed engagement, and a staging
 file each producer's atomic helper leaves when a real process is killed before its rename —

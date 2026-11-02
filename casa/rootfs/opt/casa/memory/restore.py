@@ -373,7 +373,6 @@ def _fresh_meta(conn: sqlite3.Connection, manifest: dict,
                 now: float | None) -> None:
     conn.execute("DELETE FROM meta")
     at = maintenance._iso(now)
-    _put_meta(conn, "first_boot", {"complete": True, "at": at})
     _put_meta(conn, "last_maintenance", {
         "kind": "restore", "outcome": "done", "reason": None, "at": at,
         "export_created_at": manifest.get("created_at"),
