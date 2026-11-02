@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, is_dataclass, replace
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from claude_agent_sdk import (
@@ -244,6 +245,22 @@ def _session_id_from_message(sdk_msg: Any) -> str | None:
         if isinstance(sid, str) and sid:
             return sid
     return None
+
+
+def _at_launch_cwd(engagement: EngagementRecord, options: Any) -> Any:
+    """*options* run in the engagement's launch cwd: recorded at its first
+    open (and persisted with the record's next write), then reused by every
+    later build — resume, a clearance rebuild, ``open_fresh`` — so a reload
+    that changes the configured cwd never moves its sessions out of the
+    folder its runs and its reaper use (engagement_registry.LAUNCH_CWD_KEY)."""
+    cwd = getattr(options, "cwd", None)
+    if not isinstance(cwd, (str, os.PathLike)) or not is_dataclass(options):
+        return options          # a test double carries no real launch cwd
+    launched = (getattr(engagement, "origin", None) or {}).get(LAUNCH_CWD_KEY)
+    if isinstance(launched, str) and launched:
+        return options if str(cwd) == launched else replace(options, cwd=launched)
+    engagement.origin[LAUNCH_CWD_KEY] = str(cwd)
+    return options
 
 
 def _is_fresh_job(engagement: Any) -> bool:
@@ -556,12 +573,7 @@ class InCasaDriver(DriverProtocol):
         # circular import (tools imports engagement_registry).
         from tools import engagement_var
 
-        # The cwd this engagement's sessions run in, recorded at its first
-        # open and persisted with the record's next write: every run and
-        # every reap of its transcripts reads it, never the configuration a
-        # reload may change (engagement_registry.LAUNCH_CWD_KEY).
-        if getattr(options, "cwd", None):
-            engagement.origin.setdefault(LAUNCH_CWD_KEY, str(options.cwd))
+        options = _at_launch_cwd(engagement, options)
         client = ClaudeSDKClient(
             sdk_logging.with_stderr_callback(
                 options, engagement_id=engagement.id[:8],
@@ -998,6 +1010,7 @@ class InCasaDriver(DriverProtocol):
             build_engagement_resume_options, engagement, session_id,
         )
         await self._persist_applied_profiles(engagement)
+        options = _at_launch_cwd(engagement, options)
         client = ClaudeSDKClient(
             sdk_logging.with_stderr_callback(
                 options, engagement_id=engagement.id[:8],
@@ -1114,6 +1127,7 @@ class InCasaDriver(DriverProtocol):
             build_engagement_resume_options, engagement, None,
         )
         await self._persist_applied_profiles(engagement)
+        options = _at_launch_cwd(engagement, options)
         client = ClaudeSDKClient(
             sdk_logging.with_stderr_callback(
                 options, engagement_id=engagement.id[:8],

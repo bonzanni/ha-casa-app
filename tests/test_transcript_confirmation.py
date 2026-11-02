@@ -738,3 +738,96 @@ async def test_a_finalize_cancelled_before_its_tail_confirms_its_summary_row(
     (row,) = rows(home.store)
     assert row["kind"] == "summary" and row["confirmed_at"] is not None
     assert summaries(home.store) == []
+
+
+@pytest.mark.parametrize("path", ["resident", "engagement", "delegation", "summary"])
+async def test_a_run_cancelled_during_its_registration_confirms_its_row(
+        home, monkeypatch, path):
+    """The registration insert commits, then the run is cancelled before
+    the worker returns: nothing was captured, so the row is adopted and
+    confirmed rather than left holding its folder. Red case: the committed
+    row abandoned by the cancelled wait."""
+    import threading
+    import time as _time
+
+    from engagement_registry import EngagementRegistry
+    from test_delegated_transcript_retention import _Harness
+
+    committed = threading.Event()
+    real = transcript_runs.register
+
+    def register(*a, **k):
+        run_id = real(*a, **k)
+        committed.set()
+        _time.sleep(0.3)                    # committed; the worker not back
+        return run_id
+    monkeypatch.setattr(transcript_runs, "register", register)
+    monkeypatch.setattr(agent_mod, "active_semantic_memory", None, raising=False)
+
+    if path == "resident":
+        sid = str(uuid.uuid4())
+        ScriptedToolClient.reset([_init(sid), _said("x", sid), _mk_result(sid)])
+        agent = _make_agent(home.tmp)
+        cm = patch("sdk_client_pool._default_make_client", ScriptedToolClient)
+        cm.start()
+        coro = agent._process(_operator_msg("hello", "901"))
+    elif path == "engagement":
+        from drivers.in_casa_driver import InCasaDriver
+
+        class _Client:
+            async def query(self, prompt):
+                return None
+
+            async def receive_response(self):
+                if False:
+                    yield None
+        drv = InCasaDriver(topic_stream_factory=lambda tid: _TopicStream())
+        rec = _engagement_record()
+        drv._clients[rec.id] = _Client()
+        drv._locks[rec.id] = asyncio.Lock()
+        ticket = drv.admit_inbound(rec.id, "m")
+        coro = drv.send_user_turn(rec, "m", tg_message_id=55,
+                                  inbound_token=ticket)
+        cm = None
+    elif path == "delegation":
+        cfg = _delegated_cfg(home)
+        monkeypatch.setattr(tools, "ClaudeSDKClient", _Harness().client_cls())
+        coro = tools._run_delegated_agent(cfg, "task", "")
+        cm = None
+    else:
+        reg = EngagementRegistry(tombstone_path=str(home.tmp / "e.json"), bus=None)
+        rec = await reg.create(kind="executor", role_or_type="configurator",
+                               driver="in_casa", task="t", origin=dict(ORIGIN),
+                               topic_id=None)
+        tools.init_tools(channel_manager=MagicMock(),
+                         bus=MagicMock(notify=AsyncMock()),
+                         specialist_registry=MagicMock(), mcp_registry=MagicMock(),
+                         trigger_registry=MagicMock(), engagement_registry=reg)
+        coro = tools._finalize_engagement(
+            rec, outcome="completed", text="done", artifacts=[], next_steps=[],
+            driver=MagicMock(cancel=AsyncMock()))
+        cm = None
+    if path == "delegation":
+        task = asyncio.create_task(_with_origin_task(coro))
+    else:
+        task = asyncio.create_task(coro)
+    try:
+        await asyncio.to_thread(committed.wait, 5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        if cm is not None:
+            cm.stop()
+    await transcript_runs.settle()
+    (row,) = rows(home.store)
+    assert row["confirmed_at"] is not None, row
+    assert events(home.store) == []
+
+
+async def _with_origin_task(coro):
+    token = agent_mod.origin_var.set(dict(ORIGIN, cid="c"))
+    try:
+        return await coro
+    finally:
+        agent_mod.origin_var.reset(token)

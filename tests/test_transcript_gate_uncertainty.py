@@ -13,6 +13,7 @@ child process this test started, by its own pid.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
@@ -496,3 +497,113 @@ async def test_a_held_session_keeps_its_pointer_and_goes_on_a_later_sweep(home):
     transcript_runs.confirm(home.store, other)
     await sweeper._sweep_once()
     assert reg.get("telegram-held") is None and not path.exists()
+
+
+async def test_a_rebuilt_or_resumed_engagement_stays_in_its_launch_folder(
+        home, monkeypatch):
+    """An engagement opened in A is resumed and rebuilt (a clearance clamp's
+    fresh session) after a reload pointed its specialist at B: every client
+    still launches in A, so at day 31 the reaper deletes both of its
+    sessions there. Red case: resume and rebuild taking the configured
+    cwd, leaving the rebuilt session in B where nothing reaps it."""
+    from claude_agent_sdk import ClaudeAgentOptions
+
+    import drivers.in_casa_driver as drv_mod
+    from drivers.in_casa_driver import InCasaDriver
+    from engagement_registry import RETIRED_SIDS_KEY, EngagementRegistry
+    from engagement_transcript_reaper import reap_engagement_transcripts
+    from test_engagement_transcript_reaper import _specialists
+
+    a = str(home.tmp / "agent-home" / "finance-a")
+    b = str(home.tmp / "agent-home" / "finance-b")
+    launched = []
+
+    class _Client:
+        def __init__(self, options):
+            launched.append(options.cwd)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(drv_mod, "ClaudeSDKClient", _Client)
+    monkeypatch.setattr(tools, "build_engagement_resume_options",
+                        lambda engagement, sid: ClaudeAgentOptions(cwd=b, resume=sid))
+    _specialists(monkeypatch, finance=SimpleNamespace(role="finance", cwd=a))
+    reg = EngagementRegistry(tombstone_path=str(home.tmp / "e.json"), bus=None)
+    rec = await reg.create(kind="specialist", role_or_type="finance",
+                           driver="in_casa", task="t", origin=dict(ORIGIN),
+                           topic_id=None)
+    drv = InCasaDriver(topic_stream_factory=lambda tid: None)
+    drv._persist_applied_profiles = lambda engagement: asyncio.sleep(0)
+    await drv.open(rec, ClaudeAgentOptions(cwd=a))
+    first, second = str(uuid.uuid4()), str(uuid.uuid4())
+    await reg.persist_session_id(rec.id, first)
+    _specialists(monkeypatch, finance=SimpleNamespace(role="finance", cwd=b))
+    drv._clients.clear()
+    await drv.resume(rec, first)
+    drv._clients.clear()
+    await drv.open_fresh(rec)                    # the clearance rebuild
+    assert launched == [a, a, a]
+    rec.origin[RETIRED_SIDS_KEY] = [first]
+    await reg.persist_session_id(rec.id, second)
+    await reg.mark_completed(rec.id, time.time())
+    paths = [write_transcript(a, first), write_transcript(a, second)]
+    await reap_engagement_transcripts(reg, now=time.time() + 31 * 86400)
+    assert not any(p.exists() for p in paths)
+
+
+async def test_no_run_of_the_session_starts_between_the_sweeps_check_and_delete(
+        home, monkeypatch):
+    """The sweep's final check passes; a turn on the same session key then
+    tries to start and register its run before the delete. Holding the
+    key's session-write gate across check, eviction and delete, the sweep
+    deletes with no unconfirmed run in the folder, and the turn starts
+    after. Red case: a check made outside that gate, which lets the turn's
+    row land between check and delete."""
+    import session_sweeper
+    from session_gate import session_write_gate
+
+    sid, key = str(uuid.uuid4()), "telegram-interleaved"
+    path = write_transcript(AGENT_HOME, sid)
+    reg = SessionRegistry(str(home.tmp / "sessions.json"))
+    async with reg._lock:
+        reg._data[key] = {
+            "agent": "assistant", "sdk_session_id": sid,
+            "last_active": (datetime.now(timezone.utc)
+                            - timedelta(days=60)).isoformat()}
+        await reg._save_locked()
+    loop = asyncio.get_running_loop()
+    turn_rows = []
+
+    async def turn():
+        async with session_write_gate(key):
+            turn_rows.append(transcript_runs.register(
+                home.store, kind="resident", role="assistant",
+                directory=AGENT_HOME))
+
+    real_blocked = transcript_runs.blocked
+
+    def blocked(**kw):
+        answer = real_blocked(**kw)
+        loop.call_soon_threadsafe(lambda: started.append(loop.create_task(turn())))
+        return answer
+    started: list = []
+    monkeypatch.setattr(transcript_runs, "blocked", blocked)
+    held_at_delete = []
+    real_delete = session_sweeper._sdk_delete_session
+
+    def delete(session_id, directory=None):
+        held_at_delete.append(transcript_runs.blocks_deletion(
+            home.store, directory=directory))
+        return real_delete(session_id, directory)
+    monkeypatch.setattr(session_sweeper, "_sdk_delete_session", delete)
+
+    await SessionSweeper(registry=reg,
+                         directory_for=lambda role: AGENT_HOME)._sweep_once()
+    await asyncio.gather(*started)
+    assert held_at_delete == [False]
+    assert not path.exists() and reg.get(key) is None
+    assert len(turn_rows) == 1

@@ -13,9 +13,11 @@ reaping; the CLI's cleanupPeriodDays sweep never fires under Casa's SDK
 invocation, §8.6).
 
 The transcript is deleted only where the run-confirmation gate passes
-(``memory/transcript_runs.py``), asked at the delete, outside the registry
-lock: while a run in the session is unconfirmed its transcript is kept
-(until a wipe). The rows that named a deleted session go with it.
+(``memory/transcript_runs.py``), asked at the delete under the session's
+write gate (so no run of that session starts between the check and the
+delete) and outside the registry lock: while a run in its folder is
+unconfirmed the transcript is kept and so is its pointer, for a later sweep.
+The rows that named a deleted session go with it.
 
 Pure policy module — no transport imports. Reaches into internal
 `SessionRegistry` attributes (`_lock`, `_data`, `_save_locked`) by
@@ -169,10 +171,11 @@ class SessionSweeper:
             return
 
     async def _sweep_once(self) -> None:
-        """Run one full sweep: classify under the lock; ask the confirmation
-        gate for each due transcript outside it; evict under the lock the
-        entries whose transcript may go (a held one keeps its pointer, so a
-        later sweep deletes it once the hold clears); then reap transcripts."""
+        """Run one full sweep: classify under the registry lock; then, for
+        each due entry and under that session's write gate (the one its turns
+        hold), ask the confirmation gate, evict under the registry lock and
+        delete the transcript. A held entry keeps its pointer, so a later
+        sweep deletes it once the hold clears."""
         now = self._now()
         # (key, sdk_session_id, role, last_active as stored)
         due_entries: list[tuple[str, str, str, object]] = []
@@ -221,53 +224,45 @@ class SessionSweeper:
 
                 due_entries.append((key, sid, role, entry.get("last_active")))
 
-        # The confirmation gate, asked outside the registry lock. An entry
-        # whose transcript is held stays, pointer and all, for a later sweep.
-        cleared: list[tuple[str, str, str, object]] = []
+        # Each due entry under its own session-write gate — the gate every
+        # turn on that key holds (taken before the registry lock, as turns
+        # take it), so no run of that session starts between the final
+        # confirmation-gate check, the eviction and the delete. An entry
+        # whose transcript is held keeps its pointer for a later sweep.
+        from session_gate import session_write_gate
+        evicted = 0
         for key, sid, role, stamp in due_entries:
-            if sid and await asyncio.to_thread(
-                    transcript_runs.blocked, directory=self._dir_for(role),
-                    session_id=sid):
-                logger.warning(
-                    "Session sweep kept %s (session %s): a run in its folder "
-                    "is not confirmed; retried next sweep", key, sid)
-                continue
-            cleared.append((key, sid, role, stamp))
-
-        to_evict: list[tuple[str, str, str]] = []  # (key, sdk_session_id, role)
-        if cleared:
-            async with self._registry._lock:
-                for key, sid, role, stamp in cleared:
+            async with session_write_gate(key):
+                directory = self._dir_for(role)
+                if sid and await asyncio.to_thread(
+                        transcript_runs.blocked, directory=directory,
+                        session_id=sid):
+                    logger.warning(
+                        "Session sweep kept %s (session %s): a run in its "
+                        "folder is not confirmed; retried next sweep", key, sid)
+                    continue
+                async with self._registry._lock:
                     entry = self._registry._data.get(key)
-                    # Only the entry the gate was asked about: one a turn
+                    # Only the entry the check was about: one a turn
                     # re-registered or touched since stays.
                     if (entry is None
                             or str(entry.get("sdk_session_id") or "") != sid
                             or entry.get("last_active") != stamp):
                         continue
                     self._registry._data.pop(key, None)
-                    to_evict.append((key, sid, role))
-                if to_evict:
                     await self._registry._save_locked()
+                evicted += 1
+                # The INFO is emitted from the reaper's own report of a
+                # completed delete, never from the await returning: a
+                # swallowed failure returns exactly like a success.
+                if sid and await _reap_transcript(sid, directory):
+                    logger.info(
+                        "Session sweep deleted transcript for %s (session %s, "
+                        "role %s)", key, sid, role,
+                    )
+                    await asyncio.to_thread(
+                        transcript_runs.forget_deleted, directory=directory,
+                        session_id=sid)
 
-        if not to_evict:
-            return  # no save, no transcript-reap work
-
-        logger.info("Session sweep evicted %d entr(y|ies)", len(to_evict))
-
-        # Transcript reap happens OUTSIDE the lock — best-effort, never
-        # blocks the registry. The INFO is emitted from the reaper's own
-        # report of a completed delete, never from the await returning: a
-        # swallowed failure returns exactly like a success.
-        for key, sdk_sid, role in to_evict:
-            if not sdk_sid:
-                continue
-            directory = self._dir_for(role)
-            if await _reap_transcript(sdk_sid, directory):
-                logger.info(
-                    "Session sweep deleted transcript for %s (session %s, role %s)",
-                    key, sdk_sid, role,
-                )
-                await asyncio.to_thread(
-                    transcript_runs.forget_deleted, directory=directory,
-                    session_id=sdk_sid)
+        if evicted:
+            logger.info("Session sweep evicted %d entr(y|ies)", evicted)

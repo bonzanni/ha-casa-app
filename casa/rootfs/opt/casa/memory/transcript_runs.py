@@ -366,6 +366,16 @@ class Run:
         try:
             run_id = await asyncio.wait_for(asyncio.shield(insert),
                                             STALL_GUARD_S)
+        except asyncio.CancelledError:
+            # The run is cancelled before it captured anything: a row the
+            # insert commits anyway is adopted and confirmed, never left
+            # holding its directory.
+            run._closed = True
+            _late.add(insert)
+            insert.add_done_callback(_late.discard)
+            insert.add_done_callback(
+                lambda fut: run._late_row(fut, store, confirmed))
+            raise
         except Exception as exc:  # noqa: BLE001 — never blocks the run
             logger.warning("%s run of %s not registered (%s: %s); its "
                            "transcript is not protected", kind, role,

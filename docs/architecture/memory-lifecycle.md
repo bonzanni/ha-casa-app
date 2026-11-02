@@ -162,7 +162,8 @@ store's busy timeout), and the turn waits at most 500 ms for them at all (`STALL
 guard against a starved thread or a stalled disk, not a latency target). A registration that fails or times out is logged and the
 run goes on: with no crash its captures are durable and nothing is lost, and only a crash on
 top of it lets its transcript follow normal retention (a row that commits after the turn
-stopped waiting is adopted by the run). **The gate is one rule:** while a row is unconfirmed, nothing in its
+stopped waiting is adopted by the run, and one whose run was cancelled while waiting is
+confirmed, since nothing was captured). **The gate is one rule:** while a row is unconfirmed, nothing in its
 directory is deleted — no single session's transcript and not the folder — because which
 session a row names is no evidence of which sessions the run touched (a resumed run names
 its session late, a naming write can fail, a run can move from one session to another). A
@@ -175,7 +176,9 @@ Every deleter asks the gate (`transcript_runs.blocked`) at its delete, outside a
 lock, and removes the rows that named what it deleted. The resident time-to-live sweep
 removes a pointer and its transcript only once both its time-to-live and the session's
 freshness window plus the retention have passed, so a session is never removed while it can
-resume, and keeps the pointer of a transcript the gate holds so a later sweep deletes it; a pointer whose activity time is unusable is kept when it names a transcript. A
+resume, and keeps the pointer of a transcript the gate holds so a later sweep deletes it; it
+checks, evicts and deletes each entry under that session's write gate, the one its turns
+hold, so no run of the session starts in between; a pointer whose activity time is unusable is kept when it names a transcript. A
 blocked transcript is kept when its pointer goes. The engagement transcripts and the
 `claude_code` workspace are INV-ENG-027's, in
 [`architecture/engagement-transcript-reaping.md`](engagement-transcript-reaping.md); the
