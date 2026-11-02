@@ -73,6 +73,45 @@ def summaries(store: MemoryStore) -> list[dict]:
         conn.close()
 
 
+def captured_events(store: MemoryStore) -> list[dict]:
+    """Every event capture made durable, stored now, in the order they
+    occurred. For a question about what a seam captured, not where it waited:
+    on a loaded machine a run's own detached writes can hold the write lock
+    past capture's 50 ms bound, and the capture then waits in the spool. It is
+    drained first, and a drained item is stored after the items that followed
+    it, so the rows are ordered by when they occurred, not by storage."""
+    capture.drain_waiting(store)
+    return sorted(events(store), key=lambda e: e["occurred_at"])
+
+
+def durable_texts(store: MemoryStore) -> list[str]:
+    """The event texts capture has made durable, read without moving any:
+    those waiting in the spool or a drain's snapshot, and the stored ones.
+    A capture that met a busy store (on a loaded machine a run's own detached
+    writes can hold the write lock past capture's 50 ms bound) is durable in
+    the spool. Read in the order a drain moves items and keyed by source key,
+    so a drain running meanwhile can neither hide an item nor count it twice;
+    a torn line was never a receipt."""
+    found: dict[str, str] = {}
+    for path in (capture.spool_path(store.directory),
+                 capture.snapshot_path(store.directory)):
+        try:
+            raw = Path(path).read_bytes()
+        except FileNotFoundError:
+            continue
+        for line in raw.splitlines():
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            if record["table"] == "events":
+                found.setdefault(record["item"]["source_key"],
+                                 record["item"]["text"])
+    for e in events(store):
+        found.setdefault(e["source_key"], e["text"])
+    return list(found.values())
+
+
 def spool_lines(store: MemoryStore) -> list[dict]:
     try:
         raw = Path(capture.spool_path(store.directory)).read_bytes()
@@ -696,7 +735,7 @@ async def test_model_output_floor_is_session_clearance(mem, tmp_path,
                 _specialist_cfg("finance"), "a family question", "")
     finally:
         agent_mod.origin_var.reset(token)
-    rows = {e["text"]: e for e in events(mem)}
+    rows = {e["text"]: e for e in captured_events(mem)}
     assert rows["hello from a friend"]["speaker_kind"] == "third_party"
     assert rows["pong"]["origin_tier"] == "friends"
     assert rows["hello from a friend"]["origin_tier"] == "friends"
@@ -713,7 +752,7 @@ async def test_delegated_request_captured_before_the_run(mem, monkeypatch):
 
     class _Client(_FakeSDKClient):
         def __init__(self, options):
-            seen_at_launch.append([e["text"] for e in events(mem)])
+            seen_at_launch.append(durable_texts(mem))
             super().__init__(options)
 
     token = agent_mod.origin_var.set({
@@ -728,7 +767,8 @@ async def test_delegated_request_captured_before_the_run(mem, monkeypatch):
     finally:
         agent_mod.origin_var.reset(token)
     assert seen_at_launch == [["Q1 cashflow?"]]
-    rows = events(mem)
+    await capture.settle()
+    rows = captured_events(mem)
     assert [(e["speaker_kind"], e["speaker_id"], e["origin_kind"], e["text"])
             for e in rows] == [
         ("resident", "assistant", "operator", "Q1 cashflow?"),
@@ -768,7 +808,8 @@ async def test_a_turn_a_delegation_and_an_engagement_turn_each_capture(
     FakeClient.reset()
     with patch("sdk_client_pool._default_make_client", FakeClient):
         await agent._process(_operator_msg("ping", "1001"))
-    assert [(e["speaker_kind"], e["eligibility"]) for e in events(mem)] == [
+    assert [(e["speaker_kind"], e["eligibility"])
+            for e in captured_events(mem)] == [
         ("operator", "write_trusted_turn"), ("resident", "resident_message")]
 
     # A delegation: its request and its answer.
@@ -782,7 +823,7 @@ async def test_a_turn_a_delegation_and_an_engagement_turn_each_capture(
                 _specialist_cfg("finance"), "delegated task", "")
     finally:
         agent_mod.origin_var.reset(token)
-    assert [e["eligibility"] for e in events(mem)][2:] == [
+    assert [e["eligibility"] for e in captured_events(mem)][2:] == [
         "delegated_request", "delegated_answer"]
 
     # An in-casa engagement turn of a memory-writing specialist: the
@@ -800,7 +841,7 @@ async def test_a_turn_a_delegation_and_an_engagement_turn_each_capture(
     ticket = drv.admit_inbound(rec.id, "topic message")
     await drv.send_user_turn(rec, "topic message", tg_message_id=55,
                              inbound_token=ticket)
-    rows = events(mem)
+    rows = captured_events(mem)
     assert len(rows) == 7
     assert [(e["speaker_kind"], e["text"]) for e in rows[4:]] == [
         ("operator", "topic message"), ("specialist", "first part"),
@@ -824,6 +865,42 @@ CAPTURE_OVERHEAD_BOUND_S = 0.5
 LARGE_SPOOL = 100_000
 
 
+
+
+def _time_write_holds(store: MemoryStore, monkeypatch
+                      ) -> tuple[list[tuple[float, float]],
+                                 list[tuple[float, float]]]:
+    """Times every write transaction on *store*, measured in this run: each
+    one that held the write lock, from asking for it through ``COMMIT``, and
+    each one that gave up waiting for it, from asking to giving up."""
+    import contextlib
+    import time as _time
+    held: list[tuple[float, float]] = []
+    gave_up: list[tuple[float, float]] = []
+    real_transaction = store.transaction
+
+    @contextlib.contextmanager
+    def _timed(**kw):
+        if not kw.get("write"):
+            with real_transaction(**kw) as conn:
+                yield conn
+            return
+        asked = _time.monotonic()
+        locked = False
+        try:
+            with real_transaction(**kw) as conn:
+                locked = True
+                yield conn
+        except sqlite3.OperationalError:
+            if not locked:
+                gave_up.append((asked, _time.monotonic()))
+            raise
+        finally:
+            if locked:
+                held.append((asked, _time.monotonic()))
+
+    monkeypatch.setattr(store, "transaction", _timed)
+    return held, gave_up
 
 
 async def _timed_turn(agent, message_id: str, limit: float = 5.0) -> float:
@@ -872,6 +949,7 @@ async def test_capture_never_holds_a_turn(mem, tmp_path, monkeypatch, case):
         return receipt
 
     monkeypatch.setattr(capture, "record", _recording)
+    held, gave_up = _time_write_holds(mem, monkeypatch)
     holder = None
     never = asyncio.Event()
     drain_go = threading.Event()
@@ -930,9 +1008,22 @@ async def test_capture_never_holds_a_turn(mem, tmp_path, monkeypatch, case):
     assert elapsed - baseline < CAPTURE_OVERHEAD_BOUND_S, (case, elapsed,
                                                            baseline)
     assert len(receipts) == 2 and all(r is not None for r in receipts)
-    expected = (capture.STORED if case in ("large_spool", "drain_running")
-                else capture.SPOOLED)
-    assert {r.outcome for r in receipts} == {expected}
+    outcomes = {r.outcome for r in receipts}
+    if case in ("large_spool", "drain_running"):
+        # A healthy store with a drain in flight stores each item: the drain
+        # leaves the store free between its batches. Only a wait that ONE
+        # write transaction covered from start to end — a batch that alone
+        # held the lock past the capture bound, as a loaded machine's disk
+        # makes it — spools an item by design; back-to-back batches never may.
+        covered = bool(gave_up) and all(
+            any(start <= asked and end >= given for start, end in held)
+            for asked, given in gave_up)
+        assert outcomes == {capture.STORED} or (
+            covered and outcomes <= {capture.STORED, capture.SPOOLED}), (
+            case, outcomes, gave_up,
+            max((end - start for start, end in held), default=0.0))
+    else:
+        assert outcomes == {capture.SPOOLED}
 
 
 async def test_one_background_drain_at_a_time(mem, monkeypatch):
