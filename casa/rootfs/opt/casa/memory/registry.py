@@ -138,8 +138,11 @@ REGISTRY: tuple[Entry, ...] = (
     Entry("spool", Kind.FILE, (f"{MEMORY_DIR}/spool.jsonl",
                                f"{MEMORY_DIR}/spool.draining.jsonl"),
           Export.DRAIN, Restore.NONE, Wipe.DELETE),
+    # The BM25 index of ``events``, derived: rebuilt from the store when
+    # missing (memory/search.py).
     Entry("search index", Kind.FILE, _with_sidecars(f"{MEMORY_DIR}/search.db"),
-          Export.NO, Restore.REBUILD, Wipe.DELETE_REBUILD),
+          Export.NO, Restore.REBUILD, Wipe.DELETE_REBUILD,
+          producer=("memory/search.py:catch_up",)),
     Entry("local exports", Kind.DIRECTORY, (f"{MEMORY_DIR}/exports",),
           Export.NO, Restore.NONE, Wipe.DELETE),
     Entry("restore source", Kind.DIRECTORY, (f"{MEMORY_DIR}/restore-source",),

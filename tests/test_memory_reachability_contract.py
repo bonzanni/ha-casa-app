@@ -3,16 +3,12 @@
 Drives the REAL `Agent._process` with each resident's REAL `tools.allowed`
 (read from the shipped runtime.yaml) across the channel × session cells, and
 captures the actual `ClaudeAgentOptions` handed to the SDK. Asserts the
-invariant the `recall_memory` regression violated:
+invariant a missing memory-tool grant once violated:
 
-    On any turn where auto-recall does NOT fire (resumed session, voice, or a
-    scheduled turn), the ONLY long-term-memory path is the `recall_memory` pull
-    tool — so it MUST be in the captured `options.allowed_tools`.
-
-`test_agent_process.py` already covers the per-cell memory-LOAD behaviour
-(fresh telegram recalls; voice/resumed skip). This ties that load plan to the
-tool grant via the actual assembled options — the seam no single test owned.
-Uses the real `_plan_load` (via `_process`), not a reimplementation.
+    No turn recalls on its own, and a session's served view is a ledger, not
+    the saved conversation: the path to what was said is the `search_memory`
+    tool — so it MUST be in the captured `options.allowed_tools` in every
+    cell a resident serves (resumed session, voice, or a scheduled turn).
 """
 from __future__ import annotations
 
@@ -45,7 +41,7 @@ except ImportError:
 pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
 
 AGENTS = Path(__file__).resolve().parents[1] / "casa" / "rootfs" / "opt" / "casa" / "defaults" / "agents"
-RECALL_TOOL = "mcp__casa-framework__recall_memory"
+RECALL_TOOL = "mcp__casa-framework__search_memory"
 
 
 def _real_allowed(role: str) -> list[str]:

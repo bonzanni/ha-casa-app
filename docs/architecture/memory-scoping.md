@@ -93,7 +93,7 @@ Enforced by the channel-clearance lookup's default. The direction matters: an un
 sees less, not more.
 
 What it does not cover: origin-aware resolution is narrower than it sounds. The served
-memory view, the correction note and the recall tool resolve clearance from the stamped
+memory view, the correction note and the memory tools resolve clearance from the stamped
 origin (`clearance_for_origin()`), so a webhook turn's clearance there depends on its
 declared origin. Delegated recall honours a route its caller passes, but falls back to
 channel-keyed clearance for every caller that passes none — check the call site before

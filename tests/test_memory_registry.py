@@ -165,6 +165,11 @@ def test_store_pin_every_table_and_path_is_registered(tmp_path: Path) -> None:
     assert {"spool.jsonl", "spool.draining.jsonl"} <= set(
         os.listdir(store.directory))
     assert store_pin_violations(str(tmp_path)) == []
+    # And the derived search index, once built.
+    from memory import search
+    assert search.ensure(store) is True
+    assert "search.db" in os.listdir(store.directory)
+    assert store_pin_violations(str(tmp_path)) == []
 
 
 def test_store_pin_red_cases(tmp_path: Path) -> None:
@@ -220,6 +225,8 @@ CARRIES: dict[str, tuple[str, ...]] = {
     "explanation_store.py:ExplanationStore.record": ("record",),
     "drivers/workspace.py:provision_workspace": ("executor_memory",),
     "drivers/workspace.py:refresh_claude_md": ("executor_memory",),
+    # The index copies each event's text from the store's rows.
+    "memory/search.py:catch_up": ("rows",),
 }
 
 
@@ -579,7 +586,8 @@ def launcher_transcript_roots() -> list[tuple[str, str]]:
 
 #: The modules that hold the named producers.
 PRODUCER_MODULES = ("session_registry.py", "explanation_store.py",
-                    "drivers/workspace.py", "memory/view.py")
+                    "drivers/workspace.py", "memory/view.py",
+                    "memory/search.py")
 
 #: Writes a producer makes that carry no memory: everything else the
 #: workspace provisioner creates beside the executor-memory block. A write
@@ -600,6 +608,9 @@ NON_MEMORY = {
         f"{registry.ENGAGEMENT_CONTROL_ROOT}",
         f"{registry.ENGAGEMENT_CONTROL_ROOT}/*",
     ),
+    # The indexer opens the store it indexes (to read it); the audit event
+    # of a SQLite open does not say read or write.
+    "search index": (registry.MEMORY_DB,),
 }
 
 
@@ -939,8 +950,29 @@ async def _run_view_serve(sandbox, mods, mp, code_root):
     assert MEMORY in served.view.text and not served.reset
 
 
+async def _run_search_index(sandbox, mods, mp, code_root):
+    """The index of a store holding one event: built, then caught up with a
+    second, then rebuilt."""
+    from memory import capture
+    module = mods["memory/search.py"]
+    store = MemoryStore(str(_sandboxed(sandbox, registry.MEMORY_DIR + "/x")
+                            .parent))
+    assert store.open(), store.unavailable_reason
+    for text in (MEMORY, "a second sample"):
+        item = capture.event(role="assistant", channel="telegram",
+                             speaker_kind="operator", origin_kind="operator",
+                             text=text, eligibility="write_trusted_turn",
+                             origin_tier="private")
+        assert capture.append(store, item).outcome == capture.STORED
+        module.catch_up(store)
+    module.rebuild(store)
+    found = module.search(store, "sample remembered", clearance="private")
+    assert [h["text"] for h in found.hits][0] == MEMORY
+
+
 #: One way to run each named producer.
 EXERCISERS = {
+    "memory/search.py:catch_up": _run_search_index,
     "memory/view.py:serve": _run_view_serve,
     "session_registry.py:SessionRegistry._write": _run_session_registry,
     "explanation_store.py:ExplanationStore.record": _run_explanation_store,
@@ -1187,7 +1219,17 @@ async def test_producer_pin_red_cases(tmp_path: Path) -> None:
         r"from serve .*, outside row 'memory\.db'", p) for p in problems), \
         problems
 
-    # 10. A launcher configuring a transcript root with no row.
+    # 10. The search index built outside its row.
+    problems = await _violations(
+        tmp_path / "10", "memory/search.py",
+        "return os.path.join(store.directory, SEARCH_DB_NAME)",
+        'return os.path.join(store.directory, "..", "index.db")')
+    assert any(re.fullmatch(
+        r"memory/search\.py:\d+ writes /data/index\.db "
+        r"\(sqlite3\.connect\): a file it was never declared to write, "
+        r"outside row 'search index'", p) for p in problems), problems
+
+    # 11. A launcher configuring a transcript root with no row.
     roots = shell_transcript_roots(
         "etc/s6-overlay/scripts/new-service.sh",
         "#!/bin/bash\nexport HOME=/data/other-home\nexec claude\n")

@@ -128,7 +128,7 @@ class SemanticMemory(ABC):
         #1120: ``window`` is a RANKING HINT for the backend and nothing more —
         the seam does not filter by it, so the contract above is unchanged and
         hits recorded outside the window may come back. A caller that promises
-        "only from this period" filters the hits itself (``recall_memory``).
+        "only from this period" filters the hits itself.
         Callers pass it only when they have one."""
         raise NotImplementedError
 

@@ -165,6 +165,8 @@
   doc: architecture/memory-wipe.md
 - item: casa/rootfs/opt/casa/memory/__init__.py
   doc: architecture/memory-store.md
+- item: casa/rootfs/opt/casa/memory/browse.py
+  doc: architecture/memory-tools.md
 - item: casa/rootfs/opt/casa/memory/capture.py
   doc: architecture/memory-capture.md
 - item: casa/rootfs/opt/casa/memory/classify.py
@@ -191,6 +193,8 @@
   doc: architecture/memory-store.md
 - item: casa/rootfs/opt/casa/memory/schema.py
   doc: architecture/memory-store.md
+- item: casa/rootfs/opt/casa/memory/search.py
+  doc: architecture/memory-tools.md
 - item: casa/rootfs/opt/casa/memory/sessions.py
   doc: architecture/memory-serving.md
 - item: casa/rootfs/opt/casa/memory/store.py
@@ -417,6 +421,8 @@
   doc: architecture/plugin-events.md
 - item: tool:ask_user
   doc: architecture/tools-interface.md
+- item: tool:browse_memory_day
+  doc: architecture/memory-tools.md
 - item: tool:callback_ack_revoke
   doc: architecture/callbacks.md
 - item: tool:cancel_engagement
@@ -445,6 +451,8 @@
   doc: architecture/background-jobs.md
 - item: tool:report_job_progress
   doc: architecture/background-jobs.md
+- item: tool:correct_memory
+  doc: architecture/memory-tools.md
 - item: tool:delegate_to_agent
   doc: architecture/tools-interface.md
 - item: tool:hand_off
@@ -473,6 +481,8 @@
   doc: architecture/tools-interface.md
 - item: tool:list_vault_items
   doc: architecture/plugin-secret-exploration.md
+- item: tool:open_memory
+  doc: architecture/memory-tools.md
 - item: tool:peek_engagement_workspace
   doc: architecture/tools-interface.md
 - item: tool:persona_ack_revoke
@@ -509,14 +519,14 @@
   doc: architecture/tools-interface.md
 - item: tool:relay_answer
   doc: architecture/delegate-answer-relay.md
-- item: tool:recall_memory
-  doc: architecture/tools-interface.md
 - item: tool:remove_plugin_env_reference
   doc: architecture/plugin-mutation-tools.md
 - item: tool:resident_persona_reset
   doc: architecture/tools-interface.md
 - item: tool:resident_persona_swap
   doc: architecture/tools-interface.md
+- item: tool:search_memory
+  doc: architecture/memory-tools.md
 - item: tool:send_media
   doc: architecture/tools-interface.md
 - item: tool:send_message

@@ -327,43 +327,34 @@ class TestEngagementClearanceClampOnSteering:
         assert reloaded.get(rec.id).origin["_origin_clearance"] == "public"
 
     async def test_a_lowered_engagement_recalls_at_the_lower_tier(self, tmp_path, monkeypatch):
-        """End-to-end: the clamp is what the recall path actually reads."""
-        import agent as agent_mod
+        """End-to-end: the clamp is what the memory read path actually
+        reads."""
+        import json
+
         import tools as tools_mod
-        from personality_types import RecallHit
+        from memory import capture
+        from memory_tools_support import new_store, store_event
 
-        calls = []
-
-        class _Sem:
-            async def recall_items(self, bank, query, *, tags, max_tokens,
-                                   clearance, types=(), tags_match="any",
-                                   budget="mid"):
-                calls.append({"tags": sorted(tags), "clearance": clearance})
-                return (RecallHit(
-                    text="x", memory_type="world", sensitivity="public",
-                    application_tags=(), provenance=None, backend_id="b",
-                    document_id=None, chunk_id=None, source_fact_ids=None,
-                    metadata=None, context=None, score=None),)
-
-        monkeypatch.setattr(
-            agent_mod, "active_semantic_memory", _Sem(), raising=False)
+        store = new_store(tmp_path / "mem")
+        monkeypatch.setitem(capture._wiring, "store", store)
+        store_event(store, "the alarm code is kept private", tier="private")
+        store_event(store, "the alarm sounds at noon on tests", tier="public")
         reg, rec = await self._registry(tmp_path, "private")
         await reg.lower_origin_clearance(rec.id, "public")
         token = tools_mod.engagement_var.set(rec)
         try:
             # #369: between the clamp and the context rebuild the engagement
             # may not read at all — the fence refuses without touching the
-            # backend (the old session is still running on pre-clamp context).
-            fenced = await tools_mod.recall_memory.handler({"query": "alarm code"})
-            assert calls == []
+            # store (the old session is still running on pre-clamp context).
+            fenced = await tools_mod.search_memory.handler({"query": "alarm"})
             assert "rebuilt" in fenced["content"][0]["text"]
             # Once the rebuild completes, reads run at the lowered tier.
             await reg.clear_context_rebuild_pending(rec.id)
-            await tools_mod.recall_memory.handler({"query": "alarm code"})
+            out = await tools_mod.search_memory.handler({"query": "alarm"})
         finally:
             tools_mod.engagement_var.reset(token)
-        assert calls[0]["clearance"] == "public"
-        assert calls[0]["tags"] == ["public"]
+        hits = json.loads(out["content"][0]["text"])["hits"]
+        assert [h["text"] for h in hits] == ["the alarm sounds at noon on tests"]
 
 
 class TestNestedEngagementInheritsMarkers:

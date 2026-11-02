@@ -176,6 +176,11 @@ origin_var: ContextVar[dict | None] = ContextVar("origin_var", default=None)
 #                                named, and the erase run it belongs to
 #   _webhook_deliver           — #1142 the webhook route's `deliver` enum
 #   _answered_by_operator      — #1277 the operator answered this scheduled ask
+#: The origin key holding the occurrence key of the operator message a turn
+#: opened with (set in code once its capture is durable, never copied from a
+#: message's context); ``correct_memory`` marks that message.
+MEMORY_OPENING_KEY = "_memory_opening_key"
+
 COPIED_CONTEXT_MARKERS = (
     "synthetic", "button_answer", "_origin_route", "_origin_clearance",
     "_operator_turn", "_scheduled_delivery", "_scheduled_epoch",
@@ -759,10 +764,10 @@ def _current_origin_clearance(channel: str) -> str:
 
 
 # Release A / Layer 1 — the two casa-framework tools an untrusted webhook turn
-# may use: public-clearance recall + operator-bound notify. Everything else
+# may use: public-clearance memory search + operator-bound notify. Everything else
 # (Bash, filesystem, network, delegation, plugin/config mutation) is denied.
 _RESTRICTED_WEBHOOK_TOOLS = (
-    "mcp__casa-framework__recall_memory",
+    "mcp__casa-framework__search_memory",
     "mcp__casa-framework__send_message",
 )
 # Defense-in-depth: Agent/Task can bypass allowed_tools (they route to
@@ -1093,6 +1098,9 @@ class _TurnCapture:
         self._floor = clearance_for_origin(
             origin.get("_origin_route"), origin.get("_origin_clearance"),
             msg.channel)
+        #: The key of the operator message this turn opened with, once
+        #: captured; ``None`` for a turn no message of his opened.
+        self.operator_key: str | None = None
 
     @classmethod
     def for_turn(cls, **kw) -> "_TurnCapture | None":
@@ -1136,7 +1144,11 @@ class _TurnCapture:
         except Exception:  # noqa: BLE001 — capture never fails a turn
             logger.exception("memory capture of a turn's opening failed")
             return
-        await capture.record(item)
+        receipt = await capture.record(item)
+        if receipt is not None and speaker == "operator":
+            # The message correct_memory marks when he corrects memory in
+            # this turn.
+            self.operator_key = receipt.source_key
 
     async def message(self, text: str, sdk_msg: Any) -> None:
         from memory import capture, eligibility
@@ -2563,6 +2575,9 @@ class Agent:
                 # The opening is captured raw, before the model is called.
                 if turn_capture is not None:
                     await turn_capture.opening()
+                    if turn_capture.operator_key is not None:
+                        origin_snapshot[MEMORY_OPENING_KEY] = \
+                            turn_capture.operator_key
                 try:
                     try:
                         response_text, sdk_session_id, usage, used_resume, \

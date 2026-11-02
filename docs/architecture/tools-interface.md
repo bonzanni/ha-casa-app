@@ -268,13 +268,10 @@ success whose text is withheld from the bank, audibly (INV-MEM-016, and see
 [`memory-capture.md`](memory-capture.md); the ledger and reconciliation rules are in
 [`jobs-and-delivery.md`](jobs-and-delivery.md)).
 
-**Memory cannot answer.** The recall tools report unavailability as its own status and
-refuse blank queries outright; neither is ever a fake empty result (INV-MEM-001's
-tool-level face). `recall_memory`'s unavailable message tells the model to say memory
-could not be checked when a person asked, and that on a check nobody asked for the outage
-alone is no reason to send. Its optional `period` keeps only memories first recorded in that
-period; a period it cannot read is refused before any search, and one that keeps nothing gets
-its own not-proof-of-absence empty result (INV-MEM-019, [`memory.md`](memory.md)).
+**Memory cannot answer.** The memory tools — `search_memory`, `browse_memory_day`,
+`open_memory`, `correct_memory` — report a store they cannot read as `unavailable`, never
+as an empty result, and refuse a request they cannot read before reading anything; they
+are described in [`memory-tools.md`](memory-tools.md) (INV-MEM-010, INV-MEM-019).
 
 `get_schedule` lists the calling role's own triggers and reminders, not the operator's
 calendar.

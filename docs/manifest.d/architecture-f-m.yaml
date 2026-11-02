@@ -2,8 +2,8 @@
 # the root docs/manifest.yaml by scripts/verify_docs.py; same entry format.
 
 - doc: architecture/memory.md
-  summary: Recall — how a stored fact is rendered on the way back out, and what a caller may claim from what comes back.
-  when_changing: recall behaviour or the absence contract
+  summary: The long-term memory backend seam — how a stored fact is rendered on the way back out, and the three outcomes of a recall.
+  when_changing: the memory backend seam, its recall outcomes or its rendering
   covers:
     - casa/rootfs/opt/casa/semantic_memory.py::SemanticMemory
     - casa/rootfs/opt/casa/semantic_memory.py::RecallUnavailable
@@ -14,21 +14,45 @@
     - casa/rootfs/opt/casa/recall_renderer.py::render_recall
     - casa/rootfs/opt/casa/recall_health.py::observed_recall
     - casa/rootfs/opt/casa/delegated_memory.py::delegated_recall
-    - casa/rootfs/opt/casa/timekeeping.py::resolve_period
   tests:
     - tests/test_recall_absence_invariant.py
     - tests/test_recall_health.py::test_breaker_opens_after_threshold_failures
-    - tests/test_recall_empty_verdict.py
-    - tests/test_recall_readable_slice_framing.py
     - tests/test_1123_tier_floor_regressions.py
-    - tests/test_pin_1120_recall_period.py
-  related: [architecture/overview.md, architecture/turn-loop.md, architecture/memory-lifecycle.md, architecture/memory-serving.md, architecture/memory-scoping.md, architecture/memory-wipe.md]
-  defines_invariants: [INV-MEM-001, INV-MEM-002, INV-MEM-010, INV-MEM-019]
+  related: [architecture/overview.md, architecture/turn-loop.md, architecture/memory-lifecycle.md, architecture/memory-serving.md, architecture/memory-scoping.md, architecture/memory-wipe.md, architecture/memory-tools.md]
+  defines_invariants: [INV-MEM-001, INV-MEM-002]
   invariant_tests:
     INV-MEM-001: [tests/test_pin_memory_invariants.py::test_pin_inv_mem_001_failures_raise_never_return_empty, tests/test_hindsight_memory.py::test_recall_unrenderable_results_are_unavailable_not_zero_hits]
     INV-MEM-002: [tests/test_pin_memory_invariants.py::test_pin_inv_mem_002_exactly_one_readable_tier]
-    INV-MEM-010: [tests/test_recall_empty_verdict.py::TestRecallMemoryEmptyIsNotAbsence::test_zero_hits_below_top_clearance_scopes_the_claim, tests/test_recall_empty_verdict.py::TestRecallMemoryEmptyIsNotAbsence::test_hits_that_did_not_fit_are_reported_as_existing, tests/test_recall_empty_verdict.py::TestQueryEngagerUnknownIsNotAbsence::test_unknown_carries_do_not_assert_guidance, tests/test_recall_readable_slice_framing.py::TestRecallMemoryOkArm::test_nonempty_result_carries_the_note_and_the_fact, tests/test_recall_readable_slice_framing.py::TestRecallMemoryOkArm::test_the_note_is_identical_at_every_clearance, tests/test_recall_readable_slice_framing.py::TestExecutorArchiveBlock::test_lessons_block_carries_the_note, tests/test_recall_readable_slice_framing.py::TestExecutorArchiveBlock::test_empty_archive_stays_silent, tests/test_recall_readable_slice_framing.py::test_every_slice_consumer_is_declared]
-    INV-MEM-019: [tests/test_pin_1120_recall_period.py::test_rc1_windowed_recall_returns_only_hits_recorded_in_the_period, tests/test_pin_1120_recall_period.py::test_rc2_all_out_of_period_is_the_bounded_empty_arm, tests/test_pin_1120_recall_period.py::test_rc3_invalid_or_inverted_period_is_refused_with_zero_requests, tests/test_pin_1120_recall_period.py::test_rc5_named_periods_resolve_in_the_operator_zone_and_reach_the_server, tests/test_pin_1120_recall_period.py::test_period_end_at_timezone_transition, tests/test_pin_1120_recall_period.py::test_period_filter_runs_after_the_clearance_refilter, tests/test_pin_1120_recall_period.py::test_unwindowed_call_sends_the_same_request_as_before]
+
+- doc: architecture/memory-tools.md
+  summary: The memory tools — search the saved conversation (and the derived search index behind it), browse a day, open ledger entries by id, mark a correction — and the engager query's read, each filtered per object at the reader's clearance.
+  when_changing: search_memory, browse_memory_day, open_memory or correct_memory, the search index, or what the engager query reads
+  covers:
+    - casa/rootfs/opt/casa/memory/search.py
+    - casa/rootfs/opt/casa/memory/browse.py
+    - casa/rootfs/opt/casa/memory/view.py::open_objects
+    - casa/rootfs/opt/casa/memory/corrections.py::mark_operator_event
+    - casa/rootfs/opt/casa/tools.py::search_memory
+    - casa/rootfs/opt/casa/tools.py::browse_memory_day
+    - casa/rootfs/opt/casa/tools.py::open_memory
+    - casa/rootfs/opt/casa/tools.py::correct_memory
+    - casa/rootfs/opt/casa/tools.py::_read_memory
+    - casa/rootfs/opt/casa/tools.py::_engager_context
+    - casa/rootfs/opt/casa/tools.py::query_engager
+    - casa/rootfs/opt/casa/timekeeping.py::resolve_period
+  tests:
+    - tests/test_memory_search_tool.py
+    - tests/test_memory_period.py
+    - tests/test_memory_browse.py
+    - tests/test_memory_open.py
+    - tests/test_correct_memory_tool.py
+    - tests/test_query_engager_tiers.py
+    - tests/test_recall_readable_slice_framing.py
+  related: [architecture/memory-serving.md, architecture/memory-scoping.md, architecture/memory-writer.md, architecture/memory-store.md, architecture/memory-capture.md, architecture/tools-interface.md]
+  defines_invariants: [INV-MEM-010, INV-MEM-019]
+  invariant_tests:
+    INV-MEM-010: [tests/test_memory_search_tool.py::test_every_result_carries_one_note_at_every_clearance, tests/test_memory_search_tool.py::test_an_unreadable_store_is_never_an_empty_result, tests/test_memory_search_tool.py::test_a_page_with_more_behind_it_says_so, tests/test_memory_search_tool.py::test_query_engager_unknown_carries_guidance, tests/test_memory_browse.py::test_an_empty_day_is_bounded_not_absence, tests/test_memory_browse.py::test_an_unavailable_store_is_never_an_empty_day, tests/test_query_engager_tiers.py::test_nothing_readable_is_unknown_not_absence, tests/test_query_engager_tiers.py::test_an_unreadable_store_is_unavailable_not_unknown, tests/test_resident_memory_tools.py::test_unavailable_memory_qualifies_when_to_tell, tests/test_recall_readable_slice_framing.py::TestExecutorArchiveBlock::test_lessons_block_carries_the_note, tests/test_recall_readable_slice_framing.py::TestExecutorArchiveBlock::test_empty_archive_stays_silent, tests/test_recall_readable_slice_framing.py::test_every_slice_consumer_is_declared]
+    INV-MEM-019: [tests/test_memory_period.py::test_a_range_keeps_only_events_said_inside_it, tests/test_memory_period.py::test_the_range_runs_before_paging, tests/test_memory_period.py::test_the_range_and_the_clearance_both_filter, tests/test_memory_period.py::test_an_empty_range_result_is_bounded_not_absence, tests/test_memory_period.py::test_an_unreadable_or_inverted_range_is_refused_unsearched, tests/test_memory_period.py::test_named_periods_resolve_in_the_operator_zone, tests/test_memory_period.py::test_a_search_without_a_range_reads_every_day]
 
 - doc: architecture/memory-serving.md
   summary: Serving memory — the view of a ledger a session is served at its start (whole, or its index past the budget), frozen for the session, and the correction note on every turn of every memory role.
@@ -82,7 +106,7 @@
   defines_invariants: [INV-MEM-003, INV-MEM-008, INV-MEM-011, INV-MEM-015]
   invariant_tests:
     INV-MEM-003: [tests/test_sensitivity.py::test_unknown_channel_fails_closed_to_public]
-    INV-MEM-008: [tests/test_recall_memory_tool_tiers.py::test_engagement_started_by_a_non_operator_recalls_public_only, tests/test_telegram_sender_identity.py::test_a_lowered_engagement_recalls_at_the_lower_tier]
+    INV-MEM-008: [tests/test_memory_search_tool.py::test_an_engagement_reads_at_its_own_records_clearance, tests/test_telegram_sender_identity.py::test_a_lowered_engagement_recalls_at_the_lower_tier, tests/test_query_engager_tiers.py::test_non_operator_engagement_queries_at_public_only]
     INV-MEM-011: [tests/test_engagement_context_rebuild.py::TestClampSetsRebuildPending::test_lowering_clearance_sets_the_flag_durably, tests/test_engagement_context_rebuild.py::TestClampSetsRebuildPending::test_clamp_withholds_the_launch_materials, tests/test_steering_downgrade_rebuild.py::TestDowngradeTearsDownAndRebuilds::test_downgrade_invalidates_clears_sid_rebuilds_then_delivers, tests/test_steering_downgrade_rebuild.py::TestDowngradeTearsDownAndRebuilds::test_failed_rebuild_refuses_delivery_and_keeps_the_flag, tests/test_engagement_rebuild_fences.py::TestInProcessToolFence::test_pending_record_refuses_the_tool, tests/test_engagement_rebuild_fences.py::TestChokePointFence::test_internal_tools_call_refuses_pending_engagement, tests/test_engagement_rebuild_fences.py::TestInFlightReFilter::test_clamp_during_recall_filters_this_result, tests/test_engagement_rebuild_fences.py::TestInCasaLaunchGate::test_clamp_during_client_open_aborts_the_stale_prompt, tests/test_background_jobs_loop.py::test_the_teardown_waits_for_the_running_turn_and_spares_a_replacement, tests/test_background_jobs_loop.py::test_a_message_queued_before_the_downgrade_goes_to_the_fresh_session, tests/test_background_jobs_loop.py::test_an_interactive_turn_running_at_the_downgrade_completes]
     INV-MEM-015: [tests/test_executor_memory_tiers.py::test_operator_launch_reads_its_role_and_epoch_oldest_first, tests/test_executor_memory_tiers.py::test_a_record_without_an_epoch_gets_nothing, tests/test_executor_memory_tiers.py::test_a_finalized_summary_carries_its_records_epoch, tests/test_executor_epoch.py::TestDigestInputs::test_doctrine_edit_changes_epoch, tests/test_executor_epoch.py::TestDigestInputs::test_prompt_indirection_changes_epoch, tests/test_executor_epoch.py::TestDigestInputs::test_workspace_template_source_is_input_for_claude_code, tests/test_engagement_summary_retain.py::test_executor_summary_stamped_with_launch_epoch_tag, tests/test_engagement_summary_retain.py::test_executor_summary_without_epoch_retains_untagged]
 

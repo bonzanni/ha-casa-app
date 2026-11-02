@@ -273,3 +273,44 @@ async def test_the_ledger_never_holds_excluded_output(roles, mem, tmp_path):
         mem, "SELECT * FROM revisions")
     assert len(ledger) == 4
     assert [r for r in ledger if CANARY in json.dumps(r)] == []
+
+
+async def test_search_never_returns_excluded_output(roles, mem, tmp_path):
+    """INV-MEM-032, the search half. Through the same real producers, a
+    search of the saved conversation — by the excluded answer's own words,
+    by its canary, and day by day — returns the resident's and finance's
+    words and never the excluded output."""
+    from datetime import datetime
+
+    from memory_tools_support import payload
+    from timekeeping import resolve_tz
+
+    FakeClient.reset()
+    FakeClient.response_text = "Your invoice is saved."
+    agent = _make_agent(tmp_path)
+    notice = _notice("browser", status="ok", text=EXCLUDED_ANSWER)
+    msg = BusMessage(type=MessageType.REQUEST, source="browser",
+                     target="assistant", content=notice, channel="telegram",
+                     context={"chat_id": "1"})
+    with patch("sdk_client_pool._default_make_client", FakeClient):
+        await agent._process(msg, origin_question="get my invoice")
+    FakeClient.reset()
+    await _delegate(roles["browser"], "fetch my invoice", ORIGIN,
+                    EXCLUDED_ANSWER)
+    await _delegate(roles["finance"], EXCLUDED_ANSWER,
+                    {**ORIGIN, "execution_role": "browser",
+                     "delegation_depth": 1,
+                     "_handoff_chain": ("assistant", "browser")},
+                    "finance answer")
+    agent_mod.origin_var.set({**ORIGIN, "_origin_route": "telegram",
+                              "_origin_clearance": "private"})
+    found = []
+    for query in ("saved the invoice", CANARY, "finance answer"):
+        found.append(payload(await tools.search_memory.handler(
+            {"query": query})))
+    texts = [h["text"] for out in found for h in out["hits"]]
+    assert "Your invoice is saved." in texts and "finance answer" in texts
+    day = payload(await tools.browse_memory_day.handler(
+        {"date": datetime.now(resolve_tz()).date().isoformat()}))
+    assert "finance answer" in day["text"]
+    assert CANARY not in json.dumps(found) + json.dumps(day)

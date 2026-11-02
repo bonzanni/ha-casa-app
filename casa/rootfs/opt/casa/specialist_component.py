@@ -36,7 +36,8 @@ MAX_SCOPED_NAME_BYTES = 72
 # dispatch-time ceiling in tools.py (already-live engagement records).
 SPECIALIST_CASA_TOOL_ALLOWLIST: frozenset[str] = frozenset({
     "query_engager", "emit_completion", "react", "ask_user",
-    "recall_memory", "ack_event", "get_schedule", "send_media",
+    "search_memory", "browse_memory_day", "open_memory", "ack_event",
+    "get_schedule", "send_media",
 })
 
 _CASA_SERVER_GRANT = "mcp__casa-framework"

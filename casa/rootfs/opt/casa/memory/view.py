@@ -30,6 +30,10 @@ its id is known. A session is frozen on that view: a later commit reaches
 it only through the per-turn correction note (:mod:`memory.note`) or at its
 next session.
 
+:func:`open_objects` is ``open_memory``'s read: objects of the session's
+own ledger at their latest committed revision, marked when they changed
+after the session's view.
+
 :func:`unreachable` is the writer commit's reachability check.
 
 Blocking; async callers use ``asyncio.to_thread``.
@@ -581,6 +585,84 @@ def bind(store: MemoryStore, session_key: str, view: View,
                              base_commit_no=view.commit_no,
                              budget=view.budget, block_hash=view.block_hash,
                              sdk_session_id=sdk_session_id)
+
+
+# --- opening entries -----------------------------------------------------------
+
+#: Ids one ``open_memory`` call opens.
+MAX_OPEN = 20
+
+
+def _history(conn: sqlite3.Connection, ledger: str,
+             object_id: str) -> list[dict]:
+    """Every earlier revision of an object, oldest first, dated by the
+    commit that replaced it."""
+    revs = conn.execute(
+        "SELECT revision, committed_at, subject, body, op FROM revisions "
+        "WHERE ledger = ? AND object_id = ? ORDER BY revision",
+        (ledger, object_id)).fetchall()
+    out = []
+    for older, newer in zip(revs, revs[1:]):
+        text = ": ".join(p for p in (older[2], older[3]) if p)
+        out.append({"revision": older[0], "until": (newer[1] or "")[:10],
+                    "text": text, "then": newer[4]})
+    return out
+
+
+def open_objects(store: MemoryStore, ids: list[str], *, clearance: str,
+                 session_key: str | None = None,
+                 sdk_session_id: str | None = None,
+                 with_history: bool = False) -> list[dict] | None:
+    """Open *ids* in the ledger a session at *clearance* reads, as each
+    stands at its latest committed revision: an entry in full, a group or a
+    topic as the lines of what it holds, a retired object as retired. One
+    committed after the session's view (its record by *session_key*, used
+    only when bound to the SDK session *sdk_session_id* the call runs in) is
+    marked so. An id that is no object of that ledger answers ``unknown``,
+    whether it exists in another ledger or not. ``None`` when the clearance
+    reads no ledger. Raises when the store is unavailable or fails."""
+    ledger = ledger_for(clearance)
+    if ledger is None:
+        return None
+    with store.transaction(busy_timeout=BUSY_TIMEOUT_S) as conn:
+        base = None
+        row = sessions.get(conn, session_key) if session_key else None
+        if (row is not None and sdk_session_id is not None
+                and row.sdk_session_id == sdk_session_id
+                and row.ledger == ledger and row.clearance == clearance):
+            base = row.base_commit_no
+        tree = _Tree(objects_as_of(conn, ledger,
+                                   pending.current_commit_no(conn)))
+        latest = dict(conn.execute(
+            "SELECT object_id, max(commit_no) FROM revisions "
+            "WHERE ledger = ? GROUP BY object_id", (ledger,)).fetchall())
+        out = []
+        for object_id in ids:
+            obj = tree.by_id.get(object_id)
+            if obj is not None:
+                item: dict = {"id": object_id, "kind": obj.kind}
+                if obj.kind == "entry":
+                    item["text"] = _full_line(obj)[2:]
+                    if obj.day:
+                        item["date"] = obj.day
+                else:
+                    item["label"] = _label(obj)
+                    item["members"] = [
+                        _index_line(c, tree)[2:]
+                        for c in tree.children.get(object_id, [])
+                        if _LEVEL[c.kind] < _LEVEL[obj.kind]
+                        and tree.members(c)]
+            elif object_id in latest:
+                item = {"id": object_id, "status": "retired"}
+            else:
+                out.append({"id": object_id, "status": "unknown"})
+                continue
+            if base is not None and latest.get(object_id, 0) > base:
+                item["changed_since_your_memory_above"] = True
+            if with_history:
+                item["history"] = _history(conn, ledger, object_id)
+            out.append(item)
+    return out
 
 
 # --- reachability --------------------------------------------------------------

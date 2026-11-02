@@ -10,13 +10,15 @@ import pytest
 pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
 
 
-def _ctx_hits(text):
-    from personality_types import RecallHit
-    return (RecallHit(
-        text=text, memory_type="world", sensitivity="friends",
-        application_tags=(), provenance=None, backend_id="b1", document_id=None,
-        chunk_id=None, source_fact_ids=None, metadata=None, context=None, score=None,
-    ),)
+def _remembers(tmp_path, monkeypatch, *texts):
+    """A real memory store holding *texts*, wired as the process's store."""
+    from memory import capture
+    from memory_tools_support import new_store, store_event
+    store = new_store(tmp_path / "mem")
+    for text in texts:
+        store_event(store, text)
+    monkeypatch.setitem(capture._wiring, "store", store)
+    return store
 
 
 class TestQueryEngager:
@@ -37,12 +39,7 @@ class TestQueryEngager:
             specialist_registry=MagicMock(), mcp_registry=MagicMock(),
             trigger_registry=MagicMock(), engagement_registry=reg,
         )
-        # Inject a recording semantic-memory fake whose recall returns context.
-        memory = MagicMock()
-        memory.recall_items = AsyncMock(return_value=_ctx_hits("Lesina paid in March."))
-        import agent as agent_mod
-        monkeypatch.setattr(agent_mod, "active_semantic_memory", memory,
-                            raising=False)
+        _remembers(tmp_path, monkeypatch, "Lesina paid in March.")
 
         # Monkey-patch the constrained LLM helper
         async def _fake_synth(question, context, max_tokens):
@@ -76,12 +73,8 @@ class TestQueryEngager:
             specialist_registry=MagicMock(), mcp_registry=MagicMock(),
             trigger_registry=MagicMock(), engagement_registry=reg,
         )
-        # Empty recall → query_engager returns unknown before synth runs.
-        memory = MagicMock()
-        memory.recall_items = AsyncMock(return_value=())
-        import agent as agent_mod
-        monkeypatch.setattr(agent_mod, "active_semantic_memory", memory,
-                            raising=False)
+        # Nothing on the question in memory → unknown.
+        _remembers(tmp_path, monkeypatch, "the bins go out on tuesday")
         monkeypatch.setattr("tools._synthesize_answer", AsyncMock(return_value="UNKNOWN"))
 
         token = engagement_var.set(rec)
@@ -227,11 +220,7 @@ class TestSynthesizeAnswerMaxTokens:
             specialist_registry=MagicMock(), mcp_registry=MagicMock(),
             trigger_registry=MagicMock(), engagement_registry=reg,
         )
-        memory = MagicMock()
-        memory.recall_items = AsyncMock(return_value=_ctx_hits("some context"))
-        import agent as agent_mod
-        monkeypatch.setattr(agent_mod, "active_semantic_memory", memory,
-                            raising=False)
+        _remembers(tmp_path, monkeypatch, "some context on q")
 
         captured = {}
 

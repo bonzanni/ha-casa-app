@@ -4196,6 +4196,10 @@ async def main() -> None:
     from memory.store import MemoryStore
     memory_store = MemoryStore()
     await asyncio.to_thread(memory_store.open)
+    # Boot check of the derived files: a missing or unreadable search index
+    # is rebuilt from the store, with no model call.
+    from memory import search as memory_search
+    await asyncio.to_thread(memory_search.ensure, memory_store)
     # Live capture writes here, or to the spool while the store is
     # unavailable or busy.
     memory_capture.configure(store=memory_store)
@@ -5146,11 +5150,11 @@ async def main() -> None:
         # returns the preamble prepended to the next delivered turn. The
         # rebuilt session deliberately re-imports NOTHING from the launch —
         # the record's task/brief/context were withheld by the clamp, and
-        # memory stays reachable through clearance-gated recall.
+        # memory stays reachable through the clearance-gated memory tools.
         _REBUILD_NOTE = (
             "[Context reset: this engagement's earlier working context is no "
             "longer available. Continue from the messages in this topic; use "
-            "recall_memory if you need prior facts.]"
+            "search_memory if you need prior facts.]"
         )
 
         async def _driver_invalidate_session(rec):

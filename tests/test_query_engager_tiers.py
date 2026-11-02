@@ -1,6 +1,7 @@
-"""Task 5+6: query_engager reads from the shared `casa` bank via
-delegated_recall at the engagement origin's read-clearance, instead of the
-legacy Honcho session get_context."""
+"""query_engager reads the engager's memory — its view of the ledger the
+engagement's clearance reads, and a search of the saved conversation — at
+the read clearance of the turn that created the engagement (#336), and keeps
+its three outcomes: ok, unknown (not proof of absence) and unavailable."""
 
 from __future__ import annotations
 
@@ -9,40 +10,15 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from memory import capture
+from memory_serving_support import add, fact
+from memory_tools_support import canary, new_store, store_event
+
 pytestmark = [pytest.mark.unit]
 
 
-def _hit(text):
-    from personality_types import RecallHit
-    return RecallHit(
-        text=text, memory_type="world", sensitivity="friends",
-        application_tags=(), provenance=None, backend_id="b1", document_id=None,
-        chunk_id=None, source_fact_ids=None, metadata=None, context=None, score=None,
-    )
-
-
-class _Sem:
-    """Recording fake mirroring tests/test_delegated_memory.py's _Sem shape."""
-
-    def __init__(self, recall_ret="Lesina paid in March."):
-        self.recall_calls = []
-        self.retain_calls = []
-        self._recall_ret = recall_ret
-
-    async def recall_items(self, bank, query, *, tags, max_tokens, clearance,
-                           types=("world", "experience", "observation"),
-                           tags_match="any", budget="mid"):
-        self.recall_calls.append({
-            "bank": bank, "query": query, "tags": sorted(tags),
-            "max_tokens": max_tokens, "budget": budget, "clearance": clearance,
-        })
-        return (_hit(self._recall_ret),) if self._recall_ret else ()
-
-    async def retain(self, bank, items, *, async_=True):
-        self.retain_calls.append({"bank": bank, "items": items})
-
-
-async def _setup(reg, sem, monkeypatch, *, synth_answer="Yes, Lesina paid in March."):
+async def _setup(reg, monkeypatch, tmp_path, *,
+                 synth_answer="Yes, Lesina paid in March."):
     from tools import init_tools
 
     bus = MagicMock()
@@ -56,135 +32,107 @@ async def _setup(reg, sem, monkeypatch, *, synth_answer="Yes, Lesina paid in Mar
         specialist_registry=MagicMock(), mcp_registry=MagicMock(),
         trigger_registry=MagicMock(), engagement_registry=reg,
     )
-
-    import agent as agent_mod
-    monkeypatch.setattr(agent_mod, "active_semantic_memory", sem, raising=False)
+    store = new_store(tmp_path / "mem")
+    monkeypatch.setitem(capture._wiring, "store", store)
+    contexts: list[str] = []
 
     async def _fake_synth(question, context, max_tokens):
+        contexts.append(context)
         return synth_answer
 
     monkeypatch.setattr("tools._synthesize_answer", _fake_synth)
+    return store, contexts
 
 
-async def test_telegram_clearance_recall(tmp_path, monkeypatch):
+async def _engagement(tmp_path, **markers):
     from engagement_registry import EngagementRegistry
-    from tools import query_engager, engagement_var
-
     reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
     rec = await reg.create(
         kind="specialist", role_or_type="finance", driver="in_casa",
         task="t", origin={"role": "assistant", "channel": "telegram",
-                          "chat_id": "c1"},
+                          "chat_id": "c1", **markers},
         topic_id=42,
     )
-    sem = _Sem()
-    await _setup(reg, sem, monkeypatch)
+    return reg, rec
 
+
+async def _ask(rec, question: str) -> dict:
+    from tools import engagement_var, query_engager
     token = engagement_var.set(rec)
     try:
         res = await query_engager.handler(
-            {"question": "when did Lesina pay?", "max_tokens": 500},
-        )
+            {"question": question, "max_tokens": 500})
     finally:
         engagement_var.reset(token)
-
-    payload = json.loads(res["content"][0]["text"])
-    assert payload["status"] == "ok"
-    assert payload["text"] == "Yes, Lesina paid in March."
-
-    assert len(sem.recall_calls) == 1
-    c = sem.recall_calls[0]
-    assert c["bank"] == "casa"
-    assert c["query"] == "when did Lesina pay?"
-    assert c["tags"] == ["family", "friends", "private", "public"]
-    assert c["max_tokens"] == 2000
+    return json.loads(res["content"][0]["text"])
 
 
-async def test_empty_recall_returns_unknown(tmp_path, monkeypatch):
-    from engagement_registry import EngagementRegistry
-    from tools import query_engager, engagement_var
+async def test_the_synthesizer_reads_the_view_and_the_search(tmp_path,
+                                                             monkeypatch):
+    reg, rec = await _engagement(tmp_path)
+    store, contexts = await _setup(reg, monkeypatch, tmp_path)
+    add(store, [fact("Lesina", "paid in March", topic="Clients")])
+    store_event(store, "Lesina's invoice was paid by bank transfer")
+    store_event(store, "the bins go out on tuesday")
 
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
-    rec = await reg.create(
-        kind="specialist", role_or_type="finance", driver="in_casa",
-        task="t", origin={"role": "assistant", "channel": "telegram",
-                          "chat_id": "c1"},
-        topic_id=42,
-    )
-    sem = _Sem(recall_ret="")
-    await _setup(reg, sem, monkeypatch)
+    payload = await _ask(rec, "when did Lesina pay?")
 
-    token = engagement_var.set(rec)
-    try:
-        res = await query_engager.handler({"question": "x", "max_tokens": 500})
-    finally:
-        engagement_var.reset(token)
-
-    payload = json.loads(res["content"][0]["text"])
-    assert payload["status"] == "unknown"
+    assert payload == {"status": "ok", "text": "Yes, Lesina paid in March."}
+    (context,) = contexts
+    assert "Lesina: paid in March" in context
+    assert "Lesina's invoice was paid by bank transfer" in context
+    assert "bins" not in context
 
 
-async def test_unavailable_recall_returns_unavailable_not_unknown(tmp_path, monkeypatch):
+async def test_nothing_readable_is_unknown_not_absence(tmp_path, monkeypatch):
+    reg, rec = await _engagement(tmp_path)
+    store, contexts = await _setup(reg, monkeypatch, tmp_path)
+
+    payload = await _ask(rec, "when did Lesina pay?")
+
+    assert payload["status"] == "unknown" and contexts == []
+    assert "NOT proof of absence" in payload["message"]
+
+
+async def test_an_unreadable_store_is_unavailable_not_unknown(tmp_path,
+                                                              monkeypatch):
     """Three-outcome contract: engager memory that could NOT be checked is
-    'unavailable', distinct from a genuine zero-hit 'unknown'."""
-    from engagement_registry import EngagementRegistry
-    from semantic_memory import RecallUnavailable
-    from tools import query_engager, engagement_var
+    'unavailable', distinct from a genuine 'unknown'."""
+    from tools import query_engager
+    reg, rec = await _engagement(tmp_path)
+    store, contexts = await _setup(reg, monkeypatch, tmp_path)
+    store._unavailable_reason = "a simulated outage"
 
-    class _Down(_Sem):
-        async def recall_items(self, *a, **k): raise RecallUnavailable("http_504")
+    payload = await _ask(rec, "x")
 
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
-    rec = await reg.create(
-        kind="specialist", role_or_type="finance", driver="in_casa",
-        task="t", origin={"role": "assistant", "channel": "telegram",
-                          "chat_id": "c1"},
-        topic_id=42,
-    )
-    await _setup(reg, _Down(), monkeypatch)
-
-    token = engagement_var.set(rec)
-    try:
-        res = await query_engager.handler({"question": "x", "max_tokens": 500})
-    finally:
-        engagement_var.reset(token)
-
-    payload = json.loads(res["content"][0]["text"])
-    assert payload["status"] == "unavailable"
+    assert payload["status"] == "unavailable" and contexts == []
     assert "could not be checked" in payload["message"]
-    # The tool description enumerates all three statuses.
     for status in ("status=ok", "status=unknown", "status=unavailable"):
         assert status in query_engager.description
 
 
-async def test_non_operator_engagement_queries_at_public_only(tmp_path, monkeypatch):
-    """#336 (Sol, review r3): query_engager reads the engager-side context on
-    behalf of THIS engagement, so it is filtered at the clearance of the turn
-    that created it. Red case: dropping origin_route/origin_clearance from the
-    delegated_recall call restores channel-keyed private clearance and every
-    tier becomes readable to a non-operator's engagement."""
-    from engagement_registry import EngagementRegistry
-    from tools import query_engager, engagement_var
+async def test_non_operator_engagement_queries_at_public_only(tmp_path,
+                                                              monkeypatch):
+    """#336: the engager-side context is read on behalf of THIS engagement,
+    at the clearance of the turn that created it. Red case: reading the
+    ambient channel's clearance instead makes the private ledger and the
+    private conversation readable to a non-operator's engagement."""
+    reg, rec = await _engagement(tmp_path, _origin_route="telegram",
+                                 _origin_clearance="public")
+    store, contexts = await _setup(reg, monkeypatch, tmp_path)
+    secret = canary()
+    add(store, [fact("alarm", f"the alarm code is {secret}")])
+    store_event(store, f"the alarm code is {secret}", tier="private")
+    store_event(store, "the alarm is tested on mondays", tier="public")
 
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
-    rec = await reg.create(
-        kind="specialist", role_or_type="finance", driver="in_casa",
-        task="t", origin={"role": "assistant", "channel": "telegram",
-                          "chat_id": "c1",
-                          "_origin_route": "telegram",
-                          "_origin_clearance": "public"},
-        topic_id=42,
-    )
-    sem = _Sem()
-    await _setup(reg, sem, monkeypatch)
+    await _ask(rec, "what is the alarm code?")
 
-    token = engagement_var.set(rec)
-    try:
-        await query_engager.handler(
-            {"question": "what is the alarm code?", "max_tokens": 500})
-    finally:
-        engagement_var.reset(token)
+    (context,) = contexts
+    assert "the alarm is tested on mondays" in context
+    assert secret not in context
 
-    c = sem.recall_calls[0]
-    assert c["clearance"] == "public"
-    assert c["tags"] == ["public"]
+
+def test_the_description_never_claims_memory_holds_nothing():
+    from tools import query_engager
+    assert "holds nothing relevant" not in query_engager.description
+    assert "NOT proof of absence" in query_engager.description

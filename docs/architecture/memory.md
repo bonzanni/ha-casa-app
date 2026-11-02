@@ -2,17 +2,18 @@
 last_reviewed: 2026-11-02
 ---
 
-# Memory and recall
+# Memory recall seam
 
 > Code is the source of truth. This file is a map; when it and the code disagree, the code wins.
 
 ## Scope
 
-Long-term memory on the way *out*: how a recalled fact is rendered, what a caller is told
-when the store cannot answer, and what a caller may claim from what comes back. It covers
-the memory seam and the provenance carried on a recalled fact. The view of a ledger a
-session is served at its start, and the correction note on every turn, are
-[`architecture/memory-serving.md`](memory-serving.md). *Who* may read a stored
+The long-term memory backend seam on the way *out*: how a recalled fact is rendered, what
+a caller is told when the backend cannot answer, and the provenance carried on a recalled
+fact. The tools an agent reads its memory with — search, browse, open, correct — and what a
+caller may claim from their results are [`architecture/memory-tools.md`](memory-tools.md).
+The view of a ledger a session is served at its start, and the correction note on every
+turn, are [`architecture/memory-serving.md`](memory-serving.md). *Who* may read a stored
 fact back — read clearance per channel and sender, the engagement clearance clamp, and
 the executor-archive epoch scoping — is
 [`architecture/memory-scoping.md`](memory-scoping.md). How a fact is labelled — tier
@@ -50,11 +51,7 @@ empty render as evidence of absence is making a claim the render cannot support.
 the caller's readable tiers as a server-side tag filter, so a hit above the caller's clearance
 is dropped *by the backend* and a clearance-blocked search returns the same well-formed empty
 as a genuine miss. Even at the highest clearance, server-side token truncation and the types
-filter can hide content. The recall tool therefore never hands the model a bare empty: a
-zero-hit result carries guidance that absence is unknowable and must not be asserted, and a
-result whose readable hits exist but did not fit the render budget says so and asks for a
-narrower query — the one existence claim an empty render *can* support, since those hits
-already passed the clearance filter.
+filter can hide content.
 
 Emptiness, though, was never the property that needed saying. *Boundedness* is, and a large
 useful result is exactly as bounded as an empty one: a model handed thirty readable memories
@@ -66,11 +63,9 @@ view readable here, not an inventory of Casa's memory. The note is constant at e
 on every surface: a caveat that appeared only below `private`, or read differently there,
 would itself be an oracle for "something was filtered out of *this* answer".
 
-One slice stays deliberately unframed, and it is worth knowing why it is safe: the
-engager-query synthesizer. It is a model, but it never speaks to a person — it may only
-answer from the context it was handed or return `UNKNOWN`, and that `UNKNOWN` becomes the
-already-framed unknown result. The framing is attached where a slice reaches an agent that
-can *say something to someone*, which is where the false denial happens.
+The framing is attached where a slice reaches an agent that can *say something to
+someone*, which is where the false denial happens; INV-MEM-010
+([`architecture/memory-tools.md`](memory-tools.md)) states it for every memory read.
 
 **A recalled fact says when it was recorded, and whether a scheduled turn last saved it —
 two separate facts, and neither decides which memory is right.** Each rendered hit the backend
@@ -92,29 +87,11 @@ state is a live read, which the assistant's doctrine requires before stating suc
 current. The recall request carries Casa's own clock in the operator's timezone as its
 `query_timestamp`.
 
-**A search can be limited to a period, and "only" is Casa's filter, not the backend's.** The
-recall tool takes an optional period — today, yesterday, this or last week (weeks start on
-Monday), this or last month, one day, or an inclusive range of days. Casa resolves it to whole
-days in the operator's timezone, because not every session holding the tool sees the current
-time. The backend's time window only *ranks* memories dated in it higher and still returns
-the rest, so the window is sent as that ranking hint and the tool itself keeps only the hits
-whose recorded date — the first date, for identical text — falls inside the period, after the
-clearance re-filter; a hit with no usable date cannot be placed in a period and is left out.
-So "from last week" means *first recorded* last week: a fact first said earlier and repeated
-last week is not in it. The backend's token budget still truncates before Casa filters, so
-in-period memories can be cut; the ranking hint is the only mitigation, and nothing promises
-completeness. A search with a period that keeps nothing gets its own empty result, worded
-like the others: not proof of absence. A period that cannot be read, or ends before it starts,
-is refused before anything is searched — sent to the backend, an inverted window would come
-back as an error the tool would report as "memory could not be checked". The seam's typed
-recall takes the window only as that hint and never filters by it, so its three outcomes are
-unchanged; the engager query never sends one.
-
-**No turn recalls on its own.** What a session knows from memory at its start is its view
-of a ledger, served with no search
+**Nothing reads this seam's recall any more.** What a session knows from memory at its start
+is its view of a ledger, served with no search
 ([`architecture/memory-serving.md`](memory-serving.md)), and a delegated specialist is served
-its view with the brief. A recall happens only when an agent calls the recall tool, or
-when the engager query reads for an engagement.
+its view with the brief. An agent reads more through the memory tools, and the engager
+query reads through the same store ([`architecture/memory-tools.md`](memory-tools.md)).
 
 **Writing is narrower than reading, and it has its own document.** Only write-trusted
 channels retain to the shared bank; *when* a conversation is retained, reset, or wiped is
@@ -149,10 +126,9 @@ malformed envelopes, and the no-op implementation raises rather than returning e
 backend is configured.
 
 What it does not cover: **individual call sites may still collapse the distinction after the
-fact.** The model-facing consumers no longer do — `recall_memory` and `query_engager` scope
-their empty results explicitly, and every consumer of a rendered slice frames its non-empty
-one (INV-MEM-010) — but the invariant holds at the seam, for typed recall, not at every
-consumer. A prompt-assembly caller that renders an empty digest as silence (the executor
+fact.** The one consumer of a rendered slice left, the executor archive, frames its
+non-empty one (INV-MEM-010) — but the invariant holds at the seam, for typed recall, not at
+every consumer. A prompt-assembly caller that renders an empty digest as silence (the executor
 archive slot) is making no claim, which is fine; a new consumer that words emptiness as
 absence, or hands over a bounded slice unframed, would reintroduce the defect. That is a
 standing risk of a per-consumer contract, so the consumer inventory is itself pinned: a new
@@ -184,34 +160,8 @@ read, a syntactically valid provenance tag is trusted and is not cross-checked a
 duplicate copy stored in the item's metadata, so a recalled fact can carry a speaker identity
 the read path has not independently established.
 
-**INV-MEM-010**: No recall result licenses a claim that Casa lacks something: every non-empty readable slice injected into the context of an agent that speaks to a person is framed as bounded, the sole unframed slice reaches only a synthesizer that can answer from it or return `UNKNOWN`, empty and unknown results carry explicit do-not-assert-absence guidance at every clearance tier, and readable hits that did not fit the render budget are reported as existing rather than absent.
-
-Enforced in the recall tool's empty-digest arms and the engager-query tool's unknown arm,
-which attach explicit guidance in place of a bare empty result; and, on the non-empty side, by
-one shared note (`recall_renderer.READABLE_SLICE_NOTE`) attached by both consumers of a
-bounded slice — the recall tool's ok-arm as a result `message`, and the executor lessons
-block as an instruction line under its heading. The engager-query synthesizer is the
-exception described above. The served view of a ledger is not a slice: it is the whole
-ledger, or its index, at the session's clearance.
-
-What it does not cover: it is a statement about what the result *says*, not what a model does
-with it — prompt-level honesty remains the model's job. Prompt-assembly consumers that render
-emptiness as *silence* stay outside it, deliberately: absence of a block is not a claim of
-absence, and a framing line with no memories under it would be a header for a search that
-found nothing. The consumer inventory that guards against a new, unframed consumer resolves
-direct calls only; an alias or other indirection escapes it.
-
-**INV-MEM-019**: A `recall_memory` call given a period returns only readable hits whose recorded date lies inside the period Casa resolved in the operator's timezone — hits without a recorded date are left out — the period filter runs after the clearance gate, an empty in-period result is framed as bounded and never as absence, an invalid or inverted period is refused before any request, and a call without a period sends no window.
-
-Enforced in the recall tool, which resolves the period (`timekeeping.resolve_period`), passes the
-window to the seam only when one was given, filters on each hit's recorded date after the
-clearance re-filter, and keys every result arm on what that filter keeps; the backend
-implementation adds the window to its request only when one is passed.
-
-What it does not cover: completeness. The backend ranks by the window and truncates to its
-token budget before Casa filters, so a memory first recorded in the period can still be
-missing from the result. A memory's date is the backend's first recorded date for identical
-text, not when the event it describes happened.
+**INV-MEM-010** — what a memory read may license — and **INV-MEM-019** — a search's date
+range — are declared in [`architecture/memory-tools.md`](memory-tools.md).
 
 ## Failure behavior
 
@@ -279,15 +229,11 @@ since what may be disclosed is decided per surface.
 - `casa/rootfs/opt/casa/recall_renderer.py::render_recall`
 - `casa/rootfs/opt/casa/recall_health.py::observed_recall`
 - `casa/rootfs/opt/casa/delegated_memory.py::delegated_recall`
-- `casa/rootfs/opt/casa/timekeeping.py::resolve_period`
 
 **Tests**
 - `tests/test_recall_absence_invariant.py`
 - `tests/test_recall_health.py::test_breaker_opens_after_threshold_failures`
-- `tests/test_recall_empty_verdict.py`
-- `tests/test_recall_readable_slice_framing.py`
 - `tests/test_1123_tier_floor_regressions.py`
-- `tests/test_pin_1120_recall_period.py`
 
 **Related**
 - [`architecture/overview.md`](../architecture/overview.md)
@@ -296,4 +242,5 @@ since what may be disclosed is decided per surface.
 - [`architecture/memory-serving.md`](../architecture/memory-serving.md)
 - [`architecture/memory-scoping.md`](../architecture/memory-scoping.md)
 - [`architecture/memory-wipe.md`](../architecture/memory-wipe.md)
+- [`architecture/memory-tools.md`](../architecture/memory-tools.md)
 <!-- END SOURCEMAP -->

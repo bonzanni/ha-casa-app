@@ -19,6 +19,11 @@ together or not at all; the writer runs them next. A writer job already
 holding the event is rejected at its commit, because the event's mark is no
 longer the one it read.
 
+:func:`mark_operator_event` is ``correct_memory``'s entry point: it marks the
+operator message a turn opened with, found by the occurrence key its capture
+stored it under. A message that capture had to spool is stored first, by a
+drain of the spool.
+
 Blocking; async callers use ``asyncio.to_thread``.
 """
 from __future__ import annotations
@@ -26,7 +31,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from memory import pending, writer
+from memory import capture, pending, writer
 from memory.store import MemoryStore
 
 
@@ -65,3 +70,23 @@ def mark(store: MemoryStore, seq: int) -> MarkResult:
     if ledgers:
         writer.wake()
     return MarkResult(marked=True, queued=ledgers)
+
+
+def _operator_seq(store: MemoryStore, source_key: str) -> int | None:
+    with store.transaction() as conn:
+        row = conn.execute(
+            "SELECT seq FROM events WHERE source_key = ? "
+            "AND speaker_kind = 'operator'", (source_key,)).fetchone()
+    return None if row is None else row[0]
+
+
+def mark_operator_event(store: MemoryStore, source_key: str) -> MarkResult:
+    """Mark the operator message stored under *source_key*, draining a
+    waiting spool first when it is not stored yet. ``found`` is false when
+    no operator message is stored under that key."""
+    seq = _operator_seq(store, source_key)
+    if seq is None and capture.drain_waiting(store):
+        seq = _operator_seq(store, source_key)
+    if seq is None:
+        return MarkResult(marked=False, found=False)
+    return mark(store, seq)

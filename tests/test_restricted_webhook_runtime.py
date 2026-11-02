@@ -12,7 +12,7 @@ import json
 from agent import build_restricted_webhook_options
 
 RESTRICTED_TOOLS = {
-    "mcp__casa-framework__recall_memory",
+    "mcp__casa-framework__search_memory",
     "mcp__casa-framework__send_message",
 }
 

@@ -93,22 +93,22 @@ async def test_specialist_empty_record_still_gets_its_mandatory_grants():
 
 async def test_specialist_definition_granted_framework_tool_passes():
     """A specialist config may grant framework tools beyond the two mandatory
-    ones (e.g. recall_memory); the record now pins them, so the gate admits
+    ones (e.g. search_memory); the record now pins them, so the gate admits
     them. Regression for the review finding that an empty record rejected a
     legitimately-granted specialist tool."""
     rec = _record(kind="specialist", tools_allowed=(
         "mcp__casa-framework__query_engager",
         "mcp__casa-framework__emit_completion",
-        "mcp__casa-framework__recall_memory",
+        "mcp__casa-framework__search_memory",
     ))
     registry = type("R", (), {"get": lambda self, _id: rec})()
     app = web.Application()
     app.router.add_post(
         "/internal/tools/call",
         _make_internal_tools_call_handler(
-            tool_dispatch={"recall_memory": _ran}, engagement_registry=registry),
+            tool_dispatch={"search_memory": _ran}, engagement_registry=registry),
     )
-    payload = await _call(app, "recall_memory")
+    payload = await _call(app, "search_memory")
     assert payload.get("content") == [{"type": "text", "text": "ran"}]
 
 

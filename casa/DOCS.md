@@ -51,7 +51,7 @@ is enabled by pointing Casa at a self-hosted **Hindsight** app.
 
 | Option | Description |
 |--------|-------------|
-| `hindsight_api_url` | Internal base URL for the self-hosted Hindsight app (e.g. `http://5884eb17-hindsight:8888` or its IP), reached via the app's hassio network alias/IP — not the bare host `hindsight`. **This is the single toggle for long-term memory: set it to turn long-term semantic memory ON** (the app auto-derives `MEMORY_BACKEND=hindsight`) — both **save** (the freshness reaper retains ended conversations, each item tier-classified) and **recall** (the `recall_memory` pull tool). **Leave empty to keep long-term memory disabled** (short-term continuity still works via the SDK session, except across a resident identity change — and with this empty, nothing an ended conversation held is recoverable afterwards). |
+| `hindsight_api_url` | Internal base URL for the self-hosted Hindsight app (e.g. `http://5884eb17-hindsight:8888` or its IP), reached via the app's hassio network alias/IP — not the bare host `hindsight`. **This is the single toggle for long-term memory: set it to turn long-term semantic memory ON** (the app auto-derives `MEMORY_BACKEND=hindsight`) — the freshness reaper then retains ended conversations to it, each item tier-classified. **Leave empty to keep long-term memory disabled** (short-term continuity still works via the SDK session, except across a resident identity change — and with this empty, nothing an ended conversation held is recoverable afterwards). |
 
 **Wiping long-term memory** (v0.194.0): one supported operation deletes the whole
 bank, drops any pending durable retry records, and forgets every conversation

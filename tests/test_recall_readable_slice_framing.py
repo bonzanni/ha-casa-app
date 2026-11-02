@@ -17,23 +17,17 @@ non-empty, entirely honest result, read as an inventory of Casa's memory.
 
 FOUR model-facing consumers rendered a slice; every one of them was unframed on
 its non-empty path, and the suite that shipped with #472 actively pinned the
-defect (`test_nonempty_digest_stays_clean`, now replaced by
-`test_nonempty_digest_carries_the_note` below). Two remain slices:
+defect. One remains a slice of this kind:
 
-  1. `recall_memory`'s ok-arm            → tool-result `message`
   4. `_fetch_executor_archive`'s block   → instruction line under the heading
 
 The resident's auto-recall (2) and the specialist's pre-delegation recall (3)
 were replaced by the served memory view, which is a whole ledger (or its
-index), not a slice of one.
+index), not a slice of one; the recall tool (1) by the memory tools, whose
+results carry their own constant note (`tests/test_memory_search_tool.py`).
 
-`query_engager` is deliberately absent: its synthesizer is constrained to the
-supplied context and must emit the literal `UNKNOWN` when that context does not
-answer, which routes to the already-framed unknown arm.
-
-Each site is asserted in ITS OWN emitted artifact, so deleting the framing from
-any one of them fails exactly one test — the mutation check that makes this a
-pinning suite rather than four restatements of one import. For the same reason
+The site is asserted in ITS OWN emitted artifact, so deleting the framing from
+it fails its test. For the same reason
 the expected wording is written out LITERALLY here rather than imported from
 production: a test that reads the constant it is meant to pin asserts nothing.
 
@@ -49,8 +43,6 @@ from __future__ import annotations
 import ast
 from collections import Counter
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -134,52 +126,6 @@ class TestTheNoteItself:
 
 
 # ---------------------------------------------------------------------------
-# Consumer 1 — recall_memory's ok-arm
-# ---------------------------------------------------------------------------
-
-
-def _setup_recall(monkeypatch, *, channel: str, hits=(), token_budget: int = 512):
-    import agent as agent_mod
-    sem = AsyncMock()
-    sem.recall_items.return_value = tuple(hits)
-    monkeypatch.setattr(agent_mod, "active_semantic_memory", sem, raising=False)
-    cfg = SimpleNamespace(memory=SimpleNamespace(token_budget=token_budget))
-    monkeypatch.setattr(tools, "_agent_role_map", {"assistant": cfg}, raising=False)
-    agent_mod.origin_var.set({"role": "assistant", "channel": channel})
-    return sem
-
-
-class TestRecallMemoryOkArm:
-    async def test_nonempty_result_carries_the_note_and_the_fact(self, monkeypatch):
-        _setup_recall(monkeypatch, channel="voice", hits=(_hit(),))
-        res = _payload(await tools.recall_memory.handler({"query": "thermostat?"}))
-        assert res["status"] == "ok"
-        assert "thermostat at 20C" in res["memory"], "the digest must still be usable"
-        assert res["message"] == EXPECTED_NOTE
-
-    async def test_the_note_is_identical_at_every_clearance(self, monkeypatch):
-        """A note that appeared only below `private` — or read differently
-        there — would be an oracle for 'something was filtered out of THIS
-        answer'. Truncation and the types filter bound the top tier too, so
-        the wording is constant by design."""
-        _setup_recall(monkeypatch, channel="voice", hits=(_hit(),))
-        voice = _payload(await tools.recall_memory.handler({"query": "thermostat?"}))
-        _setup_recall(monkeypatch, channel="telegram", hits=(_hit(),))
-        telegram = _payload(await tools.recall_memory.handler({"query": "thermostat?"}))
-        assert voice["message"] == telegram["message"] == EXPECTED_NOTE
-
-    async def test_the_result_never_asserts_absence_itself(self, monkeypatch):
-        """The note PROHIBITS the phrase "no record", so it necessarily
-        contains it — strip the note before checking that nothing else in the
-        result says it."""
-        _setup_recall(monkeypatch, channel="voice", hits=(_hit(),))
-        res = _payload(await tools.recall_memory.handler({"query": "thermostat?"}))
-        rest = (res["memory"] + " " + res["status"]).lower()
-        assert "no record" not in rest
-        assert "don't have" not in rest
-
-
-# ---------------------------------------------------------------------------
 # Consumer 4 — the executor archive's lessons block
 # ---------------------------------------------------------------------------
 
@@ -227,17 +173,10 @@ class TestExecutorArchiveBlock:
 # which is the point: #581 existed because three consumers were added over time
 # and none of them inherited the framing the first one grew.
 DECLARED_SLICE_CALLERS: dict[tuple[str, str], tuple[int, str]] = {
-    # render_recall — the typed renderer itself
-    ("tools.py", "recall_memory"): (1, "frames: tool-result message"),
+    # render_recall — the typed renderer itself. delegated_recall has no
+    # caller: a new one must be declared here with how it frames its slice.
     ("delegated_memory.py", "delegated_recall"): (
         1, "renders only; its callers frame (or are exempt) individually"),
-    # delegated_recall — the shared delegated read
-    ("tools.py", "query_engager"): (
-        2,
-        "exempt: both calls (initial + the post-clamp re-read) feed a "
-        "synthesizer constrained to the context, which must emit UNKNOWN when "
-        "it does not answer — that routes to the framed arm",
-    ),
     # A DIFFERENT render_recall — semantic_memory's legacy flat "- {text}"
     # renderer for the untyped recall() seam, which no consumer calls. Declared
     # rather than filtered out by name, so that wiring a consumer to the legacy
@@ -326,7 +265,7 @@ def test_the_inventory_is_not_vacuous():
     it actually resolves the known sites."""
     sites = _all_call_sites()
     for expected in (
-        ("tools.py", "recall_memory"),
-        ("tools.py", "query_engager"),
+        ("delegated_memory.py", "delegated_recall"),
+        ("hindsight_memory.py", "recall"),
     ):
         assert expected in sites, f"caller scan missed {expected}"

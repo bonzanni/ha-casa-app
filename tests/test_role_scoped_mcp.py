@@ -97,13 +97,13 @@ def test_casa_framework_factory_exposes_only_granted_tools():
 
     grants = frozenset({
         "mcp__casa-framework__get_schedule",
-        "mcp__casa-framework__recall_memory",
+        "mcp__casa-framework__search_memory",
     })
 
     cfg = create_casa_tools(grants)
 
     assert {tool.name for tool in select_casa_tools(grants)} == {
-        "get_schedule", "recall_memory",
+        "get_schedule", "search_memory",
     }
     assert cfg["alwaysLoad"] is True
 

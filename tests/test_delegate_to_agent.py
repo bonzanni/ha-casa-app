@@ -1721,7 +1721,7 @@ class TestMcpRegistryWiring:
         init_tools(ChannelManager(), MessageBus(), reg, mcp)
         cfg = _specialist_cfg(role="finance")
         cfg.tools = ToolsConfig(
-            allowed=["Skill", "mcp__casa-framework__recall_memory"],
+            allowed=["Skill", "mcp__casa-framework__search_memory"],
             permission_mode="acceptEdits",
             skills="none",
         )
@@ -1739,12 +1739,12 @@ class TestMcpRegistryWiring:
         server = options.mcp_servers["casa-framework"]
         assert server["resolved_role"] == "finance"
         assert server["resolved_grants"] == frozenset({
-            "mcp__casa-framework__recall_memory",
+            "mcp__casa-framework__search_memory",
             "mcp__casa-framework__query_engager",
             "mcp__casa-framework__emit_completion",
         })
         assert options.allowed_tools == [
-            "mcp__casa-framework__recall_memory",
+            "mcp__casa-framework__search_memory",
             "mcp__casa-framework__query_engager",
             "mcp__casa-framework__emit_completion",
         ]

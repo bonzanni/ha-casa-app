@@ -130,7 +130,7 @@ cat >> /etc/nginx/nginx.conf <<'NGINX'
         # and exist for in-container workspace subprocesses only (served by
         # svc-casa-mcp on loopback 8100 since v0.164.0 — no longer registered
         # on the 8099 app at all). When they were proxied publicly, an
-        # attacker could POST a JSON-RPC tools/call for recall_memory
+        # attacker could POST a JSON-RPC tools/call for search_memory
         # (returns PRIVATE memory) or plugin_add (arbitrary plugin install),
         # bypassing webhook auth + origin containment entirely. Keep these
         # 404s so a future re-registration on 8099 stays unexposed.

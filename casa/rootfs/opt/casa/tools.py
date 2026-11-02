@@ -23,10 +23,6 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 if TYPE_CHECKING:
     from trigger_registry import TriggerRegistry
-    # #205: type-only — _recall_surface's return feeds delegated_recall(surface=),
-    # which is typed Surface. Kept behind TYPE_CHECKING so annotating it adds no
-    # runtime import edge (tools.py already reaches recall_renderer lazily).
-    from recall_renderer import Surface
 
 from executor_registry import ExecutorRegistry
 from plugin_env_conf import set_entry as _set_env_entry  # noqa: F401 — available for future use
@@ -49,10 +45,9 @@ from plugin_grants import (
     sanitized_env_for_resolution,
 )
 from authz_grants import CHALLENGES, GRANTS, normalize_role
-from delegated_memory import delegated_recall, retain_delegated
+from delegated_memory import retain_delegated
 from handoff import child_chain, requester_of
 from memory.eligibility import Source as _CaptureSource
-from semantic_memory import RecallUnavailable
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -1815,6 +1810,361 @@ async def ask_user(args: dict) -> dict:
                     "note": ASK_USER_SILENCE_NOTE,
                     **({"casa_prefixed": list(body.annotations)}
                        if body.annotations else {})})
+
+
+# ---------------------------------------------------------------------------
+# Memory tools: search_memory, browse_memory_day, open_memory, correct_memory
+# ---------------------------------------------------------------------------
+
+#: INV-MEM-010: on every search and browse result, empty or not, and the same
+#: at every clearance — a note that varied would itself say something was
+#: filtered out of this answer.
+MEMORY_READ_NOTE = (
+    "This is the saved conversation readable here, and the search or day is "
+    "bounded. Finding nothing, or nothing on the topic, is not proof it was "
+    "never said: say you found nothing you can share, never that it didn't "
+    "happen."
+)
+#: #1116: says WHEN to tell, so an outage on a check nobody asked for (a
+#: scheduled briefing) does not become a message.
+_MEMORY_UNAVAILABLE = (
+    "Memory could not be checked right now. Do NOT say the information "
+    "doesn't exist or that you don't have it. If a person asked for something "
+    "that needs memory, tell them memory couldn't be checked. On a check "
+    "nobody asked for, this alone is not a reason to send anything; still "
+    "report what the task itself requires."
+)
+_DAY_FORMS = (
+    "a day YYYY-MM-DD, or today, yesterday, this_week, last_week, "
+    "this_month, last_month (in the operator's timezone)")
+_OPTIONAL_DAY = {"type": ["string", "null"]}
+_OPTIONAL_PAGE = {"type": ["integer", "null"],
+                  "description": "Optional page, from 1."}
+
+# Pre-built schemas: the SDK makes every dict-of-types key required, and
+# ``null`` (what a client sends for an unset optional) means not given.
+SEARCH_MEMORY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "query": {"type": "string",
+                  "description": "Words to look for in saved conversation."},
+        "from": {**_OPTIONAL_DAY, "description": (
+            "Optional first day to search: " + _DAY_FORMS
+            + "; a named period means its first day.")},
+        "to": {**_OPTIONAL_DAY, "description": (
+            "Optional last day to search, inclusive: " + _DAY_FORMS
+            + "; a named period means its last day.")},
+        "page": _OPTIONAL_PAGE,
+    },
+    "required": ["query"],
+}
+BROWSE_MEMORY_DAY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "date": {"type": "string", "description": (
+            "The day to read: " + _DAY_FORMS + "; a named period reads "
+            "all of it, up to 7 days.")},
+        "to_date": {**_OPTIONAL_DAY, "description": (
+            "Optional last day, inclusive, at most 7 days in all.")},
+        "from_time": {**_OPTIONAL_DAY, "description": (
+            "Optional HH:MM on the first day to start from.")},
+        "to_time": {**_OPTIONAL_DAY, "description": (
+            "Optional HH:MM on the last day to stop at.")},
+        "page": _OPTIONAL_PAGE,
+    },
+    "required": ["date"],
+}
+OPEN_MEMORY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "ids": {"type": "array", "items": {"type": "string"},
+                "description": "Ids from your memory's index lines."},
+        "with_history": {"type": ["boolean", "null"], "description": (
+            "Optional: also return each one's earlier versions.")},
+    },
+    "required": ["ids"],
+}
+
+
+def _memory_reader(origin: dict) -> str:
+    """The clearance a memory read runs at: the same gate the turn path
+    uses, keyed off the origin's markers or a bound engagement's (#336)."""
+    from sensitivity import clearance_for_origin
+    route, stamped = _origin_clearance_markers(origin)
+    return clearance_for_origin(route, stamped, origin.get("channel", "telegram"))
+
+
+async def _read_memory(origin: dict, read: Callable[[str], Any]) -> Any:
+    """Run the blocking *read* at the reader's clearance, off the event loop.
+    A clearance lowered while it ran (an engagement clamp, #369) reads again
+    at the new one: the clamp is one-way over a few tiers."""
+    from sensitivity import TIERS
+    clearance = _memory_reader(origin)
+    for _ in range(len(TIERS)):
+        out = await asyncio.to_thread(read, clearance)
+        now = _memory_reader(origin)
+        if now == clearance:
+            return out
+        clearance = now
+    return await asyncio.to_thread(read, clearance)
+
+
+def _memory_store():
+    from memory import capture
+    store = capture.active_store()
+    return store if store is not None and store.available else None
+
+
+def _days(args: dict, first_key: str, last_key: str):
+    """``(first, last, error)``: the local days *args* names, each ``None``
+    when not given. A named period is its first day as a first bound and
+    its last day as a last one."""
+    from datetime import datetime
+
+    from timekeeping import resolve_period, resolve_tz
+    now = datetime.now(resolve_tz())
+    out = []
+    for key, end in ((first_key, False), (last_key, True)):
+        spec = args.get(key)
+        if spec is None or (isinstance(spec, str) and not spec.strip()):
+            out.append(None)
+            continue
+        try:
+            window = resolve_period(spec, now)
+        except ValueError:
+            return None, None, f"{key} must be {_DAY_FORMS}."
+        out.append((window.end if end else window.start).date())
+    first, last = out
+    if first is not None and last is not None and last < first:
+        return None, None, f"{last_key} is before {first_key}."
+    return first, last, None
+
+
+def _page(args: dict) -> int:
+    try:
+        return max(1, int(args.get("page") or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
+@tool(
+    "search_memory",
+    "Search the saved conversation (what he and Casa said, verbatim) for "
+    "words, best match first. Optional from/to limit it to days. Each hit "
+    "has its date, weekday, time, speaker and text, with the lines around "
+    "it. To read a whole day in order use browse_memory_day; to open an "
+    "entry of your memory by id use open_memory.",
+    SEARCH_MEMORY_SCHEMA,
+)
+async def search_memory(args: dict) -> dict:
+    from memory import search as memory_search
+
+    query = args.get("query") or ""
+    if not memory_search.terms(query):
+        return _result({"status": "error", "kind": "empty_query",
+                        "message": "search_memory needs words to look for. "
+                                   "Nothing was searched."})
+    first, last, refused = _days(args, "from", "to")
+    if refused:
+        return _result({"status": "error", "kind": "invalid_days",
+                        "message": refused + " Nothing was searched."})
+    page = _page(args)
+    origin = _snapshot_origin()
+    store = _memory_store()
+    if store is None:
+        return _result({"status": "unavailable",
+                        "message": _MEMORY_UNAVAILABLE})
+    reader_role = origin.get("role")
+    try:
+        found = await _read_memory(origin, lambda clearance: (
+            memory_search.search(
+                store, query, clearance=clearance, first_day=first,
+                last_day=last, page=page, reader_role=reader_role)))
+    except Exception:  # noqa: BLE001 — never a fake empty result
+        logger.warning("search_memory: memory could not be read",
+                       exc_info=True)
+        return _result({"status": "unavailable",
+                        "message": _MEMORY_UNAVAILABLE})
+    out: dict = {"status": "ok", "page": page, "hits": found.hits}
+    if first is not None or last is not None:
+        out["days"] = {"from": first and first.isoformat(),
+                       "to": last and last.isoformat()}
+    if found.more:
+        out["more"] = f"More hits on page {page + 1}."
+    out["note"] = MEMORY_READ_NOTE
+    return _result(out)
+
+
+@tool(
+    "browse_memory_day",
+    "Read the saved conversation of one day, or up to 7 days, in time "
+    "order, optionally from a time on the first day to a time on the last. "
+    "Long stretches come in pages. To find something by its words use "
+    "search_memory.",
+    BROWSE_MEMORY_DAY_SCHEMA,
+)
+async def browse_memory_day(args: dict) -> dict:
+    from datetime import datetime
+
+    from memory import browse as memory_browse
+
+    first, last, refused = _days(args, "date", "date")
+    if refused or first is None:
+        return _result({"status": "error", "kind": "invalid_days",
+                        "message": (refused or f"date must be {_DAY_FORMS}.")
+                        + " Nothing was read."})
+    if args.get("to_date") not in (None, ""):
+        _, last, refused = _days({"to": args.get("to_date")}, "from", "to")
+        if refused or last < first:
+            return _result({"status": "error", "kind": "invalid_days",
+                            "message": (refused or "to_date is before date.")
+                            + " Nothing was read."})
+    if (last - first).days + 1 > memory_browse.MAX_DAYS:
+        return _result({"status": "error", "kind": "too_many_days",
+                        "message": (
+                            f"browse_memory_day reads at most "
+                            f"{memory_browse.MAX_DAYS} days; use search_memory "
+                            "with from and to for a longer stretch. Nothing "
+                            "was read.")})
+    times = []
+    for key in ("from_time", "to_time"):
+        spec = args.get(key)
+        if spec in (None, ""):
+            times.append(None)
+            continue
+        try:
+            times.append(datetime.strptime(str(spec).strip(), "%H:%M").time())
+        except ValueError:
+            return _result({"status": "error", "kind": "invalid_time",
+                            "message": f"{key} must be HH:MM. Nothing was "
+                                       "read."})
+    page = _page(args)
+    origin = _snapshot_origin()
+    store = _memory_store()
+    if store is None:
+        return _result({"status": "unavailable",
+                        "message": _MEMORY_UNAVAILABLE})
+    reader_role = origin.get("role")
+    try:
+        got = await _read_memory(origin, lambda clearance: (
+            memory_browse.browse(
+                store, clearance=clearance, first_day=first, last_day=last,
+                from_time=times[0], to_time=times[1], page=page,
+                reader_role=reader_role)))
+    except Exception:  # noqa: BLE001 — never a fake empty result
+        logger.warning("browse_memory_day: memory could not be read",
+                       exc_info=True)
+        return _result({"status": "unavailable",
+                        "message": _MEMORY_UNAVAILABLE})
+    out: dict = {"status": "ok",
+                 "days": {"from": first.isoformat(), "to": last.isoformat()},
+                 "page": got.page, "pages": got.pages, "text": got.text}
+    if got.total:
+        out["events"] = f"{got.first}-{got.last} of {got.total}"
+    out["note"] = MEMORY_READ_NOTE
+    return _result(out)
+
+
+@tool(
+    "open_memory",
+    "Open entries of your memory by the ids its index lines show: an entry "
+    "comes back in full, a group or topic as the lines of what it holds. "
+    "One that changed after your memory above was written is marked so. "
+    "with_history adds earlier versions. To search saved conversation use "
+    "search_memory.",
+    OPEN_MEMORY_SCHEMA,
+)
+async def open_memory(args: dict) -> dict:
+    from memory import view as memory_view
+
+    ids = args.get("ids")
+    if isinstance(ids, str):
+        ids = [ids]
+    if (not isinstance(ids, list) or not ids
+            or not all(isinstance(i, str) and i.strip() for i in ids)):
+        return _result({"status": "error", "kind": "no_ids",
+                        "message": "open_memory needs the ids from your "
+                                   "memory's index lines. To find something "
+                                   "by its words use search_memory."})
+    if len(ids) > memory_view.MAX_OPEN:
+        return _result({"status": "error", "kind": "too_many_ids",
+                        "message": f"open_memory opens at most "
+                                   f"{memory_view.MAX_OPEN} ids per call."})
+    origin = _snapshot_origin()
+    store = _memory_store()
+    if store is None:
+        return _result({"status": "unavailable",
+                        "message": _MEMORY_UNAVAILABLE})
+    session_key = sdk_session_id = None
+    if engagement_var.get(None) is None and origin.get("channel") \
+            and origin.get("role"):
+        import agent as agent_mod
+        from session_registry import build_scoped_session_key
+        session_key = build_scoped_session_key(
+            origin["channel"], origin["role"], origin.get("chat_id"))
+        registry = getattr(agent_mod, "active_session_registry", None)
+        entry = (registry.get(session_key) if registry is not None
+                 else None) or {}
+        sdk_session_id = entry.get("sdk_session_id")
+    try:
+        opened = await _read_memory(origin, lambda clearance: (
+            memory_view.open_objects(
+                store, [i.strip() for i in ids], clearance=clearance,
+                session_key=session_key, sdk_session_id=sdk_session_id,
+                with_history=args.get("with_history") is True)))
+    except Exception:  # noqa: BLE001 — never a fake "unknown"
+        logger.warning("open_memory: memory could not be read", exc_info=True)
+        return _result({"status": "unavailable",
+                        "message": _MEMORY_UNAVAILABLE})
+    if opened is None:
+        return _result({"status": "ok", "entries": [], "message": (
+            "No memory ledger is read here; search_memory reads the saved "
+            "conversation.")})
+    return _result({"status": "ok", "entries": opened})
+
+
+@tool(
+    "correct_memory",
+    "Use when his message in this turn says something stored in memory is "
+    "wrong or out of date. It marks his message as a correction: memory is "
+    "updated from his own words, and every conversation sees the correction "
+    "from its next turn. Returns at once; there is nothing to tell him. "
+    "`what`: a few words naming what he corrected.",
+    {"what": str},
+)
+async def correct_memory(args: dict) -> dict:
+    import agent as agent_mod
+    from memory import corrections
+
+    origin = _snapshot_origin()
+    key = origin.get(agent_mod.MEMORY_OPENING_KEY)
+    if engagement_var.get(None) is not None or not key:
+        return _result({"status": "error", "kind": "no_message_of_his",
+                        "message": (
+                            "correct_memory marks his own message in this "
+                            "conversation, and this turn has none stored. "
+                            "Nothing was marked.")})
+    store = _memory_store()
+    if store is None:
+        return _result({"status": "unavailable", "message": (
+            "Memory could not mark the correction right now. Use what he "
+            "said; nothing else to do.")})
+    try:
+        marked = await asyncio.to_thread(
+            corrections.mark_operator_event, store, key)
+    except Exception:  # noqa: BLE001 — reported, never a fake "queued"
+        logger.warning("correct_memory: the mark could not be written",
+                       exc_info=True)
+        return _result({"status": "unavailable", "message": (
+            "Memory could not mark the correction right now. Use what he "
+            "said; nothing else to do.")})
+    if not marked.found:
+        return _result({"status": "unavailable", "message": (
+            "His message is not stored yet, so it could not be marked. Use "
+            "what he said; nothing else to do.")})
+    return _result({"status": "queued", "message": (
+        "His message is marked as a correction; memory will be updated from "
+        "it. Nothing to tell him.")})
 
 
 @tool(
@@ -9046,273 +9396,6 @@ async def continue_voice_job(args: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# recall_memory — spec §4.3
-# ---------------------------------------------------------------------------
-
-
-def _recall_surface(channel: str, origin: dict) -> "Surface":
-    """Attribution surface for a recall render (Task 11): voice speaks aloud;
-    an untrusted webhook_trigger turn is ``restricted_webhook`` (never names a
-    person, regardless of clearance); everything else is ``text``."""
-    if channel == "voice":
-        return "voice"
-    if origin.get("_origin_route") == "webhook_trigger":
-        return "restricted_webhook"
-    return "text"
-
-
-# #1120: a pre-built schema, because the SDK makes every dict-of-types key
-# required; ``period`` is optional, and ``null`` (what a client sends for an
-# unset optional) means no period.
-RECALL_MEMORY_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "query": {"type": "string"},
-        "period": {
-            "type": ["string", "null"],
-            "description": (
-                "Optional. Only memories first recorded in this period: "
-                "today, yesterday, this_week, last_week, this_month, "
-                "last_month (weeks start Monday, in the operator's timezone), "
-                "one day YYYY-MM-DD, or an inclusive range "
-                "YYYY-MM-DD..YYYY-MM-DD."
-            ),
-        },
-    },
-    "required": ["query"],
-}
-
-_INVALID_PERIOD_MESSAGE = (
-    "Error: period must be one of today, yesterday, this_week, last_week, "
-    "this_month, last_month, a day YYYY-MM-DD, or a range "
-    "YYYY-MM-DD..YYYY-MM-DD that does not end before it starts. Nothing was "
-    "searched."
-)
-
-
-def _recall_period(args: dict):
-    """#1120: ``(window, error_result)`` for ``args``' optional period —
-    ``(None, None)`` without one. Resolved in the operator's timezone from one
-    reading of the clock; refused BEFORE any search, because an inverted
-    window sent to the memory server comes back as an HTTP error, which the
-    tool would report as "memory could not be checked"."""
-    from datetime import datetime
-
-    from timekeeping import resolve_period, resolve_tz
-
-    spec = args.get("period")
-    if spec is None:
-        return None, None
-    try:
-        return resolve_period(spec, datetime.now(resolve_tz())), None
-    except ValueError:
-        return None, _result({"status": "error", "kind": "invalid_period",
-                              "message": _INVALID_PERIOD_MESSAGE})
-
-
-@tool(
-    "recall_memory",
-    "Search your long-term memory for facts relevant to a query. Give an "
-    "optional period to see only memories first recorded in it; memories "
-    "with no recorded date are left out of such a search, and like every "
-    "search it is bounded, so finding nothing is not proof of absence.",
-    RECALL_MEMORY_SCHEMA,
-)
-async def recall_memory(args: dict) -> dict:
-    """On-demand semantic recall against the shared 'casa' bank, filtered by the channel's tier clearance (spec §4.3).
-    Voice uses budget=low so the rerank never stalls the turn."""
-    import agent as agent_mod
-
-    query = (args.get("query") or "").strip()
-    if not query:
-        return _result({"status": "error", "kind": "empty_query",
-                        "message": "Error: query is required"})
-    window, refused = _recall_period(args)
-    if refused is not None:
-        return refused
-    # #1120: every result of a search given a period echoes the resolved one.
-    echo = (
-        {} if window is None
-        else {"period": {"start": window.start.isoformat(),
-                         "end": window.end.isoformat()}}
-    )
-    sem = getattr(agent_mod, "active_semantic_memory", None)
-    if sem is None:
-        # No backend wired: memory CANNOT be checked — never a fake zero-hit.
-        return _result({
-            **echo,
-            "status": "unavailable",
-            "message": (
-                "Long-term memory could not be checked (no memory backend). "
-                "Do NOT say the information doesn't exist or that you don't "
-                "have it. If a person asked for something that needs memory, "
-                "tell them memory couldn't be checked. On a check nobody asked "
-                "for, this alone is not a reason to send anything; still "
-                "report what the task itself requires."
-            ),
-        })
-
-    origin = _snapshot_origin()
-    role = origin.get("role", "assistant")
-    channel = origin.get("channel", "telegram")
-    caller_cfg = _agent_role_map.get(role)
-
-    # Tier clearance — the same read-side gate the turn path uses (design §2.3),
-    # re-keyed off the unspoofable origin marker (Release A Layer 2): a
-    # webhook_trigger turn reads at its declared clearance (public floor, never
-    # private); /invoke stays private; missing/unknown route on the webhook
-    # channel fails closed to public.
-    from personality_types import SpeakerProvenance
-    from sensitivity import clearance_for_origin, readable_tiers
-    # #336 (Terra r2): inside an engagement the ambient origin is empty, so
-    # the markers come from the engagement's own record — an engagement reads
-    # at the clearance of the turn that started it, not at the channel
-    # default (which on telegram is private).
-    _route, _stamped_clearance = _origin_clearance_markers(origin)
-    clearance = clearance_for_origin(_route, _stamped_clearance, channel)
-    tags = readable_tiers(clearance)
-
-    budget = "low" if channel == "voice" else "mid"
-    tokens = (
-        getattr(getattr(caller_cfg, "memory", None), "token_budget", 2000)
-        if caller_cfg else 2000
-    )
-    # Attribution surface + the recalling agent's own identity (Task 11). The
-    # render itself is driven by each hit's recorded provenance; current_speaker
-    # is honest metadata only.
-    surface = _recall_surface(channel, origin)
-    current_speaker = (
-        getattr(caller_cfg, "speaker_provenance", None)
-        or SpeakerProvenance(speaker_kind="system")
-    )
-    from hindsight_ids import bank_id
-    from recall_health import default_telemetry, observed_recall
-    from recall_renderer import READABLE_SLICE_NOTE, render_recall
-    try:
-        hits = await observed_recall(
-            path="direct_tool", telemetry=default_telemetry(),
-            # #1120: the window rides only when a period was given, so a
-            # backend's unwindowed call is exactly what it was.
-            operation=lambda: sem.recall_items(
-                bank_id("casa"), query, tags=tags, max_tokens=tokens,
-                clearance=clearance, budget=budget,
-                **({} if window is None else {"window": window}),
-            ),
-        )
-    except Exception as exc:  # noqa: BLE001
-        # Three-outcome contract (v0.99.0): a failed recall must NOT report
-        # status=ok with an empty digest — the model would then (per doctrine)
-        # tell the user Casa has no such information, which is false. Any
-        # failure here (typed RecallUnavailable — incl. RecallProtocolError — or
-        # unexpected) means memory could not be checked. Only RecallUnavailable's
-        # slug reasons are trusted in logs; anything else logs its TYPE (an
-        # arbitrary .reason attribute could carry content).
-        reason = (
-            exc.reason if isinstance(exc, RecallUnavailable)
-            else type(exc).__name__
-        )
-        logger.warning(
-            "recall_memory outcome=unavailable role=%r reason=%s", role, reason,
-        )
-        return _result({
-            **echo,
-            "status": "unavailable",
-            "message": (
-                "Long-term memory could not be checked (backend unavailable). "
-                "Do NOT say the information doesn't exist or that you don't "
-                "have it. If a person asked for something that needs memory, "
-                "tell them memory couldn't be checked. On a check nobody asked "
-                "for, this alone is not a reason to send anything; still "
-                "report what the task itself requires."
-            ),
-        })
-    # #369: the clamp is monotonic and the record is live, so re-resolving
-    # after the awaited recall closes the in-flight window — a downgrade that
-    # landed while the backend call was suspended must filter THIS result,
-    # not merely the next one. Hits carry their tier; drop what the new
-    # clearance cannot read before anything is rendered.
-    _route2, _stamped2 = _origin_clearance_markers(origin)
-    clearance_now = clearance_for_origin(_route2, _stamped2, channel)
-    if clearance_now != clearance:
-        readable_now = set(readable_tiers(clearance_now))
-        hits = tuple(h for h in hits if h.sensitivity in readable_now)
-        clearance = clearance_now
-    if window is not None:
-        # #1120: the server only RANKS by the window, so "only from this
-        # period" is this filter, on the date each memory was first recorded.
-        # A memory with no usable date cannot be placed in a period and is
-        # left out. It runs after the clearance re-filter above, and every arm
-        # below is keyed on what it keeps.
-        hits = tuple(
-            h for h in hits
-            if h.mentioned_at is not None and window.contains(h.mentioned_at)
-        )
-    digest = render_recall(
-        hits, current_speaker=current_speaker, surface=surface,
-        clearance=clearance, token_budget=tokens,
-    )
-    if not digest:
-        # #472: an empty result must never license "no record exists". The
-        # request's tags filter makes the backend drop above-clearance hits
-        # SERVER-SIDE, so a clearance-blocked search returns the same
-        # well-formed empty as a genuine miss — and even at top clearance,
-        # max_tokens truncation, the types filter and mental-model overlays
-        # can hide content. Absence is therefore unknowable from an empty
-        # result at EVERY tier; the two shapes below are what the client can
-        # actually distinguish.
-        if hits:
-            return _result({
-                **echo,
-                "status": "ok", "memory": "",
-                "message": (
-                    "Readable matching memories exist but exceeded the "
-                    "render budget. Refine the query — narrow the topic or "
-                    "be more specific — and try again."
-                ),
-            })
-        if window is not None:
-            # #1120: one constant wording whether the server returned nothing,
-            # the dates left everything out, or the clearance re-filter did —
-            # it never says which.
-            return _result({
-                **echo,
-                "status": "ok", "memory": "",
-                "message": (
-                    "This search found nothing readable from this surface "
-                    "first recorded in the period you asked for. That is NOT "
-                    "proof of absence — a memory counts as from a period by "
-                    "the date it was first recorded, memories with no "
-                    "recorded date are left out, memory may hold entries this "
-                    "surface cannot read, and the search itself is bounded. "
-                    "Do not claim non-existence to the user; say you found "
-                    "nothing you can share from that period here."
-                ),
-            })
-        return _result({
-            "status": "ok", "memory": "",
-            "message": (
-                "This search found nothing readable from this surface. That "
-                "is NOT proof of absence — memory may hold entries this "
-                "surface cannot read, and the search itself is bounded. Do "
-                "not claim non-existence to the user; say you don't have "
-                "anything you can share on that here."
-            ),
-        })
-    # #581: a NON-EMPTY digest needs the same scoping as the two empty arms
-    # above. #472 attached the framing to emptiness, but the readable slice is
-    # clearance-bounded whatever its size — the observed failure was 33
-    # readable hits returned, the one on-topic record dropped server-side, and
-    # the agent answering "no record of a wall safe". The note is CONSTANT at
-    # every tier: varying it would itself be an oracle for "something was
-    # filtered here", and truncation and the types filter hide content at the
-    # top tier too.
-    return _result({
-        **echo,
-        "status": "ok", "memory": digest, "message": READABLE_SLICE_NOTE,
-    })
-
-
-# ---------------------------------------------------------------------------
 # list_inbound_files — #1036
 # ---------------------------------------------------------------------------
 
@@ -14344,14 +14427,37 @@ async def _synthesize_answer(
     return out
 
 
+#: Tokens of the engager's view handed to the synthesizer.
+_ENGAGER_VIEW_TOKENS = 2000
+
+
+def _engager_context(store, question: str, clearance: str) -> str:
+    """What the engager knows that bears on *question*, read at *clearance*
+    (blocking): its view of the ledger that clearance reads, within
+    :data:`_ENGAGER_VIEW_TOKENS`, then the first page of a search of the
+    saved conversation. ``""`` when neither holds anything."""
+    from memory import note as memory_note
+    from memory import search as memory_search
+    view, _ = memory_note.with_view(
+        store, clearance=clearance, budget=_ENGAGER_VIEW_TOKENS)
+    parts = [view.text] if view is not None and view.text else []
+    if memory_search.terms(question):
+        found = memory_search.search(store, question, clearance=clearance)
+        lines = [f"[{h['date']} {h['time']}] {h['speaker']}: {h['text']}"
+                 for h in found.hits]
+        if lines:
+            parts.append("Saved conversation matching the question:\n"
+                         + "\n".join(lines))
+    return "\n\n".join(parts)
+
+
 @tool(
     "query_engager",
     "Ask the engaging agent a question. status=ok returns the answer "
     "synthesized from the engager's clearance-filtered memory; status=unknown "
     "means the search of readable memory found nothing — NOT proof of "
     "absence, since entries above this engagement's clearance are never "
-    "searched; status=too_broad means readable matches EXIST but exceeded "
-    "the render budget — ask a narrower question; status=unavailable means "
+    "searched; status=unavailable means "
     "memory could not be checked (do not conclude the information doesn't "
     "exist). Callable only from inside an active engagement.",
     {"question": str, "max_tokens": int},
@@ -14366,7 +14472,7 @@ async def query_engager(args: dict) -> dict:
     # fell through to `status=unknown` — which this tool's own description
     # defines as "the memory was searched and holds nothing relevant". An
     # executor asking a malformed question was told the engager remembers
-    # nothing. Reject it at the boundary, exactly as `recall_memory` does.
+    # nothing. Reject it at the boundary, exactly as `search_memory` does.
     if not question.strip():
         return _result({
             "status": "error", "kind": "empty_query",
@@ -14378,43 +14484,23 @@ async def query_engager(args: dict) -> dict:
         })
     max_tokens = max(1, min(int(args.get("max_tokens") or 500), 4000))
 
-    # Retrieve engager-side context: a semantic recall against the shared `casa`
-    # bank at the engagement origin's read-clearance (design §3, plan 3).
-    import agent as agent_mod
-    sem = getattr(agent_mod, "active_semantic_memory", None)
+    # Retrieve engager-side context: the engager's view of its ledger plus a
+    # search of the saved conversation, at the clearance of the turn that
+    # created the engagement (#336: the record's own persisted markers).
+    store = _memory_store()
     context = ""
-    memory_unavailable = False
-    if sem is None:
-        # No backend wired: the engager's memory cannot be checked.
-        memory_unavailable = True
-    else:
+    memory_unavailable = store is None
+    if store is not None:
         try:
-            # #369: the record is live and the clamp monotonic — if a
-            # downgrade lands while the recall is suspended, the result was
-            # filtered at a clearance the engagement no longer holds. Re-read
-            # the markers after the await and re-run at the new floor; the
-            # loop is bounded by the (few, one-way) tiers.
-            from sensitivity import TIERS as _ALL_TIERS
-            _n_hits = 0
-            for _ in range(len(_ALL_TIERS)):
-                _q_clearance = engagement.origin.get("_origin_clearance")
-                context, _n_hits = await delegated_recall(
-                    sem, query=question,
-                    origin_channel=str(engagement.origin.get("channel", "")),
-                    max_tokens=2000, path="query_engager",
-                    # #336 (Sol, review r3): the engager-side context is read
-                    # on behalf of THIS engagement, so it is filtered at the
-                    # clearance of the turn that created it — the record's own
-                    # persisted markers, exactly like its recall_memory calls.
-                    origin_route=engagement.origin.get("_origin_route"),
-                    origin_clearance=_q_clearance,
-                    with_stats=True,
-                )
-                if engagement.origin.get("_origin_clearance") == _q_clearance:
-                    break
-        except RecallUnavailable:
-            # Distinct from status=unknown (a genuine zero-hit): the engager's
-            # memory could not be checked at all.
+            # #369: the record is live and the clamp monotonic — a downgrade
+            # landing while the read runs re-reads at the new floor.
+            _q_clearance = engagement.origin.get("_origin_clearance")
+            context = await _read_memory(
+                engagement.origin,
+                lambda clearance: _engager_context(store, question, clearance))
+        except Exception:  # noqa: BLE001 — never a fake "unknown"
+            logger.warning("query_engager: memory could not be read",
+                           exc_info=True)
             memory_unavailable = True
 
     # Publish bus event so observer can see the query
@@ -14438,12 +14524,11 @@ async def query_engager(args: dict) -> dict:
         return _result({
             "status": "unavailable", "text": "",
             "message": (
-                "The engager's memory could not be checked (backend "
+                "The engager's memory could not be checked (store "
                 "unavailable). Do not conclude the information doesn't exist."
             ),
         })
-    # #472: "unknown" is a statement about the READABLE slice only — the
-    # recall's tags filter drops above-clearance entries server-side, so an
+    # #472: "unknown" is a statement about the READABLE slice only — an
     # empty context cannot distinguish "never told" from "not readable at
     # this engagement's clearance". Say so, or the executor asserts absence.
     _unknown_note = (
@@ -14451,17 +14536,7 @@ async def query_engager(args: dict) -> dict:
         "NOT proof of absence: entries above this engagement's clearance "
         "are never searched. Do not conclude the information doesn't exist."
     )
-    # #472 (Sol diff-gate r1): a rendered "" with a NON-ZERO hit count means
-    # readable matches exist but exceeded the render budget — reporting that
-    # as "unknown" would deny memories this clearance can read.
-    _too_broad = (
-        "Readable matching memories exist but exceeded the render budget — "
-        "ask a narrower, more specific question."
-    )
     if not context:
-        if _n_hits > 0:
-            return _result(
-                {"status": "too_broad", "text": "", "message": _too_broad})
         return _result({"status": "unknown", "text": "", "message": _unknown_note})
     # #369: synthesis awaits too — a downgrade landing mid-synthesis means the
     # answer was drawn from context above the engagement's new floor. Discard
@@ -14490,27 +14565,20 @@ async def query_engager(args: dict) -> dict:
             break
         _q_clearance = engagement.origin.get("_origin_clearance")
         try:
-            context, _n_hits = await delegated_recall(
-                sem, query=question,
-                origin_channel=str(engagement.origin.get("channel", "")),
-                max_tokens=2000, path="query_engager",
-                origin_route=engagement.origin.get("_origin_route"),
-                origin_clearance=_q_clearance,
-                with_stats=True,
-            )
-        except RecallUnavailable:
+            context = await _read_memory(
+                engagement.origin,
+                lambda clearance: _engager_context(store, question, clearance))
+        except Exception:  # noqa: BLE001 — never a fake "unknown"
+            logger.warning("query_engager: memory could not be read",
+                           exc_info=True)
             return _result({
                 "status": "unavailable", "text": "",
                 "message": (
-                    "The engager's memory could not be checked (backend "
-                    "unavailable). Do not conclude the information doesn't "
-                    "exist."
+                    "The engager's memory could not be checked. Do not "
+                    "conclude the information doesn't exist."
                 ),
             })
         if not context:
-            if _n_hits > 0:
-                return _result(
-                    {"status": "too_broad", "text": "", "message": _too_broad})
             return _result(
                 {"status": "unknown", "text": "", "message": _unknown_note})
     if answer.strip().upper().startswith("UNKNOWN"):
@@ -22559,7 +22627,10 @@ CASA_TOOLS: tuple = (
     voice_job_status,
     cancel_voice_job,
     continue_voice_job,
-    recall_memory,                 # §4.3 — shared-bank semantic recall (tier-clearance filtered)
+    search_memory,                 # memory: BM25 over the saved conversation,
+    browse_memory_day,             # a day in order, an entry by id, and the
+    open_memory,                   # correction mark (each read filtered per
+    correct_memory,                # object at the reader's clearance)
     wipe_memory,                   # #411 — operator-consented long-term wipe;
                                    # NEVER add to SPECIALIST_CASA_TOOL_ALLOWLIST
     get_schedule,

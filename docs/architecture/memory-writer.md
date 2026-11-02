@@ -14,7 +14,8 @@ batch with its three checks, correction marking, crash recovery, tier classifica
 captured events, failures, the nightly pass and the size meter. What is captured and when is
 [`architecture/memory-capture.md`](memory-capture.md); the store, its tables and the registry
 are [`architecture/memory-store.md`](memory-store.md); how a ledger is served to a session
-is [`architecture/memory-serving.md`](memory-serving.md).
+is [`architecture/memory-serving.md`](memory-serving.md); the `correct_memory` tool that
+marks a correction is [`architecture/memory-tools.md`](memory-tools.md).
 
 ## Mental model
 

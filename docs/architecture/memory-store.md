@@ -36,7 +36,9 @@ the same loop over `memory/schema.py`'s `MIGRATIONS`. The schema version is SQLi
 nothing: it is the writer's pending predicate over events, dispositions and correction marks
 ([`memory-writer.md`](memory-writer.md)). Only then is the file switched to WAL, because a journal-mode change cannot
 sit inside the transaction. WAL is a performance setting: if the switch fails, the store
-stays available in its current journal mode and a warning is logged.
+stays available in its current journal mode and a warning is logged. Once the store is
+open, the boot check rebuilds a derived file that is missing or unreadable: the search
+index, built from `events` with no model call ([`memory-tools.md`](memory-tools.md)).
 
 **Unavailable, never empty, and only when unchanged.** `open()` reports the store
 unavailable only when it has left it as it was. If any step up to the migration's commit
@@ -67,7 +69,9 @@ list, so a store missing from it is one they would silently skip. The registry c
 
 The `memory.db` row also names the served-view renderer as its producer: a session's view
 is recorded there (in `session_views`, its hash and base, no text), and the text itself is
-copied only into the explanation records. A row outside `/data/memory` also names the code
+copied only into the explanation records. The search index row names its indexer, which copies each
+event's text into `search.db`; the producer pin runs it like any other producer, and the
+store it reads is the one file it opens outside its row. A row outside `/data/memory` also names the code
 that writes it and the staging-file pattern of the atomic-write helper that code uses. A crash between a staging file's write
 and its rename leaves that file behind, so the wipe needs its name. The session-pointer
 writer names its staging file after its target (`.sessions.json.<random>.tmp`) for this

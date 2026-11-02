@@ -822,7 +822,7 @@ class TestLoadAllSpecialists:
             "tools:\n"
             "  allowed:\n"
             "    - Read\n"
-            "    - mcp__casa-framework__recall_memory\n"
+            "    - mcp__casa-framework__search_memory\n"
             "    - mcp__casa-framework__engage_executor\n"
             "    - mcp__casa-framework\n"
         ))
@@ -835,7 +835,7 @@ class TestLoadAllSpecialists:
         assert failed == []
         allowed = found["finance"].tools.allowed
         assert "Read" in allowed
-        assert "mcp__casa-framework__recall_memory" in allowed
+        assert "mcp__casa-framework__search_memory" in allowed
         assert "mcp__casa-framework__engage_executor" not in allowed
         assert "mcp__casa-framework" not in allowed
 

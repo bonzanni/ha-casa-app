@@ -853,15 +853,12 @@ async def test_query_engager_reports_a_faulted_synthesis_as_unavailable(
         role_or_type = "configurator"
         origin = {"channel": "telegram"}
 
-    async def _recall(*a, **k):
-        return ("remembered context", 1)
-
     async def _boom(*a, **k):
         raise ApiErrorTurn(ErrorKind.REFUSAL)
 
-    monkeypatch.setattr(agent_mod, "active_semantic_memory", object(),
-                        raising=False)
-    monkeypatch.setattr(tools, "delegated_recall", _recall)
+    monkeypatch.setattr(tools, "_memory_store", lambda: object())
+    monkeypatch.setattr(tools, "_engager_context",
+                        lambda *a: "remembered context")
     monkeypatch.setattr(tools, "_synthesize_answer", _boom)
 
     token = tools.engagement_var.set(_Engagement())

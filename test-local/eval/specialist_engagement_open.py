@@ -86,10 +86,12 @@ RESIDENT_TOOLS = [
     "delegate_to_agent", "engage_executor", "ask_user", "get_schedule",
     "list_inbound_files", "share_inbound_file", "vault_drop_off",
     "plugin_status", "set_reminder", "cancel_reminder", "ack_event",
-    "consent_reprompt", "recall_memory", "send_message", "send_media",
+    "consent_reprompt", "search_memory", "browse_memory_day", "open_memory",
+    "correct_memory", "send_message", "send_media",
 ]
 SPECIALIST_TOOLS = ["emit_completion", "ask_user", "query_engager",
-                    "send_media", "recall_memory", "get_schedule"]
+                    "send_media", "search_memory", "browse_memory_day",
+                    "open_memory", "get_schedule"]
 SURFACE = (
     "\n<delegates>\n"
     "- butler (Tina) — house devices — lights, climate, locks, media, sensors\n"

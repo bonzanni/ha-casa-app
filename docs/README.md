@@ -74,9 +74,9 @@ which is keyed on what you are about to do rather than on subsystem names.
 | plugin mutation sequencing, a plugin or specialist mutation envelope, what a result may say about an integration being live, re-issuing a plugin-consent DM on demand, or how a plugin change warns about a reached specialist's open conversations | [`architecture/plugin-mutation-tools.md`](architecture/plugin-mutation-tools.md) |
 | plugin trigger declaration, the routing overlay, trigger consent, or per-trigger secret backing | [`architecture/plugin-triggers.md`](architecture/plugin-triggers.md) |
 | read clearance, the per-sender origin stamp, the engagement clearance clamp, or the executor-archive epoch scoping | [`architecture/memory-scoping.md`](architecture/memory-scoping.md) |
-| recall behaviour or the absence contract | [`architecture/memory.md`](architecture/memory.md) |
 | reminder creation or cancellation, the reminder sweep, or recurrence derivation | [`architecture/reminders.md`](architecture/reminders.md) |
 | root's access into a workspace, or where root-only engagement run-state lives | [`architecture/engagement-workspace-access.md`](architecture/engagement-workspace-access.md) |
+| search_memory, browse_memory_day, open_memory or correct_memory, the search index, or what the engager query reads | [`architecture/memory-tools.md`](architecture/memory-tools.md) |
 | session persistence, the save/reset guard protocol, the retirement claims, or the retry spool | [`architecture/memory-lifecycle.md`](architecture/memory-lifecycle.md) |
 | specialist install identity, consent, or materialization | [`architecture/specialist-lifecycle.md`](architecture/specialist-lifecycle.md) |
 | the HA facade, HA tool exposure, or anything about what an agent may control | [`architecture/home-assistant-control.md`](architecture/home-assistant-control.md) |
@@ -97,6 +97,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | the hand_off tool or its bounds, the requester chain or the operator's words on a delegated origin, the caller a delegated run names, or the ceiling clock a hand-off pauses | [`architecture/specialist-handoff.md`](architecture/specialist-handoff.md) |
 | the in_casa launch handoff, the launch-turn owner, what the engager is told about a launch outcome, the graceful stop's launch drains, or the engagement-outcome envelope | [`architecture/engagement-launch-detach.md`](architecture/engagement-launch-detach.md) |
 | the ingress pages, a form or its check, pairing, sites or setup in the UI, the live view's grants, sockets, window, input, probe, reconnect or Done screen, nginx or x11vnc | [`reference/casa-browser-ingress.md`](reference/casa-browser-ingress.md) |
+| the memory backend seam, its recall outcomes or its rendering | [`architecture/memory.md`](architecture/memory.md) |
 | the memory store's schema or connection handling, its boot check, or where memory is stored or copied | [`architecture/memory-store.md`](architecture/memory-store.md) |
 | the memory writer, its jobs or cadence, the pending predicate, correction marking, ledger patches, the writer's model call, the nightly memory pass or the memory meter | [`architecture/memory-writer.md`](architecture/memory-writer.md) |
 | the nftables floor or its oneshot, the proxy's addon, process, listeners or control protocol, a service user's permitted route, the proxy's handling of the 1Password hosts | [`reference/casa-browser-runtime.md`](reference/casa-browser-runtime.md) |
