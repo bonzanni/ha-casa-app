@@ -2901,29 +2901,39 @@ class Agent:
 
     async def _bind_memory_view(self, sdk_session_id: str | None) -> None:
         """Bind the view this turn served to the SDK session it was served
-        to, so only that session may resume on it. A failure is logged: the
-        record stays unbound, and the session's next reconnect starts it
-        afresh."""
+        to, so only that session may resume on it and its note has a base.
+
+        Called after the turn, inside its session gate. When the binding
+        fails or finds its record replaced, the session's warm client is let
+        go, so its next turn reconnects, finds no record bound to it and
+        starts afresh on a current view, instead of running on with a note
+        that owes no committed correction."""
         draft = _explain_draft_var.get(None)
         binding = (draft or {}).get("memory_view_binding")
         if not sdk_session_id or binding is None:
             return
         from memory import capture
         from memory import view as memory_view
-        store = capture.active_store()
-        if store is None or not store.available:
-            return
         channel_key, served = binding
+        store = capture.active_store()
+        bound = False
         try:
-            bound = await asyncio.to_thread(
-                memory_view.bind, store, channel_key, served, sdk_session_id)
+            if store is not None and store.available:
+                bound = await asyncio.to_thread(
+                    memory_view.bind, store, channel_key, served,
+                    sdk_session_id)
         except Exception:  # noqa: BLE001 — the reconnect resets instead
             logger.warning("memory view not bound role=%s",
                            self.config.role, exc_info=True)
+        if bound:
             return
-        if not bound:
-            logger.warning("memory view of session %s was replaced before it "
-                           "could be bound", channel_key)
+        logger.warning("memory view of session %s is not bound to it; the "
+                       "session reconnects at its next turn", channel_key)
+        try:
+            await self._pool.close_key(channel_key)
+        except Exception:  # noqa: BLE001 — the client stays; logged
+            logger.warning("warm client of %s not released", channel_key,
+                           exc_info=True)
 
     async def _memory_note(self, *, channel: str, channel_key: str) -> str:
         """This turn's correction note, read off the event loop

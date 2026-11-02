@@ -134,8 +134,10 @@ and the failure is logged. The note comes back on the next turn the store answer
 
 **A view's record cannot be written or bound** (the store's write lock is busy past a second).
 A view that could not be recorded is not served; one recorded but not bound to its session
-was served. Either way no record is bound to that session, so its next reconnect starts it
-afresh, and until then its note owes the pending corrections only.
+was served, and that session's warm client is released after the turn. Either way no record
+is bound to the session, so its next turn's reconnect starts it afresh on a current view.
+A session that started with no view (the store was unavailable) runs on, with a note that
+owes the pending corrections only, until its next reconnect.
 
 **The ledger is too large for the coarsest index level.** The view is served over budget, with
 a line saying every entry is still reachable; the meter reports the overflow and the nightly

@@ -287,3 +287,41 @@ async def test_a_correction_filed_while_a_session_starts_is_never_lost(
     first, second = _QueryClient.queries
     assert "4417" not in first
     assert 'his words: "the code is 4417"' in second
+
+
+@pytest.mark.parametrize("bind_fails", ["raises", "not_bound"])
+async def test_a_session_whose_view_could_not_be_bound_is_not_kept_warm(
+        tmp_path, monkeypatch, bind_fails):
+    """A session whose view record could not be bound to it has no base for
+    its note, so its warm client is let go after the turn: the next turn
+    reconnects, finds no record bound to the session and starts afresh on a
+    current view. Red case: keeping the warm client serves the old view, and
+    a correction committed meanwhile never reaches the session."""
+    import sqlite3
+    from memory_serving_support import add
+    store = ledger_store(tmp_path)
+    _, [city] = add(store, [fact("city", "Rome")])
+    wire(monkeypatch, store)
+    real_bind = view.bind
+
+    def failing_bind(*a, **kw):
+        if bind_fails == "raises":
+            raise sqlite3.OperationalError("database is locked")
+        return False
+
+    _QueryClient.options, _QueryClient.queries = [], []
+    with patch("sdk_client_pool._default_make_client", _QueryClient):
+        agent = _agent(tmp_path)
+        monkeypatch.setattr(view, "bind", failing_bind)
+        await agent._process(_msg())
+        monkeypatch.setattr(view, "bind", real_bind)
+        seq = _correction(store, "no, the city is Milan")
+        await _run_jobs(store, lambda p: reply(
+            {e["seq"]: "patched" for e in p["events"]},
+            [{"op": "replace", "object_id": city, "body": "Milan",
+              "source_seqs": [seq]}]))
+        await agent._process(_msg())
+        await agent.aclose()
+    first, second = _QueryClient.options
+    assert "Rome" in first.system_prompt
+    assert second.resume is None and "- city: Milan" in second.system_prompt
