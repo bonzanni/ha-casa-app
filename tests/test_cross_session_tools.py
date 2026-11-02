@@ -424,6 +424,7 @@ async def test_run_admission_options(monkeypatch):
     assert len(launches) == 1
     _assert_locked(launches[0])
     _assert_loads_no_settings_source(launches[0])
+    assert launches[0].tools == [] and launches[0].allowed_tools == []
 
 
 async def test_memory_writer_options(monkeypatch):
@@ -431,7 +432,6 @@ async def test_memory_writer_options(monkeypatch):
     assert len(launches) == 1
     _assert_locked(launches[0])
     _assert_loads_no_settings_source(launches[0])
-    assert launches[0].tools == [] and launches[0].allowed_tools == []
     assert launches[0].tools == [] and launches[0].allowed_tools == []
 
 
