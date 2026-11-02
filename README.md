@@ -129,6 +129,8 @@ the appliance a household agent should be.
 - **Long-term memory, built in** — agents remember what matters across conversations —
   names, preferences, the plumber's number. Every turn is captured as it happens, and
   agents can search, browse and correct what was said; no extra server to run.
+- **Yours to keep or forget** — export memory, restore an export, or wipe it all from the
+  add-on terminal; a wipe keeps your reminders, triggers, files and settings.
 - **Privacy-tiered recall** — what your assistant knows privately is not what a
   guest-facing voice agent can repeat to whoever is in the room.
 
@@ -175,7 +177,7 @@ the appliance a household agent should be.
 
 Strictly speaking, Casa boots with just a Home Assistant installation that can run apps
 and a Claude token — but the fleet is meant to be reached, so a real install includes
-Telegram and engagements (steps 1–4). Voice, memory and secrets are optional extras you
+Telegram and engagements (steps 1–4). Voice and secrets are optional extras you
 can add later, one step at a time.
 
 ### 1. Install the app
