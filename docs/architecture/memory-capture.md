@@ -60,9 +60,7 @@ that snapshot; a line appended after it starts a fresh spool, so a capture that 
 never waits for a drain. The drain then stores the immutable snapshot in batches, leaving
 the store free between them for the captures of running turns, and removes it only once
 every line is committed. At most one snapshot exists: a drain finishes a leftover one before
-it takes the spool again. Drains run one at a time; a caller on a turn's path asks for the
-drain lock with a bound and, when another drain holds it, gets `DrainBusy` with nothing
-drained. There is no model call on this path and no comparison of text:
+it takes the spool again. There is no model call on this path and no comparison of text:
 the same words said twice are two events.
 
 **Writing is narrower than reading.** Only write-trusted channels retain to the shared
@@ -179,7 +177,9 @@ fsynced, with a receipt, and the turn goes on; a locked store costs a turn at mo
 50 ms bound per captured item, and never waits for a drain that is running. The next append
 that commits starts a detached drain, and the memory writer drains a waiting spool on each of
 its passes once the store is available, which covers a store that only came back after boot
-([`memory-writer.md`](memory-writer.md)); the drain inserts every line with an `INSERT` that
+([`memory-writer.md`](memory-writer.md)); `correct_memory` asks for the same detached drain
+when the message it would mark is still spooled ([`memory-tools.md`](memory-tools.md)). The
+drain inserts every line with an `INSERT` that
 ignores a `source_key` already stored, so a drain cut off at any point and run again adds
 nothing twice.
 

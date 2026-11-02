@@ -918,10 +918,10 @@ async def test_one_background_drain_at_a_time(mem, monkeypatch):
     calls: list[int] = []
     real_drain = capture.drain_spool
 
-    def _slow_drain(store, **kw):
+    def _slow_drain(store):
         calls.append(1)
         assert release.wait(10)
-        return real_drain(store, **kw)
+        return real_drain(store)
 
     monkeypatch.setattr(capture, "drain_spool", _slow_drain)
     for i in range(3):

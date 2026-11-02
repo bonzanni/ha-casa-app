@@ -21,8 +21,9 @@ longer the one it read.
 
 :func:`mark_operator_event` is ``correct_memory``'s entry point: it marks the
 operator message a turn opened with, found by the occurrence key its capture
-stored it under. A message that capture had to spool is stored first, by a
-drain of the spool.
+stored it under. It marks only a message already in the store; one still in
+the spool is left to the background drain, and the caller answers without
+the mark.
 
 Blocking; async callers use ``asyncio.to_thread``.
 """
@@ -31,7 +32,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from memory import capture, pending, view, writer
+from memory import pending, view, writer
 from memory.store import MemoryStore
 
 
@@ -92,17 +93,13 @@ def _operator_seq(store: MemoryStore, source_key: str) -> int | None:
 
 
 def mark_operator_event(store: MemoryStore, source_key: str) -> MarkResult:
-    """Mark the operator message stored under *source_key*, draining a
-    waiting spool first when it is not stored yet. ``found`` is false when
-    no operator message is stored under that key. Every store wait is
-    bounded by :data:`TOOL_BUSY_TIMEOUT_S` — the store's lock, and the drain
-    lock another drain may hold; a store busy past it raises
-    ``sqlite3.OperationalError``, a drain lock held past it
-    :class:`memory.capture.DrainBusy`, and nothing is marked."""
+    """Mark the operator message stored under *source_key*. ``found`` is
+    false when no operator message is stored under that key — one still in
+    the spool included: nothing here drains it, since a drain can take as
+    long as its backlog and waits on spool writes. Every store wait is
+    bounded by :data:`TOOL_BUSY_TIMEOUT_S`; a store busy past it raises
+    ``sqlite3.OperationalError`` and nothing is marked."""
     seq = _operator_seq(store, source_key)
-    if seq is None and capture.drain_waiting(
-            store, lock_timeout=TOOL_BUSY_TIMEOUT_S):
-        seq = _operator_seq(store, source_key)
     if seq is None:
         return MarkResult(marked=False, found=False)
     return mark(store, seq, busy_timeout=TOOL_BUSY_TIMEOUT_S)

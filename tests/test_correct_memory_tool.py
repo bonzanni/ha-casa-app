@@ -85,9 +85,14 @@ async def test_an_engagement_turn_marks_nothing(mem, turn):
     assert out["status"] == "error" and _marks(mem) == []
 
 
-async def test_a_spooled_message_is_stored_then_marked(mem, turn):
+async def test_a_spooled_message_is_marked_once_the_drain_stores_it(
+        mem, turn, monkeypatch):
     """His message went to the spool while the store was busy: the tool
-    drains it and marks the stored event."""
+    does not drain it on the turn's path. It answers ``unavailable``,
+    marks nothing and asks for the background drain; once that has stored
+    his message, the next call marks it."""
+    monkeypatch.setattr(capture, "_background", set())
+    monkeypatch.setattr(capture, "_drain", [None])
     key = occurrence.provider_key("telegram", CHAT, "703")
     item = capture.event(role="assistant", channel="telegram",
                          speaker_kind="operator", origin_kind="operator",
@@ -99,6 +104,9 @@ async def test_a_spooled_message_is_stored_then_marked(mem, turn):
     finally:
         mem._unavailable_reason = None
     turn("private", **{agent_mod.MEMORY_OPENING_KEY: key})
+    first = await _correct()
+    assert first["status"] == "unavailable" and _marks(mem) == []
+    await capture.settle()
     assert (await _correct())["status"] == "queued"
     assert len(_marks(mem)) == 1
 

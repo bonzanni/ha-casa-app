@@ -2174,6 +2174,12 @@ async def correct_memory(args: dict) -> dict:
         return _result({"status": "unavailable",
                         "message": _CORRECTION_UNAVAILABLE})
     if not marked.found:
+        # His message may still be in the spool (captured while the store
+        # was busy). It is never drained here — a drain takes as long as its
+        # backlog and waits on spool writes — so ask for the background
+        # drain and answer now; a later call marks it once it is stored.
+        from memory import capture
+        capture.request_drain(store)
         return _result({"status": "unavailable",
                         "message": _CORRECTION_UNAVAILABLE})
     return _result({"status": "queued", "message": (

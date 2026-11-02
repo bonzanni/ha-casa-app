@@ -84,8 +84,11 @@ replaced and how.
 **A correction marks his own words.** When the operator says something memory holds is
 wrong, `correct_memory` marks the message he said it in — the operator event the turn
 opened with. Capture stores that message before the model is called; once it is durable
-its occurrence key is put on the turn's origin, and the tool finds the event by it. A
-message that had to spool is stored first by a drain of the spool. The mark goes through
+its occurrence key is put on the turn's origin, and the tool finds the event by it. Only a
+message already in the store is marked: one that had to spool is never drained on the
+turn's path (a drain takes as long as its backlog and waits on spool writes), so the tool
+asks for the background drain and answers `unavailable`, and a later call marks it once it
+is stored. The mark goes through
 `memory.corrections` (re-opening a filed event and queuing its correction job), and the
 tool returns `queued` at once; a retried call changes nothing. The note carries his words
 to every session from its next turn ([`memory-serving.md`](memory-serving.md)). The tool's
@@ -141,15 +144,14 @@ missing one itself. An index that cannot be opened during a run makes that searc
 **A lock is held.** Every connection a memory tool or the engager query opens — the store's
 reads, the index's catch-up and its reads, the correction mark — waits for another
 connection's lock no longer than the turn-path bound, `memory.view.BUSY_TIMEOUT_S` (50 ms),
-whatever the store's journal mode. The correction's drain of a waiting spool takes the
-drain lock within the same bound, so it never waits behind another drain. Past it the tool
-answers `unavailable` at once; a turn never waits on a writer, a drain or another search's
-catch-up. Only boot's rebuild of the
-index waits the store's own, longer bound.
+whatever the store's journal mode. No memory tool drains the spool or takes its lock. Past
+the bound the tool answers `unavailable` at once; a turn never waits on a writer, a drain or
+another search's catch-up. Only boot's rebuild of the index waits the store's own, longer
+bound.
 
 **A correction cannot be marked.** No message of his in the turn: an error that says so,
-nothing marked. His message not yet stored and the spool not drained, the store down or
-busy: `unavailable`, worded so the model does not claim memory was updated — the
+nothing marked. His message still in the spool (the background drain is asked for), the
+store down or busy: `unavailable`, worded so the model does not claim memory was updated — the
 conversation itself still carries his words.
 
 ## Extension points
