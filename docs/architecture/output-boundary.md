@@ -163,7 +163,7 @@ message.
 
 What it does not cover: a reply about a file the turn never listed and never tried to read,
 or a message sent before the turn's first listing, gets no line; the SDK transcript and
-retained memory hold the model's text without the line; and the disclosure is a line, not a
+captured memory hold the model's text without the line; and the disclosure is a line, not a
 hold — nothing is withheld.
 
 **INV-OUT-003**: A payload stored under an undischarged obligation — a reminder's text, a delegation or engagement brief — is delivered with its resolved note by the turn that sends it, whatever that turn's model writes; a payload stored after the `Read` carries none; and an inherited note is never discharged.
