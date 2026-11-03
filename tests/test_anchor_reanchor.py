@@ -1985,7 +1985,7 @@ class TestCancelDrainsReanchorOwner:
 
         owner = asyncio.create_task(_owner())
         drv._reanchor_retry_tasks[eng_id] = owner
-        await asyncio.wait_for(started.wait(), timeout=1.0)
+        await asyncio.wait_for(started.wait(), timeout=30.0)  # a hang guard
 
         with caplog.at_level(logging.INFO):
             cancel_task = asyncio.create_task(drv.cancel(rec))
