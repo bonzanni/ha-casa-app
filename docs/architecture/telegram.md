@@ -301,7 +301,8 @@ forgot it would retire another operator's live question. Authorization challenge
 separate scope and are untouched here, as they always were.
 
 **Three outbound messages are composed by Casa, not by an agent: a plugin's delivered
-link, message and file.** The channel's part — one labelled-link send, the whole-plan
+link, message and file.** The channel's part — one link send (a message with its URL button,
+the labelled link only when the platform refuses the button), the whole-plan
 judgement and multi-page loop for a message, the kind's media method for a file — is in
 [`plugin-delivered-slots.md`](plugin-delivered-slots.md) (INV-PLUG-025, -045, -046); all
 three are Casa-composed notices under the output boundary.

@@ -77,12 +77,15 @@ class _Recorder:
         self.outcome, self.raise_exc, self.sleep_s, self.block = (
             outcome, raise_exc, sleep_s, block)
         self.deliveries: list[tuple] = []
+        self.buttons: list = []
         self.other_sends: list[tuple] = []
         self.entered = asyncio.Event()
         self.chat_id = "42"
 
-    async def deliver_operator_link(self, chat_id, text, entities, plain, *, post=None):
+    async def deliver_operator_link(self, chat_id, text, entities, plain, *, post=None,
+                                    button=None):
         self.deliveries.append((chat_id, text, entities, plain))
+        self.buttons.append(button)
         self.entered.set()
         if self.block is not None:
             await self.block.wait()
@@ -186,6 +189,10 @@ async def test_delivered_link_posts_once_to_the_identity_chat_and_returns_the_re
         "text_link", 11, utf16_len("Approve at Rabobank (bank.example.com)"), URL)
     assert plain == ("\U0001F4CA finance\nApprove at Rabobank (bank.example.com): " + URL +
                      "\nRabobank, NL — one-time link, 30 minutes")
+    # v0.347.3: the message the channel sends first — the caption under the label line, and
+    # ONE URL button whose text is the label and the host Casa printed
+    assert recorder.buttons == [("\U0001F4CA finance\nRabobank, NL — one-time link, 30 minutes",
+                                 "Approve at Rabobank (bank.example.com)", URL)]
     # the receipt: every producer field, the reference, the claim, no URL byte
     body = _replacement(out)
     receipt = json.loads(body)
@@ -398,6 +405,51 @@ async def test_the_real_channel_method_sends_once_and_falls_back_plain():
     app.bot.send_message = AsyncMock(side_effect=TimedOut())
     with pytest.raises(TimedOut):
         await ch.deliver_operator_link(42, text, entities, plain)
+    assert app.bot.send_message.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_the_real_channel_method_sends_the_url_button_first():
+    """v0.347.3: with ``button`` the link is ONE message carrying an inline URL button (text
+    the label and Casa's host, url the link), filed under the post; a BadRequest for it falls
+    back to the labelled-link message; a TimedOut propagates with no second send."""
+    from unittest.mock import AsyncMock, MagicMock
+    from telegram.error import BadRequest, TimedOut
+    from channels.telegram import TelegramChannel
+    text, entities, plain = rb.compose_operator_link(URL, caption="c", label="Approve",
+                                                     head="H")
+    body, label = rb.compose_operator_link_button(URL, caption="c", label="Approve", head="H")
+    assert (body, label) == ("H\nc", "Approve (bank.example.com)")
+    assert rb.compose_operator_link_button(URL) == ("Open", "Open (bank.example.com)")
+    ch = TelegramChannel(bot=MagicMock(), chat_id="42")
+    app = MagicMock()
+    app.bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=7))
+    ch._app = app
+    recorded = []
+    ch._record_post = lambda chat, sent, post: recorded.append(
+        (chat, getattr(sent, "message_id", None), post))
+    button = (body, label, URL)
+    assert await ch.deliver_operator_link(42, text, entities, plain, post="P",
+                                          button=button) is DeliveryOutcome.DELIVERED
+    assert app.bot.send_message.await_count == 1
+    kw = app.bot.send_message.await_args.kwargs
+    (row,) = kw.pop("reply_markup").inline_keyboard
+    (btn,) = row
+    assert (btn.text, btn.url, btn.callback_data) == (label, URL, None)
+    assert kw == {"chat_id": 42, "text": body}
+    assert recorded == [(42, 7, "P")]
+    # the button refused: the labelled-link message, as before
+    app.bot.send_message = AsyncMock(side_effect=[BadRequest("button url invalid"), True])
+    assert await ch.deliver_operator_link(42, text, entities, plain,
+                                          button=button) is DeliveryOutcome.DELIVERED
+    assert app.bot.send_message.await_count == 2
+    kw = dict(app.bot.send_message.await_args.kwargs)
+    assert kw.pop("link_preview_options").is_disabled is True
+    assert kw == {"chat_id": 42, "text": text, "entities": entities}
+    # a TimedOut on the button message propagates: it may have landed, so nothing more
+    app.bot.send_message = AsyncMock(side_effect=TimedOut())
+    with pytest.raises(TimedOut):
+        await ch.deliver_operator_link(42, text, entities, plain, button=button)
     assert app.bot.send_message.await_count == 1
 
 

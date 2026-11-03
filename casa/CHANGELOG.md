@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.347.3] - 2026-11-03
+
+### Changed
+
+- A link Casa posts for you from a plugin — a live view of Fido's browser, a sign-in or approval link — now arrives as a message with a button to tap, the way cards do, instead of a line of link text. The button still names where it goes.
+- When you ask the assistant to stop a browsing task, she stops it first and then says in one line what stopped, without telling you how she found it or what else was or was not running.
+
+### Security
+
+- Updated the web library Casa's server runs on (aiohttp 3.14.5), which closes several published security issues, among them slow or malformed requests that could tie up the server or exhaust its memory.
+
 ## [0.347.2] - 2026-11-03
 
 ### Added

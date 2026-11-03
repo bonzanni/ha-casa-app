@@ -77,16 +77,22 @@ the resident, its words unchanged, with Casa's note of what it replied to (INV-D
 
 **The channel's part for a link.**
 When a plugin tool's result carries a slot declared `operator_link`, the result broker
-composes a single labelled-link message — the specialist's label line first, as on its
-messages, then the label and the destination host as the link text, one
-`text_link` entity, the caption beneath — and asks the channel to post it to the
-chat of the call's grant identity, without a link preview (the link text already names the
-host). The channel sends it through the same one-retry
-primitive a rendered response uses (an entity the platform refuses is resent as the plain
-text, which spells the URL out), reports it delivered on any normal return, and lets an
-exception propagate: the broker reads anything but a normal return as not proven
-(INV-PLUG-025). Nothing here goes through the markdown renderer or pagination; the
-message is bounded by the broker's own validation of the three parts.
+composes the link twice, as one message either way, and asks the channel to post it to the
+chat of the call's grant identity. First, the way a card carries its buttons: the
+specialist's label line and the caption (the label alone when there is no caption) as the
+text, and ONE inline URL button whose text is the label and the destination host
+(`compose_operator_link_button`). Only when the platform refuses that send with a
+`BadRequest` — which sent nothing — does the channel send the labelled-link message
+instead: the label line first, as on its messages, then the label and the destination host
+as the link text, one `text_link` entity, the caption beneath, without a link preview (the
+link text already names the host), through the same one-retry primitive a rendered
+response uses (an entity the platform refuses is resent as the plain text, which spells
+the URL out). Either landed message is filed under the post. The channel reports the link
+delivered on any normal return and lets any other exception propagate — a `TimedOut` on
+the button message is never followed by a second send — and the broker reads anything but
+a normal return as not proven (INV-PLUG-025). Nothing here goes through the markdown
+renderer or pagination; the message is bounded by the broker's own validation of the three
+parts.
 
 **The channel's part for a message and a file.** For a slot declared
 `operator_message` the broker composes the specialist's label line and the plugin's body as
@@ -134,7 +140,8 @@ scheme separator, `www.`, or (for the label) anything that reads as a domain —
 is Casa's to print. A deposit failing any of these mints no reference, so the result fails
 the structural check and is withheld as any bad capability result is. The message never
 goes through the markdown renderer: label and caption are sent as the bytes they are,
-beside one `text_link` entity whose length is measured in UTF-16 code units. Taking the
+on the URL button or beside one `text_link` entity whose length is measured in UTF-16 code
+units. Taking the
 deposit is atomic and once — a taken reference is used, so `arm`, `redeem` and a second
 take all refuse it — and the broker's three matchers carry an explicit sixty-second timeout.
 
@@ -278,6 +285,7 @@ compose a post for is a kind the extractor must refuse.
 **Source**
 - `casa/rootfs/opt/casa/result_broker.py::_deliver_and_replace`
 - `casa/rootfs/opt/casa/result_broker.py::compose_operator_link`
+- `casa/rootfs/opt/casa/result_broker.py::compose_operator_link_button`
 - `casa/rootfs/opt/casa/result_broker.py::compose_operator_message`
 - `casa/rootfs/opt/casa/result_broker.py::post_label`
 - `casa/rootfs/opt/casa/result_broker.py::_post_operator_message`

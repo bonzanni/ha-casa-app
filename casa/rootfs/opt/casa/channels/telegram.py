@@ -6446,7 +6446,7 @@ class TelegramChannel(Channel):
             return True
 
     async def deliver_operator_link(
-        self, chat_id: int, text: str, entities, plain: str, *, post=None,
+        self, chat_id: int, text: str, entities, plain: str, *, post=None, button=None,
     ) -> DeliveryOutcome:
         """#1015: post ONE Casa-composed labelled-link message to *chat_id* —
         the chat of a capability call's grant identity — for a plugin slot
@@ -6458,12 +6458,32 @@ class TelegramChannel(Channel):
         ``DELIVERED`` on any normal return of ``_send_one`` (its bool only
         says whether the plain retry happened); an exception — including a
         TimedOut after Telegram may already have accepted the message —
-        propagates, and the broker reads it as not proven."""
+        propagates, and the broker reads it as not proven.
+
+        v0.347.3: with ``button`` — ``(text, button text, url)`` from
+        ``compose_operator_link_button`` — the link is first sent as ONE
+        message carrying an inline URL button, as a card carries its buttons;
+        only a ``BadRequest`` for it (the platform refusing the button, which
+        sent nothing) falls back to the labelled-link message above."""
         if self._app is None:
             logger.warning(
                 "Telegram channel not started; cannot deliver operator link")
             return DeliveryOutcome.NOT_DELIVERED
-        from telegram import LinkPreviewOptions
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions
+        if button is not None:
+            body, label, url = button
+            try:
+                sent = await self._app.bot.send_message(
+                    chat_id=chat_id, text=body,
+                    reply_markup=InlineKeyboardMarkup(
+                        [[InlineKeyboardButton(text=label, url=url)]]))
+            except BadRequest as exc:
+                # the class only (#1015): the platform's text can quote the URL
+                logger.warning("link button refused, sending the link message: %s",
+                               type(exc).__name__)
+            else:
+                self._record_post(chat_id, sent, post)
+                return DeliveryOutcome.DELIVERED
         # Slice 5g: no preview card — the label and the host already say where it goes, and a
         # preview of the redirect page doubled the message's height on the phone.
         await self._send_one(chat_id, plain, text, entities,
