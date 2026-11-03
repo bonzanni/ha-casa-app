@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.346.2] - 2026-11-03
+
+### Added
+
+- Casa checks one more thing for the optional Casa Browser app: whether a page the browsing specialist landed on is the site's own sign-in, and which of its fields take your username and password, so the app can sign you in there by itself (also on a site whose username field is not marked as one). A "confirm your password" step, a password reset, a newsletter box or a passkey that approves a payment is not a sign-in and is left alone.
+
 ## [0.346.1] - 2026-11-02
 
 ### Changed

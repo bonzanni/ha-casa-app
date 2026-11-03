@@ -51,7 +51,10 @@ class CapturedFields:
     # failed, typed_after}``, or None. Its values travel only to the broker.
     attempt: dict | None = field(default=None, repr=False)
 
-DRIVER_OPS = {'find_login_fields': ('driver_session', 'page_generation'), 'fill': ('driver_session', 'page_generation', 'field_handle', 'value'), 'submit': ('driver_session', 'page_generation', 'submit_handle'), 'settle': ('driver_session', 'timeout_s'), 'choose_passkey': ('driver_session', 'page_generation', 'title', 'username'), 'guest_sign_in': ('driver_session', 'region_host', 'email', 'secret_key', 'password'), 'guest_unlock': ('driver_session', 'password'), 'guest_state': ('driver_session',), 'begin_live_capture': ('driver_session',), 'take_capture': ('driver_session', 'capture_id'), 'mark_document': ('driver_session', 'page_generation', 'mark'), 'document_marked': ('driver_session', 'page_generation', 'mark')}
+DRIVER_OPS = {'find_login_fields': ('driver_session', 'page_generation'), 'fill': ('driver_session', 'page_generation', 'field_handle', 'value'), 'submit': ('driver_session', 'page_generation', 'submit_handle'), 'settle': ('driver_session', 'timeout_s'), 'choose_passkey': ('driver_session', 'page_generation', 'title', 'username'), 'guest_sign_in': ('driver_session', 'region_host', 'email', 'secret_key', 'password'), 'guest_unlock': ('driver_session', 'password'), 'guest_state': ('driver_session',), 'begin_live_capture': ('driver_session',), 'take_capture': ('driver_session', 'capture_id'), 'mark_document': ('driver_session', 'page_generation', 'mark'), 'document_marked': ('driver_session', 'page_generation', 'mark'),
+              # signing in off the start page: the look's read and its binding
+              'read_sign_in': ('driver_session', 'page_generation', 'mark'),
+              'sign_in_bound': ('driver_session', 'page_generation', 'mark')}
 
 DRIVER_KINDS = {
     'settle': 'login', 'find_login_fields': 'login', 'fill': 'login',
@@ -59,6 +62,7 @@ DRIVER_KINDS = {
     'guest_state': 'guest', 'guest_sign_in': 'guest', 'guest_unlock': 'guest',
     'begin_live_capture': 'capture', 'take_capture': 'capture',
     'mark_document': 'login', 'document_marked': 'login',
+    'read_sign_in': 'login', 'sign_in_bound': 'login',
 }
 
 @dataclass(repr=False)
@@ -93,10 +97,12 @@ class _Session:
     tasks: set = field(default_factory=set)
     binding: object = None
     reader: object = None            # slice 5: the controller's page reader (a capture's readings)
+    mapping: object = None           # R9: (look mark, {field id: role}) for this discovery call
     readings: list = field(default_factory=list)
 
 
 _OPERATION_TIMEOUT = 30
+MAX_PLANNED = 200             # a look plans at most this many fields (ids f1 to f200)
 # Slice 5v, the guest's waits (measured: install ~3 s, popup ~1 s, each sign-in step ~1 s,
 # landing ~3.5 s). A guest op is cut at _GUEST_TIMEOUT; the broker's transport waits longer
 # (broker.main.GUEST_OP_S), so the driver always answers before the broker gives up on it.
@@ -193,6 +199,71 @@ _GUEST_SET = """(e, a) => {
 _MARK = "m => { window.__casaCodePage = m; return window.__casaCodePage === m; }"
 _MARKED = "m => window.__casaCodePage === m"
 
+# Signing in off the start page (the look): the judged sign-in's documents carry their own
+# mark, in the isolated world as the code page's does; the binding reads what a verdict covers.
+_SIGN_IN_MARK = "m => { window.__casaSignIn = m; return window.__casaSignIn === m; }"
+_SIGN_IN_MARKED = "m => window.__casaSignIn === m"
+_LABEL = """e => {
+    const t = s => (s || '').replace(/\\s+/g, ' ').trim().slice(0, 200);
+    if (e.tagName === 'INPUT' && ['submit', 'button', 'image'].includes(e.type))
+        return t(e.value) || t(e.getAttribute('aria-label'));
+    if (e.tagName === 'BUTTON') return t(e.innerText) || t(e.getAttribute('aria-label'));
+    return t(e.getAttribute('aria-label')) || t(e.labels && e.labels[0] && e.labels[0].innerText)
+        || t(e.placeholder);
+}"""
+# R9: the look's plan, in one document: every shown, enabled input with a sign-in role, a
+# password field, or a plain text/email/telephone/search field, marked with the look (``look``)
+# and a short id, its form's one submit button marked too; for each: id, role (or null), label,
+# password or not, the button's label.
+_PLAN = """a => {
+    const roleOf = (%s), labelOf = (%s);
+    const shown = e => e.getClientRects().length > 0 && !e.disabled;
+    const plain = ['text', 'email', 'tel', 'search'];
+    const submitOf = e => {
+        const f = e.form;
+        if (!f) return null;
+        const bs = [...f.querySelectorAll('button:not([type]),button[type=submit],input[type=submit]')]
+            .filter(b => b.form === f && shown(b));
+        return bs.length === 1 ? bs[0] : null;
+    };
+    const out = [];
+    let n = a.start;
+    for (const e of document.querySelectorAll('input')) {
+        if (out.length >= a.max) break;
+        if (!shown(e)) continue;
+        const role = roleOf(e);
+        if (!role && e.type !== 'password' && !plain.includes(e.type)) continue;
+        const id = 'f' + (++n);
+        e.__casaSignInField = {look: a.look, id};
+        const b = submitOf(e);
+        if (b) b.__casaSignInField = {look: a.look, id: 'button'};
+        out.push({id, role, label: labelOf(e), password: e.type === 'password',
+                  button: b ? labelOf(b) : null});
+    }
+    return out;
+}""" % (_ROLE, _LABEL)
+# The facts of every field and button the look marked in this document (the binding's part).
+_SCAN = """m => {
+    const labelOf = (%s);
+    const out = [];
+    for (const e of document.querySelectorAll('input,button')) {
+        const k = e.__casaSignInField;
+        if (!k || k.look !== m) continue;
+        const f = e.form;
+        out.push([k.id, e.tagName, e.type, e.getAttribute('autocomplete'), labelOf(e),
+                  f ? f.action : null, f ? f.method : null,
+                  e.hasAttribute('formaction') ? e.formAction : null,
+                  e.hasAttribute('formmethod') ? e.formMethod : null]);
+    }
+    return out;
+}""" % _LABEL
+# The id the look gave this element, or null (another look's mark is no mark).
+_PLANNED = "(e, m) => { const k = e.__casaSignInField; return k && k.look === m ? k.id : null; }"
+_DOCUMENT_TEXT = "() => document.body ? document.body.innerText : ''"
+# 1Password's prompt as shown: every visible notification's text (title bar, item, buttons).
+_PROMPT_TEXT = """() => [...document.querySelectorAll('[data-testid=stacked-notification]')]
+    .filter(e => e.getClientRects().length > 0).map(e => e.innerText).join('\\n')"""
+
 
 # The popup's state, by its language-free markers (5v): the lock screen, the vault list.
 _POPUP_STATE = """origin => {
@@ -239,6 +310,8 @@ class DriverServer(UnixServer):
     _sessions: dict = field(default_factory=dict, init=False, repr=False)
     _connections: set = field(default_factory=set, init=False, repr=False)
     _readings: dict = field(default_factory=dict, init=False, repr=False)
+    # The look's bound documents' frames, per (run, site): (page, frames), from its last read.
+    _sign_in_frames: dict = field(default_factory=dict, init=False, repr=False)
 
     async def handle(self, reader, writer):
         await self.serve(reader, writer, self.dispatch)
@@ -499,9 +572,12 @@ class DriverServer(UnixServer):
                 raise BrokerError('unsupported')
             op = request['op']
             keys = DRIVER_OPS[op]
-            optional = {'login_origins'} if op in ('settle', 'find_login_fields', 'fill', 'submit',
+            optional = {'login_origins'} | ({'sign_in_look', 'sign_in_fields'}
+                                            if op == 'find_login_fields' else set()) \
+                if op in ('settle', 'find_login_fields', 'fill', 'submit',
                                                    'mark_document', 'document_marked',
-                                                   'choose_passkey') else set()
+                                                   'choose_passkey', 'read_sign_in',
+                                                   'sign_in_bound') else set()
             if set(request) - optional != {'op', *keys} or any(
                     not isinstance(request[k], str) for k in keys
                     if k not in ('page_generation', 'timeout_s')):
@@ -515,8 +591,18 @@ class DriverServer(UnixServer):
                 origins = request['login_origins']
                 if not isinstance(origins, list) or not all(isinstance(o, str) for o in origins):
                     raise BrokerError('unsupported')
+            mapping = None
+            if {'sign_in_look', 'sign_in_fields'} & set(request):
+                look, ids = request.get('sign_in_look'), request.get('sign_in_fields')
+                if (op != 'find_login_fields' or not isinstance(look, str)
+                        or not isinstance(ids, dict) or not all(
+                            isinstance(k, str) and v in ('username', 'password')
+                            for k, v in ids.items())):
+                    raise BrokerError('unsupported')
+                mapping = (look, dict(ids))
 
             handlers = {name: method for name, method in (
+                ('read_sign_in', self.read_sign_in), ('sign_in_bound', self.sign_in_bound),
                 ('find_login_fields', self.find_login_fields), ('fill', self.fill),
                 ('submit', self.submit), ('settle', self.settle),
                 ('choose_passkey', self.choose_passkey), ('guest_state', self.guest_state),
@@ -529,6 +615,7 @@ class DriverServer(UnixServer):
                     raise BrokerError('refused')
                 if 'login_origins' in request:
                     s.broker_origins = frozenset(origins)
+                s.mapping = mapping
                 reply = await handlers[op](**{k: request[k] for k in keys})
                 return asdict(reply) if isinstance(reply, (LoginFields, CapturedFields)) else reply
         except BrokerError as error:
@@ -609,6 +696,10 @@ class DriverServer(UnixServer):
             if origin not in self._login_origins(s):
                 continue
             origin_ok = True
+            # R9: a look's sign-in in a document the look marked (the judged one)
+            judged = s.mapping is not None and await self._checked(
+                driver_session, frame.evaluate(_SIGN_IN_MARKED, s.mapping[0]),
+                page_generation) is True
             for element in await self._checked(
                     driver_session, frame.query_selector_all('input'), page_generation):
                 if (not await self._checked(driver_session, element.is_visible(), page_generation) or
@@ -618,6 +709,24 @@ class DriverServer(UnixServer):
                 tokens = str(info['autocomplete'] or '').lower().split()
                 hint = hint or (bool(tokens) and tokens[-1] == 'webauthn')
                 role = await self._checked(driver_session, element.evaluate(_ROLE), page_generation)
+                if judged:
+                    # R9, the judged document: only fields of the judged reading (the look's
+                    # plan); a role the check named goes to its named field alone (a password
+                    # only into a password field); a role it did not name stays with the field
+                    # the page marks with it.
+                    look, ids = s.mapping
+                    fid = await self._checked(
+                        driver_session, element.evaluate(_PLANNED, look), page_generation)
+                    if fid is None:
+                        continue
+                    wanted = ids.get(fid)
+                    if wanted is not None:
+                        role = wanted if wanted == (
+                            'password' if info['type'] == 'password' else 'username') else None
+                    elif role in ids.values():
+                        role = None
+                if s.mapping is not None and role == 'password' and info['type'] != 'password':
+                    role = None          # R9: a look's password goes only into a password field
                 if role is None:
                     continue
                 field_error |= info['invalid']
@@ -806,6 +915,109 @@ class DriverServer(UnixServer):
         ok = await self._checked(driver_session, s.page.main_frame.evaluate(_MARKED, mark),
                                  page_generation)
         return {'ok': ok is True}
+
+    # -- signing in off the start page: the look's read and the verdict's binding ------------
+
+    @_serialized
+    async def read_sign_in(self, driver_session, page_generation, mark):
+        """The look's one read (nothing filled, no vault). The fields a sign-in there could use
+        — every shown input of a login origin with a sign-in role, a password field, or a plain
+        text, email, telephone or search field (R9: the check maps the plain ones) — each with
+        a short id (``f1``, …), its role as the page marks it (or None), its label, whether it
+        is a password field and the label of its form's one submit button. Each such field and
+        that button carry ``mark`` in Patchright's isolated world. The binding of what the
+        check judges: ``mark`` in every credential-bearing frame document (the main one, each
+        frame holding a field or the submit, 1Password's notification frame while it shows a
+        prompt) and one digest of the marked fields' and buttons' facts, each bound document's
+        text and the prompt's text (``binding``). Ids, roles and labels only: never a handle,
+        never a value."""
+        fields = await self.find_login_fields(driver_session, page_generation)
+        s = self._session(driver_session, page_generation)
+        planned, holders = [], []
+        for frame in s.page.frames:
+            if frame.url.startswith(EXTENSION_ORIGIN + '/') or len(planned) >= MAX_PLANNED:
+                continue
+            if await self._origin(driver_session, frame, page_generation) not in \
+                    self._login_origins(s):
+                continue
+            found = await self._checked(driver_session, frame.evaluate(
+                _PLAN, dict(look=mark, start=len(planned), max=MAX_PLANNED - len(planned))),
+                page_generation)
+            if found:
+                planned += found
+                holders.append(frame)
+        main = s.page.main_frame
+        frames = [f for f in s.page.frames if f is main or any(f is h for h in holders)
+                  or any(entry[1] is f for entry in s.handles.values())]
+        if fields['passkey_frame']:
+            frames += [f for f in s.page.frames if f.url.startswith(EXTENSION_NOTIFICATION)
+                       and f.parent_frame is main]
+        for frame in frames:
+            if await self._checked(driver_session, frame.evaluate(_SIGN_IN_MARK, mark),
+                                   page_generation) is not True:
+                raise BrokerError('refused')
+        self._sign_in_frames[(s.run_id, s.site_id)] = (s.page, tuple(frames))
+        binding = await self._sign_in_binding(driver_session, page_generation, frames, mark)
+        return dict(page_generation=page_generation, origin_ok=fields['origin_ok'],
+                    roles=sorted(fields['roles']),
+                    fields=[{'id': f['id'], 'role': f['role'], 'label': f['label'],
+                             'password': f['password'] is True, 'button': f['button']}
+                            for f in planned],
+                    passkey_frame=fields['passkey_frame'], passkey_hint=fields['passkey_hint'],
+                    binding=binding)
+
+    @_serialized
+    async def sign_in_bound(self, driver_session, page_generation, mark):
+        """Whether the verdict still covers the page, asked just before a fill, a submit or a
+        passkey's Sign in of the judged step: every bound frame document still holds ``mark``,
+        every field and the submit of the step's read is one the look marked (so in a bound
+        document of the judged reading), no 1Password prompt the look did not bind is shown,
+        and the binding reads as it did at the look."""
+        s = self._session(driver_session, page_generation)
+        kept = self._sign_in_frames.get((s.run_id, s.site_id))
+        if kept is None or kept[0] is not s.page:
+            return {'ok': False}
+        frames = list(kept[1])
+        for frame in frames:
+            try:
+                marked = not frame.is_detached() and await frame.evaluate(_SIGN_IN_MARKED, mark)
+            except Exception:
+                marked = False
+            self._session(driver_session, page_generation)
+            if marked is not True:
+                return {'ok': False}
+        for handle, entry in s.handles.items():
+            if not any(entry[1] is f for f in frames) or await self._checked(
+                    driver_session, entry[0].evaluate(_PLANNED, mark), page_generation) is None:
+                return {'ok': False}             # a field or the submit the look did not judge
+        for frame in s.page.frames:
+            if (frame.url.startswith(EXTENSION_NOTIFICATION)
+                    and not any(frame is f for f in frames)
+                    and await self._passkey_prompt(driver_session, s, frame, page_generation)):
+                return {'ok': False}             # a passkey prompt the look did not judge
+        return {'ok': True, 'binding': await self._sign_in_binding(
+            driver_session, page_generation, frames, mark)}
+
+    def sign_in_frames(self, run_id, site_id):
+        """The frames of the look's bound documents (the controller reads only these for its
+        final comparison), or () when none was read for this run and site."""
+        kept = self._sign_in_frames.get((run_id, site_id))
+        return kept[1] if kept is not None else ()
+
+    async def _sign_in_binding(self, sid, generation, frames, mark):
+        """One digest of what a verdict covers: in each bound site document, the facts of every
+        field and button the look marked (its id, tag, type, autocomplete, label, its form's
+        destination, a button's own formaction/formmethod) and the document's text; in
+        1Password's notification frame, its prompt's text."""
+        parts = []
+        for frame in frames:
+            prompt = frame.url.startswith(EXTENSION_NOTIFICATION)
+            text = await self._checked(sid, frame.evaluate(
+                _PROMPT_TEXT if prompt else _DOCUMENT_TEXT), generation)
+            facts = [] if prompt else await self._checked(sid, frame.evaluate(_SCAN, mark),
+                                                         generation)
+            parts.append([prompt, hashlib.sha256(str(text).encode('utf-8')).hexdigest(), facts])
+        return hashlib.sha256(json.dumps(parts, sort_keys=True).encode()).hexdigest()
 
     @_serialized
     async def choose_passkey(self, driver_session, page_generation, title, username):

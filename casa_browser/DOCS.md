@@ -88,6 +88,14 @@ and pickers, and types text with several lines only into a page's own multi-line
 
 - A site with a 1Password item signs in by itself, an authenticator code stored in the item
   included; when that does not work (a rejected login, a challenge), you get a live view.
+  That holds on any page of the site that shows its sign-in form, not only its start page:
+  Casa first checks that the page really is the site's sign-in (a "confirm your password"
+  step, a password reset, a newsletter box or a passkey that approves a payment is not) and
+  which of its fields take your username and password, so a site that does not mark its
+  username field still signs in and a search box beside the form is never filled. It signs
+  in only on the page it checked, sends your password at most once there, and tells Fido
+  "Casa Browser signed in to *site* by itself." A sign-in that did not work is not retried by
+  itself in the same task.
 - A site you registered without an item: Casa checks which items in the browsing vault fit
   it, and Fido asks you once — "To sign in to *address* I'd use your 1Password item
   *title*. OK?" (**Yes** / **No**), or, when several fit, which one (their titles and

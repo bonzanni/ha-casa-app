@@ -1298,3 +1298,179 @@ def test_a_username_marked_for_passkeys_is_saved_from_the_live_view(tmp_path, sh
             assert _value(item, 'password') == password
         else:
             assert [f['id'] for f in item['fields']] == ['username']
+
+
+# -- signing in off the start page: the look's read and the binding, in Chrome's DOM ---------------
+
+def _look_run(tmp_path, body, *, between=(), frame=None, settle_s=0, path='/signin',
+              fields=None):
+    """The look's read of ``https://<login><path>``, then ``between`` (the page's own scripts),
+    then the sign-in on the judged page: the read, its bound frames, the sign-in's reply and
+    the fixture's POSTs."""
+    config = fixture_config(tmp_path)
+    with ChromeSites([LOGIN, ACCOUNT]) as sites:
+        install(sites)
+        sites.pages[path] = ('text/html', body, {})
+        sites.pages['/frame'] = ('text/html', b'<p>frame</p>', {})
+        if frame is not None:
+            sites.pages['/form'] = ('text/html', frame, {})
+        sites.pages['/finish'] = ('text/html', b'', {'Location': 'https://' + ACCOUNT + '/done'})
+        sites.status['/finish'] = 303
+        sites.pages['/done'] = ('text/html', b'<p>Signed in</p>', {})
+        result = run_scenario([{'open': {'site_id': 's1'}}, instruction(config, 'setup'),
+                               {'goto': 'https://' + LOGIN + path},
+                               instruction(config, 'login', auto=True, between=list(between),
+                                           settle_s=settle_s, fields=fields)],
+                              broker_fixture=config)
+        return result[-3], result[-2], result[-1], [r for r in sites.receipts.requests
+                                                    if r[0] == 'POST']
+
+
+_LABELLED = (b'<form method=post action="/finish"><label for=u>Email address</label>'
+             b'<input id=u name=u autocomplete=username><label for=p>Password</label>'
+             b'<input id=p name=p type=password autocomplete=current-password>'
+             b'<button>Sign in</button></form>')
+
+
+def test_look_reads_the_judged_page_and_signs_in_on_it(tmp_path):
+    """The look's read in Chrome: role names and labels (never a handle), the main document
+    bound; the sign-in on the page as it is fills both fields and posts once."""
+    read, frames, reply, posts = _look_run(tmp_path, _LABELLED)
+    assert read == {'found': True, 'passkey': False, 'fields': [
+        {'id': 'f1', 'role': 'username', 'label': 'Email address', 'password': False,
+         'button': 'Sign in'},
+        {'id': 'f2', 'role': 'password', 'label': 'Password', 'password': True,
+         'button': 'Sign in'}]}, read
+    assert frames == {'bound_frames': ['https://' + LOGIN + '/signin']}, frames
+    assert reply == {'status': 'logged_in', 'reason': 'completed'}, reply
+    assert [p[2] for p in posts] == ['/finish']
+
+
+@pytest.mark.parametrize('change', [
+    'setTimeout(() => location.reload(), 0)',                                  # a new document
+    'document.querySelector("label").textContent = "Confirm your password"',   # other text
+    'document.querySelector("form").action = "/account/delete"',               # another destination
+])
+def test_a_judged_page_that_changed_is_never_filled(tmp_path, change):
+    """R7 in Chrome's DOM: after the look, the same address reloaded, the same form's text or
+    its destination changed: 0 fills, 0 posts, ``no_form/page_moved``."""
+    _read, _frames, reply, posts = _look_run(tmp_path, _LABELLED, between=[change], settle_s=1)
+    assert reply == {'status': 'no_form', 'reason': 'page_moved'}, reply
+    assert posts == []
+
+
+def test_the_credential_iframe_navigating_is_never_filled(tmp_path):
+    """The form in an iframe of the login origin is bound; that iframe loading again (the same
+    shape, another document) after the look: 0 posts."""
+    page = b'<p>Sign in below</p><iframe id=f src="/form"></iframe>'
+    read, frames, reply, posts = _look_run(
+        tmp_path, page, frame=_LABELLED, settle_s=1,
+        between=['document.getElementById("f").src = "/form?again"'])
+    assert read['found'] is True and len(frames['bound_frames']) == 2, frames
+    assert reply == {'status': 'no_form', 'reason': 'page_moved'}, reply
+    assert posts == []
+
+
+def test_an_unbound_iframe_navigating_never_stops_the_sign_in(tmp_path):
+    """Astra r5 in Chrome: a reCAPTCHA-like iframe that keeps navigating, between the look and
+    the sign-in and during it, is not bound: the sign-in goes on and posts once."""
+    churn = (b'<iframe id=c src="/frame"></iframe><script>let i=0;const t=setInterval(()=>{'
+             b'document.getElementById("c").src="/frame?i="+(++i);if(i>=30)clearInterval(t);},60);'
+             b'</script>')
+    read, frames, reply, posts = _look_run(tmp_path, _LABELLED + churn, settle_s=0.5)
+    assert frames == {'bound_frames': ['https://' + LOGIN + '/signin']}, frames
+    assert reply == {'status': 'logged_in', 'reason': 'completed'}, reply
+    assert [p[2] for p in posts] == ['/finish']
+
+
+def test_a_page_with_only_a_plain_field_is_judged_and_never_filled_unmapped(tmp_path):
+    """the-internet's reset form as served (a plain text e-mail field): planned for the check
+    (R9); with no mapping (the check said nothing about it) nothing is filled or posted."""
+    reset = (b'<form method=post action="/forgot_password"><label for=email>E-mail</label>'
+             b'<input type=text name=email id=email><button>Retrieve password</button></form>')
+    read, _frames, reply, posts = _look_run(tmp_path, reset)
+    assert read['found'] is True and [(f['id'], f['role']) for f in read['fields']] == [
+        ('f1', None)], read
+    assert reply == {'status': 'no_form', 'reason': 'no_form'}, reply
+    assert posts == []
+
+
+def test_r9_a_password_never_goes_into_a_text_field_the_page_marks_as_one(tmp_path):
+    """Astra (R9 round): a text field with autocomplete=current-password is no password field:
+    a look's sign-in never fills the password into it."""
+    page = (b'<form method=post action="/finish"><input type=text name=u>'
+            b'<input type=text name=p autocomplete=current-password><button>Login</button></form>')
+    _read, _frames, _reply, posts = _look_run(tmp_path, page, fields={'username': 'f1'})
+    for _path, body in _posted(posts):
+        assert not body.get('p', [''])[0]
+
+
+# R9: the check maps the fields the page does not mark (the-internet's plain username)
+_INTERNET = (b'<form method=post action="/finish"><label for=username>Username</label>'
+             b'<input type=text name=username id=username><label for=password>Password</label>'
+             b'<input type=password name=password id=password>'
+             b'<button class=radius type=submit><i> Login</i></button></form>')
+_SEARCH = (b'<form method=get action="/search"><label for=q>Search</label>'
+           b'<input type=text id=q name=q><button type=submit>Search</button></form>')
+
+
+def _posted(posts):
+    from urllib.parse import parse_qs
+    return [(p[2], parse_qs(p[3].decode())) for p in posts]
+
+
+def test_r9_a_plain_username_the_check_mapped_is_filled(tmp_path):
+    """the-internet as served: its username field marks no role; the read plans it as a plain
+    field, the mapping names it, and both fields are posted once."""
+    read, _frames, reply, posts = _look_run(tmp_path, _INTERNET, fields={'username': 'f1'})
+    assert [(f['id'], f['role']) for f in read['fields']] == [('f1', None), ('f2', 'password')]
+    assert reply == {'status': 'logged_in', 'reason': 'completed'}, reply
+    (path, body), = _posted(posts)
+    assert path == '/finish' and body['username'][0] and body['password'][0]
+
+
+def test_r9_a_search_box_beside_the_form_is_not_filled(tmp_path):
+    """The decoy: a search box in its own form before the sign-in form; the mapping names the
+    sign-in form's username (f2), so only the sign-in form is filled and sent."""
+    read, _frames, reply, posts = _look_run(tmp_path, _SEARCH + _INTERNET,
+                                            fields={'username': 'f2'})
+    assert [f['label'] for f in read['fields']] == ['Search', 'Username', 'Password']
+    assert reply == {'status': 'logged_in', 'reason': 'completed'}, reply
+    assert [p[0] for p in _posted(posts)] == ['/finish']
+
+
+def test_r9_a_password_never_goes_into_a_plain_field(tmp_path):
+    """A mapping that names a plain text field for the password: the driver gives that field no
+    role (a password goes only into a password field), so it is never filled."""
+    _read, _frames, reply, posts = _look_run(tmp_path, _INTERNET, fields={'password': 'f1'})
+    for _path, body in _posted(posts):
+        assert not body.get('username', [''])[0]
+
+
+def test_r9_a_marked_field_the_check_did_not_name_is_never_filled(tmp_path):
+    """Terra (R9 post-fix): a newsletter box the page marks as an email field, in its own form
+    after the-internet's form; the check names the login form's fields (f1, f2): the sign-in
+    posts that form once and never fills or sends the newsletter box."""
+    news = (b'<form method=post action="/subscribe"><label for=nl>Email</label>'
+            b'<input type=email id=nl name=nl><button type=submit>Subscribe</button></form>')
+    read, _frames, reply, posts = _look_run(tmp_path, _INTERNET + news,
+                                            fields={'username': 'f1', 'password': 'f2'})
+    assert [(f['id'], f['role']) for f in read['fields']] == [
+        ('f1', None), ('f2', 'password'), ('f3', 'username')], read
+    assert reply == {'status': 'logged_in', 'reason': 'completed'}, reply
+    (path, body), = _posted(posts)
+    assert path == '/finish' and body['username'][0] and body['password'][0]
+
+
+def test_r9_a_marked_field_beyond_the_plan_never_spoils_the_named_ones(tmp_path):
+    """Astra (R9 round 3): the plan holds at most 200 fields; a newsletter box the page marks as
+    an email field after 198 plain inputs is not in it. In the judged document only planned
+    fields count, so the named login form signs in (one post) and the box is never filled."""
+    filler = b''.join(b'<input type=text name=x%d>' % n for n in range(198))
+    news = (b'<form method=post action="/subscribe"><input type=email id=nl name=nl>'
+            b'<button type=submit>Subscribe</button></form>')
+    read, _frames, reply, posts = _look_run(tmp_path, _INTERNET + b'<div>' + filler + b'</div>'
+                                            + news, fields={'username': 'f1', 'password': 'f2'})
+    assert len(read['fields']) == 200 and read['fields'][-1]['id'] == 'f200', read['fields'][-1]
+    assert reply == {'status': 'logged_in', 'reason': 'completed'}, reply
+    assert [p for p, _b in _posted(posts)] == ['/finish']

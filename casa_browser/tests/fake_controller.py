@@ -57,6 +57,7 @@ class FakeController:
                  language_source: str | None = "home_assistant"):
         self.store = Store(store_path)
         self.clock = clock
+        self.observe_flags: list[bool] = []    # each observe's sign_in flag, in order
         self.configured = configured
         self.needs_locale = needs_locale
         self.language_source = None if needs_locale else language_source
@@ -171,7 +172,8 @@ class FakeController:
     async def events(self, run_id: str, after: int) -> list[SafeEvent]:
         return self.store.events_after(run_id, after)
 
-    async def observe(self, run_id: str) -> Observation:
+    async def observe(self, run_id: str, sign_in: bool = False) -> Observation:
+        self.observe_flags.append(sign_in)
         run = self._require_running(run_id)
         gen = self.generation.setdefault(run_id, 1)
         source_id = None

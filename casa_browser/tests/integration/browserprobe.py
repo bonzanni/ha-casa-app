@@ -128,6 +128,31 @@ async def _scenario(steps: list[dict]) -> list:
                             reader=reader)
                     if action == 'open_login':
                         out.append({'opened': True})
+                    elif action == 'login' and arg.get('auto'):
+                        # Signing in off the start page: the look's read, then (``verdict``
+                        # sign_in, scripted) the sign-in on the page as it is, each in its own
+                        # login driver session as the controller opens them.
+                        try:
+                            if arg.get('read', True):
+                                read = await client.read_sign_in('r1', 's1', credential_session)
+                                out.append(read)
+                                frames = credential_driver.sign_in_frames('r1', 's1')
+                                out.append({'bound_frames': [f.url for f in frames]})
+                        finally:
+                            await credential_driver.close_session(credential_session)
+                            credential_session = None
+                        for code in arg.get('between', ()):
+                            await mgr.session.page.evaluate(code, isolated_context=False)
+                        if arg.get('settle_s'):
+                            await asyncio.sleep(arg['settle_s'])
+                        sid = await credential_driver.open_session(
+                            'login', 'r1', 's1', mgr.session, proxy, arg['login_origins'])
+                        try:
+                            out.append(await client.login('r1', 's1', sid, auto=True,
+                                                          password_sent=arg.get('password_sent', False),
+                                                          fields=arg.get('fields')))
+                        finally:
+                            await credential_driver.close_session(sid)
                     elif action == 'login':
                         try:
                             reply = await client.login('r1', 's1', credential_session)

@@ -389,6 +389,13 @@ class FakeOps:
         self.log.append(("read", page.reads))
         return Reading(data, list(page.elements) if with_handles else None)
 
+    async def read_page_and_bound(self, page, frames, *, policy=None):
+        """One reading of the page (one frame here) as both the whole and the bound reading."""
+        import copy
+        self.log.append(("read_page_and_bound",))
+        whole = await self.read_page(page, None, policy=policy)
+        return whole, type(whole)(copy.deepcopy(whole.data), None)
+
     async def read_page(self, page, target=None, *, policy=None, with_handles=False):
         reading = await self.read(page.main_frame, target, with_handles=with_handles)
         for c in reading.data["controls"]:
@@ -589,13 +596,23 @@ class FakeBroker:
         self.codes = []               # test-private: the codes the broker received
         self.page_generation = None   # callable: the page a needs_code reply names
         self.filled_generations = []
+        # Signing in off the start page: the look's read (None: the page has no sign-in fields)
+        self.sign_in_read = None
+        self.sign_in_hook = None      # async callable(args) run inside read_sign_in
+        self.logins = []              # the arguments of every login, in order
 
     async def call(self, op, **args):
         self.log.append(("broker", op, args.get("run_id"), args.get("site_id")))
         if op == "end_run" and self.end_run_fail:
             self.end_run_fail -= 1
             return {"error": "unavailable"}
+        if op == "read_sign_in":
+            if self.sign_in_hook is not None:
+                await self.sign_in_hook(args)
+            read = self.sign_in_read(args) if callable(self.sign_in_read) else self.sign_in_read
+            return json.loads(json.dumps(read)) if read is not None else {"found": False}
         if op == "login":
+            self.logins.append(dict(args))
             self.guest_asks.append(args.get("guest_ask"))
             if self.login_hook is not None:
                 await self.login_hook(args)
@@ -668,7 +685,8 @@ class FakeBroker:
                      "save_attempt": ("run_id", "site_id", "capture_id", "title"),
                      "drop_attempt": ("run_id", "site_id", "capture_id"),
                      "fill_code": ("run_id", "site_id", "driver_session", "page_generation",
-                                   "code")}[op]
+                                   "code"),
+                     "read_sign_in": ("run_id", "site_id", "driver_session")}[op]
             return await self.call(op, **dict(zip(names, args)), **kw)
         return call
 
@@ -689,6 +707,11 @@ class FakeDriver:
 
     def take_readings(self, capture_id):
         return self.readings.pop(capture_id, {})
+
+    def sign_in_frames(self, run_id, site_id):
+        """The look's bound frames: the page's main frame here."""
+        session = self.manager.session
+        return (session.page.main_frame,) if session is not None else ()
 
     async def open_session(self, kind, run_id, site_id, browser_session, proxy_client,
                            login_origins, reader=None):

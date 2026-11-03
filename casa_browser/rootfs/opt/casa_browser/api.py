@@ -83,7 +83,7 @@ class Controller(Protocol):
     async def screenshot(self, run_id: str, screenshot_id: str) -> bytes: ...
     async def take_screenshot(self, run_id: str) -> str: ...
     async def sources(self, run_id: str) -> list: ...
-    async def observe(self, run_id: str): ...
+    async def observe(self, run_id: str, sign_in: bool = False): ...
     async def act(self, run_id: str, action): ...
     async def download(self, run_id: str, handle: str): ...
     async def search(self, run_id: str, query: str): ...
@@ -370,10 +370,21 @@ def _empty(body: Any) -> None:
         raise ProtocolError("unsupported")
 
 
+def _observe_body(body: Any) -> bool:
+    """``{}`` (Fido 0.1.20: the page) or ``{"sign_in": <bool>}`` (Fido 0.1.21: the page, looked
+    at first for the site's sign-in); anything else is refused."""
+    if body == {}:
+        return False
+    if not isinstance(body, dict) or set(body) != {"sign_in"} or type(body["sign_in"]) is not bool:
+        raise ProtocolError("unsupported")
+    return body["sign_in"]
+
+
 async def observe(request: web.Request) -> web.Response:
     _no_query(request)
     run_id = await _run_id(request)
-    _empty(await _body(request))
+    if _observe_body(await _body(request)):
+        return _ok((await _ctl(request).observe(run_id, sign_in=True)).to_wire())
     return _ok((await _ctl(request).observe(run_id)).to_wire())
 
 

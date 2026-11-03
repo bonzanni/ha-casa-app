@@ -173,7 +173,7 @@ Routes (`{run}` scoped routes answer only for that run's own ids):
 | `GET /v1/sites`, `POST /v1/control/sites` | `{sites: [{site_id, display_name, status}]}`; `{site_id}` |
 | `POST /v1/runs`, `GET /v1/runs?state=active`, `GET /v1/runs/{run}` | the run (201 new, 200 repeat); `{runs: [ActiveRun]}`; the run |
 | `GET /v1/runs/{run}/events?after=N` | `{events: [...]}` in sequence order |
-| `POST /v1/runs/{run}/{observe,action,search,download,archive}` | `Observation`; action result; `Observation`; file record; file record |
+| `POST /v1/runs/{run}/{observe,action,search,download,archive}` | `Observation` (with `{"sign_in": true}`, a page with sign-in fields answers a `sign_in` judgement first: [`casa-browser-signin.md`](casa-browser-signin.md)); action result; `Observation`; file record; file record |
 | `POST /v1/runs/{run}/live` (`login`, `assist`), `POST /v1/control/runs/{run}/live-complete` | live-view envelope; the run |
 | `POST /v1/runs/{run}/{finish,cancel}`, `POST /v1/control/sites/{site}/forget` | the run; `{site_id, status}` |
 | `GET /v1/records?requester_id=&since=`, `GET /v1/notices?after=N` | `{records}`; `{notices: [{seq, …}]}` |

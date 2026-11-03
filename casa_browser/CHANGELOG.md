@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.6] - 2026-11-03
+
+### Added
+
+- A site with a 1Password item now signs in by itself on any of its pages that shows its sign-in form, not only on its start page. Before, a site whose start page has no form (registered by hand, say) asked you for a live view as soon as Fido opened its "Log in" page. Casa first checks that the page really is the site's sign-in and which of its fields take your username and password (so a site that does not mark its username field, such as the-internet's test login, signs in too), the browser signs in only on the very page that was checked (a page that changes before the sign-in is left alone), sends your password at most once there, and Fido is told "Casa Browser signed in to *site* by itself." A sign-in that did not work is not tried again by itself in the same task; one that worked may sign in once more later in the task. This needs Fido 0.1.21 or later and Casa 0.346.2 or later.
+
 ## [0.1.5] - 2026-11-03
 
 ### Changed
