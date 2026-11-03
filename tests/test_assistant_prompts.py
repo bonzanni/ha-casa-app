@@ -1248,13 +1248,23 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # `browse_memory_day`. Measured with `difflib` over base-vs-new compiled text,
 # word by word: exactly ONE `insert` of 67 words on each `butler:*` carrier,
 # that block; the six other carriers byte-identical. No retention claim.
+# MOVED (v0.347.1), the three `assistant:*` carriers. The Core paragraph on
+# a failed delegation keeps "never say nothing happened or nothing changed"
+# and now asks for plain words: that it stopped before finishing, what it may
+# already have done that matters to the person, and what they can do now; the
+# list of tools it called is for the assistant to judge by, never passed on
+# (on casa-test the assistant passed on "read pages about 28 times, done
+# around 21 searches"). Measured with `difflib` over base-vs-new compiled
+# text, word by word: one insert and two replaces inside that paragraph on
+# each `assistant:*` carrier and nothing else; the six other carriers
+# byte-identical. No retention claim.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
-        "8dba7774800013792a6eaeba6fdbec283839f3d5d326d3b7ad07f73f27ff3973",
+        "9002fe26031be571558305515656c9ad9dae14df3c35507488eb3eb14a202c37",
     "assistant:text":
-        "be273da3b6dba9ed8b32cc20612703b1e1b24141aa2562e629e22a0a881964eb",
+        "3701afdd59f3a55601784665ba16a7e12cff1af936f6dc04017e6f430bf710ec",
     "assistant:voice":
-        "d53786652253d8e0652d22f1add0b4af9b1bd66594b41c4d28a385ab09c25616",
+        "b8b3c859f29e0f96d39e4d2ff3e291e145249aca45069752b0b63c0a6f751ae7",
     "butler:restricted_webhook":
         "817241ec5da254b2fef07d2d0e6c7db0073bf1965a28be8d9b6818e59bc7f60b",
     "butler:text":
@@ -2262,3 +2272,32 @@ def test_asking_first_is_a_sync_delegation_on_the_assistants_text_projection():
         needle = _collapse_ws(sentence)
         assert {name: _collapse_ws(body).count(needle) for name, body in compiled} == {
             name: int(name == "assistant:text") for name, _ in compiled}, sentence
+
+
+_FAILED_DELEGATION_RULE = (
+    "A failed delegation may already have changed things. If its message lists "
+    "tools the specialist called before stopping, never say nothing happened or "
+    "nothing changed: say in plain words that it stopped before finishing, what it "
+    "may already have done that matters to the person (a message sent, a file "
+    "saved, an order placed), and what they can do now. That list is for you to "
+    "judge this by; never pass on its tool names or counts.")
+
+
+def test_a_failed_delegation_is_told_in_plain_words_not_its_tool_list():
+    """casa-test 2026-11-03: a browsing delegation hit its turn limit and its
+    notice listed the calls it made ("run_act ×28, run_observe ×28, run_search
+    ×21, …"); the assistant, told to "say it stopped partway and what it
+    called", told the operator it had "opened and read pages about 28 times,
+    done around 21 searches". The rule now asks for what happened in the
+    person's terms and keeps the list for the assistant to judge by. Every
+    assistant carrier and the fallback prompt carry it once; no other resident
+    does; the old instruction is gone."""
+    rule = _collapse_ws(_FAILED_DELEGATION_RULE)
+    compiled = _compiled_resident_carriers()
+    assert {name: _collapse_ws(body).count(rule) for name, body in compiled} == {
+        name: int(name.startswith("assistant:")) for name, _ in compiled}
+    assert all("say it stopped partway and what it called" not in _collapse_ws(body)
+               for _, body in compiled)
+    fallback = (_casa_root() / "defaults/agents/assistant/prompts/system.md").read_text(
+        encoding="utf-8")
+    assert _collapse_ws(fallback).count(rule) == 1

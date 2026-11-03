@@ -404,6 +404,24 @@ async def test_admission_branches():
 
 
 @pytest.mark.asyncio
+async def test_a_capability_refused_off_his_turn_names_casas_rule_and_his_remedy():
+    """casa-test 2026-11-03: refused on a follow-up turn nobody typed, the browsing
+    specialist said "Casa Browser wouldn't accept the request", and the assistant later told
+    the operator "Casa Browser only takes those directly from you". The rule is Casa's: the
+    refusal says so, and what he can do."""
+    store, _ = _store()
+    hook = rb.make_plugin_admission_hook("finance", _map(), client_id="c1", store=store)
+    with _Origin(None):
+        reason = _deny_reason(await hook(_pre(FETCH), "t", {}))
+    assert reason.startswith("not executed: Casa runs a tool that returns a capability only "
+                             "on a turn the operator started himself")
+    assert reason.count("This is Casa's rule, not the plugin's or its app's.") == 1
+    assert reason.endswith("if the work is still wanted, he can send the request again "
+                           "himself.")
+    assert store.inflight_count() == 0
+
+
+@pytest.mark.asyncio
 async def test_admission_arms_a_declared_consumer_and_denies_a_stale_reference():
     store, _ = _store()
     hook = rb.make_plugin_admission_hook("finance", _map(), client_id="c1", store=store)

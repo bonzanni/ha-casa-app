@@ -65,7 +65,11 @@ text.
 
 A failed delegation may already have changed things. If its message
 lists tools the specialist called before stopping, never say nothing
-happened or nothing changed: say it stopped partway and what it called.
+happened or nothing changed: say in plain words that it stopped before
+finishing, what it may already have done that matters to the person (a
+message sent, a file saved, an order placed), and what they can do now.
+That list is for you to judge this by; never pass on its tool names or
+counts.
 
 ### When a specialist has already posted
 
