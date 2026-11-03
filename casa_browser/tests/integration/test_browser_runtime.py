@@ -96,6 +96,7 @@ def test_chrome_signin_disabled():
     ext = [r for r in rows if r.startswith("ExtensionSettings ")]
     assert ext and ext[0].endswith("Platform Machine Mandatory OK")
     assert '"installation_mode":"force_installed"' in ext[0]
+    assert '"toolbar_pin":"force_pinned"' in ext[0]      # Chrome validates the key: still OK
 
 
 def _chrome_ui_height() -> int:

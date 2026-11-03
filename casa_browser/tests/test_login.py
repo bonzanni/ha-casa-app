@@ -943,6 +943,32 @@ async def test_a_page_that_only_moved_is_told_apart(tmp_path):
     await server.close_session(sid)
 
 
+@pytest.mark.parametrize('where', ['check', 'set'])
+@pytest.mark.parametrize('connected', [False, True])
+async def test_an_element_the_page_re_rendered_away_is_a_page_change(tmp_path, where, connected):
+    """The residual of v0.1.0: a field the page re-rendered away between the read and the fill
+    (its handle no longer connected, no navigation) is page_changed — the broker reads the page
+    again — never refused, which interrupted the run. A connected field that fails its check or
+    its set is still refused."""
+    from unittest.mock import AsyncMock
+    server, _, session, page, proxy = driver(tmp_path)
+    sid = await server.open_session('login', 'run', 'site', session, proxy, ('https://login.example',))
+    s, frame, element, generation = _approved(server, sid)
+
+    async def evaluate(script, arg=None):
+        if script == 'e => e.isConnected':
+            return connected
+        return False                               # the set fails
+    if where == 'check':
+        element.is_visible = AsyncMock(return_value=False)
+    element.evaluate = AsyncMock(side_effect=evaluate)
+    reply = await server.dispatch({'op': 'fill', 'driver_session': sid, 'page_generation': generation,
+                                   'field_handle': 'field', 'value': canary()})
+    assert reply == ({'error': 'refused'} if connected else {'error': 'page_changed'})
+    assert not s.departed
+    await server.close_session(sid)
+
+
 @pytest.mark.parametrize('how', ['round_trip', 'stays_away', 'detached'])
 async def test_an_approved_frame_that_left_ends_the_sign_in(tmp_path, how):
     """Slice 5u (Astra p3/p4): once a frame holding a live handle left its origin or the page,

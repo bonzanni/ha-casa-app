@@ -214,6 +214,21 @@ class Pins:
         return entry[0]
 
 
+def _reach(policy: RunPolicy) -> tuple:
+    """What ``policy.decide`` reads of a policy, its sites' provider bindings aside."""
+    return (policy.run_id, policy.mode, policy.site_grants, policy.login_lease,
+            policy.manual_lease, policy.active_session,
+            tuple((s.site_id, s.origins, s.login_origins) for s in policy.sites))
+
+
+def _only_adds_bindings(old: RunPolicy | None, new: RunPolicy) -> bool:
+    """*new* is *old* with provider bindings added and nothing else ``decide`` reads changed:
+    a binding only widens what a policy admits, so *new* refuses nothing *old* admitted."""
+    return (old is not None and _reach(old) == _reach(new)
+            and all(b in n.provider_bindings
+                    for o, n in zip(old.sites, new.sites) for b in o.provider_bindings))
+
+
 class EnforcingAddon:
     def __init__(self, *, resolver: Callable[[str, int], Awaitable] = netfloor.default_resolver,
                  broker_hosts: frozenset[str] = frozenset(), extension_hosts: frozenset[str] = frozenset(),
@@ -244,8 +259,8 @@ class EnforcingAddon:
         self.policy: RunPolicy | None = None
         self.epoch = 0  # bumped on every policy or lease change
         self.login_close_armed_at: float | None = None
-        # Slice 5r: a login lease admitted a request the policy without it refuses, and no close
-        # of every connection has happened since.
+        # Slice 5r: a login or manual lease admitted a request the policy without leases
+        # refuses, and no close of every connection has happened since.
         self.lease_only_admitted = False
         self.pins = Pins()
         self.events: collections.deque[PrivateRequestEvent] = collections.deque()
@@ -305,11 +320,18 @@ class EnforcingAddon:
 
     def install(self, policy: RunPolicy) -> int:
         """Replace the policy in one assignment and close every browser connection, so no
-        request admitted under the old policy can still be sent once this returns."""
+        request admitted under the old policy can still be sent once this returns — unless the
+        new policy only adds provider bindings to the old one (a binding a live view's sign-in
+        taught), which refuses nothing the old one admitted: closing would only cut the page
+        the operator just signed into while it still loads."""
         same = (self.policy is not None and self.policy.run_id == policy.run_id
                 and self.policy.active_session == policy.active_session
                 and self.policy.manual_lease == policy.manual_lease)
-        self._changed(policy, close_all=True, purpose=self.manual_purpose if same else None)
+        widens = _only_adds_bindings(self.policy, policy)
+        self._changed(policy, close_all=not widens,
+                      purpose=self.manual_purpose if same else None)
+        if widens:
+            self._authority_closed()
         self.login_close_armed_at = None
         if not same:
             self._candidates.clear()
@@ -340,8 +362,15 @@ class EnforcingAddon:
         return self.open_window()
 
     def end_manual(self, lease_id: str) -> None:
+        """Done in the live view. Like ``end_login``: every connection is closed only when a
+        lease admitted a request the policy without leases refuses (a document on another
+        granted site's origin) and no close of every connection happened since; otherwise the
+        page the operator leaves keeps loading."""
         if self.policy and self.policy.manual_lease and self.policy.manual_lease.lease_id == lease_id:
-            self._lease("manual_lease", None, close_all=True, purpose=None)
+            close_all = self.lease_only_admitted
+            self._lease("manual_lease", None, close_all=close_all, purpose=None)
+            if not close_all:
+                self._authority_closed()
             self._candidates.clear()
 
     def begin_login(self, lease: Lease):
@@ -449,11 +478,12 @@ class EnforcingAddon:
                       hop=hop)
 
     def _lease_only(self, meta: RequestMeta, hop: bool) -> bool:
-        """The login lease is what admits *meta*: the policy without it refuses it."""
+        """A lease is what admits *meta*: the policy without its login and manual leases
+        refuses it."""
         p = self.policy
-        return p is not None and p.login_lease is not None and not decide(
-            meta, dataclasses.replace(p, login_lease=None), extra_hosts=self.extension_hosts,
-            tagger=self.tagger, hop=hop).allow
+        return p is not None and (p.login_lease is not None or p.manual_lease is not None) and not decide(
+            meta, dataclasses.replace(p, login_lease=None, manual_lease=None),
+            extra_hosts=self.extension_hosts, tagger=self.tagger, hop=hop).allow
 
     def _recheck_sockets(self):
         for key, sock in list(self.sockets.items()):

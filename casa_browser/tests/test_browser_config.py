@@ -85,9 +85,12 @@ def test_chrome_signin_disabled():
     assert POLICY["AutofillAddressEnabled"] is False and POLICY["AutofillCreditCardEnabled"] is False
     ext = POLICY["ExtensionSettings"]
     assert set(ext) == {ONEPASSWORD_EXTENSION}
+    # Pinned to the toolbar, so the operator finds 1Password in a live view (phone check
+    # 2026-11-02).
     assert ext[ONEPASSWORD_EXTENSION] == {
         "installation_mode": "force_installed",
-        "update_url": "https://clients2.google.com/service/update2/crx"}
+        "update_url": "https://clients2.google.com/service/update2/crx",
+        "toolbar_pin": "force_pinned"}
 
 
 # --------------------------------------------------------------------------- launcher checks

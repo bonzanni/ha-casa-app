@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.5] - 2026-11-03
+
+### Changed
+
+- The 1Password icon is always pinned to the browser's toolbar, so you find it straight away in a live view.
+
+### Fixed
+
+- Pressing Done in the live view no longer cuts off the page you just signed into while it is still loading, so Fido no longer finds it stuck on a spinner. The same goes for the moment right after a sign-in through another provider (such as Google) is remembered for the site.
+- An automatic sign-in no longer stops the task when the site redraws its form while it is being filled (some sites rebuild the password field or the button as you type): Casa reads the page again and signs in.
+- A login you type in the live view on a site that offers passkeys is now saved with its username or email. Such sites mark that field for passkeys, and the save skipped it: the login was saved without a username, and a sign-in with only your email was not saved at all.
+
 ## [0.1.4] - 2026-11-02
 
 ### Changed

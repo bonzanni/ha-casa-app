@@ -108,7 +108,8 @@ starts ([`casa-browser-runs.md`](casa-browser-runs.md)).
 ## Managed policy
 
 `casa_browser/rootfs/etc/opt/chrome/policies/managed/casa.json` force-installs the official
-1Password extension from the Chrome Web Store, disables browser sign-in, sync, the password
+1Password extension from the Chrome Web Store and pins its icon to the toolbar
+(`toolbar_pin: force_pinned`, so the operator finds it in a live view), disables browser sign-in, sync, the password
 manager and its leak check, metrics reporting, DNS-over-HTTPS and the built-in DNS client,
 QUIC, non-proxied WebRTC UDP, and address and card autofill (`AutofillAddressEnabled` and
 `AutofillCreditCardEnabled` false — the first also turns off single-field form history, whose

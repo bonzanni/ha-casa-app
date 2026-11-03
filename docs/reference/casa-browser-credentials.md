@@ -61,7 +61,8 @@ least one read-only user is `readonly`, one with none `not_readonly`, unreadable
 Login drives the controller only through the driver RPC socket. It settles and inspects
 fields for at most six steps and 120 seconds, fills known roles only on a login origin,
 reads each OTP immediately before use, and stops on repeated fields with an error.
-A page that changed under a step (`page_changed`: only the view generation moved) is settled
+A page that changed under a step (`page_changed`: only the view generation moved, or the page
+re-rendered one of the step's elements away) is settled
 and read again, at most eight times per login and without taking a step; past that the reply
 is `page_unsettled` (the live view). A read with no fields after the step's own fields were
 found is `page_unsettled` too, never a completion. A sign-in that has filled nothing reads a
@@ -140,7 +141,9 @@ uses visible, enabled inputs' types and autocomplete roles, with one submit cont
 form. Discovery accepts a submit control only when its form owner is the login form,
 and submit retains and rechecks that owner and the control's submit type immediately
 before clicking. Fill and submit require the element to remain connected to the bound
-frame's document at the moment of action. Fill uses the native input setter in Patchright's isolated world and verifies the
+frame's document at the moment of action; when a check or an action fails on an element no
+longer connected (a re-render without a navigation), the reply is `page_changed`, not `refused`.
+Fill uses the native input setter in Patchright's isolated world and verifies the
 same element's value; it sends no keyboard events carrying a credential. Every action
 rechecks its frame origin and generation. Broker-origin metadata narrows the controller's
 login origins for production login calls. Field discovery, settling, account-origin checks
@@ -159,65 +162,8 @@ The credential window keeps typed guest values out of request events.
 The driver accepts the proxy's account origins only when status names the session's exact
 run and site; a policy switch to another run or site causes a fixed refusal.
 
-The driver's capture code runs in isolated worlds on the account and login origins,
-reinstalls on frame navigation and new pages, and reads on input, change, submit, pagehide,
-a 500 ms timer and final capture collection. A new document that does not take the reader
-is tried again a few times (`login.INSTALL_ATTEMPTS`); a document of a capture origin that
-never takes it marks the capture incomplete, so nothing of it is saved automatically (an
-incomplete attempt is never judged). Each capture supplies a separate random nonce
-only through isolated-world evaluation arguments; the receiver drops binding calls without
-that nonce. Each payload includes the isolated world's current origin, checked against
-capture origins without evaluating the source frame, so delivery survives document teardown.
-In a document that existed when the binding was exposed the isolated code calls the raw
-CDP binding with its JSON dispatch payload and supplies the callback map used for delivery
-acknowledgements; in a document created later it calls the driver library's wrapper with
-the arguments themselves (the two take different shapes).
-Final collection waits for those acknowledgements before wiping the buffer. A page that
-finds the binding name cannot supply capture candidates without the nonce.
-A field is a username when its autocomplete says
-username or email, or it is an email field, or it is a plain text field with no autocomplete
-of its own beside a password field (its form, or the page when there is none). A field that was a password field when the reader
-first saw it — present at a read, or changed from `password` while the reader watched the page
-— stays one for the whole capture, whatever type the page gives it later, and a field once
-reported as a password field reports only password values. A value seen as a password anywhere
-in the capture is never a username candidate, whatever field carried it — a "show password"
-toggle, a re-read, a text clone, a value since replaced or dropped for room (operator ruling
-E-T14-3 = Q1): the buffer remembers every password value seen for the capture's life, at most
-`login.MAX_SEEN_PASSWORDS`; past that it offers no username at all and says the capture is
-incomplete (with exactly that many remembered, a re-read already counts as past it). What
-remains: a value typed only into a field the reader never saw as a password field — one text
-from the start, or a copy built off the page and inserted as text — cannot be told from
-text. New and
-confirmation passwords canonicalise to password candidates. Each read names its field (an id
-per field of the document), and a field's latest value replaces its earlier ones — typing
-reports every prefix, but one typed value is one candidate (`login.CaptureBuffer`). The
-buffer keeps eight fields' values, each at most 1 KiB; overflow marks it incomplete and
-drops the oldest. Taking the capture
-wipes the driver copy and closes its session. `arm_capture_then` waits for the broker's
-acknowledgement before exposing live input.
-
-The broker accepts capture only for login and assist on a registered account site of the
-run. Before asking the driver to arm it durably records a pending capture containing only
-metadata. Taking the capture (`_review_capture`, internal: at `take_attempt`, `end_capture`
-or `end_run`; no broker op returns the values) reuses that row, takes the driver's values and
-last sign-in attempt once into broker memory, and leaves out values equal to the linked
-item's. Values stay in broker memory for fifteen minutes from the take; a live capture has no
-expiry before it. A confirmed arming refusal closes the row silently; an uncertain arming
-outcome or restart with an open row leaves a warning. Empty comparisons close silently unless
-capture was incomplete. The one save is the automatic one after a `signed_in` verdict
-(`save_attempt`, its consent `auto:<capture id>`; [`casa-browser-signin.md`](casa-browser-signin.md)):
-it updates the registered item or creates a Login — titled with the site's registered name,
-which `register_capture` carries as `title` — and registers its id. Confirmation requires the
-write's SDK reply or, for an uncertain update, a re-read containing the chosen values; version
-changes alone never confirm a save. `end_capture` is the live view's end (the run controller
-calls it at Done): a capture never taken is taken first, then dropped, so the site's next live
-view can capture again; ending a capture already ended changes nothing. An unresolved end of a
-changed or incomplete capture leaves a warning.
-
-Capture cannot retain an eventless set/send/clear between polls. A generated value never seen
-by capture must be set again to one the operator can see. A controller crash loses unsaved in-memory values.
-Python cannot guarantee erasure of memory. A site's script can retain a credential and
-send it after the credential window closes; normal private event recording then resumes.
+The live view's capture — the driver's reader and the broker's capture rows — is in
+[`reference/casa-browser-signin.md`](../reference/casa-browser-signin.md).
 
 Provider learning accepts one tagged candidate followed by its callback only after a
 signed-in outcome. It returns three validated tags and a registered provider origin,
@@ -238,8 +184,8 @@ exception text. Calls for one site serialize under a lock; other sites can proce
 The broker runtime directory becomes `0711` for traversal, its config stays `0600`, and
 the broker socket is `0660` with controller group ownership.
 
-The controller's broker client imports notices at its explicit startup hook, after a
-reply containing notice ids, and through its refresh hook before delivery. It substitutes
+The controller's broker client imports notices at its explicit startup hook and through
+its refresh hook before delivery. It substitutes
 the controller's site display name and uses `broker:<notice_key>` as the store deduplication
 key. Notice replies paginate within the wire bound, and replay starts from zero so a
 restored controller can recover its delivery copy.
@@ -263,7 +209,7 @@ Save rows move from `intent` to `attempt` and then to `vault_written`, `vault_fa
 as `vault_failed`, and other failures as `vault_unknown`. A confirmed write closes
 its save row in one transaction; the capture becomes `capture_saved` in it only when all its
 roles are resolved, and earlier failed or unknown save rows for the capture close with it.
-An automatic save issues no `credential_saved` notice (the agent says it).
+A save issues no notice: every save is the automatic one, which the agent's reply tells.
 Startup recovery turns unresolved saves and
 `capture_pending` rows into durable `credential_unknown` notices, without reading an item
 version or claiming a save. A warning names what was left unsaved — "a username you typed on

@@ -62,15 +62,11 @@ class Journal:
                 (op_id, kind, site, run, capture_id, item_id, item_version_before, consent_id))
 
     def _notice(self, row, kind, unsaved='password'):
-        """``unsaved`` words a warning by what was left unsaved: ``username`` when only a
-        username was (casa-test F11), else a password — also when nothing is known."""
+        """A warning, worded by what was left unsaved: ``username`` when only a username was
+        (casa-test F11), else a password — also when nothing is known. A save issues none: every
+        save is the automatic one, which the agent's own reply tells (slice 5)."""
         source = ('capture:' + row['capture_id'] if row['capture_id'] else 'save:' + row['op_id']) + ':' + kind
-        if kind == 'credential_saved' and (row['consent_id'] or '').startswith('auto:'):
-            return   # a live-view login saved automatically: Fido's own reply says it (slice 5)
-        if kind == 'credential_saved':
-            # Every save is the operator's own (a live view's Save or the password he entered).
-            text = 'Saved the login for {display_name}'
-        elif unsaved == 'username':
+        if unsaved == 'username':
             text = 'a username you typed on {display_name} was not saved to the vault'
         else:
             text = ('a password you changed on {display_name} may not be in the vault — '
@@ -95,7 +91,6 @@ class Journal:
             self._db.execute('UPDATE operations SET state=?, item_version=? WHERE op_id=?',
                              (state, item_version, op_id))
             if state == 'vault_written':
-                self._notice(row, 'credential_saved')
                 self._db.execute('UPDATE operations SET closed=1 WHERE op_id=?', (op_id,))
                 if capture_resolved:
                     changed = self._db.execute("""UPDATE captures SET state='capture_saved'

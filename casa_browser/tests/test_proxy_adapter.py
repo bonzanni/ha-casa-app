@@ -236,7 +236,9 @@ def test_revocation_closes_open_websocket(tmp):
                 ws = await s.ws_connect(wss, proxy=hz.proxy_url, timeout=aiohttp.ClientWSTimeout(ws_receive=5))
                 await ws.send_str("one")
                 assert (await ws.receive(timeout=5)).data == "echo:one"
-                await ProxyClient(hz.control_path).install(account_policy(revision=2))
+                # a changed policy (a new browser generation); a reinstall that only adds
+                # provider bindings closes nothing (test_an_install_that_only_adds_a_binding…)
+                await ProxyClient(hz.control_path).install(account_policy(revision=2, generation=2))
                 try:
                     await ws.send_str("two")
                     msg = await ws.receive(timeout=3)
@@ -991,15 +993,18 @@ def test_killed_request_resend_stays_in_window(tmp_path, kind):
                            binding_key_path=tmp_path / 'proxy' / 'binding.key') as hz:
             a = hz.addon
             provider, page = _provider_site(hz)
-            a.install(account_policy(sites=(provider,)))
+            second = site('s2', origins=('https://other.example',), login=())
+            a.install(account_policy(sites=(provider, second)))
             lease = Lease('l', 'r1', 's1', 1, kind)
             token = a.begin_login(lease) if kind == 'login' else a.begin_manual(lease, purpose='login')
-            if kind == 'login':
-                # slice 5r: the end of a login lease withdraws authority only after it admitted
-                # what the policy without it refuses (here the provider's sign-in page)
-                assert (await hz.fetch('GET', page, headers=NAV))[0] == 200
-                hz.fixture.request_seen.clear()
-                hz.fixture.receipts.reset()
+            # slice 5r: the end of a lease withdraws authority only after it admitted what the
+            # policy without leases refuses (the provider's sign-in page under the login lease,
+            # another granted site's page under the manual one)
+            if kind == 'manual':
+                page = 'https://other.example/'
+            assert (await hz.fetch('GET', page, headers=NAV))[0] == 200
+            hz.fixture.request_seen.clear()
+            hz.fixture.receipts.reset()
             value = canary()
             # Hold the admitted response so withdrawal kills a real in-flight POST.
             gate = hz.fixture.response_hold = asyncio.Event()
@@ -1726,6 +1731,8 @@ def test_lease_only_mark_ends_only_with_a_close_of_every_connection(tmp_path, th
                 a.arm_login_close('l')
                 assert (await hz.fetch('GET', 'https://login.example/landing', headers=NAV))[0] == 200
                 assert a.policy.login_lease is None and a.lease_only_admitted
+                # still held: the provider request has not reached the site
+                assert not any(r[1] == 'provider.example' for r in hz.fixture.receipts.requests)
                 if then == 'next_lease':
                     a.begin_login(Lease('m', 'r1', 's1', 1, 'login'))
                     a.end_login('m')
@@ -1761,4 +1768,104 @@ def test_lease_only_mark_ends_only_with_a_close_of_every_connection(tmp_path, th
                 gate.set()
                 hz.fixture.response_hold = hz.fixture.hold_paths = None
                 await asyncio.gather(held, return_exceptions=True)
+    run(scenario)
+
+
+# -- the v0.1.0 residual: Done in the live view and a learned binding cut nothing either --------
+
+async def _held_pair(hz):
+    """A site script and a cross-site call of its page, both held at the site until released:
+    the browser's connections are open while a policy change lands."""
+    gate = hz.fixture.response_hold = asyncio.Event()
+    hz.fixture.hold_paths = {'/app.js', '/v1/params'}
+    hz.fixture.receipts.reset()
+    held = [asyncio.create_task(hz.fetch('GET', 'https://login.example/app.js', headers=SCRIPT)),
+            asyncio.create_task(hz.fetch('POST', 'https://other.example/v1/params',
+                                         headers=FETCH, data=b'{}'))]
+    for _ in range(300):
+        if len(hz.fixture.receipts.requests) == 2:
+            break
+        await asyncio.sleep(0.01)
+    assert len(hz.fixture.receipts.requests) == 2
+    return gate, held
+
+
+async def _released(hz, gate, held):
+    """Release the site; the statuses, and how often the site saw the script."""
+    try:
+        # the close takes effect on the proxy's loop: give it the time before the site answers
+        await asyncio.wait(held, timeout=1)
+        gate.set()
+        statuses = [(await asyncio.wait_for(t, 5))[0] for t in held]
+    finally:
+        gate.set()
+        hz.fixture.response_hold = hz.fixture.hold_paths = None
+        await asyncio.gather(*held, return_exceptions=True)
+    seen = [r[2] for r in hz.fixture.receipts.requests]
+    assert seen.count('/v1/params') == 1
+    return statuses, seen.count('/app.js')
+
+
+@pytest.mark.parametrize('lease_only', [False, True])
+def test_end_manual_closes_only_what_a_lease_alone_admitted(tmp_path, lease_only):
+    """Done in the live view closed every browser connection, cutting the page the operator
+    had just signed into while it still loaded (the residual of v0.1.0). Requests in flight
+    that the policy without the lease admits now complete. Once the manual lease admitted what
+    that policy refuses (a document on another granted site's origin), Done still closes every
+    connection."""
+    async def scenario():
+        async with Harness(tmp_path, HOSTS) as hz:
+            a = hz.addon
+            second = site('s2', origins=('https://other.example',), login=())
+            a.install(account_policy(sites=(site(), second)))
+            a.begin_manual(Lease('m', 'r1', 's1', 1, 'manual'), purpose='login')
+            if lease_only:
+                assert (await hz.fetch('GET', 'https://other.example/', headers=NAV))[0] == 200
+                assert a.lease_only_admitted
+            gate, held = await _held_pair(hz)
+            assert a.lease_only_admitted is lease_only
+            a.end_manual('m')
+            assert a.policy.manual_lease is None and not a.lease_only_admitted
+            statuses, scripts = await _released(hz, gate, held)
+            if lease_only:
+                # both connections closed: the call fails, and the client sends the GET again
+                # on a new connection (aiohttp's RFC 9112 retry of an idempotent request)
+                assert statuses == [200, None] and scripts == 2
+            else:
+                assert statuses == [200, 200] and scripts == 1
+            # without the lease the other site's page is an ordinary refused navigation
+            assert (await hz.fetch('GET', 'https://other.example/', headers=NAV))[0] == 403
+    run(scenario)
+
+
+@pytest.mark.parametrize('change', ['binding_added', 'origin_removed', 'new_generation'])
+def test_an_install_that_only_adds_a_binding_cuts_nothing(tmp_path, change):
+    """The binding a live view's sign-in taught reaches the proxy with an install right after
+    Done; that install closed every connection (the residual of v0.1.0). A policy that only adds
+    provider bindings refuses nothing the old one admitted: it cuts nothing. Any other change
+    still closes every connection."""
+    async def scenario():
+        async with Harness(tmp_path, HOSTS,
+                           binding_key_path=tmp_path / 'proxy' / 'binding.key') as hz:
+            a = hz.addon
+            provider, _ = _provider_site(hz)
+            two = ('https://site.example', 'https://more.example')
+            plain = dataclasses.replace(provider, provider_bindings=(), origins=two)
+            a.install(account_policy(sites=(plain,)))
+            gate, held = await _held_pair(hz)
+            if change == 'binding_added':
+                learned = dataclasses.replace(provider, origins=two, revision=2)
+                after = account_policy(sites=(learned,), revision=2)
+            elif change == 'origin_removed':
+                after = account_policy(sites=(dataclasses.replace(
+                    plain, origins=two[:1], revision=2),), revision=2)
+            else:
+                after = account_policy(sites=(plain,), revision=2, generation=2)
+            a.install(after)
+            assert a.policy == after
+            statuses, scripts = await _released(hz, gate, held)
+            if change == 'binding_added':
+                assert statuses == [200, 200] and scripts == 1
+            else:
+                assert statuses == [200, None] and scripts == 2
     run(scenario)

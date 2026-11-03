@@ -23,8 +23,6 @@ class BrokerClient:
                                    op, **args)
         except BrokerError as error:
             return {'error': error.code}
-        if self.store is not None and reply.get('notice_ids'):
-            await self.import_notices()
         return reply
 
     async def start(self):

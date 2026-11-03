@@ -9,7 +9,7 @@ last_reviewed: 2026-11-01
 ## Scope
 
 How a site that is not set up gets signed in from one operator tap (the sign-in card), and how a
-login the operator typed in a live view is saved. The broker's registry, vault facade and the
+login the operator typed in a live view is captured and saved. The broker's registry, vault facade and the
 automatic login flow are in [`reference/casa-browser-credentials.md`](../reference/casa-browser-credentials.md);
 the vault question (`login_item`) and the code route are in
 [`reference/casa-browser-actions.md`](../reference/casa-browser-actions.md).
@@ -44,6 +44,69 @@ view when none did (no second check); a start page that does not open is answere
 nothing. A site whose account then lives on another host is refused there (`site_lock`); the
 model says so plainly.
 
+## The capture reader
+
+The driver's capture code runs in isolated worlds on the account and login origins,
+reinstalls on frame navigation and new pages, and reads on input, change, submit, pagehide,
+a 500 ms timer and final capture collection. A new document that does not take the reader
+is tried again a few times (`login.INSTALL_ATTEMPTS`); a document of a capture origin that
+never takes it marks the capture incomplete, so nothing of it is saved automatically (an
+incomplete attempt is never judged). Each capture supplies a separate random nonce
+only through isolated-world evaluation arguments; the receiver drops binding calls without
+that nonce. Each payload includes the isolated world's current origin, checked against
+capture origins without evaluating the source frame, so delivery survives document teardown.
+In a document that existed when the binding was exposed the isolated code calls the raw
+CDP binding with its JSON dispatch payload and supplies the callback map used for delivery
+acknowledgements; in a document created later it calls the driver library's wrapper with
+the arguments themselves (the two take different shapes).
+Final collection waits for those acknowledgements before wiping the buffer. A page that
+finds the binding name cannot supply capture candidates without the nonce.
+A field is a username when its autocomplete says
+username or email (a trailing `webauthn` token is dropped first, so `username webauthn` is a
+username, as for the sign-in's own reader), or it is an email field, or it is a plain text field with no autocomplete
+of its own beside a password field (its form, or the page when there is none). A field that was a password field when the reader
+first saw it — present at a read, or changed from `password` while the reader watched the page
+— stays one for the whole capture, whatever type the page gives it later, and a field once
+reported as a password field reports only password values. A value seen as a password anywhere
+in the capture is never a username candidate, whatever field carried it — a "show password"
+toggle, a re-read, a text clone, a value since replaced or dropped for room (operator ruling
+E-T14-3 = Q1): the buffer remembers every password value seen for the capture's life, at most
+`login.MAX_SEEN_PASSWORDS`; past that it offers no username at all and says the capture is
+incomplete (with exactly that many remembered, a re-read already counts as past it). What
+remains: a value typed only into a field the reader never saw as a password field — one text
+from the start, or a copy built off the page and inserted as text — cannot be told from
+text. New and
+confirmation passwords canonicalise to password candidates. Each read names its field (an id
+per field of the document), and a field's latest value replaces its earlier ones — typing
+reports every prefix, but one typed value is one candidate (`login.CaptureBuffer`). The
+buffer keeps eight fields' values, each at most 1 KiB; overflow marks it incomplete and
+drops the oldest. Taking the capture
+wipes the driver copy and closes its session. `arm_capture_then` waits for the broker's
+acknowledgement before exposing live input.
+
+The broker accepts capture only for login and assist on a registered account site of the
+run. Before asking the driver to arm it durably records a pending capture containing only
+metadata. Taking the capture (`_review_capture`, internal: at `take_attempt`, `end_capture`
+or `end_run`; no broker op returns the values) reuses that row, takes the driver's values and
+last sign-in attempt once into broker memory, and leaves out values equal to the linked
+item's. Values stay in broker memory for fifteen minutes from the take; a live capture has no
+expiry before it. A confirmed arming refusal closes the row silently; an uncertain arming
+outcome or restart with an open row leaves a warning. Empty comparisons close silently unless
+capture was incomplete. The one save is the automatic one after a `signed_in` verdict
+(`save_attempt`, its consent `auto:<capture id>`; [`casa-browser-signin.md`](casa-browser-signin.md)):
+it updates the registered item or creates a Login — titled with the site's registered name,
+which `register_capture` carries as `title` — and registers its id. Confirmation requires the
+write's SDK reply or, for an uncertain update, a re-read containing the chosen values; version
+changes alone never confirm a save. `end_capture` is the live view's end (the run controller
+calls it at Done): a capture never taken is taken first, then dropped, so the site's next live
+view can capture again; ending a capture already ended changes nothing. An unresolved end of a
+changed or incomplete capture leaves a warning.
+
+Capture cannot retain an eventless set/send/clear between polls. A generated value never seen
+by capture must be set again to one the operator can see. A controller crash loses unsaved in-memory values.
+Python cannot guarantee erasure of memory. A site's script can retain a credential and
+send it after the credential window closes; normal private event recording then resumes.
+
 ## Saving a login typed in the live view
 
 The capture reader also records the
@@ -51,7 +114,8 @@ last sign-in **attempt**: a submit, an Enter or a button click on a form (or, wi
 document) holding a filled password field, with that form's username — the last one recorded
 when the form has none (a two-page sign-in) — and its password (the `new-password` field's in a
 password change). A form with no password-role field at all and a filled field the page marks
-as an email or a username (type `email`, autocomplete `email` or `username`) makes an
+as an email or a username (type `email`, autocomplete `email` or `username`, a trailing
+`webauthn` aside) makes an
 **identifier-only** attempt (an emailed code or a link follows), with no password, when the
 form's shown filled fields of that kind hold exactly one value and that value is an email
 address (`protocol.py::is_email_identifier`, checked again by the broker): a hidden field never

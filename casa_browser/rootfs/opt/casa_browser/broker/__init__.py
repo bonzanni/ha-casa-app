@@ -29,10 +29,3 @@ class LoginOutcome:
 class GuestStatus:
     state: str
     reason: str
-
-@dataclass(frozen=True)
-class SaveReceipt:
-    saved: bool
-    item_id: str | None
-    notice_ids: tuple[str, ...]
-    reason: str | None = None

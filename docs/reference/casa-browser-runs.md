@@ -254,9 +254,8 @@ is cut at once, and no new run is admitted (`not_ready`) until the revocation co
 interrupted first; then the launcher deletes the site's profile, the site's provider bindings
 and their key record are cleared and the broker's registry entry removed. No vault call.
 
-**Notices.** Broker notices are imported at start, after every broker call whose reply names
-`notice_ids` (`BrokerClient`), and before `GET /v1/notices` answers; the store's dedupe key makes
-each import idempotent.
+**Notices.** Broker notices are imported at start and before `GET /v1/notices` answers
+(`BrokerClient`); the store's dedupe key makes each import idempotent.
 
 ## Residuals (ruled shapes, documented)
 
