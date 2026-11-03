@@ -7,9 +7,16 @@ view is rendered at Ellen's budget (index mode at this size) and at the
 butler's, and once as of an old commit, as a reconnecting session would.
 Marked ``slow``: it runs on demand, and its timings are what the rollout
 measures on the target hardware.
+
+Each sample starts from a fresh collection: a run that collects the whole
+suite holds every test item alive, and a full collection over that heap,
+landing in one of the twenty renders, decided the p95 by itself (464 ms and
+535 ms in the nightly lane against about 55 ms in isolation). The collector
+stays on while a render runs, so garbage the render itself makes is timed.
 """
 from __future__ import annotations
 
+import gc
 import json
 import random
 import statistics
@@ -80,6 +87,7 @@ def _build(tmp_path):
 def _p95_ms(store, fn) -> float:
     times = []
     for _ in range(RUNS):
+        gc.collect()
         t0 = time.perf_counter()
         with store.transaction() as conn:
             fn(conn)
