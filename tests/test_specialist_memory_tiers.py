@@ -163,17 +163,19 @@ def mem(tmp_path, monkeypatch):
 
 
 def _captured(store) -> list[str]:
-    """The texts captured into ``events``, in capture order. A capture that
-    met a busy store (a loaded machine holds the write lock past capture's
-    50 ms bound) is durable in the spool instead; it is drained first, so the
-    question is what was captured, not where it waited."""
+    """The texts captured into ``events``, in the order they occurred. A
+    capture that met a busy store (a loaded machine holds the write lock past
+    capture's 50 ms bound) is durable in the spool instead; it is drained
+    first, so the question is what was captured, not where it waited. A
+    drained item is stored after the ones that followed it, so rows are
+    ordered by when they occurred, not by when they were stored."""
     import sqlite3
     from memory import capture
     capture.drain_waiting(store)
     conn = sqlite3.connect(store.path)
     try:
         return [r[0] for r in conn.execute(
-            "SELECT text FROM events ORDER BY seq")]
+            "SELECT text FROM events ORDER BY occurred_at, seq")]
     finally:
         conn.close()
 

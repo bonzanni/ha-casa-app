@@ -20,7 +20,7 @@ from authz_grants import GrantIdentity
 from config import AgentConfig, CharacterConfig, MemoryConfig
 from plugin_registry import ResolutionResult, ResolvedPlugin
 from tools import DelegatedOutput
-from test_memory_capture import events, mem  # noqa: F401 — fixture
+from test_memory_capture import captured_events, mem  # noqa: F401 — fixture
 
 try:
     from tests.role_artifact_stub import STUB_ROLE_ARTIFACT
@@ -344,7 +344,9 @@ async def test_a_relayed_answer_is_not_banked_as_the_requesters_task(roles, monk
         await tools_mod._run_delegated_agent(roles["finance"], "Fido's secret answer", "")
     finally:
         agent_mod.origin_var.reset(tok)
-    banked = [e["text"] for e in events(mem)]
+    # What was captured, wherever it waits: on a loaded machine a capture
+    # that met a busy store is durable in the spool (a canary there counts).
+    banked = [e["text"] for e in captured_events(mem)]
     assert "Fido's secret answer" not in banked
     assert "finance answer" in banked
 
@@ -710,7 +712,9 @@ async def test_no_task_inside_a_relay_is_banked_however_deep(roles, monkeypatch,
         await tools_mod._run_delegated_agent(roles["finance"], "FIDO CANARY", "")
     finally:
         agent_mod.origin_var.reset(tok)
-    banked = [e["text"] for e in events(mem)]
+    # What was captured, wherever it waits: on a loaded machine a capture
+    # that met a busy store is durable in the spool (a canary there counts).
+    banked = [e["text"] for e in captured_events(mem)]
     assert "FIDO CANARY" not in banked and "target answer" in banked
 
 
