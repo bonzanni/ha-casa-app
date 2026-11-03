@@ -845,6 +845,7 @@ _restart_kind = "wipe"
 _notify: Callable[[str], Awaitable[object]] | None = None
 _resume_updates: Callable[[], Awaitable[object]] | None = None
 _expiry: asyncio.Task | None = None
+_request: asyncio.Task | None = None
 
 
 def configure(*, notify: Callable[[str], Awaitable[object]] | None) -> None:
@@ -891,15 +892,19 @@ async def request_restart(
     pause_updates: Callable[[], Awaitable[bool]] | None = None,
     resume_updates: Callable[[], Awaitable[object]] | None = None,
     kind: str | None = "wipe",
-) -> bool:
+) -> None:
     """Ask the Supervisor for the app restart (for a ``wipe`` or a
-    ``restore``, *kind*). On success the courtesy flag
-    is set for :data:`RESTART_GRACE_S`; on a failure, or when the flag
-    expires with no restart, the operator gets one line and Casa keeps
-    running. *pause_updates* stops update intake first (it returns whether
-    it paused anything), so the update that carried the consent is confirmed
-    to Telegram before the container stops; *resume_updates* undoes it."""
+    ``restore``, *kind*) and return at once. The Supervisor answers a
+    restart only after it has stopped this container, so the request runs
+    detached and the courtesy flag is set when it is sent, for
+    :data:`RESTART_GRACE_S`. On a refused or failed request, or when the
+    flag expires with no restart, the operator gets one line (through
+    *notify*, else the configured notifier) and Casa keeps running.
+    *pause_updates* stops update intake first (it returns whether it paused
+    anything), so the update that carried the consent is confirmed to
+    Telegram before the container stops; *resume_updates* undoes it."""
     global restart_accepted_at, _resume_updates, _expiry, _restart_kind
+    global _request
     _restart_kind = kind if kind in RESTART_FAILED_LINES else "wipe"
     if pause_updates is not None:
         try:
@@ -908,30 +913,46 @@ async def request_restart(
         except Exception:  # noqa: BLE001 — the restart is still requested
             logger.warning("pausing updates before the restart failed",
                            exc_info=True)
+    stamp = time.monotonic()
+    restart_accepted_at = stamp
+    if _expiry is not None and not _expiry.done():
+        _expiry.cancel()
+    loop = asyncio.get_running_loop()
+    _expiry = loop.create_task(_expire(stamp), name="memory-restart-grace")
+    _request = loop.create_task(_send_request(stamp, notify),
+                                name="memory-restart-request")
+    logger.info("memory %s: app restart requested", _restart_kind)
+
+
+async def _send_request(stamp: float,
+                        notify: Callable[[str], Awaitable[object]] | None
+                        ) -> None:
+    global restart_accepted_at
     result = await supervisor_restart.request_app_restart()
     if supervisor_restart.accepted(result):
-        stamp = time.monotonic()
-        restart_accepted_at = stamp
-        if _expiry is not None and not _expiry.done():
-            _expiry.cancel()
-        _expiry = asyncio.get_running_loop().create_task(
-            _expire(stamp), name="memory-restart-grace")
-        logger.info("memory %s: app restart requested (%s)", _restart_kind,
-                    result)
-        return True
+        logger.info("memory %s: the Supervisor accepted the restart (%s)",
+                    _restart_kind, result)
+        return
     logger.warning("memory %s: app restart request failed: %s",
                    _restart_kind, result)
+    if restart_accepted_at != stamp:
+        return
+    restart_accepted_at = None
+    if _expiry is not None and not _expiry.done():
+        _expiry.cancel()
     await _resume()
     await _say(notify or _notify, RESTART_FAILED_LINES[_restart_kind])
-    return False
 
 
 async def _expire(stamp: float) -> None:
-    global restart_accepted_at
+    global restart_accepted_at, _expiry
     await asyncio.sleep(RESTART_GRACE_S)
     if restart_accepted_at != stamp:
         return
     restart_accepted_at = None
+    # From here this task is recovery, not the grace a later request cancels.
+    if _expiry is asyncio.current_task():
+        _expiry = None
     logger.warning("memory %s: no restart %.0f s after it was accepted",
                    _restart_kind, RESTART_GRACE_S)
     await _resume()
@@ -950,13 +971,20 @@ async def _resume() -> None:
 
 async def _say(send: Callable[[str], Awaitable[object]] | None,
                text: str) -> None:
-    if send is None:
-        logger.warning("no way to tell the operator: %s", text)
-        return
-    try:
-        await send(text)
-    except Exception:  # noqa: BLE001 — one attempt, logged
-        logger.warning("could not tell the operator: %s", text, exc_info=True)
+    """One attempt through *send*; when there is none, or it raised or said
+    it could not send (``False``), one raw Bot API line instead."""
+    tried = []
+    for attempt in (send, send_operator_line):
+        if attempt is None or attempt in tried:
+            continue
+        tried.append(attempt)
+        try:
+            if await attempt(text) is not False:
+                return
+        except Exception:  # noqa: BLE001 — logged, then the fallback
+            logger.warning("could not tell the operator: %s", text,
+                           exc_info=True)
+    logger.warning("no way to tell the operator: %s", text)
 
 
 # ---------------------------------------------------------------------------

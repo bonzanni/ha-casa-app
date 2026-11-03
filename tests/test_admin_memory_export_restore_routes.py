@@ -6,6 +6,8 @@ needs an explicit confirm, and on consent stages the export, records the
 intent and asks for the app restart."""
 from __future__ import annotations
 
+import asyncio
+
 import os
 import subprocess
 import sys
@@ -47,8 +49,10 @@ def tree(monkeypatch, tmp_path):
     capture.configure(store=state["store"])
     yield state
     capture.configure(store=None)
-    if maintenance._expiry is not None:
-        maintenance._expiry.cancel()
+    maintenance.configure(notify=None)
+    for task in (maintenance._expiry, maintenance._request):
+        if task is not None:
+            task.cancel()
 
 
 def _app() -> web.Application:
@@ -122,11 +126,18 @@ async def test_consent_stages_records_the_intent_and_requests_the_restart(
 
 async def test_a_failed_restart_request_says_the_restore_waits(tree) -> None:
     tree["answer"] = {"supervisor_status": 502}
+    told: list[str] = []
+
+    async def telegram(line):
+        told.append(line)
+
+    maintenance.configure(notify=telegram)
     _, made = await _post("/admin/memory/export", {})
     _, body = await _post("/admin/memory/restore",
                           {"path": made["path"], "confirm": True})
-    assert body["message"] == (restore.STAGED_LINE + " "
-                               + maintenance.RESTART_FAILED_LINES["restore"])
+    assert body["message"] == restore.STAGED_LINE
+    await asyncio.wait_for(maintenance._request, 2)
+    assert told == [maintenance.RESTART_FAILED_LINES["restore"]]
     assert maintenance.read_intent(str(tree["root"]))["kind"] == "restore"
 
 

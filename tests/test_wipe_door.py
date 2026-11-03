@@ -38,8 +38,18 @@ def supervisor(monkeypatch, tmp_path):
 
     monkeypatch.setattr(supervisor_restart, "request_app_restart", answer)
     yield state
-    if maintenance._expiry is not None:
-        maintenance._expiry.cancel()
+    for task in (maintenance._expiry, maintenance._request):
+        if task is not None:
+            task.cancel()
+
+
+async def _answered(**kw) -> bool:
+    """Request the restart and wait for the Supervisor's answer, which in
+    production arrives only after the container has stopped; whether the
+    courtesy flag survived it."""
+    await maintenance.request_restart(**kw)
+    await asyncio.wait_for(maintenance._request, 2)
+    return maintenance.restart_accepted_at is not None
 
 
 class Lines:
@@ -52,17 +62,34 @@ class Lines:
 
 # --- the restart request ---------------------------------------------------------
 
-async def test_the_flag_is_set_only_by_a_successful_answer(supervisor):
+async def test_the_flag_is_set_at_once_and_does_not_wait_for_the_answer(
+        supervisor, monkeypatch):
+    """The Supervisor answers a restart only after it has stopped this
+    container, so the request returns before the answer and the courtesy
+    flag is already set."""
+    never = asyncio.Event()
+
+    async def held():
+        await never.wait()
+        return {"supervisor_status": 200}
+
+    monkeypatch.setattr(supervisor_restart, "request_app_restart", held)
+    await asyncio.wait_for(maintenance.request_restart(), 1)
+    assert maintenance.restart_pending()
+    assert not maintenance._request.done()
+
+
+async def test_a_failed_answer_clears_the_flag_and_says_so(supervisor):
     say = Lines()
     for answer in ({"status": "error", "kind": "no_supervisor_token"},
                    {"status": "error", "kind": "supervisor_error",
                     "message": "boom"},
                    {"supervisor_status": 500}, {"supervisor_status": 401}):
         supervisor["answers"].append(answer)
-        assert await maintenance.request_restart(notify=say) is False
+        assert await _answered(notify=say) is False
         assert maintenance.restart_accepted_at is None
     assert say.sent == [maintenance.RESTART_FAILED_LINE] * 4
-    assert await maintenance.request_restart(notify=say) is True
+    assert await _answered(notify=say) is True
     assert maintenance.restart_pending()
     assert len(say.sent) == 4
 
@@ -79,7 +106,7 @@ async def test_a_failed_request_resumes_the_paused_updates(supervisor):
 
     supervisor["answers"].append({"supervisor_status": 503})
     say = Lines()
-    assert not await maintenance.request_restart(
+    assert not await _answered(
         notify=say, pause_updates=pause, resume_updates=resume)
     assert order == ["pause", "resume"]
     assert say.sent == [maintenance.RESTART_FAILED_LINE]
@@ -97,7 +124,7 @@ async def test_an_accepted_restart_that_never_comes_tells_once_and_clears(
     async def resume():
         resumed.append(1)
 
-    assert await maintenance.request_restart(pause_updates=pause,
+    assert await _answered(pause_updates=pause,
                                              resume_updates=resume)
     assert maintenance.restart_pending()
     await asyncio.wait_for(maintenance._expiry, 2)
@@ -114,10 +141,10 @@ async def test_a_second_acceptance_replaces_the_first_grace(supervisor,
     monkeypatch.setattr(maintenance, "RESTART_GRACE_S", 0.2)
     said = Lines()
     maintenance.configure(notify=said)
-    assert await maintenance.request_restart()
+    assert await _answered()
     first = maintenance._expiry
     await asyncio.sleep(0.1)
-    assert await maintenance.request_restart()
+    assert await _answered()
     await asyncio.sleep(0.15)
     assert first.cancelled() or first.done()
     assert maintenance.restart_pending() and said.sent == []
@@ -138,6 +165,7 @@ async def test_the_three_doors_reply_before_they_request_the_restart(
 
     assert await maintenance.request_wipe(reply=reply,
                                           pause_updates=pause) == "written"
+    await asyncio.wait_for(maintenance._request, 2)
     assert order == [f"reply:{maintenance.FORGETTING_LINE}", "pause@0"]
     assert supervisor["calls"] == 1
     assert maintenance.read_intent()["attempts"] == []
@@ -267,7 +295,7 @@ async def test_an_operator_dm_after_acceptance_gets_the_line_and_no_turn(
     channel, bus = _dm_channel()
     await channel._handle(_dm_update(), None)
     assert _queued(bus) == 1                       # an ordinary turn
-    assert await maintenance.request_restart()
+    assert await _answered()
     await channel._handle(_dm_update("are you there"), None)
     assert _queued(bus) == 1                       # no second turn
     assert channel._app.bot.sent == [("42", maintenance.COURTESY_LINE)]
@@ -276,7 +304,7 @@ async def test_an_operator_dm_after_acceptance_gets_the_line_and_no_turn(
 async def test_a_dm_after_a_failed_request_is_an_ordinary_turn(supervisor):
     channel, bus = _dm_channel()
     supervisor["answers"].append({"supervisor_status": 500})
-    assert not await maintenance.request_restart(notify=Lines())
+    assert not await _answered(notify=Lines())
     await channel._handle(_dm_update(), None)
     assert _queued(bus) == 1
     assert channel._app.bot.sent == []
@@ -308,7 +336,7 @@ async def test_an_engagement_topic_message_gets_the_line_and_no_turn(
 
     await channel._deliver_turn_bg(rec, "first")
     assert (turns, notices) == (["first"], [])
-    assert await maintenance.request_restart()
+    assert await _answered()
     await channel._deliver_turn_bg(rec, "second", answer_token="tok")
     assert turns == ["first"]
     assert notices == [maintenance.COURTESY_LINE]
@@ -373,3 +401,31 @@ def test_the_reader_scan_reports_a_new_reader(tmp_path):
         "    if maintenance.restart_pending():\n"
         "        return\n")
     assert readers(tmp_path) == {("reminders.py", "fire"): {"restart_pending"}}
+
+
+async def test_a_request_during_the_expiry_recovery_does_not_cancel_it(
+        supervisor, monkeypatch):
+    """The grace ran out and intake is being resumed when a new request
+    comes in: the new request starts its own grace and the resume still
+    completes."""
+    monkeypatch.setattr(maintenance, "RESTART_GRACE_S", 0.05)
+    maintenance.configure(notify=Lines())
+    resuming, release, resumed = asyncio.Event(), asyncio.Event(), []
+
+    async def pause():
+        return True
+
+    async def resume():
+        resuming.set()
+        await release.wait()
+        resumed.append(1)
+
+    await maintenance.request_restart(pause_updates=pause,
+                                      resume_updates=resume)
+    expiry = maintenance._expiry
+    await asyncio.wait_for(resuming.wait(), 2)
+    await maintenance.request_restart()
+    release.set()
+    await asyncio.wait_for(expiry, 2)
+    assert resumed == [1]
+    assert maintenance.restart_pending()

@@ -648,8 +648,8 @@ def build_admin_memory_wipe_handler():
             lines.append(line)
 
         try:
-            state = await memory_maintenance.request_wipe(
-                reply=_collect, notify=_collect)
+            # A restart that fails after this answer is told on Telegram.
+            state = await memory_maintenance.request_wipe(reply=_collect)
         except Exception as exc:  # noqa: BLE001 — report truthfully
             logger.exception("memory wipe could not be scheduled")
             return web.json_response(
@@ -734,7 +734,7 @@ def build_admin_memory_restore_handler():
 
         try:
             state = await memory_restore.request_restore(
-                payload["path"].strip(), reply=_collect, notify=_collect,
+                payload["path"].strip(), reply=_collect,
                 confirm=payload.get("confirm") is True)
         except Exception as exc:  # noqa: BLE001 — report truthfully
             logger.exception("memory restore could not be scheduled")

@@ -61,12 +61,15 @@ once cannot overwrite each other.
 **The window before the restart has no admission guarantee.** Nothing is refused, drained
 or fenced: turns, reminders, triggers, jobs, delegations and engagements run as usual, and
 whatever they write to memory is erased at the next container start. One courtesy check
-remains: once the Supervisor has accepted the request, an operator message on the DM path
-or in an engagement topic gets "Restarting to wipe memory — send it again in a minute."
-and no turn, for at most five minutes. The flag is in-process and set only by a successful
-answer. If the request fails, or five minutes pass with no restart, the operator gets one
-line ("I couldn't restart myself, so memory isn't wiped yet. …"), update intake resumes,
-and Casa keeps running; the intent stays for the next container start.
+remains: once the restart is requested, an operator message on the DM path or in an
+engagement topic gets "Restarting to wipe memory — send it again in a minute." and no
+turn, for at most five minutes. The Supervisor answers a restart only after it has stopped
+the container, so the request is sent detached: the door answers at once (the terminal
+door included) and the in-process flag is set when the request is sent. If the
+Supervisor refuses or the request fails, the flag is cleared; then, or when five minutes
+pass with no restart, the operator gets one line on Telegram ("I couldn't restart myself,
+so memory isn't wiped yet. …"), update intake resumes, and Casa keeps running; the intent
+stays for the next container start.
 
 **The container-start step** (`memory.maintenance.run`, `python -m memory.maintenance` from
 `scripts/memory-maintenance.sh`). `init-memory-maintenance` depends on `base`, and
