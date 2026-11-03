@@ -1241,6 +1241,13 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # Measured with `difflib` over base-vs-new compiled text, word by word:
 # exactly ONE `insert` on each `assistant:*` carrier, that block; the six
 # other carriers byte-identical. No retention claim.
+# MOVED (memory serving, butler), the three `butler:*` carriers. The butler's
+# Core doctrine gains two paragraphs, one block: a current value in memory is
+# used rather than asking the person to repeat it; the part of a day's saved
+# conversation the butler is cleared to see can be read with
+# `browse_memory_day`. Measured with `difflib` over base-vs-new compiled text,
+# word by word: exactly ONE `insert` of 67 words on each `butler:*` carrier,
+# that block; the six other carriers byte-identical. No retention claim.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
         "8dba7774800013792a6eaeba6fdbec283839f3d5d326d3b7ad07f73f27ff3973",
@@ -1249,11 +1256,11 @@ _RESIDUAL_DIGESTS = {
     "assistant:voice":
         "d53786652253d8e0652d22f1add0b4af9b1bd66594b41c4d28a385ab09c25616",
     "butler:restricted_webhook":
-        "e3aa4424b24b053a11a9c04d7b6428a8bc1fc90f4b58504ab34d70279037cacc",
+        "817241ec5da254b2fef07d2d0e6c7db0073bf1965a28be8d9b6818e59bc7f60b",
     "butler:text":
-        "7a8d5db2bc3d3b86cc33e96c37b4987d7a32b9f4df11d8af907862ccdd6acc4c",
+        "01472c7a4afeedb6aad34d2cff103440486c015062c348cb85b605a0b360d632",
     "butler:voice":
-        "dfd5d7c6e32132fc57b95a5babc0d259240cdc50738767f81c7f6c39e6fd0530",
+        "512f53954dae8711a83ad25b2aaec3263b71a5916f53dc59e8938925992c4c9f",
     "concierge:restricted_webhook":
         "20eaa4bac29d6149a4623b3c6b162d7645ab2e15f4e633f703aab615a4df3f12",
     "concierge:text":
