@@ -10,11 +10,10 @@ last_reviewed: 2026-08-10
 
 Long-term memory on the way *out*: how a recalled fact is rendered, what a caller is told
 when the store cannot answer, and what a caller may claim from what comes back. It covers
-the memory seam and the provenance carried on a recalled fact. The mental-model overlay,
-together with the mental models Casa declares for it, is
-[`architecture/memory-mental-models.md`](memory-mental-models.md). *Who* may read a stored
-fact back — read clearance per channel and sender, the engagement clearance clamp, and
-the executor-archive epoch scoping — is
+the memory seam and the provenance carried on a recalled fact. *Who* may read a stored
+fact back — read clearance per channel and sender, the engagement clearance clamp, the
+executor-archive epoch scoping, and the mental-model overlay with the models Casa declares
+for it — is
 [`architecture/memory-scoping.md`](memory-scoping.md). How a fact is labelled — tier
 classification, speaker provenance, content addressing — is
 [`architecture/memory-labelling.md`](memory-labelling.md), and the retention lifecycle
@@ -323,7 +322,6 @@ since what may be disclosed is decided per surface.
 - [`architecture/overview.md`](../architecture/overview.md)
 - [`architecture/turn-loop.md`](../architecture/turn-loop.md)
 - [`architecture/memory-lifecycle.md`](../architecture/memory-lifecycle.md)
-- [`architecture/memory-mental-models.md`](../architecture/memory-mental-models.md)
 - [`architecture/memory-scoping.md`](../architecture/memory-scoping.md)
 - [`architecture/memory-wipe.md`](../architecture/memory-wipe.md)
 <!-- END SOURCEMAP -->
