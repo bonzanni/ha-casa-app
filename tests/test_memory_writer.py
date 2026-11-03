@@ -300,3 +300,91 @@ async def test_the_sdk_port_times_out(monkeypatch):
         pass
     else:
         raise AssertionError("the call must time out")
+
+
+def _said(text, session="s1"):
+    from memory import capture
+    return capture.event(role="assistant", channel="telegram",
+                         speaker_kind="operator", origin_kind="operator",
+                         text=text, eligibility="write_trusted_turn",
+                         origin_tier=None, session_id=session,
+                         tier="private", tier_status="provisional")
+
+
+def _store_now(store, item):
+    from memory import capture
+    assert capture.append(store, item).outcome == capture.STORED
+
+
+async def test_the_writer_reads_events_in_the_order_they_were_said(tmp_path):
+    """A capture that waited in the spool is stored after one said later;
+    the writer's input follows when each was said, not when it was
+    stored."""
+    store = new_store(tmp_path)
+    first, second = _said("question first"), _said("answer second")
+    for item in (second, first):
+        _store_now(store, item)
+    port = ScriptedPort(no_change_all)
+    await run_new(new_writer(store, port))
+    assert [e["text"] for e in port.prompts[0]["events"]] == [
+        "question first", "answer second"]
+
+
+async def test_a_late_stored_input_is_not_given_later_words_as_context(
+        tmp_path):
+    """Said at 09:00 but stored after a 10:00 event that is already filed:
+    the 10:00 event was said after the input, so it is not context."""
+    store = new_store(tmp_path)
+    early, later = _said("said at nine"), _said("said at ten")
+    _store_now(store, later)
+    await run_new(new_writer(store, ScriptedPort(add_each)))
+    _store_now(store, early)
+    port = ScriptedPort(no_change_all)
+    await run_new(new_writer(store, port))
+    [prompt] = port.prompts
+    assert [e["text"] for e in prompt["events"]] == ["said at nine"]
+    assert [e["text"] for e in prompt["context"]] == []
+
+
+async def test_a_late_stored_input_keeps_the_context_said_before_it(
+        tmp_path):
+    """The session's earliest input by time is stored after 25 later
+    inputs; the question filed before all of them is still its context."""
+    store = new_store(tmp_path)
+    _store_now(store, _said("which room should be 19 degrees?"))
+    await run_new(new_writer(store, ScriptedPort(add_each)))
+    reply_item = _said("the nursery")
+    later = [_said(f"later {n}") for n in range(25)]
+    for item in later:
+        _store_now(store, item)
+    _store_now(store, reply_item)
+    port = ScriptedPort(no_change_all)
+    await run_new(new_writer(store, port))
+    [prompt] = port.prompts
+    assert [e["text"] for e in prompt["events"]][0] == "the nursery"
+    assert len(prompt["events"]) == 26
+    assert [e["text"] for e in prompt["context"]] == [
+        "which room should be 19 degrees?"]
+
+
+async def test_a_deferred_input_keeps_a_question_stored_after_it(tmp_path):
+    """The question waited in the spool and is stored after its answer; the
+    question is filed, the answer deferred. On the next batch the answer
+    still gets the question as context, though the question's seq is
+    higher."""
+    store = new_store(tmp_path)
+    question, answer = _said("which room?"), _said("the nursery")
+    _store_now(store, answer)
+    _store_now(store, question)
+    q_seq, a_seq = (rows(store, "SELECT seq FROM events WHERE text = ?", t)[0]
+                    ["seq"] for t in ("which room?", "the nursery"))
+    w = new_writer(store, ScriptedPort(
+        lambda p: reply({q_seq: "no_change", a_seq: "deferred"})))
+    await run_new(w)
+    _store_now(store, _said("elsewhere", session="s2"))
+    port = ScriptedPort(no_change_all)
+    await run_new(new_writer(store, port))
+    [prompt] = port.prompts
+    assert sorted(e["text"] for e in prompt["events"]) == [
+        "elsewhere", "the nursery"]
+    assert [e["text"] for e in prompt["context"]] == ["which room?"]

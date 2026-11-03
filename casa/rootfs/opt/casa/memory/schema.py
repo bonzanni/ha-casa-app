@@ -57,6 +57,8 @@ V1: tuple[str, ...] = (
     ) STRICT
     """,
     "CREATE INDEX events_local_day ON events (local_day)",
+    # The writer's context window: a session's events in the order said.
+    "CREATE INDEX events_session_said ON events (session_id, occurred_at, seq)",
     # One row per object per ledger: its current state. ``ledger`` is the
     # maintained clearance the object belongs to, and so its tier.
     f"""

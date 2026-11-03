@@ -287,6 +287,9 @@ def assemble_input(store: MemoryStore, job_id: str, ledger: str,
                 conn, "SELECT e.* FROM pending AS p JOIN events AS e "
                 "ON e.seq = p.seq WHERE p.ledger = ? ORDER BY e.seq",
                 (ledger,))
+            # A capture that waited in the spool is stored after later ones;
+            # the writer reads them in the order they were said.
+            inp.events.sort(key=_said_order)
         _hooks["selected"]()
         if inp.events:
             marks = {r["seq"]: r for r in _rows(
@@ -312,22 +315,31 @@ def assemble_input(store: MemoryStore, job_id: str, ledger: str,
 
 
 def _window(conn, events: list[dict], ledger: str) -> list[dict]:
-    """Up to :data:`WINDOW` earlier events of each input event's session,
-    readable at *ledger*, that are not input themselves."""
-    first: dict[str, int] = {}
+    """Up to :data:`WINDOW` events of each input event's session said before
+    its earliest input, readable at *ledger*, that are not input themselves.
+    A capture that waited in the spool is stored after events said later, so
+    the window follows when each was said, not ``seq``."""
+    first: dict[str, tuple] = {}
     for e in events:
         if e["session_id"] is not None:
-            first.setdefault(e["session_id"], e["seq"])
+            key = _said_order(e)
+            first[e["session_id"]] = min(first.get(e["session_id"], key), key)
     inputs = {e["seq"] for e in events}
     out: list[dict] = []
-    for session_id, seq in first.items():
+    for session_id, (at, seq) in first.items():
         earlier = _rows(
-            conn, "SELECT * FROM events WHERE session_id = ? AND seq < ? "
-            "ORDER BY seq DESC LIMIT ?", (session_id, seq, WINDOW * 4))
+            conn, "SELECT * FROM events WHERE session_id = ? AND "
+            "(occurred_at, seq) < (?, ?) "
+            "ORDER BY occurred_at DESC, seq DESC LIMIT ?",
+            (session_id, at, seq, WINDOW * 4))
         kept = [e for e in earlier
                 if e["seq"] not in inputs and _readable(e, ledger)][:WINDOW]
-        out.extend(reversed(kept))
-    return sorted(out, key=lambda e: e["seq"])
+        out.extend(kept)
+    return sorted(out, key=_said_order)
+
+
+def _said_order(event: dict) -> tuple:
+    return (event["occurred_at"] or "", event["seq"])
 
 
 # --- the prompt and the reply -------------------------------------------------
