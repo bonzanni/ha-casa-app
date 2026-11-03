@@ -5,8 +5,8 @@
 Tiers are an access ladder, ascending sensitivity:
     public  <  friends  <  family  <  private
 A context's CLEARANCE is the highest tier it may read; it reads its own tier and all
-LESS-sensitive tiers. Facts are tagged with a tier; recall filters to tiers <= clearance.
-Retrieval relevance is Hindsight's job (semantic) — these tiers are purely access control.
+LESS-sensitive tiers. Facts are tagged with a tier; reads filter to tiers <= clearance.
+These tiers are purely access control.
 """
 from __future__ import annotations
 
@@ -62,6 +62,18 @@ def clearance_for_channel(channel: str) -> str:
     """Clearance for a channel. FAIL-CLOSED: an unmapped channel reads at the
     LEAST-sensitive tier (public) — see _DEFAULT_CLEARANCE (X2, 2026-07-10)."""
     return CLEARANCE_BY_CHANNEL.get(channel, _DEFAULT_CLEARANCE)
+
+
+def clearances_served(channels) -> list[str]:
+    """The read clearances a role is served at: the clearance of each
+    ingress its ``channels:`` list declares (``ha_voice`` is the voice
+    ingress's declaration token, ``channel_authz``). The memory package
+    maintains a ledger per clearance a role with a served-view budget reads
+    at (``memory.ledgers``)."""
+    from channel_authz import CHANNEL_CAPABILITY
+    declared = set(channels or ())
+    return [clearance for ingress, clearance in CLEARANCE_BY_CHANNEL.items()
+            if CHANNEL_CAPABILITY.get(ingress, ingress) in declared]
 
 
 # Memory read-clearance a webhook trigger may declare (spec A1/A4). Never

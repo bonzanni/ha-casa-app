@@ -90,4 +90,6 @@ async def test_workspace_legacy_path_substitutes_executor_memory(tmp_path):
     )
     claude_md = (eng_root / "abc12345" / "CLAUDE.md").read_text(encoding="utf-8")
     assert "task=dotask" in claude_md
-    assert "mem=## Prior\nbody" in claude_md
+    # Between the markers the memory wipe locates it by.
+    from memory.executor_block import marked
+    assert "mem=" + marked("## Prior\nbody") in claude_md

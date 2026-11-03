@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.347.0] - 2026-11-03
+
+### Added
+
+- Long-term memory is built in. Casa saves each Telegram conversation as it happens into its own store under `/data/memory` — your messages, the assistant's replies, what she asks a specialist and its answer, and a finished engagement's summary — with nothing to install and no option to set. Voice conversations, webhook and `/invoke` turns, and anything a specialist set to keep no memory writes are not saved. In the background Casa files what was said into notes, and a new conversation of an agent with a memory budget — the assistant and the butler as shipped, and a specialist given one when the assistant delegates to it — starts with them: all of them while they fit, and past that an index it can open. An agent with no memory budget (the concierge as shipped), a conversation with someone other than you, and a specialist's own engagement topic start without notes.
+- Correct me: when you tell the assistant that something she remembers is wrong, she marks your message as a correction. Her notes are refiled from it, and from its next turn every open conversation of a memory-enabled agent, a specialist's engagement topic included, is told about the correction where its clearance may read it.
+- Search, browse and open: the assistant can search what was said by its words, read back a day or up to a week ("what did we say last Tuesday?"), and open entries of her notes. Each search or browse result shows when it was said, who said it, and whether one of Casa's scheduled tasks started that turn.
+- The butler's shared view: on voice, the butler is served notes of its own, written only from what was said at the `friends` tier and below, so it knows what a guest in the room may hear and never your private matters.
+- Export and restore: `casactl memory-export` writes a verified copy of memory to `/data/memory/exports/`, where Casa also keeps one from each of the last seven nights, so a Home Assistant backup carries them. `casactl memory-restore <export> --yes` replaces all of memory with an export's; Casa restarts to do it.
+
+### Changed
+
+- Forget everything: `casactl memory-wipe --yes` now restarts Casa and wipes memory as Casa starts, before anything else runs. Saved conversations, notes, the search index, local memory exports and conversation transcripts all go, and every conversation starts fresh. A finished Claude Code executor workspace already past its 7-day keep period is deleted whole as well, with its work files and outbox, as the regular cleanup would have soon after. Your reminders, triggers, settings and prompts, pending tasks, plugin data, logs and other files stay. Casa tells you on Telegram when it is done, or why it could not finish.
+- Conversation transcripts on disk are kept for 30 days after their conversation ends: an assistant or butler conversation's once it can no longer be resumed, a delegation's after its run, an in-Casa engagement's after the engagement. A Claude Code executor workspace keeps its 7 days. A transcript is deleted only once every run recorded in its folder is confirmed, meaning everything Casa captured from those runs is durably stored, so it can be kept longer, never shorter.
+
+### Removed
+
+- The Hindsight memory server and the `hindsight_api_url` option. Casa no longer uses an external memory server; the memory "mental models" and the `recall_memory` tool go with it.
+
+### Migration
+
+- Nothing is imported from a Hindsight server: memory starts empty after the upgrade.
+- A `hindsight_api_url` value stored by an earlier version makes Home Assistant log a warning at every start until you remove it from the app's stored options. Casa ignores it.
+- Finish any running engagement before you upgrade.
+
 ## [0.346.2] - 2026-11-03
 
 ### Added

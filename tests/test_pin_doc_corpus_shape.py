@@ -635,22 +635,26 @@ def test_memory_labelling_and_retention_lifecycle_are_separate():
     independently yield (1, 1) at base and are regression arms.
 
     Pins ownership and lead location; byte-identical movement and
-    completeness of the passages remain review obligations.
+    completeness of the passages remain review obligations. The write-trust
+    and completeness rules (INV-MEM-005, INV-MEM-016) later moved on to
+    ``architecture/memory-capture.md`` with the rest of capture eligibility,
+    so the lifecycle set names the ids that stayed with the lifecycle; and the
+    retain-path ids (the content addressing, the tag gate, the tier floor, the
+    save guard and the background reset) were retired with the retain path,
+    so each set names its surviving ids and the labelling leads are today's.
 
     Specified by **astra** in the drive red-case round.
     """
     labelling = {
         _declaring_document(inv)
         for inv in (
-            "INV-MEM-004", "INV-MEM-009",
-            "INV-MEM-012", "INV-MEM-018",
+            "INV-MEM-012", "INV-MEM-022", "INV-MEM-026",
         )
     }
     lifecycle = {
         _declaring_document(inv)
         for inv in (
-            "INV-MEM-005", "INV-MEM-006", "INV-MEM-013",
-            "INV-MEM-016", "INV-MEM-017",
+            "INV-MEM-013", "INV-MEM-021", "INV-MEM-031",
         )
     }
     counts = (
@@ -660,22 +664,18 @@ def test_memory_labelling_and_retention_lifecycle_are_separate():
     )
     assert counts == (1, 1, 2), (counts, labelling, lifecycle)
 
-    owner = _declaring_document("INV-MEM-004")
+    owner = _declaring_document("INV-MEM-012")
     texts = {
         doc: _normalized((DOCS / doc).read_text())
         for doc in _text_corpus()
     }
     for lead in (
-        "**A scheduled session's output is saved dated and marked; "
-        "nothing stops being saved.**",
-        "**Each item is labelled before it is stored, and the labels "
-        "are not the caller's to choose.**",
-        "**A save can raise a memory's tier and never lowers the tier "
-        "it read.**",
-        "Content addressing only holds because the hash input is the "
-        "utterance and nothing else.",
+        "**A captured item is named by what occurred, never by what it "
+        "says.**",
+        "**A captured item starts `private` and provisional, with a "
+        "floor.**",
+        "**The classifier is given the item as data.**",
         "**Tier classification fails.**",
-        "**The stored-tier read fails.**",
     ):
         total = sum(text.count(lead) for text in texts.values())
         owned = texts[owner].count(lead)
@@ -870,54 +870,6 @@ def test_bridge_owner_documents_other_hook_refusals():
     section = _normalized(_section(owner, "Failure behavior"))
     counts = tuple(section.count(claim) for claim in OTHER_HOOK_REFUSAL_CLAIMS)
     assert counts == (1, 1, 1), (owner, counts)
-
-
-def test_mental_model_overlay_and_recall_are_separate():
-    """#1133: separate the mental-model overlay, and the mental models Casa
-    declares for it, from recall on the way out.
-
-    The seam is the one the document names itself at 0e80d4b8:
-    ``docs/architecture/memory.md:13-14`` lists "the mental-model overlay
-    together with the mental models Casa declares for it" as its own clause
-    beside the memory seam and the provenance on a recalled fact; the row's
-    ``summary`` and ``when_changing``
-    (``docs/manifest.d/architecture-f-m.yaml:5-6``) route it as its own
-    clause while ``defines_invariants`` (``:35``) lists all five ids on one
-    document. INV-DOC-007 (``docs/contributing/doc-contract.md:75``) owes
-    the split.
-
-    At 0e80d4b86bc35fb3bd82231375713d6455cd5ab3, ownership counts are
-    (1, 1, 1), not (1, 1, 2). All five payload-location checks independently
-    yield (1, 1) at base and are regression arms.
-
-    Pins ownership and lead location; byte-identical movement and
-    completeness of the passages remain review obligations.
-
-    Added by the drive cut that splits the document (D35).
-    """
-    overlay = {_declaring_document("INV-MEM-020")}
-    recall = {
-        _declaring_document(inv)
-        for inv in ("INV-MEM-001", "INV-MEM-002", "INV-MEM-010", "INV-MEM-019")
-    }
-    counts = (len(overlay), len(recall), len(overlay | recall))
-    assert counts == (1, 1, 2), (counts, overlay, recall)
-
-    owner = _declaring_document("INV-MEM-020")
-    texts = {
-        doc: _normalized((DOCS / doc).read_text())
-        for doc in _text_corpus()
-    }
-    for lead in (
-        "**The mental-model overlay is shown only at `private`, because it "
-        "cannot be tier-filtered.**",
-        "**Casa declares two of those models and keeps them reconciled.**",
-        "**A mental-model reconcile pass fails.**",
-        "**A new declared mental model**",
-    ):
-        total = sum(text.count(lead) for text in texts.values())
-        owned = texts[owner].count(lead)
-        assert (total, owned) == (1, 1), (lead, total, owned)
 
 
 def test_turn_limit_stop_and_turn_conduct_are_separate():
@@ -1138,7 +1090,8 @@ def test_transcript_reaping_and_durable_finalization_are_separate():
     transcripts are deleted"; the row's ``when_changing``
     (``docs/manifest.d/architecture-e.yaml:131-133``) ends "or deleting a
     finished engagement's transcripts", while ``defines_invariants``
-    (``:154``) lists INV-ENG-022 beside INV-ENG-001/002/005/010 on one
+    (``:154``) lists the reaper's invariant (INV-ENG-027 today) beside
+    INV-ENG-001/002/005/010 on one
     document. The document is past the 25 KB ceiling at that base and
     INV-DOC-007 (``docs/contributing/doc-contract.md:75``) owes the split.
 
@@ -1151,7 +1104,7 @@ def test_transcript_reaping_and_durable_finalization_are_separate():
 
     Specified by **astra** in the drive red-case round.
     """
-    moved = _declaring_document("INV-ENG-022")
+    moved = _declaring_document("INV-ENG-027")
     retained = {_declaring_document(inv)
                 for inv in ("INV-ENG-001", "INV-ENG-002",
                             "INV-ENG-005", "INV-ENG-010")}

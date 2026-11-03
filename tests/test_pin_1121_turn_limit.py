@@ -501,13 +501,6 @@ class _VoiceCfg:
     channels: list[str] = ["ha_voice"]
 
 
-class _Mem:
-    async def ensure_session(self, *a, **kw): return None
-    async def get_context(self, *a, **kw): return ""
-    async def add_turn(self, *a, **kw): return None
-    async def profile(self, bank: str) -> str: return ""
-
-
 class _RawWs:
     def __init__(self) -> None:
         self.sent: list[dict] = []
@@ -541,7 +534,7 @@ async def _voice_frames(tmp_path, transport: str, *scripts) -> list[dict]:
     channel = VoiceChannel(
         bus=bus, default_agent="butler", webhook_secret=VOICE_TEST_SECRET,
         sse_path="/api/converse", ws_path="/api/converse/ws",
-        agent_configs={"butler": _VoiceCfg()}, memory=_Mem(),
+        agent_configs={"butler": _VoiceCfg()},
         idle_timeout=300,
     )
     agent._channel_manager.register(channel)

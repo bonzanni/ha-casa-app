@@ -5,7 +5,7 @@ fresh Agent) emits one INFO `agent_capabilities` line recording the resolved
 capability surface: role, model, enabled, tool count + names, mcp servers. This
 makes capability drift visible in prod `docker logs` and diffable across
 deploys — a runtime backstop for anything that slips past the L1/L2 CI guards
-(e.g. the recall_memory grant vanishing after a config_sync reconcile).
+(e.g. the search_memory grant vanishing after a config_sync reconcile).
 """
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ def test_construction_emits_one_capability_line(tmp_path, caplog):
             tmp_path, role="assistant", model="claude-opus-4-8",
             allowed=[
                 "Read",
-                "mcp__casa-framework__recall_memory",
+                "mcp__casa-framework__search_memory",
                 "mcp__casa-framework__get_schedule",
             ],
             mcp_server_names=["casa-framework", "homeassistant"],
@@ -66,13 +66,13 @@ def test_construction_emits_one_capability_line(tmp_path, caplog):
     assert "model=claude-opus-4-8" in m
     assert "enabled=True" in m
     assert "tool_count=3" in m
-    assert "recall_memory" in m           # the drift-prone grant is visible
+    assert "search_memory" in m           # the drift-prone grant is visible
     assert "casa-framework" in m and "homeassistant" in m
 
 
-def test_capability_line_reflects_missing_recall_tool(tmp_path, caplog):
-    """The line is diffable: a config WITHOUT recall_memory shows a smaller
-    surface and no recall_memory token — exactly what makes drift spottable."""
+def test_capability_line_reflects_missing_search_tool(tmp_path, caplog):
+    """The line is diffable: a config WITHOUT search_memory shows a smaller
+    surface and no search_memory token — exactly what makes drift spottable."""
     with caplog.at_level(logging.INFO, logger="agent"):
         _construct(tmp_path, role="butler",
                    allowed=["Read", "mcp__casa-framework__get_schedule"])
@@ -80,4 +80,4 @@ def test_capability_line_reflects_missing_recall_tool(tmp_path, caplog):
          if "agent_capabilities" in r.getMessage()][0]
     assert "role=butler" in m
     assert "tool_count=2" in m
-    assert "recall_memory" not in m
+    assert "search_memory" not in m

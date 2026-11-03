@@ -1,418 +1,454 @@
-"""#411 — the retain fence (generation-checked shared/exclusive gate) and the
-wipe orchestrator (claims → drain → spool → sid-guarded removes → bank)."""
+"""§14 test 8: the wipe, through the container-start step, on a real tree.
 
-import asyncio
+A canary goes into every registry row (the store's tables, the spool and its
+drain snapshot, the search index, a finished and an in-progress export, a
+staged restore source, a transcript of every role and of an engagement, the root's own transcript
+directory, the session pointers, an explanation record, and the
+executor-memory block of an open and of a completed retained engagement),
+plus a staging file each named producer's atomic helper leaves when a real
+process is killed between its write and its rename. A further canary is
+captured after consent, in the window before the restart.
+
+After the step: 0 canary bytes anywhere, every kept item byte-identical,
+the session pointers reset, and nothing left that a spool drain or a reaper
+could bring back (INV-MEM-038)."""
+from __future__ import annotations
+
 import json
+import os
+import sqlite3
+import time
 
 import pytest
 
-import memory_wipe
-from memory_wipe import (
-    FENCE, RetainFence, StaleGeneration, WipeAborted, wipe_long_term_memory,
-)
-from session_registry import SessionRegistry
-from session_reg_helpers import STUB_BINDING_DIGEST, STUB_SPEAKER_PROV, STUB_USER_PROV
+import memory_wipe_support as w
+from memory import capture, executor_block, maintenance, registry
+from memory.store import MemoryStore
 
-pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
+pytestmark = [pytest.mark.unit]
 
 
-class FakeSem:
+def _event(text: str):
+    return capture.event(role="assistant", channel="telegram",
+                         speaker_kind="operator", origin_kind="operator",
+                         text=text, eligibility="eligible",
+                         origin_tier="private")
+
+
+def _kill_on_rename(body: str) -> str:
+    """*body* run with ``os.replace`` and ``os.rename`` killing the process:
+    a staging file is written and fsynced, and never renamed."""
+    return "\n".join([
+        "import os",
+        "def _boom(*a, **k):",
+        "    _die()",
+        "os.replace = _boom",
+        "os.rename = _boom",
+        body,
+    ])
+
+
+_RECORD = ("explanation_store.ExplanationRecord(correlation_id={cid!r},"
+           " role_id='assistant', kind='turn', resolved_model='m',"
+           " persona_ref=None, role_checksum='r', binding_digest=None,"
+           " dependency_digests=(), effective_config_digest=None,"
+           " lifecycle_state=None, projection='p', static_prompt_digest='d',"
+           " static_prompt_estimated_tokens=1, memory_tiers=(),"
+           " memory_attributions=(), tool_calls=(), denials=(),"
+           " memory_text={text!r})")
+
+
+async def build(tree: w.Tree, monkeypatch) -> dict:
+    root = tree.root
+    u = lambda p: w.under(root, p)            # noqa: E731
+    facts = {}
+
+    # memory.db: an event and an engagement summary
+    store = MemoryStore(str(u(registry.MEMORY_DIR)))
+    assert store.open()
+    assert capture.append(store, _event("told " + tree.canary())).outcome == (
+        capture.STORED)
+    with store.transaction(write=True) as conn:
+        conn.execute(
+            "INSERT INTO engagement_summaries (source_key, role, "
+            "procedural_epoch, tier, text, engagement_id, at) VALUES "
+            "('event:s1', 'assistant', '', 'private', ?, 'e1', 'now')",
+            ("summary " + tree.canary(),))
+    # the spool and the snapshot a cut-off drain leaves
+    w.write(u(f"{registry.MEMORY_DIR}/spool.jsonl"),
+            json.dumps({"text": tree.canary()}) + "\n")
+    w.write(u(f"{registry.MEMORY_DIR}/spool.draining.jsonl"),
+            json.dumps({"text": tree.canary()}) + "\n")
+    # the search index with its sidecar
+    w.write(u(f"{registry.MEMORY_DIR}/search.db"), tree.canary())
+    w.write(u(f"{registry.MEMORY_DIR}/search.db-wal"), tree.canary())
+    # exports: one finished, one being written; a staged restore source
+    w.write(u(f"{registry.MEMORY_DIR}/exports/memory-2026-10-01.tar"),
+            tree.canary())
+    w.write(u(f"{registry.MEMORY_DIR}/exports/.memory-2026-11-02.tar.part"),
+            tree.canary())
+    w.write(u(f"{registry.MEMORY_DIR}/restore-source/built.db"), tree.canary())
+    # transcripts of every role, and the root's own real directory
+    for role in ("assistant", "butler", "finance", "configurator"):
+        w.write(u(f"/config/cc-home/.claude/projects/-config-agent-home-"
+                  f"{role}/{w.SID}.jsonl"), tree.canary())
+    w.write(u("/root/.claude/projects/-root/old.jsonl"), tree.canary())
+    # session pointers
+    w.write(u("/data/sessions.json"), json.dumps(
+        {"telegram:1": {"sdk_session_id": tree.canary()}}))
+    # an explanation record
+    import explanation_store
+    rec = eval(_RECORD.format(cid="abcd1234", text="remembered " + tree.canary()),
+               {"explanation_store": explanation_store})
+    explanation_store.ExplanationStore(u("/data/explanations")).record(rec)
+
+    # executor memory: an open engagement, provisioned, and a completed one
+    # still inside its retention
+    open_ws = await w.provision(root, w.EID_OPEN,
+                                memory=w.memory_block(tree.canary()),
+                                monkeypatch=monkeypatch)
+    w.write(u(f"/data/engagement-ctl/{w.EID_OPEN}/.casa-meta.json"),
+            json.dumps({"status": "UNDERGOING", "retention_until": None}))
+    w.write(open_ws / f".home/.claude/projects/-data-engagements-"
+            f"{w.EID_OPEN}/{w.SID}.jsonl", tree.canary())
+    block = w.memory_block(tree.canary())
+    done_ws = w.marked_workspace(root, w.EID_DONE, block)
+    w.write(done_ws / f".home/.claude/projects/-data-engagements-"
+            f"{w.EID_DONE}/{w.SID}.jsonl", tree.canary())
+
+    # staging files, each left by a real process killed before its rename
+    child = w.run_child(_kill_on_rename("\n".join([
+        "import types",
+        "from drivers import workspace as ws",
+        f"ws.CONTROL_ROOT = {str(u('/data/engagement-ctl'))!r}",
+        f"open({str(u(f'/data/engagement-ctl/{w.EID_OPEN}/.executor_memory'))!r},"
+        f" 'w').write({w.memory_block(tree.canary())!r})",
+        "defn = types.SimpleNamespace(type='x', prompt_template_path="
+        f"{str(root / 'defs' / w.EID_OPEN / 'prompt.md')!r})",
+        "rec = types.SimpleNamespace(allocated_uid=-1, origin={}, task='t')",
+        f"ws.refresh_claude_md({str(open_ws)!r}, defn=defn, rec=rec)",
+    ])))
+    assert w.killed(child), child.stderr
+    assert len(list(open_ws.glob(".CLAUDE.md.casa-tmp.*"))) == 1
+    child = w.run_child(_kill_on_rename("\n".join([
+        "from session_registry import SessionRegistry",
+        f"SessionRegistry({str(u('/data/sessions.json'))!r})._write("
+        f"{{'telegram:2': {{'sdk_session_id': {tree.canary()!r}}}}})",
+    ])))
+    assert w.killed(child), child.stderr
+    assert len(list(u("/data").glob(".sessions.json.*.tmp"))) == 1
+    child = w.run_child(_kill_on_rename("\n".join([
+        "import explanation_store, pathlib",
+        "r = " + _RECORD.format(cid="ef567890", text=tree.canary()),
+        "explanation_store.ExplanationStore(pathlib.Path("
+        f"{str(u('/data/explanations'))!r})).record(r)",
+    ])))
+    assert w.killed(child), child.stderr
+    assert len(list(u("/data/explanations").glob("*.tmp"))) == 1
+    # what each CLAUDE.md must read afterwards: every byte outside the
+    # section kept, the section empty
+    facts["claude_md"] = {
+        ws: _outside_markers((ws / "CLAUDE.md").read_text())
+        for ws in (open_ws, done_ws)}
+
+    # what the wipe keeps
+    tree.keep(u("/data/reminders.json"), json.dumps(
+        [{"id": "r1", "text": "water the plants", "due": "2026-11-03T08:00"}]))
+    tree.keep(u("/data/triggers.json"), json.dumps([{"id": "t1"}]))
+    tree.keep(u("/data/agent-inbox/invoice.pdf"), b"%PDF-1.4 kept")
+    tree.keep(u("/config/agents/assistant/prompt.md"), "You are Ellen.\n")
+    tree.keep(u("/config/agents/assistant/runtime.yaml"), "token_budget: 4000\n")
+    tree.keep(u(f"/data/engagement-ctl/{w.EID_OPEN}/.session_id"), w.SID)
+    tree.keep(u(f"/data/engagement-ctl/{w.EID_OPEN}/.inbound_spool.jsonl"),
+              '{"n": 1}\n')
+    tree.keep(open_ws / ".mcp.json", (open_ws / ".mcp.json").read_bytes())
+    return facts
+
+
+def _outside_markers(text: str) -> str:
+    o, c = executor_block.OPEN, executor_block.CLOSE
+    out, rest = [], text
+    while o in rest:
+        head, _, tail = rest.partition(o)
+        out.append(head + o)
+        rest = c + tail.partition(c)[2]
+    return "".join(out) + rest
+
+
+async def test_wipe_erases_every_registry_row_and_keeps_the_rest(
+        tmp_path, monkeypatch):
+    tree = w.Tree(tmp_path / "root")
+    root = tree.root
+    proc = w.fake_proc(tmp_path)
+    facts = await build(tree, monkeypatch)
+    before = w.hits(root, tree.canaries)
+    assert len(before) >= 24, before
+
+    # consent at a door, then a turn in the window captures another canary
+    assert maintenance.write_wipe_intent(str(root)) == "written"
+    store = MemoryStore(str(w.under(root, registry.MEMORY_DIR)))
+    assert store.open()
+    assert capture.append(store, _event("window " + tree.canary())).outcome == (
+        capture.STORED)
+
+    p = w.run_oneshot(root, proc)
+    assert p.returncode == 0 and p.stdout.strip() == "done", p.stderr
+
+    assert w.hits(root, tree.canaries) == []
+    assert w.kept_changes(tree) == []
+    assert maintenance.read_intent(str(root)) is None
+    u = lambda p: w.under(root, p)            # noqa: E731
+    assert json.loads(u("/data/sessions.json").read_text()) == {}
+    for gone in ("spool.jsonl", "spool.draining.jsonl", "search.db",
+                 "search.db-wal", "exports", "restore-source"):
+        assert not (u(registry.MEMORY_DIR) / gone).exists(), gone
+    assert not u("/data/explanations").exists()
+    assert list(u("/data").glob(".sessions.json.*.tmp")) == []
+    for ws, expected in facts["claude_md"].items():
+        after = (ws / "CLAUDE.md").read_text()
+        assert after == expected
+        assert after.count(executor_block.OPEN + executor_block.CLOSE) == 1
+        assert list(ws.glob(".CLAUDE.md.casa-tmp.*")) == []
+    # every transcript root is emptied
+    roots = [u("/config/cc-home/.claude/projects"), u("/root/.claude/projects"),
+             *u("/data/engagements").glob("*/.home/.claude/projects")]
+    assert len(roots) == 4
+    assert sum(len(list(d.iterdir())) for d in roots) == 0
+
+    # a fresh, empty store records the outcome; nothing can be re-imported
+    conn = sqlite3.connect(store.path)
+    try:
+        assert conn.execute("SELECT count(*) FROM events").fetchone() == (0,)
+        meta = dict(conn.execute("SELECT key, value FROM meta"))
+    finally:
+        conn.close()
+    record = json.loads(meta["last_maintenance"])
+    assert (record["kind"], record["outcome"], record["notice_sent"]) == (
+        "wipe", "done", False)
+    assert set(meta) == {"last_maintenance"}
+    assert capture.drain_spool(store) == 0
+
+
+def test_the_done_line_is_claimed_once(tmp_path):
+    root, proc = tmp_path / "root", w.fake_proc(tmp_path)
+    assert maintenance.write_wipe_intent(str(root)) == "written"
+    assert w.run_oneshot(root, proc).stdout.strip() == "done"
+    store = MemoryStore(str(w.under(root, registry.MEMORY_DIR)))
+    assert store.open()
+    lines = [maintenance.claim_outcome_notice(store) for _ in range(3)]
+    assert lines == [maintenance.FORGOTTEN_LINE, None, None]
+
+
+def test_without_an_intent_nothing_is_touched_but_an_orphan_restore_source(
+        tmp_path):
+    tree = w.Tree(tmp_path / "root")
+    root, proc = tree.root, w.fake_proc(tmp_path)
+    tree.keep(w.under(root, "/data/memory/memory.db"), "not a canary")
+    tree.keep(w.under(root, "/data/sessions.json"), '{"a": 1}')
+    w.write(w.under(root, "/data/memory/restore-source/built.db"), "staged")
+    assert w.run_oneshot(root, proc).stdout.strip() == "none"
+    assert w.kept_changes(tree) == []
+    assert not w.under(root, "/data/memory/restore-source").exists()
+
+
+def test_every_registry_row_has_a_wipe_handler():
+    missing = [e.name for e in registry.REGISTRY
+               if (e.kind, e.wipe) not in maintenance._HANDLERS]
+    assert missing == []
+
+
+def test_a_row_with_no_handler_stops_the_wipe(tmp_path, monkeypatch):
+    """The loop is driven by the registry: a row it does not know how to wipe
+    fails the attempt instead of being skipped."""
+    monkeypatch.setattr(maintenance, "_HANDLERS", {})
+    with pytest.raises(maintenance.MaintenanceError, match="no wipe rule"):
+        maintenance.wipe_loop(root=str(tmp_path / "root"))
+
+
+def test_a_symlinked_engagement_transcript_root_is_never_followed(tmp_path):
+    """An engagement's own directories are not followed: a link planted in
+    place of its transcript root is not emptied through."""
+    root, proc = tmp_path / "root", w.fake_proc(tmp_path)
+    outside = w.write(tmp_path / "elsewhere" / "keep.txt", "outside")
+    claude = w.under(root, f"/data/engagements/{w.EID_OPEN}/.home/.claude")
+    claude.mkdir(parents=True)
+    (claude / "projects").symlink_to(outside.parent)
+    assert maintenance.write_wipe_intent(str(root)) == "written"
+    assert w.run_oneshot(root, proc).stdout.strip() == "done"
+    assert outside.read_text() == "outside"
+
+
+def test_a_killed_intent_write_leaves_staging_the_wipe_deletes(tmp_path):
+    root, proc = tmp_path / "root", w.fake_proc(tmp_path)
+    child = w.run_child(_kill_on_rename("\n".join([
+        "from memory import maintenance as m",
+        f"m.write_wipe_intent({str(root)!r})",
+    ])))
+    assert w.killed(child), child.stderr
+    memdir = w.under(root, registry.MEMORY_DIR)
+    assert len(list(memdir.glob(".maintenance.json.*.tmp"))) == 1
+    assert maintenance.read_intent(str(root)) is None
+    assert maintenance.write_wipe_intent(str(root)) == "written"
+    assert w.run_oneshot(root, proc).stdout.strip() == "done"
+    assert list(memdir.glob(".maintenance.json*")) == []
+
+
+# --- an open in_casa engagement after the wipe --------------------------------------
+
+class _InCasaDriver:
+    """The in_casa driver as the resume path sees it, with the CLI's measured
+    answer to a resume of a session whose transcript is gone."""
+
     def __init__(self):
-        self.deleted: list[str] = []
-        self.retained: list[tuple] = []
-
-    async def delete_bank(self, bank: str) -> bool:
-        self.deleted.append(bank)
-        return True
-
-    async def retain(self, bank, items, *, async_=True):
-        self.retained.append((bank, items))
-
-
-def _reg(tmp_path) -> SessionRegistry:
-    return SessionRegistry(str(tmp_path / "sessions.json"))
-
-
-async def _register(reg, key, sid):
-    await reg.register(
-        key, "resident:assistant", sid, binding_digest=STUB_BINDING_DIGEST,
-        speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV,
-    )
-
-
-class TestRetainFence:
-    async def test_stale_generation_discards(self, ):
-        fence = RetainFence()
-        gen = fence.generation()
-        async with fence.exclusive_wipe():
-            pass
-        with pytest.raises(StaleGeneration):
-            async with fence.retaining(gen):
-                pytest.fail("stale writer must not enter the shared section")
-
-    async def test_current_generation_retains(self):
-        fence = RetainFence()
-        async with fence.exclusive_wipe():
-            pass
-        gen = fence.generation()   # captured AFTER the wipe: post-wipe writer
-        entered = False
-        async with fence.retaining(gen):
-            entered = True
-        assert entered
-
-    async def test_exclusive_drains_inflight_shared(self):
-        """The wipe must not delete under a live retain: exclusive waits for
-        the shared section to exit."""
-        fence = RetainFence()
-        order: list[str] = []
-        release = asyncio.Event()
-
-        async def writer():
-            async with fence.retaining(fence.generation()):
-                order.append("writer-in")
-                await release.wait()
-                order.append("writer-out")
-
-        async def wiper():
-            await asyncio.sleep(0)   # let the writer enter first
-            async with fence.exclusive_wipe():
-                order.append("wipe")
-
-        w = asyncio.create_task(writer())
-        x = asyncio.create_task(wiper())
-        await asyncio.sleep(0.05)
-        assert order == ["writer-in"]      # wipe blocked on the drain
-        release.set()
-        await asyncio.gather(w, x)
-        assert order == ["writer-in", "writer-out", "wipe"]
-
-    async def test_exclusive_timeout_aborts_nothing_deleted(self, monkeypatch):
-        monkeypatch.setattr(memory_wipe, "_EXCLUSIVE_DRAIN_TIMEOUT_S", 0.05)
-        fence = RetainFence()
-        release = asyncio.Event()
-
-        async def writer():
-            async with fence.retaining(fence.generation()):
-                await release.wait()
-
-        w = asyncio.create_task(writer())
-        await asyncio.sleep(0)
-        gen_before = fence.generation()
-        with pytest.raises(WipeAborted):
-            async with fence.exclusive_wipe():
-                pytest.fail("must not enter after drain timeout")
-        assert fence.generation() == gen_before   # nothing changed
-        release.set()
-        await w
-        # The fence is not wedged: a wipe succeeds once the writer drained.
-        async with fence.exclusive_wipe():
-            pass
-
-    async def test_shared_blocked_during_exclusive_then_discards(self):
-        fence = RetainFence()
-        gen = fence.generation()
-        entered_exclusive = asyncio.Event()
-        release_exclusive = asyncio.Event()
-        outcome: list[str] = []
-
-        async def wiper():
-            async with fence.exclusive_wipe():
-                entered_exclusive.set()
-                await release_exclusive.wait()
-
-        async def writer():
-            await entered_exclusive.wait()
-            try:
-                async with fence.retaining(gen):
-                    outcome.append("retained")
-            except StaleGeneration:
-                outcome.append("discarded")
-
-        x = asyncio.create_task(wiper())
-        w = asyncio.create_task(writer())
-        await entered_exclusive.wait()
-        await asyncio.sleep(0.02)
-        assert outcome == []               # writer parked behind the wipe
-        release_exclusive.set()
-        await asyncio.gather(x, w)
-        assert outcome == ["discarded"]    # pre-wipe work never lands
-
-
-class TestWipeOrchestrator:
-    async def test_full_wipe_report_and_order(self, tmp_path):
-        reg = _reg(tmp_path)
-        await _register(reg, "telegram-v2-aaa", "sid-1")
-        await _register(reg, "telegram-v2-bbb", "sid-2")
-        spool = tmp_path / "spool"
-        spool.mkdir()
-        (spool / "sid-1.json").write_text(json.dumps({"sdk_session_id": "sid-1"}))
-        (spool / "sid-2.json").write_text(json.dumps({"sdk_session_id": "sid-2"}))
-        sem = FakeSem()
-        report = await wipe_long_term_memory(
-            registry=reg, semantic_memory=sem, fence=RetainFence(),
-            bank="casa", retry_dir=spool,
-        )
-        assert report.bank_deleted is True
-        assert report.spool_records_dropped == 2
-        assert report.session_entries_dropped == 2
-        assert sem.deleted == ["casa"]
-        assert list(spool.glob("*.json")) == []
-        assert reg.all_entries() == {}
-        # No claim leaks: a new registration proceeds unimpeded.
-        assert not reg.retirement_pending("telegram-v2-aaa")
-        await _register(reg, "telegram-v2-aaa", "sid-1")
-        assert reg.get("telegram-v2-aaa")["sdk_session_id"] == "sid-1"
-
-    async def test_removes_without_any_retain(self, tmp_path):
-        """The pointers are dropped WITHOUT retention — retiring saves first,
-        which is exactly the #411 residue the wipe exists to avoid."""
-        reg = _reg(tmp_path)
-        await _register(reg, "k", "sid-1")
-        sem = FakeSem()
-        await wipe_long_term_memory(
-            registry=reg, semantic_memory=sem, fence=RetainFence(),
-            bank="casa", retry_dir=tmp_path / "nospool",
-        )
-        assert sem.retained == []
-
-    async def test_steered_fresh_session_survives(self, tmp_path):
-        """Design r2 red case (Sol/Terra convergent): a racing turn steered
-        fresh registers sid-new mid-wipe; the unconditional remove of v2
-        deleted it — the sid-guarded remove must leave it standing."""
-        reg = _reg(tmp_path)
-        await _register(reg, "k", "sid-old")
-        sem = FakeSem()
-
-        real_notify = reg.notify_reset
-
-        async def notify_and_race(key):
-            await real_notify(key)
-            # The racing turn publishes its steered-fresh session between the
-            # flush-close and the remove.
-            await _register(reg, "k", "sid-new")
-
-        reg.notify_reset = notify_and_race  # type: ignore[method-assign]
-        report = await wipe_long_term_memory(
-            registry=reg, semantic_memory=sem, fence=RetainFence(),
-            bank="casa", retry_dir=tmp_path / "nospool",
-        )
-        assert reg.get("k")["sdk_session_id"] == "sid-new"
-        assert report.session_entries_dropped == 0
-
-    async def test_dying_sid_republish_refused_during_wipe(self, tmp_path):
-        """An in-flight old turn republishing the dying sid mid-wipe is
-        refused at register(), so the wipe's remove leaves no pre-wipe sid."""
-        reg = _reg(tmp_path)
-        await _register(reg, "k", "sid-old")
-        sem = FakeSem()
-
-        real_notify = reg.notify_reset
-
-        async def notify_and_republish(key):
-            await real_notify(key)
-            await _register(reg, "k", "sid-old")   # refused: claimed dying sid
-
-        reg.notify_reset = notify_and_republish  # type: ignore[method-assign]
-        await wipe_long_term_memory(
-            registry=reg, semantic_memory=sem, fence=RetainFence(),
-            bank="casa", retry_dir=tmp_path / "nospool",
-        )
-        assert reg.get("k") is None
-
-    async def test_claims_cleared_on_bank_delete_failure(self, tmp_path):
-        """A mid-wipe exception must not leave keys steering fresh forever."""
-        reg = _reg(tmp_path)
-        await _register(reg, "k", "sid-1")
-
-        class ExplodingSem(FakeSem):
-            async def delete_bank(self, bank):
-                raise RuntimeError("backend down")
-
-        with pytest.raises(RuntimeError):
-            await wipe_long_term_memory(
-                registry=reg, semantic_memory=ExplodingSem(),
-                fence=RetainFence(), bank="casa",
-                retry_dir=tmp_path / "nospool",
-            )
-        assert not reg.retirement_pending("k")
-
-    async def test_spool_dropped_before_bank_delete(self, tmp_path):
-        """Order pin: a spool record must be gone before the bank is —
-        otherwise a replay window reopens between the two."""
-        reg = _reg(tmp_path)
-        spool = tmp_path / "spool"
-        spool.mkdir()
-        (spool / "r.json").write_text("{}")
-        order: list[str] = []
-
-        class OrderSem(FakeSem):
-            async def delete_bank(self, bank):
-                order.append(("spool_empty", not list(spool.glob("*.json"))))
-                return True
-
-        await wipe_long_term_memory(
-            registry=reg, semantic_memory=OrderSem(), fence=RetainFence(),
-            bank="casa", retry_dir=spool,
-        )
-        assert order == [("spool_empty", True)]
-
-
-class TestSingleFlight:
-    @pytest.fixture(autouse=True)
-    def _reset_module_state(self, monkeypatch):
-        monkeypatch.setattr(memory_wipe, "_wipe_task", None)
-        monkeypatch.setattr(memory_wipe, "_wipes_frozen", False)
-
-    async def test_second_wipe_refused_while_running(self):
-        release = asyncio.Event()
-
-        async def slow():
-            await release.wait()
-
-        t1 = memory_wipe.start_wipe_task(slow())
-        assert t1 is not None
-        assert memory_wipe.start_wipe_task(slow()) is None
-        release.set()
-        await t1
-        # After completion a new wipe is admitted again.
-        t2 = memory_wipe.start_wipe_task(slow())
-        assert t2 is not None
-        await t2
-
-    async def test_freeze_refuses_new_wipes(self):
-        async def w():
-            return None
-
-        memory_wipe.freeze_wipes()
-        assert memory_wipe.start_wipe_task(w()) is None
-
-    async def test_drain_waits_out_running_wipe(self):
-        """Design r3 (Terra): shutdown drains a running wipe before channels
-        and the memory backend go away."""
-        done: list[str] = []
-        release = asyncio.Event()
-
-        async def slow():
-            await release.wait()
-            done.append("wipe-finished")
-
-        memory_wipe.start_wipe_task(slow())
-        memory_wipe.freeze_wipes()
-        drain = asyncio.create_task(memory_wipe.drain_wipe_task())
-        await asyncio.sleep(0.02)
-        assert not drain.done()
-        release.set()
-        await drain
-        assert done == ["wipe-finished"]
-
-
-async def _retain_roundtrip(fence):
-    async with fence.retaining(fence.generation()):
-        pass
-
-
-class TestDiffR1Fixes:
-    async def test_cancel_during_drain_releases_exclusive(self):
-        """Sol diff-r1: a wipe cancelled while draining must not leave the
-        exclusive lock held — later retains and wipes would deadlock."""
-        fence = RetainFence()
-        release = asyncio.Event()
-
-        async def writer():
-            async with fence.retaining(fence.generation()):
-                await release.wait()
-
-        w = asyncio.create_task(writer())
-        await asyncio.sleep(0)
-
-        async def wiper():
-            async with fence.exclusive_wipe():
-                pass
-
-        x = asyncio.create_task(wiper())
-        await asyncio.sleep(0.02)      # parked in the drain
-        x.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await x
-        release.set()
-        await w
-        # The fence is usable: a writer retains and a wipe completes. BOTH are
-        # bounded — with the release omitted the retain blocks forever, and a
-        # red case that hangs is not a red case (it wedges CI instead of
-        # reporting). #578: the release now lives in RwBarrier.acquire_exclusive,
-        # shared with TurnAdmission; mutating it there fails this test too.
-        await asyncio.wait_for(_retain_roundtrip(fence), timeout=1)
-        await asyncio.wait_for(fence.exclusive_wipe().__aenter__(), timeout=1)
-
-    async def test_unremovable_spool_record_aborts_before_deletion(
-        self, tmp_path, monkeypatch,
-    ):
-        """Sol diff-r1: a spool record that cannot be removed is a surviving
-        durable pre-wipe writer — the wipe must abort with the pointers and
-        the bank untouched, never report success."""
-        from pathlib import Path as _P
-
-        reg = _reg(tmp_path)
-        await _register(reg, "k", "sid-1")
-        spool = tmp_path / "spool"
-        spool.mkdir()
-        (spool / "r.json").write_text("{}")
-        sem = FakeSem()
-
-        real_unlink = _P.unlink
-
-        def failing_unlink(self, *a, **k):
-            if self.suffix == ".json" and self.parent == spool:
-                raise OSError("EPERM")
-            return real_unlink(self, *a, **k)
-
-        monkeypatch.setattr(_P, "unlink", failing_unlink)
-        with pytest.raises(WipeAborted, match="could not be removed"):
-            await wipe_long_term_memory(
-                registry=reg, semantic_memory=sem, fence=RetainFence(),
-                bank="casa", retry_dir=spool,
-            )
-        assert sem.deleted == []                       # bank untouched
-        assert reg.get("k") is not None                # pointer untouched
-        assert not reg.retirement_pending("k")         # claims released
-
-    async def test_unreadable_spool_dir_aborts_before_deletion(
-        self, tmp_path, monkeypatch,
-    ):
-        """Terra diff-r2: Path.glob() swallows the scandir OSError (an
-        unreadable dir yields [] silently), so enumeration must use scandir
-        directly — an unreadable spool dir aborts the wipe with nothing
-        deleted."""
-        reg = _reg(tmp_path)
-        await _register(reg, "k", "sid-1")
-        spool = tmp_path / "spool"
-        spool.mkdir()
-        (spool / "r.json").write_text("{}")
-        sem = FakeSem()
-
-        real_scandir = memory_wipe.os.scandir
-
-        def failing_scandir(path):
-            if str(path) == str(spool):
-                raise PermissionError(13, "Permission denied", str(path))
-            return real_scandir(path)
-
-        monkeypatch.setattr(memory_wipe.os, "scandir", failing_scandir)
-        with pytest.raises(WipeAborted, match="enumerate"):
-            await wipe_long_term_memory(
-                registry=reg, semantic_memory=sem, fence=RetainFence(),
-                bank="casa", retry_dir=spool,
-            )
-        assert sem.deleted == []
-        assert reg.get("k") is not None
-        assert not reg.retirement_pending("k")
-
-    async def test_missing_spool_dir_is_the_legitimate_empty(self, tmp_path):
-        reg = _reg(tmp_path)
-        sem = FakeSem()
-        report = await wipe_long_term_memory(
-            registry=reg, semantic_memory=sem, fence=RetainFence(),
-            bank="casa", retry_dir=tmp_path / "never-created",
-        )
-        assert report.bank_deleted is True
-        assert report.spool_records_dropped == 0
+        self.alive: set[str] = set()
+        self.calls: list[str] = []
+
+    def is_alive(self, rec):
+        return rec.id in self.alive
+
+    async def resume(self, rec, sid):
+        self.calls.append("resume")
+        raise RuntimeError(f"No conversation found with session ID: {sid}")
+
+    async def invalidate_session(self, rec):
+        self.calls.append("invalidate")
+
+    async def open_fresh(self, rec):
+        self.calls.append("open_fresh")
+        self.alive.add(rec.id)
+
+
+async def _record_file(path):
+    from engagement_registry import EngagementRecord, EngagementRegistry
+    reg = EngagementRegistry(tombstone_path=str(path), bus=None)
+    for eid, driver, status in (("e1" * 16, "in_casa", "active"),
+                                ("e2" * 16, "in_casa", "completed"),
+                                ("e3" * 16, "claude_code", "active"),
+                                ("e4" * 16, "in_casa", "idle")):
+        reg._records[eid] = EngagementRecord(
+            id=eid, kind="executor", role_or_type="configurator",
+            driver=driver, status=status, topic_id=7, started_at=0.0,
+            last_user_turn_ts=0.0, last_idle_reminder_ts=0.0,
+            completed_at=None if status == "active" else time.time(),
+            # e4 was persisted before its first session id was recorded
+            sdk_session_id=(w.SID if driver == "in_casa" and eid != "e4" * 16
+                            else None),
+            origin={}, task="Tidy the garden notes")
+    await reg._write_tombstone_locked(strict=True)
+
+
+async def _next_turn(path, eid):
+    """The engagement's next operator turn, through the real resume gate."""
+    from channels.telegram import TelegramChannel
+    from engagement_registry import EngagementRegistry
+    reg = EngagementRegistry(tombstone_path=str(path), bus=None)
+    await reg.load()
+    driver, notices = _InCasaDriver(), []
+    channel = TelegramChannel(bot_token="T", chat_id="42",
+                              default_agent="assistant", bus=None)
+    channel._engagement_registry = reg
+    channel._engagement_driver = driver
+
+    async def rebuild(rec):
+        await driver.invalidate_session(rec)
+        await driver.open_fresh(rec)
+        return "[Context reset]"
+
+    async def to_topic(topic_id, text, *a, **k):
+        notices.append(text)
+
+    async def cleanup(rec):
+        notices.append("cleanup")
+
+    channel._engagement_context_rebuilder = rebuild
+    channel.send_to_topic = to_topic
+    channel._cleanup_error_topic = cleanup
+    ok = await channel._resume_and_ready(reg.get(eid))
+    return ok, driver.calls, notices, reg.get(eid)
+
+
+@pytest.mark.parametrize("wiped", [True, False])
+async def test_an_open_in_casa_engagement_continues_fresh_after_the_wipe(
+        tmp_path, wiped):
+    """The CLI cannot resume a session whose transcript the wipe deleted
+    (measured: "No conversation found", exit 1). The step marks every open
+    in_casa engagement for a context rebuild, so its next turn opens a fresh
+    session and the record stays open. Without the mark (the red case) the
+    turn tries the resume and is refused."""
+    root, proc = tmp_path / "root", w.fake_proc(tmp_path)
+    record = w.under(root, "/data/engagements.json")
+    record.parent.mkdir(parents=True)
+    await _record_file(record)
+    w.write(w.under(root, f"/config/cc-home/.claude/projects/-cwd/{w.SID}.jsonl"),
+            "turns")
+    if wiped:
+        assert maintenance.write_wipe_intent(str(root)) == "written"
+        assert w.run_oneshot(root, proc).stdout.strip() == "done"
+    else:
+        (w.under(root, f"/config/cc-home/.claude/projects/-cwd/{w.SID}.jsonl")
+         ).unlink()                       # the transcript is gone either way
+    ok, calls, notices, rec = await _next_turn(record, "e1" * 16)
+    if wiped:
+        assert (ok, calls, notices) == (True, ["invalidate", "open_fresh"], [])
+        assert (rec.status, rec.sdk_session_id, rec.context_rebuild_pending) == (
+            "active", None, False)
+        rows = {r["id"]: r for r in json.loads(record.read_text())}
+        assert rows["e2" * 16]["context_rebuild_pending"] is False
+        assert rows["e3" * 16]["context_rebuild_pending"] is False
+    else:
+        assert (ok, calls) == (False, ["resume"])
+        assert notices[0].startswith("Could not resume this engagement")
+
+
+async def test_an_open_engagement_with_no_session_yet_also_continues(tmp_path):
+    """r4 Astra S2: a record persisted before its first session id. It is
+    marked like the others, so its next turn opens a fresh session rather
+    than being refused as an orphan."""
+    root, proc = tmp_path / "root", w.fake_proc(tmp_path)
+    record = w.under(root, "/data/engagements.json")
+    record.parent.mkdir(parents=True)
+    await _record_file(record)
+    assert maintenance.write_wipe_intent(str(root)) == "written"
+    assert w.run_oneshot(root, proc).stdout.strip() == "done"
+    ok, calls, notices, rec = await _next_turn(record, "e4" * 16)
+    assert (ok, calls, notices) == (True, ["invalidate", "open_fresh"], [])
+    assert rec.status == "idle" or rec.status == "active"
+
+
+async def test_a_valid_record_file_keeps_every_record_and_field(tmp_path):
+    root, proc = tmp_path / "root", w.fake_proc(tmp_path)
+    record = w.under(root, "/data/engagements.json")
+    record.parent.mkdir(parents=True)
+    await _record_file(record)
+    before = json.loads(record.read_text())
+    assert maintenance.write_wipe_intent(str(root)) == "written"
+    assert w.run_oneshot(root, proc).stdout.strip() == "done"
+    after = json.loads(record.read_text())
+    marked = {r["id"] for r in after if r.get("context_rebuild_pending")}
+    assert marked == {"e1" * 16, "e4" * 16}
+    for row in after:
+        row["context_rebuild_pending"] = next(
+            b for b in before if b["id"] == row["id"])["context_rebuild_pending"]
+    assert after == before
+    assert (record.stat().st_mode & 0o777) == 0o600
+
+
+@pytest.mark.parametrize("content", [
+    b'[{"id": "e1", "task": "KEEP-{canary}"',                 # not JSON
+    b'{"rows": "KEEP-{canary}"}',                              # not a list
+    b'[{"id": "e1", "status": "active", "task": "KEEP-{canary}"}]',  # no driver
+    b'[{"id": "e1", "status": "active", "driver": "in_casa"}, "KEEP-{canary}"]',
+    b'["\xff KEEP-{canary}"]',                                 # not UTF-8
+])
+def test_an_unreadable_record_file_is_left_byte_identical(tmp_path, content):
+    """r4 S1 (both reviewers): the step never repairs the engagement record
+    file. One it cannot read strictly is left exactly as it is, nothing is
+    marked, and the wipe still completes."""
+    root, proc = tmp_path / "root", w.fake_proc(tmp_path)
+    canary = os.urandom(8).hex()
+    data = content.replace(b"{canary}", canary.encode())
+    record = w.write(w.under(root, "/data/engagements.json"), data)
+    assert maintenance.write_wipe_intent(str(root)) == "written"
+    p = w.run_oneshot(root, proc)
+    assert p.stdout.strip() == "done", p.stderr
+    assert record.read_bytes() == data

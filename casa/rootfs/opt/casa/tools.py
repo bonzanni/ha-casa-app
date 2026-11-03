@@ -23,10 +23,6 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 if TYPE_CHECKING:
     from trigger_registry import TriggerRegistry
-    # #205: type-only — _recall_surface's return feeds delegated_recall(surface=),
-    # which is typed Surface. Kept behind TYPE_CHECKING so annotating it adds no
-    # runtime import edge (tools.py already reaches recall_renderer lazily).
-    from recall_renderer import Surface
 
 from executor_registry import ExecutorRegistry
 from plugin_env_conf import set_entry as _set_env_entry  # noqa: F401 — available for future use
@@ -49,9 +45,8 @@ from plugin_grants import (
     sanitized_env_for_resolution,
 )
 from authz_grants import CHALLENGES, GRANTS, normalize_role
-from delegated_memory import delegated_recall, retain_delegated, topical_query
 from handoff import child_chain, requester_of
-from semantic_memory import RecallUnavailable
+from memory.eligibility import Source as _CaptureSource
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -1354,7 +1349,7 @@ _ASK_TIMEOUT_MAX = 570.0
 # cancelled, superseded, timed out AND answered. So the status is `settled`,
 # which names no outcome, and the message says so rather than claiming that
 # nothing happened: an Approve tapped inside the post window may already have
-# started the detached wipe.
+# recorded the wipe and asked for the restart.
 #
 # `settled` is deliberately NOT an error kind. Under INV-TOOL-001 `_result`
 # marks `status == "error"` as an outer MCP error, and every way a request is
@@ -1816,28 +1811,418 @@ async def ask_user(args: dict) -> dict:
                        if body.annotations else {})})
 
 
+# ---------------------------------------------------------------------------
+# Memory tools: search_memory, browse_memory_day, open_memory, correct_memory
+# ---------------------------------------------------------------------------
+
+#: INV-MEM-010: on every search and browse result, empty or not, and the same
+#: at every clearance — a note that varied would itself say something was
+#: filtered out of this answer.
+MEMORY_READ_NOTE = (
+    "This is the saved conversation readable here, and the search or day is "
+    "bounded. Finding nothing, or nothing on the topic, is not proof it was "
+    "never said: say you found nothing you can share, never that it didn't "
+    "happen."
+)
+#: #581: the note a clearance- and epoch-filtered slice injected into a
+#: prompt carries (the executor lessons block): a slice is bounded whether it
+#: is empty or large, so a topic it does not mention is not a topic Casa has
+#: nothing on.
+READABLE_SLICE_NOTE = (
+    "Use relevant entries normally. This is the bounded view readable at this "
+    "surface, not a complete inventory of Casa's memory. If it does not answer "
+    "the request, do not say Casa has no record of it or does not know it — "
+    "say you have nothing you can share on that here. Do not repeat or "
+    "paraphrase this guidance to the user."
+)
+#: The same note as a line inside an injected prompt block, marked as an
+#: instruction so it cannot read as one of the facts beside it.
+READABLE_SLICE_PROMPT_LINE = f"[memory-use instruction: {READABLE_SLICE_NOTE}]"
+#: #1116: says WHEN to tell, so an outage on a check nobody asked for (a
+#: scheduled briefing) does not become a message.
+_MEMORY_UNAVAILABLE = (
+    "Memory could not be checked right now. Do NOT say the information "
+    "doesn't exist or that you don't have it. If a person asked for something "
+    "that needs memory, tell them memory couldn't be checked. On a check "
+    "nobody asked for, this alone is not a reason to send anything; still "
+    "report what the task itself requires."
+)
+_DAY_FORMS = (
+    "a day YYYY-MM-DD, or today, yesterday, this_week, last_week, "
+    "this_month, last_month (in the operator's timezone)")
+_OPTIONAL_DAY = {"type": ["string", "null"]}
+_OPTIONAL_PAGE = {"type": ["integer", "null"],
+                  "description": "Optional page, from 1."}
+
+# Pre-built schemas: the SDK makes every dict-of-types key required, and
+# ``null`` (what a client sends for an unset optional) means not given.
+SEARCH_MEMORY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "query": {"type": "string",
+                  "description": "Words to look for in saved conversation."},
+        "from": {**_OPTIONAL_DAY, "description": (
+            "Optional first day to search: " + _DAY_FORMS
+            + "; a named period means its first day.")},
+        "to": {**_OPTIONAL_DAY, "description": (
+            "Optional last day to search, inclusive: " + _DAY_FORMS
+            + "; a named period means its last day.")},
+        "page": _OPTIONAL_PAGE,
+    },
+    "required": ["query"],
+}
+BROWSE_MEMORY_DAY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "date": {"type": "string", "description": (
+            "The day to read: " + _DAY_FORMS + "; a named period reads "
+            "all of it, up to 7 days.")},
+        "to_date": {**_OPTIONAL_DAY, "description": (
+            "Optional last day, inclusive, at most 7 days in all.")},
+        "from_time": {**_OPTIONAL_DAY, "description": (
+            "Optional HH:MM on the first day to start from.")},
+        "to_time": {**_OPTIONAL_DAY, "description": (
+            "Optional HH:MM on the last day to stop at.")},
+        "page": _OPTIONAL_PAGE,
+    },
+    "required": ["date"],
+}
+OPEN_MEMORY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "ids": {"type": "array", "items": {"type": "string"},
+                "description": "Ids from your memory's index lines."},
+        "with_history": {"type": ["boolean", "null"], "description": (
+            "Optional: also return each one's earlier versions.")},
+    },
+    "required": ["ids"],
+}
+
+
+def _memory_reader(origin: dict) -> str:
+    """The clearance a memory read runs at: the same gate the turn path
+    uses. A bound engagement's own record is the authority, read live (its
+    markers and its channel): an in_casa engagement's call inherits the
+    launching turn's ambient origin, but the clamp lowers only the record
+    (#336, #369). Otherwise the origin's markers."""
+    from sensitivity import clearance_for_origin
+    eng = engagement_var.get(None)
+    eng_origin = getattr(eng, "origin", None) if eng is not None else None
+    if isinstance(eng_origin, dict):
+        origin = eng_origin
+    route, stamped = _origin_clearance_markers(origin)
+    return clearance_for_origin(route, stamped, origin.get("channel", "telegram"))
+
+
+async def _read_memory(origin: dict, read: Callable[[str], Any]) -> Any:
+    """Run the blocking *read* at the reader's clearance, off the event loop.
+    A clearance lowered while it ran (an engagement clamp, #369) reads again
+    at the new one: the clamp is one-way over a few tiers."""
+    from sensitivity import TIERS
+    clearance = _memory_reader(origin)
+    for _ in range(len(TIERS)):
+        out = await asyncio.to_thread(read, clearance)
+        now = _memory_reader(origin)
+        if now == clearance:
+            return out
+        clearance = now
+    return await asyncio.to_thread(read, clearance)
+
+
+def _memory_store():
+    from memory import capture
+    store = capture.active_store()
+    return store if store is not None and store.available else None
+
+
+def _days(args: dict, first_key: str, last_key: str):
+    """``(first, last, error)``: the local days *args* names, each ``None``
+    when not given. A named period is its first day as a first bound and
+    its last day as a last one."""
+    from datetime import datetime
+
+    from timekeeping import resolve_period, resolve_tz
+    now = datetime.now(resolve_tz())
+    out = []
+    for key, end in ((first_key, False), (last_key, True)):
+        spec = args.get(key)
+        if spec is None or (isinstance(spec, str) and not spec.strip()):
+            out.append(None)
+            continue
+        try:
+            window = resolve_period(spec, now)
+        except ValueError:
+            return None, None, f"{key} must be {_DAY_FORMS}."
+        out.append((window.end if end else window.start).date())
+    first, last = out
+    if first is not None and last is not None and last < first:
+        return None, None, f"{last_key} is before {first_key}."
+    return first, last, None
+
+
+def _page(args: dict) -> int:
+    try:
+        return max(1, int(args.get("page") or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
+@tool(
+    "search_memory",
+    "Search the saved conversation (what he and Casa said, verbatim) for "
+    "words, best match first. Optional from/to limit it to days. Each hit "
+    "has its date, weekday, time, speaker and text, with the lines around "
+    "it. To read a whole day in order use browse_memory_day; to open an "
+    "entry of your memory by id use open_memory.",
+    SEARCH_MEMORY_SCHEMA,
+)
+async def search_memory(args: dict) -> dict:
+    from memory import search as memory_search
+
+    query = args.get("query") or ""
+    if not memory_search.terms(query):
+        return _result({"status": "error", "kind": "empty_query",
+                        "message": "search_memory needs words to look for. "
+                                   "Nothing was searched."})
+    first, last, refused = _days(args, "from", "to")
+    if refused:
+        return _result({"status": "error", "kind": "invalid_days",
+                        "message": refused + " Nothing was searched."})
+    page = _page(args)
+    origin = _snapshot_origin()
+    store = _memory_store()
+    if store is None:
+        return _result({"status": "unavailable",
+                        "message": _MEMORY_UNAVAILABLE})
+    reader_role = origin.get("role")
+    try:
+        found = await _read_memory(origin, lambda clearance: (
+            memory_search.search(
+                store, query, clearance=clearance, first_day=first,
+                last_day=last, page=page, reader_role=reader_role)))
+    except Exception:  # noqa: BLE001 — never a fake empty result
+        logger.warning("search_memory: memory could not be read",
+                       exc_info=True)
+        return _result({"status": "unavailable",
+                        "message": _MEMORY_UNAVAILABLE})
+    out: dict = {"status": "ok", "page": page, "hits": found.hits}
+    if first is not None or last is not None:
+        out["days"] = {"from": first and first.isoformat(),
+                       "to": last and last.isoformat()}
+    if found.more:
+        out["more"] = f"More hits on page {page + 1}."
+    out["note"] = MEMORY_READ_NOTE
+    return _result(out)
+
+
+@tool(
+    "browse_memory_day",
+    "Read the saved conversation of one day, or up to 7 days, in time "
+    "order, optionally from a time on the first day to a time on the last. "
+    "Long stretches come in pages. To find something by its words use "
+    "search_memory.",
+    BROWSE_MEMORY_DAY_SCHEMA,
+)
+async def browse_memory_day(args: dict) -> dict:
+    from datetime import datetime
+
+    from memory import browse as memory_browse
+
+    first, last, refused = _days(args, "date", "date")
+    if refused or first is None:
+        return _result({"status": "error", "kind": "invalid_days",
+                        "message": (refused or f"date must be {_DAY_FORMS}.")
+                        + " Nothing was read."})
+    if args.get("to_date") not in (None, ""):
+        _, last, refused = _days({"to": args.get("to_date")}, "from", "to")
+        if refused or last < first:
+            return _result({"status": "error", "kind": "invalid_days",
+                            "message": (refused or "to_date is before date.")
+                            + " Nothing was read."})
+    if (last - first).days + 1 > memory_browse.MAX_DAYS:
+        return _result({"status": "error", "kind": "too_many_days",
+                        "message": (
+                            f"browse_memory_day reads at most "
+                            f"{memory_browse.MAX_DAYS} days; use search_memory "
+                            "with from and to for a longer stretch. Nothing "
+                            "was read.")})
+    times = []
+    for key in ("from_time", "to_time"):
+        spec = args.get(key)
+        if spec in (None, ""):
+            times.append(None)
+            continue
+        try:
+            times.append(datetime.strptime(str(spec).strip(), "%H:%M").time())
+        except ValueError:
+            return _result({"status": "error", "kind": "invalid_time",
+                            "message": f"{key} must be HH:MM. Nothing was "
+                                       "read."})
+    page = _page(args)
+    origin = _snapshot_origin()
+    store = _memory_store()
+    if store is None:
+        return _result({"status": "unavailable",
+                        "message": _MEMORY_UNAVAILABLE})
+    reader_role = origin.get("role")
+    try:
+        got = await _read_memory(origin, lambda clearance: (
+            memory_browse.browse(
+                store, clearance=clearance, first_day=first, last_day=last,
+                from_time=times[0], to_time=times[1], page=page,
+                reader_role=reader_role)))
+    except Exception:  # noqa: BLE001 — never a fake empty result
+        logger.warning("browse_memory_day: memory could not be read",
+                       exc_info=True)
+        return _result({"status": "unavailable",
+                        "message": _MEMORY_UNAVAILABLE})
+    out: dict = {"status": "ok",
+                 "days": {"from": first.isoformat(), "to": last.isoformat()},
+                 "page": got.page, "pages": got.pages, "text": got.text}
+    if got.total:
+        out["events"] = f"{got.first}-{got.last} of {got.total}"
+    out["note"] = MEMORY_READ_NOTE
+    return _result(out)
+
+
+@tool(
+    "open_memory",
+    "Open entries of your memory by the ids its index lines show: an entry "
+    "comes back in full, a group or topic as the lines of what it holds. "
+    "One that changed after your memory above was written is marked so. "
+    "with_history adds earlier versions. To search saved conversation use "
+    "search_memory.",
+    OPEN_MEMORY_SCHEMA,
+)
+async def open_memory(args: dict) -> dict:
+    from memory import view as memory_view
+
+    ids = args.get("ids")
+    if isinstance(ids, str):
+        ids = [ids]
+    if (not isinstance(ids, list) or not ids
+            or not all(isinstance(i, str) and i.strip() for i in ids)):
+        return _result({"status": "error", "kind": "no_ids",
+                        "message": "open_memory needs the ids from your "
+                                   "memory's index lines. To find something "
+                                   "by its words use search_memory."})
+    if len(ids) > memory_view.MAX_OPEN:
+        return _result({"status": "error", "kind": "too_many_ids",
+                        "message": f"open_memory opens at most "
+                                   f"{memory_view.MAX_OPEN} ids per call."})
+    origin = _snapshot_origin()
+    store = _memory_store()
+    if store is None:
+        return _result({"status": "unavailable",
+                        "message": _MEMORY_UNAVAILABLE})
+    session_key = sdk_session_id = None
+    if engagement_var.get(None) is None and origin.get("channel") \
+            and origin.get("role"):
+        import agent as agent_mod
+        from session_registry import build_scoped_session_key
+        session_key = build_scoped_session_key(
+            origin["channel"], origin["role"], origin.get("chat_id"))
+        registry = getattr(agent_mod, "active_session_registry", None)
+        entry = (registry.get(session_key) if registry is not None
+                 else None) or {}
+        sdk_session_id = entry.get("sdk_session_id")
+    try:
+        opened = await _read_memory(origin, lambda clearance: (
+            memory_view.open_objects(
+                store, [i.strip() for i in ids], clearance=clearance,
+                session_key=session_key, sdk_session_id=sdk_session_id,
+                with_history=args.get("with_history") is True)))
+    except Exception:  # noqa: BLE001 — never a fake "unknown"
+        logger.warning("open_memory: memory could not be read", exc_info=True)
+        return _result({"status": "unavailable",
+                        "message": _MEMORY_UNAVAILABLE})
+    if opened is None:
+        return _result({"status": "ok", "entries": [], "message": (
+            "No memory ledger is read here; search_memory reads the saved "
+            "conversation.")})
+    return _result({"status": "ok", "entries": opened})
+
+
+#: Every arm in which the mark was not written: the store unavailable, busy
+#: past the turn-path bound, or his message not stored yet. Worded like the
+#: read tools' unavailable message: what happened, and what not to claim.
+_CORRECTION_UNAVAILABLE = (
+    "Memory could not mark the correction right now. Do NOT say memory was "
+    "updated. Use his new value in this conversation; if he asks, tell him "
+    "memory couldn't be updated just now."
+)
+
+
+@tool(
+    "correct_memory",
+    "Use when his message in this turn says something stored in memory is "
+    "wrong or out of date. It marks his message as a correction: memory is "
+    "updated from his own words, and every conversation sees the correction "
+    "from its next turn. Returns at once; there is nothing to tell him. "
+    "`what`: a few words naming what he corrected.",
+    {"what": str},
+)
+async def correct_memory(args: dict) -> dict:
+    import agent as agent_mod
+    from memory import corrections
+
+    origin = _snapshot_origin()
+    key = origin.get(agent_mod.MEMORY_OPENING_KEY)
+    if engagement_var.get(None) is not None or not key:
+        return _result({"status": "error", "kind": "no_message_of_his",
+                        "message": (
+                            "correct_memory marks his own message in this "
+                            "conversation, and this turn has none stored. "
+                            "Nothing was marked.")})
+    store = _memory_store()
+    if store is None:
+        return _result({"status": "unavailable",
+                        "message": _CORRECTION_UNAVAILABLE})
+    try:
+        marked = await asyncio.to_thread(
+            corrections.mark_operator_event, store, key)
+    except Exception:  # noqa: BLE001 — reported, never a fake "queued"
+        logger.warning("correct_memory: the mark could not be written",
+                       exc_info=True)
+        return _result({"status": "unavailable",
+                        "message": _CORRECTION_UNAVAILABLE})
+    if not marked.found:
+        # His message may still be in the spool (captured while the store
+        # was busy). It is never drained here — a drain takes as long as its
+        # backlog and waits on spool writes — so ask for the background
+        # drain and answer now; a later call marks it once it is stored.
+        from memory import capture
+        capture.request_drain(store)
+        return _result({"status": "unavailable",
+                        "message": _CORRECTION_UNAVAILABLE})
+    return _result({"status": "queued", "message": (
+        "His message is marked as a correction; memory will be updated from "
+        "it. Nothing to tell him.")})
+
+
 @tool(
     "wipe_memory",
-    "Irreversibly wipe ALL long-term memory: the shared memory bank, the "
-    "durable retry spool, and every conversation pointer (dropped WITHOUT "
-    "retention). Operator-only and consent-gated: posts an Approve/Cancel "
-    "keyboard to the operator's DM and executes only on the operator's "
-    "Approve tap. Two-turn: returns awaiting_user immediately; the outcome "
-    "is edited into the keyboard message when the wipe finishes. A `settled` "
-    "status instead means the consent request was already over when this call "
-    "returned: nothing is pending on it, and whether anything was deleted is "
-    "reported in that keyboard message, not here.",
+    "Irreversibly wipe ALL memory: saved conversations, notes about the "
+    "operator, the search index and memory backups; every conversation starts "
+    "fresh. Reminders, triggers, files, settings, prompts, pending tasks and "
+    "plugin data stay. Operator-only and consent-gated: posts an "
+    "Approve/Cancel keyboard to the operator's DM and acts only on the "
+    "operator's Approve tap, which records the request and restarts Casa; the "
+    "wipe runs as the app starts again. Two-turn: returns awaiting_user "
+    "immediately. A `settled` status instead means the consent request was "
+    "already over when this call returned: nothing is pending on it, and what "
+    "happened is reported in that keyboard message, not here.",
     {},
 )
 async def wipe_memory(args: dict) -> dict:
-    """#411 agent door. Code-enforced gates, in order: a direct genuine
+    """The agent door. Code-enforced gates, in order: a direct genuine
     operator-DM turn (never a delegated/engagement/scheduled context), a
     configured operator identity (empty ⇒ NOBODY is operator ⇒ refused for
-    everyone), the operator-bound broker claim (#469 — only the configured
-    operator's tap can commit), and single-flight admission. The wipe itself
-    runs as a DETACHED task spawned from the broker finish hook — never
-    inside the invoking turn, whose pool entry lock the orchestrator's
-    flush-close must be able to take (design r1, Sol S-C2)."""
+    everyone), and the operator-bound broker claim (#469 — only the configured
+    operator's tap can commit). On Approve the broker's finish hook — outside
+    any turn — records the wipe intent, says so in the keyboard message, and
+    asks the Supervisor for the app restart; the wipe itself runs at the next
+    container start (``memory.maintenance``)."""
     from provenance import turn_provenance
 
     prov = turn_provenance()
@@ -1855,18 +2240,9 @@ async def wipe_memory(args: dict) -> dict:
             "message": "wipe_memory is not available from an engagement",
         })
 
-    import agent as agent_mod
     import trigger_consent
-    from memory_wipe import FENCE
-    import memory_wipe as memory_wipe_mod
+    from memory import maintenance as memory_maintenance
 
-    registry = getattr(agent_mod, "active_session_registry", None)
-    sem = getattr(agent_mod, "active_semantic_memory", None)
-    if registry is None or sem is None:
-        return _result({
-            "status": "error", "kind": "not_initialized",
-            "message": "memory backend or session registry not initialized",
-        })
     channel = _channel_manager.get("telegram") if _channel_manager is not None else None
     op = trigger_consent.operator_identity(channel) if channel is not None else None
     if channel is None or op is None:
@@ -1888,12 +2264,7 @@ async def wipe_memory(args: dict) -> dict:
 
     rid = uuid.uuid4().hex
     options = ["Approve — wipe everything", "Cancel"]
-    question = (
-        "⚠️ Wipe ALL long-term memory?\n\n"
-        "This deletes the shared memory bank, drops any spooled retry "
-        "records, and forgets every conversation pointer without saving it. "
-        "It cannot be undone."
-    )
+    question = f"⚠️ Wipe ALL memory?\n\n{memory_maintenance.CONFIRMATION}"
     scope = f"authz:{chat_id}"
     body = render_ask_body(None, question, options, short_option_labels(options))
     req, _created = BROKER.register(
@@ -1916,20 +2287,9 @@ async def wipe_memory(args: dict) -> dict:
         )
 
     def _finish_factory(message_id: int):
-        async def _run_wipe_and_report() -> None:
-            try:
-                from hindsight_ids import bank_id
-                report = await memory_wipe_mod.wipe_long_term_memory(
-                    registry=registry, semantic_memory=sem, fence=FENCE,
-                    bank=bank_id("casa"),
-                )
-                text = f"{body}\n\n✅ {report.summary()}"
-            except memory_wipe_mod.WipeAborted as exc:
-                text = f"{body}\n\n❌ Wipe aborted: {exc}"
-            except Exception as exc:  # noqa: BLE001 — report truthfully
-                logger.exception("memory wipe failed")
-                text = f"{body}\n\n❌ Wipe FAILED: {exc} — state may be partial"
-            await channel.edit_dm_message(chat_id, message_id, text)
+        async def _wipe_status(line: str) -> None:
+            await channel.edit_dm_message(
+                chat_id, message_id, f"{body}\n\n{line}")
 
         async def _finish(outcome: dict) -> None:
             kind = outcome.get("outcome")
@@ -1954,20 +2314,22 @@ async def wipe_memory(args: dict) -> dict:
                         consequence="nothing was deleted"),
                 )
                 return
-            # Approve: admit as THE single-flight wipe. The finish hook runs
-            # broker-owned, OUTSIDE any turn, so the orchestrator's
-            # flush-close can take pool entry locks freely (Sol S-C2).
-            task = memory_wipe_mod.start_wipe_task(_run_wipe_and_report())
-            if task is None:
-                await channel.edit_dm_message(
-                    chat_id, message_id,
-                    f"{body}\n\n(refused — a wipe is already running or the "
-                    "app is shutting down; nothing additional was deleted)",
+            # Approve: the finish hook runs broker-owned, OUTSIDE any turn.
+            # Update intake pauses before the restart is requested, so the
+            # tap is confirmed to Telegram and never redelivered after it.
+            try:
+                await memory_maintenance.request_wipe(
+                    reply=_wipe_status,
+                    notify=getattr(channel, "notify_operator", None),
+                    pause_updates=getattr(
+                        channel, "pause_updates_for_restart", None),
+                    resume_updates=getattr(channel, "resume_updates", None),
                 )
-                return
-            await channel.edit_dm_message(
-                chat_id, message_id, f"{body}\n\n⏳ Wiping long-term memory…",
-            )
+            except Exception as exc:  # noqa: BLE001 — report truthfully
+                logger.exception("memory wipe could not be scheduled")
+                await _wipe_status(
+                    f"❌ The wipe could not be scheduled ({exc}); nothing "
+                    "was deleted.")
         return _finish
 
     await BROKER.ensure_posted(req, _post, _finish_factory)
@@ -2742,9 +3104,8 @@ def _build_specialist_options(
     profile name given to each withheld one — instead of re-reading a
     snapshot a mutation could move.
 
-    Specialist memory is injected via prompt in :func:`_run_delegated_agent`
-    (shared ``casa`` bank); SDK-level session resume stays disabled
-    (``resume=None``) — memory enters via prompt injection, not SDK
+    SDK-level session resume stays disabled (``resume=None``) — what a
+    specialist knows enters via its prompt and its memory tools, not SDK
     continuity. Hooks are
     resolved from the specialist's own ``cfg.hooks``. MCP servers are
     resolved via the shared registry — same pattern as
@@ -3489,16 +3850,9 @@ def _build_world_state_summary() -> str:
     return "\n".join(lines)
 
 
-# Specialist memory write-path bg-task anchoring (parity with Agent._bg_tasks
-# at agent.py:133). Module-level so it persists across delegate_to_agent calls.
-_specialist_bg_tasks: set[asyncio.Task[Any]] = set()
-
 # #701: the delegation SETTLE tails — persist the terminal, announce it, and
-# let the delivery acknowledgement clear the durable obligation. A separate set
-# from `_specialist_bg_tasks` on purpose: that one anchors `retain_delegated`
-# writes downstream of a terminal already told, and its absence from the
-# shutdown drain is a committed contract. These are anchored for the same
-# reason (asyncio may collect an unreferenced task mid-flight) and, since #767,
+# let the delivery acknowledgement clear the durable obligation. Anchored
+# because asyncio may collect an unreferenced task mid-flight, and, since #767,
 # they ARE drained at the graceful stop — `drain_delegation_settlements`, called
 # twice from `casa_core._shutdown_cleanup` — because INV-JOB-009 publishes that
 # a success or non-cancellation verdict still commits mid-stop, and this tail is
@@ -3710,7 +4064,7 @@ class DelegatedOutput:
         as complete, even if a future caller stops raising. The last clause is
         memory-only: an output-token-truncated answer (``max_tokens``, or any
         stop reason outside the allow-list) stays a caller-visible success
-        while the unfinished text is withheld from the bank (#710)."""
+        while the unfinished text is withheld from memory (#710)."""
         if self.run_aborted or self.run_is_error:
             return True
         if (self.run_terminal_reason is not None
@@ -4204,31 +4558,66 @@ async def _refresh_health_after_setup_cleared() -> None:
         logger.debug("plugin health refresh wait failed", exc_info=True)
 
 
-def _sdk_delete_session(session_id: str, directory: str) -> None:
-    from claude_agent_sdk import delete_session
-    delete_session(session_id, directory)
+async def _register_delegated_run(cfg, parent: dict):
+    """A delegated run's row (``memory/transcript_runs.py``), registered
+    before its request is captured and before its client starts, under the
+    session id Casa chooses for this launch, in the launch's own cwd. A role
+    whose exchange is never captured (no memory budget, a stored call, an
+    originating channel that is not write-trusted) registers confirmed: its
+    row is only the retention pass's index."""
+    from channel_policy import writes_to_bank
+    from memory import transcript_runs
+    captures = (cfg.memory.token_budget > 0 and not parent.get("stored_call")
+                and writes_to_bank(str(parent.get("channel", ""))))
+    return await transcript_runs.Run.start(
+        transcript_runs.DELEGATION, role=cfg.role,
+        directory=specialist_cwd(cfg), session_id=str(uuid.uuid4()),
+        confirmed=not captures)
 
 
-async def _delete_own_delegated_transcript(
-    session_id: str, directory: str, role: str | None,
-) -> None:
-    """Delete the one session an ephemeral delegation launched (INV-ENG-023):
-    its ``<sid>.jsonl`` and ``<sid>/`` in the launch's own project folder,
-    through the SDK. Never lists the folder, which the specialist's other
-    sessions share. Best-effort: a failure is logged and the file kept.
-
-    A cancellation landing during the await interrupts only the await; the
-    worker thread still finishes the delete."""
+async def _capture_delegated(
+    source: _CaptureSource, cfg, parent: dict, text: str, *,
+    speaker_kind: str, speaker_id: str, resident_request: bool = True,
+    answer_incomplete: bool = False, session_id: str | None = None,
+) -> bool:
+    """Capture one side of a delegated exchange into memory, under its
+    gate: a memory-writing role (``token_budget > 0``), no stored call, a
+    write-trusted originating channel. Its floor is the
+    delegating turn's read clearance — the clearance the run reads at. A
+    capture failure is logged and never fails the run. Returns whether the
+    capture was kept: a receipt, or nothing to capture."""
+    from channel_policy import writes_to_bank
+    from memory import capture, eligibility
+    from sensitivity import clearance_for_origin
     try:
-        await asyncio.to_thread(_sdk_delete_session, session_id, directory)
-    except FileNotFoundError:
-        # The CLI never wrote one (it failed before its first message).
-        logger.debug("delegated transcript %s: none written", session_id)
-    except Exception as exc:  # noqa: BLE001 — never fails the delegation
-        logger.warning(
-            "delegated agent %s: transcript delete failed (%s); kept",
-            _known_role(role), type(exc).__name__,
-        )
+        channel = str(parent.get("channel", ""))
+        rule = eligibility.admit(
+            source, text=text, channel_writes=writes_to_bank(channel),
+            role_writes_memory=cfg.memory.token_budget > 0,
+            stored_call=bool(parent.get("stored_call")),
+            resident_request=resident_request,
+            answer_incomplete=answer_incomplete)
+        if rule is None:
+            return True
+        route, clearance = _origin_clearance_markers(parent)
+        scheduled = parent.get("_scheduled_delivery") is True
+        origin_kind = ("delegated_result"
+                       if source is _CaptureSource.DELEGATED_ANSWER
+                       else capture.origin_kind_of(
+                           scheduled=scheduled,
+                           operator_authored=(
+                               parent.get("_unauthored_opening") is False)))
+        item = capture.event(
+            role=cfg.role, channel=channel, speaker_kind=speaker_kind,
+            speaker_id=speaker_id, origin_kind=origin_kind, text=text,
+            eligibility=rule,
+            origin_tier=clearance_for_origin(route, clearance, channel),
+            scheduled=scheduled, session_id=session_id)
+    except Exception:  # noqa: BLE001 — capture never fails a delegation
+        logger.exception("memory capture of a delegated %s failed",
+                         source.value)
+        return False
+    return await capture.record(item) is not None
 
 
 # #1220: how often a pinned turn asks the CLI whether its MCP servers settled
@@ -4254,6 +4643,47 @@ async def _await_mcp_servers_settled(client) -> None:
         await asyncio.sleep(_MCP_SETTLE_POLL_S)
 
 
+async def _delegated_memory_block(cfg, parent: dict) -> str:
+    """A delegated specialist's memory: its view of the ledger the
+    delegating turn's clearance reads (#336: never the channel's), within
+    the specialist's budget, then the correction note, read in one snapshot
+    off the event loop. ``""`` when that clearance reads no ledger, and for
+    an empty ledger with nothing owed: no block is not a claim that nothing
+    is known. When the store cannot be read the specialist is told so, so it
+    never reports that Casa lacks information."""
+    from memory import capture
+    from memory import note as memory_note
+    from memory import view as memory_view
+    from sensitivity import clearance_for_origin
+    route, clearance = _origin_clearance_markers(parent)
+    clearance = clearance_for_origin(
+        route, clearance, str(parent.get("channel", "")))
+    if memory_view.ledger_for(clearance) is None:
+        return ""
+    unavailable = (
+        f'<memory_context agent="{cfg.role}" status="unavailable">\n'
+        "Long-term memory could not be checked for this task. Do not "
+        "conclude Casa lacks information on any topic — if asked, say "
+        "memory could not be checked.\n"
+        "</memory_context>\n\n"
+    )
+    store = capture.active_store()
+    if store is None or not store.available:
+        return unavailable
+    try:
+        view, note = await asyncio.to_thread(
+            memory_note.with_view, store, clearance=clearance,
+            budget=cfg.memory.token_budget,
+        )
+    except Exception:  # noqa: BLE001 — the run proceeds without memory
+        logger.warning("memory view not served to %s", cfg.role,
+                       exc_info=True)
+        return unavailable
+    parts = [p for p in ((view.text if view is not None else ""), note.text)
+             if p]
+    return "\n\n".join(parts) + "\n\n" if parts else ""
+
+
 async def _run_delegated_agent(
     cfg, task_text: str, context_text: str, resolution=None,
     output_format=None, tool_counts: dict[str, int] | None = None,
@@ -4266,23 +4696,33 @@ async def _run_delegated_agent(
     so the gate's decision and what actually launches can never drift.
     ``None`` (the common no-``requires`` case) lets the options builder
     resolve fresh, exactly as before Task 5.
+
+    The run is registered (INV-ENG-028) before its request is captured and
+    before its client starts, and this ``finally`` — the run's outermost,
+    enclosing the answer's capture — confirms it once every capture it made
+    was kept. Its transcript is kept; only the retention pass or a wipe
+    deletes it.
     """
-    import agent as agent_mod
     # AR-2: snapshot BEFORE any await — this coroutine outlives the parent
     # turn (async delegations especially), and a pooled client's origin_var
     # holder can be rewritten by the NEXT turn while this one is in flight.
     parent = _snapshot_origin()
-    from personality_types import RetainedTurn, SpeakerProvenance
+    run = await _register_delegated_run(cfg, parent)
+    try:
+        return await _run_delegated_turn(
+            cfg, task_text, context_text, resolution, output_format,
+            tool_counts, parent=parent, run=run)
+    finally:
+        run.close()
 
-    # Task 10: the caller's REAL identity, read back off the origin snapshot
-    # Agent._process now stamps. Absent (a legacy/test ingress that predates this
-    # wiring, or the caller is itself an executor/unbound specialist) → the
-    # explicit unattributed "system" identity (every field null is a VALID
-    # provenance, speaker_provenance.py's system branch). NEVER fabricate a
-    # persona for the caller.
-    caller_provenance = parent.get("speaker_provenance")
-    if not isinstance(caller_provenance, SpeakerProvenance):
-        caller_provenance = SpeakerProvenance(speaker_kind="system")
+
+async def _run_delegated_turn(
+    cfg, task_text: str, context_text: str, resolution, output_format,
+    tool_counts: dict[str, int] | None, *, parent: dict, run,
+) -> DelegatedOutput:
+    """The body of :func:`_run_delegated_agent`, as one registered run."""
+    import agent as agent_mod
+
     # The EXECUTING agent's own identity, via the SAME cfg.kind-based fallback
     # policy SessionRegistry.register's callers use (Task 9): a resident (or a
     # bound specialist, once Plan 2 lands) keeps its real persona; an executor
@@ -4365,82 +4805,27 @@ async def _run_delegated_agent(
     else:
         body_tail = f"Task: {task_text}"
 
-    # Specialist memory read on the shared `casa` bank, at the PARENT context's
-    # read-clearance (design §3, plan 3). Opt-in via cfg.memory.token_budget > 0.
-    # #1282: a stored-call turn recalls NOTHING, keyed exactly as its retain
-    # skip below — the pinned turn's prompt is Casa's instruction only.
+    # A memory role's specialist gets its view of the
+    # ledger its PARENT turn's clearance reads, within its own budget, and
+    # the correction note, both read in one snapshot. Opt-in via
+    # cfg.memory.token_budget > 0. #1282: a stored-call turn reads NOTHING,
+    # keyed exactly as its capture skip — the pinned turn's prompt is Casa's
+    # instruction only.
     memory_block = ""
     if cfg.memory.token_budget > 0 and not parent.get("stored_call"):
-        unavailable_note = (
-            f'<memory_context agent="{cfg.role}" status="unavailable">\n'
-            "Long-term memory could not be checked for this task "
-            "(backend unavailable). Do not conclude Casa lacks "
-            "information on any topic — if asked, say memory could "
-            "not be checked.\n"
-            "</memory_context>\n\n"
-        )
-        sem = getattr(agent_mod, "active_semantic_memory", None)
-        _parent_route, _parent_clearance = _origin_clearance_markers(parent)
-        if not (task_text or "").strip():
-            # #201: nothing to search FOR, which is not the same as a memory
-            # that could not be checked. Stay silent — no note, no recall.
-            # Ordered BEFORE the `sem is None` test (Sol + Terra, Important):
-            # the other way round, a blank task with no backend wired claimed
-            # "memory could not be checked for this task", which is a statement
-            # about memory health that this turn has no basis to make.
-            digest = ""
-        elif sem is None:
-            # No backend wired: same unavailability as a failed check — a
-            # silent cold turn reads as "no memories exist".
-            memory_block = unavailable_note
-        else:
-            try:
-                digest = await delegated_recall(
-                    # #1351: a short topical query, not the whole brief — the
-                    # reranker's cost grows with the query's length.
-                    sem, query=topical_query(task_text),
-                    origin_channel=str(parent.get("channel", "")),
-                    max_tokens=cfg.memory.token_budget,
-                    # #205: name the path. Left unset this fell to the generic
-                    # "delegated" default, so a specialist's memory read was
-                    # indistinguishable in telemetry from any other delegated
-                    # recall and shared that path's breaker.
-                    path="specialist_archive",
-                    # #336 (Sol, review r3): a delegated specialist reads at
-                    # the DELEGATING turn's clearance, not the channel's — a
-                    # non-operator sender must not reach private memory by
-                    # having a specialist fetch it. Resolved through the
-                    # shared helper so a delegation issued from INSIDE an
-                    # engagement (no ambient origin) inherits that
-                    # engagement's clearance rather than the channel default.
-                    origin_route=_parent_route,
-                    origin_clearance=_parent_clearance,
-                )
-            except RecallUnavailable:
-                # Delegated turn proceeds cold, but the specialist is TOLD the
-                # check failed — a silent cold turn reads as "no memories
-                # exist" and the specialist would claim absence to the user.
-                digest = ""
-                memory_block = unavailable_note
-            if digest:
-                # #581: the slice a specialist is handed is filtered at the
-                # DELEGATING turn's clearance, so a topic missing from it may
-                # simply sit above that floor — the block says so rather than
-                # letting the specialist report absence to the caller. The
-                # EMPTY case stays silent (no block at all): absence of a
-                # block is not a claim of absence.
-                from recall_renderer import READABLE_SLICE_PROMPT_LINE
-                memory_block = (
-                    f'<memory_context agent="{cfg.role}">\n'
-                    f"{READABLE_SLICE_PROMPT_LINE}\n"
-                    f"{digest}\n"
-                    f"</memory_context>\n\n"
-                )
-
+        memory_block = await _delegated_memory_block(cfg, parent)
     prompt = (
         f"{delegation_context}\n\n{memory_block}"
         f"{_result_contract_block(output_format)}{body_tail}"
     )
+
+    # The request is captured raw, before the run starts, and never depends
+    # on the answer (INV-MEM-016); the run's row already exists.
+    await run.kept(_capture_delegated(
+        _CaptureSource.DELEGATED_REQUEST, cfg, parent, task_text,
+        speaker_kind="resident", speaker_id=caller_role,
+        resident_request=(len(child_origin["_handoff_chain"]) <= 2
+                          and parent.get("synthetic") != "continuation")))
 
     # Off-loop: _build_specialist_options resolves the registry (file IO) —
     # keep it off the shared event loop (H2/M20).
@@ -4483,11 +4868,8 @@ async def _run_delegated_agent(
     messages: list[str] = []
     approval_cut = ApprovalCut()
     approval_scope: TurnScope | None = None
-    # #1168 (INV-ENG-023): the session this call launches, and the folder its
-    # transcript lands in — set together, before the client exists, so the
-    # delete in `finally` names exactly what was launched or nothing at all.
+    # INV-ENG-028: the session this call launches, chosen with its row.
     own_sid: str | None = None
-    own_dir: str | None = None
     # S5 §5.2.4: a pinned one-call turn's controller, when this run is one
     _owner = _pinned_run.get()
     # #1212: the bounded runner's process owner for this run, cleared here so
@@ -4505,12 +4887,15 @@ async def _run_delegated_agent(
                  for rp in (getattr(res, "plugins", None) or [])})
     try:
         options, binding = await asyncio.to_thread(_options_and_binding)
-        # One Casa-chosen session per launch, set HERE and never in
-        # `_build_specialist_options`: in_casa engagements launch and resume
-        # through that builder, and a fixed id there would collide with
-        # `resume`. The project folder is the launch's own cwd.
-        options = replace(options, session_id=str(uuid.uuid4()))
-        own_sid, own_dir = options.session_id, options.cwd
+        # One Casa-chosen session per launch — the one its row names — set
+        # HERE and never in `_build_specialist_options`: in_casa engagements
+        # launch and resume through that builder, and a fixed id there would
+        # collide with `resume`. The project folder is the launch's own cwd.
+        # The cwd is the one the run registered (its row's directory): the
+        # retention pass deletes in that folder, so the launch is held to it.
+        options = replace(options, session_id=run.session_id,
+                          cwd=run.directory or options.cwd)
+        own_sid = options.session_id
         _ph["options"] = time.monotonic()
         token = agent_mod.origin_var.set(child_origin)
         approval_scope = resolve_scope(child_origin)
@@ -4531,7 +4916,6 @@ async def _run_delegated_agent(
                 # same client down concurrently). The transcript is the
                 # controller's to delete after termination is confirmed.
                 client = await _owner.enter(client_options, client_factory=ClaudeSDKClient)
-                _owner.transcript = (own_sid, own_dir) if own_sid and own_dir else None
                 _client_cm = nullcontext(client)
             else:
                 _client_cm = ClaudeSDKClient(client_options)
@@ -4664,13 +5048,10 @@ async def _run_delegated_agent(
             _specialist_telemetry.record_cost(
                 cfg.role, cost_usd=cost_usd, usage=usage,
             )
-        # #1168 (INV-ENG-023): LAST in this `finally`, so it runs only after
-        # the `async with` above has exited — the CLI writes its transcript
-        # until its process ends — on return, raise and cancel alike, and an
-        # await here can never skip the log or the origin reset above.
-        if own_sid and own_dir and _owner is None:
-            await _delete_own_delegated_transcript(
-                own_sid, own_dir, getattr(cfg, "role", None))
+        # INV-ENG-028: the client has exited — on return, raise and cancel
+        # alike — so the run's retention clock starts here. The transcript
+        # is kept: only the retention pass or a wipe deletes it.
+        run.end()
 
     # #568: the CLI ended this run by reporting an API-level fault (a safety
     # refusal included) — this specialist never answered. RAISE rather than
@@ -4697,19 +5078,13 @@ async def _run_delegated_agent(
     # `specialist_limits.truncate_output` at the sync-result / async-
     # DelegationComplete assembly sites) rather than here, so the
     # `output_truncated` flag survives this task's str boundary and reaches
-    # the wire. The raw text is returned; the memory retain below offers it as
-    # exchanged, and only when the run completed (#699) (the bound is a
-    # caller-facing surface concern, not a memory one — and token_budget>0
-    # specialists are rare).
+    # the wire. The raw text is returned; memory captures it as exchanged,
+    # and only when the run completed (#699) (the bound is a caller-facing
+    # surface concern, not a memory one).
 
-    # #699: the terminal verdict is constructed HERE, before the retain, rather
-    # than seventeen lines below it. The gate used to read only the token budget
-    # and the text while `result_msg` sat unread in scope, so a run the CLI
-    # aborted had its accumulated partial answer written to the shared bank as an
-    # ordinary provenance-attributed exchange, indistinguishable at every reader
-    # from a completed one. Reading this object's own `run_aborted` rather than
-    # re-expressing the predicate keeps the gate and the returned verdict
-    # single-sourced. The no-subtype-is-completed asymmetry now lives ONLY on
+    # #699: the terminal verdict is constructed HERE, before the capture.
+    # Reading this object's own `run_aborted` rather than re-expressing the
+    # predicate keeps the gate and the returned verdict single-sourced. The no-subtype-is-completed asymmetry now lives ONLY on
     # direct `DelegatedOutput` constructions (the field default): on a PARSED
     # result `subtype` is a required field, so null is malformed evidence and
     # captures as the sentinel, i.e. an abort (Sol review r2, S1).
@@ -4752,7 +5127,7 @@ async def _run_delegated_agent(
     # non-completed terminal_reason under `subtype="success"` is a failing
     # run, not an empty success — end it as a typed caller fault, exactly as
     # the #568 refusal raise above already ends a result-only refusal. The
-    # raise PRECEDES the retain below, so a half-finished exchange is never
+    # raise PRECEDES the capture below, so a half-finished exchange is never
     # written to memory as a complete one; every consumer's existing exception
     # arm classifies `ApiErrorTurn` by its carried kind. CLI aborts do NOT
     # raise here — `caller_error_kind` yields to the specialist abort
@@ -4772,97 +5147,35 @@ async def _run_delegated_agent(
         # #1283: the messages the kept words are joined from, cut at the same index
         output = replace(output, reply_messages=tuple(messages[:approval_cut.cut]))
 
-    # Specialist write: one explicit tier-classified retain of the exchange
-    # OFFERED to the shared bank, gated by the PARENT channel's write-trust
-    # (voice → no write) — design §3, plan 3. Ephemeral specialists have no
-    # session registry, so the freshness reaper never sees them; the retain is
-    # explicit. It is best-effort and detached: reaching this block is not
-    # evidence that anything was stored.
-    # S5 §5.2.5: a stored-call turn retains NOTHING — the resident could
-    # otherwise learn model-authored content through the shared bank, outside
-    # the body-free echo; the operator sees the receipt, nothing else.
-    if cfg.memory.token_budget > 0 and not parent.get("stored_call"):
-        sem = getattr(agent_mod, "active_semantic_memory", None)
-        if sem is not None:
-            # INV-MEM-016: admission is PER TURN (#708) — the CALLER's task
-            # turn is submitted whenever it is non-blank, independent of the
-            # answer: it is a true utterance the caller genuinely made, and
-            # this is the ONLY writer of it (the resident's own session save
-            # never sees the paraphrase it sent to the specialist). The old
-            # outer `and text` gate keyed the WHOLE retain on answer text, so
-            # an empty answer silently discarded the caller turn too. The two
-            # items are independent content-addressed documents rather than a
-            # paired record, so withholding one is well defined. Suppressing
-            # the whole retain would lose the caller turn; marking the answer
-            # instead would not suppress anything, because recall runs
-            # `tags_match="any"` (an additive tag BROADENS) and the
-            # mental-model overlay is a bank-wide `profile()` with no filter
-            # hook at all. Writer-side exclusion is the only shape that
-            # protects every reader by construction.
-            #
-            # SUBMITTED, not written: what is assembled here is an ARGUMENT to a
-            # best-effort writer that can still decline it — a voice or webhook
-            # origin returns before writing anything, a wipe landing first
-            # discards the whole retain (#411), and a backend failure is
-            # swallowed by design. Whether the caller's turn reaches the bank is
-            # therefore not this site's to assert, and the log below deliberately
-            # claims only what this site DECIDES.
-            #
-            # The answer is admitted only when `answer_incomplete` is false —
-            # the single memory-boundary predicate on the evidence-carrying
-            # output object, strictly wider than `run_aborted` by
-            # construction. The `is_error` / non-completed-terminal_reason
-            # arms raise upstream now (#709) and cannot reach this block; they
-            # stay in the predicate so the gate's width never depends on
-            # call-order. The `stop_reason` arm is the memory-only one (#710):
-            # a `max_tokens`-truncated answer is a caller-visible success
-            # whose unfinished text must not be banked as a completed,
-            # provenance-attributed document.
-            turns = []
-            # Browser executor §5.4 (INV-MEM-024): the task is banked as the
-            # caller's words only when the caller is the resident the chain
-            # started from, on a turn Casa did not compose. A specialist's
-            # hand-off task (perhaps the browsing specialist's own report) and
-            # a continuation's or relay's task (Casa's text around another
-            # role's answer) are never banked — decided by the chain's shape,
-            # not by markers a nested run could inherit (p3r2a, p3r3c, p3r4c).
-            _chain_now = child_origin["_handoff_chain"]
-            _resident_task = (len(_chain_now) <= 2
-                              and parent.get("synthetic") != "continuation")
-            if task_text.strip() and _resident_task:
-                turns.append(RetainedTurn(task_text, caller_provenance))
-            if text and not output.answer_incomplete:
-                turns.append(RetainedTurn(text, executing_provenance))
-            elif text:
-                if output.run_aborted:
-                    logger.warning(
-                        "delegated agent %s run did not complete (kind=%s) — "
-                        "its partial answer is excluded from the memory "
-                        "retain",
-                        _known_role(getattr(cfg, "role", None)),
-                        _run_abort_kind(output.run_subtype),
-                    )
-                else:
-                    logger.warning(
-                        "delegated agent %s answer did not finish "
-                        "(stop_reason=%s) — its partial answer is excluded "
-                        "from the memory retain",
-                        _known_role(getattr(cfg, "role", None)),
-                        _known_token(output.run_stop_reason,
-                                     _KNOWN_STOP_REASONS),
-                    )
-            if turns:
-                # #411: fence generation captured synchronously with the
-                # exchange content — the detached task may not run until
-                # after a wipe.
-                from memory_wipe import FENCE
-                bg = asyncio.create_task(retain_delegated(
-                    sem, origin_channel=str(parent.get("channel", "")),
-                    turns=turns,
-                    fence_generation=FENCE.generation(),
-                ))
-                _specialist_bg_tasks.add(bg)
-                bg.add_done_callback(_specialist_bg_tasks.discard)
+    # The answer is captured at completion — the whole live fold — only when
+    # the run's own evidence says it is complete (INV-MEM-016).
+    await run.kept(_capture_delegated(
+        _CaptureSource.DELEGATED_ANSWER, cfg, parent, text,
+        speaker_kind=("resident" if getattr(cfg, "kind", "") == "resident"
+                      else "specialist"),
+        speaker_id=cfg.role, answer_incomplete=output.answer_incomplete,
+        session_id=own_sid))
+
+    # An unfinished answer is not captured (``answer_incomplete`` above,
+    # INV-MEM-016); say why once, where the run's own evidence is read. A
+    # stored-call turn captures nothing either way.
+    if (cfg.memory.token_budget > 0 and not parent.get("stored_call")
+            and text and output.answer_incomplete):
+        if output.run_aborted:
+            logger.warning(
+                "delegated agent %s run did not complete (kind=%s) — "
+                "its partial answer is excluded from memory",
+                _known_role(getattr(cfg, "role", None)),
+                _run_abort_kind(output.run_subtype),
+            )
+        else:
+            logger.warning(
+                "delegated agent %s answer did not finish "
+                "(stop_reason=%s) — its partial answer is excluded "
+                "from memory",
+                _known_role(getattr(cfg, "role", None)),
+                _known_token(output.run_stop_reason, _KNOWN_STOP_REASONS),
+            )
 
     return output
 
@@ -5020,8 +5333,7 @@ async def _settle_then_announce(
     mid-stop"). `casa_core._shutdown_cleanup` therefore awaits every anchored
     tail through `drain_delegation_settlements`, first while the bus
     consumers and resident pools are still up, and again immediately before
-    the job ledger closes. `_specialist_bg_tasks` — whose non-drain is a
-    different, committed contract about `retain_delegated` — is not involved.
+    the job ledger closes.
     """
     row = await settle
     if row is not None and row.execution_state is ExecutionState.CANCELLED:
@@ -9005,273 +9317,6 @@ async def continue_voice_job(args: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# recall_memory — spec §4.3
-# ---------------------------------------------------------------------------
-
-
-def _recall_surface(channel: str, origin: dict) -> "Surface":
-    """Attribution surface for a recall render (Task 11): voice speaks aloud;
-    an untrusted webhook_trigger turn is ``restricted_webhook`` (never names a
-    person, regardless of clearance); everything else is ``text``."""
-    if channel == "voice":
-        return "voice"
-    if origin.get("_origin_route") == "webhook_trigger":
-        return "restricted_webhook"
-    return "text"
-
-
-# #1120: a pre-built schema, because the SDK makes every dict-of-types key
-# required; ``period`` is optional, and ``null`` (what a client sends for an
-# unset optional) means no period.
-RECALL_MEMORY_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "query": {"type": "string"},
-        "period": {
-            "type": ["string", "null"],
-            "description": (
-                "Optional. Only memories first recorded in this period: "
-                "today, yesterday, this_week, last_week, this_month, "
-                "last_month (weeks start Monday, in the operator's timezone), "
-                "one day YYYY-MM-DD, or an inclusive range "
-                "YYYY-MM-DD..YYYY-MM-DD."
-            ),
-        },
-    },
-    "required": ["query"],
-}
-
-_INVALID_PERIOD_MESSAGE = (
-    "Error: period must be one of today, yesterday, this_week, last_week, "
-    "this_month, last_month, a day YYYY-MM-DD, or a range "
-    "YYYY-MM-DD..YYYY-MM-DD that does not end before it starts. Nothing was "
-    "searched."
-)
-
-
-def _recall_period(args: dict):
-    """#1120: ``(window, error_result)`` for ``args``' optional period —
-    ``(None, None)`` without one. Resolved in the operator's timezone from one
-    reading of the clock; refused BEFORE any search, because an inverted
-    window sent to the memory server comes back as an HTTP error, which the
-    tool would report as "memory could not be checked"."""
-    from datetime import datetime
-
-    from timekeeping import resolve_period, resolve_tz
-
-    spec = args.get("period")
-    if spec is None:
-        return None, None
-    try:
-        return resolve_period(spec, datetime.now(resolve_tz())), None
-    except ValueError:
-        return None, _result({"status": "error", "kind": "invalid_period",
-                              "message": _INVALID_PERIOD_MESSAGE})
-
-
-@tool(
-    "recall_memory",
-    "Search your long-term memory for facts relevant to a query. Give an "
-    "optional period to see only memories first recorded in it; memories "
-    "with no recorded date are left out of such a search, and like every "
-    "search it is bounded, so finding nothing is not proof of absence.",
-    RECALL_MEMORY_SCHEMA,
-)
-async def recall_memory(args: dict) -> dict:
-    """On-demand semantic recall against the shared 'casa' bank, filtered by the channel's tier clearance (spec §4.3).
-    Voice uses budget=low so the rerank never stalls the turn."""
-    import agent as agent_mod
-
-    query = (args.get("query") or "").strip()
-    if not query:
-        return _result({"status": "error", "kind": "empty_query",
-                        "message": "Error: query is required"})
-    window, refused = _recall_period(args)
-    if refused is not None:
-        return refused
-    # #1120: every result of a search given a period echoes the resolved one.
-    echo = (
-        {} if window is None
-        else {"period": {"start": window.start.isoformat(),
-                         "end": window.end.isoformat()}}
-    )
-    sem = getattr(agent_mod, "active_semantic_memory", None)
-    if sem is None:
-        # No backend wired: memory CANNOT be checked — never a fake zero-hit.
-        return _result({
-            **echo,
-            "status": "unavailable",
-            "message": (
-                "Long-term memory could not be checked (no memory backend). "
-                "Do NOT say the information doesn't exist or that you don't "
-                "have it. If a person asked for something that needs memory, "
-                "tell them memory couldn't be checked. On a check nobody asked "
-                "for, this alone is not a reason to send anything; still "
-                "report what the task itself requires."
-            ),
-        })
-
-    origin = _snapshot_origin()
-    role = origin.get("role", "assistant")
-    channel = origin.get("channel", "telegram")
-    caller_cfg = _agent_role_map.get(role)
-
-    # Tier clearance — the same read-side gate the turn path uses (design §2.3),
-    # re-keyed off the unspoofable origin marker (Release A Layer 2): a
-    # webhook_trigger turn reads at its declared clearance (public floor, never
-    # private); /invoke stays private; missing/unknown route on the webhook
-    # channel fails closed to public.
-    from personality_types import SpeakerProvenance
-    from sensitivity import clearance_for_origin, readable_tiers
-    # #336 (Terra r2): inside an engagement the ambient origin is empty, so
-    # the markers come from the engagement's own record — an engagement reads
-    # at the clearance of the turn that started it, not at the channel
-    # default (which on telegram is private).
-    _route, _stamped_clearance = _origin_clearance_markers(origin)
-    clearance = clearance_for_origin(_route, _stamped_clearance, channel)
-    tags = readable_tiers(clearance)
-
-    budget = "low" if channel == "voice" else "mid"
-    tokens = (
-        getattr(getattr(caller_cfg, "memory", None), "token_budget", 2000)
-        if caller_cfg else 2000
-    )
-    # Attribution surface + the recalling agent's own identity (Task 11). The
-    # render itself is driven by each hit's recorded provenance; current_speaker
-    # is honest metadata only.
-    surface = _recall_surface(channel, origin)
-    current_speaker = (
-        getattr(caller_cfg, "speaker_provenance", None)
-        or SpeakerProvenance(speaker_kind="system")
-    )
-    from hindsight_ids import bank_id
-    from recall_health import default_telemetry, observed_recall
-    from recall_renderer import READABLE_SLICE_NOTE, render_recall
-    try:
-        hits = await observed_recall(
-            path="direct_tool", telemetry=default_telemetry(),
-            # #1120: the window rides only when a period was given, so a
-            # backend's unwindowed call is exactly what it was.
-            operation=lambda: sem.recall_items(
-                bank_id("casa"), query, tags=tags, max_tokens=tokens,
-                clearance=clearance, budget=budget,
-                **({} if window is None else {"window": window}),
-            ),
-        )
-    except Exception as exc:  # noqa: BLE001
-        # Three-outcome contract (v0.99.0): a failed recall must NOT report
-        # status=ok with an empty digest — the model would then (per doctrine)
-        # tell the user Casa has no such information, which is false. Any
-        # failure here (typed RecallUnavailable — incl. RecallProtocolError — or
-        # unexpected) means memory could not be checked. Only RecallUnavailable's
-        # slug reasons are trusted in logs; anything else logs its TYPE (an
-        # arbitrary .reason attribute could carry content).
-        reason = (
-            exc.reason if isinstance(exc, RecallUnavailable)
-            else type(exc).__name__
-        )
-        logger.warning(
-            "recall_memory outcome=unavailable role=%r reason=%s", role, reason,
-        )
-        return _result({
-            **echo,
-            "status": "unavailable",
-            "message": (
-                "Long-term memory could not be checked (backend unavailable). "
-                "Do NOT say the information doesn't exist or that you don't "
-                "have it. If a person asked for something that needs memory, "
-                "tell them memory couldn't be checked. On a check nobody asked "
-                "for, this alone is not a reason to send anything; still "
-                "report what the task itself requires."
-            ),
-        })
-    # #369: the clamp is monotonic and the record is live, so re-resolving
-    # after the awaited recall closes the in-flight window — a downgrade that
-    # landed while the backend call was suspended must filter THIS result,
-    # not merely the next one. Hits carry their tier; drop what the new
-    # clearance cannot read before anything is rendered.
-    _route2, _stamped2 = _origin_clearance_markers(origin)
-    clearance_now = clearance_for_origin(_route2, _stamped2, channel)
-    if clearance_now != clearance:
-        readable_now = set(readable_tiers(clearance_now))
-        hits = tuple(h for h in hits if h.sensitivity in readable_now)
-        clearance = clearance_now
-    if window is not None:
-        # #1120: the server only RANKS by the window, so "only from this
-        # period" is this filter, on the date each memory was first recorded.
-        # A memory with no usable date cannot be placed in a period and is
-        # left out. It runs after the clearance re-filter above, and every arm
-        # below is keyed on what it keeps.
-        hits = tuple(
-            h for h in hits
-            if h.mentioned_at is not None and window.contains(h.mentioned_at)
-        )
-    digest = render_recall(
-        hits, current_speaker=current_speaker, surface=surface,
-        clearance=clearance, token_budget=tokens,
-    )
-    if not digest:
-        # #472: an empty result must never license "no record exists". The
-        # request's tags filter makes the backend drop above-clearance hits
-        # SERVER-SIDE, so a clearance-blocked search returns the same
-        # well-formed empty as a genuine miss — and even at top clearance,
-        # max_tokens truncation, the types filter and mental-model overlays
-        # can hide content. Absence is therefore unknowable from an empty
-        # result at EVERY tier; the two shapes below are what the client can
-        # actually distinguish.
-        if hits:
-            return _result({
-                **echo,
-                "status": "ok", "memory": "",
-                "message": (
-                    "Readable matching memories exist but exceeded the "
-                    "render budget. Refine the query — narrow the topic or "
-                    "be more specific — and try again."
-                ),
-            })
-        if window is not None:
-            # #1120: one constant wording whether the server returned nothing,
-            # the dates left everything out, or the clearance re-filter did —
-            # it never says which.
-            return _result({
-                **echo,
-                "status": "ok", "memory": "",
-                "message": (
-                    "This search found nothing readable from this surface "
-                    "first recorded in the period you asked for. That is NOT "
-                    "proof of absence — a memory counts as from a period by "
-                    "the date it was first recorded, memories with no "
-                    "recorded date are left out, memory may hold entries this "
-                    "surface cannot read, and the search itself is bounded. "
-                    "Do not claim non-existence to the user; say you found "
-                    "nothing you can share from that period here."
-                ),
-            })
-        return _result({
-            "status": "ok", "memory": "",
-            "message": (
-                "This search found nothing readable from this surface. That "
-                "is NOT proof of absence — memory may hold entries this "
-                "surface cannot read, and the search itself is bounded. Do "
-                "not claim non-existence to the user; say you don't have "
-                "anything you can share on that here."
-            ),
-        })
-    # #581: a NON-EMPTY digest needs the same scoping as the two empty arms
-    # above. #472 attached the framing to emptiness, but the readable slice is
-    # clearance-bounded whatever its size — the observed failure was 33
-    # readable hits returned, the one on-topic record dropped server-side, and
-    # the agent answering "no record of a wall safe". The note is CONSTANT at
-    # every tier: varying it would itself be an oracle for "something was
-    # filtered here", and truncation and the types filter hide content at the
-    # top tier too.
-    return _result({
-        **echo,
-        "status": "ok", "memory": digest, "message": READABLE_SLICE_NOTE,
-    })
-
-
-# ---------------------------------------------------------------------------
 # list_inbound_files — #1036
 # ---------------------------------------------------------------------------
 
@@ -10067,28 +10112,12 @@ async def casa_reload(args: dict) -> dict:
 async def _post_supervisor_restart() -> dict:
     """Internal helper used by ``_finalize_engagement`` to honor a
     deferred hard-reload after the bus message + engagement-summary retain have
-    landed. Returns a result-shaped dict for logging; never raises.
+    landed. Returns a result-shaped dict for logging; never raises. The
+    request itself lives in :mod:`supervisor_restart`, which the memory wipe
+    uses too.
     """
-    import aiohttp
-    token = os.environ.get("SUPERVISOR_TOKEN")
-    if not token:
-        return {
-            "status": "error",
-            "kind": "no_supervisor_token",
-            "message": "SUPERVISOR_TOKEN not set - cannot restart addon",
-        }
-    headers = {"Authorization": f"Bearer {token}"}
-    url = "http://supervisor/addons/self/restart"
-    try:
-        async with aiohttp.ClientSession(headers=headers) as s:
-            async with s.post(url) as resp:
-                return {"supervisor_status": resp.status}
-    except Exception as exc:  # noqa: BLE001
-        return {
-            "status": "error",
-            "kind": "supervisor_error",
-            "message": str(exc),
-        }
+    import supervisor_restart
+    return await supervisor_restart.request_app_restart()
 
 
 @tool(
@@ -10208,83 +10237,83 @@ def _duplicate_task_refusal(origin: dict, task_text: str) -> dict | None:
 
 
 async def _fetch_executor_archive(
-    *, task: str, origin_channel: str, token_budget: int,
-    origin_route: str | None = None, origin_clearance: str | None = None,
-    epoch_tag: str | None = None,
+    *, role: str, procedural_epoch: str, origin_channel: str,
+    token_budget: int, origin_route: str | None = None,
+    origin_clearance: str | None = None,
 ) -> str:
-    """Read prior-engagement "lessons" as a SEMANTIC recall against the shared
-    ``casa`` bank, keyed on the current ``task`` and filtered to the originating
-    engagement's read-clearance (design §3, plan 3). Returns the digest under a
-    recognizable header, or "" when the recall is empty or memory could not
-    be checked (RecallUnavailable → run cold; never a fabricated header).
+    """Prior engagements' lessons for an executor launch: the
+    newest ``engagement_summaries`` of *role* stamped with this launch's own
+    *procedural_epoch* (#215, INV-MEM-015), at a tier the originating turn's
+    clearance can read (#336), within *token_budget*, read once, off the
+    event loop. Returns them under a recognizable header, or "" when there
+    are none or memory is unavailable.
 
-    #201 — why collapsing unavailable into empty is CORRECT here, and what
-    would make it wrong. Elsewhere the distinction is load-bearing: an agent
-    that says "I have no record of that" because the store timed out is lying
-    to the operator. This path never says anything. The return value lands in
-    the executor prompt's ``{executor_memory}`` slot, so "" produces no memory
-    block — silence, not a claim of absence. Adding a third state here would
-    thread a sentinel through two call sites to change nothing.
+    #201 — why collapsing unavailable into empty is CORRECT here: the return
+    value lands in the executor prompt's ``{executor_memory}`` slot, so ""
+    produces no memory block — silence, not a claim of absence. That depends
+    on the prompt template staying silent for the empty case; pinned for the
+    shipped default templates by tests/test_recall_absence_invariant.py.
 
-    That reasoning depends entirely on the prompt template staying silent for
-    the empty case. If an executor prompt ever gains text like "No prior
-    engagements found", running cold starts asserting absence and THIS function
-    needs a real third state. (A blank ``task`` is a separate matter and is
-    guarded below: it is an invalid call, not an unavailable backend, and
-    ``delegated_recall`` rejects it outright.) Pinned for the shipped default
-    templates by tests/test_recall_absence_invariant.py."""
-    import agent as agent_mod
-    sem = getattr(agent_mod, "active_semantic_memory", None)
-    if sem is None:
+    A record with no epoch (created before epochs were persisted) matches
+    nothing: a lesson that cannot prove it was learned under the current
+    doctrine is never injected."""
+    from memory import capture
+    from sensitivity import clearance_for_origin
+    store = capture.active_store()
+    if store is None or not store.available or not procedural_epoch:
         return ""
-    # #201: a blank task has nothing to search FOR. Skip the recall rather than
-    # asking for one — `delegated_recall` now rejects a blank query outright,
-    # because returning "" for it would claim a search that never ran. Here the
-    # empty result is safe (it renders as no memory block at all), but the
-    # helper cannot know that, so the caller states it.
-    if not (task or "").strip():
-        return ""
-    # #215: scope the injected block to THIS launch's doctrine epoch —
-    # lessons written under another (or no recorded) epoch are dropped
-    # client-side before rendering. Injected procedure must agree with the
-    # doctrine injected beside it; query_engager (Q&A, not injected
-    # procedure) is deliberately unfiltered.
-    hit_filter = None
-    if epoch_tag is not None:
-        from executor_epoch import make_archive_epoch_filter
-        hit_filter = make_archive_epoch_filter(epoch_tag)
+    clearance = clearance_for_origin(
+        origin_route, origin_clearance, origin_channel)
     try:
-        digest = await delegated_recall(
-            sem, query=task, origin_channel=origin_channel, max_tokens=token_budget,
-            path="executor_archive",
-            # #336 (Terra r2): the archive block is injected into the
-            # executor's prompt at launch, so it must be filtered at the
-            # ORIGINATING turn's clearance — a non-operator-launched executor
-            # must not be handed private lessons in its system prompt.
-            origin_route=origin_route, origin_clearance=origin_clearance,
-            hit_filter=hit_filter,
-        )
-    except RecallUnavailable:
+        texts = await asyncio.to_thread(
+            _read_executor_archive, store, role, procedural_epoch, clearance,
+            token_budget)
+    except Exception:  # noqa: BLE001 — the launch runs without lessons
+        logger.warning("executor archive not read for %s", role,
+                       exc_info=True)
         return ""
-    if not digest:
+    if not texts:
         return ""
     # #215: one subordination line — lessons are observations from prior
     # engagements; the versioned doctrine files prevail wherever they
     # disagree. Covers the same-epoch case where a lesson is merely wrong.
     #
-    # #581 (Sol, design round 1): the block is a clearance-filtered AND
-    # epoch-filtered slice, so an executor reading it must not conclude that a
-    # topic it does not mention is a topic Casa has nothing on. The empty case
-    # above still returns "" — that renders as no block at all, which is
-    # silence rather than a claim (see this function's docstring).
-    from recall_renderer import READABLE_SLICE_PROMPT_LINE
+    # #581: the block is a clearance-filtered AND epoch-filtered slice, so an
+    # executor reading it must not conclude that a topic it does not mention
+    # is a topic Casa has nothing on.
     return (
         "## Prior engagements (lessons learned)\n"
         "These are observations from prior engagements. Where they disagree "
         "with your doctrine files, the doctrine prevails.\n"
         f"{READABLE_SLICE_PROMPT_LINE}\n"
-        f"{digest}"
+        + "\n".join(texts)
     )
+
+
+def _read_executor_archive(store, role: str, procedural_epoch: str,
+                           clearance: str, token_budget: int) -> list[str]:
+    """The summaries an executor launch is given, oldest first: the newest
+    of *role* at *procedural_epoch* readable at *clearance*, while they fit
+    *token_budget* (four characters a token). Blocking."""
+    from sensitivity import readable_tiers
+    tiers = tuple(readable_tiers(clearance))
+    if not tiers:
+        return []
+    with store.transaction(busy_timeout=1.0) as conn:
+        rows = conn.execute(
+            "SELECT at, text FROM engagement_summaries WHERE role = ? "
+            "AND procedural_epoch = ? AND tier IN "
+            f"({', '.join('?' for _ in tiers)}) ORDER BY at DESC, id DESC",
+            (role, procedural_epoch, *tiers)).fetchall()
+    kept: list[str] = []
+    used = 0
+    for at, text in rows:
+        line = f"- [{at[:10]}] {text}"
+        if used + len(line) // 4 > token_budget:
+            break
+        kept.append(line)
+        used += len(line) // 4
+    return list(reversed(kept))
 
 
 @tool(
@@ -10738,7 +10767,7 @@ async def _engage_executor_impl(args: dict, _spawn_holder: dict) -> dict:
         # archive fetch (whose filter needs it) and persisted on the record
         # so finalize stamps the summary with the epoch the engagement
         # actually ran under, not the finalize-time definition.
-        from executor_epoch import compute_procedural_epoch, epoch_application_tag
+        from executor_epoch import compute_procedural_epoch
         procedural_epoch = compute_procedural_epoch(
             defn, prompt_template=prompt_template,
         )
@@ -10752,9 +10781,9 @@ async def _engage_executor_impl(args: dict, _spawn_holder: dict) -> dict:
             # never the launch.
             logger.warning("set_procedural_epoch failed: %s", exc)
 
-        # Semantic-recall memory injection (design §3, plan 3): when the executor
-        # opts in (defn.memory.enabled=True, off by default), fetch prior-engagement
-        # lessons from the shared `casa` bank at the origin channel's read-clearance.
+        # Executor archive: when the executor opts in
+        # (defn.memory.enabled=True, off by default), read prior engagements'
+        # summaries for its type and epoch at the origin's read-clearance.
         #
         # #583: NOT for claude_code, which fetches its own copy in
         # ``ClaudeCodeDriver.start`` (drivers/claude_code_driver.py) for the
@@ -10771,12 +10800,11 @@ async def _engage_executor_impl(args: dict, _spawn_holder: dict) -> dict:
         executor_memory_block = ""
         if defn.memory.enabled and defn.driver != "claude_code":
             executor_memory_block = await _fetch_executor_archive(
-                task=task_text,
+                role=executor_type, procedural_epoch=procedural_epoch,
                 origin_channel=origin.get("channel", "telegram"),
                 token_budget=defn.memory.token_budget,
                 origin_route=origin.get("_origin_route"),
                 origin_clearance=origin.get("_origin_clearance"),
-                epoch_tag=epoch_application_tag(executor_type, procedural_epoch),
             )
 
         # W3/Sol r5-B8: the {task} value reaches BOTH driver paths through this ONE
@@ -11437,10 +11465,9 @@ async def _report_launch_death(
 
     Deliberately NOT ``_finalize_engagement``: that funnel would double-notify
     the engager over the bus, overwrite ``error_kind`` with
-    ``emit_completion_error``, and — the outcome that matters — retain a
-    tier-classified summary onto the shared ``casa`` bank, which has no other
-    copy. Nothing here constructs ``completed`` and nothing here reaches
-    semantic memory.
+    ``emit_completion_error``, and — the outcome that matters — capture a
+    finalize summary into memory, which has no other copy. Nothing here
+    constructs ``completed`` and nothing here captures a summary.
 
     Never raises. Returns a :class:`LaunchDeathResult`.
     """
@@ -12513,7 +12540,7 @@ async def _finalize_engagement(
     detach_teardown_tail: bool = False,  # #632: in_casa self-emit only
 ) -> "FinalizeResult":
     """End an engagement: update registry, close topic, NOTIFY the assistant,
-    retain a tier-classified engagement summary on the shared ``casa`` bank.
+    capture the engagement's summary into memory.
 
     Never raises on channel/memory side-effects — logs warnings and continues
     so the registry always reaches a terminal state.
@@ -12528,6 +12555,54 @@ async def _finalize_engagement(
     guard; ``PERSIST_FAILED`` means the tombstone write rolled back and the
     record is STILL LIVE (retryable).
     """
+    # Browser executor §5.4: a specialist that writes no memory leaves no
+    # summary either — the summary is its own output. Decided ONCE, here,
+    # and frozen: the summary run's registration and the tail's captures
+    # both read this decision, never the setting again (a reload during the
+    # teardown must not make a summary capture that no run covers).
+    from delegated_memory import role_writes_memory
+    summary_allowed = (engagement.kind != "specialist"
+                       or role_writes_memory(engagement.role_or_type))
+    # The finalize summaries are captures: their run's row exists before the
+    # terminal flip that makes the engagement's transcripts deletable
+    # (INV-ENG-027). This ``finally`` covers the row's whole life after its
+    # registration — a lost flip, a failure, a cancellation anywhere before
+    # the tail — unless a detached tail has taken it over; with no capture
+    # outstanding, closing confirms it.
+    summary_run = await _register_summary_run(engagement,
+                                              allowed=summary_allowed)
+    handed: list = []
+    try:
+        return await _finalize_engagement_funnel(
+            engagement, outcome=outcome, text=text, artifacts=artifacts,
+            next_steps=next_steps, driver=driver, stale_before=stale_before,
+            output_truncated=output_truncated, inbound_gate=inbound_gate,
+            detach_teardown_tail=detach_teardown_tail,
+            summary_allowed=summary_allowed, summary_run=summary_run,
+            handed=handed)
+    finally:
+        if not handed:
+            summary_run.close()
+
+
+async def _finalize_engagement_funnel(
+    engagement: EngagementRecord,
+    *,
+    outcome: str,
+    text: str,
+    artifacts: list[str],
+    next_steps: list[dict],
+    driver: Any | None,
+    stale_before: float | None,
+    output_truncated: bool,
+    inbound_gate: bool,
+    detach_teardown_tail: bool,
+    summary_allowed: bool,
+    summary_run: Any,
+    handed: list,
+) -> "FinalizeResult":
+    """The body of :func:`_finalize_engagement`, holding its summary run.
+    *handed* receives the detached tail when one takes the run over."""
     last_summary = engagement.origin.get("job", {}).get("last_summary")
     if outcome in ("cancelled", "error") and last_summary:
         text += f"\nLast progress: {last_summary}"
@@ -12821,17 +12896,10 @@ async def _finalize_engagement(
     # before the first await after the flip. ``lower_origin_clearance`` has
     # no terminal-state refusal and rewrites the live record's ``origin`` and
     # ``task``; this funnel suspends (quiesce wait, broker drain, topic
-    # round-trips) between the flip and the notification/retain reads, so
+    # round-trips) between the flip and the notification/summary reads, so
     # without this snapshot a post-terminal clamp lands in the
-    # DelegationComplete and retained-summary payloads. The completion
-    # records carry the values that won the flip. ``_snapshot_origin()``
-    # freezes only ambient provenance, so it is resolved here too (Task 10
-    # semantics unchanged: current-origin identity when present, else the
-    # honest unattributed "system" — never a fabricated persona).
-    from personality_types import SpeakerProvenance
-    _prov = _snapshot_origin().get("speaker_provenance")
-    if not isinstance(_prov, SpeakerProvenance):
-        _prov = SpeakerProvenance(speaker_kind="system")
+    # DelegationComplete and summary payloads. The completion records carry
+    # the values that won the flip.
     frozen: dict[str, Any] = {
         "id": engagement.id,
         "kind": engagement.kind,
@@ -12842,7 +12910,7 @@ async def _finalize_engagement(
         "procedural_epoch": getattr(engagement, "procedural_epoch", "") or "",
         "origin": dict(engagement.origin),
         "task": engagement.task,
-        "summary_prov": _prov,
+        "summary_allowed": summary_allowed,
     }
 
     # #599: the instant THIS call won the terminal flip, WAIT for the uid
@@ -12987,7 +13055,7 @@ async def _finalize_engagement(
                 # before the engagement ended (``consumed`` requires exactly
                 # that evidence) — so that is what it says.
                 # TOPIC-ONLY (never in `text`, which flows to the bus
-                # notification and semantic memory) and BOUNDED to one
+                # notification and the summary capture) and BOUNDED to one
                 # message: excerpts + count, full texts stay in the durable
                 # spool file.
                 # #848: a reservation text that was read is evidence of a
@@ -13279,7 +13347,12 @@ async def _finalize_engagement(
             engagement, outcome=outcome, text=text, artifacts=artifacts,
             next_steps=next_steps, driver=driver, now=now,
             output_truncated=output_truncated, frozen=frozen,
+            summary_run=summary_run,
         ))
+        # The tail now owns the summary run: its end is the run's outermost
+        # end, and a tail that ended with no capture interrupted confirms it.
+        handed.append(tail)
+        tail.add_done_callback(lambda _t: summary_run.close())
         _finalize_tail_tasks.add(tail)
         tail.add_done_callback(
             lambda t, _eid=engagement.id: _finalize_tail_done(_eid, t))
@@ -13288,6 +13361,7 @@ async def _finalize_engagement(
         engagement, outcome=outcome, text=text, artifacts=artifacts,
         next_steps=next_steps, driver=driver, now=now,
         output_truncated=output_truncated, frozen=frozen,
+        summary_run=summary_run,
     )
 
 
@@ -13296,6 +13370,62 @@ def _told_nowhere(origin: Any, outcome: str) -> bool:
     resident notification, so no resident turn. A cancelled or failed one is
     told as any engagement's end is."""
     return outcome == "completed" and background_jobs.is_quiet_origin(origin)
+
+
+async def _register_summary_run(engagement: EngagementRecord, *,
+                                allowed: bool):
+    """The ``summary`` run of a finalize that will write a summary
+    (``memory/transcript_runs.py``): one row, registered before the terminal
+    flip, naming the engagement's directory — which, unconfirmed, holds
+    every transcript there. A finalize that writes no summary holds a run
+    with no row. *allowed* is the summaries' own switch, decided once by the
+    finalize (the engagement summary of any kind but a specialist that
+    writes no memory; the executor summary, whose kind always passes), under
+    the origin channel's write-trust."""
+    from channel_policy import writes_to_bank
+    from engagement_transcript_reaper import transcript_cwd
+    from memory import transcript_runs
+    role = engagement.role_or_type
+    origin = getattr(engagement, "origin", None) or {}
+    if not (allowed and writes_to_bank(str(origin.get("channel", "")))):
+        return transcript_runs.unregistered(transcript_runs.SUMMARY, role=role)
+    try:
+        directory = transcript_cwd(engagement)
+    except Exception:  # noqa: BLE001 — the row then names no directory
+        directory = None
+    return await transcript_runs.Run.start(
+        transcript_runs.SUMMARY, role=role, directory=directory)
+
+
+async def _capture_summary(frozen: dict[str, Any], text: str, *,
+                           allowed: bool) -> bool:
+    """Capture one finalized engagement's summary into memory's
+    ``engagement_summaries``, at the origin's tier and stamped with the
+    record's epoch. ``allowed`` is the summary's own switch (a specialist
+    that writes no memory leaves none); the origin channel's write-trust
+    gates it. A failure is logged, never raised.
+    Returns whether it was kept: a receipt, or nothing to capture."""
+    from channel_policy import writes_to_bank
+    from memory import capture, eligibility
+    from sensitivity import clearance_for_origin
+    try:
+        origin = frozen["origin"]
+        channel = str(origin.get("channel", ""))
+        if eligibility.admit(
+                _CaptureSource.ENGAGEMENT_SUMMARY, text=text,
+                channel_writes=writes_to_bank(channel),
+                role_writes_memory=allowed) is None:
+            return True
+        item = capture.summary(
+            role=frozen["role_or_type"],
+            procedural_epoch=frozen.get("procedural_epoch") or "",
+            tier=clearance_for_origin(origin.get("_origin_route"),
+                                      origin.get("_origin_clearance"), channel),
+            text=text, engagement_id=frozen["id"])
+    except Exception:  # noqa: BLE001 — capture never fails a finalize
+        logger.exception("memory capture of an engagement summary failed")
+        return False
+    return await capture.record(item) is not None
 
 
 async def _finalize_engagement_tail(
@@ -13309,6 +13439,7 @@ async def _finalize_engagement_tail(
     now: float,
     output_truncated: bool,
     frozen: dict[str, Any],
+    summary_run: Any = None,
 ) -> "FinalizeResult":
     """#632: the finalize funnel's post-topic tail — driver teardown, bus
     notification, retains, terminal meta rewrite, reload-marker drain,
@@ -13322,6 +13453,10 @@ async def _finalize_engagement_tail(
     record) and for log lines reading immutable identity only.
     """
     eng_id: str = frozen["id"]
+    if summary_run is None:
+        from memory import transcript_runs
+        summary_run = transcript_runs.unregistered(
+            transcript_runs.SUMMARY, role=frozen["role_or_type"])
     # 3. Tear down driver client
     if driver is not None:
         try:
@@ -13395,60 +13530,32 @@ async def _finalize_engagement_tail(
                 engagement.id[:8], exc,
             )
 
-    # 5. Retain a structured engagement summary on the shared `casa` bank,
-    #    tier-classified and gated by the origin channel's write-trust (voice →
-    #    nothing) — design §3, plan 3. The NOTIFICATION above is not itself the
-    #    durable record for the engager — it is a queue entry, and believing
-    #    otherwise was #766. What is durable is the record's
-    #    `terminal_notification_pending`, which that notice's delivery
-    #    acknowledgement clears and a boot replay honours; this retain is the
-    #    structured one-shot the maintainer chose to keep.
-    # L33: retain_delegated internally runs an LLM tier-classification per item
-    # (a claude-CLI subprocess spawn + round trip) — off the turn's critical
-    # path per tier_classifier's own doctrine. Run both retains as background
-    # tasks (mirroring _run_delegated_agent) so emit_completion / cancel return
-    # promptly; the deferred-reload path below drains them first (H-1).
-    retain_tasks: list[asyncio.Task] = []
-    import agent as agent_mod
-    from personality_types import RetainedTurn
-    # Task 10: the structured summary is a platform record authored on behalf
-    # of the finalized engagement — provenance resolved at the terminal flip
-    # (#632: with the rest of the frozen payload inputs), current-origin
-    # identity when one was present, else the honest, unattributed "system"
-    # identity — NEVER a fabricated persona.
-    _summary_prov = frozen["summary_prov"]
-    sem = getattr(agent_mod, "active_semantic_memory", None)
+    # 5. Capture a structured engagement summary into memory. The
+    #    NOTIFICATION above is not itself the durable record for the engager —
+    #    it is a queue entry, and believing otherwise was #766. What is durable
+    #    is the record's `terminal_notification_pending`, which that notice's
+    #    delivery acknowledgement clears and a boot replay honours.
     # Browser executor §5.4: a specialist that writes no memory leaves no
-    # summary either — the summary is its own output. ``sem`` stays bound for
-    # the executor summary below, which no specialist reaches.
-    from delegated_memory import role_writes_memory
-    _summary_allowed = (frozen["kind"] != "specialist"
-                        or role_writes_memory(frozen["role_or_type"]))
-    if sem is not None and _summary_allowed:
-        summary = json.dumps({
-            "kind": "engagement_summary",
-            "engagement_id": eng_id,
-            "specialist_or_type": frozen["role_or_type"],
-            "task": frozen["task"],
-            "status": outcome,
-            "started_at": frozen["started_at"],
-            "completed_at": now,
-            "duration_s": now - frozen["started_at"],
-            "text": text,
-            "artifacts": artifacts,
-            "next_steps": next_steps,
-        })
-        # #411: fence generation captured synchronously with the summary
-        # assembly — the detached task may not run until after a wipe.
-        from memory_wipe import FENCE as _FENCE
-        bg = asyncio.create_task(retain_delegated(
-            sem, origin_channel=str(frozen["origin"].get("channel", "")),
-            turns=[RetainedTurn(summary, _summary_prov)],
-            fence_generation=_FENCE.generation(),
-        ))
-        _specialist_bg_tasks.add(bg)
-        bg.add_done_callback(_specialist_bg_tasks.discard)
-        retain_tasks.append(bg)
+    # summary either — decided once before the terminal flip (the summary
+    # run's registration read the same decision).
+    _summary_allowed = frozen["summary_allowed"]
+    summary = json.dumps({
+        "kind": "engagement_summary",
+        "engagement_id": eng_id,
+        "specialist_or_type": frozen["role_or_type"],
+        "task": frozen["task"],
+        "status": outcome,
+        "started_at": frozen["started_at"],
+        "completed_at": now,
+        "duration_s": now - frozen["started_at"],
+        "text": text,
+        "artifacts": artifacts,
+        "next_steps": next_steps,
+    })
+    # The summary's memory capture, awaited: a local append (or spool) that
+    # returns a receipt — an obligation of the finalize's summary run.
+    await summary_run.kept(
+        _capture_summary(frozen, summary, allowed=_summary_allowed))
 
     # Plan 4a.1 §8.4: update .casa-meta.json with terminal status + retention_until.
     if frozen["driver"] == "claude_code":
@@ -13503,12 +13610,9 @@ async def _finalize_engagement_tail(
                 engagement.id[:8], exc,
             )
 
-    # Per-executor-type structured summary (only kind=executor), retained
-    # tier-tagged on the shared bank. Its content differs from the engagement
-    # summary above, so its content-addressed document_id (Task 10) is distinct
-    # and the two never clobber each other.
-    # `sem` is the active_semantic_memory resolved in step 5 above.
-    if frozen["kind"] == "executor" and sem is not None:
+    # Per-executor-type structured summary (only kind=executor), captured
+    # beside the engagement summary above.
+    if frozen["kind"] == "executor":
         type_summary = json.dumps({
             "kind": "executor_engagement_summary",
             "engagement_id": eng_id,
@@ -13522,31 +13626,15 @@ async def _finalize_engagement_tail(
             "last_text": text,
             "artifacts": artifacts,
         })
-        # #215: stamp the summary with the epoch persisted on the RECORD at
-        # launch (never the finalize-time definition — a reload may have
-        # moved it). A legacy record without one retains untagged; the
-        # archive filter then drops it, by design. #411: the fence
-        # generation is captured HERE, synchronously with the summary
-        # assembly — the detached task below may not run until after a wipe.
-        from executor_epoch import epoch_application_tag
-        from memory_wipe import FENCE
-        _epoch = frozen["procedural_epoch"]
-        _tags = (
-            [epoch_application_tag(frozen["role_or_type"], _epoch)]
-            if _epoch else []
-        )
-        bg = asyncio.create_task(retain_delegated(
-            sem, origin_channel=str(frozen["origin"].get("channel", "")),
-            turns=[RetainedTurn(type_summary, _summary_prov)],
-            application_tags=_tags,
-            fence_generation=FENCE.generation(),
-        ))
-        _specialist_bg_tasks.add(bg)
-        bg.add_done_callback(_specialist_bg_tasks.discard)
-        retain_tasks.append(bg)
-
-    # H-1 (v0.34.0): honor deferred hard-reload now that all bus +
-    # retain writes have landed. Only on outcome=completed — per
+        # The executor summary's memory capture, awaited, stamped with the
+        # record's epoch (the archive an executor is served is per epoch).
+        await summary_run.kept(
+            _capture_summary(frozen, type_summary, allowed=True))
+    # Both summaries have returned: the summary run is confirmed when each
+    # was kept, and the engagement's transcripts follow retention.
+    summary_run.close()
+    # H-1 (v0.34.0): honor deferred hard-reload now that all bus and
+    # memory writes have landed. Only on outcome=completed — per
     # ``completion.md`` doctrine line 61, a cancelled engagement does
     # NOT need a reload (artifact is operator-pending). On
     # outcome=error the engagement bailed; the reload decision is the
@@ -13563,12 +13651,8 @@ async def _finalize_engagement_tail(
     _ENGAGEMENTS_PENDING_RELOAD.discard(eng_id)
     _ENGAGEMENTS_PREACTIVATED.discard(eng_id)
     if outcome == "completed" and deferred_pending:
-        # H-1: the Supervisor container-kill must be sequenced AFTER the retain
-        # writes have landed. Since L33 moved the retains to background tasks,
-        # drain them here (only on this rare deferred-reload path) so the
-        # invariant "all retain writes have landed" still holds before restart.
-        if retain_tasks:
-            await asyncio.gather(*retain_tasks, return_exceptions=True)
+        # H-1: the Supervisor container-kill is sequenced AFTER the summary
+        # captures above, which are awaited.
         result = await _post_supervisor_restart()
         if result.get("status") == "error":
             logger.warning(
@@ -13843,8 +13927,8 @@ async def emit_completion(args: dict) -> dict:
 
     # Bug 9 (v0.14.6): idempotency. Re-emitting completion (e.g. SDK
     # retry, hook misfire) used to re-run _finalize_engagement, which
-    # double-closes the topic, double-NOTIFYs the assistant, and double-retains
-    # the engagement summary on the shared `casa` bank. Re-read the live registry
+    # double-closes the topic, double-NOTIFYs the assistant, and double-captures
+    # the engagement summary. Re-read the live registry
     # state so we catch transitions that happened on another in-flight
     # turn since this engagement_var snapshot was taken.
     if _engagement_registry is not None:
@@ -14266,14 +14350,37 @@ async def _synthesize_answer(
     return out
 
 
+#: Tokens of the engager's view handed to the synthesizer.
+_ENGAGER_VIEW_TOKENS = 2000
+
+
+def _engager_context(store, question: str, clearance: str) -> str:
+    """What the engager knows that bears on *question*, read at *clearance*
+    (blocking): its view of the ledger that clearance reads, within
+    :data:`_ENGAGER_VIEW_TOKENS`, then the first page of a search of the
+    saved conversation. ``""`` when neither holds anything."""
+    from memory import note as memory_note
+    from memory import search as memory_search
+    view, _ = memory_note.with_view(
+        store, clearance=clearance, budget=_ENGAGER_VIEW_TOKENS)
+    parts = [view.text] if view is not None and view.text else []
+    if memory_search.terms(question):
+        found = memory_search.search(store, question, clearance=clearance)
+        lines = [f"[{h['date']} {h['time']}] {h['speaker']}: {h['text']}"
+                 for h in found.hits]
+        if lines:
+            parts.append("Saved conversation matching the question:\n"
+                         + "\n".join(lines))
+    return "\n\n".join(parts)
+
+
 @tool(
     "query_engager",
     "Ask the engaging agent a question. status=ok returns the answer "
     "synthesized from the engager's clearance-filtered memory; status=unknown "
     "means the search of readable memory found nothing — NOT proof of "
     "absence, since entries above this engagement's clearance are never "
-    "searched; status=too_broad means readable matches EXIST but exceeded "
-    "the render budget — ask a narrower question; status=unavailable means "
+    "searched; status=unavailable means "
     "memory could not be checked (do not conclude the information doesn't "
     "exist). Callable only from inside an active engagement.",
     {"question": str, "max_tokens": int},
@@ -14288,7 +14395,7 @@ async def query_engager(args: dict) -> dict:
     # fell through to `status=unknown` — which this tool's own description
     # defines as "the memory was searched and holds nothing relevant". An
     # executor asking a malformed question was told the engager remembers
-    # nothing. Reject it at the boundary, exactly as `recall_memory` does.
+    # nothing. Reject it at the boundary, exactly as `search_memory` does.
     if not question.strip():
         return _result({
             "status": "error", "kind": "empty_query",
@@ -14300,43 +14407,23 @@ async def query_engager(args: dict) -> dict:
         })
     max_tokens = max(1, min(int(args.get("max_tokens") or 500), 4000))
 
-    # Retrieve engager-side context: a semantic recall against the shared `casa`
-    # bank at the engagement origin's read-clearance (design §3, plan 3).
-    import agent as agent_mod
-    sem = getattr(agent_mod, "active_semantic_memory", None)
+    # Retrieve engager-side context: the engager's view of its ledger plus a
+    # search of the saved conversation, at the clearance of the turn that
+    # created the engagement (#336: the record's own persisted markers).
+    store = _memory_store()
     context = ""
-    memory_unavailable = False
-    if sem is None:
-        # No backend wired: the engager's memory cannot be checked.
-        memory_unavailable = True
-    else:
+    memory_unavailable = store is None
+    if store is not None:
         try:
-            # #369: the record is live and the clamp monotonic — if a
-            # downgrade lands while the recall is suspended, the result was
-            # filtered at a clearance the engagement no longer holds. Re-read
-            # the markers after the await and re-run at the new floor; the
-            # loop is bounded by the (few, one-way) tiers.
-            from sensitivity import TIERS as _ALL_TIERS
-            _n_hits = 0
-            for _ in range(len(_ALL_TIERS)):
-                _q_clearance = engagement.origin.get("_origin_clearance")
-                context, _n_hits = await delegated_recall(
-                    sem, query=question,
-                    origin_channel=str(engagement.origin.get("channel", "")),
-                    max_tokens=2000, path="query_engager",
-                    # #336 (Sol, review r3): the engager-side context is read
-                    # on behalf of THIS engagement, so it is filtered at the
-                    # clearance of the turn that created it — the record's own
-                    # persisted markers, exactly like its recall_memory calls.
-                    origin_route=engagement.origin.get("_origin_route"),
-                    origin_clearance=_q_clearance,
-                    with_stats=True,
-                )
-                if engagement.origin.get("_origin_clearance") == _q_clearance:
-                    break
-        except RecallUnavailable:
-            # Distinct from status=unknown (a genuine zero-hit): the engager's
-            # memory could not be checked at all.
+            # #369: the record is live and the clamp monotonic — a downgrade
+            # landing while the read runs re-reads at the new floor.
+            _q_clearance = engagement.origin.get("_origin_clearance")
+            context = await _read_memory(
+                engagement.origin,
+                lambda clearance: _engager_context(store, question, clearance))
+        except Exception:  # noqa: BLE001 — never a fake "unknown"
+            logger.warning("query_engager: memory could not be read",
+                           exc_info=True)
             memory_unavailable = True
 
     # Publish bus event so observer can see the query
@@ -14360,12 +14447,11 @@ async def query_engager(args: dict) -> dict:
         return _result({
             "status": "unavailable", "text": "",
             "message": (
-                "The engager's memory could not be checked (backend "
+                "The engager's memory could not be checked (store "
                 "unavailable). Do not conclude the information doesn't exist."
             ),
         })
-    # #472: "unknown" is a statement about the READABLE slice only — the
-    # recall's tags filter drops above-clearance entries server-side, so an
+    # #472: "unknown" is a statement about the READABLE slice only — an
     # empty context cannot distinguish "never told" from "not readable at
     # this engagement's clearance". Say so, or the executor asserts absence.
     _unknown_note = (
@@ -14373,17 +14459,7 @@ async def query_engager(args: dict) -> dict:
         "NOT proof of absence: entries above this engagement's clearance "
         "are never searched. Do not conclude the information doesn't exist."
     )
-    # #472 (Sol diff-gate r1): a rendered "" with a NON-ZERO hit count means
-    # readable matches exist but exceeded the render budget — reporting that
-    # as "unknown" would deny memories this clearance can read.
-    _too_broad = (
-        "Readable matching memories exist but exceeded the render budget — "
-        "ask a narrower, more specific question."
-    )
     if not context:
-        if _n_hits > 0:
-            return _result(
-                {"status": "too_broad", "text": "", "message": _too_broad})
         return _result({"status": "unknown", "text": "", "message": _unknown_note})
     # #369: synthesis awaits too — a downgrade landing mid-synthesis means the
     # answer was drawn from context above the engagement's new floor. Discard
@@ -14412,27 +14488,20 @@ async def query_engager(args: dict) -> dict:
             break
         _q_clearance = engagement.origin.get("_origin_clearance")
         try:
-            context, _n_hits = await delegated_recall(
-                sem, query=question,
-                origin_channel=str(engagement.origin.get("channel", "")),
-                max_tokens=2000, path="query_engager",
-                origin_route=engagement.origin.get("_origin_route"),
-                origin_clearance=_q_clearance,
-                with_stats=True,
-            )
-        except RecallUnavailable:
+            context = await _read_memory(
+                engagement.origin,
+                lambda clearance: _engager_context(store, question, clearance))
+        except Exception:  # noqa: BLE001 — never a fake "unknown"
+            logger.warning("query_engager: memory could not be read",
+                           exc_info=True)
             return _result({
                 "status": "unavailable", "text": "",
                 "message": (
-                    "The engager's memory could not be checked (backend "
-                    "unavailable). Do not conclude the information doesn't "
-                    "exist."
+                    "The engager's memory could not be checked. Do not "
+                    "conclude the information doesn't exist."
                 ),
             })
         if not context:
-            if _n_hits > 0:
-                return _result(
-                    {"status": "too_broad", "text": "", "message": _too_broad})
             return _result(
                 {"status": "unknown", "text": "", "message": _unknown_note})
     if answer.strip().upper().startswith("UNKNOWN"):
@@ -19230,12 +19299,10 @@ async def persona_install_commit(args: dict) -> dict:
 # (personality_binding.compute_binding_digest), and that digest is a resume
 # precondition — agent._resume_decision refuses a stored session whose digest
 # differs from the freshly loaded resident's, returning
-# ("new", retain_old=True, "binding_mismatch") after the role check and BEFORE
-# the freshness window, so the refusal is channel-agnostic. Telegram
-# transcripts survive as recall (Agent._spawn_cold_retain -> retain_cold_session);
-# voice is not a bank-writable channel (channel_policy.writes_to_bank), so
-# session_saver.save_session returns False without persisting and a voice
-# conversation is lost outright rather than demoted to recall.
+# ("new", "binding_mismatch") after the role check and BEFORE the freshness
+# window, so the refusal is channel-agnostic. What a conversation said reaches
+# memory through live capture as it happens, on the channels capture admits —
+# voice is not one (channel_policy.writes_to_bank).
 #
 # Staging is the LAST moment the operator can be told, because the promotion
 # happens at a restart they are about to order. One constant, shared by every
@@ -19267,15 +19334,11 @@ async def persona_install_commit(args: dict) -> dict:
 #     apparently unchanged persona never implied continuity in the first place.
 #   r4 (Astra, S2) the same overclaiming, now about the CONSOLATION rather
 #     than the loss: the sentence said Telegram history "stays recallable",
-#     which is false on a default install. Long-term memory is OFF by default,
-#     the backend is then NoOpSemanticMemory, whose `retain` is silent and
-#     whose `recall` raises `not_configured` (semantic_memory.py:147-167).
-#     Qualified with "only if long-term memory is configured".
-#   r5 (Terra, S2) that qualification was STILL a guarantee. Even with memory
-#     configured, retain_cold_session DISCARDS behind the wipe fence, retains
-#     nothing for a legacy/corrupt snapshot, and gives up after bounded
-#     retries (session_saver.py:410-432). "Written out" promises what the code
-#     does not.
+#     which was false on a default install of the time (long-term memory was
+#     off by default). Qualified with "only if long-term memory is configured".
+#   r5 (Terra, S2) that qualification was STILL a guarantee: the save path of
+#     the time could discard, skip or give up. "Written out" promises what the
+#     code does not.
 #
 #   r8 (Astra, S2) the CENTRAL claim was itself too strong. "Every
 #     conversation starts fresh" is false: `_resume_decision` compares the
@@ -22097,8 +22160,7 @@ async def vault_drop_off(args: dict) -> dict:
 # resident's very first load only — a personality-identity change is
 # restart-to-swap on disk and in memory alike, and the persona reference scan
 # keeps pinning what a resident serves until the restart. `active_runtime` is
-# the established module-level accessor (mirrors active_semantic_memory), set
-# by casa_core as `agent.active_runtime = runtime`.
+# the established module-level accessor, set by casa_core as `agent.active_runtime = runtime`.
 
 def _persona_roots() -> tuple[Path, ...]:
     """#323: resolve the approved persona roots through the SAME seams the
@@ -22481,7 +22543,10 @@ CASA_TOOLS: tuple = (
     voice_job_status,
     cancel_voice_job,
     continue_voice_job,
-    recall_memory,                 # §4.3 — shared-bank semantic recall (tier-clearance filtered)
+    search_memory,                 # memory: BM25 over the saved conversation,
+    browse_memory_day,             # a day in order, an entry by id, and the
+    open_memory,                   # correction mark (each read filtered per
+    correct_memory,                # object at the reader's clearance)
     wipe_memory,                   # #411 — operator-consented long-term wipe;
                                    # NEVER add to SPECIALIST_CASA_TOOL_ALLOWLIST
     get_schedule,

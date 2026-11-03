@@ -46,79 +46,95 @@ Short-term conversation continuity works via the Claude Agent SDK session,
 with one exception worth knowing: changing a resident's identity — its persona,
 or the model it runs on — starts that resident's conversations fresh at the
 next restart (see *Changing a resident's persona costs you its conversations*,
-below). **Long-term** memory (cross-session recall) is off by default and
-is enabled by pointing Casa at a self-hosted **Hindsight** app.
+below).
 
-| Option | Description |
-|--------|-------------|
-| `hindsight_api_url` | Internal base URL for the self-hosted Hindsight app (e.g. `http://5884eb17-hindsight:8888` or its IP), reached via the app's hassio network alias/IP — not the bare host `hindsight`. **This is the single toggle for long-term memory: set it to turn long-term semantic memory ON** (the app auto-derives `MEMORY_BACKEND=hindsight`) — both **save** (the freshness reaper retains ended conversations, each item tier-classified) and **recall** (a mental-model overlay + relevance-ranked recall on the read path, plus a `recall_memory` pull tool). **Leave empty to keep long-term memory disabled** (short-term continuity still works via the SDK session, except across a resident identity change — and with this empty, nothing an ended conversation held is recoverable afterwards). |
+**Long-term memory is built in** (v0.347.0). There is nothing to install and
+no option to set: Casa keeps its own memory store under `/data/memory`.
 
-**Mental models: what your assistant reads first.** With long-term memory on,
-Casa keeps two *mental models* in your Hindsight bank — standing questions that
-Hindsight re-answers from your memories on its own schedule — and shows their
-answers, each with its name and the date it was last refreshed, at the start of
-your private conversations, framed as leads to check rather than live facts:
+- **What is said is kept as it is said.** Each turn of a Telegram
+  conversation — your messages, Ellen's replies, what she asks a specialist
+  and its answer, a finished engagement's summary — is saved while the turn
+  runs, so a restart does not lose it. Not saved: voice conversations, turns
+  started by a webhook trigger or by `/invoke`, and anything a specialist set
+  to keep no memory writes (its answers and its engagement summary).
+- **Memory-enabled conversations start knowing what matters.** In the
+  background, Casa files what was said into notes. A new conversation of an
+  agent with a memory budget (`memory.token_budget` above 0: Ellen and the
+  butler as shipped, and a specialist given one, when Ellen delegates to it)
+  starts with them: all of them while they fit that budget, and past that an
+  index of them that the agent can open. Within one conversation that view
+  does not change. An agent whose budget is 0 (the concierge as shipped), a
+  conversation with someone other than you at `public` clearance, and a
+  specialist's own engagement topic start with no notes.
+- **Correct me.** When you tell Ellen that something she remembers is wrong,
+  she marks your message as a correction. Her notes are refiled from it in the
+  background, and from its next turn every open conversation of a
+  memory-enabled agent — a specialist's engagement topic included — is told
+  about the correction, where that conversation's clearance may read it (the
+  butler is not told a private one).
+- **Search, browse and open.** Ellen can search what was said by its words,
+  read back a day or a stretch of up to a week ("what did we say last
+  Tuesday?"), and open entries of her notes. Each message a search or browse
+  returns comes with the day and time it was said, who said it, and whether
+  one of Casa's scheduled tasks started that turn. Finding nothing is not
+  proof it was never said, and every search or browse result tells the agent
+  so.
+- **Privacy tiers, and the butler's shared view.** Each saved message is
+  classified into a sensitivity tier — `public`, `friends`, `family` or
+  `private` — and every read checks it. Your own conversations read
+  everything. The butler, which answers on voice, is served notes of its own,
+  written only from what was said at `friends` and below, so it knows what a
+  guest in the room may hear and never your private matters. Someone else
+  messaging the bot reads `public` memory only.
 
-- `casa-open-commitments` — your open commitments and follow-ups, with the dates
-  and deadlines you stated (not the assistant's own reminders and briefings).
-  Refreshed daily at 05:00 UTC when there is something new.
-- `casa-operator-profile` — who you are, the people around you, how you like to
-  be addressed, your standing preferences, routines and recurring obligations,
-  each with the date it was last stated. It leaves out health, money and other
-  people's private matters; that exclusion is part of the question Hindsight
-  answers, not a filter, and recall still brings those subjects in when they
-  are asked about. Refreshed after Hindsight consolidates new memories, at most
-  once a day.
+Conversation transcripts on disk are kept for a while after their
+conversation ends: an assistant or butler conversation's for 30 days after it
+can no longer be resumed, a delegation's for 30 days after its run ended, and
+an in-Casa specialist or executor engagement's for 30 days after the
+engagement ends. A Claude Code executor engagement's
+workspace, its transcript included, is kept for 7 days after the engagement
+ends and then deleted whole. Either way, a transcript is deleted only once
+every run recorded in its folder is confirmed — that is, once everything Casa
+captured from those runs is durably stored — so it can be kept longer, never
+shorter.
 
-Casa creates them, puts back the parts of their definitions it sets if they are
-edited, and deletes any other model whose id starts with **`casa-` — that prefix
-is reserved**: a model you create under it in the Hindsight UI is deleted at
-Casa's next start (unless the bank holds more than 1,000 models; then Casa
-deletes none). Models under any other id are never touched, and they show
-at the start of your private conversations too. A model shows only once it has
-text and a last-refresh date Casa can read. This happens in the background at
-every start and after every memory wipe; if Hindsight is not reachable then,
-Casa tries again at the next start or wipe. Each refresh is a run of the
-language model configured in the Hindsight app, on that app's account: the
-scheduled ones; the first one, which Hindsight starts when Casa creates a model
-(at the first start, after every wipe, and at any start that finds one
-missing); and at most one extra per model at each start or wipe when its
-definition had to be put back or its automatic refreshes were paused by a
-failed refresh.
-
-**Wiping long-term memory** (v0.194.0): one supported operation deletes the whole
-bank, drops any pending durable retry records, and forgets every conversation
-pointer without saving it — closing the "cleared it by hand but items kept
-reappearing" gap. **There is one way to run it: from the add-on terminal, run
-`casactl memory-wipe --yes`** (it refuses without the flag). A conversation or
-engagement already in flight when the wipe runs may still contribute one item
-afterwards. Conversation transcripts on disk are not removed by the wipe:
-forgetting a conversation pointer drops it without saving it, and does not delete
-the conversation's text. Hindsight's mental models are part of
-the bank and go with it; Casa recreates its two right after the wipe (or at
-the next start or wipe, if Hindsight cannot be reached then), and they fill in
-from the emptied bank — except that a refresh Hindsight was already running when the
-bank was deleted can write its pre-wipe summary into a recreated model, where
-it stays until that model's next refresh. Models you created yourself are not
-recreated.
+**Wiping memory.** From the add-on terminal, run `casactl memory-wipe --yes`
+(without the flag it refuses and prints what it would erase). Casa records the
+request and restarts itself; the wipe runs as Casa starts, before anything else,
+and erases everything Casa remembers: saved conversations, its notes, the
+search index, the memory exports kept under `/data/memory/exports/`,
+conversation transcripts and conversation pointers, so every conversation
+starts fresh. It also deletes, whole, every finished Claude Code executor
+workspace already past its 7-day keep period — its work files and its outbox
+with it — as the regular cleanup would have soon after. **Your reminders,
+triggers, settings and prompts, pending tasks, plugin data and logs stay, and
+so do your files** other than those expired workspaces — though a kept item can
+still mention something that was forgotten. Anything said between the request and the
+restart is erased too. Copies outside Casa (a Home Assistant backup, an export
+you copied elsewhere) are not touched. When Casa is back it tells you on
+Telegram: "Done. I've forgotten everything. Your reminders, triggers, files and
+settings are still here." If the wipe fails while Casa starts, Casa tells you
+why on Telegram and takes no messages until a restart lets it finish.
 
 Casa also carries a consent-gated agent door for the same operation — the
-`wipe_memory` tool, which posts an Approve/Cancel keyboard to the configured
-operator's DM and executes only on the operator's own tap — but **no shipped
-agent is granted it**, so asking your assistant to wipe memory will get you a
-plain "I can't do that, run `casactl memory-wipe --yes`" rather than a wipe.
-Earlier versions of this page described asking the assistant as a supported
-route; it never was on a default install. (If you have granted the tool by hand
-in your own agent configuration, the tool's own gates apply: with
+`wipe_memory` tool, which posts an Approve/Cancel keyboard (saying what goes,
+what stays, and that Casa restarts) to the configured operator's DM and acts
+only on the operator's own tap — but **no shipped agent is granted it**, so
+asking your assistant to wipe memory will get you a plain "I can't do that, run
+`casactl memory-wipe --yes`" rather than a wipe. (If you have granted the tool
+by hand in your own agent configuration, the tool's own gates apply: with
 `telegram_chat_id` empty nobody is the operator, so the wipe is then denied for
 everyone.)
 
-The following env var is **auto-derived** from `hindsight_api_url` and rarely needs
-setting by hand:
-
-| Env var | Purpose | Default |
-|---|---|---|
-| `MEMORY_BACKEND` | Long-term memory backend: `hindsight` or `noop` (disabled). **Auto-set to `hindsight` by the app whenever `hindsight_api_url` is non-empty**; otherwise unset → `noop`. Any unrecognized value → `noop`. You normally just set `hindsight_api_url`. | derived from `hindsight_api_url` |
+**Exporting and restoring memory.** From the add-on terminal,
+`casactl memory-export` writes a verified copy of memory into
+`/data/memory/exports/`; Casa also keeps one from each of the last seven
+nights there, so a Home Assistant backup carries them, and makes one before it
+upgrades the store's format. `casactl memory-restore <export> --yes` replaces
+**all** of memory with that export's — including anything said or wiped since
+it was made — and Casa restarts to do it; without `--yes` it only checks the
+export and tells you what it would do. `<export>` is an export's directory, or
+just its name inside `/data/memory/exports/`.
 
 ### Optional -- Agents
 
@@ -148,7 +164,7 @@ setting by hand:
 5. **Per-agent triggers**: Each agent declares scheduled triggers (cron, interval or a one-off date) in its own `agents/<role>/triggers.yaml`. The TriggerRegistry registers them at boot, and fires them via the agent's normal turn loop.
 6. **Reminders**: Ellen can set her own reminders, which are ordinary triggers written to her `triggers.yaml` — so they survive restarts and updates. One-off reminders remove themselves after firing, and any reminder whose time fell while Casa was down is delivered on the next sweep rather than lost.
 7. **Weekday morning briefing**: Ellen's 08:00 weekday briefing is meant to be silent on most days. It sends a message only for something you must act on today and have not already been told, checked against a live source that morning or marked as unverified. Memory and Casa's own schedule are not treated as confirmation of today's state, and an empty or failed check is not a reason to message you. These are instructions to the model, so an occasional stray line is still possible.
-8. **Dated, marked memories**: With long-term memory on, a recalled memory shows the date it was recorded when the memory server returns that date with a time zone, and one a scheduled turn last saved (a trigger or reminder prompt, what the agent wrote on that turn, its silence) says so. Your own answers to a scheduled question and results a specialist returned into it are kept as ordinary memories. Memory is still history, not confirmation of how things are now: Ellen is told to check changeable state live, or say it is unchecked, before stating it as current. A recall the memory server answers as busy is retried once, after a wait of at most a second. Memories saved before this change keep their old form.
+8. **Dated, marked memories**: When Ellen searches or browses memory, each saved message comes with the day, weekday and time it was said, who said it, and whether one of Casa's scheduled tasks (a trigger or a reminder) started that turn. Memory is still history, not confirmation of how things are now: Ellen is told to check changeable state live, or say it is unchecked, before stating it as current.
 9. **Step limit**: Each turn has a step limit — one step is one model call, and parallel tool calls in one message count as one. Ellen's is 80; a turn started by an untrusted webhook always gets 20, and the voice agents keep 10 (butler) and 6 (concierge). When a turn reaches its limit, whatever it already said stays, Casa never retries or continues on its own, and Casa adds one line: in a chat, "say 'continue'" picks up where it stopped; a scheduled task, reminder or follow-up to a scheduled question runs on its own, so its line names the task and offers to redo it on request; a trusted `/invoke` gets the line at the end of its response; a voice agent that has already spoken says so aloud; an untrusted webhook turn is only logged. Every stop logs a WARNING with the agent, the channel and the step count. A specialist conversation or the configurator that reaches its limit stays open — its first turn included — and gets the same "say 'continue'" line in its topic, even when nothing was posted there, with one WARNING; a background job's batch that runs out of steps only ends that batch, and the next one starts.
 
 ### Writing a scheduled trigger prompt by hand
@@ -272,18 +288,16 @@ create it under a new name instead.
 
 A turn started by a `/webhook/{name}` trigger is treated as **untrusted
 third-party content**: it runs in a restricted runtime (no shell, filesystem,
-network, plugins, or hooks — only public-clearance memory recall and an
-operator-bound notification), reads memory at a reduced clearance, and writes no
-memory. Operator-signed `/invoke` keeps full trust.
+network, plugins, or hooks — only a memory search at its reduced clearance and an
+operator-bound notification), and writes no memory. Operator-signed `/invoke` keeps full trust.
 
 **Who a triggered turn is attributed to (0.129.0).** Both endpoints are opened
 by a shared secret, which proves the caller holds a credential — never that a
 particular person wrote the request. So neither is ever recorded as you. An
 `/invoke` turn is attributed to `invoke_caller`; a webhook turn to
 `webhook:<trigger name>`, so two triggers are never mistaken for each other.
-Both are recorded as **automations** rather than as people, and a recalled
-automation memory is introduced to the assistant as "An automation reported: …"
-— never as something you said, and never as something Casa concluded itself.
+Both are recorded as **automations** rather than as people, so nothing either
+sends is ever remembered as something you said.
 The trigger's own name stays private to Casa. This is separate from the trust
 question above: holding the secret decides what the assistant may *disclose*;
 it says nothing about who *spoke*.
@@ -668,7 +682,6 @@ The terminal is an unauthenticated **root** shell, so it is reachable only throu
 - **App won't start**: Check the log for "claude_oauth_token is required". You must set the token before starting.
 - **No Telegram messages**: Verify `telegram_bot_token` and `telegram_chat_id` are correct. The bot must have been started (`/start` in Telegram).
 - **Engagements won't open (`engagement_not_configured`)**: See the "Troubleshooting engagements" subsection under [Engagements (v0.11.0)](#engagements-v0110) — most common cause is the bot missing "Manage topics" admin permission in the engagement supergroup.
-- **Long-term memory not working**: Long-term recall requires the `hindsight_api_url` option to be set to a reachable Hindsight app (which auto-enables `MEMORY_BACKEND=hindsight`). If recall is empty, check that `hindsight_api_url` is set and the Hindsight app is running, and check container logs for Hindsight connection errors. With `hindsight_api_url` empty, only short-term per-session continuity works.
 - **502 errors on ingress**: The Python process may still be starting. Wait up to 60 seconds after app start.
 
 ## DM button questions (v0.76.0)
@@ -1772,11 +1785,10 @@ built-in default — takes effect at the next restart, and if that changes who
 the resident is, the restart starts fresh every conversation with that
 resident that was last held under a different persona — in practice, all of
 the ones you have going — on Telegram and on voice alike. Voice conversations are not kept at
-all, so anything said there and not repeated is gone. A Telegram conversation
-is *offered* to long-term memory on the way out, which is not the same as being
-kept: long-term memory is off by default, and even switched on the hand-off can
-be dropped — so treat anything you still need as something to say again, not
-something to look up.
+all, so anything said there and not repeated is gone. What was said in a
+Telegram conversation is already in long-term memory, saved as it was said, so
+the assistant can still look it up; the fresh conversation just does not carry
+it in its context.
 
 Casa's configurator is instructed to spell this out before it restarts
 anything, and the tools that stage a resident's persona return the warning

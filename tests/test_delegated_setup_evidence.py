@@ -152,18 +152,22 @@ async def test_the_refresh_waits_for_the_plugin_lock(monkeypatch):
     monkeypatch.setattr(tm, "_PLUGIN_TOOLS_LOCK", lock)
     monkeypatch.setattr(tm, "_PLUGIN_TOOLS_LOCK_OWNER", None)
     monkeypatch.setattr(tm, "_SETUP_CLEARED_REFRESH_WAIT_S", 0.05)
+    monkeypatch.setattr(tm, "_SETUP_CLEARED_REFRESHES", set())
     regens: list = []
     monkeypatch.setattr(tm, "_regenerate_plugin_health", regens.append)
     await lock.acquire()                # another regeneration is in flight
     try:
         await tm._refresh_health_after_setup_cleared()   # returns, bounded
         assert regens == []             # did not run beside the holder
+        # ...and is still in flight past the bound, never abandoned.
+        waiting = set(tm._SETUP_CLEARED_REFRESHES)
+        assert len(waiting) == 1
     finally:
         lock.release()
-    for _ in range(50):
-        if regens:
-            break
-        await asyncio.sleep(0.01)
+    # Wait for that refresh itself, not a fixed time: its regeneration runs
+    # in a worker thread, which a loaded machine schedules late. The bound is
+    # a hang guard only.
+    await asyncio.wait_for(asyncio.gather(*waiting), timeout=30)
     assert regens == [[]]               # ...and ran once the lock was free
     assert not tm._SETUP_CLEARED_REFRESHES
 

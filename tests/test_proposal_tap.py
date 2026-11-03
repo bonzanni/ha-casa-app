@@ -52,7 +52,6 @@ def _channel():
     ch._start_typing = lambda *a, **k: None
     ch._app = types.SimpleNamespace(bot=_FakeBot())
     ch._session_registry = None
-    ch._semantic_memory = None
     return ch
 
 

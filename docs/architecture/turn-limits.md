@@ -56,8 +56,8 @@ a model delivery that raises still has the line attempted. The spoken line is
 
 The assistant's limit is `tools.max_turns` in its `runtime.yaml`, 80; the copy in its
 `role.yaml` is kept in step, which moves the role checksum, so each open assistant
-conversation restarts once, retained where its channel retains, on the release that
-changes it. The restricted options every webhook-channel turn without the `invoke` route
+conversation restarts once on the release that changes it; what it said was already
+captured, as every turn's is. The restricted options every webhook-channel turn without the `invoke` route
 takes — a webhook trigger, and a schedule declared on `channel: webhook` — pass the fixed
 `_RESTRICTED_WEBHOOK_MAX_TURNS` instead. The butler (10) and the concierge (6) keep theirs.
 

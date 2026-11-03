@@ -10,8 +10,8 @@ Privacy is enforced at the STORE boundary, not by the caller:
 
 * :meth:`ExplanationStore.record` REJECTS (raises ``ValueError``) any
   record whose JSON encoding contains a reserved ``casa-source-``
-  provenance tag (spec: reserved tags are Hindsight-internal and must
-  never leak into an operator-facing surface).
+  provenance tag (spec: reserved tags are internal and must never leak
+  into an operator-facing surface).
 * :meth:`ExplanationStore.get` strips ``system_prompt``/``memory_text``
   AND the ``memory_tiers`` sensitivity-tier metadata (GH #202) by default;
   only ``show_sensitive=True`` (gated by the admin route's ``confirmed=true``
@@ -68,6 +68,10 @@ class ExplanationRecord:
     denials: tuple[str, ...]
     system_prompt: str | None = None
     memory_text: str | None = None
+    #: The ledger the turn's session reads and the ``commit_no`` its frozen
+    #: view was rendered at; ``None`` when it reads none.
+    memory_ledger: str | None = None
+    memory_base_commit_no: int | None = None
 
 
 class ExplanationStore:

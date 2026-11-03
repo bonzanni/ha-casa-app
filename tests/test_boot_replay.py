@@ -3488,3 +3488,39 @@ async def test_boot_replay_helpers_keep_temps_under_tmp_path_without_fd_leaks(
     assert fds_after - fds_before == 0, (
         f"registry construction leaked file descriptors: "
         f"before={fds_before}, after={fds_after}")
+
+
+# --- after a memory wipe (plan Q21) ----------------------------------------------
+
+_WIPED_SID = "11111111-2222-4333-8444-555555555555"
+
+
+@pytest.mark.parametrize("transcript", [False, True])
+async def test_replay_continues_an_engagement_whose_transcript_was_wiped_fresh(
+        monkeypatch, tmp_path, transcript):
+    """A memory wipe deletes every transcript and keeps the engagement's
+    record, workspace and session pointer. Replay then drops the pointer, so
+    the run script starts a fresh session rather than a resume that cannot
+    start; a session whose transcript is there is resumed as before."""
+    from casa_core import replay_undergoing_engagements
+    from drivers.workspace import session_id_path
+
+    start_calls = _fast_path_env(monkeypatch, tmp_path)
+    ws = tmp_path / "eng" / "keep1"
+    ws.mkdir(parents=True)
+    Path(session_id_path("keep1")).parent.mkdir(parents=True, exist_ok=True)
+    Path(session_id_path("keep1")).write_text(_WIPED_SID)
+    if transcript:
+        t = ws / ".home/.claude/projects/-data-engagements-keep1"
+        t.mkdir(parents=True)
+        (t / f"{_WIPED_SID}.jsonl").write_text("{}\n")
+
+    reg = await _make_registry([_rec("keep1")])
+    driver = _boot_driver()
+    driver._spawn_background_tasks = lambda rec, **kw: None
+    await replay_undergoing_engagements(
+        registry=reg, driver=driver, executor_registry=_exec_reg(),
+        engagements_root=str(tmp_path / "eng"))
+
+    assert Path(session_id_path("keep1")).exists() is transcript
+    assert start_calls == ["keep1"]

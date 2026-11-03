@@ -58,6 +58,12 @@ JOB_SIDS_KEY = "sids"
 # own write; the transcript reaper reads the list to delete each one once the
 # engagement is terminal. Both sides name it through this constant.
 RETIRED_SIDS_KEY = "retired_sids"
+# The key, on the record's ``origin``, of the working directory the
+# engagement's CLI was first opened in (its sessions' transcript folder). Set
+# once, at the first open, persisted with the record, and read — never the
+# current configuration — by everything that registers or reaps the
+# engagement's transcripts (``engagement_transcript_reaper.transcript_cwd``).
+LAUNCH_CWD_KEY = "launch_cwd"
 
 
 def _usable_time(value: object) -> bool:
@@ -384,6 +390,11 @@ class EngagementRecord:
     # ``quiesce_pending`` is: ageing the row out would drop the obligation with
     # it, leaving the party that asked for the work permanently untold.
     terminal_notification_pending: bool = False
+    # This in_casa record's CLI transcripts are all gone: the transcript
+    # reaper found none left to delete (or none it could ever find). Until it
+    # is set the record's tombstone does not age out — the record is the
+    # reaper's only index of its sessions. Never cleared.
+    transcripts_reaped: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -560,6 +571,8 @@ class EngagementRegistry:
                     # the first boot after upgrade.
                     terminal_notification_pending=bool(
                         row.get("terminal_notification_pending", False)),
+                    transcripts_reaped=bool(
+                        row.get("transcripts_reaped", False)),
                     context_generation=int(
                         row.get("context_generation", 0) or 0),
                 )
@@ -813,7 +826,12 @@ class EngagementRegistry:
                     # the obligation AND the origin the replay is addressed
                     # from, so the party that asked for the work would be
                     # permanently untold — the harm the marker exists to close.
-                    and not rec.terminal_notification_pending):
+                    and not rec.terminal_notification_pending
+                    # An in_casa record is the transcript reaper's only index
+                    # of its sessions: it ages out only once the reaper has
+                    # found nothing left to delete (whatever downtime came
+                    # between), never at a fixed age alone.
+                    and (rec.driver != "in_casa" or rec.transcripts_reaped)):
                 continue
             snapshot.append({
                 "id": rec.id,
@@ -848,6 +866,7 @@ class EngagementRegistry:
                 "quiesce_pending": rec.quiesce_pending,
                 "terminal_notification_pending":
                     rec.terminal_notification_pending,
+                "transcripts_reaped": rec.transcripts_reaped,
                 "context_generation": rec.context_generation,
             })
         write = asyncio.ensure_future(
@@ -1313,6 +1332,22 @@ class EngagementRegistry:
                 return
             rec.quiesce_pending = False
             await self._write_tombstone_locked()
+
+    async def mark_transcripts_reaped(self, engagement_ids) -> None:
+        """The transcript reaper found nothing left to delete for these
+        terminal records: their tombstones may now age out. Best-effort
+        persistence — a failed write leaves the mark for the next pass to
+        set again."""
+        async with self._lock:
+            changed = False
+            for engagement_id in engagement_ids:
+                rec = self._records.get(engagement_id)
+                if (rec is not None and not rec.transcripts_reaped
+                        and rec.status in ("completed", "cancelled", "error")):
+                    rec.transcripts_reaped = True
+                    changed = True
+            if changed:
+                await self._write_tombstone_locked()
 
     def records_owing_quiesce(self) -> list["EngagementRecord"]:
         """Every record whose uid-quiesce obligation is still outstanding —

@@ -588,7 +588,9 @@ async def test_a_fresh_specialist_hosted_job_runs_end_to_end_and_is_reaped(
     keep = {k: v for k, v in _snapshot(project).items()
             if k.parts[0] in (f"{unrelated}.jsonl", unrelated)}
     assert len(keep) == 2
-    counts = await engagement_transcript_reaper.reap_engagement_transcripts(reg)
+    from test_engagement_transcript_reaper import after_retention
+    counts = await engagement_transcript_reaper.reap_engagement_transcripts(
+        reg, now=after_retention())
     for sid in (launch_sid, b1, b2):
         assert not (project / f"{sid}.jsonl").exists(), sid
         assert not (project / sid).exists(), sid

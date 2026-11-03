@@ -7,7 +7,7 @@ Where to look:
 
 - Look in live sources available this run, such as calendar, mail or tasks
   tools; do not assume a calendar integration exists.
-- Recalled memory already in the instructions, any `recall_memory` result,
+- Memory already in the instructions, any `search_memory` result,
   and earlier assistant messages are leads or history, never verification
   of today's state.
 - Use today's date and weekday from the turn's time and the source's own

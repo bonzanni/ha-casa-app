@@ -148,7 +148,6 @@ def _catalog_channel(
         sse_path="/api/converse",
         ws_path="/api/converse/ws",
         agent_configs=configs,
-        memory=SimpleNamespace(),
         idle_timeout=300,
         sse_enabled=sse_enabled,
         ws_enabled=ws_enabled,

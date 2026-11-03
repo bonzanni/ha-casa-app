@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-08-25
+last_reviewed: 2026-11-02
 ---
 
 # Personality: roles, personas and bindings
@@ -109,7 +109,10 @@ restricted-webhook prompts have materially different contents — voice carries 
 persona core plus two quirks, and the restricted path no persona at all — and each surface
 enforces hard persona/total token ceilings (2k/12k text, 400/6k voice, 0/4k restricted).
 A persona that validates structurally can still fail *activation* on a ceiling, and voice
-behavior written only outside the core never reaches the voice surface.
+behavior written only outside the core never reaches the voice surface. At serve time a
+session's memory view goes into a projection's one slot, after `<persona>` and before
+`<role_doctrine>`, outside the ceilings and the digest
+([`memory-serving.md`](memory-serving.md)).
 
 **The observer and secondary passes run on their own model.** Engagement observation and
 engager-query synthesis run on Haiku, resolved through `MODEL_MAP` to a full model id and

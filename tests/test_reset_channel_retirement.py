@@ -2,32 +2,12 @@
 the bounded re-derive loop for the sid-less arm, and claim hygiene on every
 exit path."""
 
-import asyncio
-from unittest.mock import AsyncMock, patch
-
 import pytest
 
-import session_saver
-from session_saver import reset_channel
-from session_registry import SessionRegistry
+from session_registry import SessionRegistry, reset_channel
 from session_reg_helpers import STUB_BINDING_DIGEST, STUB_SPEAKER_PROV, STUB_USER_PROV
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
-
-
-@pytest.fixture(autouse=True)
-def _private_retry_dir(tmp_path, monkeypatch):
-    """#1352: a reset writes its retry record before the background retain."""
-    monkeypatch.setattr(
-        session_saver, "_COLD_RETAIN_RETRY_DIR", str(tmp_path / "retry"))
-
-
-async def _settle():
-    """#1352: the reset's retain runs in the background; wait for it."""
-    pending = list(session_saver._RESET_RETAINS)
-    if pending:
-        await asyncio.wait_for(
-            asyncio.gather(*pending, return_exceptions=True), timeout=5)
 
 
 def _reg(tmp_path) -> SessionRegistry:
@@ -41,11 +21,8 @@ async def _register(reg, key, sid):
     )
 
 
-_MSGS = [type("M", (), {"type": "user", "message": {"content": "hi"}})()]
-
-
-async def test_claim_is_live_during_notify_reset(tmp_path, monkeypatch):
-    """The steer window opens BEFORE the flush-close: a listener (the pool's
+async def test_claim_is_live_during_notify_reset(tmp_path):
+    """The steer window opens BEFORE the pool close: a listener (the pool's
     close hook) must already observe the retirement claim."""
     reg = _reg(tmp_path)
     await _register(reg, "telegram-42", "sid-old")
@@ -55,23 +32,17 @@ async def test_claim_is_live_during_notify_reset(tmp_path, monkeypatch):
         observed.append(reg.retirement_pending(key))
 
     reg.add_reset_listener(listener)
-    sem = AsyncMock()
-    sem.document_tags.return_value = None  # #1123: never saved
-
-    async def fake_classify(content: str) -> str:
-        return "public"
-    monkeypatch.setattr(session_saver, "classify_tier", fake_classify)
-    with patch("session_saver.get_session_messages", return_value=_MSGS):
-        await reset_channel("telegram-42", reg, sem, channel="telegram")
+    await reset_channel("telegram-42", reg)
     assert observed == [True]
     assert not reg.retirement_pending("telegram-42")   # released on exit
+    assert reg.get("telegram-42") is None
 
 
-async def test_racing_fresh_registration_survives_reset(tmp_path, monkeypatch):
+async def test_racing_fresh_registration_survives_reset(tmp_path):
     """Design r1 red case (Terra T-A1): a steered-fresh turn registers sid-new
-    while the reset's flush-close is in flight. The v1 ordering snapshotted
-    AFTER the close and retained+removed the FRESH session; snapshot-first
-    with sid guards must leave it standing."""
+    while the reset's pool close is in flight. Snapshotting AFTER the close
+    removed the FRESH session; snapshot-first with the sid guard must leave it
+    standing."""
     reg = _reg(tmp_path)
     await _register(reg, "telegram-42", "sid-old")
 
@@ -79,33 +50,20 @@ async def test_racing_fresh_registration_survives_reset(tmp_path, monkeypatch):
         await _register(reg, key, "sid-new")   # steered-fresh racing turn
 
     reg.add_reset_listener(racing_listener)
-    sem = AsyncMock()
-    sem.document_tags.return_value = None  # #1123: never saved
-    retained = []
+    await reset_channel("telegram-42", reg)
 
-    # #878: the reset retains its snapshot registry-decoupled, so the seam this
-    # test observes is retain_cold_session rather than save_session. The
-    # property is unchanged — the reset acts on the session IT snapshotted.
-    async def capturing_retain(old, **kwargs):
-        retained.append(old)
-
-    monkeypatch.setattr(session_saver, "retain_cold_session", capturing_retain)
-    await reset_channel("telegram-42", reg, sem, channel="telegram")
-    await _settle()
-
-    assert [s.sdk_session_id for s in retained] == ["sid-old"]   # never sid-new
     entry = reg.get("telegram-42")
     assert entry is not None and entry["sdk_session_id"] == "sid-new"
     assert not reg.retirement_pending("telegram-42")
 
 
 async def test_sidless_entry_rederives_and_retires_materialized_session(
-    tmp_path, monkeypatch,
+    tmp_path,
 ):
     """Design r2 red case (Sol S-A2): the entry is sid-less (a resume-failure
-    clear), an in-flight PRE-reset turn publishes sid-x during the
-    flush-close. The v2 early-return left sid-x resumable; the re-derive loop
-    must claim and retire it (pre-batch parity)."""
+    clear), an in-flight PRE-reset turn publishes sid-x during the pool close.
+    An early return left sid-x resumable; the re-derive loop must claim and
+    retire it."""
     reg = _reg(tmp_path)
     await _register(reg, "telegram-42", "sid-x")
     await reg.clear_sdk_session("telegram-42")   # sid-less entry remains
@@ -122,53 +80,31 @@ async def test_sidless_entry_rederives_and_retires_materialized_session(
             await _register(reg, key, "sid-x")
 
     reg.add_reset_listener(publishing_listener)
-    sem = AsyncMock()
-    sem.document_tags.return_value = None  # #1123: never saved
+    await reset_channel("telegram-42", reg)
 
-    async def fake_classify(content: str) -> str:
-        return "public"
-    monkeypatch.setattr(session_saver, "classify_tier", fake_classify)
-    with patch("session_saver.get_session_messages", return_value=_MSGS):
-        await reset_channel("telegram-42", reg, sem, channel="telegram")
-        await _settle()
-
-    sem.retain.assert_awaited_once()             # the materialized session was retained
-    assert reg.get("telegram-42") is None        # …and its pointer dropped
+    assert published == ["sid-x"]
+    assert reg.get("telegram-42") is None        # the materialized pointer dropped
     assert not reg.retirement_pending("telegram-42")
 
 
-async def test_no_entry_no_claim_no_retain(tmp_path):
+async def test_no_entry_no_claim(tmp_path):
     reg = _reg(tmp_path)
-    sem = AsyncMock()
-    sem.document_tags.return_value = None  # #1123: never saved
-    await reset_channel("telegram-99", reg, sem, channel="telegram")
-    sem.retain.assert_not_awaited()
+    seen: list[str] = []
+
+    async def listener(key):
+        seen.append(key)
+
+    reg.add_reset_listener(listener)
+    await reset_channel("telegram-99", reg)
+    assert seen == ["telegram-99"]               # the pool close still runs
     assert not reg.retirement_pending("telegram-99")
 
 
-async def test_claim_released_when_the_retain_raises(tmp_path, monkeypatch):
-    """No exit path may leave the key steering fresh forever.
-
-    #878 retargeted the seam to ``retain_cold_session``; #1352 moved that
-    retain into the background, so its failure no longer reaches the reset at
-    all. The property — the retirement claim is released however the body
-    exits — is pinned on both: a retain that raises (the reset completes and
-    releases), and a body step that still raises inside the reset (the
-    pointer removal), which must release in the ``finally``."""
+async def test_claim_released_when_the_body_raises(tmp_path, monkeypatch):
+    """No exit path may leave the key steering fresh forever: a body step
+    that raises inside the reset (the pointer removal) must release the claim
+    in the ``finally``."""
     reg = _reg(tmp_path)
-    await _register(reg, "telegram-42", "sid-old")
-    sem = AsyncMock()
-    sem.document_tags.return_value = None  # #1123: never saved
-
-    async def exploding_retain(*a, **k):
-        raise RuntimeError("boom")
-
-    monkeypatch.setattr(session_saver, "retain_cold_session", exploding_retain)
-    await reset_channel("telegram-42", reg, sem, channel="telegram")
-    await _settle()
-    assert not reg.retirement_pending("telegram-42")
-    assert reg.get("telegram-42") is None
-
     await _register(reg, "telegram-42", "sid-two")
 
     async def exploding_remove(*a, **k):
@@ -176,16 +112,16 @@ async def test_claim_released_when_the_retain_raises(tmp_path, monkeypatch):
 
     monkeypatch.setattr(reg, "remove", exploding_remove)
     with pytest.raises(RuntimeError):
-        await reset_channel("telegram-42", reg, sem, channel="telegram")
+        await reset_channel("telegram-42", reg)
     assert not reg.retirement_pending("telegram-42")
 
 
 async def test_inflight_old_turn_republish_refused_then_reset_completes(
-    tmp_path, monkeypatch,
+    tmp_path,
 ):
     """A causally-before turn that resumed sid-old republishes it during the
-    flush-close: register() refuses (the claim names sid-old as dying), and
-    the reset retains+drops sid-old exactly once."""
+    pool close: register() refuses (the claim names sid-old as dying), and
+    the reset drops sid-old."""
     reg = _reg(tmp_path)
     await _register(reg, "telegram-42", "sid-old")
 
@@ -193,59 +129,23 @@ async def test_inflight_old_turn_republish_refused_then_reset_completes(
         await _register(reg, key, "sid-old")   # refused mid-retirement
 
     reg.add_reset_listener(republishing_listener)
-    sem = AsyncMock()
-    sem.document_tags.return_value = None  # #1123: never saved
+    await reset_channel("telegram-42", reg)
 
-    async def fake_classify(content: str) -> str:
-        return "public"
-    monkeypatch.setattr(session_saver, "classify_tier", fake_classify)
-    with patch("session_saver.get_session_messages", return_value=_MSGS):
-        await reset_channel("telegram-42", reg, sem, channel="telegram")
-        await _settle()
-
-    sem.retain.assert_awaited_once()
     assert reg.get("telegram-42") is None
+    assert not reg.retirement_pending("telegram-42")
 
 
-async def test_a_wipe_during_the_flush_close_makes_the_reset_discard(
-    tmp_path, monkeypatch,
-):
-    """#578 (Sol design-r2 S1): the fence's capture-point contract, applied to
-    the one caller that snapshots earlier than ``save_session``'s entry.
+async def test_a_reset_tells_the_memory_writer_the_session_ended(tmp_path,
+                                                                 monkeypatch):
+    """The end of a session is one of the writer's cadence points: the reset
+    signals it once, and does not wait for it."""
+    from memory import writer as memory_writer
 
-    ``reset_channel`` commits to its source data at its snapshot, then awaits
-    ``notify_reset``. ``save_session`` used to capture the fence generation at
-    its OWN entry — after that await — so a wipe completing in the window was
-    invisible to it: the captured generation already matched the post-wipe
-    value, ``StaleGeneration`` never fired, and the reset retained a pre-wipe
-    transcript into the bank the wipe had just emptied, behind a report that
-    said the wipe completed.
-
-    Red case: bump the generation during the flush-close (what a completing
-    wipe does at ``memory_wipe.py``'s exclusive section) and require the retain
-    to be DISCARDED. Fails when ``save_session`` captures its own generation.
-    """
-    from memory_wipe import FENCE
-
+    ended: list[None] = []
+    monkeypatch.setattr(memory_writer, "session_ended",
+                        lambda: ended.append(None))
     reg = _reg(tmp_path)
     await _register(reg, "telegram-42", "sid-old")
-
-    async def wipe_completes_mid_close(key):
-        # Exactly what _ExclusiveSection.__aenter__ does once writers drain.
-        FENCE._generation += 1
-
-    reg.add_reset_listener(wipe_completes_mid_close)
-    sem = AsyncMock()
-    sem.document_tags.return_value = None  # #1123: never saved
-
-    async def fake_classify(content: str) -> str:
-        return "public"
-    monkeypatch.setattr(session_saver, "classify_tier", fake_classify)
-    before = FENCE._generation
-    try:
-        with patch("session_saver.get_session_messages", return_value=_MSGS):
-            await reset_channel("telegram-42", reg, sem, channel="telegram")
-            await _settle()
-        sem.retain.assert_not_awaited()
-    finally:
-        FENCE._generation = before
+    await reset_channel("telegram-42", reg)
+    assert len(ended) == 1
+    assert reg.get("telegram-42") is None

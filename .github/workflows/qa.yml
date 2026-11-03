@@ -235,11 +235,10 @@ jobs:
       # without it — a skipped guard would not have caught the v0.125.0
       # boot-path NameError, so it must be installed here, not just locally.
       - run: pip install -r casa/requirements.txt -r casa/requirements-test.txt
-      # The four `slow` tests: the two specialist-installer tests (the tier's
-      # real cases — a failure of theirs is a red night), the live classifier
-      # eval and the live Hindsight contract test, both of which skip when
-      # their credentials or configuration are absent (nothing here supplies
-      # them). The step's exit is pytest's own: a failure turns this job red
+      # The `slow` tests: the two specialist-installer tests (the tier's real
+      # cases — a failure of theirs is a red night), the memory view
+      # benchmark, and the live classifier eval, which skips when its
+      # credentials are absent (nothing here supplies them). The step's exit is pytest's own: a failure turns this job red
       # and wakes `nightly-alarm`. It was masked with `|| true` from 2026-04
       # to 2026-09, which hid a deterministic failure in every scheduled run
       # (#629).

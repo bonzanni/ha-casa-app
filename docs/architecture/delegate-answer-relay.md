@@ -30,9 +30,9 @@ it — so what is posted is what the delegate ended its turn with. When that mes
 (`<silent/>`, as after a hand-over that already reached the person), nothing is held: this is
 the #1075 closing-silence rule judged on the last message alone, and the earlier text is not
 posted either. A sentinel beside the closing words is dropped and the words kept, as on a desk
-reply (#1342). The assistant still reads the whole turn as the delegation result, and the
-delegate's own memory retain still banks the whole turn: only what is posted under the
-delegate's name is the closing message.
+reply (#1342). The assistant still reads the whole turn as the delegation result, and memory capture
+still stores the whole answer: only what is posted under the delegate's name is the closing
+message.
 
 **A closing silence is told as silence.** When that closing message is silence, the
 assistant would otherwise read only the narration before it, which can sound like progress
@@ -57,7 +57,7 @@ the resident's role, the chat and the operator. A sync result then carries a
 `relay` field naming the id; a notification turn gets one line naming the full id (its header
 shows eight characters). Nothing is held for a voice run, a delegation made inside a delegated
 run, an origin without a chat, or a turn whose closing message is only silence. An answer the run did not
-finish (cut off before its end, which the memory retain also withholds) and a sync answer
+finish (cut off before its end, which memory capture also withholds) and a sync answer
 whose run left an approval waiting are held but not offered: no relay field or notice line
 names them, and a relay called anyway refuses, so the assistant passes the answer on herself
 and can say it was cut off. Holding is memory-only and
@@ -77,12 +77,11 @@ tool's result tells the assistant the person now sees the answer under its name,
 buffered turn's closing silence after a delivered relay is earned (see
 [`scheduled-prompt-endings.md`](scheduled-prompt-endings.md)).
 
-**Memory is unchanged.** A delegate's answer reaches the shared bank through the delegated
-run's own retain, attributed to the delegate and gated on its memory switch
-([`memory-lifecycle.md`](memory-lifecycle.md)), not through the assistant's retelling; a
-later notice is banked as a user turn as before. The relay writes no transcript text (tool
-blocks carry none), so it adds no copy of the answer and removes none; only the duplicate
-the assistant's retelling used to add under her own name is gone.
+**Memory is unchanged.** A delegate's answer reaches memory through the delegated run's own
+capture, attributed to the delegate and gated on its memory switch
+([`memory-capture.md`](memory-capture.md)), not through the assistant's retelling; a later
+notice is captured as the opening of a turn as before. The relay posts the answer and
+captures no copy of it.
 
 **The fallback.** When `relay_answer` cannot post — nothing held, the channel unavailable, the
 send failed — its result says so, and the doctrine has the assistant pass the answer on by

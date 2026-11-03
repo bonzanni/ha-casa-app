@@ -68,7 +68,7 @@ async def _client(secret: str):
     channel = VoiceChannel(
         bus=bus, default_agent="butler", webhook_secret=secret,
         sse_path="/api/converse", ws_path="/api/converse/ws",
-        agent_configs={"butler": _Cfg()}, memory=AsyncMock(),
+        agent_configs={"butler": _Cfg()},
         idle_timeout=300,
     )
     app = web.Application(middlewares=[cid_middleware])

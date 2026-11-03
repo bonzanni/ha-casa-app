@@ -11,7 +11,7 @@ import logging
 import os
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from atomic_io import PRIVATE, atomic_write_json
@@ -21,6 +21,9 @@ from speaker_provenance import provenance_mapping, validate_speaker_provenance
 logger = logging.getLogger(__name__)
 
 _SESSION_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+# The atomic write's staging file is named after the target, so one a crash
+# orphans can be found and deleted by name; memory.registry declares it.
+_STAGING_PREFIX = ".sessions.json."
 _SESSION_KEY_MAX = 100  # mirrors the server-side max_length from the former upstream dependency
 
 # Sentinel distinguishing "remove unconditionally" (argument omitted) from
@@ -36,6 +39,20 @@ _UNCONDITIONAL = object()
 # ever re-produce. Module-level so every registry instance in a process
 # allocates from one strictly-increasing sequence.
 _GENERATION_COUNTER = itertools.count(1)
+
+# Per-channel freshness windows (spec §3.3). Independent of SESSION_TTL.
+_DEFAULT_VOICE_MIN = 30
+_DEFAULT_TELEGRAM_H = 12
+
+
+def freshness_window(channel: str) -> timedelta:
+    """How long a session stays 'live' (resumable). Env-overridable:
+    FRESHNESS_VOICE_MINUTES, FRESHNESS_TELEGRAM_HOURS."""
+    if channel == "voice":
+        return timedelta(minutes=int(os.environ.get("FRESHNESS_VOICE_MINUTES", _DEFAULT_VOICE_MIN)))
+    # telegram + default for any conversational channel
+    return timedelta(hours=int(os.environ.get("FRESHNESS_TELEGRAM_HOURS", _DEFAULT_TELEGRAM_H)))
+
 
 # v2 scoped-key schema (spec A2): channel-role-scope identity, collision-safe
 # across residents sharing a device/channel. See build_scoped_session_key.
@@ -261,8 +278,6 @@ class SessionRegistry:
                 "user_provenance": provenance_mapping(user_provenance),
                 "scheduled": bool(scheduled) or was_scheduled,
             })
-            # A fresh registration supersedes any in-flight save claim.
-            entry.pop("consolidated_at", None)
             # #650: the advisory resume-fault fields are deliberately NOT
             # touched here. A resumed turn can publish a SUCCESSOR sid (the
             # CLI may assign a new session id on --resume), so "sid changed"
@@ -372,7 +387,8 @@ class SessionRegistry:
         Advisory streak state consumed by ``agent._resume_decision``: a
         conversation whose resumed trusted-ingress turns repeatedly evidence
         SDK faults stops being resumed once ``resume_fault_streak`` reaches
-        the limit — fresh WITH retain, so continuity is saved, never cleared.
+        the limit — fresh, like an expired entry; capture already holds what
+        the session said.
 
         The streak follows the SID CHAIN, not one sid: a resumed turn may
         publish a successor sid (the CLI can assign a new session id on
@@ -517,85 +533,6 @@ class SessionRegistry:
                 entry.pop("sdk_session_id", None)
                 await self._save_locked()
 
-    async def try_begin_save(
-        self, channel_key: str,
-        *, expected_generation: object = _UNCONDITIONAL,
-    ) -> bool:
-        """Atomically claim a session for saving. Returns True for the first
-        caller (sets ``consolidated_at``), False if missing or already claimed.
-        The ``consolidated_at`` marker persists (it is saved to disk); a save
-        that crashes after claiming but before ``finish_save`` leaves the marker
-        set — the FreshnessReaper's stale-claim recovery (a later task) detects a
-        marker older than its retry window and re-opens the claim. ``finish_save``
-        removes the entry only on success.
-
-        ``expected_generation`` (#526, Sol design-r2): the claim must be
-        generation-gated BEFORE it mutates — an unguarded claim can land on a
-        registration NEWER than the caller's snapshot, and the guarded
-        clear/remove downstream would then decline forever, stranding the
-        fresh entry claimed until stale-claim recovery."""
-        async with self._lock:
-            if self._generation_moved(channel_key, expected_generation):
-                return False  # re-registered after the snapshot; don't claim
-            entry = self._data.get(channel_key)
-            if entry is None or entry.get("consolidated_at"):
-                return False
-            entry["consolidated_at"] = datetime.now(timezone.utc).isoformat()
-            await self._save_locked()
-            return True
-
-    async def finish_save(
-        self, channel_key: str, sdk_session_id: str | None = None,
-        *, expected_generation: object = _UNCONDITIONAL,
-    ) -> None:
-        """Remove the entry after a successful retain (the session is now
-        long-term) — but only if it still belongs to the session that was
-        saved. If register() replaced the entry with a NEW sid mid-save (a
-        user turn landed during a slow reaper save), leave the new
-        registration intact; otherwise we would silently delete a fresh
-        session's pointer (M24). ``expected_generation`` (#526) extends that
-        to a mid-save re-registration of the SAME sid. Passing
-        ``sdk_session_id=None`` preserves the old unconditional behavior.
-        Idempotent."""
-        async with self._lock:
-            if self._generation_moved(channel_key, expected_generation):
-                return  # re-registered after the snapshot; leave it alone
-            entry = self._data.get(channel_key)
-            if entry is None:
-                return
-            if (
-                sdk_session_id is not None
-                and entry.get("sdk_session_id") != sdk_session_id
-            ):
-                return  # re-registered by a newer session; leave it alone
-            self._data.pop(channel_key, None)
-            self._generations.pop(channel_key, None)
-            await self._save_locked()
-
-    async def clear_save_claim(
-        self, channel_key: str, sdk_session_id: str | None = None,
-        *, expected_generation: object = _UNCONDITIONAL,
-    ) -> None:
-        """Release a save claim after a FAILED retain so the next reaper cycle
-        retries. Keeps the entry. Like ``finish_save``, only clears the claim
-        if the entry still belongs to the saved session — a newer
-        registration (which already wiped ``consolidated_at``) is left
-        untouched (M24); ``expected_generation`` (#526) extends that to a
-        same-sid re-registration."""
-        async with self._lock:
-            if self._generation_moved(channel_key, expected_generation):
-                return  # re-registered after the snapshot; leave it alone
-            entry = self._data.get(channel_key)
-            if entry is None or "consolidated_at" not in entry:
-                return
-            if (
-                sdk_session_id is not None
-                and entry.get("sdk_session_id") != sdk_session_id
-            ):
-                return
-            entry.pop("consolidated_at", None)
-            await self._save_locked()
-
     async def save(self) -> None:
         """Public save: acquires the lock.
 
@@ -611,8 +548,7 @@ class SessionRegistry:
         # Per-entry copy, not a shallow dict() of the outer map: the write runs
         # in a thread (the lock is released while we await it), so a concurrent
         # mutator that acquires the lock could otherwise mutate an inner entry
-        # dict mid-serialize. The save model relies on sdk_session_id/consolidated_at
-        # persisting atomically (crash-safety, spec §4.2 / C3). Entries are flat
+        # dict mid-serialize. Entries are flat
         # str→str|None maps, so a one-level copy is sufficient and cheap.
         data = {k: dict(v) for k, v in self._data.items()}
         await asyncio.to_thread(self._write, data)
@@ -624,7 +560,8 @@ class SessionRegistry:
         crash mid-write can never leave a truncated sessions.json — a corrupt
         file used to crash-stop the add-on on boot (H12).
         """
-        atomic_write_json(self._path, data, indent=2, mode=PRIVATE)
+        atomic_write_json(
+            self._path, data, indent=2, mode=PRIVATE, prefix=_STAGING_PREFIX)
 
     def all_entries(self) -> dict[str, dict[str, Any]]:
         """Return a shallow copy of all entries."""
@@ -632,9 +569,9 @@ class SessionRegistry:
 
     def add_reset_listener(self, cb):
         """Register an async callback(channel_key) fired by notify_reset
-        BEFORE an explicit reset saves the transcript (AR-4: gives the SDK
-        client pool a chance to close — and thereby flush — the warm
-        subprocess for that key). Returns an unsubscribe callable."""
+        BEFORE an explicit reset drops the pointer (AR-4: gives the SDK
+        client pool a chance to close the warm subprocess for that key).
+        Returns an unsubscribe callable."""
         self._reset_listeners.append(cb)
 
         def _unsub() -> None:
@@ -651,3 +588,68 @@ class SessionRegistry:
                 await cb(channel_key)
             except Exception:  # noqa: BLE001
                 logger.exception("reset listener failed for %s", channel_key)
+
+
+async def reset_channel(channel_key: str, registry: SessionRegistry) -> None:
+    """Explicit reset (``/new``): drop the key's session pointer so the next
+    turn starts fresh. Nothing is saved: Casa's live capture already holds
+    what the conversation said.
+
+    A reset holds the per-key write gate for its whole body — the mandated
+    global order is ``session_write_gate -> pool entry lock``, and this
+    function goes on to enter a pool entry lock through ``notify_reset``.
+    """
+    from session_gate import session_write_gate
+
+    async with session_write_gate(channel_key):
+        await _reset_locked(channel_key, registry)
+    # The session ended: the memory writer files what is pending at its next
+    # pass. A signal only — the reset never waits for the writer.
+    from memory import writer as memory_writer
+    memory_writer.session_ended()
+
+
+async def _reset_locked(channel_key: str, registry: SessionRegistry) -> None:
+    """The reset body. If there is no entry there is nothing to reset; the
+    caller still acks.
+
+    #290: the body runs under a per-key RETIREMENT CLAIM
+    (``registry.begin_retirement``): while it is live, both resume-decision
+    sites steer a racing same-key turn to a FRESH session instead of the
+    dying sid, and ``register()`` refuses to re-arm the dying sid itself.
+    The snapshot is taken in the same no-await block as the claim, before the
+    pool close, and the removal carries the snapshot's sid, so a
+    steered-fresh turn registering mid-close keeps its new session."""
+    # Imported lazily: agent imports this module at load.
+    from agent import snapshot_session_entry
+
+    # Bounded re-derive loop (design r2, Sol S-A2): when the FIRST pass finds
+    # no resumable entry it places no claim, so an in-flight pre-reset turn
+    # joined by the pool close below may publish a session in that window —
+    # exactly what this reset exists to retire. One more pass picks it up,
+    # and THAT pass claims in its no-await block, so a second materialization
+    # can only be a steered-fresh turn, which must survive.
+    for _pass in (1, 2):
+        snapshot = snapshot_session_entry(registry.get(channel_key))
+        token = (
+            registry.begin_retirement(channel_key, snapshot.sdk_session_id)
+            if snapshot is not None else None
+        )
+        try:
+            # AR-4 (pooling spec): close any warm SDK client for this key;
+            # joins any in-flight pool turn via the entry lock.
+            await registry.notify_reset(channel_key)
+            if snapshot is None:
+                if snapshot_session_entry(registry.get(channel_key)) is None:
+                    return  # genuinely nothing to reset
+                continue  # a pre-reset turn materialized a session; retire it
+            # #317: the removal carries the snapshot's sid, so a follow-up
+            # turn that re-registered this key mid-reset keeps its fresh
+            # session.
+            await registry.remove(
+                channel_key, expected_sid=snapshot.sdk_session_id,
+            )
+            return
+        finally:
+            if token is not None:
+                registry.end_retirement(channel_key, token)

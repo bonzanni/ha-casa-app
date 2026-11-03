@@ -132,10 +132,10 @@ def test_render_message_discloses_role_casa_tool_grants() -> None:
     # #541: the operator approving the install must see the casa-framework
     # powers the specialist arrives with.
     text = render_install_consent_message(_inspection(role_tool_grants=(
-        "mcp__casa-framework__recall_memory",
+        "mcp__casa-framework__search_memory",
         "mcp__casa-framework__send_media",
     )))
-    assert ("Casa tools: mcp__casa-framework__recall_memory, "
+    assert ("Casa tools: mcp__casa-framework__search_memory, "
             "mcp__casa-framework__send_media") in text
 
 

@@ -260,21 +260,18 @@ else failing closed), and the kind persisted on the durable row is the kind the 
 was told, never an exception class name. A specialist abort keeps precedence: an error
 flag beside a non-success subtype does not flatten the abort taxonomy. None of these
 verdicts is ever keyed on empty answer text — a completed run with an empty answer stays
-a success. Memory admission is per turn: the caller's own non-blank request turn, which
-nothing else records, is submitted regardless of the answer; the answer itself needs the
-completeness predicate, including a stop reason on the finished list — an answer the
-model did not finish (output tokens exhausted among the reasons) stays a caller-visible
-success whose text is withheld from the bank, audibly (INV-MEM-016, and see
-[`memory-lifecycle.md`](memory-lifecycle.md); the ledger and reconciliation rules are in
+a success. Memory admission is per turn: the caller's own non-blank request is captured
+before the run, regardless of the answer; the answer itself needs the completeness
+predicate, including a stop reason on the finished list — an answer the model did not
+finish (output tokens exhausted among the reasons) stays a caller-visible success whose
+text is withheld from memory, audibly (INV-MEM-016, and see
+[`memory-capture.md`](memory-capture.md); the ledger and reconciliation rules are in
 [`jobs-and-delivery.md`](jobs-and-delivery.md)).
 
-**Memory cannot answer.** The recall tools report unavailability as its own status and
-refuse blank queries outright; neither is ever a fake empty result (INV-MEM-001's
-tool-level face). `recall_memory`'s unavailable message tells the model to say memory
-could not be checked when a person asked, and that on a check nobody asked for the outage
-alone is no reason to send. Its optional `period` keeps only memories first recorded in that
-period; a period it cannot read is refused before any search, and one that keeps nothing gets
-its own not-proof-of-absence empty result (INV-MEM-019, [`memory.md`](memory.md)).
+**Memory cannot answer.** The memory tools — `search_memory`, `browse_memory_day`,
+`open_memory`, `correct_memory` — report a store they cannot read as `unavailable`, never
+as an empty result, and refuse a request they cannot read before reading anything; they
+are described in [`memory-tools.md`](memory-tools.md) (INV-MEM-010, INV-MEM-019).
 
 `get_schedule` lists the calling role's own triggers and reminders, not the operator's
 calendar.

@@ -1070,7 +1070,9 @@ def _retention_row(**over):
             "driver": "in_casa", "status": "completed", "topic_id": None,
             "started_at": 1.0, "last_user_turn_ts": 1.0,
             "completed_at": None, "origin": {}, "task": "t",
-            "auth_token": "tok-" + "a" * 40}
+            "auth_token": "tok-" + "a" * 40,
+            # its transcripts already reaped: only the age is under test
+            "transcripts_reaped": True}
     base.update(over)
     return base
 

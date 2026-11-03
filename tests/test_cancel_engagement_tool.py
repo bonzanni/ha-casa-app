@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
+from test_memory_capture import mem, summaries  # noqa: F401 — fixture
 
 pytestmark = pytest.mark.asyncio
 
@@ -50,14 +51,9 @@ class TestCancelEngagement:
         assert payload["kind"] == "unknown_engagement"
 
 
-async def test_cancel_writes_meta_scope_summary(tmp_path, monkeypatch):
-    """M2.G4 (rewritten for the shared-bank rearch) — cancel must not be
-    silent: it must retain a structured engagement summary on the shared
-    `casa` bank with status=='cancelled'. Pre-fix passed memory_provider=None
-    so cancellations were silent; the regression intent is preserved on the
-    new delegated-memory mechanism."""
-    import agent as agent_mod
-    import delegated_memory
+async def test_cancel_writes_meta_scope_summary(tmp_path, monkeypatch, mem):
+    """M2.G4 — cancel must not be silent: it captures a structured engagement
+    summary into memory with status=='cancelled'."""
     from engagement_registry import EngagementRegistry
     from tools import cancel_engagement, init_tools
 
@@ -73,23 +69,6 @@ async def test_cancel_writes_meta_scope_summary(tmp_path, monkeypatch):
         },
         topic_id=42,
     )
-
-    # Recording semantic-memory fake exposed on the agent module the way the
-    # production singleton would be.
-    class _Sem:
-        def __init__(self):
-            self.retain_calls = []
-
-        async def retain(self, bank, items, *, async_=True):
-            self.retain_calls.append({"bank": bank, "items": items})
-
-    sem = _Sem()
-    monkeypatch.setattr(agent_mod, "active_semantic_memory", sem, raising=False)
-
-    async def _fake_classify(text):
-        return "private"
-
-    monkeypatch.setattr(delegated_memory, "classify_tier", _fake_classify)
 
     tch = MagicMock()
     tch.send_to_topic = AsyncMock()
@@ -108,23 +87,9 @@ async def test_cancel_writes_meta_scope_summary(tmp_path, monkeypatch):
     payload = json.loads(res["content"][0]["text"])
     assert payload["status"] == "ok"
 
-    # L33 moved the retains off the turn's critical path into background
-    # tasks (_finalize_engagement schedules retain_delegated via
-    # asyncio.create_task) — drain them before asserting.
-    import tools as tools_mod
-    pending = list(tools_mod._specialist_bg_tasks)
-    if pending:
-        await asyncio.gather(*pending)
-
-    # A structured engagement summary was retained on the shared `casa` bank
-    # with status=='cancelled' — cancellation is not silent.
-    assert sem.retain_calls, "expected a retain on cancel; got none"
-    summaries = [
-        json.loads(i["content"])
-        for c in sem.retain_calls for i in c["items"]
-    ]
+    stored = [json.loads(row["text"]) for row in summaries(mem)]
     eng_summary = next(
-        s for s in summaries if s["kind"] == "engagement_summary"
+        s for s in stored if s["kind"] == "engagement_summary"
     )
     assert eng_summary["status"] == "cancelled"
     assert eng_summary["engagement_id"] == rec.id

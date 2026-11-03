@@ -73,7 +73,6 @@ def test_inventory_pins_every_path_the_advisory_named() -> None:
         "/data/webhook_trigger_acks.json",
         "/data/persona_install_acks.json",
         "/data/specialist_install_acks.json",
-        "/data/cold-retain-retry",
         "/config/cc-home",
         "/config/.git",
     }

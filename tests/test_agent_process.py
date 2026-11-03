@@ -16,7 +16,6 @@ from bus import BusMessage, MessageType
 from channels import ChannelManager, DeliveryOutcome
 from config import AgentConfig, CharacterConfig, MemoryConfig, ToolsConfig
 from mcp_registry import McpServerRegistry
-from semantic_memory import SemanticMemory
 from session_registry import SessionRegistry, build_scoped_session_key
 from session_reg_helpers import (
     align_prompt_surface,
@@ -122,58 +121,6 @@ def _mk_result(sid: str, usage: dict[str, int] | None = None) -> _SDKResultMessa
     return m
 
 
-class FakeSemanticMemory(SemanticMemory):
-    """SemanticMemory double for the §4.3 read path.
-
-    ``profile`` returns the mental-model overlay (rendered as <peer_overlay>);
-    ``recall`` returns the query-specific facts digest (rendered as
-    <memory_context>). Calls are recorded so tests can assert the channel-aware
-    load contract (overlay at fresh-session start; recall text-only)."""
-
-    def __init__(self, overlay: str = "", facts: str = "", provenance=None) -> None:
-        self._overlay = overlay
-        self._facts = facts
-        self._provenance = provenance
-        self.profile_calls: list[str] = []
-        self.recall_calls: list[dict] = []
-        self.retain_calls: list[tuple] = []
-
-    async def retain(self, bank, items, *, async_=True):
-        self.retain_calls.append((bank, items, async_))
-
-    async def recall(
-        self, bank, query, *, tags, max_tokens,
-        types=("world", "experience", "observation"),
-        tags_match="any", budget="mid",
-    ):
-        self.recall_calls.append({
-            "bank": bank, "query": query, "tags": tags,
-            "max_tokens": max_tokens, "budget": budget,
-        })
-        return self._facts
-
-    async def recall_items(
-        self, bank, query, *, tags, max_tokens, clearance,
-        types=("world", "experience", "observation"),
-        tags_match="any", budget="mid",
-    ):
-        self.recall_calls.append({
-            "bank": bank, "query": query, "tags": tags,
-            "max_tokens": max_tokens, "budget": budget, "clearance": clearance,
-        })
-        if not self._facts:
-            return ()
-        from personality_types import RecallHit
-        return (RecallHit(
-            text=self._facts, memory_type="world", sensitivity="friends",
-            application_tags=(), provenance=self._provenance, backend_id="b1",
-            document_id=None, chunk_id=None, source_fact_ids=None, metadata=None,
-            context=None, score=None,
-        ),)
-
-    async def document_tags(self, bank, document_id):
-        return None  # #1123: nothing stored here — every document reads never-saved
-
     async def profile(self, bank):
         self.profile_calls.append(bank)
         return self._overlay
@@ -262,7 +209,6 @@ class ScriptedToolClient:
 def _make_agent(
     tmp_path,
     role: str = "assistant",
-    semantic_memory: SemanticMemory | None = None,
 ) -> Agent:
     cfg = AgentConfig(role_artifact=STUB_ROLE_ARTIFACT,
         role=role,
@@ -286,7 +232,6 @@ def _make_agent(
         session_registry=SessionRegistry(str(tmp_path / "sessions.json")),
         mcp_registry=McpServerRegistry(),
         channel_manager=ChannelManager(),
-        semantic_memory=semantic_memory or FakeSemanticMemory(),
     )
 
 
@@ -347,16 +292,10 @@ async def test_resident_options_resolve_mcp_with_role_grants_and_skill_policy(
 
 
 async def test_session_id_is_channel_plus_role(tmp_path):
-    # §4.3: the read path no longer fans out per-scope Honcho sessions; it
-    # recalls once against the role's bank.
-    sem = FakeSemanticMemory(facts="recall digest")
-    agent = _make_agent(tmp_path, role="assistant", semantic_memory=sem)
+    agent = _make_agent(tmp_path, role="assistant")
     with patch("sdk_client_pool._default_make_client", FakeClient):
         await agent._process(_msg("telegram", "123", "hi"))
 
-    # Fresh telegram session → one bank recall keyed to the shared casa bank.
-    assert len(sem.recall_calls) == 1
-    assert sem.recall_calls[0]["bank"] == "casa"
     entry = agent._session_registry.get(
         build_scoped_session_key("telegram", "assistant", "123"),
     )
@@ -685,131 +624,14 @@ class TestHealthNoticeDeliveryConfirmation:
 
 
 async def test_voice_channel_uses_voice_speaker_peer(tmp_path):
-    # §4.3: the per-turn read no longer threads a user_peer (no ensure_session
-    # / per-turn add_turn). The voice-speaker peer is carried into save_session
-    # at session end instead. On the read side, a fresh voice turn pushes NO
-    # overlay (blocked by clearance — voice=friends, overlay is private-only)
-    # and NEVER auto-recalls (voice keeps the multi-strategy recall off the
-    # first-utterance critical path).
-    sem = FakeSemanticMemory(overlay="OVERLAY")
-    agent = _make_agent(tmp_path, role="butler", semantic_memory=sem)
+    agent = _make_agent(tmp_path, role="butler")
     with patch("sdk_client_pool._default_make_client", FakeClient):
         await agent._process(_msg("voice", "lr", "lights on"))
 
-    assert len(sem.profile_calls) == 0   # voice clearance < private → overlay blocked
-    assert sem.recall_calls == []        # voice never auto-recalls
     entry = agent._session_registry.get(
         build_scoped_session_key("voice", "butler", "lr"),
     )
     assert entry is not None
-
-
-async def test_telegram_channel_autorecalls_on_fresh_session(tmp_path):
-    # §4.3: the user_peer (nicola) is a save-path concern now (carried into
-    # save_session), no longer threaded through the per-turn read. The
-    # read-path contract for a fresh TEXT channel is: push the overlay AND
-    # auto-recall the opening utterance against the role's bank.
-    sem = FakeSemanticMemory(overlay="O", facts="F")
-    agent = _make_agent(tmp_path, role="assistant", semantic_memory=sem)
-    # #1336: a person typed this opening — Telegram ingress stamps a trusted
-    # origin; a turn without one recalls with the fixed unauthored query.
-    msg = _msg("telegram", "123", "hi")
-    msg.trusted_user_origin = _person_typed()
-    with patch("sdk_client_pool._default_make_client", FakeClient):
-        await agent._process(msg)
-
-    assert len(sem.profile_calls) == 1          # overlay pushed
-    assert len(sem.recall_calls) == 1           # telegram auto-recalls
-    assert sem.recall_calls[0]["query"] == "hi"
-
-
-# ---------------------------------------------------------------------------
-# Phase 5 / E-14: peer-overlay assembly (spec § 2.7, § 2.9)
-# ---------------------------------------------------------------------------
-
-
-async def test_fresh_text_turn_pushes_overlay_and_recalls(tmp_path):
-    """Spec §4.3: a fresh TEXT turn pushes the mental-model overlay
-    (profile) AND runs one query-specific recall over the readable scopes.
-    Supersedes the old "1 overlay + N per-scope reads under gather" shape —
-    the per-scope fan-out is gone; recall is a single tagged call."""
-    sem = FakeSemanticMemory(overlay="overlay-content", facts="recall-content")
-    agent = _make_agent(tmp_path, role="assistant", semantic_memory=sem)
-    msg = _msg("telegram", "123", "hi")
-    msg.trusted_user_origin = _person_typed()  # #1336: a person's own words
-    with patch("sdk_client_pool._default_make_client", FakeClient):
-        await agent._process(msg)
-
-    # One overlay (profile) call per fresh turn, keyed to the shared casa bank.
-    assert sem.profile_calls == ["casa"]
-    # One recall call: query == utterance, tags == sensitivity tiers readable at
-    # telegram clearance (private → all four tiers), mid budget.
-    assert len(sem.recall_calls) == 1
-    call = sem.recall_calls[0]
-    assert call["bank"] == "casa"
-    assert call["query"] == "hi"
-    assert call["tags"] == ["public", "friends", "family", "private"]
-    assert call["budget"] == "mid"
-
-
-async def test_overlay_block_present_when_overlay_non_empty(tmp_path):
-    """Assembled memory_blocks contains <peer_overlay> when the profile
-    overlay digest is non-empty (spec §4.3)."""
-    sem = FakeSemanticMemory(overlay="OVERLAY_TEXT")
-    agent = _make_agent(tmp_path, role="assistant", semantic_memory=sem)
-
-    captured: dict[str, str] = {}
-
-    class _CapturingClient(FakeClient):
-        def __init__(self, options):
-            super().__init__(options)
-            captured["system"] = options.system_prompt
-
-    with patch("sdk_client_pool._default_make_client", _CapturingClient):
-        await agent._process(_msg("telegram", "123", "hi"))
-
-    assert "<peer_overlay>" in captured["system"]
-    assert "OVERLAY_TEXT" in captured["system"]
-
-
-async def test_overlay_failure_does_not_poison_recall(tmp_path, caplog):
-    """profile() raising → overlay omitted, but the recall still proceeds
-    and lands in the prompt (spec §4.3 — the two reads are independent)."""
-    import logging
-
-    class FailingProfileMemory(FakeSemanticMemory):
-        async def profile(self, bank):
-            self.profile_calls.append(bank)
-            raise RuntimeError("simulated failure")
-
-    sem = FailingProfileMemory(facts="recall-still-works")
-    agent = _make_agent(tmp_path, role="assistant", semantic_memory=sem)
-
-    captured: dict[str, str] = {}
-
-    class _CapturingClient(FakeClient):
-        def __init__(self, options):
-            super().__init__(options)
-            captured["system"] = options.system_prompt
-
-    with caplog.at_level(logging.WARNING, logger="agent"):
-        with patch("sdk_client_pool._default_make_client", _CapturingClient):
-            await agent._process(_msg("telegram", "123", "hi"))
-
-    assert "<peer_overlay>" not in captured["system"]   # overlay omitted
-    assert "<memory_context>" in captured["system"]     # recall present
-    assert "recall-still-works" in captured["system"]
-    assert any(
-        "profile overlay failed" in r.message for r in caplog.records
-    )
-
-
-# NOTE (§4.3 read-path rewire): test_peer_overlay_empty_logs_info_line was
-# dropped here. It asserted the legacy `peer_overlay_empty` INFO line emitted
-# by the old MemoryProvider.peer_overlay_context read path. The SemanticMemory
-# seam's `profile()` overlay has no empty-digest observability line (it would
-# need to be designed + added deliberately, not inferred), so this assertion
-# has no equivalent on the new contract. No replacement is invented.
 
 
 async def test_system_prompt_contains_channel_context(tmp_path):
@@ -824,83 +646,36 @@ async def test_system_prompt_contains_channel_context(tmp_path):
     assert "</channel_context>" in prompt
 
 
-async def test_system_prompt_memory_context_only_when_nonempty(tmp_path):
-    # §4.3: <memory_context> now wraps the single recall digest (no per-scope
-    # scope= attribute). Empty recall → no block; non-empty → block + content.
-    sem = FakeSemanticMemory(facts="")
-    agent = _make_agent(tmp_path, role="assistant", semantic_memory=sem)
-    with patch("sdk_client_pool._default_make_client", FakeClient):
-        await agent._process(_msg("telegram", "123", "hi"))
-    assert "<memory_context>" not in FakeClient.captured_options.system_prompt
-
-    # Force a FRESH session so recall fires (the first turn above persisted a
-    # registry entry into the shared sessions.json, which would otherwise
-    # resume and skip the recall under §4.3).
-    sem2 = FakeSemanticMemory(facts="## Recent\n[nicola] hi")
-    agent2 = _make_agent(tmp_path, role="assistant", semantic_memory=sem2)
-    # The pool captures ``decide=_resume_decision`` by reference at
-    # construction (Agent.__init__), so patching the module-level
-    # ``agent._resume_decision`` no longer reaches the pooled turn — patch the
-    # live pool decision hook instead to force a fresh session (assertions
-    # unchanged; §4.3 recall fires only on is_fresh).
-    with patch("sdk_client_pool._default_make_client", FakeClient), \
-         patch.object(agent2._pool, "_decide", return_value=ResumeDecision("new", None, False, None, "missing")):
-        await agent2._process(_msg("telegram", "123", "hi"))
-    prompt2 = FakeClient.captured_options.system_prompt
-    assert "<memory_context>" in prompt2
-    assert "scope=" not in prompt2          # per-scope attribute is gone
-    assert "[nicola] hi" in prompt2
-
-
-async def test_auto_recall_injects_attributed_memory_context(tmp_path):
-    """Task 11 (Step 9): the pre-turn auto-recall now injects an ATTRIBUTED
-    <memory_context> — each hit rendered with its recorded source — instead of
-    a bare digest string. A telegram turn reads at private clearance, so the
-    resident source (role + persona) is spoken; raw provenance/tier tags never
-    escape into the prompt."""
-    from personality_types import SpeakerProvenance
-
-    prov = SpeakerProvenance(
-        speaker_kind="resident", role_id="resident:butler",
-        persona_id="casa.personas/tina", persona_version="1.0.0",
-        display_name="Tina", binding_digest="sha256:" + "5" * 64,
-    )
-    sem = FakeSemanticMemory(facts="the thermostat is set to 20C", provenance=prov)
-    agent = _make_agent(tmp_path, role="assistant", semantic_memory=sem)
-    with patch("sdk_client_pool._default_make_client", FakeClient), \
-         patch.object(agent._pool, "_decide",
-                      return_value=ResumeDecision("new", None, False, None, "missing")):
-        await agent._process(_msg("telegram", "123", "hi"))
-    prompt = FakeClient.captured_options.system_prompt
-    assert "<memory_context>" in prompt
-    assert "Tina previously said: the thermostat is set to 20C" in prompt
-    assert "[source: resident:butler" in prompt
-    assert "casa-source-" not in prompt   # reserved tag never escapes
-    assert "sha256:" not in prompt        # binding digest never escapes
-
-
-async def test_memory_failure_does_not_break_response(tmp_path, caplog):
-    """Pins INV-TURN-004. Red case demonstrated: re-raising from _build_options' broad recall-failure handler fails this test."""
+async def test_memory_failure_does_not_break_response(
+        tmp_path, caplog, monkeypatch):
+    """Pins INV-TURN-004. A memory store that fails while the session's view
+    and the turn's correction note are read leaves the turn answered, with no
+    memory block. Red case: re-raising from ``_serve_memory_view``'s or
+    ``_memory_note``'s failure handler fails this test."""
     import logging
 
-    class BrokenSemanticMemory(FakeSemanticMemory):
-        async def recall_items(self, *a, **kw):
-            raise RuntimeError("hindsight down")
+    from memory import note as memory_note
+    from memory import view as memory_view
+    from memory_serving_support import fact, ledger_store, wire
 
-    sem = BrokenSemanticMemory()
-    agent = _make_agent(tmp_path, role="assistant", semantic_memory=sem)
+    store = ledger_store(tmp_path, [fact("thermostat", "set to 20C")])
+    wire(monkeypatch, store)
+
+    def broken(*a, **kw):
+        raise RuntimeError("store down")
+
+    monkeypatch.setattr(memory_view, "serve", broken)
+    monkeypatch.setattr(memory_note, "for_turn", broken)
+    agent = _make_agent(tmp_path, role="assistant")
     with patch("sdk_client_pool._default_make_client", FakeClient):
         with caplog.at_level(logging.WARNING):
             out = await agent._process(_msg("telegram", "123", "hi"))
     assert out == "pong"
-    # v0.99.0 three-outcome contract: the failure logs as a distinguishable
-    # "unavailable" outcome (not the old undifferentiated "recall failed").
-    assert any(
-        "auto_recall" in r.message and "outcome=unavailable" in r.message
-        for r in caplog.records
-    )
+    assert any("memory view not served" in r.message for r in caplog.records)
+    assert any("memory correction note not read" in r.message
+               for r in caplog.records)
     prompt = FakeClient.captured_options.system_prompt
-    assert "<memory_context>" not in prompt
+    assert "<memory>" not in prompt
     assert "<channel_context>" in prompt
 
 
@@ -1424,13 +1199,12 @@ class TestTokenBudgetMonitoring:
     call returns."""
 
     async def test_memory_recorder_called_on_each_successful_turn(
-        self, tmp_path,
+        self, tmp_path, monkeypatch,
     ):
-        """The recorder should see one call per turn with the digest
-        size estimated from the assembled memory_blocks (spec §4.3:
-        the recall facts wrapped in <memory_context>)."""
-        from personality_types import RecallHit, SpeakerProvenance
-        from recall_renderer import render_recall
+        """The recorder sees one call per turn with the size of the served
+        memory view."""
+        from memory import capture
+        from memory_serving_support import fact, ledger_store, wire
         from tokens import estimate_tokens
         FakeClient.reset()
         FakeClient.usage = {
@@ -1439,13 +1213,9 @@ class TestTokenBudgetMonitoring:
             "cache_read_input_tokens": 0,
             "cache_creation_input_tokens": 0,
         }
-        # Task 11: the recorded block is now the ATTRIBUTED render of the recall
-        # hits (bounded by token_budget), not the raw facts string. Keep the
-        # fact small enough to render fully so the expected size is exact.
-        facts = "x" * 100
-        # Overlay empty so the recorded block is exactly the recall context.
-        sem = FakeSemanticMemory(overlay="", facts=facts)
-        agent = _make_agent(tmp_path, role="assistant", semantic_memory=sem)
+        store = ledger_store(tmp_path, [fact("thermostat", "x" * 100)])
+        wire(monkeypatch, store)
+        agent = _make_agent(tmp_path, role="assistant")
 
         observed: list[tuple[str, int, int]] = []
         original_record = agent._budget_tracker.record
@@ -1457,53 +1227,41 @@ class TestTokenBudgetMonitoring:
         with patch("sdk_client_pool._default_make_client", FakeClient):
             await agent._process(_msg("telegram", "123", "hi"))
 
-        digest = render_recall(
-            (RecallHit(
-                text=facts, memory_type="world", sensitivity="friends",
-                application_tags=(), provenance=None, backend_id="b1",
-                document_id=None, chunk_id=None, source_fact_ids=None,
-                metadata=None, context=None, score=None,
-            ),),
-            current_speaker=SpeakerProvenance(speaker_kind="system"),
-            surface="text", clearance="private", token_budget=1000,
-        )
-        # #581: the block now opens with the memory-use instruction line, and
-        # that line is inside the budget accounting exactly as the digest is.
-        from recall_renderer import READABLE_SLICE_PROMPT_LINE
-        expected = estimate_tokens(
-            f"<memory_context>\n{READABLE_SLICE_PROMPT_LINE}\n{digest}\n"
-            f"</memory_context>"
-        )
+        from memory import view as memory_view
+        with capture.active_store().transaction() as conn:
+            block = memory_view.render(conn, "private", 1000).text
+        assert "x" * 100 in block
         expected_channel_key = build_scoped_session_key("telegram", "assistant", "123")
-        assert observed == [(f"{expected_channel_key}-assistant", expected, 1000)]
+        assert observed == [(f"{expected_channel_key}-assistant",
+                             estimate_tokens(block), 1000)]
 
     async def test_three_consecutive_overruns_emit_one_warning(
-        self, tmp_path, caplog,
+        self, tmp_path, caplog, monkeypatch,
     ):
         """Spec §5.2: warn after three consecutive overruns; suppress
-        thereafter for that session."""
+        thereafter for that session. A view that overflows its budget even at
+        its coarsest index level is served anyway, so it
+        overruns."""
         import logging as _logging
+        from memory_serving_support import fact, ledger_store, wire
         FakeClient.reset()
         FakeClient.usage = {
             "input_tokens": 0, "output_tokens": 0,
             "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0,
         }
-        # 5000-token estimate vs 1000 budget → overrun.
-        # §4.3: the oversized memory_block only fires on a FRESH session, so
-        # force every turn fresh — the budget streak is keyed on
-        # channel_key+role, stable across these five fresh turns. Task 11: the
-        # RECALL digest is now bounded by token_budget, so the oversized block
-        # is driven through the (un-capped) mental-model overlay instead — the
-        # budget-overrun machinery under test is identical either way.
-        sem = FakeSemanticMemory(overlay="x" * 20000, facts="")
-        agent = _make_agent(tmp_path, role="assistant", semantic_memory=sem)
+        store = ledger_store(tmp_path, [
+            fact(f"item {i}", "x" * 200,
+                 line=f"what the long-named item {i} " * 4)
+            for i in range(200)])
+        wire(monkeypatch, store)
+        agent = _make_agent(tmp_path, role="assistant")
 
         caplog.set_level(_logging.WARNING, logger="tokens")
         # Force every turn fresh via the live pool decision hook: the pool
         # captured ``decide`` by reference at construction, so patching the
         # module-level ``agent._resume_decision`` would not reach it.
         with patch("sdk_client_pool._default_make_client", FakeClient), \
-             patch.object(agent._pool, "_decide", return_value=ResumeDecision("new", None, False, None, "missing")):
+             patch.object(agent._pool, "_decide", return_value=ResumeDecision("new", None, None, "missing")):
             for _ in range(5):
                 await agent._process(_msg("telegram", "123", "hi"))
 
@@ -1514,13 +1272,14 @@ class TestTokenBudgetMonitoring:
         ]
         assert len(rows) == 1, [r.getMessage() for r in rows]
 
-    async def test_retried_turn_records_budget_once(self, tmp_path):
+    async def test_retried_turn_records_budget_once(self, tmp_path, monkeypatch):
         """#349: retry_sdk_call re-invokes _build_options per SDK attempt; the
         budget streak must advance once per LOGICAL turn, not per attempt."""
+        from memory_serving_support import fact, ledger_store, wire
         FakeClient.reset()
         FakeClient.failure_schedule = [asyncio.TimeoutError(), None]
-        sem = FakeSemanticMemory(overlay="x" * 20000, facts="")
-        agent = _make_agent(tmp_path, role="assistant", semantic_memory=sem)
+        wire(monkeypatch, ledger_store(tmp_path, [fact("a", "b")]))
+        agent = _make_agent(tmp_path, role="assistant")
 
         observed: list[tuple[str, int, int]] = []
         agent._budget_tracker.record = (  # type: ignore[method-assign]
@@ -1538,8 +1297,7 @@ class TestTokenBudgetMonitoring:
         """A turn that never succeeds must not advance (or reset) the streak."""
         FakeClient.reset()
         FakeClient.failure_schedule = [RuntimeError("non-retryable")]
-        sem = FakeSemanticMemory(overlay="x" * 20000, facts="")
-        agent = _make_agent(tmp_path, role="assistant", semantic_memory=sem)
+        agent = _make_agent(tmp_path, role="assistant")
 
         observed: list[tuple[str, int, int]] = []
         agent._budget_tracker.record = (  # type: ignore[method-assign]
@@ -1560,19 +1318,9 @@ class TestTokenBudgetMonitoring:
         attempt 2 assembles NO memory block and succeeds. The successful turn
         carried no budgeted context, so nothing may be recorded."""
 
-        class _SequenceOverlayMemory(FakeSemanticMemory):
-            def __init__(self, overlays):
-                super().__init__(overlay="", facts="")
-                self._overlays = list(overlays)
-
-            async def profile(self, bank):
-                self.profile_calls.append(bank)
-                return self._overlays.pop(0) if self._overlays else ""
-
         FakeClient.reset()
         FakeClient.failure_schedule = [asyncio.TimeoutError(), None]
-        sem = _SequenceOverlayMemory(["x" * 20000, ""])
-        agent = _make_agent(tmp_path, role="assistant", semantic_memory=sem)
+        agent = _make_agent(tmp_path, role="assistant")
 
         observed: list[tuple[str, int, int]] = []
         agent._budget_tracker.record = (  # type: ignore[method-assign]
@@ -1593,8 +1341,7 @@ class TestTokenBudgetMonitoring:
         success followed by a session-registry persistence failure is still a
         failed turn and must not advance the streak."""
         FakeClient.reset()
-        sem = FakeSemanticMemory(overlay="x" * 20000, facts="")
-        agent = _make_agent(tmp_path, role="assistant", semantic_memory=sem)
+        agent = _make_agent(tmp_path, role="assistant")
 
         observed: list[tuple[str, int, int]] = []
         agent._budget_tracker.record = (  # type: ignore[method-assign]
@@ -1724,7 +1471,6 @@ def _make_agent_with_registry(
         session_registry=registry,
         mcp_registry=McpServerRegistry(),
         channel_manager=ChannelManager(),
-        semantic_memory=FakeSemanticMemory(),
     )
 
 
@@ -2523,185 +2269,6 @@ class TestScheduledSilence:
 
 
 # ---------------------------------------------------------------------------
-# TestSaveBeforeOverwrite — spec §4.2 C1, Task 7
-# ---------------------------------------------------------------------------
-
-
-class TestSaveBeforeOverwrite:
-    """_process schedules a background claim-free retain (via _spawn_cold_retain)
-    when a cold prior session exists (spec §4.2 save-before-overwrite branch,
-    tier model §2.4). The pure helper _resume_decision is already unit-tested in
-    test_agent_save_path.py; this class covers the load-bearing call inside
-    _process itself.
-
-    NOTE (Task 8, tier model §2.4): the gap branch no longer awaits save_session
-    synchronously. Doing so would race register() — save_session claims the registry
-    entry via try_begin_save/finish_save, while register() overwrites the same
-    channel_key. Instead _process captures the OLD sid before register() fires and
-    hands it to _spawn_cold_retain, which runs retain_cold_session in the background
-    (claim-free, registry-decoupled). This keeps per-item LLM classification off
-    the turn's hot path. The original intent — "cold prior session IS persisted on
-    the next turn" — is preserved; only the mechanism changed."""
-
-    async def test_cold_path_schedules_background_retain_with_old_sid(
-        self, tmp_path, monkeypatch,
-    ):
-        """When the registry holds a stale telegram entry (idle > 12 h),
-        _resume_decision returns ("new", True) and _process must schedule a
-        background retain via _spawn_cold_retain, passing the OLD sdk_session_id
-        captured BEFORE register() overwrites the entry. save_session must NOT
-        be called (it would race register() on the same channel_key)."""
-        import agent as agent_mod
-        from datetime import datetime, timedelta, timezone
-
-        retain_calls: list[dict] = []
-
-        async def _fake_retain_cold(old, *, directory, channel, semantic_memory,
-                                    fence_generation=None):
-            retain_calls.append({
-                "sid": old.sdk_session_id,
-                "role": old.agent,
-                "directory": directory,
-                "user_peer": old.user_provenance.user_peer if old.user_provenance else None,
-                "channel": channel,
-            })
-
-        save_calls: list = []
-
-        async def _fake_save(*a, **kw):
-            save_calls.append(kw)
-
-        monkeypatch.setattr(agent_mod, "retain_cold_session", _fake_retain_cold)
-        monkeypatch.setattr(agent_mod, "save_session", _fake_save)
-        FakeClient.reset()
-
-        reg = SessionRegistry(str(tmp_path / "sessions.json"))
-        # Inject a stale entry under the canonical resident identity (Task 9):
-        # sdk_session_id present, last_active > 12 h ago → expired, retain_old.
-        # Seeded via register() so it carries a real stored user_provenance.
-        from personality_types import SpeakerProvenance
-        stale_ts = (
-            datetime.now(timezone.utc) - timedelta(hours=13)
-        ).isoformat()
-        cold_key = build_scoped_session_key("telegram", "assistant", "123")
-        await reg.register(
-            cold_key, resident_role_id("assistant"), "old-stale-sid",
-            binding_digest=RESIDENT_DIGEST,
-            speaker_provenance=resident_prov("assistant"),
-            user_provenance=SpeakerProvenance(speaker_kind="user", user_peer="nicola"),
-        )
-        reg._data[cold_key]["last_active"] = stale_ts
-
-        agent = _make_agent_with_registry(reg, role="assistant")
-
-        with patch("sdk_client_pool._default_make_client", FakeClient):
-            await agent._process(_msg("telegram", "123", "hi"))
-
-        # Drain any background tasks so retain_cold_session can complete.
-        if agent._bg_tasks:
-            await asyncio.gather(*list(agent._bg_tasks), return_exceptions=True)
-
-        # save_session must NOT be called on the cold path (it races register()).
-        assert save_calls == [], (
-            f"save_session must NOT be called on the cold path (races register()); "
-            f"got: {save_calls}"
-        )
-        # retain_cold_session must have been called with the OLD sid.
-        assert len(retain_calls) == 1, (
-            f"expected retain_cold_session called once on cold path; got {len(retain_calls)} calls"
-        )
-        call = retain_calls[0]
-        assert call["sid"] == "old-stale-sid", call
-        # Task 9/10: the snapshot carries the canonical role_id as ``agent``.
-        assert call["role"] == "resident:assistant", call
-        assert call["directory"].endswith("agent-home/assistant"), call
-        assert call["user_peer"] == "nicola", call
-        assert call["channel"] == "telegram", call
-
-    async def test_save_session_not_called_on_resume_path(self, tmp_path, monkeypatch):
-        """When the registry holds a fresh entry (idle < 12 h), _resume_decision
-        returns ("resume", False) and _process must NOT call save_session."""
-        import agent as agent_mod
-        from datetime import datetime, timedelta, timezone
-
-        save_calls: list[dict] = []
-
-        async def _fake_save(channel_key, session_registry, semantic_memory,
-                             *, directory, channel):
-            save_calls.append({"channel_key": channel_key})
-
-        monkeypatch.setattr(agent_mod, "save_session", _fake_save)
-        FakeClient.reset()
-
-        reg = SessionRegistry(str(tmp_path / "sessions.json"))
-        # Fresh entry: last_active just 5 minutes ago → resume, no save.
-        fresh_ts = (
-            datetime.now(timezone.utc) - timedelta(minutes=5)
-        ).isoformat()
-        reg._data[build_scoped_session_key("telegram", "assistant", "456")] = {
-            "agent": resident_role_id("assistant"),
-            "sdk_session_id": "fresh-live-sid",
-            "last_active": fresh_ts,
-            "binding_digest": RESIDENT_DIGEST,
-        }
-
-        agent = _make_agent_with_registry(reg, role="assistant")
-
-        with patch("sdk_client_pool._default_make_client", FakeClient):
-            await agent._process(_msg("telegram", "456", "hi"))
-
-        assert save_calls == [], (
-            f"save_session must not be called on the resume path; got {save_calls}"
-        )
-
-    async def test_resumed_session_skips_overlay_and_recall(
-        self, tmp_path, monkeypatch,
-    ):
-        """Spec §4.3: on a resumed session (is_fresh=False), _plan_load
-        returns push_overlay=False, auto_recall=False. The overlay and
-        per-turn recall are BOTH skipped — the overlay rides along on the
-        resumed SDK thread; no auto-recall fires."""
-        import agent as agent_mod
-        from datetime import datetime, timedelta, timezone
-
-        # Monkeypatch save_session so the save-before-overwrite path can't
-        # accidentally fire and muddy the assertion.
-        monkeypatch.setattr(agent_mod, "save_session", AsyncMock())
-        FakeClient.reset()
-
-        reg = SessionRegistry(str(tmp_path / "sessions.json"))
-        # Seed a FRESH entry: sdk_session_id present, last_active just 5 min ago
-        # → _resume_decision returns ("resume", False) → is_fresh=False.
-        fresh_ts = (
-            datetime.now(timezone.utc) - timedelta(minutes=5)
-        ).isoformat()
-        reg._data[build_scoped_session_key("telegram", "assistant", "789")] = {
-            "agent": resident_role_id("assistant"),
-            "sdk_session_id": "live-sid-resume",
-            "last_active": fresh_ts,
-            "binding_digest": RESIDENT_DIGEST,
-        }
-
-        fake = FakeSemanticMemory(overlay="should-not-appear", facts="should-not-appear")
-        agent = _make_agent_with_registry(reg, role="assistant")
-        align_prompt_surface(reg, agent, "telegram", "789")
-        # Replace the NoOp semantic memory with our tracking fake.
-        agent._semantic_memory = fake
-
-        with patch("sdk_client_pool._default_make_client", FakeClient):
-            await agent._process(_msg("telegram", "789", "hi"))
-
-        assert fake.profile_calls == [], (
-            "profile() must not be called on a resumed session (overlay rides "
-            f"along on the thread); got: {fake.profile_calls}"
-        )
-        assert fake.recall_calls == [], (
-            "recall() must not be called on a resumed session (no auto-recall "
-            f"on resume path); got: {fake.recall_calls}"
-        )
-
-
-# ---------------------------------------------------------------------------
 # Structural contract: Agent.__init__ must not accept memory param
 # ---------------------------------------------------------------------------
 
@@ -2725,7 +2292,7 @@ async def test_untrusted_webhook_trigger_gets_restricted_runtime(tmp_path):
     assert json.loads(options.settings) == {"disableAllHooks": True,
                                             "crossSessionInbound": "refuse"}
     assert set(options.allowed_tools) == {
-        "mcp__casa-framework__recall_memory",
+        "mcp__casa-framework__search_memory",
         "mcp__casa-framework__send_message",
     }
 
@@ -3153,12 +2720,11 @@ class TestIssue650RedCases:
         else:
             assert len(channel.deliveries) == 0
 
-    async def test_two_trusted_sdk_retry_exhaustions_start_fresh_and_retain_old_snapshot(
+    async def test_two_trusted_sdk_retry_exhaustions_start_fresh(
         self, tmp_path,
     ):
         """Two consecutive trusted asks that exhaust SDK retries against the
-        same resumed sid: the third ask must NOT resume it — fresh decision,
-        old snapshot retained."""
+        same resumed sid: the third ask must NOT resume it — fresh decision."""
         from error_kinds import ErrorKind, _USER_MESSAGES
         from ingress_identity import ingress_identity
 
@@ -3187,10 +2753,6 @@ class TestIssue650RedCases:
         agent = _make_agent_with_registry(reg, role="butler")
         align_prompt_surface(reg, agent, "telegram", "fault-scope")
 
-        retain_calls: list[Any] = []
-        agent._spawn_cold_retain = (  # type: ignore[method-assign]
-            lambda old, **kw: retain_calls.append(old)
-        )
 
         def _trusted_msg() -> BusMessage:
             m = _msg("telegram", "fault-scope", "status?")
@@ -3212,7 +2774,6 @@ class TestIssue650RedCases:
             assert FakeClient.attempts == 6
             assert sleep.await_count == 4
             assert resumes == ["old-sid"] * 6
-            assert retain_calls == []
 
             third = await agent.handle_message(_trusted_msg())
 
@@ -3220,14 +2781,12 @@ class TestIssue650RedCases:
         assert third.content == "recovered"
         assert FakeClient.attempts == 7
         assert resumes == ["old-sid"] * 6 + [None]
-        assert len(retain_calls) == 1
-        assert retain_calls[0].sdk_session_id == "old-sid"
 
     async def test_untrusted_sdk_retry_exhaustions_keep_resuming(
         self, tmp_path,
     ):
         """Scoping pin: the identical six-failure/third-success sequence
-        WITHOUT trusted ingress keeps resuming and retains nothing — an
+        WITHOUT trusted ingress keeps resuming — an
         author-less turn must not burn a conversation's resume streak."""
         CLIConnectionError = type("CLIConnectionError", (RuntimeError,), {})
         resumes: list[str | None] = []
@@ -3254,10 +2813,6 @@ class TestIssue650RedCases:
         agent = _make_agent_with_registry(reg, role="butler")
         align_prompt_surface(reg, agent, "telegram", "fault-scope")
 
-        retain_calls: list[Any] = []
-        agent._spawn_cold_retain = (  # type: ignore[method-assign]
-            lambda old, **kw: retain_calls.append(old)
-        )
 
         with patch(
             "sdk_client_pool._default_make_client", _ResumeRecordingClient,
@@ -3267,7 +2822,6 @@ class TestIssue650RedCases:
 
         assert FakeClient.attempts == 7
         assert resumes == ["old-sid"] * 7
-        assert retain_calls == []
 
     @pytest.mark.parametrize("silent_final", ["", "<silent/>"])
     async def test_trusted_silence_without_retries_stays_silent(

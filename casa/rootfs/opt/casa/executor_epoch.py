@@ -9,7 +9,7 @@ launch consumed (an edit without a reload); the epoch must be derived from
 the same in-hand bytes. Why source bytes and not rendered output (design
 r5): the rendered prompt/CLAUDE.md embeds {task}/{context}/{executor_memory},
 which would make every epoch launch-unique — and circular, since the archive
-recall this epoch filters runs before rendering.
+read this epoch filters runs before rendering.
 
 Inputs, exhaustively: the canonical role-artifact checksum
 (``defn.role_checksum``), the resolved prompt template (relative path + the
@@ -22,10 +22,10 @@ fallback, r4/r5). The rest of ``definition.yaml`` (tools, model, plumbing)
 is deliberately NOT an input: changing a tool grant does not obsolete
 lessons.
 
-Summaries retained at engagement finalize are stamped with
-:func:`epoch_application_tag`; the archive injection at the NEXT launch
-keeps only same-tag lessons (client-side — the backend's only content
-filter is the sensitivity tags, and ``tags_match="any"`` broadens).
+Summaries captured at engagement finalize carry the epoch persisted on the
+engagement's record (and the copy retained to the semantic backend is
+tagged with :func:`epoch_application_tag`); the archive injection at the
+NEXT launch reads only summaries of the launch's own epoch.
 """
 from __future__ import annotations
 
@@ -107,26 +107,3 @@ def epoch_application_tag(executor_type: str, epoch: str) -> str:
 
 def is_epoch_tag(tag: str) -> bool:
     return tag.startswith(_TAG_PREFIX)
-
-
-def make_archive_epoch_filter(expected_tag: str):
-    """Hit filter for the executor-archive recall (#215): keep only hits
-    stamped with EXACTLY this launch's epoch tag. Mismatched-epoch and
-    UNTAGGED hits are dropped — the injected "lessons learned" block exists
-    to steer procedure, and a lesson that cannot prove it was learned under
-    the current doctrine is exactly the poison #215 names (legacy items are
-    indistinguishable from pre-change ones). Count-only logging; never
-    content."""
-    def _filter(hits):
-        kept = tuple(
-            h for h in hits
-            if expected_tag in (getattr(h, "application_tags", ()) or ())
-        )
-        dropped = len(hits) - len(kept)
-        if dropped:
-            logger.info(
-                "executor archive: dropped %d of %d hit(s) from another "
-                "doctrine epoch", dropped, len(hits),
-            )
-        return kept
-    return _filter

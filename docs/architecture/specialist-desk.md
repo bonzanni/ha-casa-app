@@ -173,7 +173,7 @@ block: one `<casa_notes>` block directly after the turn's `<current_time>` envel
 (`timekeeping.compose_turn_preamble`), which the transcript readback strips with the
 envelope, so no Casa line is retained as the operator's words (INV-MEM-022 in
 [`memory-labelling.md`](memory-labelling.md)). No narration turn is synthesised; the
-origin's `user_text` and the recall query stay raw; nothing is persisted.
+origin's `user_text` stays raw; nothing is persisted.
 
 **An approval raised inside a desk turn continues the desk.** The desk turn's grant identity
 carries an advisory `desk_role` beside its advisory `target_role` (which stays the resident,
@@ -201,9 +201,9 @@ resident message carrying Casa's note (INV-DESK-004), by design.
 
 The desk turn's origin is the DM's own context with the three fields the provenance
 classifier needs, the resident's role, the specialist as the executing role, depth one, a
-fresh turn id as `send_media`'s quota key and the delivered-slot echo owner, and the reserved
-`desk` marker; it classifies `dm`/`delegated`, so plugin capabilities, approvals and
-delivered posts inside the turn work exactly as inside a sync delegation. The scope is
+fresh turn id as `send_media`'s quota key and the delivered-slot echo owner, the operator's
+clearance (`private`), and the reserved `desk` marker; it classifies `dm`/`delegated`, so
+capabilities, approvals, memory and posts in the turn work as in a sync delegation. The scope is
 minted for the desk (no inherited obligations) and carried as `origin["turn_scope"]`.
 
 **INV-DESK-003**: A desk's log holds at most twelve bounded exchanges, in arrival order, shared by swipe-replies and the resident's delegations to that specialist from that chat from the first of them — every completed desk turn an exchange — and is empty on the first use after the idle bound or a restart; every use of a desk — a swipe-reply, a continuation, a sync, degraded or async delegation — runs alone under its lock from the log read to the exchange's commit, in arrival order, and no later use starts a run while an earlier use's run, cut off at the ceiling or by a cancellation, is still unwinding — the desk refuses it until that run has ended.

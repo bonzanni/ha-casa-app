@@ -86,7 +86,7 @@ cat >> /etc/nginx/nginx.conf <<'NGINX'
 
         # v0.97.0 SECURITY (must mirror rootfs setup-nginx.sh): never proxy the
         # unauthenticated internal MCP/hooks fallback endpoints on the public
-        # port — they dispatch CASA_TOOLS (recall_memory→private memory,
+        # port — they dispatch CASA_TOOLS (search_memory→private memory,
         # plugin_add). Loopback (127.0.0.1:8099) is unaffected.
         location /mcp/ {
             return 404;

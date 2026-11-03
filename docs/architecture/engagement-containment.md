@@ -255,7 +255,8 @@ one service.
 
 **The uid will not go extinct at a terminal transition.** The ladder reports `NOT_VERIFIED`
 naming the surviving pids at ERROR, the record KEEPS its durable obligation, and the finalize
-funnel continues — the operator still gets the completion, the notification and the retains,
+funnel continues — the operator still gets the completion, the notification and the summary
+captures,
 because a containment failure must not become a termination wedge. The next boot finds the
 obligation and runs the same ladder before any resume; the record is exempt from terminal
 expiry until it clears, so neither the obligation nor the uid it names can age out.

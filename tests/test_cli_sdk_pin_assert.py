@@ -9,7 +9,6 @@ import shutil
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
 
@@ -195,15 +194,11 @@ async def test_resident_specialist_and_executor_options_use_verified_cli(
         tools=ToolsConfig(allowed=["Read"]),
         memory=MemoryConfig(token_budget=800, read_strategy="cached"),
     )
-    memory = AsyncMock()
-    memory.profile.return_value = ""
-    memory.recall.return_value = ""
     resident = Agent(
         config=cfg,
         session_registry=SessionRegistry(str(tmp_path / "sessions.json")),
         mcp_registry=McpServerRegistry(),
         channel_manager=ChannelManager(),
-        semantic_memory=memory,
     )
     resident_options = await resident._build_options(
         channel="voice",

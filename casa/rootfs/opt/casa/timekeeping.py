@@ -35,7 +35,7 @@ _FALLBACK_TZ = "UTC"
 # datetime rendering, so it tolerates any single-line payload — and a pinned
 # compose→strip round-trip test keeps the pair from drifting apart. The inner
 # line's leading ISO token is captured so the turn's wall-clock time survives
-# out-of-band (RetainedTurn.timestamp) once the envelope leaves the text.
+# out-of-band once the envelope leaves the text.
 # The terminator is the composed "\n\n" OR end-of-input: the readback boundary
 # whitespace-strips messages first, so an envelope-only turn arrives without
 # its trailing blank line and must still be recognised (and then dropped).
@@ -201,10 +201,8 @@ def split_time_envelope(text: str) -> tuple[str | None, str]:
     """Split ONE leading turn envelope off ``text``: ``(iso_timestamp, rest)``
     when the envelope is present, ``(None, text)`` otherwise — no envelope, an
     envelope mentioned mid-text, a quoted block after the real one all pass
-    through untouched. Applied at the transcript-readback boundary
-    (session_saver), to USER turns only, so an identical utterance hashes and
-    stores identically whatever second it was said in (#471), while the
-    turn's wall-clock time survives out-of-band on the retain item."""
+    through untouched (#471): the turn's wall-clock time survives
+    out-of-band."""
     m = _TIME_ENVELOPE_RE.match(text)
     if m is None:
         return None, text

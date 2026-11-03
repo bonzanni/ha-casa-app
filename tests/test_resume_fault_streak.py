@@ -286,7 +286,6 @@ class TestFaultStreakDecision:
         ))
         assert d.action == "new"
         assert d.resume_sid is None
-        assert d.retain_old is True
         assert d.old is not None and d.old.sdk_session_id == "S"
         assert d.reason == "fault_streak"
 

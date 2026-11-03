@@ -2,9 +2,10 @@
 """Per-item sensitivity-tier classifier (design §2.4, revised 2026-06-04).
 
 Runs the eval-validated SENSITIVITY_PROMPT (sensitivity.py, v0.42.1, live
-accuracy 0.94–0.97) as a one-shot SDK query over a single retained item's text,
-returning its access tier. Used by the freshness reaper / save path — OFF the
-turn's critical path — so the per-turn hot path makes no classification call.
+accuracy 0.94–0.97) as a one-shot SDK query over a single captured event's text,
+returning its access tier. Used by the memory writer (``memory/classify.py``) —
+OFF the turn's critical path — so the per-turn hot path makes no classification
+call.
 
 Leak-safe: any uncertainty, empty content, or backend error → DEFAULT_TIER
 (``private``), so a mis-handled fact is forgotten at lower clearances rather than
@@ -12,11 +13,7 @@ leaked. Voice never reaches here (voice is recall-only — see channel_policy)."
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import contextvars
-import dataclasses
 import logging
-from collections.abc import Iterator
 
 from config import effort_for, resolve_model
 from claude_runtime import (
@@ -40,53 +37,18 @@ from sensitivity import (
     tier_evidence,
 )
 
-__all__ = ["ClassifyStats", "FallbackTier", "classify_stats", "classify_tier", "TIERS"]
+__all__ = ["FallbackTier", "classify_tier", "TIERS"]
 
 logger = logging.getLogger(__name__)
 
-
-# #508: aggregate observability for a batch of classifications. Measured live
-# (v0.177.0): ~12% of calls in a 48-item save defaulted with only scattered
-# per-item WARNs to notice it by — and small saves look clean by chance
-# (0.88^5 ≈ 53% chance of zero warnings in a 5-item save), so per-item lines
-# alone cannot tell an operator the rate. The save path opens a counting scope
-# (``classify_stats``); each ``classify_tier`` call inside it increments the
-# scope's counters. The scope is a contextvar so concurrent saves in separate
-# tasks never share counters, and ``asyncio.gather`` children (the bounded
-# classify fan-out) inherit the opener's scope. Counts are STRUCTURAL only —
-# never reply or item content (the leak-safety rule below).
-@dataclasses.dataclass
-class ClassifyStats:
-    total: int = 0      # classify_tier calls inside the scope
-    defaulted: int = 0  # calls that fell to DEFAULT_TIER on FAILURE (backend
-                        # errors exhausted, or reply still unparseable after
-                        # the #508 re-ask) — a genuine ``private``
-                        # classification is never counted
-
-
-_STATS: contextvars.ContextVar[ClassifyStats | None] = contextvars.ContextVar(
-    "tier_classify_stats", default=None,
-)
-
-
-@contextlib.contextmanager
-def classify_stats() -> Iterator[ClassifyStats]:
-    """Open a counting scope for the classify_tier calls made underneath it
-    (#508). Yields the live ``ClassifyStats``; read it after the batch."""
-    stats = ClassifyStats()
-    token = _STATS.set(stats)
-    try:
-        yield stats
-    finally:
-        _STATS.reset(token)
 
 class FallbackTier(str):
     """#1123: the ``DEFAULT_TIER`` a classification FAILURE returned — blank
     input, a backend error after the retry, or a reply still unparseable after
     the re-ask. It is still that tier (equal to ``"private"``, a member of
-    ``TIERS``), so every caller that only stores it is unchanged; the retain
-    builder tells it apart from a real verdict with ``isinstance``, because a
-    failure sets no floor on the memory's stored tier. A classifier that
+    ``TIERS``), so every caller that only stores it is unchanged; the memory
+    writer's classifier (``memory.classify.default_classifier``) tells it apart
+    from a real verdict with ``isinstance`` and leaves the event provisional. A classifier that
     returns a plain ``str`` is always giving a real verdict."""
 
     __slots__ = ()
@@ -174,9 +136,6 @@ async def classify_tier(content: str) -> str:
         # mode the rest of casa runs as root) never prompts and works.
         permission_mode="acceptEdits",
     )
-    stats = _STATS.get()
-    if stats is not None:
-        stats.total += 1
 
     async def _ask(prompt: str) -> str | None:
         """One classification ask under the D-5 exception ladder: one retry
@@ -190,7 +149,7 @@ async def classify_tier(content: str) -> str:
                             t = getattr(block, "text", None)
                             if isinstance(t, str):
                                 reply += t
-            except Exception as exc:  # noqa: BLE001 — classifier must never crash a save
+            except Exception as exc:  # noqa: BLE001 — classifier must never crash its caller
                 # The exception type+message live IN the log line: the D-5
                 # occurrences' tracebacks were truncated by log tooling and the
                 # container logs were gone before anyone could read them.
@@ -233,7 +192,7 @@ async def classify_tier(content: str) -> str:
         # wins" (#350/r2 doctrine) — and falls to the leak-safe default.
         # #1123: that default is a REAL verdict (a plain ``str``), not a
         # FallbackTier — the first reply's own evidence said private, so it
-        # sets a floor. It still counts as ``defaulted`` below.
+        # sets a floor.
         floor = max(
             (TIERS.index(t) for t in tier_evidence(reply)), default=-1)
         reply = await _ask(f"{classification_prompt(text)}\n\n{TIER_FORMAT_REMINDER}")
@@ -247,10 +206,6 @@ async def classify_tier(content: str) -> str:
                     "answer-shaped evidence in the discarded reply; "
                     "defaulting to %s", DEFAULT_TIER,
                 )
-                if stats is not None:
-                    stats.defaulted += 1
                 return DEFAULT_TIER
             _warn_unparseable(reply, will_reask=False)
-    if stats is not None:
-        stats.defaulted += 1
     return FallbackTier(DEFAULT_TIER)

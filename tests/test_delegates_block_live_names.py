@@ -273,16 +273,12 @@ async def test_per_role_reload_refreshes_a_live_agents_delegates_block(
     boot_registry = AgentRegistry.build(
         residents=dict(runtime.role_configs), specialists={},
     )
-    sm = AsyncMock()
-    sm.profile.return_value = ""
-    sm.recall.return_value = ""
     assistant = Agent(
         config=assistant_cfg,
         session_registry=SessionRegistry(str(tmp_path / "sessions.json")),
         mcp_registry=McpServerRegistry(),
         channel_manager=ChannelManager(),
         agent_registry=boot_registry,
-        semantic_memory=sm,
     )
     runtime.agents["assistant"] = MagicMock()
     runtime.agents["finance"] = MagicMock(

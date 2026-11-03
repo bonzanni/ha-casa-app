@@ -65,13 +65,15 @@ KNOWN_PLUGIN_SERVERS = frozenset({"context7"})
 # Invariant C — verified self-use requirements. Key = role dir name; value =
 # framework tools the agent's prompts/behaviour depend on it CALLING itself.
 # Seeded from confirmed intent only (do not add unverified rows — a false
-# requirement is as bad as a missing tool). recall_memory: v0.59.2 incident.
+# requirement is as bad as a missing tool). The memory tools: the v0.59.2
+# incident (a prompt naming a memory tool the role was not granted).
 REQUIRED_FRAMEWORK_TOOLS: dict[str, set[str]] = {
     "assistant": {
-        "recall_memory", "delegate_to_agent", "engage_executor",
+        "search_memory", "browse_memory_day", "open_memory", "correct_memory",
+        "delegate_to_agent", "engage_executor",
         "send_message", "get_schedule", "send_media",
     },
-    "butler": {"recall_memory"},          # serves the voice channel; no auto-recall path
+    "butler": {"search_memory", "browse_memory_day"},  # the voice channel
     "configurator": {
         "emit_completion", "config_git_commit",
         "cleanup_engagement_topics",       # v0.65.0 topic retention: doctrine tells it to

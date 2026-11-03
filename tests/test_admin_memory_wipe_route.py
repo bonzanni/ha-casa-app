@@ -1,24 +1,41 @@
-"""#411 — POST /admin/memory/wipe (the casactl terminal door). Root gating
-itself is the shared peercred middleware, covered by
-test_admin_peercred_gate.py; here: confirm gating, single-flight, and the
-report passthrough."""
+"""POST /admin/memory/wipe (the casactl terminal door). Root gating itself is
+the shared peercred middleware, covered by test_admin_peercred_gate.py; here:
+the explicit confirm, and that consent records the intent, replies, and asks
+for the app restart at once (INV-MEM-038)."""
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+import asyncio
+
+import json
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-import memory_wipe
+import supervisor_restart
+from memory import maintenance
 
 pytestmark = pytest.mark.asyncio
 
 
 @pytest.fixture(autouse=True)
-def _fresh_wipe_state(monkeypatch):
-    monkeypatch.setattr(memory_wipe, "_wipe_task", None)
-    monkeypatch.setattr(memory_wipe, "_wipes_frozen", False)
+def supervisor(monkeypatch, tmp_path):
+    monkeypatch.setattr(maintenance, "INTENT_PATH",
+                        str(tmp_path / "memory" / "maintenance.json"))
+    monkeypatch.setattr(maintenance, "restart_accepted_at", None)
+    monkeypatch.setattr(maintenance, "RESTART_GRACE_S", 3600.0)
+    state = {"answer": {"supervisor_status": 200}, "calls": 0}
+
+    async def answer():
+        state["calls"] += 1
+        return state["answer"]
+
+    monkeypatch.setattr(supervisor_restart, "request_app_restart", answer)
+    yield state
+    maintenance.configure(notify=None)
+    for task in (maintenance._expiry, maintenance._request):
+        if task is not None:
+            task.cancel()
 
 
 def _make_app() -> web.Application:
@@ -30,86 +47,128 @@ def _make_app() -> web.Application:
     return app
 
 
-def _bind_backends(monkeypatch):
-    import agent as agent_mod
-    monkeypatch.setattr(agent_mod, "active_session_registry", MagicMock(), raising=False)
-    monkeypatch.setattr(agent_mod, "active_semantic_memory", MagicMock(), raising=False)
-
-
-async def test_requires_explicit_confirm(monkeypatch) -> None:
-    _bind_backends(monkeypatch)
-    app = _make_app()
-    async with TestClient(TestServer(app)) as client:
+async def test_requires_explicit_confirm(supervisor) -> None:
+    async with TestClient(TestServer(_make_app())) as client:
         for body in ({}, {"confirm": False}, {"confirm": "yes"}, None):
             resp = await client.post("/admin/memory/wipe", json=body)
             assert resp.status == 400
             assert (await resp.json())["kind"] == "confirm_required"
+    assert maintenance.read_intent() is None and supervisor["calls"] == 0
 
 
-async def test_happy_path_returns_report(monkeypatch) -> None:
-    _bind_backends(monkeypatch)
-
-    async def fake_wipe(**kwargs):
-        return memory_wipe.WipeReport(
-            spool_records_dropped=3, session_entries_dropped=2,
-            bank_deleted=True,
-        )
-
-    monkeypatch.setattr(memory_wipe, "wipe_long_term_memory", fake_wipe)
-    app = _make_app()
-    async with TestClient(TestServer(app)) as client:
+async def test_consent_records_the_intent_and_requests_the_restart(
+        supervisor) -> None:
+    async with TestClient(TestServer(_make_app())) as client:
         resp = await client.post("/admin/memory/wipe", json={"confirm": True})
-        assert resp.status == 200
-        payload = await resp.json()
-        assert payload["status"] == "ok"
-        assert payload["bank_deleted"] is True
-        assert payload["spool_records_dropped"] == 3
-        assert payload["session_entries_dropped"] == 2
+        body = await resp.json()
+    assert resp.status == 200
+    assert body == {"status": "ok", "state": "written",
+                    "message": maintenance.FORGETTING_LINE}
+    intent = maintenance.read_intent()
+    assert (intent["kind"], intent["attempts"]) == ("wipe", [])
+    assert supervisor["calls"] == 1
+    assert maintenance.restart_pending()
 
 
-async def test_second_wipe_409s_while_running(monkeypatch) -> None:
-    import asyncio
-    _bind_backends(monkeypatch)
-    release = asyncio.Event()
+async def test_a_failed_restart_request_says_so_and_keeps_the_intent(
+        supervisor) -> None:
+    """The terminal is answered before the Supervisor is (it answers only
+    after stopping the container); a refusal that comes back is told on
+    Telegram."""
+    supervisor["answer"] = {"supervisor_status": 502}
+    told: list[str] = []
 
-    async def slow_wipe(**kwargs):
-        await release.wait()
-        return memory_wipe.WipeReport()
+    async def telegram(line):
+        told.append(line)
 
-    monkeypatch.setattr(memory_wipe, "wipe_long_term_memory", slow_wipe)
-    app = _make_app()
-    async with TestClient(TestServer(app)) as client:
-        first = asyncio.create_task(
-            client.post("/admin/memory/wipe", json={"confirm": True}),
-        )
-        await asyncio.sleep(0.05)
-        second = await client.post("/admin/memory/wipe", json={"confirm": True})
-        assert second.status == 409
-        assert (await second.json())["kind"] == "already_running"
-        release.set()
-        assert (await first).status == 200
-
-
-async def test_abort_maps_to_503(monkeypatch) -> None:
-    _bind_backends(monkeypatch)
-
-    async def aborting_wipe(**kwargs):
-        raise memory_wipe.WipeAborted("writers did not drain")
-
-    monkeypatch.setattr(memory_wipe, "wipe_long_term_memory", aborting_wipe)
-    app = _make_app()
-    async with TestClient(TestServer(app)) as client:
+    maintenance.configure(notify=telegram)
+    async with TestClient(TestServer(_make_app())) as client:
         resp = await client.post("/admin/memory/wipe", json={"confirm": True})
-        assert resp.status == 503
-        assert (await resp.json())["kind"] == "aborted"
+        body = await resp.json()
+    assert resp.status == 200
+    assert body["message"] == maintenance.FORGETTING_LINE
+    await asyncio.wait_for(maintenance._request, 2)
+    assert told == [maintenance.RESTART_FAILED_LINE]
+    assert maintenance.read_intent()["kind"] == "wipe"
+    assert not maintenance.restart_pending()
 
 
-async def test_uninitialized_backend_500s(monkeypatch) -> None:
-    import agent as agent_mod
-    monkeypatch.setattr(agent_mod, "active_session_registry", None, raising=False)
-    monkeypatch.setattr(agent_mod, "active_semantic_memory", None, raising=False)
-    app = _make_app()
-    async with TestClient(TestServer(app)) as client:
+async def test_a_second_request_answers_already_scheduled(supervisor) -> None:
+    async with TestClient(TestServer(_make_app())) as client:
+        await client.post("/admin/memory/wipe", json={"confirm": True})
         resp = await client.post("/admin/memory/wipe", json={"confirm": True})
-        assert resp.status == 500
-        assert (await resp.json())["kind"] == "not_initialized"
+        body = await resp.json()
+    await asyncio.wait_for(maintenance._request, 2)
+    assert (body["state"], body["message"]) == (
+        "already", maintenance.ALREADY_SCHEDULED_LINE)
+    assert supervisor["calls"] == 2
+
+
+async def test_a_pending_restore_is_not_replaced(supervisor) -> None:
+    maintenance.write_intent({"kind": "restore", "requested_at": "t",
+                              "attempts": [], "notified_container_ids": []})
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/admin/memory/wipe", json={"confirm": True})
+        body = await resp.json()
+    assert resp.status == 409 and body["kind"] == "restore_pending"
+    assert maintenance.read_intent()["kind"] == "restore"
+    assert supervisor["calls"] == 0
+
+
+async def test_an_intent_that_cannot_be_written_is_reported(
+        supervisor, monkeypatch) -> None:
+    def refuse(*a, **k):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(maintenance, "write_intent", refuse)
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/admin/memory/wipe", json={"confirm": True})
+        body = await resp.json()
+    assert resp.status == 500 and body["kind"] == "not_scheduled"
+    assert "nothing was deleted" in body["message"]
+    assert supervisor["calls"] == 0
+    assert json.dumps(body).count("Forgetting") == 0
+
+
+async def test_a_failure_before_telegram_is_wired_is_still_told(
+        supervisor, monkeypatch) -> None:
+    """A wipe asked for while the channels are still starting (no notifier
+    yet) that the Supervisor refuses is told with one raw Bot API line."""
+    supervisor["answer"] = {"supervisor_status": 503}
+    raw: list[str] = []
+
+    async def bot_api(line):
+        raw.append(line)
+        return True
+
+    monkeypatch.setattr(maintenance, "send_operator_line", bot_api)
+    maintenance.configure(notify=None)
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/admin/memory/wipe", json={"confirm": True})
+    assert resp.status == 200
+    await asyncio.wait_for(maintenance._request, 2)
+    assert raw == [maintenance.RESTART_FAILED_LINE]
+
+
+async def test_a_notifier_that_cannot_send_falls_back_to_the_raw_line(
+        supervisor, monkeypatch) -> None:
+    """Telegram configured but not ready (its notifier answers False): the
+    refusal still reaches the operator through one raw Bot API line."""
+    supervisor["answer"] = {"supervisor_status": 503}
+    raw: list[str] = []
+    unready: list[str] = []
+
+    async def bot_api(line):
+        raw.append(line)
+        return True
+
+    async def not_ready(line):
+        unready.append(line)
+        return False
+
+    monkeypatch.setattr(maintenance, "send_operator_line", bot_api)
+    maintenance.configure(notify=not_ready)
+    async with TestClient(TestServer(_make_app())) as client:
+        await client.post("/admin/memory/wipe", json={"confirm": True})
+    await asyncio.wait_for(maintenance._request, 2)
+    assert unready == raw == [maintenance.RESTART_FAILED_LINE]

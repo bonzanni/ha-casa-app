@@ -4,20 +4,17 @@
 unavailable — because an agent that says "I have no record of that" when the
 store merely timed out is lying to the operator.
 
-A blank query was a silent fourth case wearing the second one's clothes:
-`delegated_recall` short-circuited it to `""`, the value its own docstring
-reserves for a *genuine* zero-hit search. That reached a speaking surface —
-`query_engager` accepted a blank question and returned `status="unknown"`,
-which its tool description defines as "the memory was searched and holds
-nothing relevant". No search had run.
+A blank query was a silent fourth case wearing the second one's clothes: it
+reached a speaking surface — `query_engager` accepted a blank question and
+returned `status="unknown"`, which its tool description defines as "the memory
+was searched and holds nothing relevant". No search had run.
 
 The fix has two halves, and this module guards both:
 
-1. **The blank query is now a caller bug**, not an outcome. `delegated_recall`
-   raises `ValueError`; `query_engager` rejects it as `empty_query` at the tool
-   boundary; the two prompt-assembly callers skip the recall instead.
-2. **Empty renders as silence.** `_fetch_executor_archive` still swallows
-   `RecallUnavailable` and runs cold, which is safe *only* because its result
+1. **The blank query is a caller bug**, not an outcome: `query_engager`
+   rejects it as `empty_query` at the tool boundary.
+2. **Empty renders as silence.** `_fetch_executor_archive` returns `""` when
+   the memory store is unavailable and runs cold, which is safe *only* because its result
    lands in the `{executor_memory}` prompt slot, where empty means the section
    is absent. Absence of a block is not a claim of absence. That reasoning
    lives in the TEMPLATES, so the template tests below pin it: the moment a
@@ -149,8 +146,8 @@ def test_no_executor_template_claims_casa_has_no_memory():
 
     assert not offenders, (
         "An executor prompt asserts Casa has no memory. Empty is also what a "
-        "FAILED recall returns "
-        "(_fetch_executor_archive swallows RecallUnavailable), so the executor "
+        "FAILED read returns "
+        "(_fetch_executor_archive runs cold on an unavailable store), so the executor "
         "would state absence during a backend outage — the exact conflation "
         "#201 is about. Either drop the wording, or give that path a real "
         "third state:\n  " + "\n  ".join(offenders)
@@ -248,23 +245,6 @@ def test_memory_slot_is_never_introduced_by_a_label():
 
 
 @pytest.mark.asyncio
-async def test_delegated_recall_rejects_a_blank_query():
-    """A blank query performs no search, so it has no result to report."""
-    from delegated_memory import delegated_recall
-
-    class _ShouldNotBeCalled:
-        async def recall_items(self, *a, **k):  # pragma: no cover
-            raise AssertionError("no recall may run for a blank query")
-
-    for blank in ("", "   ", "\n\t "):
-        with pytest.raises(ValueError, match="non-blank query"):
-            await delegated_recall(
-                _ShouldNotBeCalled(), query=blank,
-                origin_channel="telegram", max_tokens=100,
-            )
-
-
-@pytest.mark.asyncio
 async def test_query_engager_rejects_a_blank_question_instead_of_claiming_absence():
     """The bug #201 named, at the surface where it actually spoke.
 
@@ -293,106 +273,6 @@ async def test_query_engager_rejects_a_blank_question_instead_of_claiming_absenc
             )
     finally:
         tools.engagement_var.reset(token)
-
-
-@pytest.mark.asyncio
-async def test_executor_archive_skips_the_recall_for_a_blank_task(monkeypatch):
-    """Pins the caller-side guard (Sol, Important).
-
-    `delegated_recall` now RAISES on a blank query, and this caller only
-    catches `RecallUnavailable`. Delete its blank check and the ValueError
-    escapes into a live engagement — this fix must not trade a false-absence
-    bug for a crash.
-    """
-    import agent as agent_mod
-    import tools
-
-    class _ShouldNotBeCalled:
-        async def recall_items(self, *a, **k):  # pragma: no cover
-            raise AssertionError("no recall may run for a blank task")
-
-    monkeypatch.setattr(
-        agent_mod, "active_semantic_memory", _ShouldNotBeCalled(), raising=False,
-    )
-    for blank in ("", "   ", "\n"):
-        assert await tools._fetch_executor_archive(
-            task=blank, origin_channel="telegram", token_budget=100,
-        ) == ""
-
-
-def test_delegated_specialist_recall_guards_blank_before_checking_the_backend():
-    """The blank-task branch must precede the `sem is None` branch.
-
-    Ordered the other way (as it was first written), a blank task with no
-    memory backend emitted the "memory could not be checked" note — a claim
-    about memory health that a turn with nothing to search for has no basis to
-    make (Sol + Terra, round 2).
-
-    Checked over the AST rather than by searching source text (Sol + Terra,
-    round 3): the branch sits deep inside `_run_delegated_agent`, which a unit
-    test cannot cheaply drive, but matching on exact spelling would fail on
-    harmless reformatting and pass on a semantically different rewrite.
-
-    Both PREDICATES are matched structurally, not merely by mentioning the
-    right names (Sol + Terra, round 4). An earlier version accepted any `if`
-    referencing `task_text` with any `elif` referencing `sem`, so the inverted
-    `if (task_text or "").strip(): ... elif sem is None:` — which routes blank
-    tasks straight into the backend branch, the exact bug — would have passed.
-    """
-    import ast
-
-    def _is_blank_task_test(test) -> bool:
-        """Matches `not <expr involving task_text>.strip()` and equivalents.
-
-        The `.strip` must be CALLED, and `task_text` must appear in the thing
-        it is called ON (Sol + Terra, round 5). Matching a bare
-        `ast.Attribute(attr="strip")` accepted `if not task_text.strip:` — the
-        truthiness of a bound method, which is always True, so the blank guard
-        never fires and the original mis-routing returns.
-        """
-        if not (isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not)):
-            return False
-        return any(
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "strip"
-            and "task_text" in {
-                n.id for n in ast.walk(node.func.value) if isinstance(n, ast.Name)
-            }
-            for node in ast.walk(test)
-        )
-
-    def _is_sem_is_none_test(test) -> bool:
-        """Matches exactly `sem is None`."""
-        return (
-            isinstance(test, ast.Compare)
-            and isinstance(test.left, ast.Name)
-            and test.left.id == "sem"
-            and len(test.ops) == 1
-            and isinstance(test.ops[0], ast.Is)
-            and len(test.comparators) == 1
-            and isinstance(test.comparators[0], ast.Constant)
-            and test.comparators[0].value is None
-        )
-
-    tree = ast.parse(Path(tools_source_path()).read_text(encoding="utf-8"))
-    for node in ast.walk(tree):
-        if not (isinstance(node, ast.If) and _is_blank_task_test(node.test)):
-            continue
-        # The `sem is None` arm must live in THIS if's else-chain, i.e. be
-        # evaluated only after the blank-task test has already failed.
-        if any(
-            _is_sem_is_none_test(alt.test)
-            for alt in node.orelse if isinstance(alt, ast.If)
-        ):
-            return
-
-    raise AssertionError(
-        "no `if <blank task_text> ... elif sem is None` chain found in "
-        "tools.py — either the guard was removed, or the `sem is None` branch "
-        "now runs FIRST and a blank task with no backend will claim that "
-        "memory could not be checked (#201)"
-    )
 
 
 def tools_source_path() -> str:

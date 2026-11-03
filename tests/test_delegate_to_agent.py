@@ -1721,7 +1721,7 @@ class TestMcpRegistryWiring:
         init_tools(ChannelManager(), MessageBus(), reg, mcp)
         cfg = _specialist_cfg(role="finance")
         cfg.tools = ToolsConfig(
-            allowed=["Skill", "mcp__casa-framework__recall_memory"],
+            allowed=["Skill", "mcp__casa-framework__search_memory"],
             permission_mode="acceptEdits",
             skills="none",
         )
@@ -1739,12 +1739,12 @@ class TestMcpRegistryWiring:
         server = options.mcp_servers["casa-framework"]
         assert server["resolved_role"] == "finance"
         assert server["resolved_grants"] == frozenset({
-            "mcp__casa-framework__recall_memory",
+            "mcp__casa-framework__search_memory",
             "mcp__casa-framework__query_engager",
             "mcp__casa-framework__emit_completion",
         })
         assert options.allowed_tools == [
-            "mcp__casa-framework__recall_memory",
+            "mcp__casa-framework__search_memory",
             "mcp__casa-framework__query_engager",
             "mcp__casa-framework__emit_completion",
         ]
@@ -2778,8 +2778,6 @@ class TestHandoffLine:
                 "agent": "finance", "task": "x", "context": "", "mode": mode,
             }), origin)
             await asyncio.gather(*list(tools_mod._handoff_line_tasks))
-            await asyncio.gather(*list(tools_mod._specialist_bg_tasks),
-                                 return_exceptions=True)
         return json.loads(result["content"][0]["text"]), ch.lines
 
     async def test_an_operator_sync_delegation_shows_the_line(self, tmp_path, monkeypatch):

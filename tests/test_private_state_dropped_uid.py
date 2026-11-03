@@ -113,8 +113,8 @@ def _fixture_tree(root: Path) -> None:
         p.write_text("sensitive", encoding="utf-8")
         os.chmod(p, 0o644)
 
-    for rel in ("data/cold-retain-retry", "config/cc-home", "config/.git",
-                "var/log/casa-engagement-aaaaaaaa"):
+    for rel in ("data/memory", "config/cc-home",
+                "config/.git", "var/log/casa-engagement-aaaaaaaa"):
         d = root / rel
         d.mkdir(parents=True, exist_ok=True)
         os.chmod(d, 0o755)

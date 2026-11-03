@@ -64,6 +64,21 @@ removes anything that does not follow the layout, and reclaims a publication a c
 half-done after an hour; it never deletes for space, so a full folder refuses the next
 publication instead. Its contract is [`plugin-handoff.md`](plugin-handoff.md).
 
+**Memory has a directory of its own, and a registry of everywhere else it lives.**
+`/data/memory/` (0700, in the private-state inventory) holds `memory.db`, a SQLite store in
+WAL mode reached only through one connection owner, one transaction per connection. Boot
+checks and migrates it; a failure leaves the file untouched and memory unavailable, never
+an empty store reported as healthy. Memory that lives outside the directory — SDK
+transcripts, `sessions.json`, explanation records, an engagement's executor-memory block —
+is listed with the directory's own contents in one registry, together with the staging-file
+names their atomic writers leave on a crash. For that reason `sessions.json`'s writer names
+its staging file after its target, while the shared writer's default name stays generic.
+Its contract is [`memory-store.md`](memory-store.md) (INV-MEM-025). A memory wipe is
+recorded as `/data/memory/maintenance.json` and carried out at the next container start,
+before any service, over exactly that registry; while the file exists `setup-configs.sh`
+leaves a real `/root/.claude/projects` where it is
+([`memory-wipe.md`](memory-wipe.md), INV-MEM-035).
+
 **Two stored fields carry a disclosure a payload owes.** A reminder entry in a role's
 `triggers.yaml` may carry `output_note`, and a durable job row carries `output_note` — the
 resolved Casa line the payload's authoring turn owed, stored beside the payload rather than
@@ -135,30 +150,30 @@ writes the artifacts a dropped engagement must load, so private call sites opt i
 **A state file is absent.** Almost always treated as empty, and often created on first write.
 
 **Session pointers are actively reaped, and webhook sessions never survive a boot.** A
-six-hour sweep removes expired entries and any with malformed or missing activity
-timestamps, hard-deleting their SDK transcripts best-effort — a stored pointer is not
-indefinitely durable. With one exception, and it is not storage hygiene: an entry that
-names a transcript on a bank-writable channel is held back however stale it is, because a
-successful retain would have removed the entry, so one that is still here is a conversation
-that never reached long-term memory and whose transcript is its only copy
-(INV-MEM-017, `architecture/memory-lifecycle.md`). Such an entry stays until the retain
-succeeds or the operator resets or wipes it, and each sweep says so. A reset
-does remove it, but it does not lose the conversation: the reset retains that
-session itself and, on failure, leaves a durable retry record in its place
-(`architecture/memory-lifecycle.md`). The TTLs are environment-tunable: `SESSION_TTL_DAYS` (default 30)
+six-hour sweep removes expired entries, and entries with malformed or missing activity
+timestamps that name no transcript, hard-deleting their SDK transcripts best-effort — a
+stored pointer is not indefinitely durable. An entry naming a transcript is never removed
+before the session's freshness window plus the transcript retention
+(`TRANSCRIPT_RETENTION_DAYS`, default 30) has passed, and its transcript is deleted only
+where no unconfirmed run names it (INV-MEM-031, `architecture/memory-lifecycle.md`); the
+run registrations themselves live in `memory.db`'s `transcript_runs` table (ids and times,
+no content). A reset removes an entry without losing the conversation, whose words were
+captured as they were said (`architecture/memory-lifecycle.md`). The TTLs are environment-tunable: `SESSION_TTL_DAYS` (default 30)
 and the much shorter `WEBHOOK_SESSION_TTL_DAYS` (default 1). And a boot-time purge drops *every* webhook-scoped session
 unconditionally, so webhook conversation continuity deliberately does not survive a
 restart even though the registry file does.
 
 **Engagement transcripts are reaped by the engagement's record, not by a pointer.** Once an
-`in_casa` engagement's terminal status is on disk, a separate pass deletes the CLI sessions
-that record names (INV-ENG-022, `architecture/engagement-transcript-reaping.md`); sessions no
-record names are not touched by either pass.
+`in_casa` engagement's terminal status is on disk and the retention has passed, a separate
+pass deletes the CLI sessions that record names (INV-ENG-027,
+`architecture/engagement-transcript-reaping.md`), and a delegated session goes by its run's
+row (INV-ENG-028, `architecture/engagement-transcript-reaping.md`); sessions nothing names are not touched.
 
 An entry also records the digest of the structural prompt surface the session was
 created with — the delegates, background jobs and executors the agent could reach at
 that moment, and for the butler the names of the Home Assistant tools the facade had
-published. It is what lets the next turn tell that a resumed conversation's pinned
+published, and the read clearance the session was created for when it is not `private`. It
+is what lets the next turn tell that a resumed conversation's pinned
 system prompt no longer describes the agent's capabilities and start a fresh session
 instead (INV-TURN-012, `architecture/turn-loop.md`). An entry written before that field
 existed carries none, and is treated as a mismatch rather than as agreement: a prompt
@@ -169,11 +184,9 @@ schedule fired (a trigger or reminder prompt, a scheduled question's continuatio
 delegated result returning into such a conversation) registered it. Every registration
 writes it explicitly, from the reserved marker Casa's scheduled dispatch stamps and never
 from the message type or the speaker; once true it stays true for that entry, because a
-key is either a schedule's label or a person's chat. The durable cold-retain retry record
-carries it too. It has three read states: true, false, and absent — an entry or retry
-record written before the upgrade that added it has none, and absent is read as *unknown*,
-never as "not scheduled". Saving uses it to date and mark what the session retained
-(`architecture/memory-labelling.md`); an unknown session is saved as before.
+key is either a schedule's label or a person's chat. It has three read states: true, false,
+and absent — an entry written before the upgrade that added it has none, and absent is read
+as *unknown*, never as "not scheduled".
 
 A session entry may also carry two advisory resume-fault fields — the fault-streak state
 of the turn loop's INV-TURN-008 (`architecture/turn-loop.md`), persisted with the entry
@@ -235,4 +248,5 @@ the code writes.
 - [`architecture/configuration.md`](../architecture/configuration.md)
 - [`architecture/engagements.md`](../architecture/engagements.md)
 - [`architecture/memory.md`](../architecture/memory.md)
+- [`architecture/memory-store.md`](../architecture/memory-store.md)
 <!-- END SOURCEMAP -->

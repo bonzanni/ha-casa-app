@@ -9,7 +9,7 @@ user. Uses the same _FakeBot / _FakeApp pattern as test_telegram_rate_limit.
 from __future__ import annotations
 
 import types
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -68,7 +68,6 @@ async def _noop(_msg: BusMessage) -> None:
 def _make_channel(
     *,
     session_registry=None,
-    semantic_memory=None,
 ) -> tuple[TelegramChannel, MessageBus, _FakeApp]:
     bus = MessageBus()
     bus.register("assistant", _noop)
@@ -82,7 +81,6 @@ def _make_channel(
     app = _FakeApp()
     ch._app = app  # type: ignore[assignment]
     ch._session_registry = session_registry
-    ch._semantic_memory = semantic_memory
     return ch, bus, app
 
 
@@ -93,15 +91,9 @@ class TestTelegramNewReset:
 
         reg = SessionRegistry(str(tmp_path / "s.json"))
         await reg.register(_KEY_42, "assistant", "sid-1", binding_digest=STUB_BINDING_DIGEST, speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV)
-        sem = AsyncMock()
-        sem.document_tags.return_value = None  # #1123: never saved
-        msgs = [
-            type("M", (), {"type": "user", "message": {"content": "remember X"}})()
-        ]
-        ch, bus, app = _make_channel(session_registry=reg, semantic_memory=sem)
+        ch, bus, app = _make_channel(session_registry=reg)
 
-        with patch("session_saver.get_session_messages", return_value=msgs):
-            await ch._handle(_fake_update("42", "/new"), None)
+        await ch._handle(_fake_update("42", "/new"), None)
 
         queued = await _drain_bus(bus)
         assert queued == [], "/new must not be forwarded to the agent bus"
@@ -112,15 +104,9 @@ class TestTelegramNewReset:
 
         reg = SessionRegistry(str(tmp_path / "s.json"))
         await reg.register(_KEY_42, "assistant", "sid-1", binding_digest=STUB_BINDING_DIGEST, speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV)
-        sem = AsyncMock()
-        sem.document_tags.return_value = None  # #1123: never saved
-        msgs = [
-            type("M", (), {"type": "user", "message": {"content": "hi"}})()
-        ]
-        ch, bus, app = _make_channel(session_registry=reg, semantic_memory=sem)
+        ch, bus, app = _make_channel(session_registry=reg)
 
-        with patch("session_saver.get_session_messages", return_value=msgs):
-            await ch._handle(_fake_update("42", "/new"), None)
+        await ch._handle(_fake_update("42", "/new"), None)
 
         assert len(app.bot.sent) == 1, "exactly one ack must be sent"
         ack = app.bot.sent[0]
@@ -133,49 +119,15 @@ class TestTelegramNewReset:
 
         reg = SessionRegistry(str(tmp_path / "s.json"))
         await reg.register(_KEY_42, "assistant", "sid-1", binding_digest=STUB_BINDING_DIGEST, speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV)
-        sem = AsyncMock()
-        sem.document_tags.return_value = None  # #1123: never saved
-        msgs = [
-            type("M", (), {"type": "user", "message": {"content": "hi"}})()
-        ]
-        ch, bus, app = _make_channel(session_registry=reg, semantic_memory=sem)
+        ch, bus, app = _make_channel(session_registry=reg)
 
-        with patch("session_saver.get_session_messages", return_value=msgs):
-            await ch._handle(_fake_update("42", "/new"), None)
+        await ch._handle(_fake_update("42", "/new"), None)
 
         assert reg.get(_KEY_42) is None, "registry pointer must be cleared"
 
-    async def test_new_retains_the_ended_conversation(self, tmp_path, monkeypatch):
-        """The ended conversation is retained. #1352: in the background, after
-        the reset has written its retry record and cleared the pointer."""
-        import asyncio
-
-        import session_saver
-        from session_registry import SessionRegistry
-
-        monkeypatch.setattr(
-            session_saver, "_COLD_RETAIN_RETRY_DIR", str(tmp_path / "retry"))
-
-        reg = SessionRegistry(str(tmp_path / "s.json"))
-        await reg.register(_KEY_42, "assistant", "sid-1", binding_digest=STUB_BINDING_DIGEST, speaker_provenance=STUB_SPEAKER_PROV, user_provenance=STUB_USER_PROV)
-        sem = AsyncMock()
-        sem.document_tags.return_value = None  # #1123: never saved
-        msgs = [
-            type("M", (), {"type": "user", "message": {"content": "important data"}})()
-        ]
-        ch, bus, app = _make_channel(session_registry=reg, semantic_memory=sem)
-
-        with patch("session_saver.get_session_messages", return_value=msgs):
-            await ch._handle(_fake_update("42", "/new"), None)
-            await asyncio.wait_for(asyncio.gather(
-                *list(session_saver._RESET_RETAINS)), timeout=5)
-
-        sem.retain.assert_awaited_once()
-        assert reg.get(_KEY_42) is None
-
     async def test_new_no_registry_wired_still_acks(self):
         """When _session_registry is None (pre-Task-9), /new still acks the user."""
-        ch, bus, app = _make_channel(session_registry=None, semantic_memory=None)
+        ch, bus, app = _make_channel(session_registry=None)
 
         await ch._handle(_fake_update("99", "/new"), None)
 
@@ -189,9 +141,7 @@ class TestTelegramNewReset:
         from session_registry import SessionRegistry
 
         reg = SessionRegistry(str(tmp_path / "s.json"))
-        sem = AsyncMock()
-        sem.document_tags.return_value = None  # #1123: never saved
-        ch, bus, app = _make_channel(session_registry=reg, semantic_memory=sem)
+        ch, bus, app = _make_channel(session_registry=reg)
 
         await ch._handle(_fake_update("55", "/new please"), None)
 
@@ -219,22 +169,19 @@ class TestNewSerializesWithFollowUps:
         follow-ups while other chats keep flowing."""
         import asyncio
 
-        import session_saver
         from session_registry import SessionRegistry
 
         reg = SessionRegistry(str(tmp_path / "s.json"))
-        sem = AsyncMock()
-        sem.document_tags.return_value = None  # #1123: never saved
-        ch, bus, app = _make_channel(session_registry=reg, semantic_memory=sem)
+        ch, bus, app = _make_channel(session_registry=reg)
 
         reset_started = asyncio.Event()
         release_reset = asyncio.Event()
 
-        async def gated_reset(channel_key, registry, semantic_memory, *, channel):
+        async def gated_reset(channel_key, registry):
             reset_started.set()
             await release_reset.wait()
 
-        with patch("session_saver.reset_channel", gated_reset):
+        with patch("session_registry.reset_channel", gated_reset):
             new_task = asyncio.ensure_future(
                 ch._handle(_fake_update("42", "/new"), None)
             )

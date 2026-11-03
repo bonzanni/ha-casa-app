@@ -92,7 +92,7 @@ def ephemeral_setting_sources() -> list[str]:
     Left unset, the SDK loads the user source, and with it the pinned CLI
     enables its own age-based cleanup, which walks the whole projects root
     and deletes any transcript older than ``cleanupPeriodDays`` (default 30)
-    — a resident transcript INV-MEM-017 holds included. The CLI enables that
+    — a transcript INV-MEM-031 keeps included. The CLI enables that
     cleanup only when the user source is loaded or a loaded source sets
     ``cleanupPeriodDays``; a project source is no better, since its file could
     carry the key, and a one-shot has no project of its own. Never put
@@ -103,7 +103,7 @@ def ephemeral_setting_sources() -> list[str]:
 
 def ephemeral_extra_args() -> dict[str, str | None]:
     """The ``extra_args`` of a utility one-shot: ``--no-session-persistence``
-    (INV-ENG-023). Nothing resumes or names a one-shot's session afterwards,
+    (INV-ENG-028). Nothing resumes or names a one-shot's session afterwards,
     so it writes no transcript at all. Measured on the pinned CLI under the
     SDK's stream-json transport: a completed turn returns its reply and
     leaves nothing under the projects root."""

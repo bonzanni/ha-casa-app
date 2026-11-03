@@ -9,14 +9,16 @@ last_reviewed: 2026-11-02
 ## Scope
 
 Which stored facts a given reader gets back: the read-clearance model — per channel, per
-Telegram sender via the stamped origin, failing closed — the clearance an engagement
-inherits from its creating turn and the monotonic clamp steering applies to it, the
-procedural-epoch scoping on the executor archive, and the mental-model overlay, which is
-shown only at the highest clearance, together with the mental models Casa declares for it.
-How a recalled fact is rendered, what a
+Telegram sender via the stamped origin, failing closed — the ledgers Casa maintains, one per
+clearance it serves, each written only from what that clearance can read, the check every
+read path makes on each object it returns, the clearance an engagement
+inherits from its creating turn and the monotonic clamp steering applies to it, and the
+procedural-epoch scoping on the executor archive. How a ledger is served, what a
 caller is told when the store cannot answer, and what a caller may claim from what comes
-back are [`architecture/memory.md`](memory.md); the write side — write trust and
-retention — is [`architecture/memory-lifecycle.md`](memory-lifecycle.md), and tier
+back are [`architecture/memory-serving.md`](memory-serving.md) and
+[`architecture/memory-tools.md`](memory-tools.md); write trust is
+[`architecture/memory-capture.md`](memory-capture.md), retention is
+[`architecture/memory-lifecycle.md`](memory-lifecycle.md), and tier
 labelling is [`architecture/memory-labelling.md`](memory-labelling.md).
 
 ## Mental model
@@ -31,6 +33,31 @@ whose id matches the configured operator chat id, public for anyone else the acc
 mode lets in — and origin-aware resolution honors that stamp, failing closed to public
 when a telegram-marked turn carries a missing or malformed one. Both ways into a Telegram
 turn stamp it: a message and a button tap.
+
+**Each served clearance has a ledger of its own, written only from what it can read.** Memory
+text served at a tier is generated from inputs readable at that tier; it is never a higher
+ledger filtered on the way out, because a filter over entries cannot recover a restriction
+the entry's writer never saw. So Casa maintains one ledger per clearance it serves:
+`private` always, and `friends` while a role that reads at `friends` has a served-view
+budget above 0 — the butler, since voice reads at `friends`. Which clearances have such a
+reader is worked out once at boot from each role's declared ingresses and budget, so a
+budget a reload changes counts from the next start. A session reads the ledger of the
+highest maintained clearance at or below its own: `family` reads `friends`, `public` reads
+none. The writer files each ledger as its own job, `private` first: that job classifies
+each event, and a lower ledger is given only events classified at or below it, so its cost
+scales with lower-tier content alone ([`architecture/memory-writer.md`](memory-writer.md)).
+Ellen's own replies carry the clearance of the session that wrote them as their floor
+([`architecture/memory-labelling.md`](memory-labelling.md)), so what reaches the butler's
+ledger is what people said at `friends` and below, never Ellen's private replies.
+
+**Every read path checks each object it returns.** The served view and `open_memory` read
+the reader's ledger and nothing else; an object there is dated only from source events that
+ledger can read. The correction note reads that ledger and re-checks each correction's own
+tier. Search hits, each hit's window neighbours and date browse check every event's tier
+before anything is paged or counted, so a count never reveals an unreadable event. The
+executor archive checks each summary's tier. An id the reader's ledger does not hold gets
+the same answer as an id that does not exist, whether it names an object of another ledger
+or nothing at all.
 
 **An engagement reads at the clearance of the turn that created it.** This needs stating
 because the mechanism is not the obvious one: an engagement's own tool calls arrive over the
@@ -59,7 +86,7 @@ ingress pass that lowers the record also: durably marks the context for rebuild 
 the clamp persist in one write, so a crash between them cannot happen), withholds the
 record's own launch materials (task, brief, context, world-state, a fresh job's recorded
 launch context and the text of its pending completion, INV-BGJOB-007 — every later render re-derives from the record, and evicting the session
-while the record still carried them would re-import them), tears the live session down, and drops the resume pointer — recording the evicted session on the record in that same write, so the terminal transcript pass (INV-ENG-022) deletes it once the engagement ends. Every
+while the record still carried them would re-import them), tears the live session down, and drops the resume pointer — recording the evicted session on the record in that same write, so the terminal transcript pass (INV-ENG-027) deletes it once the engagement ends. Every
 resume path — the steering turn itself, a system continuation, boot replay — refuses to
 resume while the rebuild is pending and establishes a fresh session at the clamped floor
 instead; while it is pending, the old process's tool calls are refused at both dispatch
@@ -87,43 +114,6 @@ record that carries a stamped clearance: an engagement running before per-sender
 existed has none, so it keeps channel-keyed clearance — on Telegram, private — until it
 finishes.
 
-**The mental-model overlay is shown only at `private`, because it cannot be tier-filtered.**
-A *mental model* is a standing question the memory backend re-answers from the bank on its
-own schedule; its answer is a bank-wide summary, not individually tagged facts, so there is no
-way to redact part of one. On a fresh session at `private` origin clearance the turn reads the
-bank's models (with their content — the backend's list returns metadata only unless asked)
-and pushes the ones that have content into the prompt. Each renders under its name with
-`refreshed <weekday> <day> <month> <year>` — the date of its last refresh in the operator's
-timezone, the same form as a recalled fact's recorded date — and, when its automatic refreshes
-are paused because the last one failed (the backend's own rule: a failure later than the last
-success, or a failure with no success at all), says that it may be out of date. A model with no
-content yet (its first refresh still running) or no readable refresh date is left out: the
-overlay never shows a summary whose age it cannot state. A non-empty overlay opens with one
-line framing it as memory-derived leads: not live state, and not a complete list, so nothing
-missing from it is evidence of absence. A missing bank (after a wipe, before the first save) is
-simply no overlay; any other failure to read it is logged and the turn runs without it.
-
-**Casa declares two of those models and keeps them reconciled.** `casa-open-commitments` asks
-for the operator's open commitments and follow-ups with their stated dates and deadlines,
-leaving out the assistant's own reminders and briefings; it refreshes on the backend's daily
-schedule at 05:00 UTC. `casa-operator-profile` asks for a profile of the operator and their
-household — who they are, the people around them, how they like to be addressed, standing
-preferences and routines with their cadence, each item with the date it was last stated —
-leaving out health, money and other people's private matters; it refreshes after the backend
-consolidates new memories, at most once a day. Both are untagged, so each reads the whole
-bank. The exclusions are written into the question, not enforced: they shape what the backend
-writes and filter nothing. A reconcile pass makes the backend match the declarations: it
-creates a missing model, rewrites a definition whose declared fields drifted (fields Casa does
-not declare are left as they are), and deletes any model under the **reserved `casa-`
-prefix** that Casa no longer declares — so a model the operator creates under that prefix is
-deleted at the next pass, while every other id is never touched. The pass reads one page of
-up to 1,000 models, and when the backend reports more than it returned, it deletes nothing. A
-model whose definition was rewritten, or whose automatic refreshes are paused, gets one
-explicit refresh in that pass, because rewriting does not refresh and only an explicit refresh
-resumes a paused model. A pass runs in the background at boot and after every completed wipe,
-one at a time in arrival order; boot and the wipe never wait for it, and shutdown cancels it
-before the memory client closes.
-
 ## Contracts & invariants
 
 **INV-MEM-003**: An unrecognised channel reads at the least-sensitive tier.
@@ -131,12 +121,38 @@ before the memory client closes.
 Enforced by the channel-clearance lookup's default. The direction matters: an unknown surface
 sees less, not more.
 
-What it does not cover: origin-aware resolution is narrower than it sounds. Resident
-auto-recall and the recall tool resolve clearance from the stamped origin
-(`clearance_for_origin()`), so a webhook turn's clearance there depends on its declared
-origin. Delegated recall honours a route its caller passes, but falls back to channel-keyed
-clearance for every caller that passes none — check the call site before assuming a
-delegated read is origin-filtered.
+What it does not cover: origin-aware resolution is narrower than it sounds. The served
+memory view, the correction note and the memory tools resolve clearance from the stamped
+origin (`clearance_for_origin()`), so a webhook turn's clearance there depends on its
+declared origin. Delegated recall honours a route its caller passes, but falls back to
+channel-keyed clearance for every caller that passes none — check the call site before
+assuming a delegated read is origin-filtered.
+
+**INV-MEM-029**: A writer job for ledger L is given only what is readable at L — the events pending in L, which below `private` are only events classified at or below it, a window of earlier events readable at L, and L's own objects, all built by `assemble_input`, the only builder of a job's input — and its patches change objects of L only, each recording as its sources only events readable at L.
+
+Enforced by the pending view's eligibility rule, by input assembly reading the events, the
+window and the objects through L in one read transaction, by the patch loader refusing
+an id that is no object of L, and by every object write in the commit dropping a source id
+that names no event classified at or below L — one the model invented, since it was never
+given such an event — without failing the job. The `private` job runs before any lower one, so an event
+reaches a lower ledger only once classified. Pinned by a `private` canary in an event, in
+the `private` ledger and in its history, and a provisional event, none of which may appear
+in any `friends` prompt, object or revision, with every prompt the model port is given
+checked against the input that function built for the running job.
+
+What it does not cover: a source id naming a readable event the job was not given is kept
+— it is readable at L either way; and a tier raised after a lower ledger filed the event,
+since nothing reclassifies an event (an object citing it is then dated from nothing,
+INV-MEM-034).
+
+**INV-MEM-034**: Every memory read path checks each object it returns against the reader's clearance — the served view and `open_memory` by ledger, the correction note by ledger and each correction's own tier, search hits, their window neighbours and date browse by event tier before paging and counts, the executor archive by summary tier — and an id the reader's ledger does not hold gets the same answer as an id that does not exist.
+
+Enforced in each read function rather than by its callers, so a tool, the engager query, a
+delegated run and a resident turn all inherit it. Pinned by a matrix of every path against
+every reader clearance over one store holding a canary at every tier.
+
+What it does not cover: the meter, which reports counts per ledger to the operator, and the
+whole-store export, which is the operator's own copy.
 
 **INV-MEM-008**: An engagement's reads resolve clearance from the origin markers its own record carries, and a steering turn from a lower-clearance sender clamps those markers down permanently.
 
@@ -174,13 +190,15 @@ checksum, the resolved prompt template's path and just-read bytes, every doctrin
 and (for workspace-driven executors) the *source* workspace instruction file,
 pre-interpolation, whichever of the template or plain-copy forms will be consumed.
 Launch-specific substitutions are never inputs: rendered bytes embed the task and the
-recalled memory itself, which would make every epoch unique and the filter circular.
+served memory itself, which would make every epoch unique and the filter circular.
 Workspace provisioning re-reads those sources, so after provisioning the driver recomputes
 the digest and aborts the launch on a mismatch rather than stamp an engagement with an
-epoch it did not run under. Filtering is client-side between recall and render (the tag
-filter cannot narrow), drops foreign-epoch *and* unstamped hits alike — a lesson that
-cannot prove it was learned under the current doctrine is exactly what the filter exists
-for — and the injected block subordinates itself to the doctrine files in as many words.
+epoch it did not run under. The archive is read from the memory store's
+`engagement_summaries`: the newest summaries of the executor's own type whose stored epoch
+equals the launch's, at a tier the originating turn's clearance can read, within the
+executor's budget. A record with no epoch matches nothing — a lesson that cannot prove it
+was learned under the current doctrine is exactly what the filter exists for — and the
+injected block subordinates itself to the doctrine files in as many words.
 
 What it does not cover: `query_engager` is deliberately unfiltered (an answer to "what
 happened last time" is not injected procedure); a same-epoch lesson that is merely wrong
@@ -191,60 +209,32 @@ consumed, so an edit that lands *and reverts* inside the provisioning window can
 mislabel — accepted: it needs two opposing edits within milliseconds, and closing it
 would thread an immutable byte snapshot through the whole provisioning path.
 
-**INV-MEM-020**: The mental-model overlay is pushed only on a fresh session at `private` origin clearance, and every model it renders carries its name and the date of its last refresh in the operator's timezone.
-
-Enforced by the turn's load plan, which pushes the overlay on a fresh session only, behind the
-`private`-only overlay gate; by the backend's overlay read, which asks the list for content;
-and by the overlay render, which emits a model only together with its name and its local
-refresh date and leaves out a model whose refresh date it cannot read.
-
-What it does not cover: what the summaries *say*. They are written by the backend's own model
-from the whole bank; their dates are the last refresh, not when any fact in them was stated,
-and the declared exclusions are part of the question rather than a filter. Nor does it cover
-the declared models' reconcile, which is best-effort by design and pinned by ordinary tests:
-a pass that cannot reach the backend leaves the models as they were until the next boot or
-wipe.
-
 ## Failure behavior
-
-**A mental-model reconcile pass fails.** If the backend's model list cannot be read —
-unreachable, timing out, a server error, an unrecognisable answer — the pass writes nothing
-and logs it. A missing bank is not a failure: its list answers 404 and the pass creates both
-models, which recreates the bank. One model's create, rewrite, refresh or delete failing is
-logged and the pass moves on; a rewrite that failed is not followed by a refresh. A refresh
-whose connection drops is not resent — the pass cannot tell whether the backend accepted it.
-Nothing retries inside the process: if the backend comes up after Casa, the declared models
-wait for the next boot or wipe.
 
 **A clamp fails to persist.** The clamp is applied in memory first, so a failed persist
 leaves this process correctly clamped while a restart would restore the higher tier
 (logged as security-relevant).
 
-Recall failures — an unavailable backend, a malformed envelope, a tripped breaker — are
-[`architecture/memory.md`](memory.md)'s; failures on the write side are
-[`architecture/memory-lifecycle.md`](memory-lifecycle.md)'s.
+A store that cannot be read is reported unavailable by every read path
+([`architecture/memory-tools.md`](memory-tools.md),
+[`architecture/memory-store.md`](memory-store.md)); failures on the write side are
+[`architecture/memory-capture.md`](memory-capture.md)'s and
+[`architecture/memory-writer.md`](memory-writer.md)'s.
 
 ## Extension points
 
-**A new declared mental model** is one more entry in the declarations, under the reserved
-`casa-` prefix. Its first reconcile creates it; removing the entry later deletes it from the
-backend at the next pass.
+**Another maintained ledger** (a reader served at `family`, say) joins `memory.ledgers`'
+on-demand clearances; the writer, the view, the note and the tools need no change.
 
 **A new channel** needs an explicit clearance entry, or it reads at the least-sensitive tier
-by default. Write access is a separate, deliberate addition, and the retention list is a
-third ([`architecture/memory-lifecycle.md`](memory-lifecycle.md)).
+by default. Write access is a separate, deliberate addition
+([`architecture/memory-capture.md`](memory-capture.md)), and the retention list is a third
+([`architecture/memory-lifecycle.md`](memory-lifecycle.md)).
 
-**Scoping what a recall surfaces** is a caller-side decision: the backend's only content
-filter is the sensitivity tags, so a caller that must narrow further (the executor archive
-drops lessons from another doctrine epoch — INV-MEM-015) filters the typed hits between
-recall and render, never by adding tags to the request (an added tag *broadens* an
-any-match filter).
-
-**One archive recall per launch.** A recall is relevance-ranked and bounded, so two are not
-two copies of one answer: an executor handed both is handed two accounts of what happened
-last time. A memory-enabled launch recalls once — into the first turn for an in-process
-executor, into the workspace instructions for one with a workspace, never both. Nothing
-after the launch recalls again ([`engagements.md`](engagements.md)).
+**One archive read per launch.** A memory-enabled launch reads the archive once — into the
+first turn for an in-process executor, into the workspace instructions for one with a
+workspace, never both, so an executor is never handed two accounts of what happened last
+time. Nothing after the launch reads it again ([`engagements.md`](engagements.md)).
 
 ## Source & test map
 
@@ -252,12 +242,15 @@ after the launch recalls again ([`engagements.md`](engagements.md)).
 <!-- generated by scripts/verify_docs.py --write-nav; do not hand-edit -->
 
 **Source**
+- `casa/rootfs/opt/casa/memory/ledgers.py`
+- `casa/rootfs/opt/casa/sensitivity.py::clearances_served`
 - `casa/rootfs/opt/casa/sensitivity.py::clearance_for_channel`
 - `casa/rootfs/opt/casa/sensitivity.py::clearance_for_origin`
 - `casa/rootfs/opt/casa/executor_epoch.py::compute_procedural_epoch`
 - `casa/rootfs/opt/casa/executor_epoch.py::epoch_application_tag`
-- `casa/rootfs/opt/casa/executor_epoch.py::make_archive_epoch_filter`
-- `casa/rootfs/opt/casa/delegated_memory.py::delegated_recall`
+- `casa/rootfs/opt/casa/tools.py::_fetch_executor_archive`
+- `casa/rootfs/opt/casa/tools.py::_read_executor_archive`
+- `casa/rootfs/opt/casa/channel_trust.py`
 - `casa/rootfs/opt/casa/tools.py::_origin_clearance_markers`
 - `casa/rootfs/opt/casa/tools.py::inherit_origin_markers`
 - `casa/rootfs/opt/casa/tools.py::_engagement_rebuild_fence`
@@ -269,23 +262,18 @@ after the launch recalls again ([`engagements.md`](engagements.md)).
 - `casa/rootfs/opt/casa/drivers/in_casa_driver.py::InCasaDriver.start`
 - `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver.start`
 - `casa/rootfs/opt/casa/casa_core.py::replay_undergoing_engagements`
-- `casa/rootfs/opt/casa/semantic_memory.py::render_mental_models`
-- `casa/rootfs/opt/casa/semantic_memory.py::mental_model_refresh_paused`
-- `casa/rootfs/opt/casa/hindsight_memory.py::HindsightSemanticMemory.profile`
-- `casa/rootfs/opt/casa/hindsight_memory.py::HindsightSemanticMemory.reconcile_mental_models`
-- `casa/rootfs/opt/casa/mental_models.py::reconcile`
-- `casa/rootfs/opt/casa/mental_models.py::schedule_reconcile`
-- `casa/rootfs/opt/casa/mental_models.py::drain_reconcile_tasks`
 
 **Tests**
 - `tests/test_sensitivity.py::test_readable_tiers_is_clearance_and_below`
 - `tests/test_sensitivity.py::test_clearance_docstring_states_the_fail_closed_direction`
 - `tests/test_executor_epoch.py`
-- `tests/test_mental_models_1126.py`
+- `tests/test_butler_friends_view.py`
 
 **Related**
 - [`architecture/memory.md`](../architecture/memory.md)
 - [`architecture/memory-lifecycle.md`](../architecture/memory-lifecycle.md)
 - [`architecture/engagements.md`](../architecture/engagements.md)
-- [`architecture/memory-wipe.md`](../architecture/memory-wipe.md)
+- [`architecture/memory-writer.md`](../architecture/memory-writer.md)
+- [`architecture/memory-serving.md`](../architecture/memory-serving.md)
+- [`architecture/memory-tools.md`](../architecture/memory-tools.md)
 <!-- END SOURCEMAP -->

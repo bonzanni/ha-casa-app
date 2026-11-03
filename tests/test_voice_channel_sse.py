@@ -65,13 +65,6 @@ class _FakeAgentConfig:
     channels: list[str] = ["ha_voice"]
 
 
-class _DummyMemory:
-    async def ensure_session(self, *a, **kw): return None
-    async def get_context(self, *a, **kw): return ""
-    async def add_turn(self, *a, **kw): return None
-    async def profile(self, bank: str) -> str: return ""
-
-
 @pytest.fixture
 async def voice_app():
     telemetry_clock = iter((10.0, 10.125))
@@ -87,7 +80,6 @@ async def voice_app():
         sse_path="/api/converse",
         ws_path="/api/converse/ws",
         agent_configs={"butler": _FakeAgentConfig()},
-        memory=_DummyMemory(),
         idle_timeout=300,
         monotonic=lambda: next(telemetry_clock),
     )
@@ -116,7 +108,6 @@ async def broken_voice_app(monkeypatch):
         sse_path="/api/converse",
         ws_path="/api/converse/ws",
         agent_configs={"butler": butler_cfg},
-        memory=_DummyMemory(),
         idle_timeout=300,
     )
 
@@ -173,7 +164,6 @@ async def agent_error_voice_app(tmp_path):
         sse_path="/api/converse",
         ws_path="/api/converse/ws",
         agent_configs={"butler": cfg},
-        memory=_DummyMemory(),
         idle_timeout=300,
     )
     channel_manager.register(voice_channel)
@@ -242,7 +232,6 @@ async def agent_partial_then_error_voice_app(tmp_path):
         sse_path="/api/converse",
         ws_path="/api/converse/ws",
         agent_configs={"butler": cfg},
-        memory=_DummyMemory(),
         idle_timeout=300,
     )
     channel_manager.register(voice_channel)
@@ -322,7 +311,7 @@ async def _emit(cfg, *, already_spoke: bool) -> str:
     channel = _VC(
         bus=None, default_agent="butler", webhook_secret="",
         sse_path="/api/converse", ws_path="/api/converse/ws",
-        agent_configs={"butler": cfg}, memory=_DummyMemory(), idle_timeout=300,
+        agent_configs={"butler": cfg}, idle_timeout=300,
     )
     ctx = {"_error_sink": _sink, "_spoken_any": lambda: already_spoke}
     assert await channel.emit_error_line("unknown", ctx, cfg) is True
@@ -350,7 +339,7 @@ async def sse_transport_error_after_speech_app(tmp_path):
         bus=MessageBus(), default_agent="butler",
         webhook_secret=VOICE_TEST_SECRET,
         sse_path="/api/converse", ws_path="/api/converse/ws",
-        agent_configs={"butler": cfg}, memory=_DummyMemory(), idle_timeout=300,
+        agent_configs={"butler": cfg}, idle_timeout=300,
     )
     channel._bus = _PartialThenRaisingBus()
     app = web.Application(middlewares=[cid_middleware])
@@ -429,7 +418,7 @@ class TestSSETailBlockCountsAsSpeech:
             bus=MessageBus(), default_agent="butler",
             webhook_secret=VOICE_TEST_SECRET,
             sse_path="/api/converse", ws_path="/api/converse/ws",
-            agent_configs={"butler": cfg}, memory=_DummyMemory(),
+            agent_configs={"butler": cfg},
             idle_timeout=300,
         )
         channel._bus = _TailOnlySpeechBus()
@@ -764,7 +753,6 @@ async def voice_app_with_limiter(request):
         sse_path="/api/converse",
         ws_path="/api/converse/ws",
         agent_configs={role: _FakeAgentConfig() for role in roles},
-        memory=_DummyMemory(),
         idle_timeout=300,
         rate_limiter=limiter,
     )
@@ -1013,7 +1001,6 @@ async def voice_app_nonprefix():
         sse_path="/api/converse",
         ws_path="/api/converse/ws",
         agent_configs={"butler": _FakeAgentConfig()},
-        memory=_DummyMemory(),
         idle_timeout=300,
     )
     app = web.Application(middlewares=[cid_middleware])
@@ -1038,7 +1025,6 @@ async def voice_app_shrinking():
         sse_path="/api/converse",
         ws_path="/api/converse/ws",
         agent_configs={"butler": _FakeAgentConfig()},
-        memory=_DummyMemory(),
         idle_timeout=300,
     )
     app = web.Application(middlewares=[cid_middleware])
@@ -1067,7 +1053,6 @@ async def voice_app_stalling(monkeypatch):
         sse_path="/api/converse",
         ws_path="/api/converse/ws",
         agent_configs={"butler": _FakeAgentConfig()},
-        memory=_DummyMemory(),
         idle_timeout=300,
     )
     app = web.Application(middlewares=[cid_middleware])

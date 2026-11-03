@@ -1511,6 +1511,9 @@ class TestRefreshClaudeMd:
             task=brief_task_for(rec, defn), context="ctx-marker",
             world_state_summary="world-marker", executor_memory="mem-marker",
             casa_framework_mcp_url="http://x",
+            # the same template the refresh selects (the driver passes it)
+            workspace_template_root=(
+                Path(defn.prompt_template_path).parent / "workspace-template"),
         )
         ws_dir = Path(path)
         # Memory was cached for a later boot refresh — Task 4: control dir.
@@ -1530,7 +1533,10 @@ class TestRefreshClaudeMd:
         # Every pre-existing placeholder section survived the refresh.
         assert "CTX:ctx-marker" in claude_md
         assert "WORLD:world-marker" in claude_md
-        assert "MEM:mem-marker" in claude_md
+        # The memory section comes back between its markers (the wipe finds
+        # it there).
+        from memory.executor_block import marked
+        assert "MEM:" + marked("mem-marker") in claude_md
 
     async def test_refresh_legacy_path_briefless_uses_task_fallback(self, tmp_path):
         from pathlib import Path

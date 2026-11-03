@@ -10,7 +10,9 @@ tools:
   allowed:
     - Read
     - mcp__casa-framework__get_schedule
-    - mcp__casa-framework__recall_memory
+    - mcp__casa-framework__search_memory
+    - mcp__casa-framework__browse_memory_day
+    - mcp__casa-framework__open_memory
     - mcp__homeassistant
     # #419 — a headless event wake cannot ask for approval; without this
     # every nudge would stall to budget exhaustion since ack_event could
@@ -48,7 +50,7 @@ mcp_server_names:
   - homeassistant
   - casa-framework
 memory:
-  token_budget: 800
+  token_budget: 10000
   read_strategy: cached
 channels:
   - ha_voice

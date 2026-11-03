@@ -88,14 +88,6 @@ def test_plugin_setup_episodes_store_is_private(
     assert path.read_text(encoding="utf-8").strip().startswith("{")
 
 
-def test_cold_retain_retry_dir_is_private(tmp_path: Path) -> None:
-    """The directory is what makes the records unreachable; it was created at
-    0755 by a bare ``mkdir(parents=True)``."""
-    d = tmp_path / "cold-retain-retry"
-    d.mkdir(mode=0o700, parents=True)
-    assert _mode(d) == 0o700
-
-
 def test_atomic_io_default_is_still_world_readable(tmp_path: Path) -> None:
     """The counterweight, stated as a test so it cannot be "tidied" later: the
     mode=None default MUST stay 0644. The same helper writes /config artifacts

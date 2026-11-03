@@ -94,7 +94,7 @@
     - tests/test_private_state_write_sites.py
     - tests/test_private_state_dropped_uid.py
     - tests/test_boot_replay.py
-  related: [architecture/configuration.md, architecture/engagements.md, architecture/memory.md]
+  related: [architecture/configuration.md, architecture/engagements.md, architecture/memory.md, architecture/memory-store.md]
   defines_invariants: [INV-STATE-001, INV-STATE-002, INV-STATE-003, INV-STATE-004, INV-STATE-005]
   invariant_tests:
     INV-STATE-001: [tests/test_pin_g5_invariants.py::test_pin_inv_state_001_only_whitelist_admitted]

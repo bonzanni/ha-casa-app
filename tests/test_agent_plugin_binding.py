@@ -9,7 +9,6 @@ import re
 import threading
 import time
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
 
@@ -55,16 +54,12 @@ def _make_agent(tmp_path, role="assistant", agent_registry=None) -> Agent:
         tools=ToolsConfig(allowed=["Read"], permission_mode="acceptEdits"),
         memory=MemoryConfig(token_budget=1000, read_strategy="per_turn"),
     )
-    sm = AsyncMock()
-    sm.profile.return_value = ""
-    sm.recall.return_value = ""
     return Agent(
         config=cfg,
         session_registry=SessionRegistry(str(tmp_path / "sessions.json")),
         mcp_registry=McpServerRegistry(),
         channel_manager=ChannelManager(),
         agent_registry=agent_registry,
-        semantic_memory=sm,
     )
 
 

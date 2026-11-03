@@ -67,13 +67,17 @@ def align_prompt_surface(registry, agent, channel: str, scope_id) -> str:
     Tests that assert a FRESH session must NOT call this — their unaligned seed
     is doing real work."""
     from agent import _live_agent_directory, _render_prompt_surface
+    from sensitivity import clearance_for_origin
     from session_registry import build_scoped_session_key
 
+    # The reader is the clearance a turn on ``channel`` reads at when its
+    # message carries no origin markers, as these tests' messages do.
     digest = _render_prompt_surface(
         agent.config.role, agent.config.delegates, agent._agent_registry,
         live_names=_live_agent_directory(),
         allowed_tools=agent.config.tools.allowed,
         executors=agent.config.executors,
+        reader=clearance_for_origin(None, None, channel),
     ).digest
     key = build_scoped_session_key(channel, agent.config.role, scope_id)
     entry = registry._data.get(key)

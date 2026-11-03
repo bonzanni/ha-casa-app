@@ -1,0 +1,84 @@
+"""§14 test 9a (INV-MEM-035, INV-MEM-037): the wipe loop and the restore's
+build and install run only in the container-start step. Nothing but
+``memory.maintenance.run`` calls them, and nothing calls ``run`` but the
+step's own entry point, so ``casa-main`` (which imports the modules for the
+intent check and the doors) never runs them."""
+from __future__ import annotations
+
+import ast
+from pathlib import Path
+
+import pytest
+
+pytestmark = [pytest.mark.unit]
+
+CODE = Path(__file__).resolve().parents[1] / "casa" / "rootfs" / "opt" / "casa"
+
+#: The loops and who may call them.
+LOOPS = {"wipe_loop": {("memory/maintenance.py", "run")},
+         "build_phase": {("memory/maintenance.py", "run")},
+         "install_phase": {("memory/maintenance.py", "run")},
+         "run": {("memory/maintenance.py", "main")}}
+
+
+def callers(code: Path) -> dict[str, set[tuple[str, str]]]:
+    """Every function that calls (or hands on) a maintenance loop by name."""
+    found: dict[str, set[tuple[str, str]]] = {n: set() for n in LOOPS}
+    for path in sorted(code.rglob("*.py")):
+        rel = path.relative_to(code).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        imports_maintenance = rel == "memory/maintenance.py" or any(
+            isinstance(n, (ast.Import, ast.ImportFrom)) and (
+                "maintenance" in ast.unparse(n) or "restore" in ast.unparse(n))
+            for n in ast.walk(tree))
+        if not imports_maintenance:
+            continue
+        for fn in ast.walk(tree):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for node in ast.walk(fn):
+                name = None
+                if isinstance(node, ast.Attribute):
+                    name = node.attr
+                elif isinstance(node, ast.Name) and rel == "memory/maintenance.py":
+                    name = node.id
+                # ``run`` is the step's own name in its module, or an
+                # attribute of the maintenance module elsewhere (never, say,
+                # ``asyncio.run``).
+                is_step = name == "run" and (
+                    isinstance(node, ast.Name)
+                    or "maintenance" in ast.unparse(node.value))
+                if (name in LOOPS and name != "run") or is_step:
+                    found[name].add((rel, fn.name))
+    return found
+
+
+def test_only_the_step_runs_the_wipe_loop():
+    assert callers(CODE) == LOOPS
+
+
+def test_the_scan_reports_a_casa_main_caller(tmp_path):
+    source = (CODE / "memory" / "maintenance.py").read_text(
+        encoding="utf-8")
+    (tmp_path / "memory").mkdir()
+    (tmp_path / "memory" / "maintenance.py").write_text(source)
+    (tmp_path / "casa_core.py").write_text(
+        "from memory import maintenance as memory_maintenance\n"
+        "from memory import restore as memory_restore\n"
+        "async def main():\n"
+        "    memory_maintenance.wipe_loop(root='/')\n"
+        "    memory_maintenance.run()\n"
+        "    memory_restore.build_phase({}, root='/')\n"
+        "    memory_restore.install_phase({}, root='/', counts=None)\n")
+    found = callers(tmp_path)
+    for loop in ("wipe_loop", "run", "build_phase", "install_phase"):
+        assert ("casa_core.py", "main") in found[loop], loop
+
+
+def test_the_step_script_runs_the_module_entry_point():
+    script = (CODE.parents[1] / "etc/s6-overlay/scripts/memory-maintenance.sh"
+              ).read_text(encoding="utf-8")
+    lines = [ln for ln in script.splitlines() if "python3" in ln]
+    assert len(lines) == 1
+    assert "PYTHONPATH=/opt/casa /opt/casa/venv/bin/python3 -m memory.maintenance" in lines[0]
+    assert script.rstrip().endswith("exit 0")

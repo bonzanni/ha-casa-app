@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import functools
 import hashlib
 import json
 import logging
@@ -59,23 +60,16 @@ import sdk_logging
 from mcp_registry import McpServerRegistry
 from channel_trust import channel_trust_display
 from timekeeping import compose_turn_preamble, resolve_tz
-from hindsight_ids import bank_id
-from sensitivity import clearance_for_origin, readable_tiers
+from sensitivity import clearance_for_origin
 from personality_types import SpeakerProvenance
-from recall_renderer import (
-    READABLE_SLICE_PROMPT_LINE,
-    provenance_view,
-    render_recall,
-)
 from speaker_provenance import UserProvenance, provenance_from_mapping
 from provenance import ANSWERED_BY_OPERATOR
-from session_saver import freshness_window, retain_cold_session, save_session
-from semantic_memory import NoOpSemanticMemory, RecallUnavailable, SemanticMemory
 from session_gate import session_write_gate
 from session_registry import (
     SessionRegistry,
     _is_uuid_scope,
     build_scoped_session_key,
+    freshness_window,
 )
 from sdk_client_pool import (
     ManagedSdkClient,
@@ -136,8 +130,8 @@ def process_stopping() -> bool:
 # #573/#578/#579: the per-session-key write gate and the process-wide turn
 # admission barrier both live in `session_gate` — module scope a reload cannot
 # replace and no turn path can route around. Imported here (rather than
-# defined here) so `memory_wipe` and `session_saver` can reach the same
-# instances without the lazy-import cycle this module already works around.
+# defined here) so `session_registry`'s reset can reach the same instances
+# without the lazy-import cycle this module already works around.
 #
 # #573 introduced the gate for SCHEDULED turns only. v0.208.0 makes it
 # unconditional: the pool entry lock serializes turns within ONE pool, and a
@@ -151,7 +145,6 @@ active_engagement_driver = None   # InCasaDriver | None, set by casa_core.main
 active_executor_registry = None   # ExecutorRegistry | None, set by casa_core.main
 active_claude_code_driver = None  # ClaudeCodeDriver | None, set by casa_core.main
 active_runtime = None             # CasaRuntime | None, set by casa_core.main (Task C.3)
-active_semantic_memory = None     # SemanticMemory | None, set by casa_core.main
 active_session_registry = None    # SessionRegistry | None, set by casa_core.main (#411)
 
 # Phase 3.1: delegating-turn origin. Set by Agent._process for the
@@ -181,6 +174,11 @@ origin_var: ContextVar[dict | None] = ContextVar("origin_var", default=None)
 #                                named, and the erase run it belongs to
 #   _webhook_deliver           — #1142 the webhook route's `deliver` enum
 #   _answered_by_operator      — #1277 the operator answered this scheduled ask
+#: The origin key holding the occurrence key of the operator message a turn
+#: opened with (set in code once its capture is durable, never copied from a
+#: message's context); ``correct_memory`` marks that message.
+MEMORY_OPENING_KEY = "_memory_opening_key"
+
 COPIED_CONTEXT_MARKERS = (
     "synthetic", "button_answer", "_origin_route", "_origin_clearance",
     "_operator_turn", "_scheduled_delivery", "_scheduled_epoch",
@@ -202,15 +200,16 @@ COPIED_CONTEXT_MARKERS = (
 )
 
 # Personality Task 14 / GH #199: the per-turn explanation draft. ``_build_options``
-# is the ONLY seam that observes the selected prompt projection + the auto-recall
-# hits, so it stashes those fields here; ``_process`` reads the draft at
+# is the ONLY seam that observes the selected prompt projection + the served
+# memory view, so it stashes those fields here; ``_process`` reads the draft at
 # end-of-turn and writes exactly one ``ExplanationStore.record()``. Same-task only
 # — ``_build_options`` is awaited directly inside the turn coroutine (both the
 # bypass path and via the pool's ``turn()``), so a mutable draft dict set here is
 # visible where the record is written, exactly like ``origin_var``. A warm-reuse
 # pool turn SKIPS ``_build_options`` and leaves the draft empty; ``_process`` then
 # records only the deterministic projection/identity fields it can derive itself
-# (honest partial record — no recall ran, the cached prompt was reused).
+# (honest partial record — no view was served, the cached prompt was reused).
+# The per-turn correction note stashes the session's ledger and base.
 _explain_draft_var: ContextVar[dict | None] = ContextVar(
     "casa_explain_draft", default=None,
 )
@@ -237,29 +236,6 @@ def _projection_name_for_turn(channel: str, origin_route: str | None) -> str:
     if channel == "voice":
         return "voice"
     return "text"
-
-
-def _attribution_label(hit, *, clearance: str | None) -> str:
-    """Derive an HONEST, operator-safe attribution label for one recall hit from
-    its clearance/surface-gated provenance view. Never emits the hit's raw
-    ``application_tags`` (which may carry reserved ``casa-source-`` tags the store
-    rejects) and never a person's display name — only speaker_kind + role/persona
-    IDS, so the label is safe to expose in the DEFAULT (non-sensitive) explain
-    output."""
-    view = provenance_view(
-        hit.provenance, clearance=clearance or "public", surface="text",
-    )
-    if view is None:
-        return "unattributed"
-    if view.speaker_kind == "user":
-        return "user"
-    parts = [view.speaker_kind]
-    if view.role_id:
-        parts.append(view.role_id)
-    label = ":".join(parts)
-    if view.persona_id and view.persona_version:
-        label += f"/{view.persona_id}@{view.persona_version}"
-    return label
 
 
 # Type alias for the streaming callback
@@ -414,10 +390,11 @@ class PromptSurface:
     instead of silently keeping a stale one.
 
     Holds only blocks derived from config, the agent registry and resolved
-    plugin state. ``<memory_context>``, ``<channel_context>`` and recall output
-    are deliberately NOT here: they change per turn and per sender, and
-    digesting them would retire the session on nearly every turn, costing both
-    the conversation and the cached prompt prefix.
+    plugin state. The ``<memory>`` view and ``<channel_context>`` are
+    deliberately NOT here: the view changes with every writer commit and the
+    channel context per sender, and digesting them would retire sessions over
+    and over, costing both the conversation and the cached prompt prefix. A
+    resumed session's view is checked on its own (``memory.view.serve``).
 
     The BLOCKS and the DIGEST travel together, and `_build_options` splices
     these exact strings rather than re-rendering. Design round 1 reproduced the
@@ -435,17 +412,24 @@ class PromptSurface:
     digest, and ``_build_options`` connects with exactly these configs, so a
     publication landing mid-turn never pairs new tools with an old identity.
     Empty for every role with no published surface, whose digest is then
-    byte-identical to one computed without this field."""
+    byte-identical to one computed without this field.
+
+    ``reader`` is the turn's read clearance, and it joins the digest too: a
+    session's prompt (its memory view, its channel context) is written for
+    one reader, so a turn read at another clearance never reuses or resumes
+    it — it starts a session at its own clearance. ``private`` adds nothing,
+    so the operator's sessions keep the digest computed without it."""
     delegates: str
     jobs: str
     executors: str
     digest: str
     tool_servers: tuple = ()
+    reader: str | None = None
 
 
 def _render_prompt_surface(caller_role, delegates, registry, *, live_names=None,
                            allowed_tools=None, executors=(),
-                           tool_servers=()) -> PromptSurface:
+                           tool_servers=(), reader=None) -> PromptSurface:
     """Render the structural blocks and digest them as one immutable unit."""
     delegates_block = _render_delegates_block(
         delegates, registry, live_names=live_names,
@@ -461,13 +445,15 @@ def _render_prompt_surface(caller_role, delegates, registry, *, live_names=None,
         parts.append("\x1e".join(
             f"{name}={surface}" for name, _config, surface in tool_servers
         ))
+    if reader is not None and reader != "private":
+        parts.append(f"reader={reader}")
     digest = "sha256:" + hashlib.sha256(
         "\x1f".join(parts).encode("utf-8")
     ).hexdigest()
     return PromptSurface(
         delegates=delegates_block, jobs=jobs_block,
         executors=executors_block, digest=digest,
-        tool_servers=tool_servers,
+        tool_servers=tool_servers, reader=reader,
     )
 
 
@@ -526,28 +512,21 @@ class SessionEntrySnapshot:
 
 @dataclass(frozen=True, slots=True)
 class ResumeDecision:
-    """The structured outcome of the resume gate (replaces the former
-    ``(decision, save_old)`` tuple). ``retain_old``/``old`` drive
-    save-before-overwrite of a superseded cold session.
+    """The structured outcome of the resume gate. ``old`` is the stored
+    session the gate judged (``None`` when there was none).
 
-    ``reason="retiring"`` (#290/#411) is never produced by
+    ``reason="retiring"`` (#290) is never produced by
     :func:`_resume_decision` itself — it is the steer applied on top of it
-    (by the pool, or by the bypass path) while a reset/wipe holds a
-    retirement claim on the key. ``fence_generation`` (#411) is the retain
-    fence generation captured in the same no-await block as the decision;
-    a cold retain spawned from this decision passes it to the fence so a
-    wipe that completed between decision and retain makes the retain
-    discard instead of restoring pre-wipe content."""
+    (by the pool, or by the bypass path) while a reset holds a retirement
+    claim on the key."""
     action: Literal["resume", "new"]
     resume_sid: str | None
-    retain_old: bool
     old: SessionEntrySnapshot | None
     reason: Literal[
         "missing", "role_mismatch", "binding_mismatch",
         "prompt_surface_changed",
-        "fresh", "expired", "invalid_entry", "retiring",
+        "fresh", "expired", "invalid_entry", "retiring", "fault_streak",
     ]
-    fence_generation: int | None = None
 
 
 def _decode_provenance(raw: object) -> SpeakerProvenance | None:
@@ -578,23 +557,9 @@ def snapshot_session_entry(entry: dict | None) -> SessionEntrySnapshot | None:
     )
 
 
-def _proven_scheduled(
-    old: SessionEntrySnapshot, turn_scheduled: bool,
-) -> SessionEntrySnapshot:
-    """#1117: the superseded session's marker, completed from the turn that
-    superseded it. An entry written before the marker existed reads UNKNOWN;
-    if the incoming turn on the SAME key is one Casa's schedule fired, the key
-    is a schedule's label, so the old session on it was scheduled too. An
-    unmarked incoming turn proves nothing, and a known marker is never
-    overridden."""
-    if old.scheduled is None and turn_scheduled:
-        return dataclasses.replace(old, scheduled=True)
-    return old
-
-
 def agent_home_for_role_id(role_id: str) -> str:
     """Map a canonical ``kind:slot`` role id to its on-disk agent home — the
-    transcript cwd ``get_session_messages``/``delete_session`` read.
+    transcript cwd ``delete_session`` reads.
 
     Bare ``/config/agent-home/<slot>`` for EVERY kind (resident, specialist,
     executor) — this MUST stay byte-for-byte consistent with the actual
@@ -639,8 +604,8 @@ def speaker_provenance_for_role(cfg: AgentConfig) -> SpeakerProvenance:
 
 
 #: #650: how many consecutive resumed trusted-ingress turns may evidence an
-#: SDK fault before the resume decision stops resuming that session (fresh
-#: WITH retain — continuity is saved, never cleared). Env-tunable alongside
+#: SDK fault before the resume decision stops resuming that session (fresh,
+#: like an expired entry; what it said was captured as it happened). Env-tunable alongside
 #: the retry knobs (SDK_RETRY_*); see docs/architecture/sdk-client-pool.md.
 RESUME_FAULT_LIMIT: int = _env_int("SDK_RESUME_FAULT_LIMIT", 2)
 
@@ -676,8 +641,7 @@ def _resume_decision(
 ) -> ResumeDecision:
     """Spec §3.3/§4.2 + personality Task 9: resume iff a stored entry exists,
     matches this config's ``{role_id, binding_digest}`` identity, AND is within
-    its channel freshness window. A role or binding mismatch — or a stale but
-    present session — signals save-before-overwrite via ``retain_old``/``old``.
+    its channel freshness window; anything else starts a new session.
 
     The role gate is checked BEFORE the digest gate so a legacy short-role
     entry (``"butler"``) is reported as ``role_mismatch`` against a canonical
@@ -687,16 +651,16 @@ def _resume_decision(
     role-id-only gating, byte-for-byte matching the prior behavior."""
     old = snapshot_session_entry(entry)
     if old is None:
-        return ResumeDecision("new", None, False, None, "missing")
+        return ResumeDecision("new", None, None, "missing")
     if old.agent != role_id:
-        return ResumeDecision("new", None, True, old, "role_mismatch")
+        return ResumeDecision("new", None, old, "role_mismatch")
     if (old.binding_digest or "") != (binding_digest or ""):
-        return ResumeDecision("new", None, True, old, "binding_mismatch")
+        return ResumeDecision("new", None, old, "binding_mismatch")
     # #1029: the structural prompt surface gate, sibling to the binding gate
     # above and checked after it so an identity change keeps reporting itself.
     # A session's system prompt is pinned by the CLI at creation, so a surface
     # that no longer matches cannot be corrected in place — the session has to
-    # go, with retain_old so the conversation is saved rather than dropped.
+    # go.
     # A stored digest of None is a MISMATCH, not consent: every entry written
     # before this gate may be carrying exactly the stale prompt this closes,
     # and retiring it once is what lets an already-stuck conversation recover
@@ -705,7 +669,7 @@ def _resume_decision(
     if prompt_surface_digest is not None:
         if (old.prompt_surface_digest or "") != prompt_surface_digest:
             return ResumeDecision(
-                "new", None, True, old, "prompt_surface_changed",
+                "new", None, old, "prompt_surface_changed",
             )
     try:
         last = (
@@ -719,18 +683,17 @@ def _resume_decision(
         # would raise — treat it as invalid rather than guessing its zone.
         last = None
     if last is None:
-        return ResumeDecision("new", None, True, old, "invalid_entry")
+        return ResumeDecision("new", None, old, "invalid_entry")
     if (now - last) <= freshness_window(channel):
         # #650: a fresh, identity-matching session that has repeatedly
         # evidenced SDK faults on resumed trusted-ingress turns is not
-        # resumed again — fresh WITH retain, exactly like an expired entry,
-        # so the old conversation's snapshot is saved rather than cleared.
+        # resumed again — it starts fresh, exactly like an expired entry.
         # The streak is advisory registry state written by
         # SessionRegistry.note_resume_health under the session write gate.
         if _resume_fault_streak(entry, old.sdk_session_id) >= RESUME_FAULT_LIMIT:
-            return ResumeDecision("new", None, True, old, "fault_streak")
-        return ResumeDecision("resume", old.sdk_session_id, False, old, "fresh")
-    return ResumeDecision("new", None, True, old, "expired")
+            return ResumeDecision("new", None, old, "fault_streak")
+        return ResumeDecision("resume", old.sdk_session_id, old, "fresh")
+    return ResumeDecision("new", None, old, "expired")
 
 
 @dataclass(frozen=True)
@@ -747,125 +710,6 @@ class PluginBindingSnapshot:
     generation: int
 
 
-@dataclass(frozen=True)
-class _LoadPlan:
-    push_overlay: bool   # GET mental-model overlay precedes the turn
-    auto_recall: bool    # auto-run a query-specific recall on the opening utterance
-
-
-def _plan_load(channel: str, *, is_fresh_session: bool) -> _LoadPlan:
-    """Spec §4.3 channel-aware load. Overlay is pushed only at fresh-session-start
-    (it rides along on resume). Voice never auto-recalls (the multi-strategy + rerank
-    recall must not sit on the first-utterance critical path); voice uses the
-    recall_memory pull tool instead. Note: even when push_overlay is True the overlay
-    is additionally gated by ``_overlay_allowed(channel)`` at the call site — a channel
-    without ``private`` clearance (e.g. voice = friends) never actually receives the
-    overlay regardless of this plan."""
-    if not is_fresh_session:
-        return _LoadPlan(push_overlay=False, auto_recall=False)
-    if channel == "voice":
-        return _LoadPlan(push_overlay=True, auto_recall=False)
-    return _LoadPlan(push_overlay=True, auto_recall=True)
-
-
-def _retain_fence():
-    """The process-wide retain fence (#411). Imported lazily so tests that
-    stub agent's collaborators need not know the fence exists."""
-    from memory_wipe import FENCE
-    return FENCE
-
-
-def _turn_admission():
-    """The process-wide turn-admission barrier (#578), read at call time for
-    the same reason as the fence above: a module-level ``from … import`` binds
-    the instance once, and a test that needs the wipe and the turn to share a
-    barrier must be able to substitute one."""
-    import session_gate
-    return session_gate.TURN_ADMISSION
-
-
-def _memory_bank() -> str:
-    """The single shared long-term bank (design §2.1). Role no longer partitions
-    memory — sensitivity tiers do."""
-    return bank_id("casa")
-
-
-# Auto-recall (pre-turn) bound: prompt construction must never sit on the full
-# HTTP client timeout (20s) waiting for an overloaded reranker — past this
-# deadline the recall is cancelled and the turn runs cold (v0.99.0).
-_AUTO_RECALL_TIMEOUT_S = 5.0
-# #1336: a session no person opened — a trigger prompt, a delegation notice,
-# an event — opens with Casa's own text: hundreds of tokens of instructions,
-# which the backend's CPU reranker scores against every candidate (12–20 s
-# measured) and which rank memories by likeness to the instructions, not to
-# the day. Such a session recalls with this fixed topical query instead, under
-# a longer deadline: mostly nobody is waiting on it, and where someone is (a
-# delegation's answer being relayed) a few seconds' delay is the accepted cost.
-_UNAUTHORED_RECALL_QUERY = "today's appointments, deadlines and open follow-ups"
-_UNAUTHORED_AUTO_RECALL_TIMEOUT_S = 15.0
-_RECALL_BREAKER_THRESHOLD = 3      # consecutive failures before opening
-_RECALL_BREAKER_COOLDOWN_S = 60.0  # open duration before a half-open probe
-
-
-class _RecallBreaker:
-    """Circuit breaker for the automatic pre-turn recall (v0.99.0).
-
-    After ``threshold`` CONSECUTIVE failures the breaker opens and auto-recall
-    runs cold (skipped entirely) instead of adding a doomed multi-second call —
-    and load — to every turn of an already-overloaded backend. After
-    ``cooldown_s`` the next turn's recall is allowed through as the recovery
-    probe: success closes the breaker, failure re-opens it for a full cooldown.
-    The recall_memory pull tool is intentionally NOT gated — an explicit pull
-    can still try (and surface status=unavailable to the model)."""
-
-    def __init__(
-        self, *, threshold: int = _RECALL_BREAKER_THRESHOLD,
-        cooldown_s: float = _RECALL_BREAKER_COOLDOWN_S,
-        clock: Callable[[], float] = time.monotonic,
-    ) -> None:
-        self._threshold = threshold
-        self._cooldown_s = cooldown_s
-        self._clock = clock
-        self._failures = 0
-        self._opened_at: float | None = None
-        self._probe_started_at: float | None = None  # half-open probe in flight
-
-    @property
-    def open(self) -> bool:
-        return self._opened_at is not None
-
-    def allow(self) -> bool:
-        """True when a recall attempt may proceed (closed, or THE half-open
-        probe). In half-open state exactly one probe is admitted at a time —
-        concurrent turns arriving after cooldown must not all hit the backend
-        at once. Calling this in half-open state RESERVES the probe; the
-        reservation is released by record_success/record_failure, and expires
-        after a cooldown so a turn that died without recording (cancelled
-        mid-probe) cannot wedge the breaker open forever. All calls run on
-        the one event loop, so no lock is needed."""
-        if self._opened_at is None:
-            return True
-        now = self._clock()
-        if now - self._opened_at < self._cooldown_s:
-            return False
-        if (self._probe_started_at is not None
-                and now - self._probe_started_at < self._cooldown_s):
-            return False
-        self._probe_started_at = now
-        return True
-
-    def record_success(self) -> None:
-        self._failures = 0
-        self._opened_at = None
-        self._probe_started_at = None
-
-    def record_failure(self) -> None:
-        self._probe_started_at = None
-        self._failures += 1
-        if self._failures >= self._threshold:
-            self._opened_at = self._clock()  # re-stamps on a failed half-open probe
-
-
 def _current_origin_clearance(channel: str) -> str:
     """Read-clearance for the CURRENT turn, keyed off the unspoofable origin
     marker in ``origin_var`` (Release A Layer 2) rather than the channel string,
@@ -878,24 +722,11 @@ def _current_origin_clearance(channel: str) -> str:
     )
 
 
-def _recall_tier_tags(channel: str) -> list[str]:
-    """Tiers a turn may recall = readable_tiers(clearance). The sole read-side
-    access gate (design §2.3), origin-keyed (Layer 2)."""
-    return readable_tiers(_current_origin_clearance(channel))
-
-
-def _overlay_allowed(channel: str) -> bool:
-    """The bank-level mental-model overlay cannot be tier-filtered, so it is pushed
-    ONLY at ``private`` clearance — a context that may already see everything
-    (design §2.3). At any lower clearance it would leak across tiers."""
-    return _current_origin_clearance(channel) == "private"
-
-
 # Release A / Layer 1 — the two casa-framework tools an untrusted webhook turn
-# may use: public-clearance recall + operator-bound notify. Everything else
+# may use: public-clearance memory search + operator-bound notify. Everything else
 # (Bash, filesystem, network, delegation, plugin/config mutation) is denied.
 _RESTRICTED_WEBHOOK_TOOLS = (
-    "mcp__casa-framework__recall_memory",
+    "mcp__casa-framework__search_memory",
     "mcp__casa-framework__send_message",
 )
 # Defense-in-depth: Agent/Task can bypass allowed_tools (they route to
@@ -1035,7 +866,7 @@ def build_restricted_webhook_options(
     leave Bash reachable), NO skills, strict MCP config (no ambient ``.mcp.json``),
     ``permission_mode="dontAsk"``, and exactly two casa-framework tools. ``Agent``/
     ``Task`` are additionally disallowed (they bypass ``allowed_tools``). This
-    closes the Bash→(unauthenticated)Hindsight, Bash→transcript-file, and
+    closes the Bash→memory-store, Bash→transcript-file, and
     pre-tool-decision-hook bypasses that application-level memory gates cannot.
 
     #1142 (INV-TRIG-018): a ``deliver: operator`` turn's final reply is its
@@ -1201,6 +1032,153 @@ def _replay_statement(statement: str, complete: DelegationComplete, *,
     return (statement + " "
             + _replay_time_sentence(complete, orphan=orphan) + "\n\n")
 
+
+class _TurnCapture:
+    """What one resident turn captures into memory: the text it opens with,
+    at admission, and each text-bearing message the resident writes, as it
+    is emitted (``memory/capture.py``). Built only for a turn on a
+    write-trusted channel. Every event's floor is the turn's read clearance,
+    except a message the operator sent himself: it has no floor and is
+    classified like any text, so what he says may reach a lower ledger.
+    A capture failure is logged and never fails the turn.
+
+    The turn is a run (``memory/transcript_runs.py``): :meth:`register` puts
+    its row in place before the opening's capture, :meth:`observe` names the
+    session each stream message comes from before anything is captured from
+    it, every capture is awaited as one of the run's obligations, and
+    :meth:`close` (the turn's outermost ``finally``) confirms it."""
+
+    def __init__(self, *, role: str, msg: BusMessage, user_text: str,
+                 origin: Mapping[str, Any], scheduled: bool,
+                 delegated_result: bool) -> None:
+        from memory import capture
+        self._role = role
+        self._msg = msg
+        self._user_text = user_text
+        self._scheduled = scheduled
+        operator_authored = msg.trusted_user_origin is not None
+        self._operator_authored = operator_authored
+        self._origin_kind = capture.origin_kind_of(
+            scheduled=scheduled, operator_authored=operator_authored,
+            delegated_result=delegated_result,
+            callback=msg.context.get("synthetic") == "callback_nudge")
+        self._floor = clearance_for_origin(
+            origin.get("_origin_route"), origin.get("_origin_clearance"),
+            msg.channel)
+        #: The key of the operator message this turn opened with, once
+        #: captured; ``None`` for a turn no message of his opened.
+        self.operator_key: str | None = None
+        from memory import transcript_runs
+        self.run = transcript_runs.unregistered(transcript_runs.RESIDENT,
+                                                role=role)
+
+    @classmethod
+    def for_turn(cls, **kw) -> "_TurnCapture | None":
+        from channel_policy import writes_to_bank
+        return cls(**kw) if writes_to_bank(kw["msg"].channel) else None
+
+    async def register(self, directory: str) -> None:
+        """The turn's row, before its first capture."""
+        from memory import transcript_runs
+        self.run = await transcript_runs.Run.start(
+            transcript_runs.RESIDENT, role=self._role, directory=directory)
+
+    async def observe(self, sdk_msg: Any) -> None:
+        """Name the session *sdk_msg* comes from, before anything of it is
+        captured (the init message is the first that names one)."""
+        from memory import transcript_runs
+        await self.run.name(transcript_runs.session_of(sdk_msg))
+
+    async def name(self, sid: str | None) -> None:
+        """Name *sid* before a pointer to it is published."""
+        await self.run.name(sid)
+
+    def close(self) -> None:
+        self.run.close()
+
+    async def opening(self) -> None:
+        await self.run.kept(self._opening())
+
+    async def message(self, text: str, sdk_msg: Any) -> None:
+        await self.run.kept(self._message(text, sdk_msg))
+
+    def _own_words(self, speaker: str) -> bool:
+        """Whether the opening is a message the operator sent himself: the
+        server-stamped ``_operator_words`` are this text. The floor exists
+        for text Casa or a model wrote, which may carry what its session
+        could read; a button tap carries Casa's option text and keeps it.
+        What he sends — typed, forwarded or picked from an inline bot — is
+        classified like any text (design §7)."""
+        return (speaker == "operator"
+                and self._msg.context.get("_operator_words")
+                == self._user_text)
+
+    async def _opening(self) -> bool:
+        from delegated_memory import notice_from_excluded_role
+        from memory import capture, eligibility, occurrence
+        msg = self._msg
+        try:
+            rule = eligibility.admit(
+                eligibility.Source.TURN, text=self._user_text,
+                channel_writes=True, scheduled=self._scheduled,
+                excluded_notice=notice_from_excluded_role(self._user_text))
+            if rule is None:
+                return True
+            ctx = msg.context
+            provider_id = ctx.get("message_id") if self._operator_authored \
+                else None
+            key = (occurrence.provider_key(msg.channel, ctx.get("chat_id"),
+                                           provider_id)
+                   if provider_id else None)
+            if not self._operator_authored:
+                speaker = "casa"
+            elif ctx.get("_operator_turn") is True:
+                speaker = "operator"
+            else:
+                speaker = "third_party"
+            user_id = ctx.get("user_id")
+            item = capture.event(
+                source_key=key, role=self._role, channel=msg.channel,
+                speaker_kind=speaker, origin_kind=self._origin_kind,
+                text=self._user_text, eligibility=rule,
+                origin_tier=None if self._own_words(speaker) else self._floor,
+                scheduled=self._scheduled,
+                speaker_id=None if user_id is None else str(user_id),
+                speaker_name=ctx.get("user_name") if self._operator_authored
+                else None,
+                provider_message_id=None if provider_id is None
+                else str(provider_id))
+        except Exception:  # noqa: BLE001 — capture never fails a turn
+            logger.exception("memory capture of a turn's opening failed")
+            return False
+        receipt = await capture.record(item)
+        if receipt is not None and speaker == "operator":
+            # The message correct_memory marks when he corrects memory in
+            # this turn.
+            self.operator_key = receipt.source_key
+        return receipt is not None
+
+    async def _message(self, text: str, sdk_msg: Any) -> bool:
+        from memory import capture, eligibility
+        try:
+            rule = eligibility.admit(
+                eligibility.Source.RESIDENT_MESSAGE, text=text,
+                channel_writes=True)
+            if rule is None:
+                return True
+            sid = getattr(sdk_msg, "session_id", None)
+            item = capture.event(
+                role=self._role, channel=self._msg.channel,
+                speaker_kind="resident", speaker_id=self._role,
+                origin_kind=self._origin_kind, text=text, eligibility=rule,
+                origin_tier=self._floor, scheduled=self._scheduled,
+                session_id=sid if isinstance(sid, str) and sid else None)
+        except Exception:  # noqa: BLE001 — capture never fails a turn
+            logger.exception("memory capture of a resident message failed")
+            return False
+        return await capture.record(item) is not None
+
+
 class Agent:
     """A Casa agent backed by the Claude Agent SDK."""
 
@@ -1211,23 +1189,16 @@ class Agent:
         mcp_registry: McpServerRegistry,
         channel_manager: ChannelManager,
         agent_registry=None,
-        semantic_memory: SemanticMemory | None = None,
     ) -> None:
         self.config = config
-        self._semantic_memory: SemanticMemory = semantic_memory or NoOpSemanticMemory()
         self._session_registry = session_registry
         self._mcp_registry = mcp_registry
         self._channel_manager = channel_manager
         self._agent_registry = agent_registry
-        self._bg_tasks: set[asyncio.Task] = set()  # background cold-session retains
         # Per-(session_id) over-budget streak tracker (spec 5.2 §5.2).
-        # Per-instance so assistant (4000) and butler (800) budgets stay
+        # Per-instance so the assistant's and the butler's budgets stay
         # isolated even when the same channel serves both roles.
         self._budget_tracker = BudgetTracker()
-        # Auto-recall circuit breaker (v0.99.0): per-instance — the backend is
-        # shared, but auto-recall fires only on this agent's fresh text turns,
-        # so per-instance state converges on backend health within one turn each.
-        self._recall_breaker = _RecallBreaker()
         # Unified plugin architecture (§3.3/§3.9): per-instance ONE-shot
         # snapshot of the registry resolution for this agent's tier:role
         # (resolution + {name: artifact_id} binding + resolver generation),
@@ -1276,21 +1247,14 @@ class Agent:
             # mismatch (another resident's entry under the same channel_key,
             # impossible post-A2 collision-safety, but defense-in-depth) never
             # resumes.
-            # #411: fence_generation is captured INSIDE the lambda — the pool
-            # invokes decide synchronously in its decision block (AR-3), so
-            # the capture lands in the same no-await block as the registry
-            # read, per the fence's capture-point contract.
             # #1029: the surface digest comes from the TURN's armed carrier,
             # read here inside the pool's no-await decision block — the same
             # object `_build_options` splices and `register` stores.
-            decide=lambda ch, entry, now: dataclasses.replace(
-                _resume_decision(
-                    ch, entry, now,
-                    role_id=self.config.role_id,
-                    binding_digest=self.config.binding_digest,
-                    prompt_surface_digest=_armed_surface_digest(),
-                ),
-                fence_generation=_retain_fence().generation(),
+            decide=lambda ch, entry, now: _resume_decision(
+                ch, entry, now,
+                role_id=self.config.role_id,
+                binding_digest=self.config.binding_digest,
+                prompt_surface_digest=_armed_surface_digest(),
             ),
             origin_ctxvar=origin_var, cid_ctxvar=cid_var,
             engagement_ctxvar=_engagement_var,
@@ -2186,7 +2150,7 @@ class Agent:
                 origin_snapshot["_voice_handoff_reservation"] = reservation
         origin_token = origin_var.set(origin_snapshot)
         # Task 14 / #199: per-turn explanation scaffolding. ``explain_draft`` is
-        # populated by ``_build_options`` (projection + recall attributions);
+        # populated by ``_build_options`` (projection + served memory view);
         # ``turn_state`` captures the on_message ``state`` dict of whichever
         # attempt produced the response (its ``tool_names_by_id`` are the turn's
         # tool calls). Both are read once at end-of-turn to record the
@@ -2194,6 +2158,7 @@ class Agent:
         explain_draft: dict[str, Any] = {}
         explain_token = _explain_draft_var.set(explain_draft)
         turn_state: dict[str, Any] = {}
+        turn_capture: _TurnCapture | None = None
         try:
             # Resolve cwd to the agent-home (Plan 4b §5.1). Residents live at
             # /config/agent-home/<role>/; configured cwd on
@@ -2236,6 +2201,17 @@ class Agent:
                 msg.channel == "telegram"
                 and msg.context.get("_scheduled_delivery") is True
             )
+            # What this turn captures into memory; None off a write-trusted
+            # channel. The opening is captured in the admitted block below,
+            # each resident message by the fold that emits it.
+            turn_capture = _TurnCapture.for_turn(
+                role=self.config.role, msg=msg, user_text=user_text,
+                origin=origin_snapshot, scheduled=turn_scheduled,
+                delegated_result=origin_question is not None)
+            capture_message = (turn_capture.message
+                               if turn_capture is not None else None)
+            capture_observe = (turn_capture.observe
+                               if turn_capture is not None else None)
 
             # <current_time> rides on the per-turn query text (NOT the cached
             # system prompt) so the agent still knows the wall-clock time to
@@ -2251,6 +2227,11 @@ class Agent:
             # user_text stays raw.
             import specialist_desk
             notes: list[str] = []
+            # On every turn of a memory role, whatever its
+            # channel, every correction the session's frozen view does not
+            # reflect, read in this turn's own snapshot.
+            memory_note = await self._memory_note(
+                channel=msg.channel, channel_key=channel_key)
             if msg.channel == "telegram":
                 desk_lines = specialist_desk.prompt_lines(msg.context.get("chat_id"))
                 if desk_lines:
@@ -2261,6 +2242,8 @@ class Agent:
                 received = msg.context.get("_received_file")
                 if isinstance(received, dict) and isinstance(received.get("note"), str):
                     notes.append(received["note"])
+            if memory_note:
+                notes.append(memory_note)
             prompt_text = (
                 compose_turn_preamble(datetime.now(resolve_tz()), notes) + user_text
             )
@@ -2320,7 +2303,8 @@ class Agent:
                     on_token, turn_guard,
                     settle_evidence=(
                         msg.context.get("synthetic") != "plugin_setup"),
-                    scope=scope,
+                    scope=scope, capture=capture_message,
+                    observe=capture_observe,
                 )
                 turn_state["state"] = state
                 # #521: keep EVERY attempt's state — a setup tool can run in
@@ -2344,6 +2328,8 @@ class Agent:
 
                 async def _publish(sid):
                     nonlocal session_published
+                    if turn_capture is not None:
+                        await turn_capture.name(sid)
                     await self._session_registry.register(
                         channel_key=channel_key,
                         agent=self.config.role_id,
@@ -2364,11 +2350,6 @@ class Agent:
                     prompt=prompt_text, origin=origin_snapshot,
                     cid=cid_var.get(), build_options=_build,
                     binding_digest=self.config.binding_digest,
-                    on_stale_old=lambda old, fence_gen=None: self._spawn_cold_retain(
-                        _proven_scheduled(old, turn_scheduled),
-                        directory=agent_home, channel=msg.channel,
-                        fence_generation=fence_gen,
-                    ),
                     on_message=on_message,
                     on_success=_publish,
                     # Finding 2 (final-review): fires for EVERY turn (warm
@@ -2398,11 +2379,11 @@ class Agent:
                 )
                 existing = self._session_registry.get(channel_key)
                 # #526: same no-await block as the entry snapshot (see the
-                # pooled path's on_decision). #290/#411: the retirement check
-                # and the fence-generation capture share that block too — the
-                # bypass path is a full resume-decision site and gets the
-                # same steer the pool applies, so no path can resume a
-                # session a reset/wipe is retiring.
+                # pooled path's on_decision). #290: the retirement check
+                # shares that block too — the bypass path is a full
+                # resume-decision site and gets the same steer the pool
+                # applies, so no path can resume a session a reset is
+                # retiring.
                 existing_generation = self._session_registry.generation(
                     channel_key,
                 )
@@ -2410,7 +2391,6 @@ class Agent:
                     self._session_registry, "retirement_pending",
                     lambda _k: False,
                 )(channel_key)
-                _fence_gen = _retain_fence().generation()
                 decision = _resume_decision(
                     msg.channel, existing, datetime.now(timezone.utc),
                     role_id=self.config.role_id,
@@ -2420,7 +2400,7 @@ class Agent:
                 if _retiring:
                     decision = dataclasses.replace(
                         decision, action="new", resume_sid=None,
-                        retain_old=False, old=None, reason="retiring",
+                        old=None, reason="retiring",
                     )
                 resume_sid = (
                     decision.resume_sid if decision.action == "resume" else None
@@ -2428,18 +2408,6 @@ class Agent:
                 last_resume.update(sid=resume_sid, gen=existing_generation)
                 if decision.action == "resume":
                     await self._session_registry.touch(channel_key)
-                elif decision.retain_old and decision.old is not None:
-                    # next-turn-after-gap: register() below overwrites this
-                    # channel's pointer, so retain the OLD immutable snapshot in
-                    # the BACKGROUND (claim-free / registry-decoupled — cannot
-                    # race register(); per-item classification runs off the hot
-                    # path, tier §2.4).
-                    self._spawn_cold_retain(
-                        _proven_scheduled(decision.old, turn_scheduled),
-                        directory=agent_home, channel=msg.channel,
-                        fence_generation=_fence_gen,
-                    )
-                # else ("new", retain_old=False): no prior entry → nothing to save
                 options = await self._build_options(
                     channel=msg.channel, channel_key=channel_key,
                     is_fresh=resume_sid is None, resume_sid=resume_sid,
@@ -2453,7 +2421,8 @@ class Agent:
                     on_token, turn_guard,
                     settle_evidence=(
                         msg.context.get("synthetic") != "plugin_setup"),
-                    scope=scope,
+                    scope=scope, capture=capture_message,
+                    observe=capture_observe,
                 )
                 turn_state["state"] = state
                 turn_state.setdefault("states", []).append(state)
@@ -2558,21 +2527,10 @@ class Agent:
             # scheduled turns only, leaving ordinary turns to the pool entry
             # lock; that lock serializes within ONE pool, and a reload builds a
             # second pool over the same key, so two clients could resume one
-            # session (#579).
-            #
-            # #578: admission is held across the same window, OUTSIDE the gate
-            # (the order is TurnAdmission -> session_write_gate -> RetainFence
-            # -> pool entry lock, and inverting it deadlocks). It is what lets
-            # a memory wipe drain an in-flight turn on ANY path, including one
-            # the client pool never owned and one whose key has no registry
-            # entry yet to enumerate. Deliberately NOT the whole of _process:
-            # both resume decisions live inside this block (the pooled one
-            # under the entry lock, the bypass one at the registry read above),
-            # so a turn that waits out a wipe re-reads an emptied registry and
-            # starts fresh.
-            async with _turn_admission().admitted(), \
-                    session_write_gate(channel_key), \
-                    self._armed_prompt_surface():
+            # session (#579). The order is session_write_gate -> pool entry
+            # lock; inverting it deadlocks.
+            async with session_write_gate(channel_key), \
+                    self._armed_prompt_surface(msg.channel):
                 # #1003: a Casa-dispatched setup turn re-checks its obligation
                 # HERE — holding the per-session gate, before any client or
                 # prompt — because an ordinary turn ahead of it on the same
@@ -2588,6 +2546,15 @@ class Agent:
                             "by turn evidence before it ran (role=%s)",
                             _episode, self.config.role)
                         return None
+                # A turn that captures is registered before its first
+                # capture. The opening is captured raw, before the model is
+                # called.
+                if turn_capture is not None:
+                    await turn_capture.register(agent_home)
+                    await turn_capture.opening()
+                    if turn_capture.operator_key is not None:
+                        origin_snapshot[MEMORY_OPENING_KEY] = \
+                            turn_capture.operator_key
                 try:
                     try:
                         response_text, sdk_session_id, usage, used_resume, \
@@ -2666,6 +2633,8 @@ class Agent:
                 # 9. SessionRegistry — record the SDK session id for resume +
                 # save. Inside the gate; see the note above.
                 if sdk_session_id and not session_published:
+                    if turn_capture is not None:
+                        await turn_capture.name(sdk_session_id)
                     await self._session_registry.register(
                         channel_key=channel_key,
                         agent=self.config.role_id,
@@ -2678,6 +2647,12 @@ class Agent:
                         user_provenance=user_provenance,
                         scheduled=turn_scheduled,
                     )
+                # The view this turn served belongs to the session the turn
+                # published, pooled or not, and that session is kept only on
+                # a record bound to it; inside the same gate.
+                await self._settle_memory_session(
+                    channel=msg.channel, channel_key=channel_key,
+                    sdk_session_id=sdk_session_id)
 
                 # #650: return-path health note — after the registration step
                 # (the published successor sid must precede the strike that
@@ -2721,9 +2696,8 @@ class Agent:
                     sdk_session_id,
                 )
 
-            # 8. Persist — the freshness reaper classifies each retained item at
-            # its true sensitivity tier off the critical path (tier model §2.4);
-            # nothing to compute or record per-turn here.
+            # 8. Persist — capture stored the turn as it ran; the memory writer
+            # classifies each event off the critical path.
 
             # 9. SessionRegistry publish moved up, under the #573 session write
             # gate — see the attempt block above.
@@ -2760,6 +2734,10 @@ class Agent:
             # result answers the waiting episode now (same contract).
             import plugin_erasure
             plugin_erasure.turn_ended(msg.context)
+            # The turn's run is confirmed once every capture it made was
+            # kept (memory/transcript_runs.py); never awaited by the turn.
+            if turn_capture is not None:
+                turn_capture.close()
             _explain_draft_var.reset(explain_token)
             origin_var.reset(origin_token)
 
@@ -2841,14 +2819,13 @@ class Agent:
             return name
 
     def _stash_explanation_draft(
-        self, *, projection: str, bundle, system_prompt: str,
-        facts: str, hits: tuple, clearance: str | None,
+        self, *, projection: str, bundle, system_prompt: str, memory_view,
     ) -> None:
-        """Populate this turn's ``_explain_draft_var`` with the projection +
-        prompt + recall attributions that only ``_build_options`` observes.
-        Reads/writes the per-turn draft dict in place; a no-op when no draft is
-        bound (e.g. ``_build_options`` called directly by a unit test). Never
-        raises into the options path."""
+        """Populate this turn's ``_explain_draft_var`` with the projection,
+        the prompt and the served memory view that only ``_build_options``
+        observes. Reads/writes the per-turn draft dict in place; a no-op when
+        no draft is bound (e.g. ``_build_options`` called directly by a unit
+        test). Never raises into the options path."""
         draft = _explain_draft_var.get(None)
         if draft is None:
             return
@@ -2861,18 +2838,138 @@ class Agent:
                 draft["static_prompt_digest"] = ""
                 draft["static_prompt_estimated_tokens"] = 0
             draft["projection"] = projection
-            # Distinct tiers touched, insertion-ordered; attributions are the
-            # clearance-gated, casa-source-free labels (never raw tags).
-            draft["memory_tiers"] = tuple(
-                dict.fromkeys(h.sensitivity for h in hits)
-            )
-            draft["memory_attributions"] = tuple(
-                _attribution_label(h, clearance=clearance) for h in hits
-            )
             draft["system_prompt"] = system_prompt
-            draft["memory_text"] = facts or None
+            if memory_view is not None:
+                # The view is one ledger, which is also its tier.
+                draft["memory_tiers"] = (memory_view.ledger,)
+                draft["memory_ledger"] = memory_view.ledger
+                draft["memory_base_commit_no"] = memory_view.commit_no
+                draft["memory_text"] = memory_view.text or None
+            else:
+                draft["memory_text"] = None
         except Exception:  # noqa: BLE001
             logger.debug("explanation draft stash skipped", exc_info=True)
+
+    async def _serve_memory_view(
+        self, *, channel: str, channel_key: str, resume_sid: str | None,
+    ):
+        """This session's frozen memory view and the resume sid to connect
+        with: ``(view or None, resume_sid)``. The view is read off the event
+        loop. A resumed session whose recorded view cannot be reproduced
+        starts afresh: its resume pointer is dropped durably FIRST, so a
+        retry of this turn or any later turn sees a session to start, never
+        one to resume, and only then is the new view rendered and recorded;
+        it comes back with ``resume_sid=None``. No store, a store or registry
+        that fails, or a clearance that reads no ledger serves no view and
+        leaves the resume as it was."""
+        from memory import capture
+        from memory import view as memory_view
+        store = capture.active_store()
+        if store is None or not store.available:
+            return None, resume_sid
+        serve = functools.partial(
+            memory_view.serve, store, channel_key,
+            clearance=_current_origin_clearance(channel),
+            budget=self.config.memory.token_budget)
+        # A new session's view is rendered as of the snapshot this turn's
+        # correction note was read in, so the two describe one state of the
+        # store and a correction filed in between is after the base.
+        draft = _explain_draft_var.get(None)
+        as_of = (draft or {}).get("memory_snapshot_commit_no")
+        if draft is not None:
+            draft.pop("memory_view_binding", None)
+        try:
+            served = await asyncio.to_thread(
+                serve, resume_sid=resume_sid, as_of=as_of)
+            if served.reset:
+                await self._session_registry.clear_sdk_session(
+                    channel_key, expected_sid=resume_sid)
+                resume_sid = None
+                served = await asyncio.to_thread(serve, as_of=as_of)
+        except Exception:  # noqa: BLE001 — the turn runs without memory
+            # A resumed session keeps the frozen view its CLI session was
+            # created with; a new one starts without a view, recorded for
+            # no SDK session, so its next reconnect starts it afresh.
+            logger.warning("memory view not served role=%s",
+                           self.config.role, exc_info=True)
+            return None, resume_sid
+        if draft is not None and served.view is not None:
+            # Bound to the SDK session once its id is known
+            # (``_settle_memory_session``), after the turn.
+            draft["memory_view_binding"] = (channel_key, served.view)
+        return served.view, resume_sid
+
+    async def _settle_memory_session(
+        self, *, channel: str, channel_key: str, sdk_session_id: str | None,
+    ) -> None:
+        """End of every turn, inside its session gate: bind the view this turn
+        served (if it served one) to the SDK session that ran the turn, then
+        keep that session for its next turn — warm reuse, like a resume —
+        only if a record bound to exactly it exists. One that has none (its
+        view could not be recorded or bound) has its warm client released,
+        so the next turn reconnects, finds no record bound to it and starts
+        afresh on a current view. A store that cannot be read is not a
+        verdict: the session is kept, on its own frozen view."""
+        if self.config.memory.token_budget <= 0 or not sdk_session_id:
+            return
+        from memory import capture
+        from memory import view as memory_view
+        draft = _explain_draft_var.get(None)
+        binding = (draft or {}).get("memory_view_binding")
+        served = binding[1] if binding and binding[0] == channel_key else None
+        store = capture.active_store()
+        if store is None or not store.available:
+            return
+        try:
+            kept = await asyncio.to_thread(
+                memory_view.settle, store, channel_key, sdk_session_id,
+                clearance=_current_origin_clearance(channel),
+                budget=self.config.memory.token_budget, served=served)
+        except Exception:  # noqa: BLE001 — unreadable: keep the session
+            logger.warning("memory session %s not checked; kept on its own "
+                           "view", channel_key, exc_info=True)
+            return
+        if kept:
+            return
+        logger.warning("memory view of session %s is not bound to it; the "
+                       "session reconnects at its next turn", channel_key)
+        try:
+            await self._pool.close_key(channel_key)
+        except Exception:  # noqa: BLE001 — the client stays; logged
+            logger.warning("warm client of %s not released", channel_key,
+                           exc_info=True)
+
+    async def _memory_note(self, *, channel: str, channel_key: str) -> str:
+        """This turn's correction note, read off the event loop
+        in the turn's own snapshot: every correction this session's frozen
+        view does not reflect. ``""`` for a role served no memory, a
+        clearance that reads no ledger, or no store. The session's ledger and
+        base go into the turn's explanation draft."""
+        if self.config.memory.token_budget <= 0:
+            return ""
+        from memory import capture
+        from memory import note as memory_note
+        store = capture.active_store()
+        if store is None or not store.available:
+            return ""
+        entry = self._session_registry.get(channel_key) or {}
+        try:
+            note = await asyncio.to_thread(
+                memory_note.for_turn, store,
+                clearance=_current_origin_clearance(channel),
+                session_key=channel_key,
+                sdk_session_id=entry.get("sdk_session_id"),
+            )
+        except Exception:  # noqa: BLE001 — the turn runs without the note
+            logger.warning("memory correction note not read role=%s",
+                           self.config.role, exc_info=True)
+            return ""
+        draft = _explain_draft_var.get(None)
+        if draft is not None and note.ledger is not None:
+            draft["memory_ledger"] = note.ledger
+            draft["memory_base_commit_no"] = note.base_commit_no
+            draft["memory_snapshot_commit_no"] = note.snapshot_commit_no
+        return note.text
 
     async def _record_turn_explanation(
         self, *, channel: str, turn_state: dict, explain_draft: dict,
@@ -2961,6 +3058,9 @@ class Agent:
                 denials=(),
                 system_prompt=explain_draft.get("system_prompt"),
                 memory_text=explain_draft.get("memory_text"),
+                memory_ledger=explain_draft.get("memory_ledger"),
+                memory_base_commit_no=explain_draft.get(
+                    "memory_base_commit_no"),
             )
             # F7: the blocking write+prune runs off the event loop. `record`
             # is a fully-built immutable dataclass; nothing task-local is read
@@ -2972,9 +3072,9 @@ class Agent:
             )
 
     @contextlib.asynccontextmanager
-    async def _armed_prompt_surface(self):
+    async def _armed_prompt_surface(self, channel: str | None = None):
         """Render this turn's structural surface ONCE and arm it for the whole
-        turn (#1029).
+        turn (#1029), with the turn's read clearance as its reader.
 
         Entered inside the same gate the resume decisions run under, so the
         decision, the options build and the registration all read one object.
@@ -2994,6 +3094,8 @@ class Agent:
                 tool_servers=self._mcp_registry.role_surfaces(
                     self.config.mcp_server_names, role=self.config.role,
                 ),
+                reader=(_current_origin_clearance(channel)
+                        if channel is not None else None),
             )
         )
         try:
@@ -3058,119 +3160,28 @@ class Agent:
                 # #1142: the turn scope's predicate, and nothing else.
                 delivers_to_operator=_delivers_to_operator(_origin),
             )
-            # #199: an untrusted webhook turn does no recall — record the
+            # #199: an untrusted webhook turn reads no memory — record the
             # restricted projection + its persona-stripped prompt, memory empty.
             self._stash_explanation_draft(
                 projection="restricted_webhook", bundle=_bundle,
-                system_prompt=restricted_prompt, facts="", hits=(), clearance=None,
+                system_prompt=restricted_prompt, memory_view=None,
             )
             return sdk_logging.with_stderr_callback(restricted, engagement_id=None)
 
-        # 2b. Memory context (spec §4.3) — channel-aware load on the
-        # SemanticMemory seam: a cheap mental-model overlay at fresh-session
-        # start, plus (text only) one recall filtered by channel clearance tier.
-        load_plan = _plan_load(channel, is_fresh_session=is_fresh)
-        bank = _memory_bank()
-        overlay_digest = ""
-        facts = ""
-        # #199: the recall hits (+ the clearance they were gated at) feed the
-        # explanation record's memory attributions; empty unless a recall
-        # actually succeeds below.
-        _recall_hits: tuple = ()
-        _recall_clearance_used: str | None = None
-        if load_plan.push_overlay and _overlay_allowed(channel):
-            try:
-                overlay_digest = await self._semantic_memory.profile(bank)
-            except Exception:  # noqa: BLE001
-                logger.warning(
-                    "profile overlay failed for role=%s", self.config.role,
-                    exc_info=True,
-                )
-        if load_plan.auto_recall and not self._recall_breaker.allow():
-            # Breaker open: run cold rather than hammer an unavailable backend
-            # on every turn. No memory block; the model is never told an empty
-            # recall happened (doctrine: "unavailable" ≠ "no memories").
-            logger.info(
-                "auto_recall role=%s outcome=skipped reason=breaker_open",
-                self.config.role,
+        # 2b. Memory: the session's frozen view of its ledger,
+        # built locally with no model call, on a fresh or cold connect only
+        # (a warm turn keeps the client this built). A resumed session's view
+        # is rendered again from its recorded base; one that cannot be
+        # reproduced starts the session afresh, once.
+        memory_view = None
+        if self.config.memory.token_budget > 0:
+            memory_view, resume_sid = await self._serve_memory_view(
+                channel=channel, channel_key=channel_key,
+                resume_sid=resume_sid,
             )
-        elif load_plan.auto_recall:
-            _recall_t0 = time.monotonic()
-            _recall_clearance = _current_origin_clearance(channel)
-            # #1336: no person typed this opening (``_process`` stamps it from
-            # the turn's trusted ingress); absent — a direct caller — keeps the
-            # turn's own text, the behaviour every operator turn has.
-            _unauthored = _origin.get("_unauthored_opening") is True
-            try:
-                # Bounded deadline: never the full HTTP timeout. No synchronous
-                # retry on failure here — a 504 means the reranker is overloaded
-                # and retrying makes it worse (the seam itself retries only
-                # connection-level drops and, #1117, one 503 inside this same
-                # deadline).
-                #
-                # Task 11: the awaited method is now the typed, attributed
-                # recall_items; the OWN _RecallBreaker/wait_for/record_* logic
-                # around it is UNCHANGED (this site is NOT wrapped in the new
-                # recall_health breaker). On success the hits are rendered with
-                # their recorded attribution before assignment to ``facts``.
-                _hits = await asyncio.wait_for(
-                    self._semantic_memory.recall_items(
-                        bank,
-                        _UNAUTHORED_RECALL_QUERY if _unauthored else user_text,
-                        tags=_recall_tier_tags(channel),
-                        max_tokens=self.config.memory.token_budget,
-                        clearance=_recall_clearance,
-                        budget="mid",  # auto_recall is always non-voice (see _plan_load); voice uses the recall_memory pull tool at budget=low
-                    ),
-                    timeout=(_UNAUTHORED_AUTO_RECALL_TIMEOUT_S if _unauthored
-                             else _AUTO_RECALL_TIMEOUT_S),
-                )
-                self._recall_breaker.record_success()
-                _recall_hits = _hits
-                _recall_clearance_used = _recall_clearance
-                facts = render_recall(
-                    _hits, current_speaker=speaker_provenance_for_role(self.config),
-                    surface="text", clearance=_recall_clearance,
-                    token_budget=self.config.memory.token_budget,
-                )
-            except (RecallUnavailable, asyncio.TimeoutError) as exc:
-                self._recall_breaker.record_failure()
-                logger.warning(
-                    "auto_recall role=%s outcome=unavailable reason=%s "
-                    "latency_ms=%d breaker_open=%s",
-                    self.config.role,
-                    getattr(exc, "reason", "deadline"),
-                    int((time.monotonic() - _recall_t0) * 1000),
-                    self._recall_breaker.open,
-                )
-            except Exception as exc:  # noqa: BLE001
-                self._recall_breaker.record_failure()
-                # Exception TYPE only — repr/traceback could embed the query
-                # text, which must never be logged.
-                logger.warning(
-                    "auto_recall role=%s outcome=unavailable reason=unexpected:%s "
-                    "latency_ms=%d breaker_open=%s",
-                    self.config.role, type(exc).__name__,
-                    int((time.monotonic() - _recall_t0) * 1000),
-                    self._recall_breaker.open,
-                )
-        parts: list[str] = []
-        if overlay_digest:
-            parts.append(f"<peer_overlay>\n{overlay_digest}\n</peer_overlay>")
-        if facts:
-            # #581: auto-recall reads at the turn's clearance — per SENDER on
-            # telegram — so the injected slice is bounded, and a model that
-            # treats it as all of memory answers "no record" for a fact it
-            # simply cannot read. One instruction line says so. The empty case
-            # injects no block at all, which stays deliberately silent:
-            # absence of a block is not a claim of absence.
-            parts.append(
-                f"<memory_context>\n{READABLE_SLICE_PROMPT_LINE}\n{facts}\n"
-                f"</memory_context>"
-            )
-        memory_blocks = "\n".join(parts)
+        memory_block = memory_view.text if memory_view is not None else ""
 
-        if memory_blocks:
+        if memory_block:
             # #349: recorded at end-of-turn, not here — `_build_options` runs
             # once per SDK ATTEMPT (retry_sdk_call), and recording per attempt
             # advanced the consecutive-overrun streak N times for one logical
@@ -3179,7 +3190,7 @@ class Agent:
             # bound (a unit test calling this method directly), record now.
             budget_record = (
                 f"{channel_key}-{self.config.role}",
-                estimate_tokens(memory_blocks),
+                estimate_tokens(memory_block),
                 self.config.memory.token_budget,
             )
             if _draft is not None:
@@ -3187,21 +3198,24 @@ class Agent:
             else:
                 self._budget_tracker.record(*budget_record)
 
-        # 3. System prompt = composed-prompt + runtime-injected blocks. For a
-        # resident, the base is the immutable compiled projection selected for
-        # this surface (text/voice); specialists/executors keep the legacy
-        # composed self.config.system_prompt (Plan 1 does not touch their
-        # prompt composition).
+        # 3. System prompt. For a resident, the base is the immutable compiled
+        # projection selected for this surface (text/voice), with the memory
+        # block in its one slot between the persona and the role doctrine
+        # (outside the projection's digest and ceilings); specialists and
+        # executors keep the legacy composed self.config.system_prompt, with
+        # the block at its head.
         if _bundle is not None:
             from prompt_compiler import projection_for
             base_system_prompt = projection_for(
                 _bundle, channel=channel, origin_route=_route,
+                memory=memory_block,
             ).system_prompt
+        elif memory_block:
+            base_system_prompt = (
+                f"{memory_block}\n\n{self.config.system_prompt}")
         else:
             base_system_prompt = self.config.system_prompt
         system_parts = [base_system_prompt]
-        if memory_blocks:
-            system_parts.append("\n" + memory_blocks)
         # #336: the static per-channel display claims "authenticated (operator)"
         # for telegram, which is a lie the model would act on when an
         # accept-all-mode stranger is the sender. Key the honesty off the same
@@ -3251,7 +3265,7 @@ class Agent:
         # rides on the per-turn query text (built in _process).
         system_prompt = "\n".join(system_parts)
 
-        # #199: stash the projection + assembled prompt + recall attributions for
+        # #199: stash the projection + assembled prompt + served view for
         # this turn's explanation record. A resident's projection name is derived
         # in lockstep with the projection_for selection above; a
         # specialist/executor (no bundle) records the honest "legacy" projection.
@@ -3261,7 +3275,7 @@ class Agent:
                 if _bundle is not None else "legacy"
             ),
             bundle=_bundle, system_prompt=system_prompt,
-            facts=facts, hits=_recall_hits, clearance=_recall_clearance_used,
+            memory_view=memory_view,
         )
 
         # 4. Hooks — resolved from hooks.yaml at load time by agent_loader.
@@ -3467,8 +3481,16 @@ class Agent:
         turn_guard: VoiceTurnGuard | None = None,
         settle_evidence: bool = True,
         scope: TurnScope | None = None,
+        capture: Callable[[str, Any], Awaitable[None]] | None = None,
+        observe: Callable[[Any], Awaitable[None]] | None = None,
     ):
         """Build the per-turn ``on_message(sdk_msg)`` handler + its ``state``.
+
+        ``capture``, when given, is awaited with each text-bearing message's
+        folded text (and the message) before that text is emitted: the
+        turn's memory capture of what the resident wrote. ``observe``, when
+        given, is awaited first with every message: it names the session the
+        turn's run captures from before anything of it is captured.
 
         Reproduces today's per-message body VERBATIM (Phase 4b sdk_logging
         dispatch wrapped in try/except, tool_names_by_id, idx counter,
@@ -3576,6 +3598,8 @@ class Agent:
             state["last_emitted"] = emitted
 
         async def on_message(sdk_msg: Any) -> None:
+            if observe is not None:
+                await observe(sdk_msg)
             # Voice partial streaming — handled EARLY so a StreamEvent never
             # falls through to the phase4b dispatch below (no per-token log
             # lines, no idx/tool bookkeeping). AR-E: defensive parsing — the
@@ -3773,6 +3797,8 @@ class Agent:
                             state["text"] += "\n\n"
                         state["text"] += msg_text
                         state["messages"].append(msg_text)
+                        if capture is not None:
+                            await capture(msg_text, sdk_msg)
                     # The canonical fold supersedes any in-flight partial for
                     # this message (AR-A/AR-B): reset before computing the
                     # cumulative so a stale partial never bleeds into message
@@ -3797,34 +3823,7 @@ class Agent:
             self._unsub_reset()
         except Exception:  # noqa: BLE001
             pass
-        # Sol r1 (#345): settle detached background cold-retains while the
-        # loop is still alive — cancelling here runs retain_cold_session's
-        # CancelledError arm (a synchronous spool write) deterministically,
-        # instead of relying on the runtime's final task-cancellation sweep.
-        #
-        # #881: that settle is an await, and it is BEFORE the pool close, so a
-        # cancellation delivered there — which is exactly what the loop's final
-        # sweep does to a reload's background "agent-pool-close" task — used to
-        # end this call without the pool ever being entered, leaving its warm
-        # client connected with nothing left to reclaim it. Hold the
-        # cancellation, close the pool anyway, then propagate. force=True
-        # because nobody is waiting for this call any more: a graceful lock
-        # wait here would hang the sweep that is gathering it, so the pool goes
-        # straight to its bounded, concurrent cut.
-        cancelled: BaseException | None = None
-        try:
-            for task in list(self._bg_tasks):
-                task.cancel()
-            if self._bg_tasks:
-                await asyncio.gather(*list(self._bg_tasks),
-                                     return_exceptions=True)
-        except asyncio.CancelledError as exc:
-            cancelled = exc
-        if cancelled is None:
-            await self._pool.aclose()
-        else:
-            await self._pool.aclose(force=True)
-            raise cancelled
+        await self._pool.aclose()
 
     async def _maybe_prepend_health_notice(
         self, text: str,
@@ -3943,41 +3942,6 @@ class Agent:
                     "plugin resolution degraded for %s: %s", target,
                     [(i.name, i.reason_code) for i in resolution.issues])
             return resolution
-
-    def _spawn_cold_retain(
-        self, old: SessionEntrySnapshot, *, directory: str, channel: str,
-        fence_generation: int | None = None,
-    ) -> None:
-        """Retain a cold prior session in the background (claim-free; cannot race
-        register()). Tracked so it isn't GC'd; failures are swallowed in
-        retain_cold_session and never reach the turn.
-
-        Task 9/10: takes the immutable ``SessionEntrySnapshot`` the resume gate
-        produced (``decision.old``) and passes it straight through to the reduced
-        ``retain_cold_session``, which reads the speaker/user provenance off the
-        snapshot itself. A legacy/corrupt snapshot with no usable provenance
-        retains nothing (never invents authorship).
-
-        ``fence_generation`` (#411) is the retain-fence generation captured at
-        the RESUME DECISION that produced ``old`` — not here, and not inside
-        the spawned coroutine: awaits (the pool's client close) sit between
-        the decision and this call, and the task body may not run until later
-        still; a memory wipe completing in either window must make the retain
-        DISCARD rather than restore pre-wipe content. ``None`` (legacy/test
-        callers) falls back to capturing now, which is still before the
-        coroutine body runs."""
-        if fence_generation is None:
-            fence_generation = _retain_fence().generation()
-        task = asyncio.create_task(
-            retain_cold_session(
-                old, directory=directory, channel=channel,
-                semantic_memory=self._semantic_memory,
-                fence_generation=fence_generation,
-            ),
-            name=f"cold-retain-{old.sdk_session_id}",
-        )
-        self._bg_tasks.add(task)
-        task.add_done_callback(self._bg_tasks.discard)
 
     def _log_retry(self, attempt: int, exc: Exception, delay_ms: int) -> None:
         """Emit a single WARNING per retry event (spec 5.2 §3.2)."""

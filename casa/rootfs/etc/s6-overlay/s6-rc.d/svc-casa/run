@@ -36,14 +36,6 @@ _op_vault="$(bashio::config 'onepassword_default_vault')"
 [ "$_op_vault" = "null" ] && _op_vault=""
 export ONEPASSWORD_DEFAULT_VAULT="$_op_vault"
 unset _op_token _op_vault
-_hindsight_url="$(bashio::config 'hindsight_api_url')"
-if [ "$_hindsight_url" != "null" ] && [ -n "$_hindsight_url" ]; then
-    export HINDSIGHT_API_URL="$_hindsight_url"
-    # Setting hindsight_api_url is the single toggle for long-term memory:
-    # casa_core requires MEMORY_BACKEND=hindsight (anything else → noop), and
-    # nothing else sets it, so derive it here. Respect an explicit override.
-    export MEMORY_BACKEND="${MEMORY_BACKEND:-hindsight}"
-fi
 # #325: all three are optional (password?/str?/int?) — a cleared field makes
 # bashio yield the literal "null". Unnormalized, that is truthy for the token
 # gate in casa_core and boot-fatal for the supergroup id (int("null")).

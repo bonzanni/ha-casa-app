@@ -29,11 +29,9 @@ from bus import BusMessage, MessageType
 from specialist_registry import DelegationComplete
 
 try:
-    from tests.test_agent_process import FakeSemanticMemory
     from tests.test_agent_process import _make_agent as _make_agent_with_memory
     from tests.test_notification_handling import _FakeClient, _make_agent
 except ImportError:
-    from test_agent_process import FakeSemanticMemory
     from test_agent_process import _make_agent as _make_agent_with_memory
     from test_notification_handling import _FakeClient, _make_agent
 
@@ -119,9 +117,7 @@ async def test_ordinary_turn_after_narration_records_its_own_text(
 
 
 async def test_narration_turn_still_sees_the_whole_notice(tmp_path):
-    sem = FakeSemanticMemory(overlay="O", facts="F")
-    agent = _make_agent_with_memory(tmp_path, role="assistant",
-                                    semantic_memory=sem)
+    agent = _make_agent_with_memory(tmp_path, role="assistant")
     _CapturingClient.reset()
     built = []
     synthesized = []
@@ -147,11 +143,6 @@ async def test_narration_turn_still_sees_the_whole_notice(tmp_path):
     assert len(_CapturingClient.prompts) == 1
     assert _CapturingClient.prompts[0].endswith(body)
     assert built == [body]
-    # #1336: no person typed the notice (the synthesized turn carries no
-    # trusted origin), so its fresh-session recall searches with the fixed
-    # query, not the notice; the prompt and options still see it whole.
-    assert [c["query"] for c in sem.recall_calls] == [
-        agent_mod._UNAUTHORED_RECALL_QUERY]
 
 
 _SHARED_SIG_SEED = "invoke-1160-seed"

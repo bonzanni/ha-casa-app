@@ -51,6 +51,28 @@ def test_crash_between_tempwrite_and_replace_keeps_original(
     assert leftovers == []
 
 
+def test_staging_name_takes_the_callers_prefix(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The sidecar is ``<prefix><random>.tmp``; the default prefix is ``"."``,
+    so every caller that passes none stages exactly as before."""
+    staged: list[str] = []
+    real = os.replace
+
+    def spy(src, dst, *args, **kwargs):
+        staged.append(os.path.basename(src))
+        return real(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(os, "replace", spy)
+    atomic_io.atomic_write_json(tmp_path / "a.json", {})
+    atomic_io.atomic_write_text(tmp_path / "b.txt", "x", prefix=".b.txt.")
+    atomic_io.atomic_write_json(tmp_path / "c.json", {}, prefix=".c.json.")
+    assert staged[0].startswith(".") and staged[0].endswith(".tmp")
+    assert not staged[0].startswith(".a.json.")
+    assert staged[1].startswith(".b.txt.") and staged[1].endswith(".tmp")
+    assert staged[2].startswith(".c.json.") and staged[2].endswith(".tmp")
+
+
 def test_mode_bits_applied(tmp_path: Path) -> None:
     p = tmp_path / "secret.conf"
     atomic_io.atomic_write_text(p, "token", mode=0o600)

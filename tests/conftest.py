@@ -444,11 +444,10 @@ def _agent_active_singletons_restored():
     on the ``agent`` module at each test's setup and restore THE SNAPSHOT at its
     teardown — restoring names the test deleted and removing names it added.
 
-    ``agent.py`` declares six of them ("written by ``casa_core.main`` so tool
+    ``agent.py`` declares five of them ("written by ``casa_core.main`` so tool
     handlers can reach them without circular imports": ``active_engagement_driver``,
     ``active_executor_registry``, ``active_claude_code_driver``, ``active_runtime``,
-    ``active_semantic_memory``, ``active_session_registry``) and ``casa_core.main``
-    writes a seventh, ``active_observer``, that ``agent.py`` does not declare at
+    ``active_session_registry``) and ``casa_core.main`` writes a sixth, ``active_observer``, that ``agent.py`` does not declare at
     all. Every consumer resolves them at CALL time with
     ``getattr(agent_mod, "<name>", None)`` and gates each use on ``hasattr`` — a
     predicate a ``MagicMock`` satisfies unconditionally — so a leaked mock does

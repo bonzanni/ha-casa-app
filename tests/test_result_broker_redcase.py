@@ -30,7 +30,6 @@ from __future__ import annotations
 import json
 import re
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
 
@@ -101,16 +100,12 @@ def _resident(tmp_path, hooks_cfg):
         memory=MemoryConfig(token_budget=1000, read_strategy="per_turn"),
         hooks=hooks_cfg,
     )
-    sm = AsyncMock()
-    sm.profile.return_value = ""
-    sm.recall.return_value = ""
     return Agent(
         config=cfg,
         session_registry=SessionRegistry(str(tmp_path / "sessions.json")),
         mcp_registry=McpServerRegistry(),
         channel_manager=ChannelManager(),
         agent_registry=None,
-        semantic_memory=sm,
     )
 
 

@@ -1,5 +1,6 @@
-"""#411 — the `wipe_memory` agent door: consent-gated in code, operator-bound,
-detached execution from the broker finish hook, single-flight."""
+"""The `wipe_memory` agent door: consent-gated in code, operator-bound; an
+Approve tap records the wipe intent and asks for the app restart from the
+broker's finish hook, outside any turn (INV-MEM-038)."""
 from __future__ import annotations
 
 import asyncio
@@ -8,8 +9,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import memory_wipe
+import supervisor_restart
 import verdict_broker
+from memory import maintenance
 from verdict_broker import VerdictBroker
 
 WIPE_TOOL = "mcp__casa-framework__wipe_memory"
@@ -33,9 +35,27 @@ def _fresh_broker(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _fresh_wipe_state(monkeypatch):
-    monkeypatch.setattr(memory_wipe, "_wipe_task", None)
-    monkeypatch.setattr(memory_wipe, "_wipes_frozen", False)
+def restarts(monkeypatch, tmp_path):
+    """The intent goes to a stand-in path; the Supervisor accepts every
+    restart request, which is recorded."""
+    monkeypatch.setattr(maintenance, "INTENT_PATH",
+                        str(tmp_path / "memory" / "maintenance.json"))
+    monkeypatch.setattr(maintenance, "restart_accepted_at", None)
+    monkeypatch.setattr(maintenance, "RESTART_GRACE_S", 3600.0)
+    calls: list[str] = []
+
+    async def accept():
+        calls.append("restart")
+        return {"supervisor_status": 200}
+
+    monkeypatch.setattr(supervisor_restart, "request_app_restart", accept)
+    yield calls
+    if maintenance._expiry is not None:
+        maintenance._expiry.cancel()
+
+
+def _intent():
+    return maintenance.read_intent()
 
 
 class _FakeChannel:
@@ -46,7 +66,19 @@ class _FakeChannel:
     def __init__(self, *, post_result=42):
         self.posts: list[tuple] = []
         self.edits: list[tuple] = []
+        self.order: list[str] = []
         self._post_result = post_result
+
+    async def pause_updates_for_restart(self):
+        self.order.append("pause")
+        return True
+
+    async def resume_updates(self):
+        self.order.append("resume")
+
+    async def notify_operator(self, text):
+        self.order.append(f"notify:{text}")
+        return True
 
     async def post_dm_keyboard(self, *, chat_id, request_id, text, options,
                                short_labels=False):
@@ -72,7 +104,7 @@ def _set_origin(agent_mod, **overrides):
     return agent_mod.origin_var.set(origin)
 
 
-async def _invoke_raw(monkeypatch, *, channel=None, registry=None, sem=None,
+async def _invoke_raw(monkeypatch, *, channel=None, registry=None,
                       origin_overrides=None):
     import agent as agent_mod
     import tools as tools_mod
@@ -88,10 +120,6 @@ async def _invoke_raw(monkeypatch, *, channel=None, registry=None, sem=None,
     monkeypatch.setattr(
         agent_mod, "active_session_registry",
         registry if registry is not None else MagicMock(), raising=False,
-    )
-    monkeypatch.setattr(
-        agent_mod, "active_semantic_memory",
-        sem if sem is not None else MagicMock(), raising=False,
     )
     tok = _set_origin(agent_mod, **(origin_overrides or {}))
     try:
@@ -179,30 +207,6 @@ class TestGates:
         assert payload["status"] == "error"
         assert payload["kind"] == "consent_channel_unavailable"
 
-    async def test_refused_when_backend_uninitialized(self, monkeypatch):
-        import agent as agent_mod
-        payload_holder = {}
-
-        async def run():
-            import tools as tools_mod
-            cm = MagicMock()
-            cm.get = MagicMock(return_value=_FakeChannel())
-            tools_mod.init_tools(
-                channel_manager=cm, bus=MagicMock(),
-                specialist_registry=MagicMock(), mcp_registry=MagicMock(),
-            )
-            monkeypatch.setattr(agent_mod, "active_session_registry", None, raising=False)
-            monkeypatch.setattr(agent_mod, "active_semantic_memory", None, raising=False)
-            tok = _set_origin(agent_mod)
-            try:
-                res = await tools_mod.wipe_memory.handler({})
-            finally:
-                agent_mod.origin_var.reset(tok)
-            payload_holder.update(_payload(res))
-
-        await run()
-        assert payload_holder["kind"] == "not_initialized"
-
 
 class TestConsentFlow:
     async def test_posts_keyboard_and_awaits_user(self, monkeypatch, _fresh_broker):
@@ -212,7 +216,7 @@ class TestConsentFlow:
         assert _fresh_broker.pending(namespace="resident_ask", scope="authz:500")
 
     async def test_cancel_during_post_returns_neutral_settlement(
-        self, monkeypatch, _fresh_broker,
+        self, monkeypatch, _fresh_broker, restarts,
     ):
         """RED pre-fix (#682, INV-TOOL-008): `/new` retires the consent request
         while its keyboard post is still in flight. `_run_setup` then records
@@ -220,13 +224,6 @@ class TestConsentFlow:
         gate passes and the tool reports an outstanding request id for a
         request the broker has already retired and whose keyboard already reads
         "cancelled". Counts, not statuses."""
-        calls = []
-
-        async def fake_wipe(**kwargs):
-            calls.append(kwargs)
-            return memory_wipe.WipeReport()
-
-        monkeypatch.setattr(memory_wipe, "wipe_long_term_memory", fake_wipe)
         channel = _BlockingPostChannel()
         task = asyncio.create_task(_invoke_raw(monkeypatch, channel=channel))
         await asyncio.wait_for(channel.post_started.wait(), 5.0)
@@ -266,7 +263,7 @@ class TestConsentFlow:
         assert len(channel.edits) == 1
         assert sum("(this question was cancelled by /new — nothing was "
                    "deleted)" in e[2] for e in channel.edits) == 1
-        assert len(calls) == 0
+        assert _intent() is None and restarts == []
 
     async def test_a_live_consent_request_returns_the_unchanged_payload(
         self, monkeypatch, _fresh_broker,
@@ -287,41 +284,30 @@ class TestConsentFlow:
         assert len(_fresh_broker.pending(
             namespace="resident_ask", scope="authz:500")) == 1
 
-    async def test_approve_runs_orchestrator_once_and_reports(
-        self, monkeypatch, _fresh_broker,
+    async def test_approve_records_the_intent_and_requests_the_restart(
+        self, monkeypatch, _fresh_broker, restarts,
     ):
-        calls = []
-
-        async def fake_wipe(**kwargs):
-            calls.append(kwargs)
-            return memory_wipe.WipeReport(
-                spool_records_dropped=1, session_entries_dropped=2,
-                bank_deleted=True,
-            )
-
-        monkeypatch.setattr(memory_wipe, "wipe_long_term_memory", fake_wipe)
         payload, channel = await _invoke(monkeypatch)
         assert payload["status"] == "awaiting_user"
+        assert _intent() is None and restarts == []
         await _tap(_fresh_broker, channel, idx=0)
-        # Drain the detached wipe task.
-        await memory_wipe.drain_wipe_task()
-        await asyncio.sleep(0)
-        assert len(calls) == 1
-        # The keyboard message ends carrying the report.
-        assert any("bank deleted=True" in e[2] for e in channel.edits)
+        await _fresh_broker.drain_hooks()
+        intent = _intent()
+        assert (intent["kind"], intent["attempts"]) == ("wipe", [])
+        assert restarts == ["restart"]
+        # Q20: update intake pauses, so the tap is confirmed to Telegram,
+        # before the restart is requested.
+        assert channel.order == ["pause"]
+        assert sum(maintenance.FORGETTING_LINE in e[2]
+                   for e in channel.edits) == 1
+        assert maintenance.restart_pending()
 
-    async def test_cancel_tap_deletes_nothing(self, monkeypatch, _fresh_broker):
-        calls = []
-
-        async def fake_wipe(**kwargs):
-            calls.append(kwargs)
-            return memory_wipe.WipeReport()
-
-        monkeypatch.setattr(memory_wipe, "wipe_long_term_memory", fake_wipe)
+    async def test_cancel_tap_deletes_nothing(self, monkeypatch, _fresh_broker,
+                                              restarts):
         payload, channel = await _invoke(monkeypatch)
         await _tap(_fresh_broker, channel, idx=1)    # "Cancel"
-        await memory_wipe.drain_wipe_task()
-        assert calls == []
+        await _fresh_broker.drain_hooks()
+        assert _intent() is None and restarts == []
         assert any("cancelled — nothing was deleted" in e[2] for e in channel.edits)
 
     async def test_non_operator_tap_cannot_claim(self, monkeypatch, _fresh_broker):
@@ -336,16 +322,9 @@ class TestConsentFlow:
         assert claim == "forbidden"
 
     async def test_broker_cancel_finishes_as_declined(
-        self, monkeypatch, _fresh_broker,
+        self, monkeypatch, _fresh_broker, restarts,
     ):
         """A /new-style cancel_scope can only DENY — never execute."""
-        calls = []
-
-        async def fake_wipe(**kwargs):
-            calls.append(kwargs)
-            return memory_wipe.WipeReport()
-
-        monkeypatch.setattr(memory_wipe, "wipe_long_term_memory", fake_wipe)
         payload, channel = await _invoke(monkeypatch)
         n = _fresh_broker.cancel_scope(
             namespace="resident_ask", scope="authz:500", reason="new_session",
@@ -353,15 +332,15 @@ class TestConsentFlow:
         assert n == 1
         await asyncio.sleep(0)
         await asyncio.sleep(0)
-        await memory_wipe.drain_wipe_task()
-        assert calls == []
+        await _fresh_broker.drain_hooks()
+        assert _intent() is None and restarts == []
         # #933: a `/new` is a cancellation, and now says which one. The bare
         # "(cancelled — nothing was deleted)" copy belongs to the DENY tap.
         assert sum("(this question was cancelled by /new — nothing was "
                    "deleted)" in e[2] for e in channel.edits) == 1
 
     async def test_an_expired_wipe_keyboard_does_not_claim_it_was_cancelled(
-        self, monkeypatch, _fresh_broker,
+        self, monkeypatch, _fresh_broker, restarts,
     ):
         """#933, mirrored — this keyboard collapses the other way.
 
@@ -369,46 +348,34 @@ class TestConsentFlow:
         simply never came back is told they declined. The deny arm below it
         keeps saying cancelled, because for a tap on "Cancel" that is true.
         """
-        calls = []
-
-        async def fake_wipe(**kwargs):
-            calls.append(kwargs)
-            return memory_wipe.WipeReport()
-
-        monkeypatch.setattr(memory_wipe, "wipe_long_term_memory", fake_wipe)
         payload, channel = await _invoke(monkeypatch)
         rid = _fresh_broker.pending(
             namespace="resident_ask", scope="authz:500")[0]
         _fresh_broker._on_timeout(("resident_ask", "authz:500", rid))
         await asyncio.sleep(0)
         await asyncio.sleep(0)
-        await memory_wipe.drain_wipe_task()
+        await _fresh_broker.drain_hooks()
 
-        assert calls == []
+        assert _intent() is None and restarts == []
         assert len(channel.edits) == 1
         suffix = channel.edits[0][2].casefold()
         assert sum("expired" in t for t in [suffix]) == 1
         assert sum("cancelled" in t for t in [suffix]) == 0
         assert sum("nothing was deleted" in t for t in [suffix]) == 1
 
-    async def test_second_wipe_refused_while_first_runs(
-        self, monkeypatch, _fresh_broker,
+    async def test_a_second_wipe_answers_already_scheduled_and_restarts_again(
+        self, monkeypatch, _fresh_broker, restarts,
     ):
-        release = asyncio.Event()
-
-        async def slow_wipe(**kwargs):
-            await release.wait()
-            return memory_wipe.WipeReport()
-
-        monkeypatch.setattr(memory_wipe, "wipe_long_term_memory", slow_wipe)
         payload, channel = await _invoke(monkeypatch)
         await _tap(_fresh_broker, channel, idx=0)
-        # Second consent round while the first wipe still runs.
-        payload2, channel2 = await _invoke(monkeypatch, channel=channel)
+        await _fresh_broker.drain_hooks()
+        payload2, _ = await _invoke(monkeypatch, channel=channel)
         await _tap(_fresh_broker, channel, idx=0)
-        assert any("already running" in e[2] for e in channel.edits)
-        release.set()
-        await memory_wipe.drain_wipe_task()
+        await _fresh_broker.drain_hooks()
+        assert restarts == ["restart", "restart"]
+        assert sum(maintenance.ALREADY_SCHEDULED_LINE in e[2]
+                   for e in channel.edits) == 1
+        assert _intent()["kind"] == "wipe"
 
 
 class TestRegistration:

@@ -679,25 +679,6 @@ async def test_a_descendant_is_dropped_as_extinct_only_on_its_own_pidfds_evidenc
     assert owner2.pinned_pids() == {tree.pid}
 
 
-async def test_a_late_delete_waits_for_every_pinned_exit_then_closes_the_fds(tree, monkeypatch):
-    owner = _owner()
-    owner._pin_tree(tree.pid, None)
-    ran = []
-
-    async def delete():
-        ran.append(owner.alive())
-    task = owner.schedule_after_exit(delete)
-    await asyncio.sleep(0.2)
-    assert ran == [] and not task.done()                    # the writer is alive: nothing yet
-    for pid in (tree.grandchild, tree.pid):
-        os.kill(pid, 9)
-    await asyncio.wait_for(task, 5)
-    assert ran == [False]                                   # ran once, after every exit
-    for p in owner._all():
-        with pytest.raises(OSError):
-            os.fstat(p.fd)                                  # the fds were closed by the waiter
-
-
 async def test_a_child_that_exited_before_validation_is_extinct_whatever_its_ancestry_reads(tree, monkeypatch):
     """Astra A2 diff r3 S2: a CLI and its server both gone before the chain
     walk — the server a reparented zombie — is extinction (its own pidfd is
@@ -750,62 +731,6 @@ async def test_a_child_exiting_between_the_fd_poll_and_the_proc_read_is_extinct_
     owner._pin_tree(tree.pid, None)
     assert tree.grandchild not in owner.pinned_pids()
     assert owner._unconfirmed_identity is False
-
-
-async def test_a_deferred_delete_with_nothing_pinned_waits_for_the_clients_process(monkeypatch):
-    """Astra A1b diff r4 S2: when the CLI could not be pinned (pidfd_open failed)
-    the pin set is empty, yet the writer may be alive — the deferred cleanup
-    establishes its exit through the retained process object before deleting."""
-    monkeypatch.setattr(pr.PinnedRun, "LATE_WAIT_S", 5.0)
-    owner = _owner()
-    proc = _Process(12345)                                   # the transport's process: still running
-    client = _FakeClient(12345)
-    client.process = proc
-    client._transport = types.SimpleNamespace(_process=proc)
-    owner._client = client
-    owner._entry = "entered"
-    owner._unconfirmed_identity = True                       # pinning failed; nothing in the pin set
-    assert owner.pinned_pids() == set()
-    ran = []
-
-    async def delete():
-        ran.append(proc.returncode)
-    task = owner.schedule_after_exit(delete)
-    await asyncio.sleep(0.2)
-    assert ran == [] and not task.done()                     # the writer has not left
-    proc.returncode = 0                                      # now it has
-    await asyncio.wait_for(task, 5)
-    assert ran == [0]
-
-
-async def test_a_deferred_delete_with_no_process_at_all_runs_at_once():
-    owner = _owner()                                         # the entry never produced a process
-    ran = []
-
-    async def delete():
-        ran.append(True)
-    await asyncio.wait_for(owner.schedule_after_exit(delete), 5)
-    assert ran == [True]
-
-
-async def test_a_deferred_delete_never_runs_while_the_writer_is_alive_even_past_the_cap(tree, monkeypatch):
-    """Astra A1b diff r5 S2: the waiter's period expiring is NOT exit evidence;
-    deleting then would let a later flush recreate the transcript for good.
-    The obligation is kept until the exit is confirmed."""
-    monkeypatch.setattr(pr.PinnedRun, "LATE_WAIT_S", 0.1)
-    owner = _owner()
-    owner._pin_tree(tree.pid, None)
-    ran = []
-
-    async def delete():
-        ran.append(owner.alive())
-    task = owner.schedule_after_exit(delete)
-    await asyncio.sleep(0.5)                                # several periods past the cap
-    assert ran == [] and not task.done()
-    for pid in (tree.grandchild, tree.pid):
-        os.kill(pid, 9)
-    await asyncio.wait_for(task, 5)
-    assert ran == [False]                                   # once, after the exit
 
 
 # --- #1205: a child started AFTER enter (a tool call's shell-out) is pinned at terminate ------

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -21,6 +22,7 @@ from engagement_uids import (
     UID_BASE, UNALLOCATED_UID, ensure_identity, owner_uid_or_none,
     prune_identity,
 )
+from memory import executor_block
 from safe_fs import SymlinkRefused, atomic_write_beneath, read_text_beneath
 
 logger = logging.getLogger(__name__)
@@ -88,6 +90,25 @@ def provision_control_dir(engagement_id: str, *, root: str | None = None) -> str
 
 def session_id_path(engagement_id: str, *, root: str | None = None) -> str:
     return os.path.join(control_dir(engagement_id, root=root), ".session_id")
+
+
+def drop_session_without_transcript(
+    ws_dir: str, engagement_id: str, *, root: str | None = None,
+) -> bool:
+    """Remove the control-dir session pointer when the session it names has
+    no transcript under the workspace's ``.home/.claude/projects`` (a memory
+    wipe deleted it), so the run script starts a fresh session instead of a
+    resume that cannot start. Returns whether it removed one."""
+    path = Path(session_id_path(engagement_id, root=root))
+    try:
+        sid = path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return False
+    projects = Path(ws_dir) / ".home" / ".claude" / "projects"
+    if sid and any(projects.glob(f"*/{sid}.jsonl")):
+        return False
+    path.unlink(missing_ok=True)
+    return True
 
 
 def spawn_epoch_path(engagement_id: str, *, root: str | None = None) -> str:
@@ -718,13 +739,40 @@ async def provision_workspace(
     # there is no hooks file), so no os.path.isfile probe is needed anymore.
     hooks_yaml_data: dict = getattr(defn, "hooks_document", None) or {}
 
+    use_template = (
+        workspace_template_root is not None
+        and workspace_template_root.is_dir()
+    )
+    if use_template:
+        template_text = template_instruction_source(workspace_template_root) or ""
+    else:
+        template_text = _read_text(defn.prompt_template_path)
+
+    # Task 4 (containment stage 2): the control dir is provisioned here,
+    # alongside the workspace — every root-only run-state file below lands
+    # in it, never under the uid-owned workspace the CLI can symlink through.
+    provision_control_dir(engagement_id)
+
+    # W3 (Task 8): cache the fetched executor_memory block at the control-dir
+    # ``.executor_memory`` so a later ``refresh_claude_md`` (boot replay) can
+    # re-interpolate the SAME {executor_memory} section — the block is a LIVE
+    # fetch, not re-derivable at boot, so it must be persisted alongside the
+    # workspace. Task 4: moved OUT of the workspace — root generates and
+    # reads this, the CLI never does.
+    #
+    # The memory wipe finds the section again through this cache and the
+    # section's markers, so the cache is written BEFORE any CLAUDE.md: a crash
+    # between the two leaves a cache with no file, never a memory-bearing file
+    # with no cache. A template with no slot never carries the block, so its
+    # cache holds nothing either.
+    Path(executor_memory_path(engagement_id)).write_text(
+        (executor_memory or "") if executor_block.SLOT in template_text
+        else "", encoding="utf-8")
+
     # Plan 4b §16.3: if a workspace-template exists for this executor, render it
     # into the workspace root. This subsumes the old symlink-loop behavior.
     # §3.3: selection is independent of plugin assignment now.
-    if (
-        workspace_template_root is not None
-        and workspace_template_root.is_dir()
-    ):
+    if use_template:
         render_workspace_template(
             template_root=workspace_template_root,
             dest=ws,
@@ -738,15 +786,11 @@ async def provision_workspace(
         )
     else:
         # 1. CLAUDE.md — the executor prompt, interpolated (legacy path).
-        prompt_text = _read_text(defn.prompt_template_path)
-        prompt_interpolated = (
-            prompt_text
-            .replace("{task}", task or "")
-            .replace("{context}", context or "(none)")
-            .replace("{executor_type}", defn.type)
-            .replace("{executor_memory}", executor_memory or "")
-        )
-        (ws / "CLAUDE.md").write_text(prompt_interpolated, encoding="utf-8")
+        write_claude_md(
+            str(ws), template_text,
+            {"{task}": task or "", "{context}": context or "(none)",
+             "{executor_type}": defn.type},
+            executor_memory)
 
         # .claude/settings.json with translated hooks (legacy path).
         (ws / ".claude").mkdir(exist_ok=True)
@@ -756,20 +800,6 @@ async def provision_workspace(
         (ws / ".claude" / "settings.json").write_text(
             json.dumps(settings, indent=2), encoding="utf-8",
         )
-
-    # Task 4 (containment stage 2): the control dir is provisioned here,
-    # alongside the workspace — every root-only run-state file below lands
-    # in it, never under the uid-owned workspace the CLI can symlink through.
-    provision_control_dir(engagement_id)
-
-    # W3 (Task 8): cache the fetched executor_memory block at the control-dir
-    # ``.executor_memory`` so a later ``refresh_claude_md`` (boot replay) can
-    # re-interpolate the SAME {executor_memory} section — the block is a LIVE
-    # Hindsight fetch, not re-derivable at boot, so it must be persisted
-    # alongside the workspace. Task 4: moved OUT of the workspace — root
-    # generates and reads this, the CLI never does.
-    Path(executor_memory_path(engagement_id)).write_text(
-        executor_memory or "", encoding="utf-8")
 
     # v0.74.2 (live finding 2026-07-13): provision the executor's doctrine/
     # into the workspace — the rendered CLAUDE.md references doctrine/*.md,
@@ -851,6 +881,31 @@ def _read_text(path: str) -> str:
         return fh.read()
 
 
+def template_instruction_source(template_root: Path) -> str | None:
+    """The text a workspace template's ``CLAUDE.md`` is rendered from:
+    ``CLAUDE.md.tmpl`` when present, else a plain ``CLAUDE.md`` (the same
+    selection ``executor_epoch`` hashes), else ``None``."""
+    for name in ("CLAUDE.md.tmpl", "CLAUDE.md"):
+        path = Path(template_root) / name
+        if path.is_file():
+            return path.read_text(encoding="utf-8")
+    return None
+
+
+def write_claude_md(ws_dir: str, template_text: str, values: dict[str, str],
+                    executor_memory: str, *, owner_uid: int | None = None
+                    ) -> None:
+    """The one writer of a workspace's root ``CLAUDE.md``: *template_text*
+    rendered by ``executor_block.render`` (every marker outside the memory
+    block neutralised, the block between its markers) and written atomically
+    without following a symlink, so a crash leaves no file or a whole one.
+    The memory wipe relies on nothing else writing that file."""
+    atomic_write_beneath(
+        ws_dir, "CLAUDE.md",
+        executor_block.render(template_text, values, executor_memory),
+        owner_uid=owner_uid, mode=0o644)
+
+
 def refresh_claude_md(ws_dir: str, *, defn, rec) -> None:
     """Re-render an existing workspace's CLAUDE.md from the engagement record
     (W3/Sol r8-B5, Task 8).
@@ -905,30 +960,26 @@ def refresh_claude_md(ws_dir: str, *, defn, rec) -> None:
     template_root = exec_dir / "workspace-template"
 
     if template_root.is_dir():
-        # Mirror render_workspace_template (workspace.py:489-496) EXACTLY.
-        text = (template_root / "CLAUDE.md.tmpl").read_text(encoding="utf-8")
-        text = (
-            text.replace("{executor_type}", defn.type)
-                .replace("{task}", task)
-                .replace("{context}", context)
-                .replace("{world_state_summary}", world_state_summary)
-                .replace("{executor_memory}", executor_memory or "")
-        )
-        atomic_write_beneath(
-            str(ws), "CLAUDE.md", text, owner_uid=owner_uid, mode=0o644)
+        # Mirror render_workspace_template EXACTLY: the same source and the
+        # same writer. A template tree with no instruction file has nothing
+        # to refresh.
+        text = template_instruction_source(template_root)
+        if text is None:
+            return
+        write_claude_md(
+            str(ws), text,
+            {"{executor_type}": defn.type, "{task}": task,
+             "{context}": context,
+             "{world_state_summary}": world_state_summary},
+            executor_memory, owner_uid=owner_uid)
     else:
-        # Mirror the legacy provision branch (workspace.py:245-253) EXACTLY.
+        # Mirror the legacy provision branch EXACTLY.
         prompt_text = _read_text(defn.prompt_template_path)
-        prompt_interpolated = (
-            prompt_text
-            .replace("{task}", task or "")
-            .replace("{context}", context or "(none)")
-            .replace("{executor_type}", defn.type)
-            .replace("{executor_memory}", executor_memory or "")
-        )
-        atomic_write_beneath(
-            str(ws), "CLAUDE.md", prompt_interpolated,
-            owner_uid=owner_uid, mode=0o644)
+        write_claude_md(
+            str(ws), prompt_text,
+            {"{task}": task or "", "{context}": context or "(none)",
+             "{executor_type}": defn.type},
+            executor_memory, owner_uid=owner_uid)
 
 
 def write_casa_meta(
@@ -1164,7 +1215,19 @@ async def _sweep_workspaces(
         if not entry.is_dir():
             continue
         try:
-            _sweep_one_workspace(entry, now_iso=now_iso, log_root=log_root)
+            # Off the event loop: the run-confirmation gate and the row
+            # removal are SQLite calls that may wait on the store's lock, and
+            # the removal itself is file work.
+            uid = await asyncio.to_thread(
+                _sweep_one_workspace, entry, now_iso=now_iso, log_root=log_root)
+            if uid is not None:
+                try:
+                    prune_identity(uid)
+                except OSError as exc:
+                    logger.warning(
+                        "workspace sweep: prune_identity(%s) failed: %s",
+                        uid, exc,
+                    )
         except Exception:  # noqa: BLE001 — Sol r6-1: per-workspace boundary
             logger.warning(
                 "workspace sweep: entry %s failed; continuing with the "
@@ -1174,9 +1237,12 @@ async def _sweep_workspaces(
 
 def _sweep_one_workspace(
     entry: os.DirEntry, *, now_iso: str, log_root: str | None,
-) -> None:
+) -> int | None:
     """One workspace's retention decision + deletion — isolated so a
-    surprising per-entry failure cannot abort the whole sweep (Sol r6-1)."""
+    surprising per-entry failure cannot abort the whole sweep (Sol r6-1).
+    Runs in a worker thread; returns the uid whose passwd/group entry the
+    caller prunes on the event loop (where every other passwd edit runs),
+    or ``None``."""
     meta = load_casa_meta(entry.path)
     if meta is None:
         return
@@ -1197,6 +1263,15 @@ def _sweep_one_workspace(
         return
     if retention_until > now_iso:
         return
+    # The run-confirmation gate, asked at the delete: while a run in the
+    # workspace (its finalize summary) is unconfirmed, it is kept whole for
+    # a later sweep (memory/transcript_runs.py).
+    from memory import transcript_runs
+    if transcript_runs.blocked(directory=entry.path):
+        logger.warning(
+            "workspace sweep: kept %s past retention — a run in it is not "
+            "confirmed", entry.name)
+        return
     try:
         shutil.rmtree(entry.path)
     except OSError as exc:
@@ -1209,6 +1284,7 @@ def _sweep_one_workspace(
             "workspace sweep: removed %s (status=%s, past retention)",
             entry.name, status,
         )
+        transcript_runs.forget_deleted(directory=entry.path)
         log_dir = engagement_log_dir(entry.name, root=log_root)
         try:
             if os.path.isdir(log_dir):
@@ -1247,13 +1323,6 @@ def _sweep_one_workspace(
             owner_uid_or_none(_raw_uid) if isinstance(_raw_uid, int) else None
         )
         if real_uid is not None:
-            try:
-                prune_identity(real_uid)
-            except OSError as exc:
-                logger.warning(
-                    "workspace sweep: prune_identity(%s) failed: %s",
-                    real_uid, exc,
-                )
             # Task 11 (containment stage 2): the uid's private outbox dir
             # follows the workspace on the SAME retention decision — same
             # reasoning as the control dir and passwd entry above.
@@ -1265,6 +1334,8 @@ def _sweep_one_workspace(
                     "workspace sweep: engagement outbox teardown(%s) "
                     "failed: %s", real_uid, exc,
                 )
+        return real_uid
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1301,29 +1372,29 @@ def render_workspace_template(
 
     dest.mkdir(parents=True, exist_ok=True)
 
-    # Copy every file under template_root except CLAUDE.md.tmpl (handled below).
+    # Copy every file under template_root except CLAUDE.md.tmpl and the root
+    # CLAUDE.md: the workspace's own instruction file is only ever written by
+    # write_claude_md, below.
     for src in template_root.rglob("*"):
         if src.is_dir():
             continue
         rel = src.relative_to(template_root)
+        if rel.name == "CLAUDE.md.tmpl" or rel == Path("CLAUDE.md"):
+            continue
         target = dest / rel
         target.parent.mkdir(parents=True, exist_ok=True)
-        if rel.name == "CLAUDE.md.tmpl":
-            continue
         shutil.copy2(src, target)
 
-    # Interpolate CLAUDE.md.
-    tmpl = template_root / "CLAUDE.md.tmpl"
-    if tmpl.is_file():
-        text = tmpl.read_text(encoding="utf-8")
-        text = (
-            text.replace("{executor_type}", executor_type)
-                .replace("{task}", task)
-                .replace("{context}", context)
-                .replace("{world_state_summary}", world_state_summary)
-                .replace("{executor_memory}", executor_memory or "")
-        )
-        (dest / "CLAUDE.md").write_text(text, encoding="utf-8")
+    # Render CLAUDE.md from CLAUDE.md.tmpl, or from a plain CLAUDE.md, which is
+    # rendered and neutralised the same way (no memory slot unless it has one).
+    text = template_instruction_source(template_root)
+    if text is not None:
+        write_claude_md(
+            str(dest), text,
+            {"{executor_type}": executor_type, "{task}": task,
+             "{context}": context,
+             "{world_state_summary}": world_state_summary},
+            executor_memory)
 
     # Generate .claude/settings.json (hooks + permissions only).
     # §3.3: no enabledPlugins — executor plugins load via --plugin-dir.

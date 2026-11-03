@@ -34,7 +34,6 @@ def _desk_turn_origin():
         resident_role="assistant", desk_role="finance", chat_id=1, user_id=1,
         user_name="operator", message_id=7, cid="desk-cid", text="run the check",
         turn_id="desk-turn-1")
-    origin["_origin_clearance"] = "private"
     return {**origin, "delegation_depth": origin["delegation_depth"] + 1,
             "execution_role": "finance", "_delegation_kind": "specialist"}
 

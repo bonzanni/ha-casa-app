@@ -8,8 +8,8 @@ Three gates pinned here:
   1. the in-process tool fence (in_casa engagements dispatch tools in-process,
      so the internal-socket choke point alone cannot cover them);
   2. the internal-socket choke point (claude_code executors);
-  3. the post-await re-filter in recall_memory (a clamp landing while the
-     backend call is suspended filters THIS result, not just the next one);
+  3. the re-read in the memory tools (a clamp landing while a read runs
+     reads THIS result again at the new floor, not just the next one);
 plus the in_casa driver's last-instant launch gate (a clamp landing during
 client open aborts the pre-clamp prompt instead of delivering it).
 """
@@ -43,7 +43,9 @@ async def _pending_record(tmp_path):
 
 class TestInProcessToolFence:
     @pytest.mark.parametrize("tool_name,args", [
-        ("recall_memory", {"query": "the topic"}),
+        ("search_memory", {"query": "the topic"}),
+        ("browse_memory_day", {"date": "2026-10-05"}),
+        ("open_memory", {"ids": ["o0000000000000000"]}),
         ("query_engager", {"question": "the topic?"}),
         ("engage_executor", {"executor_type": "configurator", "task": "t"}),
         ("delegate_to_agent", {"agent": "finance", "task": "t"}),
@@ -54,8 +56,6 @@ class TestInProcessToolFence:
     ):
         import agent as agent_mod
         import tools
-        monkeypatch.setattr(
-            agent_mod, "active_semantic_memory", AsyncMock(), raising=False)
         reg, rec = await _pending_record(tmp_path)
         token = tools.engagement_var.set(rec)
         try:
@@ -66,23 +66,21 @@ class TestInProcessToolFence:
         assert "rebuilt" in out or "rebuilding" in out.lower()
 
     async def test_cleared_flag_unfences(self, tmp_path, monkeypatch):
-        import agent as agent_mod
+        import json
+
         import tools
-        sem = AsyncMock()
-        sem.recall_items.return_value = ()
-        monkeypatch.setattr(
-            agent_mod, "active_semantic_memory", sem, raising=False)
-        cfg = SimpleNamespace(memory=SimpleNamespace(token_budget=512))
-        monkeypatch.setattr(
-            tools, "_agent_role_map", {"assistant": cfg}, raising=False)
+        from memory import capture
+        from memory_tools_support import new_store
+        monkeypatch.setitem(capture._wiring, "store",
+                            new_store(tmp_path / "mem"))
         reg, rec = await _pending_record(tmp_path)
         await reg.clear_context_rebuild_pending(rec.id)
         token = tools.engagement_var.set(rec)
         try:
-            await tools.recall_memory.handler({"query": "q"})
+            res = await tools.search_memory.handler({"query": "q"})
         finally:
             tools.engagement_var.reset(token)
-        sem.recall_items.assert_awaited_once()
+        assert json.loads(_text(res))["status"] == "ok"
 
 
 class TestChokePointFence:
@@ -102,13 +100,13 @@ class TestChokePointFence:
             return {"content": [{"type": "text", "text": "{}"}]}
 
         handler = _make_internal_tools_call_handler(
-            tool_dispatch={"recall_memory": fake_tool},
+            tool_dispatch={"search_memory": fake_tool},
             engagement_registry=reg,
         )
 
         class _Req:
             async def json(self):
-                return {"name": "recall_memory", "arguments": {},
+                return {"name": "search_memory", "arguments": {},
                         "engagement_id": rec.id,
                         "engagement_token": rec.auth_token}
 
@@ -152,14 +150,20 @@ class TestInFlightReFilter:
     async def test_clamp_during_recall_filters_this_result(
         self, tmp_path, monkeypatch,
     ):
-        """The downgrade lands while the backend call is suspended: the hits
-        came back filtered at the OLD clearance and must be re-filtered at the
-        new one before anything is rendered."""
-        import agent as agent_mod
+        """The downgrade lands while the read runs: what it read at the OLD
+        clearance is read again at the new one before anything is
+        returned."""
         import tools
         from engagement_registry import EngagementRegistry
-        from personality_types import RecallHit
+        from memory import capture
+        from memory import search as memory_search
+        from memory_tools_support import new_store, store_event
 
+        store = new_store(tmp_path / "mem")
+        monkeypatch.setitem(capture._wiring, "store", store)
+        store_event(store, "the alarm code is 1234", tier="private")
+        store_event(store, "bins go out tuesday, the alarm is fine",
+                    tier="public")
         reg = EngagementRegistry(
             tombstone_path=str(tmp_path / "e.json"), bus=None)
         rec = await reg.create(
@@ -168,36 +172,24 @@ class TestInFlightReFilter:
             origin={"channel": "telegram", "_origin_route": "telegram",
                     "_origin_clearance": "private"},
         )
+        real = memory_search.search
+        reads = []
 
-        def _hit(text, tier):
-            return RecallHit(
-                text=text, memory_type="world", sensitivity=tier,
-                application_tags=(), provenance=None, backend_id="b",
-                document_id=None, chunk_id=None, source_fact_ids=None,
-                metadata=None, context=None, score=None)
-
-        class _Sem:
-            async def recall_items(self, bank, query, *, tags, max_tokens,
-                                   clearance, types=(), tags_match="any",
-                                   budget="mid"):
-                # The clamp lands MID-CALL. (It sets the rebuild flag too, but
-                # this call already passed the fence — exactly the in-flight
-                # window under test.)
-                await reg.lower_origin_clearance(rec.id, "public")
-                return (_hit("the alarm code is 1234", "private"),
-                        _hit("bins go out tuesday", "public"))
-
-        monkeypatch.setattr(
-            agent_mod, "active_semantic_memory", _Sem(), raising=False)
-        cfg = SimpleNamespace(memory=SimpleNamespace(token_budget=512))
-        monkeypatch.setattr(
-            tools, "_agent_role_map", {"assistant": cfg}, raising=False)
+        def clamped_mid_read(*a, **k):
+            # The clamp lands MID-READ. (It sets the rebuild flag too, but
+            # this call already passed the fence — exactly the in-flight
+            # window under test.)
+            reads.append(k["clearance"])
+            rec.origin["_origin_clearance"] = "public"
+            return real(*a, **k)
+        monkeypatch.setattr(memory_search, "search", clamped_mid_read)
         token = tools.engagement_var.set(rec)
         try:
-            res = await tools.recall_memory.handler({"query": "everything"})
+            res = await tools.search_memory.handler({"query": "alarm"})
         finally:
             tools.engagement_var.reset(token)
         out = _text(res)
+        assert reads == ["private", "public"]
         assert "alarm code" not in out
         assert "bins go out tuesday" in out
 
@@ -414,3 +406,65 @@ class TestInCasaLaunchGate:
         assert "text" not in delivered
         # The fresh floor client the rebuild registered is untouched.
         assert driver._clients[rec.id] is fresh
+
+
+class TestInCasaClampMidRead:
+    """An in_casa engagement's tool call inherits the launching turn's
+    ambient origin (private), while the clamp lowers the engagement's own
+    record. The record is the authority: a clamp landing mid-read makes
+    every memory tool read again at the record's new clearance."""
+
+    @pytest.mark.parametrize("tool_name,seam,args", [
+        ("search_memory", ("memory.search", "search"), {"query": "alarm"}),
+        ("browse_memory_day", ("memory.browse", "browse"),
+         {"date": "2026-10-05"}),
+        ("open_memory", ("memory.view", "open_objects"), None),
+    ])
+    async def test_every_memory_tool_rereads_at_the_clamped_record(
+        self, tmp_path, monkeypatch, tool_name, seam, args,
+    ):
+        import importlib
+        import json
+
+        import agent as agent_mod
+        import tools
+        from engagement_registry import EngagementRegistry
+        from memory import capture
+        from memory_serving_support import add, fact
+        from memory_tools_support import canary, new_store, store_event
+
+        secret = canary()
+        store = new_store(tmp_path / "mem")
+        monkeypatch.setitem(capture._wiring, "store", store)
+        store_event(store, f"the alarm code is {secret}", tier="private",
+                    day="2026-10-05")
+        store_event(store, "the alarm is tested on mondays", tier="public",
+                    day="2026-10-05")
+        _, (entry,) = add(store, [fact("alarm", f"code {secret}")])
+        if args is None:
+            args = {"ids": [entry]}
+        reg = EngagementRegistry(
+            tombstone_path=str(tmp_path / "e.json"), bus=None)
+        parent = {"role": "assistant", "channel": "telegram", "chat_id": "1",
+                  "_origin_route": "telegram", "_origin_clearance": "private"}
+        rec = await reg.create(
+            kind="specialist", role_or_type="finance", driver="in_casa",
+            task="t", topic_id=7, origin=dict(parent))
+        module = importlib.import_module(seam[0])
+        real = getattr(module, seam[1])
+        reads = []
+
+        def clamped_mid_read(*a, **k):
+            reads.append(k["clearance"])
+            rec.origin["_origin_clearance"] = "public"
+            return real(*a, **k)
+        monkeypatch.setattr(module, seam[1], clamped_mid_read)
+        agent_mod.origin_var.set(dict(parent))      # the inherited ambient
+        token = tools.engagement_var.set(rec)
+        try:
+            res = await getattr(tools, tool_name).handler(args)
+        finally:
+            tools.engagement_var.reset(token)
+        out = json.loads(_text(res))
+        assert reads == ["private", "public"]
+        assert secret not in json.dumps(out)

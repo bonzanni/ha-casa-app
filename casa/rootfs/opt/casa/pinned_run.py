@@ -496,7 +496,6 @@ class PinnedRun(ProcessTree):
     ended or its termination was confirmed."""
 
     TASK_WAIT_S = 5.0        # (a) the execution task's cancellation wait
-    LATE_WAIT_S = 3600.0     # a detached waiter's period between its "still alive" reports
     GRACE_S = 5.0            # (b) SIGTERM → SIGKILL
     EXIT_WAIT_S = 10.0       # (d)+(g) one deadline: pidfd exits and the callback drain
 
@@ -514,7 +513,6 @@ class PinnedRun(ProcessTree):
         self._drain: asyncio.Future | None = None
         self._capture: Capture | None = None
         self.close_task: asyncio.Task | None = None
-        self.transcript: tuple[str, str] | None = None   # (session id, cwd) the runner records
 
     def _close_started(self) -> bool:
         # the SDK's close (the normal end's teardown, which stops the servers)
@@ -701,60 +699,6 @@ class PinnedRun(ProcessTree):
                            "callbacks_drained=%s identity_ok=%s)", self.run_id, confirmed,
                            drained, not self._unconfirmed_identity)
         return ok
-
-    async def _wait_process_object(self, deadline: float) -> bool:
-        """The unpinned writer's exit, read from the transport's process
-        object (``returncode`` set) by polling until *deadline*; True at once
-        when the entry never produced a process (nothing can write)."""
-        _pid, proc = self._process_of(self._client)
-        if proc is None:
-            return True
-        loop = asyncio.get_running_loop()
-        while getattr(proc, "returncode", None) is None:
-            if loop.time() >= deadline:
-                return False
-            await asyncio.sleep(min(0.1, max(0.0, deadline - loop.time())))
-        return True
-
-    def schedule_after_exit(self, coro_factory: Callable[[], Any]) -> "asyncio.Task":
-        """An unconfirmed run's deferred cleanup (the transcript delete: its
-        writer may still flush, Astra diff round 3): a DETACHED task — never
-        awaited by the desk, whose bounded hold is over — waits for every
-        pinned fd to report exit (capped at LATE_WAIT_S), runs *coro_factory*
-        once, then closes the fds; the fds stay owned by the waiter until then."""
-        async def _later() -> None:
-            loop = asyncio.get_running_loop()
-            try:
-                # the period expiring is NOT exit evidence (Astra, diff round
-                # 5: a delete before the exit lets a later flush recreate the
-                # transcript for good) — keep the obligation, say so at every
-                # period, and run the cleanup only once the exit is confirmed
-                while True:
-                    deadline = loop.time() + self.LATE_WAIT_S
-                    exited = True
-                    for pinned in self._all():
-                        if not await self._wait_exit(pinned, deadline):
-                            exited = False
-                    if not self._all():
-                        # nothing could be pinned (pidfd_open failed) yet the
-                        # client holds a process that may still write: its exit
-                        # is read from the retained process object (diff round 4)
-                        exited = await self._wait_process_object(deadline)
-                    if exited:
-                        break
-                    logger.error("pinned run %s: a pinned process is still alive after %.0f s; "
-                                 "its deferred cleanup keeps waiting", self.run_id, self.LATE_WAIT_S)
-                await coro_factory()
-            finally:
-                self.close_fds()
-        task = asyncio.create_task(_later())
-        _LATE_TASKS.add(task)
-        task.add_done_callback(_LATE_TASKS.discard)
-        task.add_done_callback(_consume)
-        return task
-
-
-_LATE_TASKS: set = set()
 
 
 def _consume(task: "asyncio.Task") -> None:

@@ -697,7 +697,7 @@ def _desk_origin(*, resident_role: str, desk_role: str, chat_id: int, user_id: i
     needs, the resident's role, the specialist as the executing role, depth 1
     (as after any delegation: the specialist cannot delegate onward; the
     runner's own increment only deepens it), the turn id as the quota key and echo owner, the
-    operator's words raw, and the reserved desk marker."""
+    operator's words raw, the operator's read clearance, and the reserved desk marker."""
     return {
         "role": resident_role,
         "execution_role": desk_role,
@@ -713,6 +713,10 @@ def _desk_origin(*, resident_role: str, desk_role: str, chat_id: int, user_id: i
         "delegation_depth": 1,
         "_delegation_id": turn_id,
         "_origin_route": "telegram",
+        # The desk is the operator's own: the operator writing to a specialist
+        # in its topic reads at his clearance, as a delegation from his
+        # private chat does.
+        "_origin_clearance": "private",
         "_operator_turn": True,
         "desk": {"role": desk_role, "chat_id": chat_id},
         # browser executor §5.5: only a reply the operator typed carries his
@@ -1201,7 +1205,7 @@ async def handle_tap(
                 logger.warning("pinned run for %s could not start: %s", desk_role, type(exc).__name__)
             # THE one release path — the normal end, the ceiling and a
             # cancellation alike (BRAIN, diff round 2): the confirmation, the
-            # fault decision, the transcript delete, the fd close and the
+            # fault decision, the fd close and the
             # permit release happen together, in one function, shielded from
             # the cancellation; nothing in this turn releases by another route.
             _confirmed, interrupted = await _shielded(_settle_pinned_run(
@@ -1404,9 +1408,11 @@ async def _settle_pinned_run(owner: Any, run: "asyncio.Task | None", mode: str, 
     callback drained, every identity established — and on it, together and
     in this order: the fault decision (unconfirmed, or a teardown itself
     cancelled by a loop shutdown ⇒ the desk is faulted, told, and the health
-    report refreshed), the pinned run's transcript delete, the fd close and
-    the permit release. Nothing else in ``handle_tap`` performs any of these
-    (pinned structurally in tests/test_desk_tap.py)."""
+    report refreshed), the fd close and the permit release. Nothing else in
+    ``handle_tap`` performs any of these (pinned structurally in
+    tests/test_desk_tap.py). The pinned run's transcript is not deleted here:
+    like every delegated run's, it is kept for the retention pass
+    (INV-ENG-028)."""
     import tools as tools_mod
     confirmed = False
     try:
@@ -1432,26 +1438,8 @@ async def _settle_pinned_run(owner: Any, run: "asyncio.Task | None", mode: str, 
                 logger.warning("faulted-desk telling interrupted by a cancellation")
             except Exception as exc:  # noqa: BLE001 — the next regeneration carries it
                 logger.warning("faulted-desk telling failed: %s", type(exc).__name__)
-        late = False
-        if owner.transcript is not None:
-            # after termination is CONFIRMED — the runner's own delete assumes
-            # the client exited before it (INV-ENG-023); an unconfirmed writer
-            # may still flush, so its delete is deferred to a detached waiter
-            # that runs after the pinned fds report exit (Astra, diff round 3)
-            sid, directory = owner.transcript
-            if confirmed:
-                try:
-                    await tools_mod._delete_own_delegated_transcript(sid, directory, desk_role)
-                except asyncio.CancelledError:
-                    logger.warning("pinned run %s: transcript delete interrupted by a cancellation",
-                                   run_id)
-            else:
-                owner.schedule_after_exit(
-                    lambda: tools_mod._delete_own_delegated_transcript(sid, directory, desk_role))
-                late = True
     finally:
-        if not late:
-            owner.close_fds()               # a deferred waiter owns the fds otherwise
+        owner.close_fds()
         if permit is not None:
             permit.release()                # inside the desk lock, before it is released
     return confirmed

@@ -87,8 +87,8 @@ agent_loader.py enforces these rules. Adding a forbidden file or removing a requ
 
 ## Memory wiring per tier (v0.16.0 — Memory M4)
 
-Residents (Tier 1) carry long-term memory and read a recall digest each
-turn (clearance-gated by the channel's trust). Specialists (Tier 2) were
+Residents (Tier 1) carry long-term memory: each session is served a view
+of its ledger at its start (clearance-gated by the channel's trust). Specialists (Tier 2) were
 stateless per delegation through v0.16.0 — *Specialist memory (M4b,
 v0.17.0)* below documents the per-`(role, user_peer)` memory opt-in. Tier
 3 Executors are ephemeral per engagement, but may opt in to a
@@ -102,33 +102,32 @@ include:
       enabled: true       # default false
       token_budget: 2000
 
-When `enabled: true`, `engage_executor` reads the archive via
-semantic recall against the shared `casa` bank at the engagement's
-clearance and substitutes the digest into the prompt template's
-`{executor_memory}` slot before driver dispatch. The archive is populated
-by `_finalize_engagement` (one summary per terminal engagement) — no
-separate writer code.
+When `enabled: true`, `engage_executor` reads the archive — the summaries
+of earlier engagements of the same executor type, under the same doctrine
+epoch, readable at the engagement's clearance — from Casa's memory store and
+substitutes it into the prompt template's `{executor_memory}` slot before
+driver dispatch. The archive is populated by `_finalize_engagement` (one
+summary per terminal engagement) — no separate writer code.
 
 For Configurator (you), `memory.enabled: false` is shipped: an
 engagement starts without prior engagement summaries in its prompt, so it
-starts sooner. Summaries are still retained when an engagement ends.
+starts sooner. Summaries are still captured when an engagement ends.
 
 ## Specialist memory
 
-Specialists read and write the **shared `casa` Hindsight bank** via
-clearance-gated recall and sensitivity-tier-classified retain — there
-is no per-role Honcho session and no `honcho_session_id`. Memory is
-channel-agnostic and scoped by the recall query at read time.
+Memory is Casa's own store, built in: each turn's words are captured as
+they happen, and a writer files them into ledgers by sensitivity tier.
+There is no per-role memory and no external memory server.
 
 Trust filtering happens one level up: a specialist is callable from a
 channel iff some resident on that channel lists it in `delegates`.
-Once invoked, the specialist's recall draws from the shared bank at
-the engagement's inherited clearance.
+Once invoked, the specialist reads at the clearance its caller's context
+carries.
 
 Enabling memory on a specialist: set `memory.token_budget > 0` in
-`runtime.yaml`. Each `delegate_to_agent` call then triggers a recall
-pass against the shared bank. Disabling: set `token_budget: 0` (back
-to stateless).
+`runtime.yaml`. Each `delegate_to_agent` call then serves it the view of
+its ledger, with the brief. Disabling: set `token_budget: 0` (back to
+stateless; its output is then kept out of memory too).
 
 ## MCP service topology (v0.14.0)
 

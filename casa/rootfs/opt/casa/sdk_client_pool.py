@@ -446,7 +446,7 @@ class SdkClientPool:
                  monotonic=time.monotonic, wall_now=None,
                  on_force_close=None) -> None:
         if freshness is None:
-            from session_saver import freshness_window as freshness
+            from session_registry import freshness_window as freshness
         self._registry = session_registry
         self._decide = decide
         self._origin_ctxvar = origin_ctxvar
@@ -500,7 +500,7 @@ class SdkClientPool:
         return {"entries": len(self._entries), "closing": self._closing}
 
     async def turn(self, *, channel_key: str, channel: str, prompt: str,
-                   origin: dict, cid: str, build_options, on_stale_old,
+                   origin: dict, cid: str, build_options,
                    on_message,
                    on_success: Callable[[str], Awaitable[None]] | None = None,
                    on_decision: Callable[[str | None, bool, int | None], None] | None = None,
@@ -539,18 +539,16 @@ class SdkClientPool:
                 decision = self._decide(
                     channel, reg_entry, self._wall_now(),
                 )
-                # #290/#411: while a reset/wipe holds a retirement claim on
-                # this key, steer the turn to a FRESH session instead of the
-                # dying sid, and DON'T retain the old snapshot here — the
-                # retiring caller owns that retain (a second one would only
-                # be duplicate work). Checked in the pool, not the decide
-                # callback, so no pool user can exist without the steer;
-                # duck-typed so registry fakes without claims are unaffected.
+                # #290: while a reset holds a retirement claim on this key,
+                # steer the turn to a FRESH session instead of the dying sid.
+                # Checked in the pool, not the decide callback, so no pool
+                # user can exist without the steer; duck-typed so registry
+                # fakes without claims are unaffected.
                 _retiring = getattr(self._registry, "retirement_pending", None)
                 if _retiring is not None and _retiring(channel_key):
                     decision = dataclasses.replace(
                         decision, action="new", resume_sid=None,
-                        retain_old=False, old=None, reason="retiring",
+                        old=None, reason="retiring",
                     )
                 resume_sid = (
                     decision.resume_sid if decision.action == "resume" else None
@@ -575,22 +573,7 @@ class SdkClientPool:
                 )
                 if not reusable:
                     if entry.state == "warm":
-                        await entry.aclose()          # flush BEFORE retain (AR-4)
-                    # Task 9: hand the resume gate's own immutable snapshot to
-                    # the retain callback (sourced from the registry read under
-                    # the entry lock, AR-3) — never a sid reconstructed from the
-                    # pool's own possibly-stale ``entry.sid``. #411: the second
-                    # argument is the retain-fence generation the DECISION was
-                    # made under (captured by the decide callback in the same
-                    # no-await block as the registry read) — the aclose() await
-                    # above sits between decision and this call, and a memory
-                    # wipe completing inside it must make the spawned retain
-                    # discard rather than restore pre-wipe content.
-                    if decision.retain_old and decision.old is not None:
-                        on_stale_old(
-                            decision.old,
-                            getattr(decision, "fence_generation", None),
-                        )
+                        await entry.aclose()
                     options = await build_options(is_fresh, resume_sid)
                     fresh_client = ManagedSdkClient(
                         options,

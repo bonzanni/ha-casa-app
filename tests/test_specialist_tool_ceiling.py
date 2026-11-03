@@ -28,9 +28,12 @@ def test_allowlist_is_exactly_the_converged_set():
     # voice-job tools OUT (they act on the RESIDENT's state via the
     # inherited actor — r1 Sol); get_schedule kept (read-only, defended by
     # both reviewers in r3); send_media kept but quota-bound at dispatch.
+    # The three memory reads replace the one recall tool; correct_memory
+    # marks a resident turn's opening message and is not grantable here.
     assert SPECIALIST_CASA_TOOL_ALLOWLIST == frozenset({
         "query_engager", "emit_completion", "react", "ask_user",
-        "recall_memory", "ack_event", "get_schedule", "send_media",
+        "search_memory", "browse_memory_day", "open_memory", "ack_event",
+        "get_schedule", "send_media",
     })
 
 
@@ -38,7 +41,7 @@ def test_allowlisted_grants_load(tmp_path: Path):
     component_dir, manifest_path = write_minimal_component(
         tmp_path, tools_allowed=[
             "Read", "WebSearch",
-            "mcp__casa-framework__recall_memory",
+            "mcp__casa-framework__search_memory",
             "mcp__casa-framework__send_media",
             "mcp__plugin_bank-feed_bank-feed__list_banks",
         ])
@@ -134,7 +137,7 @@ def test_violations_helper_names_every_offender():
         "Read",
         "mcp__casa-framework",
         "mcp__casa-framework__engage_executor",
-        "mcp__casa-framework__recall_memory",   # allowlisted — not named
+        "mcp__casa-framework__search_memory",   # allowlisted — not named
         "mcp__plugin_x_x__tool",                # out of scope — not named
     ])
     assert offenders == [

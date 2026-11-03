@@ -344,9 +344,8 @@ class TestRegistrationGeneration:
     session's continuity/retention. Every ``register()`` stamps a process-local
     monotonic generation (NEVER persisted — a restart must not be able to
     collide with a generation loaded from disk); the whole conditional family
-    (``clear_sdk_session``/``remove``/``finish_save``/``clear_save_claim``/
-    ``try_begin_save``) declines when the entry's generation moved past the
-    caller's snapshot."""
+    (``clear_sdk_session``/``remove``) declines when the entry's generation
+    moved past the caller's snapshot."""
 
     async def _register(self, reg, key, sid):
         await reg.register(
@@ -433,47 +432,37 @@ class TestRegistrationGeneration:
         await reg.remove("telegram-g1")
         assert reg.generation("telegram-g1") is None
 
-    async def test_try_begin_save_declines_on_newer_generation(self, tmp_path):
-        """Sol design-r2: an unguarded claim can land on a NEWER registration
-        (whose sid mismatch is only detected downstream), and the guarded
-        clear/remove then decline forever — the claim must be generation-gated
-        BEFORE it mutates."""
-        reg = SessionRegistry(str(tmp_path / "s.json"))
-        await self._register(reg, "telegram-g1", "sid-A")
-        g1 = reg.generation("telegram-g1")
-        await self._register(reg, "telegram-g1", "sid-B")  # newer session
-        assert await reg.try_begin_save(
-            "telegram-g1", expected_generation=g1) is False
-        assert "consolidated_at" not in reg.get("telegram-g1")
 
-    async def test_try_begin_save_proceeds_on_matching_generation(self, tmp_path):
-        reg = SessionRegistry(str(tmp_path / "s.json"))
-        await self._register(reg, "telegram-g1", "sid-A")
-        g1 = reg.generation("telegram-g1")
-        assert await reg.try_begin_save(
-            "telegram-g1", expected_generation=g1) is True
-        assert "consolidated_at" in reg.get("telegram-g1")
 
-    async def test_finish_save_declines_after_same_sid_reregistration(self, tmp_path):
-        reg = SessionRegistry(str(tmp_path / "s.json"))
-        await self._register(reg, "telegram-g1", "sid-A")
-        g1 = reg.generation("telegram-g1")
-        assert await reg.try_begin_save("telegram-g1", expected_generation=g1)
-        await self._register(reg, "telegram-g1", "sid-A")  # mid-save re-register
-        await reg.finish_save(
-            "telegram-g1", "sid-A", expected_generation=g1)
-        assert reg.get("telegram-g1") is not None  # fresh registration spared
+# --- the freshness windows (spec §3.3) ---------------------------------------
 
-    async def test_clear_save_claim_declines_after_same_sid_reregistration(
-            self, tmp_path):
-        reg = SessionRegistry(str(tmp_path / "s.json"))
-        await self._register(reg, "telegram-g1", "sid-A")
-        g1 = reg.generation("telegram-g1")
-        assert await reg.try_begin_save("telegram-g1", expected_generation=g1)
-        await self._register(reg, "telegram-g1", "sid-A")
-        # register() already wiped the claim; a stale saver's guarded release
-        # must not touch the fresh entry (idempotent decline).
-        entry_before = dict(reg.get("telegram-g1"))
-        await reg.clear_save_claim(
-            "telegram-g1", "sid-A", expected_generation=g1)
-        assert reg.get("telegram-g1") == entry_before
+
+async def test_freshness_voice_is_short(monkeypatch):
+    from datetime import timedelta
+    from session_registry import freshness_window
+    monkeypatch.delenv("FRESHNESS_VOICE_MINUTES", raising=False)
+    assert freshness_window("voice") == timedelta(minutes=30)
+
+
+async def test_freshness_telegram_is_long(monkeypatch):
+    from datetime import timedelta
+    from session_registry import freshness_window
+    monkeypatch.delenv("FRESHNESS_TELEGRAM_HOURS", raising=False)
+    assert freshness_window("telegram") == timedelta(hours=12)
+
+
+async def test_freshness_unknown_channel_falls_back_to_telegram_default(monkeypatch):
+    from datetime import timedelta
+    from session_registry import freshness_window
+    monkeypatch.delenv("FRESHNESS_TELEGRAM_HOURS", raising=False)
+    assert freshness_window("something-else") == timedelta(hours=12)
+
+
+async def test_freshness_env_override(monkeypatch):
+    from datetime import timedelta
+    from session_registry import freshness_window
+    monkeypatch.setenv("FRESHNESS_VOICE_MINUTES", "10")
+    monkeypatch.setenv("FRESHNESS_TELEGRAM_HOURS", "3")
+    assert freshness_window("voice") == timedelta(minutes=10)
+    assert freshness_window("telegram") == timedelta(hours=3)
+    assert freshness_window("something-else") == timedelta(hours=3)

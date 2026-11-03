@@ -12,7 +12,7 @@ An always-on fleet of Claude-powered AI agents inside your Home Assistant.
   research, configuration work), each with scoped tool permissions.
 
 Also on board: cron-style scheduling with real timezone handling, optional
-long-term semantic memory (Hindsight), secrets as 1Password `op://` references,
+built-in long-term memory, secrets as 1Password `op://` references,
 a web terminal in the ingress panel, HMAC-authenticated webhooks, and a custom
 AppArmor profile.
 

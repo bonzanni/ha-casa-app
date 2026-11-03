@@ -118,7 +118,7 @@ def test_every_service_is_a_member_of_the_user_bundle():
     services = sorted(p.name for p in (root / "s6-rc.d").iterdir() if p.is_dir())
     members = sorted(
         p.name for p in (root / "user-bundles.d" / "user" / "contents.d").iterdir())
-    assert len(services) == 8, services
+    assert len(services) == 9, services
     assert members == services
 
 

@@ -254,7 +254,6 @@ async def test_shared_writer_interleaves_utterances_and_delivery_protocol(
         sse_path="/sse",
         ws_path="/ws",
         agent_configs=configs,
-        memory=AsyncMock(),
         idle_timeout=300,
         route_registry=routes,
         delivery_coordinator=coordinator,

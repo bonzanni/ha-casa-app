@@ -766,7 +766,9 @@ def _worker_cwd(monkeypatch):
 
 async def _reap(h):
     import engagement_transcript_reaper
-    return await engagement_transcript_reaper.reap_engagement_transcripts(h.reg)
+    from test_engagement_transcript_reaper import after_retention
+    return await engagement_transcript_reaper.reap_engagement_transcripts(
+        h.reg, now=after_retention())
 
 
 async def test_reaper_deletes_every_fresh_batch_transcript_and_nothing_else(

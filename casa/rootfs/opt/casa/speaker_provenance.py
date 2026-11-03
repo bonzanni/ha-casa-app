@@ -149,7 +149,7 @@ def validate_speaker_provenance(value: SpeakerProvenance) -> None:
         # A machine author reached through a shared bearer secret (#204). It
         # gets a peer so the originating trigger stays attributable, but never
         # a user_id or display_name — those are what promote a provenance to a
-        # NAMED person in recall_renderer.provenance_view, and a shared secret
+        # NAMED person, and a shared secret
         # identifies no human. Agent fields stay null: it is not one of Casa's
         # own roles either.
         if not value.user_peer:

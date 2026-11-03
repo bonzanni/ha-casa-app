@@ -421,14 +421,13 @@ class ProcessError(Exception):
 
 
 # --- Session API (0.2.x) -------------------------------------------------
-# The long-term-save path imports these at module top-level
-# (session_saver.get_session_messages, session_sweeper.delete_session). The
-# offline harness has no persisted transcript, so they are inert: read returns
-# an empty transcript (the save path then retains nothing) and delete is a
-# recorded no-op. Mirrors the real 0.2.87 surface so casa_core imports cleanly.
+# Mirrors the real 0.2.87 session surface (get_session_messages,
+# session_sweeper's delete_session). The offline harness has no persisted
+# transcript, so they are inert: read returns an empty transcript and delete
+# is a recorded no-op.
 @dataclass
 class SessionMessage:
-    """Mock of claude_agent_sdk.SessionMessage. The save path reads ``.type``
+    """Mock of claude_agent_sdk.SessionMessage: ``.type``
     ('user'|'assistant') and ``.message`` (Any)."""
 
     type: str = "user"

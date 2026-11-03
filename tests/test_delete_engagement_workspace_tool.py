@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
+from test_memory_capture import mem, summaries  # noqa: F401 — fixture
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
 
@@ -357,13 +358,11 @@ async def test_non_boolean_force_is_rejected(tmp_path, monkeypatch, bad_force):
     assert (tmp_path / "eng-live").exists()  # workspace untouched
 
 
-async def test_force_delete_writes_meta_scope_summary(tmp_path, monkeypatch):
-    """M2.G4 (rewritten for the shared-bank rearch) — force=True on a
-    still-live engagement must write a summary before pulling the workspace.
-    The regression intent is preserved: force-delete is NOT silent."""
+async def test_force_delete_writes_meta_scope_summary(tmp_path, monkeypatch,
+                                                     mem):
+    """M2.G4 — force=True on a still-live engagement must capture a summary
+    before pulling the workspace: force-delete is NOT silent."""
     import sys
-    import agent as agent_mod
-    import delegated_memory
     from engagement_registry import EngagementRegistry
     from tools import delete_engagement_workspace, init_tools
 
@@ -381,25 +380,7 @@ async def test_force_delete_writes_meta_scope_summary(tmp_path, monkeypatch):
     )
     # Engagement starts in 'active' (live) status — force=True path.
 
-    # Recording semantic-memory fake exposed on the agent module the way
-    # the production singleton would be.
-    class _Sem:
-        def __init__(self):
-            self.retain_calls = []
-
-        async def retain(self, bank, items, *, async_=True):
-            self.retain_calls.append({"bank": bank, "items": items})
-
-    sem = _Sem()
-    monkeypatch.setattr(agent_mod, "active_semantic_memory", sem, raising=False)
-
-    async def _fake_classify(text):
-        return "private"
-
-    monkeypatch.setattr(delegated_memory, "classify_tier", _fake_classify)
-
     fake_agent_mod = MagicMock()
-    fake_agent_mod.active_semantic_memory = sem
     fake_agent_mod.active_engagement_driver = None
     fake_agent_mod.active_claude_code_driver = None
     monkeypatch.setitem(sys.modules, "agent", fake_agent_mod)
@@ -423,29 +404,14 @@ async def test_force_delete_writes_meta_scope_summary(tmp_path, monkeypatch):
     payload = json.loads(res["content"][0]["text"])
     assert payload["status"] == "ok"
 
-    # L33 moved the retains off the turn's critical path into background
-    # tasks (_finalize_engagement schedules retain_delegated via
-    # asyncio.create_task) — drain them before asserting, else the fake
-    # deterministically records nothing.
-    import tools as tools_mod
-    pending = list(tools_mod._specialist_bg_tasks)
-    if pending:
-        await asyncio.gather(*pending)
-
-    # A structured engagement summary was retained on the shared `casa` bank
-    # with status=='cancelled' — force-delete finalises as cancelled,
-    # confirming that force-delete is NOT silent.
-    assert sem.retain_calls, "expected a retain on force-delete; got none"
-    summaries = [
-        json.loads(i["content"])
-        for c in sem.retain_calls for i in c["items"]
-    ]
+    # force-delete finalises as cancelled, and the summary says so.
+    stored = [json.loads(row["text"]) for row in summaries(mem)]
     eng_summary = next(
-        (s for s in summaries if s.get("kind") == "engagement_summary"),
+        (s for s in stored if s.get("kind") == "engagement_summary"),
         None,
     )
     assert eng_summary is not None, (
-        f"expected engagement_summary in retain; got: {summaries}"
+        f"expected an engagement_summary captured; got: {stored}"
     )
     assert eng_summary["status"] == "cancelled", (
         f"force-delete finalises as cancelled; got: {eng_summary['status']}"

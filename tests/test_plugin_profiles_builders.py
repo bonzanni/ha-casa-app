@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 import re
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
 
@@ -129,13 +128,9 @@ async def test_resident_builder_enforces_the_live_profile(tmp_path, profiled):
         tools=ToolsConfig(allowed=["Read"], disallowed=[]),
         memory=MemoryConfig(token_budget=800, read_strategy="cached"),
     )
-    memory = AsyncMock()
-    memory.profile.return_value = ""
-    memory.recall.return_value = ""
     resident = Agent(
         config=cfg, session_registry=SessionRegistry(str(tmp_path / "sessions.json")),
         mcp_registry=McpServerRegistry(), channel_manager=ChannelManager(),
-        semantic_memory=memory,
     )
     opts = await resident._build_options(
         channel="telegram", channel_key="telegram-k", is_fresh=True,

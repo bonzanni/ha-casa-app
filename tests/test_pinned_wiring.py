@@ -3,7 +3,7 @@ builder consumes the build input the tap CAPTURED under the desk lock (no
 second resolve, no filter, no rebuild, no plan) and puts the pin matcher
 FIRST; the capture withholds exactly what the builder withholds; the
 delegated runner obtains its client from the controller and never exits it,
-retains nothing and leaves the transcript to the controller
+captures nothing and leaves the transcript to the controller
 (INV-PROP-001, INV-PROP-002).
 """
 from __future__ import annotations
@@ -25,7 +25,7 @@ import tools as tools_mod
 from plugin_grants import ProfilePlan, protected_map, result_contract_map
 from plugin_registry import ResolutionResult, ResolvedPlugin
 from test_delegate_to_agent import _specialist_cfg, _with_origin
-from test_delegated_transcript_delete import _Harness, _project, _write_session
+from test_delegated_transcript_retention import _Harness, _project, _write_session
 
 MISSING = "S5_WIRING_MISSING_VAR"
 
@@ -146,14 +146,15 @@ def runner_env(tmp_path, monkeypatch, bound):
     cwd.mkdir(parents=True)
     cfg = _specialist_cfg()
     cfg.cwd = str(cwd)
-    cfg.memory.token_budget = 4000                       # retention is reachable
-    retains = []
+    cfg.memory.token_budget = 4000                       # capture is reachable
+    captures = []
 
-    async def fake_retain(sem, **kw):
-        retains.append(kw)
-    monkeypatch.setattr(tools_mod, "retain_delegated", fake_retain)
-    monkeypatch.setattr(agent_mod, "active_semantic_memory", object(), raising=False)
-    return types.SimpleNamespace(cfg=cfg, retains=retains, monkeypatch=monkeypatch)
+    async def fake_record(item):
+        captures.append(item.text)
+        return object()                                  # a receipt
+    from memory import capture
+    monkeypatch.setattr(capture, "record", fake_record)
+    return types.SimpleNamespace(cfg=cfg, captures=captures, monkeypatch=monkeypatch)
 
 
 def _install(monkeypatch, h, *, cli_pid=None):
@@ -179,7 +180,7 @@ def _install(monkeypatch, h, *, cli_pid=None):
     monkeypatch.setattr(claude_agent_sdk, "delete_session", h.recording_delete())
 
 
-async def test_the_pinned_runner_hands_its_client_to_the_controller_and_retains_nothing(runner_env):
+async def test_the_pinned_runner_hands_its_client_to_the_controller_and_captures_nothing(runner_env):
     cfg, monkeypatch = runner_env.cfg, runner_env.monkeypatch
     cli = subprocess.Popen([sys.executable, "-c", "import time\nwhile True: time.sleep(1)"])
     try:
@@ -198,17 +199,16 @@ async def test_the_pinned_runner_hands_its_client_to_the_controller_and_retains_
         assert out.text == "answer"
         assert len(h.launches) == 1 and h.exits_done == 0        # entered by the controller, never exited here
         assert h.launches[0].hooks["PreToolUse"][0].hooks == [owner.pin_hook]
-        assert owner.transcript == (h.launches[0].session_id, cfg.cwd)
-        assert h.deletes == []                                   # the controller deletes after termination
+        assert h.deletes == []                                   # nothing deletes it on the run's path
         assert owner.pinned_pids() == {cli.pid} and owner.alive()
         for _ in range(3):
             await asyncio.sleep(0)
-        assert runner_env.retains == []                          # a stored-call turn retains nothing
+        assert runner_env.captures == []                         # a stored-call turn captures nothing
         # normal completion: the controller's orderly close, confirmed by pidfd, no SDK await
         assert await owner.finish() is True
         assert h.exits_done == 1 and owner.alive() is False and owner.sealed
         assert len(h.written) == 1                               # the CLI flushed its transcript on exit…
-        assert h.deletes == []                                   # …and the desk deletes it, not the runner
+        assert h.deletes == []                                   # …kept for the retention pass
     finally:
         try:
             os.kill(cli.pid, 9)
@@ -217,17 +217,15 @@ async def test_the_pinned_runner_hands_its_client_to_the_controller_and_retains_
         cli.wait(timeout=5)
 
 
-async def test_the_unpinned_runner_still_exits_its_client_retains_and_deletes(runner_env):
+async def test_the_unpinned_runner_still_exits_its_client_captures_and_keeps_its_transcript(runner_env):
     cfg, monkeypatch = runner_env.cfg, runner_env.monkeypatch
     h = _Harness()
     _install(monkeypatch, h)
     out = await _with_origin(tools_mod._run_delegated_agent(cfg, "task", "", resolution=None),
                              _origin())
     assert out.text == "answer"
-    assert h.exits_done == 1 and len(h.deletes) == 1
-    for _ in range(3):
-        await asyncio.sleep(0)
-    assert len(runner_env.retains) == 1                          # the positive control retains
+    assert h.exits_done == 1 and len(h.written) == 1 and h.deletes == []
+    assert runner_env.captures == ["task", "answer"]             # the positive control captures
 
 
 # --- #1220: the stored tool is in the pinned turn's first request -----------------------------

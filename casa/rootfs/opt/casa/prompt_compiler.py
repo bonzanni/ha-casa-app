@@ -9,6 +9,10 @@ plus the image-owned safety kernel, in a FIXED section order:
     <platform_frame> <role_identity> <persona> <role_doctrine>
     <response_shape> <safety_kernel>
 
+At serve time :func:`projection_for` places the session's memory view in one
+opaque slot between ``<persona>`` and ``<role_doctrine>``, outside the
+ceilings and the digest.
+
 The restricted-webhook surface strips the persona entirely (an untrusted
 webhook origin must never see the resident's persona identity). Each surface
 enforces an admission ceiling (persona token budget + total token budget) and
@@ -22,7 +26,7 @@ claims to bind is rejected as tampered/stale.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Mapping
 
 from canonical_bytes import canonical_text, checksum_bytes
@@ -311,9 +315,30 @@ def compile_prompt_bundle(
     )
 
 
-def projection_for(bundle: CompiledPromptBundle, *, channel: str, origin_route: str | None) -> CompiledProjection:
+_DOCTRINE_OPEN = "<role_doctrine>\n"
+
+
+def projection_for(
+    bundle: CompiledPromptBundle, *, channel: str, origin_route: str | None,
+    memory: str = "",
+) -> CompiledProjection:
+    """The compiled projection for this surface. ``memory`` is the served
+    memory view, placed in the projection's one opaque slot: after the
+    persona, before the role doctrine. The slot is outside every admission
+    ceiling, and the projection keeps its compiled ``digest`` and token
+    estimate, so a memory commit never changes the digests a session's
+    resume is gated on."""
     if origin_route == "webhook_trigger":
-        return bundle.restricted_webhook
-    if channel == "voice":
-        return bundle.voice
-    return bundle.text
+        projection = bundle.restricted_webhook
+    elif channel == "voice":
+        projection = bundle.voice
+    else:
+        projection = bundle.text
+    if not memory:
+        return projection
+    prompt = projection.system_prompt
+    at = prompt.find(_DOCTRINE_OPEN)
+    if at < 0:
+        at = len(prompt)
+    block = memory.rstrip("\n") + "\n"
+    return replace(projection, system_prompt=prompt[:at] + block + prompt[at:])

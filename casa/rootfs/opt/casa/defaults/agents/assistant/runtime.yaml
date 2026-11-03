@@ -39,7 +39,10 @@ tools:
     # Router-compatible: it triggers a server-posted keyboard, the ONLY
     # surface whose Approve commits; never relay a consent via ask_user.
     - mcp__casa-framework__consent_reprompt
-    - mcp__casa-framework__recall_memory
+    - mcp__casa-framework__search_memory
+    - mcp__casa-framework__browse_memory_day
+    - mcp__casa-framework__open_memory
+    - mcp__casa-framework__correct_memory
     - mcp__casa-framework__send_message
     # slice 5l — a delegate's answer, posted by Casa under its header
     - mcp__casa-framework__relay_answer
@@ -74,7 +77,7 @@ tools:
 mcp_server_names:
   - casa-framework
 memory:
-  token_budget: 5000                     # Phase 5 — honest envelope for 40/60 overlay/scope split
+  token_budget: 50000                    # tokens of served memory view: whole ledger while it fits
   read_strategy: per_turn
 channels:
   - telegram

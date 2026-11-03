@@ -170,13 +170,6 @@ class _Cfg:
         self.tts = type("T", (), {"tag_dialect": dialect})()
 
 
-class _DummyMemory:
-    async def ensure_session(self, *a, **kw): return None
-    async def get_context(self, *a, **kw): return ""
-    async def add_turn(self, *a, **kw): return None
-    async def profile(self, bank: str) -> str: return ""
-
-
 async def _client_for(agent: _DeltaAgent, cfg: _Cfg):
     """A running VoiceChannel serving one stub agent, both transports."""
     bus = MessageBus()
@@ -185,7 +178,7 @@ async def _client_for(agent: _DeltaAgent, cfg: _Cfg):
     channel = VoiceChannel(
         bus=bus, default_agent="butler", webhook_secret=VOICE_TEST_SECRET,
         sse_path="/api/converse", ws_path="/api/converse/ws",
-        agent_configs={"butler": cfg}, memory=_DummyMemory(),
+        agent_configs={"butler": cfg},
         idle_timeout=300,
     )
     app = web.Application(middlewares=[cid_middleware])

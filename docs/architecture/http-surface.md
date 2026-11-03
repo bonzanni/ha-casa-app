@@ -158,7 +158,7 @@ mistake for "no identity" — there is no quiet fallback to an anonymous or syst
 
 **No peer names the operator.** The route used to fix the operator's peer as a hardcoded
 constant, so with the accept-all configuration any Telegram user's turns were recorded
-under the operator's identity and ran at the operator's private recall clearance. #336
+under the operator's identity and ran at the operator's private read clearance. #336
 fixed the clearance half per sender; the peer half was fixed by deleting the constant
 outright — the operator is `telegram:<their id>` like everyone else, and *clearance* is
 the only thing that distinguishes them. The two consequences to hold on to are that

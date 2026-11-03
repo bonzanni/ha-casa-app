@@ -1,27 +1,40 @@
 ---
-last_reviewed: 2026-10-07
+last_reviewed: 2026-11-02
 ---
 
-# Engagement transcript reaping: deleting a finished `in_casa` engagement's CLI transcripts
+# Transcript reaping: a finished engagement's and a delegation's CLI transcripts
 
 > Code is the source of truth. This file is a map; when it and the code disagree, the code wins.
 
 ## Scope
 
-Where a finished `in_casa` engagement's CLI transcripts are deleted: the pass that removes
-the files a terminal record attributes to it, what it never selects, and what it retries.
+Where a finished engagement's CLI transcripts are deleted: the pass that removes the files a
+terminal `in_casa` record attributes to it once their retention has passed, the gate it and the
+`claude_code` workspace sweep ask first, what it never selects, and what it retries — and
+the delegated retention pass, which deletes an ephemeral delegation's session the same way.
 How a durable engagement ends — the terminal transition whose on-disk status this pass waits
 for — is [`architecture/engagement-finalization.md`](engagement-finalization.md).
 
 ## Mental model
 
 **The terminal record is the unit, never the folder.** The pass deletes what a terminal
-record names or owns and nothing else: it never lists a folder or selects by age, so what no
-record names stays on disk. The invariant below states what that selects, and its gaps.
+record names or owns and nothing else: it never lists a folder, so what no record names stays
+on disk. **A transcript outlives its engagement by the retention, and never outlives an
+unconfirmed run.** The invariant below states what that selects, and its gaps.
 
 ## Contracts & invariants
 
-**INV-ENG-022**: Once an `in_casa` engagement's terminal status is on disk, a pass run at scheduler start and every six hours deletes its CLI transcripts — a plugin job's whole per-engagement project folder, or, for a specialist or executor, each session the record names (its current session, every session its background job lists, and every session a clearance downgrade retired from it) in that record's own project folder — and a plugin job's working folder `/data/engagements/<id>`, and selects nothing else. A pass that cannot import the SDK's folder lookup deletes no transcript.
+**INV-ENG-027**: Once an `in_casa` engagement's terminal status is on disk and `TRANSCRIPT_RETENTION_DAYS` have passed since its `completed_at`, a pass run at scheduler start and every six hours deletes its CLI transcripts — a plugin job's whole per-engagement project folder, or, for a specialist or executor, each session the record names (its current session, every session its background job lists, and every session a clearance downgrade retired from it) in that record's own project folder — each only where the run-confirmation gate passes, and a plugin job's working folder `/data/engagements/<id>` at once, and selects nothing else; a `claude_code` workspace past its `retention_until` is deleted whole only where the gate passes for it, and is kept whole otherwise. A pass that cannot import the SDK's folder lookup deletes no transcript.
+
+**The gate** is `memory/transcript_runs.py`'s, asked at each delete and never copied:
+nothing in a folder is deleted while a run registered in that folder is unconfirmed. The
+finalize registers its summary run, one row naming the engagement's folder, before the
+terminal flip that makes the record eligible here (`tools.py::_register_summary_run`). A
+crash between the flip and the summaries' capture therefore keeps every transcript in that
+folder — a sibling engagement's in a shared folder too — until a wipe, counted unresolved
+(INV-MEM-031, in [`architecture/memory-lifecycle.md`](memory-lifecycle.md)). The workspace
+sweep runs its gate and its removals in a worker thread, off the event loop. After a delete the rows that
+named it are removed. The pass reads no transcript.
 
 Casa owns transcript deletion: the CLI's own cleanup never fires for an `in_casa` launch, since
 no SDK launch loads user settings or passes `cleanupPeriodDays` (INV-MEM-021, in
@@ -32,8 +45,10 @@ subagents and oversized tool results) under the CLI projects root, in a folder n
 the session's working directory; a `claude_code` engagement keeps its transcript inside its
 workspace, which goes with the workspace. Nothing resumes or reads an `in_casa` transcript
 once its record is terminal, so the pass deletes the files the record attributes to it. The
-folder comes from the launch's own working-directory constructor run through the SDK's
-lookup — a plugin job's folder is unique to the engagement, so it goes whole with every
+folder comes from the launch's own working-directory constructor
+(`engagement_transcript_reaper.py::transcript_cwd`, the same one a run registers under:
+the cwd persisted on the record at its first open, which every later resume and rebuild
+launches in too, so a configuration reload cannot move it) run through the SDK's lookup — a plugin job's folder is unique to the engagement, so it goes whole with every
 batch's session in it; a specialist's folder (its configured working directory, else its
 agent home) and the executors' shared `/config` folder hold other sessions, so only the
 named ones go, a zero-byte file included. A clearance downgrade (INV-MEM-011) records the
@@ -56,14 +71,33 @@ it logs one warning naming the helper, counts an error, deletes no transcript an
 the next pass. The end-to-end test image's mock SDK carries a copy of the same lookup, so the
 pass runs there as it does in production.
 
-What it does not cover, and these are gaps rather than retention: it never lists a folder or
-selects by age, so sessions no record names stay — any plugin-job folder whose record is
-gone, and the sessions of a specialist that has since been uninstalled (its folder can no
-longer be derived) or given another working directory. (A delegation deletes its own session
-as it ends and a utility one-shot writes none: INV-ENG-023, in
-[`architecture/delegation.md`](delegation.md).) A terminal record's row ages out of the
-tombstone once it is 30 days old, and the pass never selects a record without one, so a
-removal that fails for that long is not retried.
+What it does not cover, and these are gaps rather than retention: it never lists a folder,
+so sessions no record names stay — any plugin-job folder whose record is gone, and the
+sessions of a specialist that has since been uninstalled (its folder can no longer be
+derived) or given another working directory. (A delegation's session is deleted by the
+delegated retention pass and a utility one-shot writes none: INV-ENG-028, below.) A terminal `in_casa` record's row stays in
+the tombstone until the pass has found nothing left of its transcripts to delete (all
+removed, already absent, or none it could ever find) and marked it `transcripts_reaped`, and
+only then ages out at its 30 days — so downtime past the retention, a failed removal or a
+held transcript keeps the record, and the pass deletes the transcript once it can.
+
+**INV-ENG-028**: An ephemeral delegation runs under a session id Casa chooses for that launch, registered in `transcript_runs` before its request is captured and before its client starts; the run is confirmed only once its request's and its answer's captures are durable or the live rules capture nothing; its transcript is deleted only by the delegated retention pass or a wipe — that one session, in its own project folder, once the run is confirmed and `TRANSCRIPT_RETENTION_DAYS` have passed since it ended — and an unconfirmed run's transcript never by retention; the utility one-shots (the observer, the tier classifier, `query_engager`'s synthesis, run admission's reading) persist no transcript at all.
+
+Every delegation — synchronous, asynchronous, both voice paths and a stored-call tap — goes
+through one runner, which registers the run (`tools.py::_register_delegated_run`) and starts
+a fresh CLI session in the specialist's working directory. The folder is shared with the
+specialist's other sessions, so the runner names its session on its own copy of the options
+(the shared builder carries no id: engagements launch and resume through it). The runner's
+outermost `finally` encloses the answer's capture and confirms the run; its client's exit
+records the end the retention counts from (an earlier process's run that never ended counts
+from its start). A role whose exchange is never captured registers already confirmed: its
+row is only the retention pass's index. The pass (`memory/transcript_runs.py::retention_pass`,
+scheduled with the engagement reaper) deletes the session a row names through the SDK, never
+from a folder listing, and asks the gate (INV-MEM-031) first. The one-shots pass
+`--no-session-persistence`.
+
+What it does not cover: a run whose registration failed has no row, so its transcript is
+never deleted.
 
 ## Failure behavior
 
@@ -76,7 +110,8 @@ engagement the file was never written, which is not a fault.
 
 **A new place an `in_casa` launch writes a session** has to be named by the record, or by a
 folder the record alone owns, for the pass to delete it: the pass selects only what a
-terminal record attributes to it, so a session no record names stays on disk.
+terminal record attributes to it, so a session no record names stays on disk. **A new
+deleter of engagement transcripts** asks `transcript_runs.blocked` at its delete.
 
 ## Source & test map
 
@@ -85,10 +120,15 @@ terminal record attributes to it, so a session no record names stays on disk.
 
 **Source**
 - `casa/rootfs/opt/casa/engagement_transcript_reaper.py::reap_engagement_transcripts`
+- `casa/rootfs/opt/casa/engagement_transcript_reaper.py::transcript_cwd`
+- `casa/rootfs/opt/casa/tools.py::_register_delegated_run`
 
 **Tests**
 - `tests/test_engagement_transcript_reaper.py`
 - `tests/test_engagement_transcript_reaper_pins.py`
+- `tests/test_transcript_confirmation.py`
+- `tests/test_transcript_retention.py`
+- `tests/test_delegated_transcript_retention.py`
 
 **Related**
 - [`architecture/engagement-finalization.md`](../architecture/engagement-finalization.md)

@@ -52,7 +52,7 @@ only; when a specialist asked (finance handing invoices to the browsing speciali
 answer then becomes the task of a turn of that specialist under that specialist's own
 desk, whose answer climbs on. A requester no longer loaded fails the climb with Casa's own
 message (`RequesterUnavailable`), never with one role's answer passed off as another's. A relay's task is Casa's text and is
-never banked as the requester's words (INV-MEM-024).
+never captured as the requester's words (INV-MEM-032).
 
 **A turn that only made progress tells nobody** (operator ruling 2026-10-18). The
 specialist declares it itself: a continuation turn whose whole answer is exactly `<silent/>`

@@ -1,13 +1,11 @@
-"""#215 — the procedural epoch: digest inputs, stability, and the archive
-epoch filter."""
+"""#215 — the procedural epoch: digest inputs and stability. The archive's
+epoch filter is pinned in tests/test_executor_memory_tiers.py."""
 
 from types import SimpleNamespace
 
 import pytest
 
-from executor_epoch import (
-    compute_procedural_epoch, epoch_application_tag, make_archive_epoch_filter,
-)
+from executor_epoch import compute_procedural_epoch
 
 pytestmark = [pytest.mark.unit]
 
@@ -104,33 +102,3 @@ class TestDigestInputs:
     def test_doctrineless_executor_digests(self, tmp_path):
         defn = _defn(tmp_path, doctrine=False)
         assert _epoch(defn) == _epoch(defn)
-
-
-class TestArchiveEpochFilter:
-    def _hit(self, tags):
-        return SimpleNamespace(application_tags=tuple(tags))
-
-    def test_keeps_matching_drops_mismatched_and_untagged(self):
-        """#215 red case: on the pre-fix tree a mismatched-epoch summary was
-        injected into the executor prompt; the filter must keep ONLY the
-        current epoch's lessons."""
-        tag = epoch_application_tag("configurator", "a" * 64)
-        other = epoch_application_tag("configurator", "b" * 64)
-        keep = self._hit(["private", tag])
-        stale = self._hit(["private", other])
-        legacy = self._hit(["private"])          # pre-#215 item: no epoch tag
-        out = make_archive_epoch_filter(tag)((keep, stale, legacy))
-        assert out == (keep,)
-
-    def test_cross_type_lessons_dropped(self):
-        tag_cfg = epoch_application_tag("configurator", "a" * 64)
-        tag_dev = epoch_application_tag("plugin-developer", "a" * 64)
-        out = make_archive_epoch_filter(tag_cfg)((self._hit([tag_dev]),))
-        assert out == ()
-
-    def test_empty_epoch_tag_matches_nothing_stamped(self):
-        """A legacy record without a persisted epoch filters everything —
-        never mislabels (claude_code resume path)."""
-        tag = epoch_application_tag("configurator", "")
-        stamped = self._hit([epoch_application_tag("configurator", "a" * 64)])
-        assert make_archive_epoch_filter(tag)((stamped,)) == ()

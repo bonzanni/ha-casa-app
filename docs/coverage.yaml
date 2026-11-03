@@ -78,7 +78,7 @@
 - item: casa/rootfs/opt/casa/config_sync.py
   doc: architecture/config-reconciliation.md
 - item: casa/rootfs/opt/casa/delegated_memory.py
-  doc: architecture/memory.md
+  doc: architecture/memory-capture.md
 - item: casa/rootfs/opt/casa/handoff.py
   doc: architecture/specialist-handoff.md
 - item: casa/rootfs/opt/casa/operator_calls.py
@@ -135,16 +135,8 @@
   doc: architecture/agent-taxonomy.md
 - item: casa/rootfs/opt/casa/explanation_store.py
   doc: architecture/persistent-state.md
-- item: casa/rootfs/opt/casa/freshness_reaper.py
-  doc: architecture/memory-lifecycle.md
 - item: casa/rootfs/opt/casa/ha_mcp_facade.py
   doc: architecture/home-assistant-control.md
-- item: casa/rootfs/opt/casa/hindsight_ids.py
-  doc: architecture/memory.md
-- item: casa/rootfs/opt/casa/hindsight_memory.py
-  doc: architecture/memory.md
-- item: casa/rootfs/opt/casa/hindsight_provenance_contract.py
-  doc: architecture/memory-labelling.md
 - item: casa/rootfs/opt/casa/hooks.py
   doc: architecture/hook-resolution.md
 - item: casa/rootfs/opt/casa/ingress_identity.py
@@ -159,12 +151,58 @@
   doc: architecture/observability.md
 - item: casa/rootfs/opt/casa/mcp_envelope.py
   doc: architecture/tools-interface.md
-- item: casa/rootfs/opt/casa/memory_provenance.py
-  doc: architecture/memory-lifecycle.md
-- item: casa/rootfs/opt/casa/memory_wipe.py
+- item: casa/rootfs/opt/casa/memory/__init__.py
+  doc: architecture/memory-store.md
+- item: casa/rootfs/opt/casa/memory/browse.py
+  doc: architecture/memory-tools.md
+- item: casa/rootfs/opt/casa/memory/capture.py
+  doc: architecture/memory-capture.md
+- item: casa/rootfs/opt/casa/memory/classify.py
+  doc: architecture/memory-writer.md
+- item: casa/rootfs/opt/casa/memory/corrections.py
+  doc: architecture/memory-writer.md
+- item: casa/rootfs/opt/casa/memory/eligibility.py
+  doc: architecture/memory-capture.md
+- item: casa/rootfs/opt/casa/memory/executor_block.py
   doc: architecture/memory-wipe.md
-- item: casa/rootfs/opt/casa/mental_models.py
+- item: casa/rootfs/opt/casa/memory/export.py
+  doc: architecture/memory-export-restore.md
+- item: casa/rootfs/opt/casa/memory/ledgers.py
   doc: architecture/memory-scoping.md
+- item: casa/rootfs/opt/casa/memory/maintenance.py
+  doc: architecture/memory-wipe.md
+- item: casa/rootfs/opt/casa/memory/meter.py
+  doc: architecture/memory-writer.md
+- item: casa/rootfs/opt/casa/memory/model_port.py
+  doc: architecture/memory-writer.md
+- item: casa/rootfs/opt/casa/memory/nightly.py
+  doc: architecture/memory-writer.md
+- item: casa/rootfs/opt/casa/memory/note.py
+  doc: architecture/memory-serving.md
+- item: casa/rootfs/opt/casa/memory/occurrence.py
+  doc: architecture/memory-labelling.md
+- item: casa/rootfs/opt/casa/memory/patches.py
+  doc: architecture/memory-writer.md
+- item: casa/rootfs/opt/casa/memory/pending.py
+  doc: architecture/memory-writer.md
+- item: casa/rootfs/opt/casa/memory/registry.py
+  doc: architecture/memory-store.md
+- item: casa/rootfs/opt/casa/memory/restore.py
+  doc: architecture/memory-export-restore.md
+- item: casa/rootfs/opt/casa/memory/schema.py
+  doc: architecture/memory-store.md
+- item: casa/rootfs/opt/casa/memory/search.py
+  doc: architecture/memory-tools.md
+- item: casa/rootfs/opt/casa/memory/sessions.py
+  doc: architecture/memory-serving.md
+- item: casa/rootfs/opt/casa/memory/store.py
+  doc: architecture/memory-store.md
+- item: casa/rootfs/opt/casa/memory/transcript_runs.py
+  doc: architecture/memory-lifecycle.md
+- item: casa/rootfs/opt/casa/memory/view.py
+  doc: architecture/memory-serving.md
+- item: casa/rootfs/opt/casa/memory/writer.py
+  doc: architecture/memory-writer.md
 - item: casa/rootfs/opt/casa/observer.py
   doc: architecture/engagements.md
 - item: casa/rootfs/opt/casa/output_boundary.py
@@ -225,10 +263,6 @@
   doc: architecture/http-surface.md
 - item: casa/rootfs/opt/casa/rate_limit.py
   doc: architecture/http-surface.md
-- item: casa/rootfs/opt/casa/recall_health.py
-  doc: architecture/memory.md
-- item: casa/rootfs/opt/casa/recall_renderer.py
-  doc: architecture/memory.md
 - item: casa/rootfs/opt/casa/reload.py
   doc: architecture/configuration.md
 - item: casa/rootfs/opt/casa/reminders.py
@@ -243,14 +277,10 @@
   doc: architecture/personality.md
 - item: casa/rootfs/opt/casa/runtime.py
   doc: architecture/overview.md
-- item: casa/rootfs/opt/casa/rw_barrier.py
-  doc: architecture/concurrency-model.md
 - item: casa/rootfs/opt/casa/sdk_client_pool.py
   doc: architecture/sdk-client-pool.md
 - item: casa/rootfs/opt/casa/sdk_logging.py
   doc: architecture/observability.md
-- item: casa/rootfs/opt/casa/semantic_memory.py
-  doc: architecture/memory.md
 - item: casa/rootfs/opt/casa/sensitivity.py
   doc: architecture/memory-scoping.md
 - item: casa/rootfs/opt/casa/scheduled_asks.py
@@ -259,8 +289,6 @@
   doc: architecture/concurrency-model.md
 - item: casa/rootfs/opt/casa/session_registry.py
   doc: architecture/persistent-state.md
-- item: casa/rootfs/opt/casa/session_saver.py
-  doc: architecture/memory-lifecycle.md
 - item: casa/rootfs/opt/casa/session_sweeper.py
   doc: architecture/memory-lifecycle.md
 - item: casa/rootfs/opt/casa/speaker_provenance.py
@@ -285,6 +313,8 @@
   doc: architecture/specialist-lifecycle.md
 - item: casa/rootfs/opt/casa/supervisor_discovery.py
   doc: architecture/home-assistant-control.md
+- item: casa/rootfs/opt/casa/supervisor_restart.py
+  doc: architecture/memory-wipe.md
 - item: casa/rootfs/opt/casa/result_broker.py
   doc: architecture/plugin-result-contract.md
 - item: casa/rootfs/opt/casa/svc_casa_mcp.py
@@ -331,8 +361,6 @@
   doc: reference/operator-options.md
 - item: option:engagement_reap_days
   doc: reference/operator-options.md
-- item: option:hindsight_api_url
-  doc: reference/operator-options.md
 - item: option:log_level
   doc: reference/operator-options.md
 - item: option:onepassword_default_vault
@@ -361,6 +389,8 @@
   doc: reference/operator-options.md
 - item: option:webhook_secret
   doc: reference/operator-options.md
+- item: s6:init-memory-maintenance
+  doc: architecture/memory-wipe.md
 - item: s6:init-plugin-store
   doc: architecture/overview.md
 - item: s6:init-setup-configs
@@ -383,6 +413,8 @@
   doc: architecture/plugin-events.md
 - item: tool:ask_user
   doc: architecture/tools-interface.md
+- item: tool:browse_memory_day
+  doc: architecture/memory-tools.md
 - item: tool:callback_ack_revoke
   doc: architecture/callbacks.md
 - item: tool:cancel_engagement
@@ -411,6 +443,8 @@
   doc: architecture/background-jobs.md
 - item: tool:report_job_progress
   doc: architecture/background-jobs.md
+- item: tool:correct_memory
+  doc: architecture/memory-tools.md
 - item: tool:delegate_to_agent
   doc: architecture/tools-interface.md
 - item: tool:hand_off
@@ -439,6 +473,8 @@
   doc: architecture/tools-interface.md
 - item: tool:list_vault_items
   doc: architecture/plugin-secret-exploration.md
+- item: tool:open_memory
+  doc: architecture/memory-tools.md
 - item: tool:peek_engagement_workspace
   doc: architecture/tools-interface.md
 - item: tool:persona_ack_revoke
@@ -475,14 +511,14 @@
   doc: architecture/tools-interface.md
 - item: tool:relay_answer
   doc: architecture/delegate-answer-relay.md
-- item: tool:recall_memory
-  doc: architecture/tools-interface.md
 - item: tool:remove_plugin_env_reference
   doc: architecture/plugin-mutation-tools.md
 - item: tool:resident_persona_reset
   doc: architecture/tools-interface.md
 - item: tool:resident_persona_swap
   doc: architecture/tools-interface.md
+- item: tool:search_memory
+  doc: architecture/memory-tools.md
 - item: tool:send_media
   doc: architecture/tools-interface.md
 - item: tool:send_message
@@ -521,6 +557,10 @@
   doc: architecture/observability.md
 - item: route:casa/rootfs/opt/casa/casa_core.py:GET:path
   doc: architecture/mcp-and-tools.md
+- item: route:casa/rootfs/opt/casa/casa_core.py:POST:/admin/memory/export
+  doc: architecture/memory-export-restore.md
+- item: route:casa/rootfs/opt/casa/casa_core.py:POST:/admin/memory/restore
+  doc: architecture/memory-export-restore.md
 - item: route:casa/rootfs/opt/casa/casa_core.py:POST:/admin/memory/wipe
   doc: architecture/memory-wipe.md
 - item: route:casa/rootfs/opt/casa/casa_core.py:POST:/admin/reload
@@ -594,9 +634,9 @@
 - item: casa/rootfs/opt/casa/channel_authz.py
   doc: architecture/voice.md
 - item: casa/rootfs/opt/casa/channel_policy.py
-  doc: architecture/memory-lifecycle.md
+  doc: architecture/memory-capture.md
 - item: casa/rootfs/opt/casa/channel_trust.py
-  doc: architecture/memory.md
+  doc: architecture/memory-scoping.md
 - item: casa/rootfs/opt/casa/channels/__init__.py
   doc: architecture/overview.md
 - item: casa/rootfs/opt/casa/channels/topic_icons.py
@@ -669,6 +709,8 @@
   doc: architecture/callbacks.md
 - item: env:CASA_BINDINGS_DIR
   doc: architecture/overview.md
+- item: env:CASA_TEST_MAINTENANCE_SLEEP_S
+  doc: architecture/memory-wipe.md
 - item: env:CASA_CALLBACK_SPOOL_ROOT
   doc: architecture/callback-delivery.md
 - item: env:CASA_CONFIG_DIR
@@ -731,6 +773,8 @@
   doc: reference/operator-options.md
 - item: env:TELEGRAM_TRANSPORT
   doc: reference/operator-options.md
+- item: env:TRANSCRIPT_RETENTION_DAYS
+  doc: architecture/memory-lifecycle.md
 - item: env:TZ
   doc: reference/operator-options.md
 - item: env:VOICE_IDLE_TIMEOUT_SECONDS
@@ -785,6 +829,8 @@
   doc: architecture/triggers.md
 - item: schema:voice.v1.json
   doc: architecture/personality.md
+- item: script:memory-maintenance.sh
+  doc: architecture/memory-wipe.md
 - item: script:setup-configs.sh
   doc: architecture/configuration.md
 - item: script:setup-nginx.sh

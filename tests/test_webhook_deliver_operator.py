@@ -54,7 +54,7 @@ OPERATOR_CHAT = "4242"
 EFFECTIVE = "plg-elevenlabs--voicemail"
 GLOBAL_SECRET = "global-webhook-secret"
 SEND_TOOL = "mcp__casa-framework__send_message"
-RECALL_TOOL = "mcp__casa-framework__recall_memory"
+SEARCH_TOOL = "mcp__casa-framework__search_memory"
 
 
 # ---------------------------------------------------------------------------
@@ -616,16 +616,16 @@ def test_5_opted_in_options_do_not_offer_send_message():
     set, leaves it in the listing and fails this test."""
     opts = _restricted(True)
     assert SEND_TOOL not in opts.allowed_tools
-    assert RECALL_TOOL in opts.allowed_tools
+    assert SEARCH_TOOL in opts.allowed_tools
     assert SEND_TOOL in opts.disallowed_tools
-    assert _listed_tools(opts) == {"recall_memory"}
+    assert _listed_tools(opts) == {"search_memory"}
 
 
 def test_5_non_opted_in_options_are_unchanged():
     opts = _restricted(False)
-    assert opts.allowed_tools == [RECALL_TOOL, SEND_TOOL]
+    assert opts.allowed_tools == [SEARCH_TOOL, SEND_TOOL]
     assert SEND_TOOL not in opts.disallowed_tools
-    assert _listed_tools(opts) == {"recall_memory", "send_message"}
+    assert _listed_tools(opts) == {"search_memory", "send_message"}
 
 
 def _send_hook(results: list):

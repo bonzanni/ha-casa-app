@@ -2,7 +2,7 @@
 
 Casa is a **Home Assistant app** (formerly "add-on"): a fleet of Claude-powered agents
 reachable over Telegram and a voice (SSE/WebSocket) channel, packaged as an HA app.
-Python + `aiohttp`, built on the **Claude Agent SDK**, Hindsight memory, the **MCP**
+Python + `aiohttp`, built on the **Claude Agent SDK**, a built-in SQLite memory store, the **MCP**
 protocol, and **APScheduler**, all **s6-overlay**–supervised inside the container.
 
 ## Where things are

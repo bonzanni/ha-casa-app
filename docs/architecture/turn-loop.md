@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-10-07
+last_reviewed: 2026-11-02
 ---
 
 # The turn loop
@@ -21,7 +21,9 @@ read into a turn.
 
 A turn is a single pass with a fixed shape: take a message, decide whether it continues an
 existing conversation or starts a fresh one, assemble a system prompt and a memory block,
-call the model with retry, stream the output, and record what happened.
+call the model with retry, stream the output, and record what happened. On a write-trusted
+channel the turn's opening text and each message the resident writes are also captured into
+the memory store as they happen ([`memory-capture.md`](memory-capture.md)).
 
 The client the turn calls is usually a warm one the pool hands it rather than one this turn
 created; what that reuse guarantees, and what a close or a reset owes it, is
@@ -49,14 +51,14 @@ is [`output-boundary.md`](output-boundary.md) (INV-OUT-006 in
 [`output-scope-properties.md`](output-scope-properties.md) for the three decisions that
 used to be inline checks here and in `send_message`).
 
-**The origin snapshot records the turn's question, which is usually its text.** The prompt,
-the options and the recall query are built from the message's own text, except that a fresh
-session no person opened (no trusted ingress identity) recalls with one fixed short query
-instead ([`memory.md`](memory.md)); the query sent
-puts `compose_turn_preamble` ahead of it — the `<current_time>` envelope, then, on a Telegram
-turn that has any, one `<casa_notes>` block of Casa's per-turn notes (the drained front-desk
-lines, then a reply's note: [`specialist-desk.md`](specialist-desk.md); then a captioned
-file's note: [`inbound-files.md`](inbound-files.md)), which retention
+**The origin snapshot records the turn's question, which is usually its text.** The prompt
+is built from the message's own text, and the options from the session's frozen memory view
+([`memory-serving.md`](memory-serving.md)); the query sent
+puts `compose_turn_preamble` ahead of it — the `<current_time>` envelope, then, on a turn
+that has any, one `<casa_notes>` block of Casa's per-turn notes (on Telegram the drained
+front-desk lines, then a reply's note: [`specialist-desk.md`](specialist-desk.md); then a
+captioned file's note: [`inbound-files.md`](inbound-files.md); on every turn of a memory
+role, the correction note), which retention
 strips with the envelope (INV-MEM-022 in [`memory-labelling.md`](memory-labelling.md)). The origin's
 `user_text` normally holds that same text, and it is what a delegation launched from the turn
 records and quotes back. The one exception is a turn `handle_message` synthesized from a
@@ -69,9 +71,9 @@ in [`delegation-announcements.md`](delegation-announcements.md)). No other calle
 **INV-TURN-004**: A memory read that raises does not fail the turn. It is logged and the turn proceeds with an empty memory block.
 
 What it does not cover: nothing downstream is told. The unavailable-versus-empty distinction
-is flattened to omission at this point — observable in logs and the recall breaker, not in
-the prompt — and a successfully-read profile overlay may still be present beside the missing
-recall block.
+is flattened to omission at this point — observable in logs, not in the prompt — and the
+memory view and the correction note fail independently, so either may be present beside the
+other's absence.
 
 **INV-TURN-005**: Cancellation is never retried and is re-raised after a bounded interrupt-and-drain cleanup; retry covers exactly the three classified transient kinds — timeout, rate limit, and SDK error — with exponential backoff, honouring a server-supplied retry hint when present.
 
@@ -157,8 +159,8 @@ a real answer, a clean no-retry finish, or a turn that stopped at its turn limit
 retries preceded it (INV-TURN-014). A terminal rate-limit or timeout is
 congestion-shaped and records no verdict either way. The note follows the session-id
 chain (a resumed turn may publish a successor id), so the recorded fault id is always the
-id the next ask would resume. At the streak bound the resume decision comes out fresh
-*with retain*, exactly like an expired entry — continuity is saved, never cleared, and
+id the next ask would resume. At the streak bound the resume decision comes out fresh,
+exactly like an expired entry — what the session said was captured as it happened — and
 the refusal-only registration clearing of INV-TURN-007 is untouched.
 
 What it does not cover: the notice does not extend to delegation-completion synthesis
@@ -196,7 +198,7 @@ hold unchanged. The winning attempt's `turn_report["approval_cut"]` — how many
 before a call still waiting on an approval — is read with them on any turn, for the #1252 rule
 there, which also stops the stream at the cut (INV-TURN-009).
 
-**INV-TURN-012**: A conversation is resumed only while the structural surface of its system prompt — the delegates, background jobs and executors the agent can reach, and, for a role whose Home Assistant tools the facade publishes, the names of the tools last published — still digests to what the session was registered with. A surface that differs, or a session that never recorded one, starts a fresh session with the old one retained. The surface is rendered once per turn and the same render is what the resume decision gates on, what the prompt carries, the published tool servers the session connects with, and what the registration stores.
+**INV-TURN-012**: A conversation is resumed only while the structural surface of its system prompt — the delegates, background jobs and executors the agent can reach; for a role whose Home Assistant tools the facade publishes, the names of the tools last published; and the clearance the turn reads at — still digests to what the session was registered with. A surface that differs, or a session that never recorded one, starts a fresh session with the old one retained. The surface is rendered once per turn and the same render is what the resume decision gates on, what the prompt carries, the published tool servers the session connects with, and what the registration stores.
 
 The CLI pins a session's system prompt when the session is created. Rebuilding options on a
 cold connect therefore does not reach a conversation that is being resumed: the prompt is
@@ -235,6 +237,12 @@ connects with exactly the captured servers, so a publication landing mid-turn ne
 new tools with the old identity; the next turn picks it up. A role with no published tool
 surface digests exactly as before, so its conversations are not retired by this. The butler's
 conversations restart once, retained, on the upgrade that introduces it.
+
+The turn's read clearance joins the surface the same way, because the session's prompt — its
+memory view, its channel context — was written for one reader. A turn read at another
+clearance than its chat's session starts a session at its own, retained like any surface
+change; `private` adds nothing, so the operator's sessions keep their digest. In a chat whose
+turns alternate between the operator and another sender, each switch starts a new session.
 
 **INV-TURN-013**: Every in-process SDK client Casa builds raises the SDK's per-message stream limit to one shared value, `SDK_MAX_BUFFER_SIZE` in `claude_runtime.py`, sized so that a built-in `Read` of the largest PDF the pinned CLI inlines whole still arrives as one message instead of ending the turn.
 
@@ -283,9 +291,9 @@ upgrading the CLI without moving the pin prevents Casa from starting rather than
 degrading turns.
 
 **Memory is unavailable.** The turn proceeds without it, with a warning. An unavailable
-memory is not an empty memory — but at this point the distinction lives only in the logs and
-the recall breaker. The model and the turn's caller see the same thing either way: no recall
-block (see INV-TURN-004).
+memory is not an empty memory — but at this point the distinction lives only in the logs.
+The model and the turn's caller see the same thing either way: no memory view and no
+correction note (see INV-TURN-004).
 
 What the loop does *not* do: it does not save long-term memory per turn. Saving happens at
 session granularity, in the background, elsewhere.
@@ -316,7 +324,6 @@ listed in [`architecture/sdk-client-pool.md`](sdk-client-pool.md).
 
 **Tests**
 - `tests/test_agent_process.py::test_session_id_is_channel_plus_role`
-- `tests/test_agent_process.py::test_telegram_channel_autorecalls_on_fresh_session`
 - `tests/test_retry.py`
 - `tests/test_agent_api_error_message.py`
 

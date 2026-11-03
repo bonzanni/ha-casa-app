@@ -56,12 +56,11 @@ def _fresh_ledger(monkeypatch, tmp_path):
 @pytest.fixture(autouse=True)
 def _quiet_agent_singletons(monkeypatch):
     """The finalize funnel consults agent.* singletons via getattr; pin them
-    to None so no background retain/observer work runs regardless of test
-    order."""
+    to None so no background observer work runs regardless of test order."""
     import agent as agent_mod
 
     for attr in (
-        "active_semantic_memory", "active_observer",
+        "active_observer",
         "active_engagement_driver", "active_claude_code_driver",
     ):
         monkeypatch.setattr(agent_mod, attr, None, raising=False)
@@ -75,7 +74,7 @@ def _reset_permission_nag(monkeypatch):
 
 # ---------------------------------------------------------------------------
 # Harness — drive _finalize_engagement the way test_cancel_engagement_tool
-# does: through cancel_engagement.handler, draining _specialist_bg_tasks.
+# does: through cancel_engagement.handler.
 # ---------------------------------------------------------------------------
 
 
@@ -122,11 +121,6 @@ async def _make_engagement(tmp_path, *, topic_id):
 async def _cancel_and_drain(rec):
     res = await cancel_engagement.handler({"engagement_id": rec.id})
     payload = json.loads(res["content"][0]["text"])
-    # L33: the funnel schedules retains as background tasks — drain them
-    # before asserting (harness pattern from test_cancel_engagement_tool).
-    pending = list(tools_mod._specialist_bg_tasks)
-    if pending:
-        await asyncio.gather(*pending, return_exceptions=True)
     return payload
 
 

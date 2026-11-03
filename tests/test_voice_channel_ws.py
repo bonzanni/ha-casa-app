@@ -239,8 +239,7 @@ async def ws_app():
     ch = VoiceChannel(
         bus=bus, default_agent="butler", webhook_secret=VOICE_TEST_SECRET,
         sse_path="/api/converse", ws_path="/api/converse/ws",
-        agent_configs={"butler": _FakeCfg()},
-        memory=memory, idle_timeout=300,
+        agent_configs={"butler": _FakeCfg()}, idle_timeout=300,
         monotonic=lambda: next(telemetry_clock),
     )
     app = web.Application()
@@ -275,7 +274,6 @@ async def signed_ws_app():
             "butler": _FakeCfg(),
             "text-only": _TextOnlyCfg(),
         },
-        memory=AsyncMock(),
         idle_timeout=300,
         delivery_coordinator=delivery,
     )
@@ -302,7 +300,6 @@ async def unsigned_route_ws_app():
         sse_path="/api/converse",
         ws_path="/api/converse/ws",
         agent_configs={"butler": _FakeCfg()},
-        memory=AsyncMock(),
         idle_timeout=300,
     )
     app = web.Application()
@@ -364,7 +361,7 @@ class TestTailBlockCountsAsSpeech:
         channel = VoiceChannel(
             bus=None, default_agent="butler", webhook_secret="",
             sse_path="/api/converse", ws_path="/api/converse/ws",
-            agent_configs={"butler": cfg}, memory=AsyncMock(),
+            agent_configs={"butler": cfg},
             idle_timeout=300,
         )
         channel._bus = _TailOnlySpeechBus()
@@ -410,7 +407,7 @@ class TestRetractionFollowsDeliveryNotSelection:
         channel = VoiceChannel(
             bus=None, default_agent="butler", webhook_secret="",
             sse_path="/api/converse", ws_path="/api/converse/ws",
-            agent_configs={"butler": cfg}, memory=AsyncMock(),
+            agent_configs={"butler": cfg},
             idle_timeout=300,
         )
         channel._bus = _PartialThenErrorBusStreamOnly()
@@ -459,7 +456,7 @@ class TestWSTransportFaultAfterSpeechIsRetracted:
         channel = VoiceChannel(
             bus=None, default_agent="butler", webhook_secret="",
             sse_path="/api/converse", ws_path="/api/converse/ws",
-            agent_configs={"butler": cfg}, memory=AsyncMock(),
+            agent_configs={"butler": cfg},
             idle_timeout=300,
         )
         channel._bus = _PartialThenRaisingBus()
@@ -487,7 +484,7 @@ class TestWSPartialThenFaultIsRetracted:
         channel = VoiceChannel(
             bus=None, default_agent="butler", webhook_secret="",
             sse_path="/api/converse", ws_path="/api/converse/ws",
-            agent_configs={"butler": cfg}, memory=AsyncMock(),
+            agent_configs={"butler": cfg},
             idle_timeout=300,
         )
         channel._bus = _PartialThenErrorBus(channel, cfg)
@@ -516,7 +513,7 @@ class TestWSTurn:
         channel = VoiceChannel(
             bus=bus, default_agent="concierge", webhook_secret="",
             sse_path="/api/converse", ws_path="/api/converse/ws",
-            agent_configs={"concierge": _FakeCfg()}, memory=AsyncMock(),
+            agent_configs={"concierge": _FakeCfg()},
             idle_timeout=300,
         )
         ws = _RecordingWs()
@@ -536,7 +533,7 @@ class TestWSTurn:
         channel = VoiceChannel(
             bus=bus, default_agent="concierge", webhook_secret="",
             sse_path="/api/converse", ws_path="/api/converse/ws",
-            agent_configs={"concierge": _FakeCfg()}, memory=AsyncMock(),
+            agent_configs={"concierge": _FakeCfg()},
             idle_timeout=300,
         )
 
@@ -556,7 +553,7 @@ class TestWSTurn:
         channel = VoiceChannel(
             bus=bus, default_agent="concierge", webhook_secret="",
             sse_path="/api/converse", ws_path="/api/converse/ws",
-            agent_configs={"concierge": _FakeCfg()}, memory=AsyncMock(),
+            agent_configs={"concierge": _FakeCfg()},
             idle_timeout=300,
         )
         ws = _RecordingWs()
@@ -652,7 +649,7 @@ class TestWSTurn:
         channel = VoiceChannel(
             bus=bus, default_agent="concierge", webhook_secret="",
             sse_path="/api/converse", ws_path="/api/converse/ws",
-            agent_configs={"concierge": _FakeCfg()}, memory=AsyncMock(),
+            agent_configs={"concierge": _FakeCfg()},
             idle_timeout=300,
         )
         ws = _FailingHandoffWs()
@@ -1358,8 +1355,7 @@ async def voice_ws_app_with_limiter(request):
     channel = VoiceChannel(
         bus=bus, default_agent="butler", webhook_secret=VOICE_TEST_SECRET,
         sse_path="/api/converse", ws_path="/api/converse/ws",
-        agent_configs={role: _FakeCfg() for role in roles},
-        memory=memory, idle_timeout=300,
+        agent_configs={role: _FakeCfg() for role in roles}, idle_timeout=300,
         rate_limiter=limiter,
     )
 
@@ -1545,8 +1541,7 @@ async def ws_app_nonprefix():
     ch = VoiceChannel(
         bus=bus, default_agent="butler", webhook_secret=VOICE_TEST_SECRET,
         sse_path="/api/converse", ws_path="/api/converse/ws",
-        agent_configs={"butler": _FakeCfg()},
-        memory=AsyncMock(), idle_timeout=300,
+        agent_configs={"butler": _FakeCfg()}, idle_timeout=300,
     )
     app = web.Application()
     ch.register_routes(app)
@@ -1567,8 +1562,7 @@ async def ws_app_shrinking():
     ch = VoiceChannel(
         bus=bus, default_agent="butler", webhook_secret=VOICE_TEST_SECRET,
         sse_path="/api/converse", ws_path="/api/converse/ws",
-        agent_configs={"butler": _FakeCfg()},
-        memory=AsyncMock(), idle_timeout=300,
+        agent_configs={"butler": _FakeCfg()}, idle_timeout=300,
     )
     app = web.Application()
     ch.register_routes(app)
@@ -1593,8 +1587,7 @@ async def ws_app_stalling(monkeypatch):
     ch = VoiceChannel(
         bus=bus, default_agent="butler", webhook_secret=VOICE_TEST_SECRET,
         sse_path="/api/converse", ws_path="/api/converse/ws",
-        agent_configs={"butler": _FakeCfg()},
-        memory=AsyncMock(), idle_timeout=300,
+        agent_configs={"butler": _FakeCfg()}, idle_timeout=300,
     )
     app = web.Application()
     ch.register_routes(app)

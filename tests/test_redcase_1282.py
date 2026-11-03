@@ -24,7 +24,7 @@ import tools as tools_mod
 from plugin_grants import ProfilePlan
 from plugin_registry import ResolutionResult, ResolvedPlugin
 from test_delegate_to_agent import _specialist_cfg
-from test_delegated_transcript_delete import _Harness
+from test_delegated_transcript_retention import _Harness
 from test_desk_tap import APPLY, ART, CANON, _map, _tap, _tool, env  # noqa: F401
 from test_pinned_wiring import _install, bound  # noqa: F401
 
@@ -40,12 +40,12 @@ OPERATOR_FRAME = "is a message from the operator"
 
 async def _pinned_prompt(env, tmp_path, monkeypatch):
     """Run one committed tap end to end; return the prompts the pinned turn
-    sent and the recall calls it made."""
+    sent and the memory reads it made."""
     cfg = _specialist_cfg()
     cfg.kind = "specialist"
     cfg.cwd = str(tmp_path / "agent-home" / "finance")
     os.makedirs(cfg.cwd)
-    cfg.memory.token_budget = 4000                      # recall is reachable
+    cfg.memory.token_budget = 4000                      # memory is served
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-home"))
     monkeypatch.setitem(tools_mod._agent_role_map, "finance", cfg)
     plugin_dir = tmp_path / "probe"
@@ -63,15 +63,10 @@ async def _pinned_prompt(env, tmp_path, monkeypatch):
 
     recalls: list[dict] = []
 
-    async def fake_recall(sem, **kw):
-        recalls.append(kw)
-        return MEMORY_SENTINEL
-    monkeypatch.setattr(tools_mod, "delegated_recall", fake_recall)
-
-    async def fake_retain(sem, **kw):
-        return None
-    monkeypatch.setattr(tools_mod, "retain_delegated", fake_retain)
-    monkeypatch.setattr(agent_mod, "active_semantic_memory", object(), raising=False)
+    async def fake_memory(cfg, parent):
+        recalls.append({"role": cfg.role})
+        return f"<memory_context>{MEMORY_SENTINEL}</memory_context>\n\n"
+    monkeypatch.setattr(tools_mod, "_delegated_memory_block", fake_memory)
     monkeypatch.setattr(tools_mod, "_run_delegated_agent", REAL_RUNNER)
 
     prompts: list[str] = []
