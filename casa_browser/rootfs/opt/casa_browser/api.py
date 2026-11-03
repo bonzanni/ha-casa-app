@@ -45,6 +45,7 @@ from .protocol import (
     parse_answer,
     parse_archive,
     parse_cancel,
+    parse_request_cancel,
     parse_claim,
     parse_delivery,
     parse_download,
@@ -92,6 +93,8 @@ class Controller(Protocol):
     async def live_complete(self, run_id: str, operator_ref: str): ...
     async def finish(self, run_id: str, manifest): ...
     async def cancel(self, run_id: str): ...
+    async def cancel_requests(self, request_ids: tuple) -> dict: ...
+    async def request_stopped(self, request_id: str) -> bool: ...
     async def forget(self, site_id: str, operator_ref: str) -> dict: ...
     async def records(self, requester_id: str, since: datetime) -> list: ...
     async def file_bytes(self, file_id: str) -> tuple: ...
@@ -335,8 +338,12 @@ async def list_runs(request: web.Request) -> web.Response:
 
 
 async def get_run(request: web.Request) -> web.Response:
+    """The run, and whether the operator's Stop stopped its request (``stopped``: its request id
+    is in ``cancelled_requests``) — the one fact the plugin reads to know whose ending it was."""
     _no_query(request)
-    return _ok((await _ctl(request).get_run(await _run_id(request))).to_wire())
+    ctl = _ctl(request)
+    run = await ctl.get_run(await _run_id(request))
+    return _ok({**run.to_wire(), "stopped": await ctl.request_stopped(run.spec.request_id)})
 
 
 async def run_events(request: web.Request) -> web.Response:
@@ -464,6 +471,15 @@ async def cancel(request: web.Request) -> web.Response:
     return _ok((await _ctl(request).cancel(run_id)).to_wire())
 
 
+async def cancel_requests(request: web.Request) -> web.Response:
+    """The operator's Stop of one request: every request id the requester chose for it, in one
+    call (runs of some may not exist yet). The paired requester's, like
+    ``/v1/runs/{run}/cancel``."""
+    _no_query(request)
+    request_ids = parse_request_cancel(await _body(request))
+    return _ok(await _ctl(request).cancel_requests(request_ids))
+
+
 async def forget(request: web.Request) -> web.Response:
     _no_query(request)
     site_id = _id(request, "site")
@@ -587,6 +603,7 @@ def make_app(controller: Controller) -> web.Application:
         web.post("/v1/control/runs/{run}/live-complete", live_complete, expect_handler=_expect),
         web.post("/v1/runs/{run}/finish", finish, expect_handler=_expect),
         web.post("/v1/runs/{run}/cancel", cancel, expect_handler=_expect),
+        web.post("/v1/requests/cancel", cancel_requests, expect_handler=_expect),
         web.post("/v1/control/sites/{site}/forget", forget, expect_handler=_expect),
         web.get("/v1/records", records, **_GET),
         web.get("/v1/files/{file}", file_bytes, **_GET),

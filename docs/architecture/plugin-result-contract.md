@@ -106,7 +106,9 @@ it serves, requests run admission, queues a continuation and reads a delivered s
 outcome over five more routes on the same socket
 ([`plugin-operator-calls.md`](plugin-operator-calls.md), INV-PLUG-051). A plugin may also
 name, in `casa.driverSweep`, one `safe` tool Casa calls itself once a minute
-([`plugin-continuations.md`](plugin-continuations.md)).
+([`plugin-continuations.md`](plugin-continuations.md)), and in `casa.stopTool` one Casa
+calls directly to list and stop the work it carries on by itself
+([`plugin-stop.md`](plugin-stop.md)).
 
 ## Contracts & invariants
 

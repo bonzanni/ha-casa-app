@@ -546,6 +546,83 @@ async def relay_answer(args: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# stop_work — the resident stops work a specialist carries on by itself (browsing)
+# ---------------------------------------------------------------------------
+
+STOP_WORK_ONLY_OPERATOR = "Only the person's own message can stop work."
+_STOP_WORK_RESULTS = {
+    "stopped": "Stopped: {task}. Tell the person in one plain line.",
+    "ended": "It had already ended. Tell the person in one plain line.",
+    "already_stopped": ("It is already stopped and the person has been told. Add nothing "
+                        "about it; answer only what else his message asks, or with exactly "
+                        "<silent/>."),
+    "not_taken": ("Casa Browser isn't answering; the browsing stops as soon as it does. Tell "
+                  "the person in one plain line."),
+}
+_STOP_WORK_RESULTS["in_flight"] = _STOP_WORK_RESULTS["already_stopped"]
+
+
+@tool(
+    "stop_work",
+    "Stop work a specialist carries on by itself, such as browsing. Without ref: what is "
+    "running, each with its ref. With a ref from that list: stops it at once. Use it "
+    "yourself whenever the person asks to stop or cancel such work; never delegate a stop.",
+    {"type": "object", "properties": {"ref": {"type": "string"}}, "required": []},
+)
+async def stop_work(args: dict) -> dict:
+    """The resident's direct stop (``plugin_stop``): no desk, no specialist turn. Only on the
+    operator's own live turn — the spawn cap's ``_is_agent_context`` False and the sender the
+    operator as configured now; voice, narration, scheduled and delegated turns are refused."""
+    import plugin_stop
+    from operator_calls import is_configured_operator
+
+    origin = _snapshot_origin()
+    chat_id, user_id = origin.get("chat_id"), origin.get("user_id")
+    if _is_agent_context(origin) or not is_configured_operator(chat_id, user_id):
+        return _text_result(f"Error: {STOP_WORK_ONLY_OPERATOR}", is_error=True)
+    plugins = await plugin_stop.stop_plugins()
+    ref = args.get("ref")
+    if not isinstance(ref, str) or not ref.strip():
+        lines = []
+        for role, _cfg, rp, seg, tool_name in plugins:
+            listing = await plugin_stop.call_stop(rp, tool_name, {})
+            name = _display_name_for_role(role)
+            if listing.get("failed"):
+                lines.append(f"- {name}: what it is doing could not be listed right now.")
+            for r in listing.get("requests") or []:
+                ref = r.get("ref")
+                if not isinstance(ref, str) or plugin_stop.confirmation_for(
+                        seg, int(user_id), ref) is None:
+                    continue            # not his: a request admitted for another operator
+                tasks = "; ".join(t for t in (r.get("tasks") or []) if isinstance(t, str))
+                lines.append(f"- {r.get('ref')}: {name} — {tasks} ({r.get('state')})")
+        return _text_result("\n".join(lines) if lines else "Nothing is running.")
+    ref = ref.strip()
+    if not ref.startswith(plugin_stop.REF_PREFIX) or len(ref) > plugin_stop.REF_MAX:
+        return _text_result("Error: that is not a ref from the list; call stop_work without "
+                            "ref to see what is running.", is_error=True)
+    operator_id = int(user_id)
+    for role, _cfg, _rp, seg, _tool in plugins:
+        if plugin_stop.confirmation_for(seg, operator_id, ref) is None:
+            continue                    # no request of this plugin admitted for him has it
+        async def _tell(outcome: dict, seg=seg) -> None:
+            mark = plugin_stop.MARKS.get(outcome.get("outcome"))
+            if mark is not None:
+                await plugin_stop.settle_run_card(
+                    plugin_stop.confirmation_for(seg, operator_id, ref), mark)
+
+        out = await plugin_stop.stop(role, seg, ref, operator_id=operator_id, tell=_tell)
+        o = out.get("outcome")
+        if o in ("unknown", "unavailable"):
+            continue
+        task = "; ".join(out.get("tasks") or []) or "the browsing"
+        return _text_result(_STOP_WORK_RESULTS.get(o, _STOP_WORK_RESULTS["not_taken"])
+                            .format(task=task))
+    return _text_result("Error: nothing running has that ref; call stop_work without ref to "
+                        "see what is running.", is_error=True)
+
+
+# ---------------------------------------------------------------------------
 # send_media — reusable agent->channel media delivery (v0.73.0, spec §3).
 # ---------------------------------------------------------------------------
 
@@ -22533,6 +22610,7 @@ async def persona_ack_revoke(args: dict) -> dict:
 CASA_TOOLS: tuple = (
     send_message,
     relay_answer,                  # slice 5l — a delegate's answer under its header
+    stop_work,                     # the resident's direct stop of a specialist's own work
     send_media,
     react,
     ask_user,

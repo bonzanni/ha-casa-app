@@ -1,5 +1,6 @@
-# Manifest shard: the specialist hand-off and plugin operator-call documents (born
-# in their own shard: the S and plugin-M-R shards stand near the index ceiling).
+# Manifest shard: the specialist hand-off, plugin operator-call, continuation and Stop
+# documents (born in their own shard: the S and plugin-M-R shards stand near the index
+# ceiling).
 - doc: architecture/specialist-handoff.md
   summary: A specialist answering a request hands part of it to another specialist and gets the answer back — the hand_off tool, the requester chain and the operator's words every delegated run carries, the mechanical bounds, the permit, and the requester's ceiling a hand-off pauses.
   when_changing: the hand_off tool or its bounds, the requester chain or the operator's words on a delegated origin, the caller a delegated run names, or the ceiling clock a hand-off pauses
@@ -20,13 +21,14 @@
 
 - doc: architecture/plugin-operator-calls.md
   summary: What a plugin's own code asks Casa during one of its declared callsCasa calls — whom the call serves (its binding), run admission from the operator's own words and its confirmation, a continuation for a run, a delivered slot's outcome, and the check of one browsing action.
-  when_changing: a plugin's callsCasa declaration or its call record, the requester, run-admission, run-admission-status, continue or delivery-status broker routes, the binding store, the admission confirmation card, how run admission reads the operator's words and decides, or the action-judgement route, its rulebooks or the words kept per spec digest
+  when_changing: a plugin's callsCasa declaration or its call record, the requester, run-admission, run-admission-status, continue or delivery-status broker routes, the binding store, the admission confirmation card, the Stop it keeps or the status card posted when his words admitted the runs, how run admission reads the operator's words and decides, or the action-judgement route, its rulebooks or the words kept per spec digest
   covers:
     - casa/rootfs/opt/casa/operator_calls.py
     - casa/rootfs/opt/casa/action_judgement.py
     - casa/rootfs/opt/casa/run_admission.py
     - casa/rootfs/opt/casa/plugin_bindings.py
     - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.deliver_operator_question
+    - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.deliver_run_card
     - casa/rootfs/opt/casa/result_broker.py::DeliveryOutcomes
   tests:
     - tests/test_operator_calls.py
@@ -41,7 +43,7 @@
 
 - doc: architecture/plugin-continuations.md
   summary: How a plugin's work that outlives one turn is carried on in fresh turns of its specialist — the continuation queue, the origin rebuilt from a binding, the relay of the answer up the requester chain, a role's desk-context switch, and the once-a-minute driver sweep.
-  when_changing: the continuation queue or turn, the origin a continuation runs under, how a continuation's answer reaches its requesters, a role's session.desk_context, the casa.driverSweep declaration, or the driver sweep's direct call
+  when_changing: the continuation queue or turn, the origin a continuation runs under, how a continuation's answer reaches its requesters, a role's session.desk_context, the casa.driverSweep declaration, the driver sweep's direct call or the plugin resolution and client it shares with the stop, or how a stopped request's queued continuations are dropped
   covers:
     - casa/rootfs/opt/casa/plugin_continuations.py
     - casa/rootfs/opt/casa/specialist_desk.py::desk_log
@@ -53,3 +55,21 @@
   invariant_tests:
     INV-PLUG-054: [tests/test_plugin_continuations.py::test_a_progress_only_answer_climbs_no_further, tests/test_plugin_continuations.py::test_a_quiet_record_completes_without_a_notice, tests/test_plugin_continuations.py::test_only_the_exact_sentinel_declares_progress, tests/test_plugin_continuations.py::test_a_requesters_own_silence_never_hides_the_result]
     INV-PLUG-053: [tests/test_plugin_continuations.py::test_a_continuation_origin_is_rebuilt_from_the_binding_alone, tests/test_plugin_continuations.py::test_one_pending_continuation_per_run_until_it_starts, tests/test_plugin_continuations.py::test_the_answer_climbs_the_chain_one_requester_at_a_time, tests/test_plugin_continuations.py::test_a_continuation_waits_for_the_desk_and_lets_it_go_after_its_own_turn, tests/test_plugin_continuations.py::test_an_unloaded_requester_fails_the_relay_instead_of_passing_the_answer_on, tests/test_plugin_continuations.py::test_a_desk_that_faults_while_the_continuation_waits_runs_nothing, tests/test_plugin_continuations.py::test_a_binding_of_a_former_operator_is_never_continued, tests/test_plugin_continuations.py::test_shutdown_cancels_a_running_continuation_turn, tests/test_plugin_continuations.py::test_a_request_queued_while_a_worker_finishes_is_not_lost, tests/test_plugin_continuations.py::test_the_sweep_calls_only_a_tool_the_server_lists, tests/test_plugin_continuations.py::test_a_turn_still_unwinding_keeps_the_desk_refused, tests/test_plugin_continuations.py::test_a_stop_during_the_relay_tells_the_resident_instead_of_going_silent, tests/test_plugin_continuations.py::test_the_sweep_calls_the_declared_tool_and_queues_its_runs, tests/test_plugin_continuations.py::test_an_invalid_sweep_declaration_sweeps_nothing, tests/test_operator_calls.py::test_a_continuation_turn_has_the_operators_identity_and_no_words, tests/test_operator_calls.py::test_driver_sweep_names_a_safe_tool_that_calls_nothing]
+
+- doc: architecture/plugin-stop.md
+  summary: The Stop — a specialist's own work (a browsing request) stopped at once with no model turn and no desk — the casa.stopTool declaration and Casa's direct call of it, the Stop on a request's card, a proposal button that stores the stop tool, the resident's stop_work tool, one flight per request, the card mark and the one line, and the continuations a stop drops.
+  when_changing: the casa.stopTool declaration or its direct call, the Stop button on a browsing request's card or its run_stop callback, a stored call of the stop tool, the stop_work tool, the outcome marks or lines of a stop, or which continuations a stop drops
+  covers:
+    - casa/rootfs/opt/casa/plugin_stop.py
+    - casa/rootfs/opt/casa/plugin_store.py::manifest_stop_tool
+    - casa/rootfs/opt/casa/tools.py::stop_work
+    - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._on_run_stop_callback
+    - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._stop_tap
+    - casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.send_reply_line
+    - casa/rootfs/opt/casa/plugin_continuations.py::Continuations.drop
+  tests:
+    - tests/test_plugin_stop.py
+  related: [architecture/plugin-operator-calls.md, architecture/plugin-continuations.md, architecture/stored-call-buttons.md, reference/casa-browser.md]
+  defines_invariants: [INV-PLUG-056]
+  invariant_tests:
+    INV-PLUG-056: [tests/test_plugin_stop.py::test_the_operators_stop_tap_stops_it_directly_and_tells_him_once, tests/test_plugin_stop.py::test_the_stop_tap_does_not_wait_for_the_running_desk_use, tests/test_plugin_stop.py::test_stop_work_does_not_wait_for_the_running_desk_use, tests/test_plugin_stop.py::test_the_twenty_minute_cards_stop_is_called_directly, tests/test_plugin_stop.py::test_a_stop_tap_that_is_not_his_calls_nothing, tests/test_plugin_stop.py::test_stop_work_is_refused_off_his_own_live_turn, tests/test_plugin_stop.py::test_a_dropped_continuation_runs_no_turn, tests/test_plugin_stop.py::test_a_stopped_requests_queued_continuations_are_dropped, tests/test_plugin_stop.py::test_a_continuation_for_another_ref_still_runs, tests/test_plugin_stop.py::test_a_stop_that_keeps_the_seal_drops_the_queued_continuations, tests/test_plugin_stop.py::test_stop_work_neither_lists_nor_stops_another_operators_request, tests/test_plugin_stop.py::test_the_twenty_minute_cards_stop_starts_before_any_card_edit]

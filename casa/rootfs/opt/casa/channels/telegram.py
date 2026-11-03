@@ -295,7 +295,8 @@ def _escape_mdv2_pre(text: str) -> str:
 # Telegram hard-caps callback_data at 64 bytes.
 _CALLBACK_DATA_MAX_BYTES = 64
 _CALLBACK_NAMESPACES = ("permission", "engagement_ask", "resident_ask",
-                        "proposal")       # S5: a stored-call keyboard (DM-scoped)
+                        "proposal",       # S5: a stored-call keyboard (DM-scoped)
+                        "run_stop")       # the Stop on a browsing request's card (DM-scoped)
 
 
 async def _safe_answer(cq: Any, text: str) -> None:
@@ -2336,6 +2337,63 @@ class TelegramChannel(Channel):
                 await t
                 raise
 
+    async def _on_run_stop_callback(self, cq: Any, cid: str) -> None:
+        """The Stop on a browsing request's start or status card (``v1|run_stop|<cid>|0``):
+        fail closed, exactly one answer. The admission (durable thirty days, so a Stop after
+        a restart works) must be ``admitted``; the tap must come from its chat and from its
+        operator, who is still the operator as configured now. Then the toast at once, and
+        one tracked task stops the request directly (``plugin_stop``): no desk, no model."""
+        import plugin_bindings
+        import plugin_stop
+        import run_admission
+        from operator_calls import is_configured_operator
+
+        toast = "expired"
+        try:
+            if (cq.message is None or getattr(cq.message, "chat", None) is None
+                    or cq.from_user is None):
+                return
+            c = run_admission.CONFIRMATIONS.peek(cid)
+            if c is None or c.status != "admitted":
+                return
+            b = plugin_bindings.BINDINGS.peek(c.binding_ref)
+            if b is None:
+                return
+            if (cq.message.chat.id != b.chat_id or cq.from_user.id != c.operator_id
+                    or c.operator_id != b.operator_id
+                    or not is_configured_operator(b.chat_id, b.operator_id)):
+                toast = "not for you"
+                return
+            toast = "stopping…"
+            tapped = getattr(cq.message, "message_id", None)
+            role = b.chain[-1]
+
+            async def _tell(outcome: dict) -> None:
+                o = outcome.get("outcome")
+                mark = plugin_stop.MARKS.get(o)
+                if mark is not None:
+                    await plugin_stop.settle_run_card(c, mark)
+                if o in ("stopped", "ended", "not_taken", "unavailable"):
+                    await plugin_stop.tell_line(b.chat_id, role, o, reply_to=tapped)
+
+            async def _run() -> None:
+                try:
+                    await plugin_stop.stop(role, c.plugin, f"request:{c.request_key}",
+                                           operator_id=c.operator_id, tell=_tell)
+                except Exception:  # noqa: BLE001 — logged; the card keeps its Stop
+                    logger.exception("run stop failed (cid=%s)", cid[:13])
+
+            task = asyncio.create_task(_run())
+            self._turn_tasks.add(task)
+            task.add_done_callback(self._turn_tasks.discard)
+        finally:
+            t = asyncio.create_task(_safe_answer(cq, toast))
+            try:
+                await asyncio.shield(t)
+            except asyncio.CancelledError:
+                await t
+                raise
+
     def proposal_finish_hook(self, *, rid: str, req: Any) -> Callable[[dict], Any]:
         """S5 §4.2/§4.4: the one owner of what follows a proposal's
         settlement. A tap: the keyboard edited away FIRST with the chosen
@@ -2388,6 +2446,16 @@ class TelegramChannel(Channel):
                         "{label} ☑ {button} — the buttons could not be cleared.",
                         label=specialist_desk.label_for(str(meta.get("role") or "")),
                         fields={"button": label}))
+                return
+            # A stored call of the declared stop tool starts at once, before any edit of the
+            # card (a slow or flood-limited edit must not keep the run going): no desk, no
+            # turn, and no ⏳ line — its own outcome mark is the card's one edit
+            try:
+                if await self._stop_tap(meta=meta, idx=idx):
+                    return
+            except Exception:  # noqa: BLE001 — never raise into the hook drain
+                logger.exception("stop tap failed (rid=%s)", rid[:8])
+                await self._edit_proposal_message(meta, f"{text}\n✖ failed")
                 return
             # #1341: a call tap's card says it is working, not settled — the
             # call's answer decides what it becomes (☑, ✖, or the next card in
@@ -2469,6 +2537,8 @@ class TelegramChannel(Channel):
         tracked desk use with the reservation's done-callback."""
         import specialist_desk
         chat_id, desk_role = int(meta["chat_id"]), str(meta.get("role") or "")
+        if await self._stop_tap(meta=meta, idx=idx):
+            return True             # a stored call of the declared stop tool: no desk, no turn
         label = specialist_desk.label_for(desk_role)
         desk = specialist_desk.DESKS.get_or_create(chat_id, desk_role)
         # #1362: a keep_card tap never writes a line over its card
@@ -2500,6 +2570,56 @@ class TelegramChannel(Channel):
         self._turn_tasks.add(task)
         task.add_done_callback(self._turn_tasks.discard)
         task.add_done_callback(reservation.release)
+        return True
+
+    async def _stop_tap(self, *, meta: dict, idx: int) -> bool:
+        """A tapped button whose stored call names its plugin's declared ``casa.stopTool``
+        (the bare name equal, the plugin segment and artifact the proposal's own) reserves no
+        desk and runs no pinned turn: the stop is called directly in one tracked task
+        (``plugin_stop``), the proposal is marked with its outcome, the reply line is posted
+        under it, and the request's start or status card is marked too. False for any other
+        call, which goes to the desk as before."""
+        import plugin_stop
+        calls = meta.get("calls") or []
+        call = calls[idx] if isinstance(idx, int) and 0 <= idx < len(calls) else None
+        args = call.get("arguments") if isinstance(call, dict) else None
+        if not isinstance(args, dict) or set(args) != {"ref"} or not isinstance(args["ref"], str):
+            return False
+        role, seg = str(meta.get("role") or ""), str(meta.get("plugin_seg") or "")
+        artifact = str(meta.get("artifact_id") or "")
+        declared = next((tool for r, _cfg, rp, s, tool in await plugin_stop.stop_plugins()
+                         if r == role and s == seg and str(rp.artifact_id) == artifact), None)
+        if declared is None or call.get("wire_name") != declared:
+            return False
+        chat_id, operator_id = int(meta["chat_id"]), int(meta["operator_id"])
+        ref = args["ref"]
+        proposal_mid = meta.get("message_id")
+
+        async def _tell(outcome: dict) -> None:
+            o = outcome.get("outcome")
+            mark = plugin_stop.MARKS.get(o) or {"unknown": "✖ expired",
+                                                "unavailable": "✖ unavailable"}.get(o)
+            if mark is not None:
+                await self.mark_proposal(meta, mark)
+                if o in plugin_stop.MARKS:
+                    await plugin_stop.settle_run_card(
+                        plugin_stop.confirmation_for(seg, operator_id, ref), mark)
+            if o in ("stopped", "ended", "not_taken", "unavailable"):
+                await plugin_stop.tell_line(chat_id, role, o, reply_to=proposal_mid)
+
+        async def _run() -> None:
+            try:
+                out = await plugin_stop.stop(role, seg, ref, operator_id=operator_id,
+                                             tell=_tell)
+                if out.get("outcome") == "in_flight":
+                    await self.mark_proposal(meta, "☑ Stop")
+            except Exception:  # noqa: BLE001 — logged; the proposal says it failed
+                logger.exception("stop tap failed")
+                await self.mark_proposal(meta, "✖ failed")
+
+        task = asyncio.create_task(_run())
+        self._turn_tasks.add(task)
+        task.add_done_callback(self._turn_tasks.discard)
         return True
 
     async def mark_proposal(self, meta: dict, line: str) -> bool:
@@ -4387,6 +4507,11 @@ class TelegramChannel(Channel):
         if ns == "proposal":
             await self._on_proposal_callback(cq, request_id, idx)
             return
+        # The Stop on a browsing request's start or status card: DM-scoped, its own
+        # fail-closed branch; the request id is the admission's confirmation id.
+        if ns == "run_stop":
+            await self._on_run_stop_callback(cq, request_id)
+            return
 
         if cq.from_user is None:
             # r3-B5: fail closed — an anonymous/missing actor can never
@@ -5359,6 +5484,7 @@ class TelegramChannel(Channel):
 
     async def edit_dm_message(
         self, chat_id: int, message_id: int, text: str, *, caption: bool = False,
+        buttons: "list[tuple[str, str]] | None" = None,
     ) -> bool:
         """Plain (no parse_mode, no reply_markup) text edit of a posted DM
         message — resident_ask finish-hook target.
@@ -5389,10 +5515,16 @@ class TelegramChannel(Channel):
         ``caption`` (slice 5b): the message is a photo whose caption is the text
         (a proposal with a photo), so the same edit goes through
         ``editMessageCaption`` — Telegram refuses ``editMessageText`` on a photo.
-        """
-        from telegram import InlineKeyboardMarkup
 
-        cleared = InlineKeyboardMarkup([])
+        ``buttons`` (the start card's Stop): ``(label, callback data)`` pairs the
+        edited message carries instead of the empty keyboard — the one caller
+        that settles a question into a card that still acts.
+        """
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+        cleared = InlineKeyboardMarkup(
+            [[InlineKeyboardButton(text=str(label), callback_data=str(data))]
+             for label, data in (buttons or [])])
         display, entities = render(text)
         for attempt in (1, 2):
             try:
@@ -6478,6 +6610,41 @@ class TelegramChannel(Channel):
             return None
         mid = getattr(msg, "message_id", None)
         return mid if isinstance(mid, int) else None
+
+    async def deliver_run_card(self, chat_id: int, text: str,
+                               buttons: "list[tuple[str, str]]") -> "int | None":
+        """The status card of browsing his own words started (``run_admission``): Casa's
+        label line and its fixed text, with ``(label, callback data)`` buttons — the
+        request's Stop. Returns the message id, or ``None`` when nothing landed."""
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+        if self._app is None:
+            logger.warning("Telegram channel not started; cannot deliver the run card")
+            return None
+        kbd = InlineKeyboardMarkup([
+            [InlineKeyboardButton(text=str(label), callback_data=str(data))]
+            for label, data in buttons])
+        try:
+            msg = await self._app.bot.send_message(chat_id=chat_id, text=text, reply_markup=kbd)
+        except Exception as exc:  # noqa: BLE001 — not proven
+            logger.warning("deliver_run_card send failed (chat=%s): %s",
+                           chat_id, type(exc).__name__)
+            return None
+        mid = getattr(msg, "message_id", None)
+        return mid if isinstance(mid, int) else None
+
+    async def send_reply_line(self, chat_id: int, text: str, reply_to: "int | None") -> bool:
+        """One Casa line (a Stop's outcome, under the specialist's label) as a reply to the
+        card it answers; a failure is logged and nothing more is attempted."""
+        if self._app is None:
+            return False
+        kwargs = {"reply_to_message_id": reply_to} if isinstance(reply_to, int) else {}
+        try:
+            await self._app.bot.send_message(chat_id=chat_id, text=text, **kwargs)
+            return True
+        except Exception as exc:  # noqa: BLE001 — a notice fault is logged
+            logger.warning("reply line failed: %s", type(exc).__name__)
+            return False
 
     async def deliver_operator_proposal(self, chat_id: int, text: str, labels: list,
                                         rid: str, *, post=None, photo=None, urls=None):

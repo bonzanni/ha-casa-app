@@ -3797,3 +3797,198 @@ async def test_a_needs_guest_reply_to_a_sign_in_that_did_not_ask_is_not_retried(
     assert sign_in_ops(rig) == ["login", "unlock_guest", "login"]
     assert rig.broker.guest_asks == [True, False]
     assert [e.outcome for e in rig.events(run.run_id, "login_needed")] == ["passkey"]
+
+
+# --------------------------------------------------------------------------- the request cancel
+
+
+async def _stop(rig, *ids):
+    """The Stop of one request, all its ids in one call: ``{request_id: answer}``."""
+    out = await rig.ctl.cancel_requests(tuple(ids))
+    return {a["request_id"]: a for a in out["requests"]}
+
+
+async def test_request_cancel_of_a_running_run_wins_and_cuts_its_command(rig):
+    """The Stop: the in-flight command answers ``interrupted``, the run ends ``cancelled``, and
+    the answer says this cancel stopped it."""
+    run = await rig.run(spec(request_id="rq-stop"))
+    rig.page().show(A_START, "Start", [dict(role="link", name="Invoice", href=A_PAGE)])
+    obs = await observe(rig, run.run_id)
+    rig.downloader.gate = asyncio.Event()
+    download = asyncio.create_task(download_(rig, run.run_id, handle_of(obs, "Invoice")))
+    await asyncio.sleep(0.01)
+    answer = await _stop(rig, "rq-stop")
+    with pytest.raises(ProtocolError, match="interrupted"):
+        await download
+    assert answer["rq-stop"] == {"request_id": "rq-stop", "run_id": run.run_id, "stopped": True,
+                                 "state": "cancelled"}
+    assert len(rig.events(run.run_id, "run_cancelled")) == 1
+
+
+async def test_request_cancel_answers_the_same_on_a_repeat(rig):
+    """``stopped`` is the app's durable record, not this call's: a repeat (a retry, a second
+    tap) answers ``stopped`` again, with no second ending."""
+    run = await rig.run(spec(request_id="rq-twice"))
+    first = await _stop(rig, "rq-twice")
+    again = await _stop(rig, "rq-twice")
+    assert first["rq-twice"]["stopped"] is True and again == first
+    assert len(rig.events(run.run_id, "run_cancelled")) == 1
+
+
+async def test_a_request_is_stopped_whole_and_no_sibling_starts(rig):
+    """Astra d2/d3 + Terra d3: the request's queued siblings and its uncreated id are recorded and
+    cancelled in the same synchronous step as the driving run's ending begins, so ending the
+    driving run never lets the app start a sibling: one browser opened, three ids stopped."""
+    leases = _count_leases(rig)
+    run = await rig.run(spec(request_id="g-1"))
+    q2, _ = await rig.ctl.start_run(spec(request_id="g-2"))
+    q3, _ = await rig.ctl.start_run(spec(request_id="g-3"))
+    other, _ = await rig.ctl.start_run(spec(request_id="other"))
+    await rig.settle()
+    opens = rig.log.kinds().count("open")
+    leases.clear()
+    answer = await _stop(rig, "g-1", "g-2", "g-3", "g-4")
+    await rig.settle()
+    assert {rid: (a["stopped"], a["state"]) for rid, a in answer.items()} == {
+        "g-1": (True, "cancelled"), "g-2": (True, "cancelled"), "g-3": (True, "cancelled"),
+        "g-4": (True, "cancelled")}
+    assert answer["g-4"]["run_id"] is None
+    assert [rig.state(r) for r in (q2.run_id, q3.run_id)] == ["cancelled", "cancelled"]
+    assert rig.state(other.run_id) == "running"            # another request's run goes on
+    assert leases == [other.run_id]                        # the only lease after the Stop
+    assert rig.log.kinds().count("open") == opens + 1
+
+
+async def test_a_queued_sibling_is_stopped_while_the_driving_command_holds_the_lock(rig):
+    """Astra d3 S1: the siblings are cancelled without waiting for the command lock, and the
+    driving command is cut at once — nothing waits behind a command that holds the lock."""
+    run = await rig.run(spec(request_id="h-1"))
+    q2, _ = await rig.ctl.start_run(spec(request_id="h-2"))
+    await rig.settle()
+    rig.page().show(A_START, "Start", [dict(role="link", name="Invoice", href=A_PAGE)])
+    obs = await observe(rig, run.run_id)
+    rig.downloader.gate = asyncio.Event()
+    download = asyncio.create_task(download_(rig, run.run_id, handle_of(obs, "Invoice")))
+    await asyncio.sleep(0.01)
+    stopping = asyncio.create_task(_stop(rig, "h-1", "h-2"))
+    await asyncio.sleep(0)
+    assert rig.state(q2.run_id) == "cancelled" and rig.state(run.run_id) == "finishing"
+    with pytest.raises(ProtocolError, match="interrupted"):
+        await download
+    assert (await stopping)["h-1"]["stopped"] is True
+
+
+async def test_a_command_waiting_for_the_lock_is_refused_once_the_stop_began(rig):
+    """The driving run's ending is decided when the Stop arrives: a finish that only reaches the
+    lock afterwards is refused, and the run ends cancelled with no ``run_finished``."""
+    run = await rig.run(spec(request_id="w-1"))
+    async with rig.ctl._lock:
+        finishing = asyncio.create_task(rig.ctl.finish(run.run_id, manifest()))
+        await asyncio.sleep(0.01)
+        stopping = asyncio.create_task(_stop(rig, "w-1"))
+        await asyncio.sleep(0.01)
+    with pytest.raises(ProtocolError):
+        await finishing
+    assert (await stopping)["w-1"] == {"request_id": "w-1", "run_id": run.run_id,
+                                       "stopped": True, "state": "cancelled"}
+    assert rig.events(run.run_id, "run_finished") == []
+
+
+async def test_request_cancel_of_a_terminal_run_does_not_stop_it(rig):
+    """A run that had ended on its own is not taken for a Stop: ``stopped`` false, the run
+    unchanged, nothing recorded."""
+    run = await rig.run(spec(request_id="rq-done"))
+    await rig.ctl.finish(run.run_id, manifest())
+    answer = await _stop(rig, "rq-done")
+    assert answer["rq-done"] == {"request_id": "rq-done", "run_id": run.run_id,
+                                 "stopped": False, "state": "completed"}
+    assert not rig.store.request_cancelled("rq-done")
+    assert rig.events(run.run_id, "run_cancelled") == []
+
+
+async def test_request_cancel_while_a_finish_tears_down_does_not_stop_it(tmp_path):
+    """A finish whose ending started first wins, however the Stop races its teardown: the run
+    completes with only ``run_finished``, and the Stop — and its repeat — answer ``stopped``
+    false (Astra r2: a state read before the cancel took this for a Stop)."""
+    r = Rig(tmp_path)
+    proxy = LocalProxy(tmp_path)
+    r.proxy = r.ctl.proxy = proxy
+    await r.start()
+    try:
+        run = await r.run(spec(request_id="rq-fin", mode="open_web", sites=()))
+        gate = asyncio.Event()
+        proxy.hold["revoke"] = gate
+        finishing = asyncio.create_task(r.ctl.finish(run.run_id, manifest()))
+        await asyncio.sleep(0.02)
+        assert r.state(run.run_id) == "finishing"
+        answer = await _stop(r, "rq-fin")                  # nothing of it waits on the lock
+        gate.set()
+        assert (await finishing).state == "completed"
+        assert answer["rq-fin"]["stopped"] is False
+        assert (await _stop(r, "rq-fin"))["rq-fin"] == {
+            "request_id": "rq-fin", "run_id": run.run_id, "stopped": False, "state": "completed"}
+        kinds = [e.kind for e in r.events(run.run_id) if e.kind.startswith("run_")]
+        assert kinds.count("run_finished") == 1 and "run_cancelled" not in kinds
+    finally:
+        await r.ctl.shutdown()
+        r.close()
+
+
+def _count_leases(rig):
+    calls = []
+    real = rig.store.lease_next_run
+
+    def lease():
+        out = real()
+        if out is not None:
+            calls.append(out.run_id)
+        return out
+    rig.store.lease_next_run = lease
+    return calls
+
+
+async def test_a_request_stopped_before_its_run_exists_is_created_cancelled(rig):
+    """A Stop that finds no run yet records the id; the POST that comes after creates the run
+    already ``cancelled``: one ``run_cancelled`` event, no browser, no lease."""
+    leases = _count_leases(rig)
+    opens = rig.log.kinds().count("open")
+    answer = await _stop(rig, "rq-later")
+    assert answer["rq-later"] == {"request_id": "rq-later", "run_id": None, "stopped": True,
+                                  "state": "cancelled"}
+    run, created = await rig.ctl.start_run(spec(request_id="rq-later"))
+    await rig.settle()
+    assert created and run.state == "cancelled" and rig.state(run.run_id) == "cancelled"
+    assert [e.kind for e in rig.events(run.run_id)] == ["run_cancelled"]
+    assert rig.log.kinds().count("open") == opens and leases == []
+    again = await _stop(rig, "rq-later")
+    assert again["rq-later"]["run_id"] == run.run_id and again["rq-later"]["stopped"] is True
+
+
+async def test_a_post_in_flight_when_the_stop_lands_is_created_cancelled(rig):
+    """The POST started first, the Stop's record landing before its create: the same — no
+    browser starts for a cancelled request id."""
+    leases = _count_leases(rig)
+    opens = rig.log.kinds().count("open")
+    posting = asyncio.create_task(rig.ctl.start_run(spec(request_id="rq-race")))
+    answer = await _stop(rig, "rq-race")
+    run, created = await posting
+    await rig.settle()
+    assert answer["rq-race"]["run_id"] is None and answer["rq-race"]["stopped"] is True
+    assert created and rig.state(run.run_id) == "cancelled"
+    assert len(rig.events(run.run_id, "run_cancelled")) == 1
+    assert rig.log.kinds().count("open") == opens and leases == []
+
+
+async def test_an_ending_already_under_way_is_not_a_stop(rig):
+    """White-box: a driving run whose ending another command already began is not the Stop's —
+    ``stopped`` false, nothing recorded."""
+    run = await rig.run(spec(request_id="rq-under-way"))
+    active = rig.ctl.active
+    active.ending = ("interrupted", "run_interrupted", "internal")
+    try:
+        answer = await _stop(rig, "rq-under-way")
+    finally:
+        active.ending = None
+    assert answer["rq-under-way"]["stopped"] is False
+    assert not rig.store.request_cancelled("rq-under-way")
+    assert rig.events(run.run_id, "run_cancelled") == []

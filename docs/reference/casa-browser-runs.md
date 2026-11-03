@@ -246,7 +246,7 @@ confirmed. An account run whose `end_run` is unacknowledged is also written to t
 `owed_releases` before it takes its state, so the obligation survives a controller restart.
 A run that is ending
 never gets another install. `cancel` is idempotent; a queued run is cancelled by its transition
-alone. There is no run-duration limit: time is a progress signal (events carry their time).
+alone; the request cancel takes the same path ([`casa-browser.md`](casa-browser.md)). There is no run-duration limit: time is a progress signal (events carry their time).
 
 **Service start.** Before a run is ended or begun: `status()`; a policy a previous controller
 left installed is revoked, then the launcher's exit proof — both retried every 5 s until

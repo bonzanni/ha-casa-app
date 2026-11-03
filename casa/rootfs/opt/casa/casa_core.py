@@ -6238,6 +6238,8 @@ async def _shutdown_cleanup(
     import plugin_continuations
     plugin_continuations.stop_sweep()              # slice 5k: no sweep pass after the stop
     await plugin_continuations.CONTINUATIONS.drain()
+    import plugin_stop
+    await plugin_stop.drain()                       # a stop call still tearing down its stdio
     await _tools_mod.drain_delegation_settlements()
 
     # 17. Cleanup

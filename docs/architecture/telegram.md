@@ -146,9 +146,13 @@ own message, before the overflow pages, which go untouched. The contract is INV-
 **A tap is authorised against the request it answers.** Callback data is versioned and
 carries the namespace and request id; resolution is bound to the operator the request was
 posted for. A tap from someone else is refused. Note that the parser still accepts a legacy
-permission format — but actionability is bounded by process memory: a callback resolves only
-while its request lives in the current process's broker, so buttons from before a restart
-are rejected as expired however well their format parses.
+permission format — but actionability is bounded by process memory: a callback of a broker
+namespace resolves only while its request lives in the current process's broker, so buttons
+from before a restart are rejected as expired however well their format parses. The
+namespaces are `_CALLBACK_NAMESPACES`; `proposal` is
+[`stored-call-buttons.md`](stored-call-buttons.md). `run_stop`, the Stop on a browsing
+request's card, is no broker request: it reads the durable admission, so it still acts after
+a restart ([`plugin-stop.md`](plugin-stop.md)).
 
 ## Contracts & invariants
 
@@ -243,7 +247,7 @@ which reads as `UNKNOWN` and preserves their existing behavior. That case is del
 distinct from a negative — treating "cannot report" as "failed" would re-offer a notice on
 every turn forever.
 
-**INV-TG-007**: A settled DM question drops its buttons along with its text.
+**INV-TG-007**: A settled DM question drops its buttons along with its text, except the buttons its settle names: only the browsing start card's Start keeps its Stop.
 
 The DM settle edit sends an *explicit empty* keyboard rather than omitting the markup.
 Omitting it is not neutral: the client library drops the absent parameter, so the platform's
@@ -251,10 +255,13 @@ edit call never touches the markup and the buttons outlive the text that retired
 operator is then holding a live-looking control for a question that is already closed —
 which is the single-attention-lane discipline broken in the one place it is most visible.
 
-The clear is unconditional because every caller of the DM settle edit is a broker finish
+The clear is the default because every caller of the DM settle edit is a broker finish
 hook, and a finish hook runs only at a terminal outcome: an answered question, an expiry, a
-supersession, a shutdown. There is no mid-question repaint on this path for the flag to
-protect, and an opt-in flag is a thing the next call site forgets. The topic path is
+supersession, a shutdown. There is no mid-question repaint on this path, and an opt-in flag
+is a thing the next call site forgets. The one exception names its buttons explicitly
+(`edit_dm_message(buttons=...)`): the start card of a browsing request, answered Start,
+keeps the request's Stop, because the question is closed but the work it started is not
+([`plugin-stop.md`](plugin-stop.md)). The topic path is
 different — it has genuine mid-question edits — and keeps its explicit opt-in.
 
 An edit is idempotent, so a DM settle edit that fails transiently is tried once more: after

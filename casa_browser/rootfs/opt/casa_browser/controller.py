@@ -617,7 +617,10 @@ class RunController:
             if self.store.get_site(grant.site_id) is None:
                 raise ProtocolError("not_found")
         run, created = self.store.create_run(spec, "run_" + secrets.token_hex(8), now=self.clock())
-        if created:
+        if created and run.state == "cancelled":
+            # its request was stopped before it existed (``cancel_request``): never leased
+            self._event(run.run_id, "run_cancelled", "cancelled")
+        elif created:
             self._event(run.run_id, "run_queued", "queued")
             self._spawn(self._advance())
         return run, created
@@ -3337,22 +3340,58 @@ class RunController:
                 self._event(run_id, "run_cancelled", "cancelled")
             return self._run(run_id)
 
+    async def request_stopped(self, request_id: str) -> bool:
+        """Whether the operator's Stop stopped this request id (``cancelled_requests``)."""
+        return self.store.request_cancelled(request_id)
+
+    async def cancel_requests(self, request_ids: tuple[str, ...]) -> dict:
+        """``POST /v1/requests/cancel`` (the operator's Stop of one request, all its request
+        ids at once). In one synchronous step — no await between — every id is decided: an id
+        with no run yet is recorded in ``cancelled_requests`` (its create comes back
+        cancelled), a queued run is recorded and moved to ``cancelled``, and the driving run,
+        when its ending has not started, is recorded, its in-flight command cut and its ending
+        begun (``cancelled``); a terminal run, or one whose ending another command already
+        began, is not recorded. Only then is the driving run torn down, under the command
+        lock. ``lease_next_run`` skips a recorded id, so no sibling is started meanwhile. Each
+        id's ``stopped`` is whether it is recorded after this call (the same on a repeat)."""
+        now = self.clock()
+        ending: _Active | None = None
+        for request_id in request_ids:
+            run = self.store.run_by_request(request_id)
+            if run is None:
+                self.store.cancel_request_id(request_id, now=now)
+            elif run.state == "queued":
+                self.store.cancel_request_id(request_id, now=now)
+                if self.store.transition(run.run_id, "queued", "cancelled", now=now):
+                    self._event(run.run_id, "run_cancelled", "cancelled")
+            elif run.state not in TERMINAL_STATES:
+                active = self.active
+                if active is not None and active.run_id == run.run_id and active.ending is None:
+                    self.store.cancel_request_id(request_id, now=now)
+                    self.grants.revoke(run.run_id)
+                    self._cut("interrupted", run.run_id)       # before the ending begins
+                    self._begin_end(active, "cancelled", "run_cancelled", "cancelled")
+                    ending = active
+        if ending is not None:
+            async with self._lock:
+                if self.active is ending and self._run(ending.run_id).state not in TERMINAL_STATES:
+                    await self._end(ending, "cancelled", "run_cancelled", "cancelled")
+        out = []
+        for request_id in request_ids:
+            run = self.store.run_by_request(request_id)
+            out.append({"request_id": request_id,
+                        "run_id": None if run is None else run.run_id,
+                        "stopped": self.store.request_cancelled(request_id),
+                        "state": "cancelled" if run is None else run.state})
+        return {"requests": out}
+
     async def _end(self, active: _Active, state: str, kind: str, outcome: str, *,
                    advance: bool = True) -> None:
         """Move the run to ``finishing`` and tear it down; terminal only when confirmed. The
         teardown runs in its own task: a command that ends its own run is not cut by it."""
         self.grants.revoke(active.run_id)   # the live view ends now (no await before it)
         if active.ending is None:
-            active.ending = (state, kind, outcome)
-            # The run's question ends with it: nothing it froze can run any more. (A press
-            # that may have happened was already recorded outcome_unknown by its own work.)
-            active.pending = None
-            active.question = None
-            self._sweep_quarantine(active)
-            self.store.end_questions(active.run_id, now=self.clock(), confirming="expired")
-            current = self._run(active.run_id).state
-            if current not in TERMINAL_STATES and current != "finishing":
-                self.store.transition(active.run_id, current, "finishing")
+            self._begin_end(active, state, kind, outcome)
         work = self._work
         if work is not None and work is not asyncio.current_task() and \
                 self._work_run == active.run_id and not work.done():
@@ -3371,6 +3410,20 @@ class RunController:
         ending.result()
         if cancelled:
             raise asyncio.CancelledError
+
+    def _begin_end(self, active: _Active, state: str, kind: str, outcome: str) -> None:
+        """The synchronous start of a run's ending: from here the run is ``finishing`` and its
+        ending is decided (``active.ending``), so every later command of it is refused."""
+        active.ending = (state, kind, outcome)
+        # The run's question ends with it: nothing it froze can run any more. (A press
+        # that may have happened was already recorded outcome_unknown by its own work.)
+        active.pending = None
+        active.question = None
+        self._sweep_quarantine(active)
+        self.store.end_questions(active.run_id, now=self.clock(), confirming="expired")
+        current = self._run(active.run_id).state
+        if current not in TERMINAL_STATES and current != "finishing":
+            self.store.transition(active.run_id, current, "finishing")
 
     async def _teardown_and_settle(self, active: _Active, advance: bool) -> None:
         await self._settle(active, await self._teardown(active), advance)

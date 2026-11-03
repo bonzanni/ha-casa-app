@@ -285,3 +285,19 @@ async def test_crash_after_settling_cas_replays_exact_edit_once_without_dispatch
     _assert_empty_markup(kwargs)
     assert boot_ch._dispatch_scheduled_continuation.await_count == 0
     assert len(reopened.all()) == 0
+
+
+async def test_pin_inv_tg_007_a_settle_that_names_its_buttons_keeps_exactly_those():
+    """The one settle that keeps a keyboard: the browsing start card's answered Start keeps
+    its Stop (``operator_calls.post_question(after_choice=...)``). The edit carries exactly
+    the named buttons; every other settle still sends the empty keyboard."""
+    ch, bot = _mk_channel()
+
+    ok = await ch.edit_dm_message(CHAT, MESSAGE_ID, PLAIN_TEXT,
+                                  buttons=[("Stop", "v1|run_stop|conf-x|0")])
+
+    assert ok is True and bot.edit_message_text.await_count == 1
+    _, kwargs = bot.edit_message_text.call_args
+    rows = list(kwargs["reply_markup"].inline_keyboard)
+    assert [(b.text, b.callback_data) for row in rows for b in row] == [
+        ("Stop", "v1|run_stop|conf-x|0")]

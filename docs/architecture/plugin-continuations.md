@@ -12,7 +12,9 @@ How a plugin's work that outlives one turn — a browsing run waiting on the ope
 a live-view login, or simply running long — is carried on in fresh turns of its
 specialist: the continuation queue, the turn's origin rebuilt from a binding, the relay of
 its answer back up the requester chain, and the once-a-minute driver sweep that finds work
-nothing is driving. The binding and the `continue` route that feeds the queue are
+nothing is driving. Stopping such work at once — the plugin's declared stop tool, called
+directly with the sweep's own resolution and client — is [`plugin-stop.md`](plugin-stop.md).
+The binding and the `continue` route that feeds the queue are
 [`plugin-operator-calls.md`](plugin-operator-calls.md); the desk a continuation waits for
 is [`specialist-desk.md`](specialist-desk.md); the announcement its answer becomes is
 [`delegation-announcements.md`](delegation-announcements.md).
@@ -26,6 +28,13 @@ fresh turn. `CONTINUATIONS.request(binding, run_ref, reason)` keeps at most one 
 continuation per plugin, operator and `run_ref`; once its turn has started, a new request
 for the run queues the next one, so a tap that arrives while a turn still drives the run
 is applied after that turn.
+
+**A stopped request's continuations are dropped** (`Continuations.drop`). When the operator
+stops a request and its plugin answers `stopped` ([`plugin-stop.md`](plugin-stop.md)),
+every pending continuation of that plugin and operator whose `run_ref` the stop names is
+taken off the queue and marked `dropped`; its worker, once it holds the desk, returns
+before the turn starts (`run_continuation`). A continuation whose turn has started is the
+session driving the work and is left to end itself.
 
 **A continuation turn is rebuilt from the binding alone** (`continuation_origin`), and only
 for a binding of the operator as configured now, whose chain ends with a loaded specialist:
@@ -67,11 +76,13 @@ is announced as always.
 **The sweep makes a lost hand-over cost a minute** (`sweep_once`). Once a minute, for
 every loaded specialist's resolved plugins that declare `casa.driverSweep`
 (`plugin_store.manifest_driver_sweep`: a `safe` contract tool that consumes nothing and
-calls nothing), Casa starts that plugin's stdio server itself — no model, no session —
+calls nothing; `declaring_plugins` resolves them as the specialist's sessions do, with
+unresolved environment withheld, once per artifact — the stop tool's resolution too),
+Casa starts that plugin's stdio server itself (`sweep_server`) — no model, no session —
 with the environment the CLI would give it (`CLAUDE_PLUGIN_ROOT`, `CLAUDE_PLUGIN_DATA` by
 the CLI's rule for a locally loaded plugin, `plugin_data_dir`, and its `.mcp.json`
 environment expanded), lists the server's tools and calls the declared one — only if the server lists it — with
-no arguments, and queues a continuation
+no arguments (`call_plugin_tool`, which the stop shares), and queues a continuation
 (reason `sweep`) for every returned `{run_ref, binding_ref}` whose binding belongs to that
 plugin. The plugin's own predicate decides which runs need a driver; a turn cut at its
 ceiling, a crash or a Casa restart leaves the run to the next sweep.
@@ -143,8 +154,8 @@ record in the browser app is untouched).
 pass is skipped and logged; the next minute tries again. An unusable `sweep_again_s` arms
 nothing, and an unusable `unless_delivered` holds nothing. **Casa restarts.** The queue is
 empty; bindings survive, so the first sweep re-finds every run still needing a driver.
-**Casa stops.** Pending and running continuations are cancelled before delegation
-settlements drain; a running turn is cancelled and given its bounded teardown before its
+**Casa stops.** Pending and running continuations are cancelled, then any stop call still
+tearing down its server (`plugin_stop.drain`), before delegation settlements drain; a running turn is cancelled and given its bounded teardown before its
 desk and permit are released.
 
 ## Extension points

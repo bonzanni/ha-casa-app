@@ -211,18 +211,37 @@ async def sites_named(words: str) -> list[str]:
         return []
 
 
-def compose_question(runs: list[dict], requester_name: str) -> str:
-    """Casa's own text for the batch tap: one line per run, from the
-    validated fields; the task line is the plugin's, clipped."""
-    head = ("Start this browsing run?" if len(runs) == 1
-            else f"Start these {len(runs)} browsing runs?")
+def _run_lines(runs: list[dict]) -> list[str]:
     lines = []
     for r in runs:
         where = ("the open web" if r["mode"] == "open_web"
                  else ", ".join(s["name"] for s in r["sites"]))
         task = " ".join((r["task_kind"] or r["task_text"]).split())[:CARD_TASK_CHARS]
         lines.append(f"• {where}" + (f" — {task}" if task else ""))
-    return "\n".join([head, *lines, f"Asked for by {requester_name}."])
+    return lines
+
+
+def compose_question(runs: list[dict], requester_name: str) -> str:
+    """Casa's own text for the batch tap: one line per run, from the
+    validated fields; the task line is the plugin's, clipped."""
+    head = ("Start this browsing run?" if len(runs) == 1
+            else f"Start these {len(runs)} browsing runs?")
+    return "\n".join([head, *_run_lines(runs), f"Asked for by {requester_name}."])
+
+
+def compose_status(runs: list[dict], requester_name: str) -> str:
+    """The status card's text when his words admitted the runs (no start card exists): the
+    same lines under "Browsing now:"."""
+    head = ("Browsing now:" if len(runs) == 1 else f"Browsing now ({len(runs)} runs):")
+    return "\n".join([head, *_run_lines(runs), f"Asked for by {requester_name}."])
+
+
+#: the Stop button every start or status card carries (``channels.telegram``'s ``run_stop``)
+STOP_LABEL = "Stop"
+
+
+def stop_button(cid: str) -> "tuple[str, str]":
+    return (STOP_LABEL, f"v1|run_stop|{cid}|0")
 
 
 def _admissions(runs: list[dict]) -> list[dict]:
@@ -244,6 +263,10 @@ class Confirmation:
     created_at: float           # wall clock (survives a restart)
     answered_at: float = 0.0
     process: str = ""           # the process that posted a pending card
+    # the start or status card that carries the request's Stop (0: none landed): its message
+    # and its text as shown, so a Stop from any path marks it (``plugin_stop.settle_run_card``)
+    card_message_id: int = 0
+    card_text: str = ""
 
 
 _PROCESS = uuid.uuid4().hex     # a pending card from another process is dead
@@ -323,15 +346,35 @@ class Confirmations:
             self._items[c.cid] = c
             self._save_locked()
 
-    def settle(self, cid: str, status: str, admissions: list) -> "Confirmation | None":
+    def settle(self, cid: str, status: str, admissions: list, *, card_message_id: int = 0,
+               card_text: str = "") -> "Confirmation | None":
         with self._lock:
             self._load_locked()
             c = self._items.get(cid)
             if c is None or c.status != "pending":
                 return None
             c.status, c.admissions, c.answered_at = status, admissions, self._now()
+            if card_message_id:
+                c.card_message_id, c.card_text = int(card_message_id), card_text
             self._save_locked()
             return c
+
+    def set_card(self, cid: str, message_id: int, text: str) -> None:
+        """The status card landed: its message and text are recorded with the request."""
+        with self._lock:
+            self._load_locked()
+            c = self._items.get(cid)
+            if c is None:
+                return
+            c.card_message_id, c.card_text = int(message_id), text
+            self._save_locked()
+
+    def peek(self, cid: Any) -> "Confirmation | None":
+        """Casa's own read (the Stop callback): no plugin or operator check — the caller
+        compares the tapper itself."""
+        with self._lock:
+            self._load_locked()
+            return self._items.get(cid) if isinstance(cid, str) else None
 
     def get(self, cid: Any, *, plugin: str, operator_id: int) -> "Confirmation | None":
         with self._lock:
@@ -407,6 +450,7 @@ async def _decide(call, runs: list[dict], request_key: str) -> dict:
             logger.info("run admission: %d run(s) admitted by his words extract_ms=%s "
                         "total_ms=%d", len(runs), extract_ms,
                         int((time.monotonic() - started) * 1000))
+            _spawn_status_card(call, runs, binding, cid)
             return _answer(conf)
     import tools as tools_mod
     conf = Confirmation(cid=cid, plugin=call.plugin, operator_id=int(call.identity.operator_id),
@@ -416,7 +460,10 @@ async def _decide(call, runs: list[dict], request_key: str) -> dict:
 
     async def _on_settle(outcome: dict) -> None:
         if outcome.get("outcome") == "answered" and outcome.get("choice") == 0:
-            settled = CONFIRMATIONS.settle(cid, "admitted", _admissions(runs))
+            settled = CONFIRMATIONS.settle(
+                cid, "admitted", _admissions(runs),
+                card_message_id=int(outcome.get("message_id") or 0),
+                card_text=str(outcome.get("text") or ""))
         elif outcome.get("outcome") == "answered":
             settled = CONFIRMATIONS.settle(cid, "declined", [])
         elif outcome.get("outcome") == "no_answer":
@@ -434,12 +481,47 @@ async def _decide(call, runs: list[dict], request_key: str) -> dict:
     landed = await post_question(
         identity=call.identity, role=call.role,
         text=compose_question(runs, tools_mod._display_name_for_role(binding.requester)),
-        options=[start, "Not now"], timeout_s=CONFIRM_TIMEOUT_S, on_settle=_on_settle)
+        options=[start, "Not now"], timeout_s=CONFIRM_TIMEOUT_S, on_settle=_on_settle,
+        after_choice={0: [stop_button(cid)]})
     logger.info("run admission: %d run(s) put to the operator (%s) extract_ms=%s",
                 len(runs), "posted" if landed else "not delivered", extract_ms)
     if not landed:
         CONFIRMATIONS.settle(cid, "refused", [])
     return _answer(conf)
+
+
+_CARD_TASKS: set = set()
+
+
+def _spawn_status_card(call, runs: list[dict], binding, cid: str) -> None:
+    """His words admitted the runs, so no start card exists: one status card with the Stop
+    button is posted beside the answer (never awaited by it). A failed post is logged and
+    nothing else — Ellen's ``stop_work`` remains."""
+    async def _post() -> None:
+        import tools as tools_mod
+        from result_broker import _telegram_channel, compose_operator_message, post_label
+        channel = _telegram_channel()
+        if channel is None:
+            return
+        text = compose_operator_message(
+            compose_status(runs, tools_mod._display_name_for_role(binding.requester)),
+            post_label(call.role))
+        mid = await channel.deliver_run_card(int(call.identity.chat_id), text,
+                                             [stop_button(cid)])
+        if isinstance(mid, int) and not isinstance(mid, bool):
+            CONFIRMATIONS.set_card(cid, mid, text)
+        else:
+            logger.warning("run admission: the status card was not posted")
+
+    async def _guarded() -> None:
+        try:
+            await _post()
+        except Exception as exc:  # noqa: BLE001 — logged; the answer stands
+            logger.warning("run admission: status card failed (%s)", type(exc).__name__)
+
+    task = asyncio.get_running_loop().create_task(_guarded())
+    _CARD_TASKS.add(task)
+    task.add_done_callback(_CARD_TASKS.discard)
 
 
 def confirmation_status(call, cid: Any) -> dict:

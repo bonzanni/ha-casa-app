@@ -426,6 +426,22 @@ class FakeController:
             self._event(run_id, "run_cancelled", "cancelled")
         return self._run(run_id)
 
+    async def request_stopped(self, request_id: str) -> bool:
+        return self.store.request_cancelled(request_id)
+
+    async def cancel_requests(self, request_ids: tuple) -> dict:
+        out = []
+        for request_id in request_ids:
+            run = self.store.run_by_request(request_id)
+            if run is None or run.state not in TERMINAL_STATES:
+                self.store.cancel_request_id(request_id, now=self.clock())
+            if run is not None:
+                run = await self.cancel(run.run_id)
+            out.append({"request_id": request_id, "run_id": None if run is None else run.run_id,
+                        "stopped": self.store.request_cancelled(request_id),
+                        "state": "cancelled" if run is None else run.state})
+        return {"requests": out}
+
     async def forget(self, site_id: str, operator_ref: str) -> dict:
         if self.store.get_site(site_id) is None:
             raise ProtocolError("not_found")

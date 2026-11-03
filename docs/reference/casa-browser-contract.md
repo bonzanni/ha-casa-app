@@ -55,6 +55,7 @@ outside its bound, is `unsupported` before anything happens. A refusal is
 | `POST /v1/runs` | `request_id`, `requester_id`, `mode` (`account`\|`open_web`), `task_text`, `task_kind`, `sites` (`[{site_id, access: account\|public}]`; an account run names at least one), `result_expectation`, `admission` `{origin_kind: operator_telegram, origin_ref, admitted_spec_digest}`; optional `start_url` (an open-web spec only: one `https` address with a host, at most 2,048 bytes, printable, no whitespace; a digest member only when present) |
 | `POST …/observe` | none (`{}`), or `{"sign_in": <bool>}`: the page of an account site is first looked at for its sign-in, and a page with sign-in fields answers `judgement_required` with a `sign_in` judgement, whose verdict's reply is `done` with the `observation` ([`casa-browser-signin.md`](casa-browser-signin.md)) |
 | `…/cancel` | none (`{}`) |
+| `POST /v1/requests/cancel` | `request_ids` (1–8 distinct caller ids: every id of one request) |
 | `POST …/action` | `kind` (`navigate`\|`click`\|`type`\|`scroll`\|`select`\|`back`), `handle`, `generation`; `text` for `type` only (printable characters and line breaks only: no other control character, no line or paragraph separator; CR and CRLF arrive as LF; a line break only into a `multi-line` field, else `not_run` `one_line`, and never with `enter`, else `not_run` `no_enter`); `enter` (boolean) for `type` only; `choice_handle` for `select` only (an option of the select); `direction` (`up`\|`down`) and `amount` (`step`\|`page`) for `scroll` only |
 | `POST /v1/control/runs/{run}/judgements/{judgement}` | `packet_sha256` (64 lowercase hex) and `verdict` (the check's reply object, untouched), optional `latency_ms`; or `no_verdict: check_unavailable` |
 | `POST /v1/control/runs/{run}/questions/{question}/answer` | `revision`, `digest` (the question's packet digest), `choice` (`confirm`\|`not_now`\|`{extra: 0–2}`, or `{item: 0–4}` for a login question), `operator_ref` |
@@ -87,6 +88,7 @@ outside its bound, is `unsupported` before anything happens. A refusal is
 | a source (X9, `GET /v1/control/runs/{run}/sources` → `{sources}`) | `source_id`, `url`, `title_masked` — the one reply that carries an address; never a model tool |
 | a screenshot (X7, `GET /v1/control/runs/{run}/screenshots/{screenshot}`) | the masked PNG, that run's ids only; never on a model route; `POST /v1/control/runs/{run}/screenshots` (no members, a running run) takes one of the page as it stands → `{screenshot_id}` |
 | forget | `{site_id, status: forgotten}` |
+| a request cancel (`POST /v1/requests/cancel`) | `requests`: one per id asked, in order — `request_id`, `run_id` (null when no run of it exists yet), `stopped` (whether the id is recorded as stopped after the call: the same on a repeat), `state` (the run's, or `cancelled` with no run) — [`casa-browser.md`](casa-browser.md) |
 
 **Admission digest (X4).** `admitted_spec_digest` is `sha256:` + the hex SHA-256 of the RFC
 8785 canonical JSON of the run body's members other than `admission`; the shared vector file
@@ -115,7 +117,7 @@ Each event is `{seq, run_id, kind, origin, handle, text_masked, outcome, screens
 | `live_unavailable` | a short code | the run is back in `running` |
 | `live_done` | `running`, or `waiting_approval` back to the open question it was opened from | |
 | `run_finished` | `completed` | |
-| `run_failed`, `run_cancelled` | `failed`, `cancelled` | |
+| `run_failed`, `run_cancelled` | `failed`, `cancelled` | a run created for a request already stopped has `run_cancelled` alone |
 | `run_interrupted` | why — for example `app_restart`, `proxy_restarted`, `site_forgotten`, `pairing_revoked`, `release_unconfirmed` | with a durable `run_interrupted` notice |
 
 ## Locale

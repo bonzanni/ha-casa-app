@@ -96,6 +96,7 @@ EDIT_DM_MESSAGE_CALLERS = {
     ("specialist_install_consent.py", "_finish_inner"): {"plugin"},
     ("trigger_consent.py", "_finish"): {"plugin"},
     ("operator_calls.py", "_finish"): {"plugin"},                  # browser executor: a plugin's question, ☑ label / retired
+    ("plugin_stop.py", "settle_run_card"): {"status"},             # the Stop: the card's stored text + ☑ Stopped / Ended / Stop asked
 }
 
 RAW_TRANSPORT_FUNCTIONS = {
@@ -123,6 +124,8 @@ RAW_TRANSPORT_FUNCTIONS = {
     ("channels/telegram.py", "replace_operator_proposal"): "notice", # #1339: that proposal edited in place, as a tap's next card
     ("channels/telegram.py", "deliver_desk_notice"): "notice",       # S4: a desk turn's outcome, Casa-composed
     ("channels/telegram.py", "send_handoff_line"): "notice",         # #1350: a hand-off record, Casa-composed
+    ("channels/telegram.py", "deliver_run_card"): "notice",          # the Stop: a browsing request's status card, Casa-composed
+    ("channels/telegram.py", "send_reply_line"): "notice",           # the Stop: its one outcome line, Casa-composed
     ("channels/telegram.py", "notify_operator"): "notice",           # the memory wipe's restart and done lines
     ("channels/telegram.py", "_send_plain_line"): "notice",          # the memory wipe's courtesy line
     # topic — sequencer-owned engagement-topic methods (out of this boundary)
@@ -229,7 +232,8 @@ TOPIC_METHODS = {"send_to_topic", "send_to_topic_rich", "send_to_topic_paged",
 NOTICE_METHODS = {"deliver_operator_link", "deliver_operator_message", "deliver_operator_page",
                   "deliver_operator_file", "deliver_desk_notice", "send_handoff_line", "reply",
                   "deliver_operator_proposal", "replace_operator_proposal",
-                  "deliver_operator_question", "notify_operator"}
+                  "deliver_operator_question", "notify_operator", "deliver_run_card",
+                  "send_reply_line"}
 # dispatch — the text becomes a TURN's input, not an emission (Astra r1 item 1)
 DISPATCH_METHODS = {"deliver_system_turn"}
 

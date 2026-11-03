@@ -39,14 +39,22 @@ class _Channel:
         self.deliver = deliver
         self.posted: list[tuple] = []
         self.edits: list[tuple] = []
+        self.edit_buttons: list[list] = []
+        self.cards: list[tuple] = []
+        self.card_lands = True
 
     async def deliver_operator_question(self, chat_id, text, labels, rid):
         self.posted.append((chat_id, text, labels, rid))
         return 555 if self.deliver else None
 
-    async def edit_dm_message(self, chat_id, message_id, text):
+    async def edit_dm_message(self, chat_id, message_id, text, buttons=None):
         self.edits.append(text)
+        self.edit_buttons.append(list(buttons or []))
         return True
+
+    async def deliver_run_card(self, chat_id, text, buttons):
+        self.cards.append((chat_id, text, list(buttons)))
+        return 556 if self.card_lands else None
 
 
 @pytest.fixture
@@ -440,3 +448,64 @@ async def test_overlapping_requests_with_one_key_are_decided_once(wired, monkeyp
     a, b = await asyncio.gather(first, second)
     assert a == b and a["status"] == "confirmation_pending"
     assert len(readings) == 1 and len(channel.posted) == 1
+
+
+# -- the Stop on the start and status cards -----------------------------------------------
+
+@pytest.mark.asyncio
+async def test_his_start_leaves_the_card_with_exactly_its_stop(wired, monkeypatch):
+    channel, _continued = wired
+    ask, _ = _model('{"runs": []}')
+    monkeypatch.setattr(run_admission, "_ask_model", ask)
+    out = await run_admission.request_admission(_call(words="yes"), [RUNPOD], "k1")
+    cid = out["confirmation_id"]
+    await _tap(channel, 0)
+    assert channel.edit_buttons == [[("Stop", f"v1|run_stop|{cid}|0")]]
+    assert len(f"v1|run_stop|{cid}|0".encode()) <= 64
+    c = run_admission.CONFIRMATIONS.peek(cid)
+    assert c.card_message_id == 555 and c.card_text.endswith("☑ Start")
+
+
+@pytest.mark.asyncio
+async def test_not_now_settles_the_card_with_no_buttons(wired, monkeypatch):
+    channel, _continued = wired
+    ask, _ = _model('{"runs": []}')
+    monkeypatch.setattr(run_admission, "_ask_model", ask)
+    await run_admission.request_admission(_call(words="yes"), [RUNPOD], "k1")
+    await _tap(channel, 1)
+    assert channel.edit_buttons == [[]]
+
+
+async def _cards_settle():
+    for _ in range(50):
+        if not run_admission._CARD_TASKS:
+            return
+        await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_runs_his_words_admitted_get_one_status_card_with_its_stop(wired, monkeypatch):
+    channel, _continued = wired
+    ask, _ = _model('{"runs": [{"site": "RunPod"}]}')
+    monkeypatch.setattr(run_admission, "_ask_model", ask)
+    out = await run_admission.request_admission(_call(), [RUNPOD], "k1")
+    await _cards_settle()
+    assert out["status"] == "admitted" and channel.posted == []
+    (card,) = channel.cards
+    cid = out["confirmation_id"]
+    assert card[2] == [("Stop", f"v1|run_stop|{cid}|0")]
+    assert "Browsing now:" in card[1] and "• RunPod — download invoice" in card[1]
+    c = run_admission.CONFIRMATIONS.peek(cid)
+    assert c.card_message_id == 556 and c.card_text == card[1]
+
+
+@pytest.mark.asyncio
+async def test_a_status_card_that_fails_to_post_leaves_the_admission(wired, monkeypatch):
+    channel, _continued = wired
+    channel.card_lands = False
+    ask, _ = _model('{"runs": [{"site": "RunPod"}]}')
+    monkeypatch.setattr(run_admission, "_ask_model", ask)
+    out = await run_admission.request_admission(_call(), [RUNPOD], "k1")
+    await _cards_settle()
+    assert out["status"] == "admitted" and len(channel.cards) == 1
+    assert run_admission.CONFIRMATIONS.peek(out["confirmation_id"]).card_message_id == 0
