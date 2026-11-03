@@ -3026,6 +3026,81 @@ async def test_expiry_ends_a_live_view_never_opened(rig):
     assert presses(rig) == []
 
 
+
+async def test_a_live_view_nobody_opens_ends_its_run_after_an_hour(rig):
+    """casa-test 2026-11-03: a login live view the operator never opened kept its run waiting
+    all night, and Fido was woken every minute for it. A view the model asked for that nobody
+    opened within a question's hour cancels the run, once, with one event and no notice; the
+    view cannot be claimed after."""
+    run = await rig.run()
+    await rig.ctl.request_live(run.run_id, "login")
+    assert rig.state(run.run_id) == "waiting_live"
+    rig.clock.advance(3599)
+    await rig.ctl.expire_live()
+    assert rig.state(run.run_id) == "waiting_live" and rig.ctl.active.live is not None
+    rig.clock.advance(2)
+    await rig.ctl.expire_live()
+    await rig.settle()
+    assert rig.state(run.run_id) == "cancelled"
+    assert [(e.kind, e.outcome) for e in rig.events(run.run_id)
+            if e.kind in ("live_done", "run_cancelled")] == [("live_done", "expired"),
+                                                             ("run_cancelled", "cancelled")]
+    assert rig.store.notices_after(0) == []
+    with pytest.raises(ProtocolError):
+        await rig.ctl.begin_live(run.run_id, _expose)
+    await rig.ctl.expire_live()                       # nothing more to end
+    assert len(rig.events(run.run_id, "run_cancelled")) == 1
+
+
+async def test_the_question_sweep_ends_an_unopened_live_view(tmp_path, monkeypatch):
+    """The controller's own 30-second sweep runs the live view expiry (no caller needed)."""
+    monkeypatch.setattr(ctl_mod, "QUESTION_SWEEP_S", 0.01)
+    r = Rig(tmp_path)
+    await r.start()
+    try:
+        run = await r.run()
+        await r.ctl.request_live(run.run_id, "login")
+        r.clock.advance(3601)
+        for _ in range(200):
+            if r.state(run.run_id) == "cancelled":
+                break
+            await asyncio.sleep(0.01)
+        assert r.state(run.run_id) == "cancelled"
+    finally:
+        await r.ctl.shutdown()
+        r.close()
+
+
+async def test_a_live_view_the_operator_opened_never_expires(rig):
+    """The hour counts only while nobody has opened the view: one the operator is in stays his
+    until Done, however long."""
+    run = await rig.run()
+    await rig.ctl.request_live(run.run_id, "login")
+    await rig.ctl.begin_live(run.run_id, _expose)
+    rig.clock.advance(3 * 3600)
+    await rig.ctl.expire_live()
+    assert rig.state(run.run_id) == "live"
+    await rig.ctl.live_done(run.run_id)
+    assert rig.state(run.run_id) == "running"
+    rig.clock.advance(3 * 3600)
+    await rig.ctl.expire_live()                       # no view now: nothing to end
+    assert rig.state(run.run_id) == "running"
+
+
+async def test_a_question_view_is_left_to_its_question(rig):
+    """A view asked from a question is ended by that question's expiry, which returns the run
+    to running; the live view expiry never cancels that run."""
+    run, els = await _gate_run(rig, [dict(role="button", name="Pay now")])
+    qid = await asked(rig, run, els)
+    await live(rig, run.run_id, qid)
+    rig.clock.advance(3601)
+    await rig.ctl.expire_live()
+    assert rig.state(run.run_id) == "waiting_live"
+    await rig.ctl.expire_questions()
+    await rig.ctl.expire_live()
+    assert rig.state(run.run_id) == "running"
+
+
 # --- slice 4: public downloads (S4-6)
 # A public link download is fetched without a check; a file whose sniffed type is outside the
 # document set is held as a private partial file and judged before it is kept. The downloader
