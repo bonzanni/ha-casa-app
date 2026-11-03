@@ -1028,10 +1028,15 @@ _DENY_UNDECLARED = (
 _DENY_UNKNOWN_PLUGIN = (
     "not executed: the plugin could not be matched to a resolved artifact. "
     "Tell the operator; do not retry.")
+# casa-test 2026-11-03: read as the browser app's refusal ("Casa Browser
+# wouldn't accept the request"), and passed on to the operator as that app's
+# rule. It is Casa's, and the sentence says so, with what he can do.
 _DENY_NO_IDENTITY = (
-    "not executed: a tool that returns a capability can only be called on a "
-    "turn bound to the configured operator (a direct message, a button, or an "
-    "active engagement). Do not retry on this turn.")
+    "not executed: Casa runs a tool that returns a capability only on a turn "
+    "the operator started himself (his own message, a button he tapped, or an "
+    "active engagement), and this turn was not started by him. This is Casa's "
+    "rule, not the plugin's or its app's. Do not retry on this turn; if the "
+    "work is still wanted, he can send the request again himself.")
 _DENY_STALE_REFERENCE = (
     "not executed: a capability reference passed to this call is not "
     "redeemable here (unknown, already used, expired, minted for another "

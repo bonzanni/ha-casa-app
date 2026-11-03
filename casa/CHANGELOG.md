@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.347.1] - 2026-11-03
+
+### Changed
+
+- When a specialist stops before finishing a task, the assistant tells you in plain words that it stopped, what it may already have done that matters to you, and what you can do now, instead of listing how many pages it opened or searches it made.
+- When a specialist cannot start something because the request did not come from you (for example, when the assistant follows up on her own), it now says plainly that this is Casa's rule and that you can send the request again yourself. It no longer blames the browser app for it.
+
 ## [0.347.0] - 2026-11-03
 
 ### Added
