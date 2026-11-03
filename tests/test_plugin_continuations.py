@@ -346,7 +346,7 @@ async def test_a_relayed_answer_is_not_banked_as_the_requesters_task(roles, monk
         agent_mod.origin_var.reset(tok)
     # What was captured, wherever it waits: on a loaded machine a capture
     # that met a busy store is durable in the spool (a canary there counts).
-    banked = [e["text"] for e in captured_events(mem)]
+    banked = [e["text"] for e in await captured_events(mem)]
     assert "Fido's secret answer" not in banked
     assert "finance answer" in banked
 
@@ -714,7 +714,7 @@ async def test_no_task_inside_a_relay_is_banked_however_deep(roles, monkeypatch,
         agent_mod.origin_var.reset(tok)
     # What was captured, wherever it waits: on a loaded machine a capture
     # that met a busy store is durable in the spool (a canary there counts).
-    banked = [e["text"] for e in captured_events(mem)]
+    banked = [e["text"] for e in await captured_events(mem)]
     assert "FIDO CANARY" not in banked and "target answer" in banked
 
 

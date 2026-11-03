@@ -28,7 +28,7 @@ import agent as agent_mod
 import tools
 from bus import BusMessage, MessageType
 from log_cid import cid_var
-from memory import capture, occurrence
+from memory import capture, occurrence, transcript_runs
 from memory.store import MemoryStore
 from test_agent_process import (
     FakeClient, ScriptedToolClient, _make_agent, _mk_assistant, _mk_result,
@@ -73,13 +73,18 @@ def summaries(store: MemoryStore) -> list[dict]:
         conn.close()
 
 
-def captured_events(store: MemoryStore) -> list[dict]:
+async def captured_events(store: MemoryStore) -> list[dict]:
     """Every event capture made durable, stored now, in the order they
     occurred. For a question about what a seam captured, not where it waited:
     on a loaded machine a run's own detached writes can hold the write lock
-    past capture's 50 ms bound, and the capture then waits in the spool. It is
-    drained first, and a drained item is stored after the items that followed
-    it, so the rows are ordered by when they occurred, not by storage."""
+    past capture's 50 ms bound, and the capture then waits in the spool.
+
+    Every write the seams detached (run-row writes, drains) is settled first,
+    so the drain here never meets a store one of them still holds; then a
+    waiting spool is drained. A drained item is stored after the items that
+    followed it, so the rows are ordered by when they occurred."""
+    await transcript_runs.settle()
+    await capture.settle()
     capture.drain_waiting(store)
     return sorted(events(store), key=lambda e: e["occurred_at"])
 
@@ -735,7 +740,7 @@ async def test_model_output_floor_is_session_clearance(mem, tmp_path,
                 _specialist_cfg("finance"), "a family question", "")
     finally:
         agent_mod.origin_var.reset(token)
-    rows = {e["text"]: e for e in captured_events(mem)}
+    rows = {e["text"]: e for e in await captured_events(mem)}
     assert rows["hello from a friend"]["speaker_kind"] == "third_party"
     assert rows["pong"]["origin_tier"] == "friends"
     assert rows["hello from a friend"]["origin_tier"] == "friends"
@@ -767,8 +772,7 @@ async def test_delegated_request_captured_before_the_run(mem, monkeypatch):
     finally:
         agent_mod.origin_var.reset(token)
     assert seen_at_launch == [["Q1 cashflow?"]]
-    await capture.settle()
-    rows = captured_events(mem)
+    rows = await captured_events(mem)
     assert [(e["speaker_kind"], e["speaker_id"], e["origin_kind"], e["text"])
             for e in rows] == [
         ("resident", "assistant", "operator", "Q1 cashflow?"),
@@ -809,7 +813,7 @@ async def test_a_turn_a_delegation_and_an_engagement_turn_each_capture(
     with patch("sdk_client_pool._default_make_client", FakeClient):
         await agent._process(_operator_msg("ping", "1001"))
     assert [(e["speaker_kind"], e["eligibility"])
-            for e in captured_events(mem)] == [
+            for e in await captured_events(mem)] == [
         ("operator", "write_trusted_turn"), ("resident", "resident_message")]
 
     # A delegation: its request and its answer.
@@ -823,7 +827,7 @@ async def test_a_turn_a_delegation_and_an_engagement_turn_each_capture(
                 _specialist_cfg("finance"), "delegated task", "")
     finally:
         agent_mod.origin_var.reset(token)
-    assert [e["eligibility"] for e in captured_events(mem)][2:] == [
+    assert [e["eligibility"] for e in await captured_events(mem)][2:] == [
         "delegated_request", "delegated_answer"]
 
     # An in-casa engagement turn of a memory-writing specialist: the
@@ -841,7 +845,7 @@ async def test_a_turn_a_delegation_and_an_engagement_turn_each_capture(
     ticket = drv.admit_inbound(rec.id, "topic message")
     await drv.send_user_turn(rec, "topic message", tg_message_id=55,
                              inbound_token=ticket)
-    rows = captured_events(mem)
+    rows = await captured_events(mem)
     assert len(rows) == 7
     assert [(e["speaker_kind"], e["text"]) for e in rows[4:]] == [
         ("operator", "topic message"), ("specialist", "first part"),
@@ -940,6 +944,11 @@ async def test_capture_never_holds_a_turn(mem, tmp_path, monkeypatch, case):
     FakeClient.reset()
     agent = _make_agent(tmp_path)
     baseline = await _timed_turn(agent, "1")            # warm, healthy
+    # The baseline turn's detached writes (its run row's confirmation) land
+    # before the case is set up; on a loaded machine one still holding the
+    # write lock made the case's own first capture spool.
+    await transcript_runs.settle()
+    await capture.settle()
     receipts: list = []
     real_record = capture.record
 

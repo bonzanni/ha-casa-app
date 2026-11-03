@@ -162,7 +162,7 @@ def mem(tmp_path, monkeypatch):
     return store
 
 
-def _captured(store) -> list[str]:
+async def _captured(store) -> list[str]:
     """The texts captured into ``events``, in the order they occurred. A
     capture that met a busy store (a loaded machine holds the write lock past
     capture's 50 ms bound) is durable in the spool instead; it is drained
@@ -170,7 +170,11 @@ def _captured(store) -> list[str]:
     drained item is stored after the ones that followed it, so rows are
     ordered by when they occurred, not by when they were stored."""
     import sqlite3
-    from memory import capture
+    from memory import capture, transcript_runs
+    # The seams' detached writes (run-row writes, drains) settle first, so
+    # the drain never meets a store one of them still holds.
+    await transcript_runs.settle()
+    await capture.settle()
     capture.drain_waiting(store)
     conn = sqlite3.connect(store.path)
     try:
@@ -227,7 +231,7 @@ async def test_token_budget_zero_captures_nothing(monkeypatch, mem):
         text="ok", structured_output=None,
         run_subtype="success", result_message_seen=True, reply_messages=("ok",),
     )
-    assert _captured(mem) == []
+    assert await _captured(mem) == []
 
 
 # ---------------------------------------------------------------------------
@@ -260,7 +264,7 @@ async def test_write_capture_telegram(monkeypatch, mem):
     # Task 10: content-addressed ids (the retired doc_prefix:idx scheme is gone).
     # Asserted as full literal items — the previous prefix/tag-count proxies are
     # subsumed by equality, and a proxy is what lets a wrong item pass.
-    assert _captured(mem) == ["Q1 cashflow?", "Q1 is on track"]
+    assert await _captured(mem) == ["Q1 cashflow?", "Q1 is on track"]
 
 
 # ---------------------------------------------------------------------------
@@ -286,7 +290,7 @@ async def test_voice_writes_nothing(monkeypatch, mem):
         text="voice answer", structured_output=None,
         run_subtype="success", result_message_seen=True, reply_messages=("voice answer",),
     )
-    assert _captured(mem) == []
+    assert await _captured(mem) == []
     # Voice reads at ``friends``, where no ledger is maintained: no memory.
     assert "<memory" not in _FakeSDKClient.captured_prompt
 
@@ -312,7 +316,7 @@ async def test_empty_reply_captures_caller_turn_only(monkeypatch, mem):
         text="", structured_output=None,
         run_subtype="success", result_message_seen=True,
     )
-    assert _captured(mem) == ["hi"]
+    assert await _captured(mem) == ["hi"]
 
 
 # ---------------------------------------------------------------------------
@@ -487,7 +491,7 @@ async def test_pin_inv_mem_016_aborted_run_captures_only_caller_task(
     assert out.run_aborted is True
 
 
-    assert _captured(mem) == ["Q1 cashflow?"]
+    assert await _captured(mem) == ["Q1 cashflow?"]
 
 
 async def test_pin_inv_mem_016_null_subtype_on_a_parsed_result_is_an_abort(
@@ -516,7 +520,7 @@ async def test_pin_inv_mem_016_null_subtype_on_a_parsed_result_is_an_abort(
     assert out.run_aborted is True
 
 
-    assert _captured(mem) == ["Q1 cashflow?"]
+    assert await _captured(mem) == ["Q1 cashflow?"]
 
     # The object-level asymmetry survives for direct constructions: absent
     # subtype on a seen result stays completed there, which is what every
@@ -554,7 +558,7 @@ async def test_empty_answer_submits_caller_turn_whether_or_not_run_aborted(
     assert out.run_aborted is (result_subtype != "success")
 
 
-    assert _captured(mem) == ["Q1 cashflow?"]
+    assert await _captured(mem) == ["Q1 cashflow?"]
 
 
 async def test_aborted_voice_run_writes_nothing_and_claims_nothing(
@@ -584,7 +588,7 @@ async def test_aborted_voice_run_writes_nothing_and_claims_nothing(
 
 
     # Nothing was captured at all — not the answer, not the caller's turn.
-    assert _captured(mem) == []
+    assert await _captured(mem) == []
 
     withheld = [r.getMessage() for r in caplog.records
                 if "did not complete" in r.getMessage()]
@@ -652,7 +656,7 @@ async def test_a_success_subtype_is_not_enough_to_call_the_turn_complete(
                 cfg, task_text="Q1 cashflow?", context_text="")
 
 
-    assert _captured(mem) == ["Q1 cashflow?"]
+    assert await _captured(mem) == ["Q1 cashflow?"]
 
 
 @pytest.mark.parametrize("terminal_reason", [
@@ -681,7 +685,7 @@ async def test_a_genuinely_completed_run_still_captures_both_turns(
     assert out.run_aborted is False
 
 
-    assert _captured(mem) == ["Q1 cashflow?", "partial answer"]
+    assert await _captured(mem) == ["Q1 cashflow?", "partial answer"]
 
 
 def test_capture_layer_predicates_are_not_collapsed():
@@ -732,7 +736,7 @@ async def test_red_incomplete_stop_reason_withholds_only_the_answer(
     assert out.run_aborted is False
 
 
-    assert _captured(mem) == ["Q1 cashflow?"]
+    assert await _captured(mem) == ["Q1 cashflow?"]
 
     withheld = [r.getMessage() for r in caplog.records
                 if "excluded from memory" in r.getMessage()]
@@ -774,7 +778,7 @@ async def test_stop_reason_matrix(
     expected = ["Q1 cashflow?", "partial answer"][:expected_items]
     # Which items were captured is the point (#710), not their order: a drain
     # after a busy store can store the request after the answer.
-    assert sorted(_captured(mem)) == sorted(expected)
+    assert sorted(await _captured(mem)) == sorted(expected)
 
     withheld = [r.getMessage() for r in caplog.records
                 if "excluded from memory" in r.getMessage()]
@@ -799,7 +803,7 @@ async def test_malformed_stop_reason_withholds_the_answer(monkeypatch, mem):
     assert out.run_aborted is False
 
 
-    assert _captured(mem) == ["Q1 cashflow?"]
+    assert await _captured(mem) == ["Q1 cashflow?"]
 
 
 @pytest.mark.parametrize("response,stop_reason", [
@@ -825,5 +829,5 @@ async def test_whitespace_only_task_submits_nothing(
             cfg, task_text="   ", context_text="")
 
 
-    assert _captured(mem) == []
+    assert await _captured(mem) == []
 

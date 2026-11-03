@@ -21,8 +21,7 @@ import plugin_continuations as pc
 import tools
 from bus import BusMessage, MessageType
 from test_agent_process import FakeClient, _make_agent
-from memory import capture
-from test_memory_capture import events as _stored_events
+from test_memory_capture import captured_events
 from test_memory_capture import mem, summaries  # noqa: F401 — fixture
 from test_no_retain_specialist import _cfg, _notice
 from test_plugin_continuations import _binding
@@ -43,24 +42,22 @@ def roles(monkeypatch):
     return m
 
 
-def events(store) -> list[dict]:
+async def events(store) -> list[dict]:
     """The captured events. A capture that met a busy store (a loaded machine
     holds the write lock past capture's 50 ms bound) waits durably in the
-    spool; it is drained first, since every question here is what was
-    captured, not where it waited — and a canary waiting in the spool counts.
-    A drained item is stored after the items that followed it, so the events
-    are returned in the order they occurred, not the order they were stored."""
-    capture.drain_waiting(store)
-    return sorted(_stored_events(store), key=lambda e: e["occurred_at"])
+    spool; every question here is what was captured, not where it waited —
+    and a canary waiting in the spool counts. ``captured_events`` settles the
+    seams' detached writes, drains the spool and orders by occurrence."""
+    return await captured_events(store)
 
 
-def _stored_text(store) -> list[str]:
-    return ([e["text"] for e in events(store)]
+async def _stored_text(store) -> list[str]:
+    return ([e["text"] for e in await events(store)]
             + [s["text"] for s in summaries(store)])
 
 
-def _assert_no_canary(store) -> None:
-    leaked = [t for t in _stored_text(store) if CANARY in t]
+async def _assert_no_canary(store) -> None:
+    leaked = [t for t in await _stored_text(store) if CANARY in t]
     assert leaked == []
 
 
@@ -120,23 +117,23 @@ async def test_the_notice_is_not_captured_and_the_relay_is(roles, mem,
         with patch("sdk_client_pool._default_make_client", FakeClient):
             await agent._process(msg, origin_question="get my invoice")
     FakeClient.reset()
-    rows = events(mem)
+    rows = await events(mem)
     assert [(e["speaker_kind"], e["origin_kind"]) for e in rows] == [
         ("resident", "delegated_result"),
         ("casa", "delegated_result"), ("resident", "delegated_result")]
     assert "Q3 is complete" in rows[1]["text"]
     assert rows[0]["text"] == rows[2]["text"] == "Your invoice is saved."
-    _assert_no_canary(mem)
+    await _assert_no_canary(mem)
 
 
 async def test_an_excluded_delegation_captures_nothing(roles, mem):
     await _delegate(roles["browser"], "fetch my invoice", ORIGIN,
                     EXCLUDED_ANSWER)
-    assert events(mem) == []
+    assert await events(mem) == []
     del roles["browser"]                        # a role no longer loaded
     await _delegate(_cfg("browser", "specialist", 0), "fetch it again",
                     ORIGIN, EXCLUDED_ANSWER)
-    assert events(mem) == []
+    assert await events(mem) == []
 
 
 async def test_a_handoff_task_from_an_excluded_specialist_is_not_captured(
@@ -147,8 +144,8 @@ async def test_a_handoff_task_from_an_excluded_specialist_is_not_captured(
               "_handoff_chain": ("assistant", "browser")}
     await _delegate(roles["finance"], EXCLUDED_ANSWER, origin,
                     "finance answer")
-    assert [e["text"] for e in events(mem)] == ["finance answer"]
-    _assert_no_canary(mem)
+    assert [e["text"] for e in await events(mem)] == ["finance answer"]
+    await _assert_no_canary(mem)
 
 
 @pytest.mark.parametrize("composed", [True, False],
@@ -166,8 +163,8 @@ async def test_no_task_inside_a_relay_is_captured(roles, mem, composed):
     if not composed:
         nested.pop("synthetic")
     await _delegate(roles["finance"], EXCLUDED_ANSWER, nested, "target answer")
-    assert [e["text"] for e in events(mem)] == ["relay answer", "target answer"]
-    _assert_no_canary(mem)
+    assert [e["text"] for e in await events(mem)] == ["relay answer", "target answer"]
+    await _assert_no_canary(mem)
 
 
 async def _finalize(tmp_path, monkeypatch, roles, role, text):
@@ -203,7 +200,7 @@ async def test_an_excluded_engagement_leaves_no_summary(roles, mem, tmp_path,
     rows = summaries(mem)
     assert [(r["role"], r["tier"]) for r in rows] == [("finance", "private")]
     assert "Q3 is complete" in rows[0]["text"]
-    _assert_no_canary(mem)
+    await _assert_no_canary(mem)
 
 
 class _TopicStream:
@@ -240,7 +237,7 @@ async def test_an_excluded_specialists_engagement_turn_captures_nothing(
     ticket = drv.admit_inbound(rec.id, "find the invoice")
     await drv.send_user_turn(rec, "find the invoice", tg_message_id=9,
                              inbound_token=ticket)
-    assert events(mem) == []
+    assert await events(mem) == []
 
 
 async def test_the_ledger_never_holds_excluded_output(roles, mem, tmp_path):
@@ -269,7 +266,7 @@ async def test_the_ledger_never_holds_excluded_output(roles, mem, tmp_path):
                      "delegation_depth": 1,
                      "_handoff_chain": ("assistant", "browser")},
                     "finance answer")
-    stored = events(mem)
+    stored = await events(mem)
     assert len(stored) == 2
 
     port = ScriptedPort(add_each)

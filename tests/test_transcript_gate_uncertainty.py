@@ -63,6 +63,7 @@ RESUMED_CHILD = r"""
 from pathlib import Path
 from unittest.mock import patch
 from claude_agent_sdk import AssistantMessage, SystemMessage, TextBlock
+from memory import transcript_runs
 from test_agent_process import ScriptedToolClient, _make_agent, _mk_result
 from test_memory_capture import _operator_msg
 from transcript_runs_support import write_transcript
@@ -89,6 +90,10 @@ agent = _make_agent(Path(home))
 async def main():
     with patch("sdk_client_pool._default_make_client", Client):
         await agent._process(_operator_msg("hello", "901"))
+        # The first turn's confirmation is a detached write; it lands before
+        # the second turn starts, as it would on an idle machine (a loaded
+        # one has let the kill overtake it).
+        await transcript_runs.settle()
         await agent._process(_operator_msg("again", "902"))
 asyncio.run(main())
 """
