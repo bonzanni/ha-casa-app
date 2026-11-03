@@ -26,16 +26,27 @@ BROKER_OPS = {'status': (), 'begin_run': ('run_id', 'account_site_ids'), 'end_ru
               # slice 5n: the vault's logins for a sign-in card, before any site exists
               'list_vault_logins': ('run_id',),
               # action model slice 6 (S6-3): the sign-in code the site sent
-              'fill_code': ('run_id', 'site_id', 'driver_session', 'page_generation', 'code')}
+              'fill_code': ('run_id', 'site_id', 'driver_session', 'page_generation', 'code'),
+              # signing in off the start page: the look's read (nothing filled, no vault)
+              'read_sign_in': ('run_id', 'site_id', 'driver_session')}
 
-#: keys an op may carry beyond its required ones: ``login``'s ``guest_ask`` (False when absent)
-BROKER_OPTIONAL = {'login': ('guest_ask',)}
+#: keys an op may carry beyond its required ones: ``login``'s ``guest_ask``, ``auto`` (a sign-in
+#: on the page a look judged) and ``password_sent`` (the look already sent the password); each
+#: False when absent
+BROKER_OPTIONAL = {'login': ('guest_ask', 'auto', 'password_sent', 'fields')}
+#: R9: a look's sign-in names the plain fields the check mapped, by the ids the look gave them
+FIELD_ID = r'f[0-9]{1,6}'
 
 #: a site's one-time sign-in code (``protocol.LOGIN_CODE``)
 CODE_PATTERN = r'[A-Za-z0-9-]{4,10}'
 
 #: page changes a sign-in settles and reads again before it asks for the live view (slice 5u)
 PAGE_CHANGES = 8
+#: the look's read (signing in off the start page): its bound, its settle, and the reads a page
+#: that changes under it gets
+SIGN_IN_READ_S = 25
+SETTLE_QUIET_READ_S = 10
+SIGN_IN_READS = 3
 #: reads of a field-free page a sign-in that filled nothing yet waits for a form with (5u):
 #: each is a settle (at least a quarter second) and a discovery, about two seconds in all
 FORM_WAITS = 6
@@ -84,6 +95,8 @@ class Broker:
     # slice 5v: the (run_id, site_id) whose sign-in already tried 1Password's passkey prompt:
     # one try per run and site, whichever sign-in call of the run makes it
     _passkey_tries: set = field(default_factory=set, init=False, repr=False)
+    # (run_id, site_id) -> the last look's binding: its mark and digest, until a sign-in on it
+    _looks: dict = field(default_factory=dict, init=False, repr=False)
 
     async def start(self):
         self.registry_path = Path(self.registry_path)
@@ -139,8 +152,13 @@ class Broker:
                 valid = type(value) is int and value >= 0
             elif key == 'code':
                 valid = isinstance(value, str) and re.fullmatch(CODE_PATTERN, value)
-            elif key == 'guest_ask':
+            elif key in ('guest_ask', 'auto', 'password_sent'):
                 valid = type(value) is bool
+            elif key == 'fields':
+                valid = (isinstance(value, dict) and len(value) <= 2 and all(
+                    role in ('username', 'password') and isinstance(fid, str)
+                    and re.fullmatch(FIELD_ID, fid) for role, fid in value.items())
+                    and len(set(value.values())) == len(value))
             else:
                 valid = isinstance(value, str) and ID_PATTERN.fullmatch(value)
             if not valid:
@@ -174,7 +192,7 @@ class Broker:
                 'list_login_items': self.list_login_items, 'take_attempt': self.take_attempt,
                 'list_vault_logins': self.list_vault_logins,
                 'save_attempt': self.save_attempt, 'drop_attempt': self.drop_attempt,
-                'fill_code': self.fill_code}
+                'fill_code': self.fill_code, 'read_sign_in': self.read_sign_in}
             if 'site_id' in args:
                 async with self._locks.setdefault(args['site_id'], asyncio.Lock()):
                     return await handlers[op](**args)
@@ -226,6 +244,8 @@ class Broker:
         self._runs.pop(run_id, None)
         for key in [k for k in self._code_marks if k[0] == run_id]:
             del self._code_marks[key]
+        for key in [k for k in self._looks if k[0] == run_id]:
+            del self._looks[key]
         self._passkey_tries = {k for k in self._passkey_tries if k[0] != run_id}
         return {}
 
@@ -266,33 +286,48 @@ class Broker:
         return reply
 
     async def login(self, run_id, site_id, driver_session, guest_ask=False, code=None,
-                    page_generation=None):
+                    page_generation=None, *, auto=False, password_sent=False, fields=None):
         """The automatic sign-in. With ``guest_ask`` (the run controller's: the extension's guest
         has not been unlocked in this browser session), a read that shows a passkey hint ends it
         as ``needs_guest`` before anything more is filled or clicked: the controller unlocks the
-        guest and signs in again from the start page, with ``guest_ask`` False."""
+        guest and signs in again from the start page, with ``guest_ask`` False.
+
+        With ``auto`` the sign-in is on the page as it is, the page the run's check judged the
+        site's sign-in (``read_sign_in``): its first step only while the look's binding holds
+        (``no_form``/``page_moved`` otherwise), and after its first submit or passkey answer no
+        guest, no passkey and no second password (``password_again``; ``password_sent``: this
+        look sent one already). ``fields`` (R9): the check's mapping of the look's plain fields
+        to ``username``/``password``, by the ids the look gave them."""
         site = self._account_site(run_id, site_id)
         deadline = self.clock() + 120
         try:
             async with asyncio.timeout(120):
+                look = self._looks.pop((run_id, site_id), None) if auto and code is None else None
                 if site['item_id'] is None:
                     return {'status': 'needs_live_view', 'reason': 'not_found'}
                 mark, answered = None, False
                 if code is None:
                     self._code_marks.pop((run_id, site_id), None)   # a new sign-in replaces it
+                    if auto and look is None:
+                        return {'status': 'no_form', 'reason': 'page_moved'}
                 else:
                     held = self._code_marks.pop((run_id, site_id), None)   # one report, one code
                     if held is None:
                         return {'status': 'needs_live_view', 'reason': 'code_page_gone'}
-                    # The sign-in goes on: whether it answered a passkey goes on with it (5v).
-                    mark, answered = held
+                    # The sign-in goes on: whether it answered a passkey goes on with it (5v),
+                    # and a look's sign-in keeps its limits (Astra r3).
+                    mark, answered, auto, password_sent = held
                 outcome = await self._login_flow(site, driver_session, deadline, code,
                                                  page_generation, mark, answered,
                                                  tries_key=(run_id, site_id),
-                                                 guest_ask=guest_ask and code is None)
+                                                 guest_ask=guest_ask and code is None,
+                                                 auto=auto, look=look,
+                                                 password_sent=password_sent,
+                                                 mapping=fields)
                 if outcome.get('status') == 'needs_code':
-                    self._code_marks[(run_id, site_id)] = (outcome.pop('_mark'),
-                                                           outcome.pop('_passkey'))
+                    self._code_marks[(run_id, site_id)] = (
+                        outcome.pop('_mark'), outcome.pop('_passkey'), outcome.pop('_auto'),
+                        outcome.pop('_password_sent'))
                 self._after_login(run_id, site, outcome)
                 return outcome
         except TimeoutError:
@@ -301,6 +336,49 @@ class Broker:
             if error.code == 'timeout':
                 return {'status': 'failed', 'reason': 'timeout'}
             raise
+
+    async def read_sign_in(self, run_id, site_id, driver_session):
+        """The look (signing in off the start page): one settle and one read of the page in a
+        ``login`` driver session — nothing filled or clicked, the vault not read. The reply says
+        what a sign-in there would do, never a value or a handle: ``found`` (a role field on a
+        login origin, the site's passkey request or 1Password's prompt), the roles, each field's
+        label, whether there is one submit and its label, and whether a passkey is offered. A
+        found read's binding (its mark, its digest) is kept for ``login(auto=True)``."""
+        site = self._account_site(run_id, site_id)
+        key = (run_id, site_id)
+        self._looks.pop(key, None)
+        if site['item_id'] is None:
+            return {'found': False}
+        mark = secrets.token_urlsafe(24)
+        async with asyncio.timeout(SIGN_IN_READ_S):
+            for _ in range(SIGN_IN_READS):
+                settled = await self._driver_call('settle', driver_session=driver_session,
+                                                  timeout_s=SETTLE_QUIET_READ_S)
+                try:
+                    read = await self._driver_call(
+                        'read_sign_in', driver_session=driver_session,
+                        page_generation=settled['page_generation'], mark=mark,
+                        login_origins=site['login_origins'])
+                except BrokerError as error:
+                    if error.code == 'page_changed':
+                        continue
+                    raise
+                break
+            else:
+                raise BrokerError('timeout')
+        passkey = bool(read.get('passkey_hint') or read.get('passkey_frame'))
+        planned = [f for f in read.get('fields') or () if isinstance(f, dict)]
+        # R9: any planned field on a login origin (a plain username included) is the check's
+        found = bool(read.get('origin_ok') and (read.get('roles') or planned)) or passkey
+        if not found:
+            return {'found': False}
+        self._looks[key] = {'mark': mark, 'binding': read['binding']}
+        return {'found': True, 'passkey': passkey,
+                'fields': [{'id': str(f.get('id')), 'role': f.get('role') if isinstance(
+                    f.get('role'), str) else None, 'label': str(f.get('label') or ''),
+                            'password': f.get('password') is True,
+                            'button': str(f['button']) if f.get('button') else None}
+                           for f in planned]}
 
     async def fill_code(self, run_id, site_id, driver_session, page_generation, code):
         """Slice 6 (S6-3): the code the site sent, into the very page ``login`` stopped on
@@ -322,12 +400,29 @@ class Broker:
         self._persist_registry()
 
     async def _login_flow(self, site, driver_session, deadline, code=None, page_generation=None,
-                          mark=None, answered=False, tries_key=None, guest_ask=False):
-        item = await self.vault.get(site['item_id'])
-        values = {f.id: f.value for f in item.fields
-                  if f.id in ('username', 'password') and not f.section_id}
-        has_totp = any(f.field_type == 'Totp' for f in item.fields)
-        title = _shown(item.title) if isinstance(item.title, str) else ''
+                          mark=None, answered=False, tries_key=None, guest_ask=False, *,
+                          auto=False, look=None, password_sent=False, mapping=None):
+        values, has_totp, title = {}, False, ''
+        # R9: a look's discovery always carries the look (a password only into a password
+        # field), and the plain fields of the judged document the check mapped, by its ids
+        mapped = ({'sign_in_look': look['mark'],
+                   'sign_in_fields': {fid: role for role, fid in (mapping or {}).items()}}
+                  if look is not None else {})
+
+        async def load():
+            """The linked item, read once: at the start of a sign-in from the start page, at
+            the first use of a value for a look's sign-in (its first read fills nothing)."""
+            nonlocal item, values, has_totp, title
+            if item is None:
+                item = await self.vault.get(site['item_id'])
+                values = {f.id: f.value for f in item.fields
+                          if f.id in ('username', 'password') and not f.section_id}
+                has_totp = any(f.field_type == 'Totp' for f in item.fields)
+                title = _shown(item.title) if isinstance(item.title, str) else ''
+
+        item = None
+        if not auto or code is not None:
+            await load()
 
         scope_required = False
         approved = False      # this step found fields: set at the read, cleared by our submit
@@ -337,6 +432,11 @@ class Broker:
         # site's code keeps that).
         passkey_answered = answered
         unique = None
+        # A look's sign-in: ``bound`` while its judged step has not been submitted (or its
+        # passkey answered); after it, the later steps' limits. A code continuation is after.
+        after = auto and (look is None or code is not None)
+        sent = password_sent
+        touched = False       # a look's sign-in filled or clicked something
 
         async def unique_title():
             """The linked item's title names no other login in the vault (5v): the passkey
@@ -362,11 +462,22 @@ class Broker:
                 raise BrokerError('timeout')
             return reply
 
+        async def held(generation):
+            """The judged step's binding, just before each of its fills, its submit and its
+            passkey answer (R7): False ends the sign-in with nothing more done."""
+            if look is None or after:
+                return True
+            reply = await drive('sign_in_bound', driver_session=driver_session,
+                                page_generation=generation, mark=look['mark'])
+            return reply.get('ok') is True and reply.get('binding') == look['binding']
+
+        moved = {'status': 'no_form', 'reason': 'page_moved'}
+
         async def step(code, previous_roles):
             """One sign-in step: settle, read the form, fill it, submit it. The roles it filled
             once submitted; ``_AGAIN`` to read the page again; otherwise the sign-in's
             outcome."""
-            nonlocal approved, waits, passkey_answered
+            nonlocal approved, waits, passkey_answered, after, sent, touched
             remaining = deadline - self.clock()
             if remaining <= 0:
                 return {'status': 'failed', 'reason': 'timeout'}
@@ -380,8 +491,12 @@ class Broker:
                 # tab, a reload or a navigation since holds no mark.
                 return {'status': 'needs_live_view', 'reason': 'code_page_gone'}
             fields = await drive('find_login_fields', driver_session=driver_session,
-                                 page_generation=generation)
+                                 page_generation=generation, **mapped)
             roles = fields['roles']
+            if after and code is None and not {'password', 'one_time_code'} & set(roles):
+                # After a look's first submit, a page with neither a password nor a code to fill
+                # is the page after the sign-in (a newsletter box in its footer included).
+                roles = {}
             approved |= bool(roles)
             if code is not None and (not fields['origin_ok'] or set(roles) != {'one_time_code'}
                                      or not fields['submit']):
@@ -391,17 +506,24 @@ class Broker:
                 return {'status': 'needs_live_view', 'reason': 'off_origin'}
             if 'new_password' in roles or 'confirm_password' in roles:
                 return {'status': 'needs_live_view', 'reason': 'password_change_page'}
-            if guest_ask and (fields['passkey_hint'] or fields['passkey_frame']):
+            if guest_ask and not after and (fields['passkey_hint'] or fields['passkey_frame']):
                 # A passkey hint (the site's webauthn field, or 1Password's prompt, the locked
                 # "Unlock 1Password" one included) while the guest is not unlocked: nothing more
                 # is filled or clicked, and the passkey try is not spent.
-                return {'status': 'needs_guest', 'reason': 'passkey'}
+                return {'status': 'needs_guest', 'reason': 'passkey',
+                        **({'password_sent': sent} if auto else {})}
+            if fields['passkey_frame'] and not after:
+                await load()
             if (fields['passkey_frame'] and code is None and tries_key is not None
-                    and tries_key not in self._passkey_tries
+                    and not after and tries_key not in self._passkey_tries
                     and values.get('username') and await unique_title()):
                 # Slice 5v: 1Password's passkey prompt offering exactly this site's linked
                 # item (its title, unique in the vault, and its username) is signed in by its
-                # own Sign in; that counts as this step's submit.
+                # own Sign in; that counts as this step's submit. A look's sign-in answers only
+                # its judged page's prompt (R5).
+                if not await held(generation):
+                    return moved
+                touched = True
                 self._passkey_tries.add(tries_key)   # before the call: whatever answers it
                 try:
                     chosen = await drive('choose_passkey', driver_session=driver_session,
@@ -409,9 +531,11 @@ class Broker:
                                          username=_shown(values['username']))
                 except BrokerError:
                     passkey_answered = True   # it may have clicked: claim nothing after it
+                    after = auto
                     raise
                 if chosen.get('ok'):
                     passkey_answered = True
+                    after = auto
                     return {'passkey'}
             if fields['field_error'] and (not roles or set(roles) == previous_roles):
                 # The item's own password was rejected only when the step sent it and no code
@@ -424,7 +548,10 @@ class Broker:
                     # The fields this step found went away without a submit of ours (slice
                     # 5u, operator ruling): not a completion, whatever the page shows now.
                     return {'status': 'needs_live_view', 'reason': 'page_unsettled'}
-                if previous_roles is None and waits < FORM_WAITS:
+                if auto and not after:
+                    # The judged page shows no form now: nothing was filled, nothing is claimed.
+                    return {'status': 'no_form', 'reason': 'no_form'}
+                if previous_roles is None and not auto and waits < FORM_WAITS:
                     waits += 1               # nothing filled yet: a form may still render
                     return _AGAIN
                 if settled['on_site_origin'] and not fields['passkey_frame']:
@@ -433,7 +560,7 @@ class Broker:
                     # decides whether he is signed in). Neither does a passkey's Sign in
                     # (5v): the site checks the assertion on its own time, and a page without
                     # a form is no proof that it took it.
-                    if previous_roles is None:
+                    if previous_roles is None and not after:
                         return {'status': 'no_form', 'reason': 'no_form'}
                     if passkey_answered:
                         return {'status': 'no_form', 'reason': 'passkey'}
@@ -442,6 +569,7 @@ class Broker:
             if not fields['submit'] or any(role not in ('username', 'password', 'one_time_code')
                                            for role in roles):
                 return {'status': 'needs_live_view', 'reason': 'ambiguous_fields'}
+            await load()
             if set(roles) == {'one_time_code'} and not has_totp and code is None:
                 # The site sent a code (email or SMS): the page stays as it is (S6-2), marked
                 # in its own document while this session still holds it.
@@ -452,10 +580,13 @@ class Broker:
                     return {'status': 'needs_live_view', 'reason': 'missing_role'}
                 return {'status': 'needs_code', 'code_field': True, 'totp_held': False,
                         'page_generation': generation, '_mark': fresh,
-                        '_passkey': passkey_answered}
+                        '_passkey': passkey_answered, '_auto': auto, '_password_sent': sent}
             if ('one_time_code' in roles and not has_totp and code is None) or any(
                     role != 'one_time_code' and not values.get(role) for role in roles):
                 return {'status': 'needs_live_view', 'reason': 'missing_role'}
+            if auto and sent and 'password' in roles:
+                # This look sent the password once already: never a second time.
+                return {'status': 'needs_live_view', 'reason': 'password_again'}
             for role, handle in roles.items():
                 try:
                     if role != 'one_time_code':
@@ -468,14 +599,24 @@ class Broker:
                     if error.code == 'not_found':
                         return {'status': 'needs_live_view', 'reason': 'missing_role'}
                     raise
+                if not await held(generation):
+                    return moved
+                touched = True
                 filled = await drive('fill', driver_session=driver_session,
                                      page_generation=generation, field_handle=handle, value=value)
                 if not filled.get('ok'):
                     raise BrokerError('refused')
+            if not await held(generation):
+                return moved
             submitted = await drive('submit', driver_session=driver_session,
                                     page_generation=generation, submit_handle=fields['submit'])
             if not submitted.get('ok'):
                 raise BrokerError('refused')
+            # Only a submit that clicked ends the judged step: a page_changed before the click
+            # (another frame's navigation) reads the page again under the same binding.
+            if auto and 'password' in roles:
+                sent = True
+            after = auto
             return set(roles)
 
         previous_roles = None
@@ -485,6 +626,10 @@ class Broker:
                 outcome = await step(code, previous_roles)
             except BrokerError as error:
                 if error.code != 'page_changed':
+                    if auto and look is not None and not touched and error.code != 'timeout':
+                        # The judged page could not be read or acted on before anything was
+                        # submitted: nothing is claimed (the observation shows the page).
+                        return {'status': 'no_form', 'reason': 'probe_failed'}
                     raise
                 # The page changed under the step (slice 5u): settle, read it again, go on.
                 changes += 1

@@ -73,6 +73,14 @@ waits for the model's `request_live(…, 'login')`. A broker RPC error interrupt
 site per run; the login question, [`casa-browser-actions.md`](casa-browser-actions.md)); only
 when there is nothing to judge is it `login_needed`.
 
+**Signing in off the start page.** `observe(run, sign_in=True)` first looks at a page of the
+account site that shows sign-in fields (`RunController._look`: mechanical facts, then the
+broker's `read_sign_in` in a `login` driver session) and returns its `sign_in` judgement; its
+verdict signs in on that page as it is (`RunController._auto_login`, the broker's `login` with
+`auto`, no `_goto`). Every executed step clears the run's `looked` pairs, every sign-in adds the
+page it ended on, and every sign-in that acted counts in the run's per-site ledger
+(`RunController._ledger`) — [`casa-browser-signin.md`](casa-browser-signin.md).
+
 **The guest unlock** (the browser's 1Password extension, signed in as the guest on a fresh
 profile, unlocked after a browser restart; slice 5v) runs at most once per browser session, only
 for an account profile with login origins, and only when needed: the active run's `guest_for` holds the

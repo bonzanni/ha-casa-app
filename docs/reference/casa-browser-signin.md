@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-01
+last_reviewed: 2026-11-03
 ---
 
 # Casa Browser — signing in: the sign-in card and the live-view save
@@ -8,7 +8,8 @@ last_reviewed: 2026-11-01
 
 ## Scope
 
-How a site that is not set up gets signed in from one operator tap (the sign-in card), and how a
+How a site that is not set up gets signed in from one operator tap (the sign-in card), how a
+registered site is signed in on a page that is not its start page (the look), and how a
 login the operator typed in a live view is captured and saved. The broker's registry, vault facade and the
 automatic login flow are in [`reference/casa-browser-credentials.md`](../reference/casa-browser-credentials.md);
 the vault question (`login_item`) and the code route are in
@@ -43,6 +44,94 @@ view when none did (no second check); a start page that does not open is answere
 (the site stays saved). No, an expiry or a tap after the run ended registers
 nothing. A site whose account then lives on another host is refused there (`site_lock`); the
 model says so plainly.
+
+## Signing in off the start page (the look)
+
+The start page's sign-in (`controller.py::RunController._login`) runs only when the run navigates
+the site's start page. A step that lands on another page of the site showing a sign-in form —
+a judged click on a "Log in" link, a redirect — is signed into by the look. The plugin asks for
+it: `POST /v1/runs/{run}/observe` with `{"sign_in": true}` (`api.py::_observe_body`; `{}` stays
+the plain observation, any other body is `unsupported`).
+
+**What is looked at** (`controller.py::RunController._look`), mechanical facts only, no I/O: an
+account run in its account session, a site with login origins and a linked item, no code wait,
+the run's sign-in ledger allows one (below), an http(s) page, and a (browser session, address)
+pair not yet in `looked`. Every executed step clears `looked` (`_action_done`, `_executed`);
+every sign-in adds the page it ended on; the look adds its own pair first. So an address is
+looked at once between two of the plugin's steps, a redirect away and back included.
+
+**The read** (`broker/main.py::Broker.read_sign_in`): in a `login` driver session, one settle and
+the driver's `read_sign_in` (`login.py::DriverServer.read_sign_in`), which fills nothing and reads
+no vault value. Its plan script (`login.py::_PLAN`) lists, in every frame of a login origin,
+each shown input with a sign-in role, each password field and each plain text, email, telephone
+or search field, with a short id (`f1`, …), the role the page marks (or none), its label (its
+`aria-label`, `<label>` or `placeholder`), whether it is a password field and the label of its
+form's one submit button, and marks each such field and button with the look in Patchright's
+isolated world. It goes on only for a marked role or a password field on a login origin, the
+site's passkey request (`passkey_hint`) or 1Password's prompt. The same read binds what the
+check will judge: the look's mark in every credential-bearing frame document (the main document
+and each frame holding a planned field or the submit; 1Password's notification frame while it
+shows a prompt) and one digest of the marked fields' and buttons' facts (id, type,
+autocomplete, label, the form's resolved `action`/`method`, a button's own
+`formaction`/`formmethod`) and of each bound document's text (the prompt's text for the
+notification frame). The broker keeps the mark and the digest for the run and site; the
+controller keeps the bound frames (`login.py::DriverServer.sign_in_frames`) and its own reading
+of them.
+
+**The check.** A page with sign-in fields becomes a `sign_in` judgement (`gate.py::sign_in_packet`:
+the site, the page as an action packet reads it, and `planned`: the fields by id, marked role,
+masked label, `password_field` and masked button label, and whether a passkey would be
+answered). The observe reply is `{outcome: judgement_required, judgement}`; the plugin's code
+relays it to Casa's check (`action_judgement.py`, kind `sign_in`, rulebook
+`rulebooks/sign_in_v1.txt`): `sign_in` only when filling the login into the fields it names and
+pressing their button, or answering this passkey, signs the operator in to this site; with it,
+`fields` names the planned field that takes the username and the one that takes the password.
+It is never listed by `pending_judgements`. A shape judged `not_sign_in` (site, the planned
+fields' roles, labels and buttons, passkey) is remembered for the run and not asked about again.
+
+**The verdict** (`controller.py::RunController._apply_sign_in`). The check's `fields` must fit
+the reading it was shown (`controller.py::_sign_in_mapping`, mechanical facts only): every id
+is a planned field's, a password goes only into a password field and a username never does
+(so no field takes both), and a field the page marks keeps its role; otherwise nothing is
+filled (`sign_in_mapping`, `refused`). `sign_in`
+then applies only while the session and the address are the ones looked at, no step came
+between (the pair is still in `looked`), and a final read of the bound documents equals the
+judged one by the tap rule (`gate.py::same_reading`; `gate.py::PageOps.read_page_and_bound`,
+one pass giving the packet's reading and the bound one, so an unbound frame such as a CAPTCHA
+counts in neither reading). Then the broker's `login` with `auto`, and the named fields as
+`fields`, signs in on the page as it is (no navigation): in the judged document only the
+look's planned fields count in the driver's discovery, a role the
+check named goes to its named field alone (a newsletter box the page marks as an email field
+beside the form takes no username then), a role it named nothing for stays with the field the
+page marks with it, and a password role goes only to a password field. A look plans at
+most 200 fields. `not_sign_in`, no verdict, a verdict outside its
+bounds or a page that moved fill nothing. The reply is `{outcome: done, observation}`, the
+observation read after the sign-in, its `notice` the sign-in step the look recorded
+(`signed_in`: "Casa Browser signed in to {site} by itself.", or the `login_needed` text,
+`needs_code` included), else null.
+
+**The sign-in** (`broker/main.py::Broker.login` with `auto`). Before each fill, submit or passkey
+answer of the judged step, the driver's `sign_in_bound` must report every bound document still
+marked, every field and the submit of the step one the look marked (so of the judged reading),
+no 1Password prompt the look did not bind, and the same digest; otherwise the
+sign-in ends `no_form`/`page_moved` with nothing more done. The judged step is the ordinary step:
+`needs_guest` while the guest is not unlocked, 1Password's passkey prompt for the linked item,
+username, password and TOTP fills, the refusals `password_change_page` and `ambiguous_fields`; a
+username-only form fills the username. After its first submit or passkey answer: a page with
+neither a password nor a code field to fill is the page after the sign-in (the completion rule);
+a password asked again ends `needs_live_view`/`password_again` (carried across the guest reload
+and an emailed code); no guest and no passkey answer. A first read that errors or finds no form
+is `no_form` (`probe_failed`, `no_form`).
+
+**The guest reload.** On `needs_guest` the controller runs the guest flow, loads the looked
+address again and looks afresh: the new `sign_in` judgement is the verdict reply's successor
+(the plugin relays successors), with no second unlock and the password already sent carried.
+Nothing reloaded is filled on the old verdict.
+
+**The ledger** (`controller.py::RunController._ledger`). Every sign-in of the run that acted counts
+per site, start page or look; an outcome that acted on nothing does not (`no_form` with
+`no_form`, `probe_failed` or `page_moved`, and any `not_found`). A look may sign in when the count
+is 0, or 1 and that one worked. The start page's sign-in does not consult it.
 
 ## The capture reader
 
@@ -154,6 +243,10 @@ decline.
 
 What INV-BRW-053 and INV-BRW-048 do not cover (ruled residuals): an identifier-only save takes the value the site's own sign-in page shows as its one email field, so that page, on its own login origin, can plant a decoy email (a field hidden by CSS, say) that is saved instead of the one the operator typed; it is saved and filled only for that site, no secret leaks, and a code is never saved, because only an email address is an identifier on its own. A username-only sign-in with no password is not saved. A redirect after the sign-in to a host the card did not show is refused (`site_lock`).
 
+**INV-BRW-059**: Off the start page, Casa Browser fills or presses nothing of a sign-in without a `sign_in` verdict on that page, only fields of the judged reading (a field the page does not mark only as the verdict mapped it, a password only into a password field), and only while the documents, destinations, labels and text it judged are unchanged and no step came between; a look sends the password once, answers only its judged page's passkey, and signs in again only after a sign-in of the run that worked.
+
+What INV-BRW-059 does not cover (ruled residuals): the check can misjudge a page; a site's own script changing its form while Casa fills it (another control's value, the operation it submits) is out of scope, since that script can send any request to its own origin anyway; the later steps of a judged sign-in are not judged again, only the limits above apply; a page whose bound text changes by itself (a clock in the form's document) is not signed into automatically.
+
 **INV-BRW-048**: A live-view credential is written only from the capture's last attempt that the check judged `signed_in`, that did not fail, with no password typing after it, ending on one of the site's origins; it overwrites a linked item only when that item is `unverified` or its own password was rejected in this run, and never writes equal values.
 
 ## Source & test map
@@ -163,11 +256,16 @@ What INV-BRW-053 and INV-BRW-048 do not cover (ruled residuals): an identifier-o
 
 **Source**
 - `casa_browser/rootfs/opt/casa_browser/api.py::sign_in`
+- `casa_browser/rootfs/opt/casa_browser/api.py::_observe_body`
 
 **Tests**
 - `casa_browser/tests/test_sign_in_card.py`
 - `casa_browser/tests/test_credential_save.py`
+- `casa_browser/tests/test_controller_look.py`
+- `casa_browser/tests/test_broker_look.py`
+- `casa_browser/tests/test_sign_in_binding.py`
 - `casa_browser/tests/integration/test_login.py`
+- `casa_browser/tests/integration/test_run_lifecycle.py`
 
 **Related**
 - [`reference/casa-browser-credentials.md`](../reference/casa-browser-credentials.md)

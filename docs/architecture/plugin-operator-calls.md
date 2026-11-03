@@ -83,8 +83,10 @@ operator and digest, because nothing durable keeps his words.
 
 **The action check judges one browsing action, bound to the bytes it judged.**
 `POST /internal/broker/action-judgement` takes `{"kind", "packet", "spec_digest"}`: the
-kind (`action`, or `rejudge` at a tapped question; `login_item` and `signin` for the judgements
-Casa Browser starts itself, each answered from its packet alone), the app's packet as its own JSON text
+kind (`action`, or `rejudge` at a tapped question; `login_item`, `signin` and `sign_in` for the
+judgements Casa Browser starts itself, each answered from its packet alone; `sign_in`: whether
+the page is the site's own sign-in, `{"verdict": "sign_in" | "not_sign_in", "fields", "reason"}`,
+`fields` naming the planned field ids the username and the password go into), the app's packet as its own JSON text
 relayed as a string, and the run's spec digest or null. Casa hashes exactly the UTF-8
 bytes it received and runs one clean-context call (`action_judgement._ask_check`: Opus
 5.5 at effort high, fixed whatever the model map says; the measured rulebook for the kind,

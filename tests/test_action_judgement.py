@@ -388,6 +388,9 @@ def test_rulebook_files_are_the_measured_bytes():
                                     "b6576753235325ba706f8913670f6bc6"),
         "signin_v1.txt": (2037, "551b5d6477790a54b82c5121709115683"
                                 "ae42a5f288d65d3998bf5fad4a0ebdf"),
+        # signing in off the start page (M9, with R9's field mapping), measured 2026-11-03
+        "sign_in_v1.txt": (3021, "a72031d6f76eb06038044531f26eb6dd"
+                                 "fae484461d30fad4d3b6ac4996e9fe4a"),
     }
     for kind, name in aj.RULEBOOK_FILES.items():
         raw = (aj.RULEBOOK_DIR / name).read_bytes()
@@ -544,3 +547,60 @@ async def test_the_sdks_own_payload_records_are_silenced_during_a_check(monkeypa
     assert marker not in "\n".join(r.getMessage() for r in caplog.records)
     logging.getLogger("claude_agent_sdk._internal.transport.subprocess_cli").debug(marker)
     assert marker in "\n".join(r.getMessage() for r in caplog.records)   # control: outside a check
+
+
+# -- signing in off the start page: the sign_in kind ----------------------------------------
+
+SIGN_IN = {"kind": "sign_in",
+           "site": {"name": "Voorbeeld Energie", "registered_origins": ["https://example.com"],
+                    "host": "example.com"},
+           "page": {"title": "Log in", "path": "/login", "blocks": [{"n": 1, "text": "Log in"}],
+                    "page_truncated": False, "controls": ["textbox: Email", "button: Log in"]},
+           "planned": {"fields": [{"role": "username", "label": "Email"}], "button": "Log in",
+                       "passkey": False}}
+
+
+async def test_the_sign_in_check_sends_the_bare_packet_with_its_rulebook(wired):
+    seen, replies = wired
+    aj.WORDS.record(plugin="browser", operator_id=100, spec_digest=DIGEST, words=WORDS)
+    for verdict in ("sign_in", "not_sign_in"):
+        replies.append(json.dumps({"verdict": verdict, "reason": "the page says so",
+                                   "fields": {"username": "f1"}}))
+        out = await aj.judge(_call(client="c-" + verdict), "sign_in", _canonical(SIGN_IN), DIGEST)
+        sent = json.loads(_canonical(SIGN_IN))
+        assert seen[-1] == (aj.RULEBOOKS["sign_in"], json.dumps(sent, ensure_ascii=False))
+        assert out["verdict"] == {"verdict": verdict, "reason": "the page says so",
+                                  "fields": {"username": "f1"}}
+        assert out["packet_sha256"] == hashlib.sha256(_canonical(SIGN_IN).encode()).hexdigest()
+        assert WORDS not in seen[-1][1]
+
+
+@pytest.mark.parametrize("reply", [
+    '{"verdict": "signed_in", "reason": ""}',            # another kind's verdict
+    '{"verdict": "go", "category": "login", "reason": ""}',
+    '{"verdict": "yes", "reason": ""}',
+    '{"verdict": "sign_in", "reason": "' + "x" * 601 + '"}',
+    '{"verdict": "sign_in", "reason": 3}',
+    'sign_in',
+    '{"verdict": "sign_in", "reason": "", "fields": ["f1"]}',
+    '{"verdict": "sign_in", "reason": "", "fields": {"login": "f1"}}',
+    '{"verdict": "sign_in", "reason": "", "fields": {"username": 1}}',
+    '{"verdict": "sign_in", "reason": "", "fields": {"username": "' + "f" * 17 + '"}}',
+])
+async def test_a_sign_in_reply_outside_its_shape_is_no_verdict(wired, reply):
+    _, replies = wired
+    replies.append(reply)
+    assert await aj.judge(_call(), "sign_in", _canonical(SIGN_IN), None) == \
+        {"error": "check_unavailable"}
+
+
+def test_a_sign_in_reply_parses_to_its_verdict_and_reason_only():
+    assert aj.parse_reply("sign_in", '{"verdict": "not_sign_in", "reason": "a newsletter", '
+                                     '"evidence_blocks": [1]}') == \
+        {"verdict": "not_sign_in", "reason": "a newsletter", "fields": {}}
+    assert aj.parse_reply("sign_in", '{"verdict": "sign_in"}') == {"verdict": "sign_in",
+                                                                     "reason": "", "fields": {}}
+    # R9: the planned field ids the username and the password go into; a null is no field
+    assert aj.parse_reply("sign_in", '{"verdict": "sign_in", "reason": "r", "fields": '
+                                     '{"username": "f2", "password": null}}') == \
+        {"verdict": "sign_in", "reason": "r", "fields": {"username": "f2"}}

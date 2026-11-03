@@ -392,11 +392,14 @@ class Observation:
     text: str
     elements: tuple[ElementView, ...]
     source_id: str | None = None
+    # Signing in off the start page: the sign-in step the look recorded (Casa Browser signed
+    # in by itself, or the login it needs), or None.
+    notice: str | None = None
 
     def to_wire(self) -> dict:
         return {"page_handle": self.page_handle, "generation": self.generation,
                 "text": self.text, "elements": [e.to_wire() for e in self.elements],
-                "source_id": self.source_id}
+                "source_id": self.source_id, "notice": self.notice}
 
 
 @dataclass(frozen=True)

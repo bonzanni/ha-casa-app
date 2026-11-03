@@ -19,8 +19,10 @@ class BrokerClient:
         try:
             # The broker's 120 s sign-in bound; its guest flow's 105 s (slice 5v).
             long = op in ('login', 'fill_code', 'unlock_guest')
-            reply = await rpc_call(self.path, max(self.timeout, 125) if long else self.timeout,
-                                   op, **args)
+            # The look's read: its settle and up to three reads, within the broker's 25 s.
+            bound = (max(self.timeout, 125) if long else
+                     max(self.timeout, 30) if op == 'read_sign_in' else self.timeout)
+            reply = await rpc_call(self.path, bound, op, **args)
         except BrokerError as error:
             return {'error': error.code}
         return reply
@@ -70,9 +72,18 @@ class BrokerClient:
         return await self.call('register_capture', site_id=site_id, login_origins=login_origins,
                                operator_ref=operator_ref, title=title)
 
-    async def login(self, run_id, site_id, driver_session, guest_ask=False):
+    async def login(self, run_id, site_id, driver_session, guest_ask=False, *, auto=False,
+                    password_sent=False, fields=None):
+        extra = {'auto': True, 'password_sent': password_sent} if auto else {}
+        if auto and fields:
+            extra['fields'] = dict(fields)
         return await self.call('login', run_id=run_id, site_id=site_id, driver_session=driver_session,
-                               guest_ask=guest_ask)
+                               guest_ask=guest_ask, **extra)
+
+    async def read_sign_in(self, run_id, site_id, driver_session):
+        """The look's read of the page (signing in off the start page): facts, never values."""
+        return await self.call('read_sign_in', run_id=run_id, site_id=site_id,
+                               driver_session=driver_session)
 
     async def fill_code(self, run_id, site_id, driver_session, page_generation, code):
         """Slice 6 (S6-3): the code goes in this one call's line and nowhere else."""

@@ -268,6 +268,16 @@ class FakeDriver:
         self.passkeys = []    # test-private: what choose_passkey was asked to match
         self.marks = {}       # slice 6: step index -> the mark set in that page's document
         self.mark_fails = False
+        # Signing in off the start page: the look's binding as the driver reads it. ``binding``
+        # is what read_sign_in reports; ``bound`` (callable(op_count) -> (ok, binding) or None
+        # for "unchanged") stands for the page moving between the look and a fill.
+        self.binding = 'binding-1'
+        self.bound = None
+        self.bound_checks = 0
+        self.labels = {'username': 'Username', 'password': 'Password',
+                       'one_time_code': 'Code', 'submit': 'Login'}
+        self.read_failure = None
+        self.plain = ()           # R9: the read's plain fields (no role the page marks), labels
 
     async def call(self, op, **args):
         return await getattr(self, op)(**args)
@@ -277,7 +287,8 @@ class FakeDriver:
         return dict(page_generation=self.index + 1, on_site_origin=self.steps[self.index].on_site_origin,
                     on_login_origin=self.steps[self.index].origin_ok)
 
-    async def find_login_fields(self, driver_session, page_generation):
+    async def find_login_fields(self, driver_session, page_generation, sign_in_look=None,
+                                sign_in_fields=None, login_origins=None):
         self.calls.append(('find_login_fields', driver_session, page_generation))
         s = self.steps[self.index]
         return LoginFields(page_generation, s.origin_ok, {r: r for r in s.roles}, s.submit,
@@ -303,6 +314,31 @@ class FakeDriver:
         self.calls.append(('submit', driver_session, page_generation, submit_handle))
         self.index = min(self.index + 1, len(self.steps) - 1)
         return {'ok': True}
+
+    async def read_sign_in(self, driver_session, page_generation, mark, login_origins=None):
+        self.calls.append(('read_sign_in', driver_session, page_generation))
+        if self.read_failure:
+            raise self.read_failure
+        s = self.steps[self.index]
+        fields = [{'id': f'f{n}', 'role': r, 'label': self.labels.get(r, ''),
+                   'password': r == 'password', 'button': self.labels['submit'] if s.submit else None}
+                  for n, r in enumerate(sorted(s.roles), 1)]
+        fields += [{'id': f'f{n}', 'role': None, 'label': label, 'password': False,
+                    'button': self.labels['submit']}
+                   for n, label in enumerate(self.plain, len(fields) + 1)]
+        return dict(page_generation=page_generation, origin_ok=s.origin_ok,
+                    roles=sorted(s.roles), fields=fields,
+                    passkey_frame=s.passkey_frame, passkey_hint=s.passkey_hint,
+                    binding=self.binding)
+
+    async def sign_in_bound(self, driver_session, page_generation, mark, login_origins=None):
+        self.calls.append(('sign_in_bound', driver_session, page_generation))
+        self.bound_checks += 1
+        got = self.bound(self.bound_checks) if self.bound is not None else None
+        if got is None:
+            return {'ok': True, 'binding': self.binding}
+        ok, binding = got
+        return {'ok': ok, 'binding': binding}
 
     async def mark_document(self, driver_session, page_generation, mark):
         self.calls.append(('mark_document', driver_session, page_generation))

@@ -185,6 +185,22 @@ async def _scenario(steps: list[dict], broker: dict | None) -> list:
                             "source_id": obs.source_id, "generation": obs.generation})
                 if arg.get("values"):          # slice 5m: what each field shows the model
                     out[-1]["values"] = {e.label_masked: e.value_masked for e in obs.elements}
+            elif op == "look":
+                # Signing in off the start page: observe with ``sign_in`` (Fido 0.1.21), timed;
+                # a judgement it returns is the run's last one (``verdict`` applies it).
+                started = time.monotonic()
+                result = await attempt(ctl.observe(run_id(arg["name"]), sign_in=True))
+                took = round(time.monotonic() - started, 3)
+                if isinstance(result, dict):
+                    out.append(result)
+                    continue
+                wire = result.to_wire()
+                if "page_handle" in wire:
+                    last[arg["name"]] = result
+                    out.append({"observation": True, "text": result.text, "seconds": took})
+                else:
+                    out.append({**wire, "seconds": took})
+                    track(arg["name"], wire)
             elif op == "act":
                 h, gen = handle(arg["name"], arg["label"], arg.get("nth", 0))
                 choice = handle(arg["name"], arg["choice"])[0] if arg.get("choice") else None

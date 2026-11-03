@@ -1110,6 +1110,33 @@ def signin_packet(site: str, origins: list, after: list, at_done: dict) -> dict:
             "after_attempt": [numbered(r) for r in after], "at_done": numbered(at_done)}
 
 
+SIGN_IN_VERDICTS = ("sign_in", "not_sign_in")
+
+
+def sign_in_within_bounds(v: Any) -> bool:
+    """A ``sign_in`` reply (signing in off the start page): its verdict, a reason and (R9)
+    ``fields``: the planned field id the username and the password go into, each optional."""
+    if not (isinstance(v, dict) and v.get("verdict") in SIGN_IN_VERDICTS
+            and _str_within(v.get("reason"), MAX_REASON_CHARS)):
+        return False
+    fields = v.get("fields", {})
+    return (isinstance(fields, dict) and set(fields) <= {"username", "password"}
+            and all(f is None or _str_within(f, 16) for f in fields.values()))
+
+
+def sign_in_packet(reading: dict, *, site: str, origins: list, planned: dict) -> dict:
+    """The ``sign_in`` packet: the site, the page as an action packet reads it (title, path,
+    numbered masked blocks, its controls) and what a sign-in there would do (``planned``: the
+    fields by role and masked label, the button's masked label, the passkey)."""
+    base = build_packet(reading, None, {"kind": "sign_in"}, task="", session="signed_in",
+                        site=site)
+    where = base["where"]
+    return {"kind": "sign_in",
+            "site": {"name": site, "registered_origins": list(origins), "host": where["host"]},
+            "page": {"title": where["title"], "path": where["path"], **base["page"]},
+            "planned": planned}
+
+
 def packet_blocks(packet: dict) -> set:
     return {b["n"] for r in (*packet["after_attempt"], packet["at_done"])
             for b in r.get("blocks") or ()}
@@ -1362,6 +1389,22 @@ class PageOps:
         a placeholder whose content is compared by digest. Frames are read parents first.
         ``complete`` is false when any frame's reading is, or cannot be had, or a closed shadow
         root exists."""
+        frame, got, views = await self._read_frames(page, target, policy, with_handles)
+        shadow = await self.closed_shadow(page)
+        return self._assemble(frame, got, views, with_handles, shadow)
+
+    async def read_page_and_bound(self, page, frames, *, policy=None) -> tuple:
+        """One pass over the page's frames (signing in off the start page): the whole page
+        reading, and from the very same frame readings the reading of the main frame and
+        ``frames`` only (a look's bound documents; every other frame is left out of it)."""
+        frame, got, views = await self._read_frames(page, None, policy, False)
+        shadow = await self.closed_shadow(page)
+        main = page.main_frame
+        bound = [(f, r) for f, r in got if f is main or any(f is b for b in frames)]
+        return (self._assemble(frame, got, views, False, shadow),
+                self._assemble(frame, bound, views, False, shadow))
+
+    async def _read_frames(self, page, target, policy, with_handles):
         from casa_browser.observe import child_frames, frame_shown, page_view_allowed
         frame = await self.frame_of(page, target)
         main = page.main_frame
@@ -1371,7 +1414,6 @@ class PageOps:
             raise LookupError("not_this_sessions_page")
         got: list = []          # (frame, its reading, or None when it could not be read)
         views: dict = {}        # id(frame) -> (shown, origin)
-        incomplete = False
         for f in [main, *child_frames(page)]:
             address = f.url
             try:
@@ -1381,7 +1423,6 @@ class PageOps:
                     raise
                 got.append((f, None))
                 views[id(f)] = (False, None)
-                incomplete = True
                 continue
             href, origin = r.data.get("href"), r.data.get("origin")
             if f is main:
@@ -1396,11 +1437,15 @@ class PageOps:
             views[id(f)] = (ok, origin)
         if not views.get(id(frame), (False,))[0]:
             raise LookupError("not_this_sessions_page")
+        return frame, got, views
+
+    @staticmethod
+    def _assemble(frame, got, views, with_handles, shadow) -> Reading:
         primary = next(r for f, r in got if f is frame)
         data = dict(primary.data, blocks=list(primary.data["blocks"]),
                     controls=[dict(c, frame_href=primary.data["href"])
                               for c in primary.data["controls"]])
-        if incomplete:
+        if any(r is None for _f, r in got):
             data["complete"] = False
         handles = list(primary.handles or ()) if with_handles else None
         k = 0
@@ -1414,7 +1459,7 @@ class PageOps:
             merge_frame(data, r.data, k, shown=shown)
             if with_handles and shown:
                 handles += list(r.handles or ())
-        if await self.closed_shadow(page):
+        if shadow:
             data["complete"] = False
         return Reading(data, handles)
 

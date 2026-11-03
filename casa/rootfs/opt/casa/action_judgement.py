@@ -15,7 +15,8 @@ settings sources, no session. The model sees the measured body: for
 ``rejudge`` the packet alone. Slice 5 adds two kinds the app starts itself:
 ``login_item`` (which vault items sign in to a site: 0–5 indexes) and
 ``signin`` (did a live-view sign-in attempt sign the person in), each judged
-on its packet alone. The operator's own words travel outside the
+on its packet alone; ``sign_in`` (is the page the site's own sign-in, which the
+app then signs in to by itself) is judged the same way. The operator's own words travel outside the
 packet and its digest (ruling 3); Casa keeps them, memory-only, per spec
 digest when run admission reads them (``WORDS``).
 
@@ -47,9 +48,10 @@ MAX_WORDS_CHARS = 4000
 WORDS_MAX_ENTRIES = 500
 WORDS_KEEP_S = 24 * 3600.0
 
-KINDS = ("action", "rejudge", "login_item", "signin")
+KINDS = ("action", "rejudge", "login_item", "signin", "sign_in")
 VERDICTS = {"action": ("go", "ask", "look_first"), "rejudge": ("same", "changed"),
-            "signin": ("signed_in", "not_signed_in", "unsure")}
+            "signin": ("signed_in", "not_signed_in", "unsure"),
+            "sign_in": ("sign_in", "not_sign_in")}
 CATEGORIES = ("reading", "local", "account_change", "commitment", "payment",
               "personal_data", "login", "software", "unclear")
 SCREENSHOTS = ("required", "useful", "none")
@@ -65,10 +67,12 @@ MAX_HIGHLIGHTS = 6
 MAX_HIGHLIGHT_CHARS = 200
 MAX_LOGIN_ITEMS = 5                 # a login_item reply: at most five candidates (S5-2)
 MAX_EVIDENCE_BLOCKS = 50            # a signin reply's evidence block numbers
+MAX_FIELD_ID_CHARS = 16             # a sign_in reply's planned field id (R9)
 
 RULEBOOK_DIR = Path(__file__).resolve().with_name("rulebooks")
 RULEBOOK_FILES = {"action": "action_v1.txt", "rejudge": "rejudge_v1.txt",
-                  "login_item": "login_item_v1.txt", "signin": "signin_v1.txt"}
+                  "login_item": "login_item_v1.txt", "signin": "signin_v1.txt",
+                  "sign_in": "sign_in_v1.txt"}
 # Read as bytes and decoded: no newline translation, the measured text exactly.
 RULEBOOKS: dict[str, str] = {
     kind: (RULEBOOK_DIR / name).read_bytes().decode("utf-8")
@@ -204,6 +208,18 @@ def parse_reply(kind: str, text: Any) -> "dict | None":
                 and all(_index(b) and b >= 1 for b in blocks)):
             return None
         return {"verdict": d["verdict"], "evidence_blocks": list(blocks), "reason": reason}
+    if kind == "sign_in":
+        # R9: which planned field takes the username and which the password, by the ids the
+        # packet gave them (each optional); the app checks them against its own packet.
+        fields = d.get("fields", {})
+        if fields is None:
+            fields = {}
+        if not (isinstance(fields, dict) and set(fields) <= {"username", "password"}
+                and all(f is None or _str_within(f, MAX_FIELD_ID_CHARS)
+                        for f in fields.values())):
+            return None
+        return {"verdict": d["verdict"], "reason": reason,
+                "fields": {k: v for k, v in fields.items() if v is not None}}
     if kind == "rejudge":
         if not isinstance(d.get("text_incomplete"), bool):
             return None

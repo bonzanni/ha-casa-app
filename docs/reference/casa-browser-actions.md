@@ -102,6 +102,14 @@ read and in the difference.
 The packet travels as canonical JSON text (`gate.py::canonical`: sorted keys,
 no ASCII escaping, compact) and is bound by `gate.py::digest`.
 
+A look's `sign_in` packet (`gate.py::sign_in_packet`) reuses this page part — title, masked
+path, numbered masked blocks, control lines — beside the site and `planned` (what a sign-in
+there would fill and press); its reply bound is `gate.py::sign_in_within_bounds`.
+`PageOps.read_page_and_bound` reads the page once and gives the whole reading and, from the same
+frame readings, the main frame and the look's bound frames only: the look's final
+comparison, by `same_reading`, covers its bound documents only
+([`casa-browser-signin.md`](casa-browser-signin.md)).
+
 ## Verdicts
 
 `POST /v1/control/runs/{run}/judgements/{judgement}` (`RunController.apply_judgement`) takes

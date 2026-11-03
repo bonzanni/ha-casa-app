@@ -192,6 +192,52 @@ class _Active:
     # awaited, so one that was cancelled, failed or timed out counts too). Every browser start
     # relocks the extension, so another session object means it has not run yet.
     guest_for: Any = field(default=None, repr=False)
+    # Signing in off the start page. ``looked``: the (browser session, address) pairs looked at
+    # since Fido's last step (every executed step clears it; every sign-in adds the page it
+    # ended on). ``sign_ins``: per site, the sign-ins of the run that acted, start page or
+    # look, and whether the last one worked. ``not_sign_in``: the shapes the check judged not
+    # the site's sign-in. ``notice``: the sign-in step a look's sign-in recorded.
+    looked: set = field(default_factory=set, repr=False)
+    sign_ins: dict = field(default_factory=dict)
+    not_sign_in: set = field(default_factory=set, repr=False)
+    notice: str | None = None
+
+
+@dataclass(eq=False)
+class _Look:
+    """What a ``sign_in`` verdict covers: the site, the browser session and the address looked
+    at, the judged reading restricted to the bound documents (``frames``), the shape the check
+    was asked about, and what a sign-in there carries (``guest_ask``: None for the run's own
+    rule; ``password_sent``: this look sent the password already)."""
+
+    site_id: str
+    session: Any = field(repr=False)
+    url: str = field(repr=False)
+    frames: tuple = field(repr=False)
+    reading: dict = field(repr=False)
+    shape: tuple = field(repr=False)
+    guest_ask: bool | None = None
+    password_sent: bool = False
+    fields: tuple = field(default=(), repr=False)    # the planned fields the check was shown
+
+
+def _sign_in_mapping(fields, named) -> dict | None:
+    """R9: the check's ``fields`` ({"username": id, "password": id}) checked against the planned
+    fields it was shown. Mechanical facts only: every id is a planned field's, a password goes
+    only into a password field and a username never into one (so no field takes both), and a
+    field the page marks keeps its own role. The named fields (in the judged document a named role
+    goes to its named field alone), or None: no automatic sign-in."""
+    by_id = {f["id"]: f for f in fields}
+    named = {role: fid for role, fid in (named or {}).items() if fid is not None}
+    out = {}
+    for role, fid in named.items():
+        f = by_id.get(fid)
+        if f is None or f["password_field"] != (role == "password"):
+            return None
+        if f["role"] is not None and f["role"] != role:
+            return None
+        out[role] = fid
+    return out
 
 
 @dataclass(eq=False)
@@ -200,7 +246,7 @@ class _AppJudgement:
     The vault's item ids stay here (controller memory), never in a packet or a reply."""
 
     id: str
-    kind: str                            # login_item | signin
+    kind: str                            # login_item | signin | sign_in
     packet_bytes: bytes = field(repr=False)
     digest: str = ""
     packet: dict = field(default_factory=dict, repr=False)
@@ -209,6 +255,7 @@ class _AppJudgement:
     items: list = field(default_factory=list, repr=False)   # login_item: the listed items
     capture_id: str | None = field(default=None, repr=False)   # signin: the broker's capture
     proposal: Any = field(default=None, repr=False)   # slice 5n: a sign-in card's login_item
+    look: Any = field(default=None, repr=False)       # sign_in: the look it judges (_Look)
 
     def wire(self) -> dict:
         return {"id": self.id, "kind": self.kind, "packet": self.packet_bytes.decode("utf-8")}
@@ -773,8 +820,9 @@ class RunController:
     def _login_needed(self, active: _Active, reason: str, text: str | None = None) -> str:
         reason = reason if isinstance(reason, str) and reason.isascii() and len(reason) <= 40 \
             else "unknown"
-        self._event(active.run_id, "login_needed", reason,
-                    text or "The site needs the operator in a login live view.")
+        text = text or "The site needs the operator in a login live view."
+        self._event(active.run_id, "login_needed", reason, text)
+        active.notice = mask_text(text).text[:500]
         return reason
 
     async def _guest(self, active: _Active, site: Site) -> bool:
@@ -820,18 +868,22 @@ class RunController:
                                             guest_ask=guest_ask)
         finally:
             forced = await self._close_driver(active, sid)
+        self._looked_now(active)
         if "error" in reply:
             raise _Dependency("broker_" + str(reply["error"]))
         if forced:
+            self._ledger(active, site, "failed", "timeout")
             self._login_needed(active, "timeout")
             return
         if reply.get("status") == "needs_guest" and guest_ask:
             active.guest_for = session
             if await self._guest(active, site) or active.session is not session:
+                self._ledger(active, site, "failed", "timeout")
                 self._login_needed(active, "timeout")   # K1: the session is gone, no retry
                 return
             await self._login(active, site, url, guest_ask=False)
             return
+        self._ledger(active, site, reply.get("status"), reply.get("reason"))
         if reply.get("status") == "needs_code":
             self._code_asked(active, site, reply.get("page_generation"))
             return
@@ -843,6 +895,223 @@ class RunController:
             if reply.get("reason") == "not_found" and await self._vault_judgement(active, site):
                 return
             self._login_needed(active, reply.get("reason", "unknown"))
+
+    # -- signing in off the start page: the look, its check and its sign-in ------------------
+
+    def _looked_now(self, active: _Active) -> None:
+        """The page a sign-in ended on is not looked at again before Fido's next step."""
+        session = active.session
+        page = session.page if session is not None else None
+        if page is not None and not page.is_closed():
+            active.looked.add((session, page.url))
+
+    @staticmethod
+    def _ledger(active: _Active, site: Site, status, reason) -> None:
+        """A sign-in of the run (start page or look) that acted counts: every outcome but one
+        that acted on nothing (``no_form`` that found no form, could not read it or found it
+        moved, and any ``not_found``: no item to sign in with). The last one's success is
+        kept."""
+        if (status == "no_form" and reason in ("no_form", "probe_failed", "page_moved")) \
+                or reason == "not_found":
+            return
+        count, _worked = active.sign_ins.get(site.site_id, (0, False))
+        active.sign_ins[site.site_id] = (count + 1, status == "logged_in")
+
+    @staticmethod
+    def _ledger_allows(active: _Active, site: Site) -> bool:
+        """A look may sign in once, and once more only after a sign-in of the run that worked
+        (R4): never after one that failed."""
+        count, worked = active.sign_ins.get(site.site_id, (0, False))
+        return count == 0 or (count == 1 and worked)
+
+    async def _look(self, active: _Active) -> _AppJudgement | None:
+        """``observe`` with ``sign_in`` (Fido 0.1.21): mechanical facts only, then one read of
+        the page (``read_sign_in``); a page with sign-in fields becomes a ``sign_in`` judgement
+        for Casa's check, returned in the observe reply. None: observe as today."""
+        spec, ref = active.spec, active.ref
+        if spec.mode != "account" or ref is None or ref.kind != "account":
+            return None
+        site = self.store.get_site(ref.site_id)
+        if (site is None or self._access(spec, site.site_id) != "account"
+                or not site.login_origins or site.vault_item_id is None):
+            return None
+        if active.code_wait is not None or not self._ledger_allows(active, site):
+            return None
+        session = active.session
+        if session is None or self.browser.session is not session:
+            return None
+        page = session.page
+        if page is None or page.is_closed():
+            return None
+        url = page.url
+        if self._origin(url) is None or (session, url) in active.looked:
+            return None
+        active.looked.add((session, url))
+        return await self._read_look(active, site, session, url, guest_ask=None,
+                                     password_sent=False)
+
+    async def _read_look(self, active: _Active, site: Site, session, url: str, *,
+                         guest_ask: bool | None, password_sent: bool) -> _AppJudgement | None:
+        """The look's read, then its judgement: the page reading as an action packet has it,
+        the reading of the bound documents kept for the verdict, and what a sign-in would do
+        (masked labels). A read error, no sign-in fields, a shape the check already judged
+        not a sign-in in this run, or a page that moved: None."""
+        try:
+            sid = await self.driver.open_session("login", active.run_id, site.site_id, session,
+                                                 self.proxy, site.login_origins)
+        except BrokerError:
+            return None
+        active.driver_sid = sid
+        reply: Any = {}
+        try:
+            reply = await self.broker.read_sign_in(active.run_id, site.site_id, sid)
+        finally:
+            forced = await self._close_driver(active, sid)
+        if (forced or not isinstance(reply, dict) or "error" in reply or not reply.get("found")
+                or active.session is not session or session.page is None
+                or session.page.is_closed() or session.page.url != url):
+            return None
+        label = lambda text: mask_text(text if isinstance(text, str) else "").text.strip()[:200]  # noqa: E731
+        fields = [{"id": f["id"], "role": f["role"] if isinstance(f.get("role"), str) else None,
+                   "label": label(f.get("label")), "password_field": f.get("password") is True,
+                   "button": label(f["button"]) if f.get("button") else None}
+                  for f in reply.get("fields") or () if isinstance(f, dict)
+                  and isinstance(f.get("id"), str)]
+        passkey = reply.get("passkey") is True
+        shape = (site.site_id, tuple((f["role"], f["label"], f["password_field"], f["button"])
+                                     for f in fields), passkey)
+        if shape in active.not_sign_in:
+            return None
+        frames = tuple(self.driver.sign_in_frames(active.run_id, site.site_id))
+        page = session.page
+        try:
+            # One pass: the packet and the reading the verdict is held to are the same frames'.
+            reading, bound = await self.ops.read_page_and_bound(page, frames, policy=active.policy)
+        except Exception:  # noqa: BLE001 — a page that cannot be read is not judged
+            return None
+        if not bound.complete or page.url != url:
+            return None
+        packet = gate.sign_in_packet(
+            reading.data, site=site.display_name,
+            origins=sorted({*site.origins, *site.login_origins}),
+            planned={"fields": fields, "passkey": passkey})
+        look = _Look(site.site_id, session, url, frames, dict(bound.data), shape,
+                     guest_ask=guest_ask, password_sent=password_sent, fields=tuple(fields))
+        self._freeze_app(active, "sign_in", packet, site_id=site.site_id, look=look)
+        self._event(active.run_id, "sign_in_judgement", "pending",
+                    f"Casa checks whether this page is the sign-in of {site.display_name}.")
+        return active.app_judgements["sign_in"]
+
+    async def _look_holds(self, active: _Active, look: _Look) -> bool:
+        """The verdict applies only to what it judged: the session and the address looked at,
+        no step since (the pair is still in ``looked``), and a final read of the bound
+        documents equal to the judged one (``gate.same_reading``: their blocks' text, their
+        controls' state and their exact destinations)."""
+        session = active.session
+        if session is not look.session or self.browser.session is not session:
+            return False
+        page = session.page
+        if (page is None or page.is_closed() or page.url != look.url
+                or (session, look.url) not in active.looked):
+            return False
+        try:
+            _whole, final = await self.ops.read_page_and_bound(page, look.frames,
+                                                               policy=active.policy)
+        except Exception:  # noqa: BLE001
+            return False
+        return page.url == look.url and gate.same_reading(look.reading, dict(final.data))
+
+    async def _apply_sign_in(self, active: _Active, app: _AppJudgement, body: dict) -> dict:
+        """A ``sign_in`` verdict. ``sign_in`` on the page as it was judged: Casa signs in by
+        itself on that page (no navigation). ``not_sign_in`` (remembered for the run by its
+        shape), no verdict (F1: never a sign-in without one) or a page that moved: nothing is
+        filled. Either way the reply is the page as it is now, with the sign-in step the look
+        recorded, if any (``notice``); the guest unlock's reload brings a fresh judgement."""
+        verdict = body.get("verdict")
+        if verdict is not None and not gate.sign_in_within_bounds(verdict):
+            verdict = None
+        look = app.look
+        site = self.store.get_site(app.site_id)
+        name = site.display_name if site is not None else app.site_id
+        if verdict is None:
+            self._event(active.run_id, "judgement", "no_verdict",
+                        f"Check of the sign-in page on {name}: no verdict.")
+        else:
+            latency = body.get("latency_ms")
+            seconds = "" if latency is None else f" ({latency / 1000:.1f} s)"
+            self._event(active.run_id, "judgement", verdict["verdict"],
+                        f"Check of the sign-in page on {name}: {verdict['verdict']}{seconds}.")
+        active.notice = None
+        if verdict is not None and verdict["verdict"] == "not_sign_in":
+            active.not_sign_in.add(look.shape)
+        mapping = (_sign_in_mapping(look.fields, verdict.get("fields"))
+                   if verdict is not None and verdict["verdict"] == "sign_in" else None)
+        if mapping is None and verdict is not None and verdict["verdict"] == "sign_in":
+            self._event(active.run_id, "sign_in_mapping", "refused",
+                        f"The check's fields for the sign-in page on {name} do not fit it; "
+                        "nothing is filled.")
+        if (mapping is not None and site is not None
+                and await self._look_holds(active, look)):
+            successor = await self._auto_login(active, site, look, mapping)
+            if successor is not None:
+                return {"outcome": "judgement_required", "generation": self._generation(active),
+                        "judgement": successor.wire()}
+        notice, active.notice = active.notice, None
+        obs = replace(await self._observe(active), notice=notice)
+        return {"outcome": "done", "generation": obs.generation, "observation": obs.to_wire()}
+
+    async def _auto_login(self, active: _Active, site: Site, look: _Look,
+                          mapping: dict) -> _AppJudgement | None:
+        """The sign-in on the judged page as it is (``broker.login(auto=True)``, no ``_goto``).
+        On ``needs_guest`` the guest flow runs, the looked address is loaded again and looked
+        at afresh: its judgement (no second unlock, the password already sent carried) is the
+        successor returned; nothing reloaded is ever filled on the old verdict."""
+        active.code_wait = None              # a new sign-in replaces a code report (S6-2)
+        session = active.session
+        guest_ask = look.guest_ask if look.guest_ask is not None else active.guest_for is not session
+        sid = await self._driver_session(active, "login", site)
+        reply: dict = {}
+        try:
+            reply = await self.broker.login(active.run_id, site.site_id, sid, guest_ask=guest_ask,
+                                            auto=True, password_sent=look.password_sent,
+                                            fields=mapping or None)
+        finally:
+            forced = await self._close_driver(active, sid)
+        self._looked_now(active)
+        if "error" in reply:
+            raise _Dependency("broker_" + str(reply["error"]))
+        if forced:
+            self._ledger(active, site, "failed", "timeout")
+            self._login_needed(active, "timeout")
+            return None
+        status, reason = reply.get("status"), reply.get("reason")
+        if status == "needs_guest" and guest_ask:
+            active.guest_for = session
+            if await self._guest(active, site) or active.session is not session:
+                self._ledger(active, site, "failed", "timeout")
+                self._login_needed(active, "timeout")   # K1: the session is gone, no retry
+                return None
+            sent = look.password_sent or reply.get("password_sent") is True
+            try:
+                await self._goto(active, look.url)
+            except ProtocolError:
+                return None
+            page = session.page
+            if active.session is not session or page is None or page.is_closed():
+                return None
+            active.looked.add((session, page.url))
+            return await self._read_look(active, site, session, page.url, guest_ask=False,
+                                         password_sent=sent)
+        self._ledger(active, site, status, reason)
+        if status == "logged_in":
+            text = f"Casa Browser signed in to {site.display_name} by itself."
+            self._event(active.run_id, "signed_in", "logged_in", text)
+            active.notice = mask_text(text).text[:500]
+        elif status == "needs_code":
+            self._code_asked(active, site, reply.get("page_generation"))
+        elif status != "no_form":
+            self._login_needed(active, reason if isinstance(reason, str) else "unknown")
+        return None
 
     # -- slice 6: a code the site sent (design §5.4, plan S6-2, S6-3) ------------------------
 
@@ -955,8 +1224,10 @@ class RunController:
         active = self.active
         if active is None or active.run_id != run.run_id or active.ending is not None:
             return {"judgements": []}
+        # A look's ``sign_in`` judgement is relayed only from the observe reply that made it.
         return {"judgements": [j.wire() for j in active.app_judgements.values()
-                               if j.kind != "login_item" or run.state == "running"]}
+                               if j.kind != "sign_in"
+                               and (j.kind != "login_item" or run.state == "running")]}
 
     # ------------------------------------------------------------------ navigation
 
@@ -1112,8 +1383,21 @@ class RunController:
         extra = tuple(self._start_entries(active, obs.generation))
         return replace(obs, source_id=source_id, elements=obs.elements + extra)
 
-    async def observe(self, run_id: str) -> Observation:
-        return await self._command(run_id, ("running",), self._observe)
+    async def observe(self, run_id: str, sign_in: bool = False):
+        """``POST …/observe``: the page. With ``sign_in`` (Fido 0.1.21), a page of the site
+        that shows sign-in fields is first looked at: the reply is then the ``sign_in``
+        judgement for Casa's check (an ``ActionResult``), whose verdict reply carries the
+        observation."""
+        if not sign_in:
+            return await self._command(run_id, ("running",), self._observe)
+
+        async def body(active):
+            app = await self._look(active)
+            if app is not None:
+                return ActionResult("judgement_required", self._generation(active),
+                                    {"judgement": app.wire()})
+            return await self._observe(active)
+        return await self._command(run_id, ("running",), body)
 
     async def search(self, run_id: str, query: str):
         async def body(active):
@@ -1265,6 +1549,7 @@ class RunController:
             raise ProtocolError("stale_handle")
         shot = await self._screenshot(active, session)
         self._event(active.run_id, "action", "done", f"Action: {kind}.{note}", screenshot_id=shot)
+        active.looked.clear()                # a step: every page may be looked at again
         return ActionResult("done", session.view_generation)
 
     def _free_nav_guard(self, active: _Active):
@@ -1484,6 +1769,8 @@ class RunController:
         """Slice 5: a ``login_item`` or ``signin`` verdict. Outside its bounds (an index the
         packet does not hold, evidence naming no block of it) it is no verdict, which links
         and saves nothing (F1)."""
+        if app.kind == "sign_in":
+            return await self._apply_sign_in(active, app, body)
         verdict = body.get("verdict")
         if app.kind == "login_item":
             if self._run(active.run_id).state != "running":
@@ -2614,6 +2901,7 @@ class RunController:
             self.store.transition(active.run_id, "waiting_approval", "running")
         active.changes.append(Change("action_confirmed", None, "",
                                      mask_text(frozen.confirm_label).text[:200]))
+        active.looked.clear()                # a step: every page may be looked at again
         self._event(active.run_id, "action", "confirmed",
                     f"Action confirmed by the operator: {frozen.pending.label}.",
                     screenshot_id=frozen.screenshot_id)

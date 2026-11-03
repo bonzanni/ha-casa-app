@@ -295,3 +295,75 @@ def test_s5n_a_sign_in_card_registers_the_browsers_origin_and_signs_in(tmp_path)
         posts = [r for r in sites.receipts.requests if r[0] == "POST"]
         assert [p[2] for p in posts] == ["/password", "/finish"]
         assert out[10] == "completed"
+
+
+def test_signing_in_off_the_start_page(tmp_path):
+    """Signing in off the start page, in real Chrome with the production controller, driver and
+    broker (the phone sequence of casa-test 2026-11-02): the site's start page is its root,
+    which has no form (``no_form``, silent); Fido's judged step opens /login; observe with
+    ``sign_in`` looks at it (timed) and returns the ``sign_in`` judgement; its verdict (scripted
+    here; the real check's verdicts on this page shape are measured, M9) signs in on the page as
+    it is: one POST, the secure area, one ``signed_in``, no ``login_needed``. Then the reset
+    page, judged ``not_sign_in``: nothing filled, nothing posted to it."""
+    config = fixture_config(tmp_path)
+    with ChromeSites([A]) as sites:
+        _controller_uid(sites)
+        sites.pages["/"] = ("text/html", b'<title>The Internet</title><h1>Welcome</h1>'
+                            b'<a href="/login">Form Authentication</a>', {})
+        # the-internet's form as served: its username marks no role (R9: the check maps it)
+        sites.pages["/login"] = ("text/html", (
+            b'<title>The Internet</title><h2>Login Page</h2><form method=post action="/authenticate">'
+            b'<label for=username>Username</label><input type=text id=username name=username>'
+            b'<label for=password>Password</label><input id=password name=password type=password>'
+            b'<button type=submit>Login</button></form>'), {})
+        sites.pages["/authenticate"] = ("text/html", b"", {"Location": f"https://{A}/secure"})
+        sites.status["/authenticate"] = 303
+        sites.pages["/secure"] = ("text/html", b'<title>The Internet</title><h2>Secure Area</h2>'
+                                  b'<p>You logged into a secure area!</p><a href="/logout">Logout</a>'
+                                  b' <a href="/forgot_password">Forgot password</a>', {})
+        sites.pages["/forgot_password"] = ("text/html", (
+            b'<title>The Internet</title><h2>Forgot Password</h2><form method=post action="/forgot_password">'
+            b'<label for=email>E-mail</label><input type=email id=email name=email>'
+            b'<button type=submit>Retrieve password</button></form>'), {})
+        sign_in = {"verdict": "sign_in", "reason": "the site's login form",
+                   "fields": {"username": "f1", "password": "f2"}}
+        not_sign_in = {"verdict": "not_sign_in", "reason": "a password reset form"}
+        steps = [
+            {"site": {"site_id": "s1", "name": "The Internet", "origins": [f"https://{A}"],
+                      "login": [f"https://{A}"], "item": "item", "start": f"https://{A}/"}},
+            {"broker": {"op": "register_item", "site_id": "s1", "item_id": "item",
+                        "login_origins": [f"https://{A}"], "operator_ref": "op"}},
+            {"run": {"name": "r", "request_id": "it-look", "sites": [["s1", "account"]]}},
+            {"wait_state": {"name": "r", "state": "running", "timeout": 150}},
+            {"sleep": 3.5},     # the credential window's quiet interval after close_window
+            {"observe": {"name": "r"}},
+            {"act": {"name": "r", "kind": "navigate", "label": "Form Authentication"}},
+            {"look": {"name": "r"}},
+            {"verdict": {"name": "r", "verdict": sign_in}},
+            {"observe": {"name": "r"}},
+            {"act": {"name": "r", "kind": "navigate", "label": "Forgot password"}},
+            {"look": {"name": "r"}},
+            {"verdict": {"name": "r", "verdict": not_sign_in}},
+            {"events": {"name": "r"}},
+            {"finish": {"name": "r"}},
+        ]
+        out = run_lifecycle(steps, home=controller_home(tmp_path), broker_fixture=config)
+        assert out[3] == "running", out
+        look = out[7]
+        assert look["outcome"] == "judgement_required", out
+        assert look["judgement"]["kind"] == "sign_in"
+        done = out[8]
+        assert done["outcome"] == "done", done
+        assert done["observation"]["notice"] == "Casa Browser signed in to The Internet by itself."
+        assert "Secure Area" in done["observation"]["text"], done
+        assert out[11]["outcome"] == "judgement_required", out
+        assert out[12]["outcome"] == "done" and out[12]["observation"]["notice"] is None, out
+        posts = [r for r in sites.receipts.requests if r[0] == "POST"]
+        assert [p[2] for p in posts] == ["/authenticate"], posts
+        from urllib.parse import parse_qs
+        body = parse_qs(posts[0][3].decode())
+        assert body["username"][0] and body["password"][0]   # the plain username was filled
+        kinds = [k for k, _o in out[13]]
+        assert kinds.count("signed_in") == 1 and "login_needed" not in kinds, out[13]
+        print("LOOK_SECONDS", look["seconds"], out[11]["seconds"])
+        assert out[14] == "completed"
