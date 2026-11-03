@@ -864,6 +864,15 @@ async def test_a_turn_a_delegation_and_an_engagement_turn_each_capture(
 #: ``CAPTURE_BUSY_TIMEOUT_S``, else one fsynced spool line.
 CAPTURE_OVERHEAD_BOUND_S = 0.5
 
+#: The warm baseline turn's duration on an unloaded machine (about 0.07 s
+#: measured). The overhead bound holds at this speed; when the same run's
+#: baseline shows turns running slower, a loaded machine stretches capture's
+#: overhead with them (a drain thread's parsing competes for the GIL, which
+#: an unloaded run already measures at about 0.18 s), and the bound is scaled
+#: by that same-run slowdown. A turn that waited for the drain (several
+#: seconds for this spool) is still far past it.
+NOMINAL_TURN_S = 0.1
+
 #: Spool lines for the large-spool case; drained synchronously, this many
 #: took well over a second on real SQLite.
 LARGE_SPOOL = 100_000
@@ -1014,8 +1023,13 @@ async def test_capture_never_holds_a_turn(mem, tmp_path, monkeypatch, case):
         never.set()
         drain_go.set()
         await capture.settle()
-    assert elapsed - baseline < CAPTURE_OVERHEAD_BOUND_S, (case, elapsed,
-                                                           baseline)
+    # Only a running drain competes with the turn for the GIL, a cost that
+    # grows with the machine's load as the baseline does; every other case
+    # keeps the fixed bound, so a capture that stalls the turn fails there.
+    scale = (max(1.0, baseline / NOMINAL_TURN_S)
+             if case in ("large_spool", "drain_running") else 1.0)
+    bound = CAPTURE_OVERHEAD_BOUND_S * scale
+    assert elapsed - baseline < bound, (case, elapsed, baseline, bound)
     assert len(receipts) == 2 and all(r is not None for r in receipts)
     outcomes = {r.outcome for r in receipts}
     if case in ("large_spool", "drain_running"):
