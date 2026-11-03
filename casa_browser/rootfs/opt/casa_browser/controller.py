@@ -90,7 +90,8 @@ MAX_SOURCE_TITLE = 120
 SEARCH_ORIGIN = "https://www.google.com"
 SEARCH_PATH = "/search?q="
 RETENTION_EVERY_S = 6 * 3600
-QUESTION_SWEEP_S = 30.0         # an open question past its hour expires within this
+QUESTION_SWEEP_S = 30.0         # an open question past its hour expires within this; so does
+                                # a live view the model asked for and nobody opened
 DEPENDENCY_CODES = frozenset({"unavailable", "timeout", "internal"})
 
 
@@ -156,6 +157,7 @@ class _Live:
     events: list = field(default_factory=list, repr=False)
     site_id: str | None = None
     question_id: str | None = None       # opened from this open question (slice 3, S3-3)
+    asked_at: datetime | None = None     # when the model asked for it (request_live)
 
 
 @dataclass(eq=False)
@@ -507,6 +509,10 @@ class RunController:
                 await self.expire_questions()
             except Exception:  # noqa: BLE001 — retried at the next period
                 log.warning("question expiry failed")
+            try:
+                await self.expire_live()
+            except Exception:  # noqa: BLE001 — retried at the next period
+                log.warning("live view expiry failed")
 
     async def shutdown(self) -> None:
         for task in list(self._tasks):
@@ -2763,6 +2769,29 @@ class RunController:
                 active.vault_asked.add(login.site_id)
                 self._login_needed(active, "not_found")
 
+    async def expire_live(self) -> None:
+        """A live view the model asked for (``request_live``) that nobody opened within a
+        question's hour (``QUESTION_TTL_S``) cancels its run, with a ``live_done`` event
+        (outcome ``expired``): nothing else ends a view nobody comes for, and the run cannot
+        go on without it. A view from a question ends with that question
+        (``expire_questions``); one the operator opened stays his until Done."""
+        active = self.active
+        if active is None or active.ending is not None:
+            return
+        live = active.live
+        if (live is None or live.asked_at is None
+                or (self.clock() - live.asked_at).total_seconds() <= conf.QUESTION_TTL_S
+                or self._run(active.run_id).state != "waiting_live"):
+            return
+        async with self._lock:
+            if (self.active is not active or active.ending is not None
+                    or active.live is not live
+                    or self._run(active.run_id).state != "waiting_live"):
+                return
+            self._event(active.run_id, "live_done", "expired",
+                        "Nobody opened the live view within an hour, so the run was cancelled.")
+            await self._end(active, "cancelled", "run_cancelled", "cancelled")
+
     def _settle_question(self, active: _Active, q, state: str, response: dict | None,
                          operator_ref: str | None, *, outcome: str | None = None,
                          text: str = "") -> None:
@@ -3055,7 +3084,8 @@ class RunController:
                     await self._guest(active, site)
             if not self.store.transition(run_id, "running", "waiting_live"):
                 raise ProtocolError("not_ready")
-            active.live = _Live(purpose, site_id=active.ref.site_id if active.ref else None)
+            active.live = _Live(purpose, site_id=active.ref.site_id if active.ref else None,
+                                asked_at=self.clock())
             self._event(run_id, "live_requested", purpose,
                         f"The model asked for {'an' if purpose[0] in 'aeiou' else 'a'} {purpose} live view.")
             return self.grants.issue(run_id, purpose, self.clock())

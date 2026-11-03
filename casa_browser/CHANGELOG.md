@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.7] - 2026-11-03
+
+### Fixed
+
+- A live view you never open no longer keeps its task waiting for ever: after an hour unopened, the task is cancelled and Fido tells you once. A live view you have opened stays yours until you press Done.
+
 ## [0.1.6] - 2026-11-03
 
 ### Added

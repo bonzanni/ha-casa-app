@@ -186,6 +186,13 @@ capture, the exposure) — leaves through one cleanup (operator ruling 2026-10-2
 view: the capture the broker armed is ended, the
 lease ends, the window closes, the run returns to `running` with a `live_unavailable` event.
 
+**A view nobody opens.** A view `request_live` issued (its `_Live.asked_at`) that is still
+`waiting_live` a question's hour later (`confirmations.QUESTION_TTL_S`) cancels its run: the
+controller's 30-second sweep (`expire_live`, beside `expire_questions`) records a `live_done`
+event with outcome `expired` and ends the run `cancelled` (no notice; the plugin tells whoever
+asked). Only `request_live` sets `asked_at`: a view from a question ends with its question, and
+a view the operator opened (`live`) stays his until Done.
+
 **The view ends first.** Every path that ends a run or cuts its work — `cancel`, an interruption,
 re-pairing, forget, shutdown and every `_end` — ends the live view (`LiveView.revoke`: no more
 socket or input) before it waits for anything; the teardown and a refused claim then wait for
