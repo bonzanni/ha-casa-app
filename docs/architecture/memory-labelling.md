@@ -19,7 +19,7 @@ read it back is [`architecture/memory-scoping.md`](memory-scoping.md).
 ## Mental model
 
 **A captured item is named by what occurred, never by what it says.** Every captured item's
-`source_key` comes from one constructor, `memory/occurrence.py`, in one of two forms. An
+`source_key` comes from one constructor, `memory/occurrence.py`, in one of three forms. An
 operator message that carries a provider id — a Telegram DM, or a message in an engagement
 topic — is keyed by a hash of its channel, its chat and that id, so the same message
 delivered twice is one event. Everything else — a turn no person typed, each resident or
@@ -27,7 +27,11 @@ specialist message, a delegated request and answer, an engagement summary — is
 random id minted once, when capture builds the item, and carried on its spool line. The same
 words said twice are two events; a retried attempt's output and a regenerated answer are new
 events; a spool drain run twice adds nothing. No key counts anything, and the short log
-correlation id is never an input, since two turns can share one.
+correlation id is never an input, since two turns can share one. The third form names Casa's
+line that a specialist which keeps no memory posted to the operator's chat
+([`memory-capture.md`](memory-capture.md)) by the post's own identity — its owner, tool call
+and slot, with the channel and chat — so every page of one post, and the same post landing
+again, is one event.
 
 **A captured item starts `private` and provisional, with a floor.** Capture does not classify.
 Every event is stored `private`, `provisional`, with an `origin_tier` below which it can never
@@ -63,7 +67,7 @@ turn was often answered instead of classified.
 
 ## Contracts & invariants
 
-**INV-MEM-026**: Every `source_key` of an item captured into the memory store is built by `memory/occurrence.py` from no positional counter and never from the log correlation id: an operator message with a provider id is keyed by its channel, chat and provider message id, so a redelivery collapses into one event, and every other live item by an id minted once when capture builds it, so a spool drain re-run adds it once while a repeat, a retry's output or a regenerated answer is a new event.
+**INV-MEM-026**: Every `source_key` of an item captured into the memory store is built by `memory/occurrence.py` from no positional counter and never from the log correlation id: an operator message with a provider id is keyed by its channel, chat and provider message id, so a redelivery collapses into one event; Casa's line for a specialist's post by its channel, chat and the post's owner, tool call and slot, so its pages and a re-landing are one event; and every other live item by an id minted once when capture builds it, so a spool drain re-run adds it once while a repeat, a retry's output or a regenerated answer is a new event.
 
 The verbatim store keeps every occurrence. The engagement-topic form uses the engagement as
 its chat, since the driver that captures it knows the engagement, not the forum's chat id.

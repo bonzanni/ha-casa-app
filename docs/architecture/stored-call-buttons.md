@@ -37,7 +37,9 @@ a non-blank string `receipt`, otherwise the text verbatim; a plugin refusal (its
 guard) is a receipt too. A `safe` call's response that also carries `"on_card": true` (and no
 `next`) asks for its receipt as the tapped card's last line (`☑ <receipt>`) instead of a
 message; when that edit does not land, the receipt is posted as a message. Nothing the model
-writes reaches the operator or the resident; the pinned turn stores nothing in memory.
+writes reaches the operator or the resident; the pinned turn stores nothing of its own in
+memory (a receipt or card a specialist that keeps no memory posts leaves only Casa's
+body-free line that it posted, INV-MEM-040, [`memory-capture.md`](memory-capture.md)).
 
 **Which calls a button may store.** At deposit, every button's tool must be a declared tool
 of the same plugin on the same (single, stdio) server — a `safe` tool that consumes no
