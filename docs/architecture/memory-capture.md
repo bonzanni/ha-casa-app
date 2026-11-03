@@ -43,6 +43,13 @@ awaits the append, so every capture a turn made has returned by the time the tur
 - **A finalized engagement's summary**, and an executor's per-type summary, into the store's
   `engagement_summaries`, awaited by the finalize tail, under the specialist's own memory
   switch (below).
+- **Casa's line that a specialist which keeps no memory posted to the operator's chat**, in
+  the Telegram channel's `_record_post`, where every message Casa sends on a specialist's
+  behalf lands: a plugin's link, message, page, proposal or file, a desk reply, a stored-call
+  receipt and a delegate's answer relayed under its name. The line is Casa's own words,
+  "Fido posted to your chat.", with the time, never anything of the post (INV-MEM-040). It is
+  the one capture not awaited at its seam: the landing is synchronous on the send path, so the
+  write is detached, and a send never waits for or fails on it.
 
 **A receipt means durable, and the receipt is all a turn waits for.**
 `memory.capture.append` makes one item durable and returns a receipt: committed in one
@@ -143,10 +150,26 @@ a chain of at most the resident and one specialist (`len(_handoff_chain) <= 2`) 
 Casa did not compose (`synthetic != "continuation"`).
 
 What it does not cover: what the resident chooses to say about the result, which is the
-resident's; a specialist that writes memory quoting the excluded specialist's answer in its
+resident's; Casa's own body-free line that such a specialist posted (INV-MEM-040); a specialist that writes memory quoting the excluded specialist's answer in its
 own reply, which is that specialist's own output; and a Casa whose tools were never
 initialised (an empty role map), where nothing is gated. It is the capture half of the rule; what reads the store later (ledgers, search, export, restore) is held to it by
 the mechanisms that read.
+
+**INV-MEM-040**: When a message Casa sends on behalf of a specialist that writes no memory lands in the configured operator chat, exactly one event is captured per post — Casa's words "<name> posted to your chat.", with the time, speaker `casa`, origin `system`, the chat's resident as its role, the specialist as its speaker id, a `private` floor — holding nothing of the post's body, caption, file name or buttons, and keyed by the post's identity (its owner, tool call and slot) so every page of it and a re-landing are one event; nothing is captured for a specialist that writes memory, another chat, or a channel with no operator chat.
+
+The specialist's answer stays out of memory (INV-MEM-032), and so does Casa's notice carrying
+it, so without this line the writer saw a request handed to the specialist and then nothing,
+and kept the errand open. The seam is where every such message lands, `_record_post`, read
+with the same `role_writes_memory` switch; the name is the persona name the post's own label
+carries. Pinned by real channel sends over a fake bot against a real store: a canary in the
+post's body reaches no row, pages and a re-landing are one event, a desk reply and a relayed
+answer leave a line, and a failing capture still delivers the send.
+
+What it does not cover: whether the post answered what was asked; the writer judges that from
+the line and what it already holds. Casa's own cards under a specialist's label — the start
+card of a browsing run, its status card, the line answering a Stop, a desk fault notice — are
+Casa's status text, not the specialist's post, and leave no line. The write is detached: a
+crash between the landing and the write loses the line, never the post.
 
 ## Failure behavior
 
@@ -211,9 +234,12 @@ that writes it ([`memory-store.md`](memory-store.md)).
 - `casa/rootfs/opt/casa/channel_policy.py::writes_to_bank`
 - `casa/rootfs/opt/casa/delegated_memory.py::role_writes_memory`
 - `casa/rootfs/opt/casa/delegated_memory.py::notice_from_excluded_role`
+- `casa/rootfs/opt/casa/delegated_memory.py::capture_post_line`
+- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._record_post`
 
 **Tests**
 - `tests/test_memory_capture.py`
+- `tests/test_memory_specialist_post.py`
 - `tests/test_memory_eligibility.py`
 - `tests/test_memory_excluded_specialist.py`
 - `tests/test_no_retain_specialist.py`

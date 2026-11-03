@@ -15,6 +15,7 @@ T, R = Source.TURN, Source.RESIDENT_MESSAGE
 DQ, DA = Source.DELEGATED_REQUEST, Source.DELEGATED_ANSWER
 ET, EA, ES = (Source.ENGAGEMENT_TURN, Source.ENGAGEMENT_ANSWER,
               Source.ENGAGEMENT_SUMMARY)
+SP = Source.SPECIALIST_POST
 
 MATRIX = [
     # source, channel, facts, admitting rule
@@ -59,6 +60,11 @@ MATRIX = [
     ("summary of a no-memory specialist", ES, "telegram",
      {"role_writes_memory": False}, None),
     ("summary of a voice-started engagement", ES, "voice", {}, None),
+    ("post line of a no-memory specialist", SP, "telegram",
+     {"role_writes_memory": False}, "specialist_post"),
+    ("post line of a specialist that keeps memory", SP, "telegram", {},
+     None),
+    ("post line on voice", SP, "voice", {"role_writes_memory": False}, None),
 ]
 
 

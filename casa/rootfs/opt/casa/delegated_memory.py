@@ -54,3 +54,48 @@ def notice_from_excluded_role(text: str) -> bool:
     switch keeps out."""
     m = _NOTICE_ROLE_RE.match((text or "").lstrip())
     return m is not None and not role_writes_memory(m.group("role"))
+
+
+# ---------------------------------------------------------------------------
+# INV-MEM-040 (operator ruling 2026-11-03, option a): what such a specialist
+# posts to the operator's chat stays out of memory, so the writer saw a request
+# handed to it and then nothing, and kept the errand open. Casa keeps one line
+# of its own per post instead: that the specialist posted, never what.
+# ---------------------------------------------------------------------------
+
+POST_LINE = "{name} posted to your chat."
+
+
+def capture_post_line(*, channel: str, chat_id, operator_chat, resident: str,
+                      post) -> None:
+    """Capture Casa's line for *post*, one message of which just landed in
+    *chat_id*, when its poster keeps no memory and the chat is the
+    configured *operator_chat*. Detached, keyed by the post's identity, so
+    every page of it is one event. Mechanical facts only; never raises."""
+    import logging
+    try:
+        role = getattr(post, "role", "") or ""
+        if (not role or not str(operator_chat or "").strip()
+                or str(chat_id) != str(operator_chat).strip()):
+            return
+        from channel_policy import writes_to_bank
+        from memory import capture, eligibility, occurrence
+        rule = eligibility.admit(
+            eligibility.Source.SPECIALIST_POST, text=POST_LINE,
+            channel_writes=writes_to_bank(channel),
+            role_writes_memory=role_writes_memory(role))
+        if rule is None:
+            return
+        import tools as tools_mod
+        item = capture.event(
+            source_key=occurrence.post_key(
+                channel, chat_id, getattr(post, "owner", ""),
+                getattr(post, "tool_use_id", ""), getattr(post, "slot", "")),
+            role=resident, channel=channel, speaker_kind="casa",
+            origin_kind="system",
+            text=POST_LINE.format(name=tools_mod._display_name_for_role(role)),
+            eligibility=rule, origin_tier="private", speaker_id=role)
+        capture.record_detached(item)
+    except Exception:  # noqa: BLE001 — a memory line never fails a send
+        logging.getLogger(__name__).exception(
+            "memory: the line for a specialist's post was not captured")

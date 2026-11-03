@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.347.4] - 2026-11-03
+
+### Fixed
+
+- When you change something you told Casa, and the new value is more private than the old one, the butler no longer goes on giving guests the old value as if it were current. Example: you mention your pool locker number in a way guests may know, then say the number has changed without saying guests may know the new one. The butler's memory now drops the old number instead of keeping it; asked, it says it doesn't know, and the new number stays private. Your own memory keeps both, the new value and the old one as earlier.
+- Memory now notes when Fido (or another helper that keeps no memory) posts something to your chat: it keeps a short line that he posted and when, never what he posted. Before, a browsing request handed to Fido could later come back as if it had never been answered.
+
 ## [0.347.3] - 2026-11-03
 
 ### Changed

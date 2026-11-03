@@ -63,7 +63,12 @@ worker indefinitely. A ledger over 40 000 tokens is given as its index instead �
 object without its body — and a filing run's first answer may name up to 80 objects to open,
 which a second call gives in full from the same snapshot. Its answer is a list of id-addressed
 operations — `add`, `replace`, `retire`, `split`, `merge`, `add_cue`, `set_line`, `move` —
-and an outcome per event. What the conversation means, and how the ledger should change, is
+and an outcome per event. A `private` filing job, while a lower ledger is maintained, is also
+given that ledger's current entries and the events still owed to it, with the tier each of
+its own events is committed at, and may answer `withdraw` for a lower entry or owed event
+that an event above that ledger replaced; the parser splits those off first, and the commit
+applies them after the verdicts (INV-MEM-039,
+[`architecture/memory-scoping.md`](memory-scoping.md)). What the conversation means, and how the ledger should change, is
 the model's judgement; code checks only that each operation is well formed and stays in the
 job's ledger. Cues are add-only. Each object written keeps only the source event ids its
 ledger can read: below `private`, an id naming an event the job was never given — a
@@ -77,8 +82,8 @@ run read, nothing is written and the job goes back to the queue. Otherwise it ap
 operations (each object's next revision plus a history row), checks that every current
 object still hangs from current parents a level up (entry, group, topic) — the view's own
 reachability rule, so no entry is ever beyond a view's reach — writes the
-classification verdicts, one disposition for every input event, and the job's `committed`
-state, all under one `commit_no`. Its input must still be exactly what is owed: the commit
+classification verdicts, a `private` job's withdrawals into lower ledgers, one disposition
+for every input event, and the job's `committed` state, all under one `commit_no`. Its input must still be exactly what is owed: the commit
 re-reads the pending view, and if another commit filed some of the run's events since the read
 (a second writer process, whose `no_change` changes no revision and no mark), the answer is
 stale — it may cite an event already filed — so nothing is written and the job is requeued to

@@ -28,6 +28,10 @@ The user message is one JSON object:
 - `ledger_mode`: present, as `index`, when the ledger is too large to give
   whole. Then each object in `ledger` comes without its `body`, and `opened`
   holds the objects given in full.
+- `lower` (only in some `ordinary` and `correction` jobs): the ledgers kept
+  for readers below this one, each with its `ledger` name, its current
+  `entries` and the `pending` events it has still to file. Each event in
+  `events` then carries its `tier`. See "Lower ledgers".
 
 # When the ledger is an index
 
@@ -60,6 +64,31 @@ you have in full.
 - Date what you write. Keep entries short.
 - When an event needs more conversation before it can be filed, defer it; it
   will come back with the next batch.
+
+# Lower ledgers
+
+When you are given `lower`, a lower ledger serves readers who may see only
+part of what you see. Tiers run `public` < `friends` < `family` < `private`:
+an event reaches a lower ledger only when its `tier` is at or below that
+ledger's, and a `provisional` event reaches none. A lower ledger never sees
+an event above it, so when such an event replaces or contradicts a value, the
+lower ledger keeps the old value as current.
+
+So for each event you file whose `tier` is above a lower ledger, look at that
+ledger's `entries` and `pending` events, and at your own events that reach
+it. When one states a value this event replaced or contradicted, withdraw it
+from that ledger:
+
+- `{"op": "withdraw", "ledger": "friends", "object_id": "..."}` for one of
+  its `entries`;
+- `{"op": "withdraw", "ledger": "friends", "seq": 12}` for one of its
+  `pending` events, or one of your own events that reaches it.
+
+A withdrawal carries nothing else, and nothing of yours ever reaches that
+ledger: it simply no longer has that entry or event. Not knowing is better
+than a wrong current value. Withdraw only what was actually replaced or
+contradicted, never what is merely related. When the newer event reaches
+that ledger too, withdraw nothing: that ledger files it itself.
 
 For `condense`: rewrite each entry given so it is much shorter, keeping its
 current value, who it belongs to and its dates; add a cue for every kind of
@@ -100,5 +129,8 @@ Each operation is an object with an `op` and an optional `reason`:
 - `{"op": "add_cue", "object_id": "...", "cues": ["..."]}`.
 - `{"op": "set_line", "object_id": "...", "line": "..."}`.
 - `{"op": "move", "object_id": "...", "parent": "..." | null}`.
+- `{"op": "withdraw", "ledger": "...", "object_id": "..."}` or
+  `{"op": "withdraw", "ledger": "...", "seq": 12}`, only with `lower` (see
+  "Lower ledgers").
 
 A group or topic you retire must have no current members left.

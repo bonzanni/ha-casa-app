@@ -50,6 +50,21 @@ Ellen's own replies carry the clearance of the session that wrote them as their 
 ([`architecture/memory-labelling.md`](memory-labelling.md)), so what reaches the butler's
 ledger is what people said at `friends` and below, never Ellen's private replies.
 
+**An update above a lower ledger takes the old value out of it.** Each event is classified
+on its own, so a change can land above the fact it changes: "my pool locker is ZQXL5" at
+`friends`, then "the locker is ZQXL7 now" at `family`. The `friends` job never sees the
+update, and on its own it would keep ZQXL5 as current for the butler to serve. The `private`
+job is the one place that sees both, since it reads every ledger and runs first. So it is
+also given each lower ledger's current entries and the events still owed to that ledger, and
+each of its own events carries the tier it is committed at. When an event it files replaces
+or contradicts what a lower ledger holds or is about to file, and does not itself reach that
+ledger, the model *withdraws* it there: the entry is retired, or the owed event is closed
+with `no_change`. Nothing of the update goes below: the lower ledger simply no longer has the
+old value, and its readers are told nothing rather than something stale. Which value is
+stale is the model's judgement; the code checks only that each withdrawal names an entry or
+event of that ledger that the run was given. The verbatim record is not changed: search and
+date browse at `friends` still find the dated statement that was said.
+
 **Every read path checks each object it returns.** The served view and `open_memory` read
 the reader's ledger and nothing else; an object there is dated only from source events that
 ledger can read. The correction note reads that ledger and re-checks each correction's own
@@ -128,10 +143,10 @@ declared origin. Delegated recall honours a route its caller passes, but falls b
 channel-keyed clearance for every caller that passes none — check the call site before
 assuming a delegated read is origin-filtered.
 
-**INV-MEM-029**: A writer job for ledger L is given only what is readable at L — the events pending in L, which below `private` are only events classified at or below it, a window of earlier events readable at L, and L's own objects, all built by `assemble_input`, the only builder of a job's input — and its patches change objects of L only, each recording as its sources only events readable at L.
+**INV-MEM-029**: A writer job for ledger L is given only what is readable at L — the events pending in L, which below `private` are only events classified at or below it, a window of earlier events readable at L, and L's own objects (and, for a `private` filing job, each lower maintained ledger's current entries and the events still owed to it), all built by `assemble_input`, the only builder of a job's input — and its patches change objects of L only, each recording as its sources only events readable at L; its only write into another ledger is a withdrawal (INV-MEM-039).
 
 Enforced by the pending view's eligibility rule, by input assembly reading the events, the
-window and the objects through L in one read transaction, by the patch loader refusing
+window and the objects (for `private`, also the lower ledgers) through L in one read transaction, by the patch loader refusing
 an id that is no object of L, and by every object write in the commit dropping a source id
 that names no event classified at or below L — one the model invented, since it was never
 given such an event — without failing the job. The `private` job runs before any lower one, so an event
@@ -144,6 +159,26 @@ What it does not cover: a source id naming a readable event the job was not give
 — it is readable at L either way; and a tier raised after a lower ledger filed the event,
 since nothing reclassifies an event (an object citing it is then dated from nothing,
 INV-MEM-034).
+
+**INV-MEM-039**: The only write a writer job makes into a ledger other than its own is a `private` filing job's withdrawal into a lower maintained ledger L', and it carries nothing from above L': a new revision of a current L' entry the run was given that copies that entry's own state, retired, with the operation `withdraw` and no reason, or a `no_change` disposition in L' for an event pending there that the run was shown; every other field of a withdrawal is ignored, each target applies once, and a given entry whose revision or a given owed event whose correction mark changed since the run's read makes the run stale.
+
+Enforced by the reply parser splitting every `withdraw` operation off before anything reads
+the job's own operations, so a withdrawal can neither cite one of the job's events nor reach
+the patch loader; by the commit reading only a withdrawal's ledger and its entry id or event
+`seq`, against what the run's one read transaction gave it; and by the patch module's
+withdrawal copying the entry's own row. A target the run was not given, an entry that is not
+an entry, or an event no longer owed there is dropped with one warning, never a failed job.
+A lower job's withdrawal is dropped the same way: it was given no lower ledger. Pinned by
+the live case at each timing (filed in the same batch, filed earlier, still owed), and by a
+withdrawal stuffed with an above-`friends` canary in every field and the update's own `seq`,
+none of which may appear in any `friends` object, revision or disposition.
+
+What it does not cover: whether the model withdraws the right thing — a missed withdrawal
+leaves the old value, a wrong one removes a value the lower ledger could still serve. A
+session already running keeps the view it was served at its start, as with any other change.
+The owed events a run is shown are bounded at the ledger's whole-text bound (40 000
+tokens), newest first; past it the oldest are left out and cannot be withdrawn. An entry
+or event is withdrawn whole, with whatever else it held.
 
 **INV-MEM-034**: Every memory read path checks each object it returns against the reader's clearance — the served view and `open_memory` by ledger, the correction note by ledger and each correction's own tier, search hits, their window neighbours and date browse by event tier before paging and counts, the executor archive by summary tier — and an id the reader's ledger does not hold gets the same answer as an id that does not exist.
 
@@ -268,6 +303,7 @@ time. Nothing after the launch reads it again ([`engagements.md`](engagements.md
 - `tests/test_sensitivity.py::test_clearance_docstring_states_the_fail_closed_direction`
 - `tests/test_executor_epoch.py`
 - `tests/test_butler_friends_view.py`
+- `tests/test_memory_withdrawal.py`
 
 **Related**
 - [`architecture/memory.md`](../architecture/memory.md)

@@ -46,6 +46,10 @@ class Source(str, enum.Enum):
     ENGAGEMENT_ANSWER = "engagement_answer"
     #: A finalized engagement's summary (engagement or executor summary).
     ENGAGEMENT_SUMMARY = "engagement_summary"
+    #: Casa's own line that a specialist posted to the operator's chat, kept
+    #: only for a specialist that keeps no memory (INV-MEM-040): its post is
+    #: kept out, so the line is all memory learns of it.
+    SPECIALIST_POST = "specialist_post"
 
 
 def admit(
@@ -80,4 +84,6 @@ def admit(
     if source in (Source.ENGAGEMENT_TURN, Source.ENGAGEMENT_ANSWER,
                   Source.ENGAGEMENT_SUMMARY):
         return source.value if role_writes_memory else None
+    if source is Source.SPECIALIST_POST:
+        return None if role_writes_memory else source.value
     raise ValueError(f"unknown capture source {source!r}")

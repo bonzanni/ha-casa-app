@@ -18,8 +18,10 @@ the job and the commit's ``commit_no``. The operations are:
 * ``set_line``: an object's need line or label;
 * ``move``: an object's parent.
 
-Every operation acts on objects of the job's own ledger only: an id that is
-not an object of that ledger is refused, as is any malformed operation
+Every operation acts on objects of the job's own ledger only (a ``private``
+job's withdrawal from a lower ledger is :func:`withdraw`, applied by the
+writer's commit, INV-MEM-039): an id that is not an object of that ledger is
+refused, as is any malformed operation
 (:class:`PatchError`), which fails the job. Whether an operation is right is
 the model's judgement; this module checks only that it is well-formed.
 
@@ -222,6 +224,23 @@ def _check_entry_fields(obj: dict) -> None:
             raise PatchError(f"unknown errand_state {state!r}")
     elif state is not None:
         raise PatchError("only an errand has an errand_state")
+
+
+def withdraw(conn: sqlite3.Connection, ledger: str, object_id: str, *,
+             job_id: str, commit_no: int, committed_at: str) -> None:
+    """Retire entry *object_id* of *ledger* for a ``private`` job's
+    withdrawal (INV-MEM-039): its next revision is a copy of its own row,
+    ``retired``, with the operation ``withdraw`` and no reason, so nothing
+    but the entry's own state is written to *ledger*. The caller checks that
+    the entry is one the job was given, at the revision it read; an entry is
+    a leaf, so retiring it leaves every other object reachable."""
+    led = _Ledger(conn, ledger, job_id=job_id, commit_no=commit_no,
+                  committed_at=committed_at)
+    obj = led.load(object_id)
+    if obj["kind"] != "entry":
+        raise PatchError(f"{object_id!r} is not an entry")
+    obj["status"] = "retired"
+    led.write(obj, "withdraw", None)
 
 
 def apply(conn: sqlite3.Connection, ledger: str, ops: list, *, job_id: str,

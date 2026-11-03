@@ -465,6 +465,22 @@ async def record(item: Event | Summary) -> Receipt | None:
     return receipt
 
 
+def record_detached(item: Event | Summary) -> None:
+    """Capture *item* without awaiting it, for a seam on a synchronous path
+    that must not wait (the channel's post landing). :func:`settle` awaits
+    it like any other detached write. Never raises."""
+    async def _run() -> None:
+        try:
+            await record(item)
+        except Exception:  # noqa: BLE001 — logged; capture never fails a send
+            logger.exception("memory capture: %s not recorded",
+                             item.source_key)
+    try:
+        _detach(_run())
+    except Exception:  # noqa: BLE001 — no running loop: nothing captured
+        logger.exception("memory capture: %s not scheduled", item.source_key)
+
+
 def _detach(coro) -> asyncio.Task:
     task = asyncio.get_running_loop().create_task(coro)
     _background.add(task)

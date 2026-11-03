@@ -17,6 +17,15 @@ builder of a job's input; its patches change objects of *L* only
 first (:meth:`Writer.next_job`), so a batch reaches each lower ledger after
 it is classified.
 
+**Withdrawals (INV-MEM-039).** Each event is classified alone, so an update can
+land above the fact it replaces, and the lower ledger would keep the old value
+as current. The ``private`` filing job is the one place that sees both: while
+a lower ledger is maintained it is also given that ledger's current entries
+and the events still owed to it (:func:`_lower`), with each of its own events'
+tier, and may answer ``withdraw`` for one of them. Its commit retires the
+entry there, or closes the owed event there with ``no_change``
+(:func:`_withdraw`); nothing else of the answer reaches the lower ledger.
+
 **Cadence.** Each tick, a ledger with pending events this process's runs have
 not yet been given (a ``seq`` above the highest any filing run's input held)
 gets an ``ordinary`` job once those events have been quiet for
@@ -115,6 +124,8 @@ CONDENSE = "condense"
 REGROUP = "regroup"
 KINDS = (ORDINARY, CORRECTION, CONDENSE, REGROUP)
 _FILING = (ORDINARY, CORRECTION)
+#: The one operation that acts on a lower ledger (INV-MEM-039).
+WITHDRAW = "withdraw"
 
 #: Seconds of quiet after the newest unseen event before a job runs.
 QUIET_S = 600.0
@@ -247,6 +258,13 @@ class Input:
     #: The ledger is past :data:`WHOLE_LEDGER_MAX_TOKENS`: the run is given
     #: its index, and opens what it needs from this same snapshot.
     index: bool = False
+    #: A ``private`` filing job, while a lower ledger is maintained: per
+    #: lower ledger, its current entries and the events still owed to it
+    #: that are not this run's own (:func:`_lower`). Empty otherwise.
+    lower: dict[str, "Lower"] = field(default_factory=dict)
+    #: The tier each input event is committed at (the classification
+    #: verdicts), shown with the events while ``lower`` is given.
+    verdicts: dict[int, str] = field(default_factory=dict)
 
     @property
     def input_seqs(self) -> list[int]:
@@ -259,6 +277,21 @@ class Input:
         if self.kind == CONDENSE:
             return not self.entries
         return not self.objects
+
+
+@dataclass
+class Lower:
+    """What a ``private`` filing run is given of one lower ledger."""
+
+    entries: list[dict] = field(default_factory=list)
+    #: The entries are past :data:`WHOLE_LEDGER_MAX_TOKENS`: given as their
+    #: index view.
+    index: bool = False
+    pending: list[dict] = field(default_factory=list)
+    #: The revision of every entry given, by id.
+    base: dict[str, int] = field(default_factory=dict)
+    #: ``mark_no`` of every pending event given that carries a mark.
+    mark_seen: dict[int, int] = field(default_factory=dict)
 
 
 def _rows(conn, sql: str, args=()) -> list[dict]:
@@ -278,8 +311,9 @@ def assemble_input(store: MemoryStore, job_id: str, ledger: str,
     transaction on one connection and closed before the model is called:
     the events pending in *ledger* now, their correction marks, a short
     preceding window readable at *ledger*, the ledger's objects and the base
-    revisions. Nothing outside *ledger*'s clearance enters it (M6,
-    INV-MEM-029)."""
+    revisions; for a ``private`` filing job, also what each lower
+    maintained ledger holds and is owed (:func:`_lower`). Nothing outside
+    *ledger*'s clearance enters it (M6, INV-MEM-029)."""
     inp = Input(job_id=job_id, ledger=ledger, kind=kind)
     with store.transaction() as conn:
         if kind in _FILING:
@@ -302,6 +336,8 @@ def assemble_input(store: MemoryStore, job_id: str, ledger: str,
                     event["correction"] = {"marked_at": mark["marked_at"]}
                     inp.mark_seen[event["seq"]] = mark["mark_no"]
             inp.context = _window(conn, inp.events, ledger)
+            if ledger == "private":
+                inp.lower = _lower(conn, inp)
         objects = _rows(conn, "SELECT * FROM objects WHERE ledger = ? "
                               "ORDER BY rowid", (ledger,))
     inp.base_revisions = {o["object_id"]: o["revision"] for o in objects}
@@ -336,6 +372,51 @@ def _window(conn, events: list[dict], ledger: str) -> list[dict]:
                 if e["seq"] not in inputs and _readable(e, ledger)][:WINDOW]
         out.extend(kept)
     return sorted(out, key=_said_order)
+
+
+def _lower(conn, inp: Input) -> dict[str, Lower]:
+    """Per maintained ledger below ``private``: its current entries, and
+    the events pending in it that are not among the run's own, with their
+    marks. The ``private`` job reads every ledger, and it is the one place
+    that sees both an update classified above a lower ledger and what that
+    ledger holds or is about to file (INV-MEM-039). The owed events are
+    non-empty only while a lower job is owed; they are bounded at
+    :data:`WHOLE_LEDGER_MAX_TOKENS`, newest kept."""
+    out: dict[str, Lower] = {}
+    own = set(inp.input_seqs)
+    for ledger in _maintained():
+        if ledger == "private":
+            continue
+        low = Lower()
+        low.entries = _rows(conn, "SELECT * FROM objects WHERE ledger = ? "
+                                  "AND status = 'current' AND kind = 'entry' "
+                                  "ORDER BY rowid", (ledger,))
+        low.base = {o["object_id"]: o["revision"] for o in low.entries}
+        low.index = sum(tokens(o["body"]) for o in low.entries) \
+            > WHOLE_LEDGER_MAX_TOKENS
+        owed = [e for e in _rows(
+            conn, "SELECT e.* FROM pending AS p JOIN events AS e "
+            "ON e.seq = p.seq WHERE p.ledger = ?", (ledger,))
+            if e["seq"] not in own]
+        owed.sort(key=_said_order, reverse=True)
+        budget, kept = WHOLE_LEDGER_MAX_TOKENS, []
+        for event in owed:
+            budget -= tokens(event["text"])
+            if budget < 0:
+                break
+            kept.append(event)
+        if len(kept) < len(owed):
+            logger.warning("memory writer: job %s: %d event(s) owed to the %s "
+                           "ledger left out of its input", inp.job_id,
+                           len(owed) - len(kept), ledger)
+        low.pending = sorted(kept, key=_said_order)
+        marks = dict(conn.execute(
+            "SELECT m.seq, m.mark_no FROM correction_marks AS m JOIN pending "
+            "AS p ON p.seq = m.seq AND p.ledger = ?", (ledger,)).fetchall())
+        low.mark_seen = {e["seq"]: marks[e["seq"]] for e in low.pending
+                         if e["seq"] in marks}
+        out[ledger] = low
+    return out
 
 
 def _said_order(event: dict) -> tuple:
@@ -404,9 +485,29 @@ def render_prompt(inp: Input, opened: list[dict] | None = None) -> str:
     if inp.kind in _FILING:
         body["events"] = [_event_view(e) for e in inp.events]
         body["context"] = [_event_view(e) for e in inp.context]
+        if inp.lower:
+            for view_, event in zip(body["events"], inp.events):
+                view_["tier"] = _tier_of(inp, event)
+            body["lower"] = [
+                {"ledger": ledger,
+                 "entries": [(_index_view if low.index else _object_view)(o)
+                             for o in low.entries],
+                 "pending": [_event_view(e) for e in low.pending]}
+                for ledger, low in inp.lower.items()]
     elif inp.kind == CONDENSE:
         body["entries"] = [o["object_id"] for o in inp.entries]
     return json.dumps(body, ensure_ascii=False, indent=1)
+
+
+def _tier_of(inp: Input, event: dict) -> str:
+    """The tier an input event is committed at: its verdict, its stored
+    tier once classified, else ``provisional`` (it reaches no lower
+    ledger)."""
+    if event["seq"] in inp.verdicts:
+        return inp.verdicts[event["seq"]]
+    if event["tier_status"] == "classified":
+        return event["tier"]
+    return "provisional"
 
 
 def opened_objects(reply: dict, inp: Input) -> list[dict] | None:
@@ -438,6 +539,8 @@ class Plan:
     ops: list = field(default_factory=list)
     outcomes: dict[int, str] = field(default_factory=dict)
     verdicts: dict[int, str] = field(default_factory=dict)
+    #: ``withdraw`` operations, split off before anything reads ``ops``.
+    withdrawals: list = field(default_factory=list)
 
 
 def _json_object(text: str) -> dict:
@@ -476,6 +579,12 @@ def parse_reply(text: str, inp: Input) -> Plan:
     ops = reply.get("ops", [])
     if not isinstance(ops, list):
         raise RunFailed("ops is not a list")
+    # A withdrawal acts on a lower ledger only: nothing in it may cite an
+    # event of this run or reach the patch loader.
+    withdrawals = [op for op in ops
+                   if isinstance(op, dict) and op.get("op") == WITHDRAW]
+    ops = [op for op in ops
+           if not (isinstance(op, dict) and op.get("op") == WITHDRAW)]
     named = reply.get("events", {})
     if not isinstance(named, dict):
         raise RunFailed("events is not an object")
@@ -488,7 +597,7 @@ def parse_reply(text: str, inp: Input) -> Plan:
                 if isinstance(spec, dict) and isinstance(
                         spec.get("source_seqs"), list):
                     cited.update(spec["source_seqs"])
-    plan = Plan(ops=ops)
+    plan = Plan(ops=ops, withdrawals=withdrawals)
     for seq in inp.input_seqs:
         outcome = named.get(str(seq), named.get(seq))
         if outcome is None:
@@ -563,6 +672,9 @@ def _commit(store: MemoryStore, inp: Input, plan: Plan, boot_id: str) -> int:
                     "UPDATE events SET tier = ?, tier_status = 'classified' "
                     "WHERE seq = ? AND tier_status = 'provisional'",
                     (plan.verdicts[seq], seq))
+        _withdraw(conn, inp,
+                  plan.withdrawals if still or not inp.input_seqs else [],
+                  commit_no=commit_no, committed_at=committed_at)
         conn.executemany(
             "INSERT INTO dispositions (seq, ledger, job_id, outcome, "
             "commit_no, committed_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -572,6 +684,70 @@ def _commit(store: MemoryStore, inp: Input, plan: Plan, boot_id: str) -> int:
         if conn.execute(_SET_COMMITTED, (inp.job_id, boot_id)).rowcount != 1:
             raise Stale("the job is no longer running in this process")
         return commit_no
+
+
+def _withdraw(conn, inp: Input, withdrawals: list, *, commit_no: int,
+              committed_at: str) -> None:
+    """Apply a ``private`` run's withdrawals, inside its commit and after
+    its verdicts (INV-MEM-039). Code reads only ``ledger`` and ``object_id``
+    or ``seq``, so nothing the model wrote reaches the lower ledger:
+
+    * an entry of that ledger the run was given is retired there, its new
+      revision a copy of its own row with no reason;
+    * an event pending there that the run was shown gets a ``no_change``
+      disposition there.
+
+    A target the run was not given, or no longer owed, is dropped (one
+    warning counts them): a mistaken withdrawal costs itself only. A given
+    entry whose revision, or a given owed event whose mark, is not the one
+    the run read raises :class:`Stale`, the own-ledger rule."""
+    if not withdrawals:
+        return
+    dropped = 0
+    applied: dict[str, list] = {}
+    for w in withdrawals:
+        ledger = w.get("ledger")
+        low = inp.lower.get(ledger) if isinstance(ledger, str) else None
+        object_id, seq = w.get("object_id"), w.get("seq")
+        if low is None:
+            dropped += 1
+        elif isinstance(object_id, str) and object_id in low.base:
+            if object_id in applied.get(w["ledger"], ()):
+                continue
+            row = conn.execute(
+                "SELECT revision FROM objects WHERE ledger = ? AND "
+                "object_id = ?", (w["ledger"], object_id)).fetchone()
+            if row is None or row[0] != low.base[object_id]:
+                raise Stale(f"a {w['ledger']} entry changed since the run "
+                            "read it")
+            patches.withdraw(conn, w["ledger"], object_id, job_id=inp.job_id,
+                             commit_no=commit_no, committed_at=committed_at)
+            applied.setdefault(w["ledger"], []).append(object_id)
+        elif pending.is_seq(seq) and (
+                seq in inp.input_seqs
+                or any(e["seq"] == seq for e in low.pending)):
+            if seq not in inp.input_seqs:
+                row = conn.execute("SELECT mark_no FROM correction_marks "
+                                   "WHERE seq = ?", (seq,)).fetchone()
+                if (row[0] if row else None) != low.mark_seen.get(seq):
+                    raise Stale(f"event {seq} was marked since the run read "
+                                "it")
+            if not pending.is_pending(conn, seq, w["ledger"]):
+                dropped += seq not in applied.get(w["ledger"], ())
+                continue
+            conn.execute(
+                "INSERT INTO dispositions (seq, ledger, job_id, outcome, "
+                "commit_no, committed_at) VALUES (?, ?, ?, 'no_change', ?, ?)",
+                (seq, w["ledger"], inp.job_id, commit_no, committed_at))
+            applied.setdefault(w["ledger"], []).append(seq)
+        else:
+            dropped += 1
+    for ledger, targets in applied.items():
+        logger.info("memory writer: job %s withdrew %d item(s) from the %s "
+                    "ledger", inp.job_id, len(targets), ledger)
+    if dropped:
+        logger.warning("memory writer: job %s: %d withdrawal(s) named nothing "
+                       "it could withdraw; dropped", inp.job_id, dropped)
 
 
 def _requeue(store: MemoryStore, job_id: str, boot_id: str,
@@ -749,6 +925,7 @@ class Writer:
                 if ledger == "private":
                     plan.verdicts = await classify.classify_events(
                         inp.events, self.classifier)
+                    inp.verdicts = plan.verdicts
                 system = await asyncio.to_thread(system_prompt)
                 reply = await asyncio.wait_for(
                     self.port.complete(system=system,
@@ -769,6 +946,7 @@ class Writer:
                 _hooks["after_model"]()
                 parsed = parse_reply(reply.text, inp)
                 plan.ops, plan.outcomes = parsed.ops, parsed.outcomes
+                plan.withdrawals = parsed.withdrawals
             commit_no = await asyncio.to_thread(
                 _commit, self.store, inp, plan, self.boot_id)
         except Stale as exc:

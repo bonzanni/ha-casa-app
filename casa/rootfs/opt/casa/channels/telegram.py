@@ -6404,7 +6404,9 @@ class TelegramChannel(Channel):
         """S4 §2: file the message that just landed under *post* in the post
         map — as it lands, one physical message at a time — so the operator's
         swipe-reply on it routes to the poster. Nothing without a record (every
-        resident reply today), nothing without a message id (a stub)."""
+        resident reply today), nothing without a message id (a stub). A landed
+        post of a specialist that keeps no memory also leaves Casa's one
+        body-free line in memory (INV-MEM-040)."""
         if post is None:
             return
         message_id = getattr(sent, "message_id", None)
@@ -6414,6 +6416,13 @@ class TelegramChannel(Channel):
             return
         import result_broker
         result_broker.POST_MAP.record(chat, message_id, post)
+        if message_id is not None:
+            # INV-MEM-040: memory keeps that a specialist which keeps no
+            # memory posted here, never what (one line per post).
+            from delegated_memory import capture_post_line
+            capture_post_line(channel=self.name, chat_id=chat,
+                              operator_chat=self.chat_id,
+                              resident=self.default_agent, post=post)
 
     async def _send_one(self, chat_id, original, display, entities, *,
                         record=None, **kw):
