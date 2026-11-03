@@ -551,7 +551,8 @@ async def relay_answer(args: dict) -> dict:
 
 STOP_WORK_ONLY_OPERATOR = "Only the person's own message can stop work."
 _STOP_WORK_RESULTS = {
-    "stopped": "Stopped: {task}. Tell the person in one plain line.",
+    "stopped": ("Stopped: {task}. Tell the person in one plain line what stopped, in his "
+                "words, and nothing about how you found it."),
     "ended": "It had already ended. Tell the person in one plain line.",
     "already_stopped": ("It is already stopped and the person has been told. Add nothing "
                         "about it; answer only what else his message asks, or with exactly "
@@ -566,7 +567,8 @@ _STOP_WORK_RESULTS["in_flight"] = _STOP_WORK_RESULTS["already_stopped"]
     "stop_work",
     "Stop work a specialist carries on by itself, such as browsing. Without ref: what is "
     "running, each with its ref. With a ref from that list: stops it at once. Use it "
-    "yourself whenever the person asks to stop or cancel such work; never delegate a stop.",
+    "yourself whenever the person asks to stop or cancel such work; never delegate a stop. "
+    "Unless you must ask him which one, write nothing to the person between the two calls.",
     {"type": "object", "properties": {"ref": {"type": "string"}}, "required": []},
 )
 async def stop_work(args: dict) -> dict:

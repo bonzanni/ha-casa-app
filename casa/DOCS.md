@@ -1225,6 +1225,12 @@ of the agent whose plugin sent it, as on a specialist's other posts — and
 Telegram shows no link preview under it: the link text already names the
 host.
 
+Since v0.347.3 the link is a button: the message is the label line and the
+caption (the label when there is no caption), with one button to tap whose
+text is the label and the real destination host, the way cards carry their
+buttons. Only if Telegram refuses the button does Casa send the link text as
+before.
+
 A tool that delivers a link may find it has no link to make this time — the
 account is already connected, or an earlier link is still outstanding. It
 says so by returning every slot it provides as `null` and depositing

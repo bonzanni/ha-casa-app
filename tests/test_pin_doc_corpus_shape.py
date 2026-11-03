@@ -1140,14 +1140,16 @@ PLUGIN_SHARD_RANGES = {
 
 # Parsed rows at 0fca2ec9, sha256 of json.dumps(row, sort_keys=True). The
 # plugin-erasure row is absent on purpose: the erase-episode split (#1270)
-# edits it in the same change.
+# edits it in the same change. v0.347.3: the plugin-delivered-slots row gains
+# one `covers` source (result_broker.compose_operator_link_button, the link's
+# button form) and nothing else; its digest is that row's.
 PLUGIN_SHARD_ROW_DIGESTS = {
     "architecture/plugin-authorization.md":
         "3d428f89a763a6365d072808fb7564576b964ba30cc6b1e77871eec9a45ff4e6",
     "architecture/plugin-delivered-files.md":
         "81641b189ea4c55a2a74db557fad021f85798e0a9b19ca06a5d311114bf9786c",
     "architecture/plugin-delivered-slots.md":
-        "1f8d536048d5aafb9c033ccac2e9ef6a8d1cc1e39167724113ff4a7092143533",
+        "a5e5e2693943fc701b9e5109f94ac5cc89317e11beb9f87cfe1283086df40975",
     "architecture/plugin-events.md":
         "30ee8209c4833435cbb1d8f2243963f3cbe21716465c6ebd3689a975a93006e2",
     "architecture/plugin-access-profiles.md":

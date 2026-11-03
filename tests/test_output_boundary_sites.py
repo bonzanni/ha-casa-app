@@ -117,6 +117,7 @@ RAW_TRANSPORT_FUNCTIONS = {
     ("channels/telegram.py", "_maybe_redirect_main_feed"): "notice",
     ("channels/telegram.py", "_send_rate_limit_reply"): "notice",
     ("channels/telegram.py", "reply"): "notice",                    # #1036 arrival replies
+    ("channels/telegram.py", "deliver_operator_link"): "notice",  # v0.347.3: a delivered link as one message with its URL button, Casa-composed
     ("channels/telegram.py", "deliver_operator_message"): "notice",  # S3: a plugin's delivered post, Casa-labelled
     ("channels/telegram.py", "deliver_operator_page"): "notice",  # #1377: a card's page, Casa-labelled
     ("channels/telegram.py", "deliver_operator_proposal"): "notice", # S5: a plugin's proposal, Casa-labelled, one page with its keyboard

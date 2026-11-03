@@ -1337,16 +1337,33 @@ def compose_operator_link(value: str, *, caption: str = "", label: str = "",
     return lead + link_text + tail, entities, f"{lead}{link_text}: {value}{tail}"
 
 
+def compose_operator_link_button(value: str, *, caption: str = "", label: str = "",
+                                 head: str = "") -> tuple[str, str]:
+    """v0.347.3: the same link as one message with an inline URL button, the way a card
+    carries its buttons — ``(text, button)``. ``button`` is the link text
+    :func:`compose_operator_link` makes, ``"<label> (<host>)"`` with the host Casa prints;
+    ``text`` is the specialist's label line and the caption, or the label alone when there
+    is no caption (a message is never empty). The channel posts this first and the
+    text-link message only when the platform refuses the button."""
+    host = (urlsplit(value).hostname or "").lower()
+    label = label or DEFAULT_LINK_LABEL
+    body = caption or label
+    return (f"{head}\n{body}" if head else body), f"{label} ({host})"
+
+
 async def _post_operator_link(chat_id: int, text: str, entities, plain: str,
-                              post: "PostRecord | None" = None):
+                              post: "PostRecord | None" = None,
+                              button: "tuple[str, str, str] | None" = None):
     """Reach the Telegram channel the way the delegated authz factory does
     (``tools._channel_manager``); absent ⇒ ``NOT_DELIVERED``. ``post`` (S4)
-    is the record the channel files each landed message under."""
+    is the record the channel files each landed message under; ``button``
+    (v0.347.3) is ``(text, button text, url)``, the message with the URL button."""
     from channels import DeliveryOutcome
     channel = _telegram_channel()
     if channel is None:
         return DeliveryOutcome.NOT_DELIVERED
-    return await channel.deliver_operator_link(chat_id, text, entities, plain, post=post)
+    return await channel.deliver_operator_link(chat_id, text, entities, plain, post=post,
+                                               button=button)
 
 
 def _telegram_channel():
@@ -1874,12 +1891,15 @@ async def _deliver_and_replace(store: ReferenceStore, seg: str, call: _InFlight,
                         identity, seg, slot, call, proposal, head, post, warning=warning,
                         on_proven=_remember)
                 else:
+                    head = post_label(identity.enforcement_role)
                     text, entities, plain = compose_operator_link(
-                        value, caption=caption, label=label,
-                        head=post_label(identity.enforcement_role))
+                        value, caption=caption, label=label, head=head)
+                    button_text, button_label = compose_operator_link_button(
+                        value, caption=caption, label=label, head=head)
                     outcome = await asyncio.wait_for(
                         _post_operator_link(identity.chat_id, text, entities, plain,
-                                            post=post),
+                                            post=post,
+                                            button=(button_text, button_label, value)),
                         DELIVERY_TIMEOUT_S)
                     delivered = outcome is DeliveryOutcome.DELIVERED
                     if delivered:

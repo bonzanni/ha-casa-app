@@ -1264,11 +1264,18 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # delegate a stop, and ask which one when several run and his words do not say.
 # ONE `insert` on `assistant:text`, that paragraph; the eight other carriers
 # byte-identical. No retention claim.
+# MOVED (v0.347.3), `assistant:text` only: that stop paragraph now says to
+# ask which one first when several run and his words do not say, and otherwise
+# write nothing to the person until the work is stopped, then one plain line
+# of what stopped, never how it was found or what else runs (on casa-test the
+# assistant posted "Only one thing running, so that's the one." between its
+# two stop_work calls). One paragraph changed on `assistant:text`; the eight
+# other carriers byte-identical. No retention claim.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
         "9002fe26031be571558305515656c9ad9dae14df3c35507488eb3eb14a202c37",
     "assistant:text":
-        "fa825eeb6abd4d244086bf4b044813dc7fe2542e93284aaf07ee7111d0b88748",
+        "4f0d91ee0bdbc6eb01c7566e2e5fea2344074a54854f7e5ef7f56fd7f9ff0e5f",
     "assistant:voice":
         "b8b3c859f29e0f96d39e4d2ff3e291e145249aca45069752b0b63c0a6f751ae7",
     "butler:restricted_webhook":
@@ -2307,3 +2314,22 @@ def test_a_failed_delegation_is_told_in_plain_words_not_its_tool_list():
     fallback = (_casa_root() / "defaults/agents/assistant/prompts/system.md").read_text(
         encoding="utf-8")
     assert _collapse_ws(fallback).count(rule) == 1
+
+
+def test_the_stop_paragraph_asks_first_and_otherwise_says_only_what_stopped(system_md_text):
+    """v0.347.3 (casa-test 2026-11-03): "Only one thing running, so that's the one." was posted
+    between the two stop_work calls. The paragraph says: ask which one when several run and his
+    words do not say; otherwise nothing until it is stopped, then one plain line of what stopped.
+    The asking comes first, so the silence never forbids it (r1, Astra + Terra)."""
+    text = _collapse_ws(system_md_text)
+    ask = ("When its list holds more than one and the person's words do not make clear which he "
+           "means, ask him which, naming each by its task, before stopping any.")
+    quiet = ("Otherwise write nothing to him until it is stopped, then say in one plain line what "
+             "stopped (\"Stopped the Hacker News summaries.\"), never how you found it or what "
+             "else is or is not running.")
+    assert text.count(ask) == 1 and text.count(quiet) == 1
+    assert text.index(ask) < text.index(quiet)
+    import tools as tools_mod
+    desc = _collapse_ws(tools_mod.stop_work.description)
+    assert ("Unless you must ask him which one, write nothing to the person between the two "
+            "calls.") in desc

@@ -101,11 +101,14 @@ no `ref` it lists every stop plugin's running requests, each with its ref,
 its specialist's name, its tasks and its state, and says of a specialist whose listing
 `failed` that what it is doing could not be listed right now. With a `request:` ref from
 that list it stops it through the same flight, marks the card, and returns a short
-instruction instead of a line: the resident says it in one plain line, or adds nothing
-when another path has already told him (`already_stopped`, `in_flight`). A ref no plugin
-knows is an error naming the listing. The resident's prompt tells it to stop such work
-itself, never by delegation, and to ask which one when several run and the person's words
-do not say.
+instruction instead of a line: the resident says in one plain line what stopped, and
+nothing about how it found it, or adds nothing when another path has already told him
+(`already_stopped`, `in_flight`). A ref no plugin knows is an error naming the listing. The
+resident's prompt tells it to stop such work itself, never by delegation, to ask which one
+when several run and the person's words do not say, and otherwise to write nothing to the
+person until it is stopped (the tool's description says the same: unless it must ask,
+nothing between the two calls), then one plain line of what stopped, never how it was found
+or what else runs.
 
 ## Contracts & invariants
 

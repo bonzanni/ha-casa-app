@@ -751,7 +751,8 @@ async def test_stop_work_by_a_listed_ref_stops_it_and_marks_the_card(env):
     env.admit()
     text = await _stop_work(env, {"ref": "request:k1"})
     assert [c["args"] for c in _calls(rp)] == [{"ref": "request:k1"}]
-    assert text == "Stopped: invoice: get the RunPod invoice. Tell the person in one plain line."
+    assert text == ("Stopped: invoice: get the RunPod invoice. Tell the person in one plain line "
+                    "what stopped, in his words, and nothing about how you found it.")
     (edit,) = _card_edits(env)
     assert edit["text"].endswith("☑ Stopped") and _lines(env) == []      # her reply is the line
 

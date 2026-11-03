@@ -48,6 +48,7 @@
   covers:
     - casa/rootfs/opt/casa/result_broker.py::_deliver_and_replace
     - casa/rootfs/opt/casa/result_broker.py::compose_operator_link
+    - casa/rootfs/opt/casa/result_broker.py::compose_operator_link_button
     - casa/rootfs/opt/casa/result_broker.py::compose_operator_message
     - casa/rootfs/opt/casa/result_broker.py::post_label
     - casa/rootfs/opt/casa/result_broker.py::_post_operator_message
