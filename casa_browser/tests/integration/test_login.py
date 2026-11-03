@@ -166,7 +166,10 @@ def _bound_action(tmp_path, invalidation, op):
                                instruction(config, 'attempt_bound_action', invalidate=invalidation, op=op,
                                            value=value, same_origin_page='https://' + LOGIN + '/password')],
                               broker_fixture=config)
-        assert result[-1]['reply'] == {'error': 'refused'}
+        # A form taken out of the DOM (no navigation) is a page that changed under the step: the
+        # sign-in reads the page again (the v0.1.0 re-render residual). Either way nothing acts.
+        expected = 'page_changed' if invalidation == 'detached' else 'refused'
+        assert result[-1]['reply'] == {'error': expected}
         # Inspect the bound page and surviving target; neither may receive a stale action.
         assert result[-1]['effects']
         assert all(effect == {'value': '', 'clicks': 0} for effect in result[-1]['effects'])
@@ -1244,3 +1247,54 @@ def test_s5u_a_site_page_with_no_form_claims_nothing(tmp_path):
     reply, posts = _signin_run(tmp_path, '/home', b'<p>Welcome back</p>', start=ACCOUNT)
     assert reply == {'status': 'no_form', 'reason': 'no_form'}, reply
     assert posts == []
+
+
+@pytest.mark.parametrize('replaced', ['password', 'button'])
+def test_a_form_the_page_re_renders_under_the_fill_is_signed_into(tmp_path, replaced):
+    """The residual of v0.1.0: a sign-in form the page re-renders (without navigating) between
+    the broker finding its fields and filling or submitting them — here the username's first
+    input event replaces the password field or the submit button with a new one, as a
+    framework's re-render does — ended the sign-in as broker_refused, which interrupted the
+    run. The sign-in now reads the page again and signs in."""
+    selector = 'input[type=password]' if replaced == 'password' else 'button'
+    rerender = (b'<script>const u=document.querySelector("input[name=u]");'
+                b'u.addEventListener("input",()=>{const e=document.querySelector("'
+                + selector.encode() + b'");e.replaceWith(e.cloneNode(true));},{once:true});</script>')
+    reply, posts = _signin_run(tmp_path, '/signin', _SIGNIN + rerender)
+    assert reply == {'status': 'logged_in', 'reason': 'completed'}, reply
+    assert [p[2] for p in posts] == ['/finish']
+
+
+@pytest.mark.parametrize('shape', ['password', 'email_only'])
+def test_a_username_marked_for_passkeys_is_saved_from_the_live_view(tmp_path, shape):
+    """The residual of v0.1.0: a site that offers passkeys marks its username field
+    ``autocomplete="username webauthn"``; the live view's capture read that field as no role,
+    so a login typed there was saved without its username (or, email-only, not at all). The
+    trailing ``webauthn`` token is dropped first, as the sign-in's own reader does."""
+    config = fixture_config(tmp_path)
+    user = ('it-' + canary()[8:16] + '@example.com') if shape == 'email_only' else 'it-user-' + canary()[8:16]
+    password = canary()
+    with ChromeSites([LOGIN, ACCOUNT]) as sites:
+        sites.pages['/start'] = ('text/html', b'<p>Start</p>', {})
+        field = b'<input id=u name=user type=text autocomplete="username webauthn">'
+        if shape == 'password':
+            body = (b'<form id=f method=post action="https://' + ACCOUNT.encode() + b'/account">'
+                    + field + b'<input id=p name=pass type=password><button id=b>Sign in</button></form>')
+            steps = [{'type': {'selector': '#u', 'text': user}},
+                     {'type': {'selector': '#p', 'text': password}}, {'click': '#b'}]
+        else:
+            body = (b'<form id=f method=post action="https://' + ACCOUNT.encode() + b'/account">'
+                    + field + b'<button id=b>Next</button></form>')
+            steps = [{'type': {'selector': '#u', 'text': user}}, {'click': '#b'}]
+        sites.pages['/signin'] = ('text/html', body, {})
+        sites.pages['/account'] = ACCOUNT_PAGE
+        done, saved = _run(config, sites, [{'goto': 'https://' + LOGIN + '/signin'}, {'wait': 1}]
+                           + steps, 'signed_in')
+        assert done['taken']['attempt'] == {'failed': False, 'typed_after': False}, done
+        assert saved['saved'] is True, saved
+        (item,) = _created(config)
+        assert _value(item, 'username') == user, item
+        if shape == 'password':
+            assert _value(item, 'password') == password
+        else:
+            assert [f['id'] for f in item['fields']] == ['username']

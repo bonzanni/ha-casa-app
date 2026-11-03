@@ -191,9 +191,9 @@ async def test_rpc_bounds_replies_and_client_requests(tmp_path):
 async def test_notice_import_replays_with_broker_dedupe_key(tmp_path):
     r = await Rig(tmp_path).setup()
     # Seed durable metadata directly; capture and save are independent of importing.
-    r.journal.begin('save', 'manual', 'site', 'run')
+    r.journal.begin('save', 'live', 'site', 'run')
     r.journal.transition('save', 'attempt')
-    r.journal.transition('save', 'vault_written', 2)
+    r.journal.recover()          # an unresolved save: one durable warning
     server = BrokerServer(r.broker, tmp_path / 'broker.sock', allowed_uid=os.getuid())
     await server.start()
     store = Store(tmp_path / 'controller.db')
@@ -204,7 +204,7 @@ async def test_notice_import_replays_with_broker_dedupe_key(tmp_path):
         notices = store.notices_after(0)
         assert len(notices) == 1
         assert notices[0].dedupe_key == 'broker:1'
-        assert notices[0].kind == 'credential_saved'
+        assert notices[0].kind == 'credential_unknown'
         assert '{display_name}' not in notices[0].text_masked
     finally:
         await server.close()
@@ -216,9 +216,9 @@ async def test_notice_pages_fit_wire_bound(tmp_path):
     r = Rig(tmp_path)
     for index in range(500):
         op_id = str(index)
-        r.journal.begin(op_id, 'manual', 'site', 'run')
+        r.journal.begin(op_id, 'live', 'site', 'run')
         r.journal.transition(op_id, 'attempt')
-        r.journal.transition(op_id, 'vault_written', 2)
+    r.journal.recover()          # 500 unresolved saves: 500 durable warnings
     first = await r.broker.pending_notices(0)
     assert len(encode(first)) <= MAX_LINE
     assert 0 < len(first['notices']) < 500

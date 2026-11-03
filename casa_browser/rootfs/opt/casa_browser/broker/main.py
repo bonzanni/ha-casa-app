@@ -688,7 +688,7 @@ class Broker:
                 except Exception:
                     pass
             if item is None:
-                return dict(saved=False, reason=reason, item_id=item_id, notice_ids=[])
+                return dict(saved=False, reason=reason, item_id=item_id)
         remaining = {key: (role, value) for key, (role, value) in capture.candidates.items()
                      if role not in chosen}
         resolved = self.journal.transition(op_id, 'vault_written', item_version=item.version,
@@ -701,11 +701,7 @@ class Broker:
         capture.pending = not resolved
         if resolved:
             self._drop_capture(capture_id)
-        notices = self.journal.pending_notices(0)
-        return dict(saved=True, item_id=item.id,
-                    notice_ids=[n['notice_key'] for n in notices
-                                if n['kind'] == 'credential_saved' and n['site_id'] == capture.site_id
-                                and n['run_id'] == capture.run_id])
+        return dict(saved=True, item_id=item.id)
 
     # -- action model slice 5: vault listing and the automatic save --------------------------
 

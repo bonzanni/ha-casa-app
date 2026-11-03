@@ -115,15 +115,19 @@ resolution that admitted a request to it, which a concurrent admission may have 
 and mitmproxy's upstream connection reuse is kept.
 
 **Withdrawing authority.** A policy or lease change replaces the policy in one assignment on
-the proxy's event loop and advances an epoch. `install`, `revoke` and the end of a manual
-lease then close every browser- and download-listener connection through mitmproxy's live
-connection handlers — the browser's connection, its upstream connections and any upstream
-connection still opening — before the control call replies; a flow's own kill flag does not
-stop a flow in transit, so closing the sockets is the mechanism. `end_login` closes them only
-when a login lease admitted a request the policy without it refuses (a provider's sign-in
-page) and no close of every connection happened since — whichever lease the call names: a
-replaced lease, or one already closed at its landing document, keeps the mark, and only such a
-close ends it. Otherwise every request admitted under a lease is one the policy after it admits too, and
+the proxy's event loop and advances an epoch. `install` and `revoke` then close every
+browser- and download-listener connection through mitmproxy's live connection handlers — the
+browser's connection, its upstream connections and any upstream connection still opening —
+before the control call replies; a flow's own kill flag does not stop a flow in transit, so
+closing the sockets is the mechanism. An `install` whose policy only adds provider bindings
+to the current one (`proxy_addon.py::_only_adds_bindings`: everything `decide` reads
+otherwise equal — the binding a live view's sign-in taught) refuses nothing the current one
+admitted and closes nothing. `end_login` and `end_manual` (Done in the live view) close them
+only when a lease admitted a request the policy without its login and manual leases refuses
+(a provider's sign-in page; another granted site's document in the live view) and no close of
+every connection happened since — whichever lease the call names: a replaced login lease, or
+one already closed at its landing document, keeps the mark, and only such a close ends it.
+Otherwise every request admitted under a lease is one the policy after it admits too, and
 closing would only cut a page still loading: measured, a sign-in page's own scripts and calls
 cut right after its first load left it on a spinner until a reload. A WebSocket frame arriving under a newer
 epoch is decided again, and a refused frame is dropped and its connection closed. Frames on an
@@ -165,7 +169,7 @@ proxy names its key without revealing it — `key_id`, the first 16 hex digits o
 fixed label under the key — and reports it as `binding_key_id` in its `status`; the controller
 reads it at start and tells a binding learned under another key by it.
 
-**INV-BRW-042**: On the browser and download listeners no byte reaches an upstream for a request the current policy refuses — an account session's off-site top-level document included, while its pages' other requests reach any floor-checked origin — the proxy dials only an address the floor checked for that host (never a name resolved outside a decision), and once a policy change is acknowledged no request or WebSocket frame admitted under the earlier policy is sent, except that `end_login` leaves in flight what the policy after it admits when no login lease has admitted anything the policy without it refuses since the last close of every connection.
+**INV-BRW-042**: On the browser and download listeners no byte reaches an upstream for a request the current policy refuses — an account session's off-site top-level document included, while its pages' other requests reach any floor-checked origin — the proxy dials only an address the floor checked for that host (never a name resolved outside a decision), and once a policy change is acknowledged no request or WebSocket frame admitted under the earlier policy is sent, except that `end_login` and `end_manual` leave in flight what the policy after them admits when no lease has admitted anything the policy without leases refuses since the last close of every connection, and an `install` that only adds provider bindings leaves everything in flight.
 
 **The broker listener** carries only the broker's 1Password SDK traffic: `CONNECT` to a host
 on `infra.py::BROKER_SDK_HOSTS` or the configured account host, port 443, intercepted, with

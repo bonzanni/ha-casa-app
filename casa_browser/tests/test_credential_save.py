@@ -133,8 +133,10 @@ async def test_save_crash_recovery_warns(tmp_path, state):
     journal = Journal(tmp_path / 'journal.db')
     journal.recover()
     first = journal.pending_notices(0)
-    expected = [] if state == 'capture_declined' else [
-        'credential_saved' if state in ('vault_written', 'capture_saved') else 'credential_unknown']
+    # a confirmed write warns about nothing, and issues no notice of its own (every save is the
+    # automatic one, which the agent's reply tells)
+    expected = [] if state in ('capture_declined', 'vault_written', 'capture_saved') else [
+        'credential_unknown']
     assert [n['kind'] for n in first] == expected
     journal.recover()
     assert journal.pending_notices(0) == first
@@ -618,7 +620,7 @@ async def test_unjudged_capture_discarded_at_run_end(tmp_path):
         await r.ctl.cancel(run.run_id)
         await r.settle()
         assert br.broker._captures == {} and br.writes() == []
-        assert [n for n in br.journal.pending_notices(0) if n["kind"] != "credential_saved"] == []
+        assert br.journal.pending_notices(0) == []
 
 
 async def test_credential_saved_change_in_record(tmp_path):

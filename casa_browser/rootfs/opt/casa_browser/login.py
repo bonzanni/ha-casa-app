@@ -707,8 +707,16 @@ class DriverServer(UnixServer):
             raise BrokerError('refused')
         if (not await self._checked(sid, element.is_visible(), generation) or
                 not await self._checked(sid, element.is_enabled(), generation)):
+            await self._still_there(sid, element, generation)
             raise BrokerError('refused')
         return s, entry
+
+    async def _still_there(self, sid, element, generation):
+        """Asked once a check or an action on a step's element failed: an element the page
+        re-rendered away (no navigation) is a page that changed under the step, which the
+        sign-in settles and reads again (``page_changed``); otherwise the refusal stands."""
+        if await self._checked(sid, element.evaluate('e => e.isConnected'), generation) is False:
+            raise BrokerError('page_changed')
 
     @_serialized
     async def fill(self, driver_session, page_generation, field_handle, value):
@@ -720,6 +728,7 @@ class DriverServer(UnixServer):
         ok = await self._checked(driver_session, element.evaluate(
             _SET, dict(origin=origin, type=types, value=value)), page_generation)
         if not ok:
+            await self._still_there(driver_session, element, page_generation)
             raise BrokerError('refused')
         return {'ok': True}
 
@@ -739,6 +748,7 @@ class DriverServer(UnixServer):
         clicked = await element.evaluate(_SUBMIT, dict(origin=origin, form=form))
         self._session(driver_session)
         if not clicked:
+            await self._still_there(driver_session, element, page_generation)
             raise BrokerError('refused')
         return {'ok': True}
 
@@ -1497,8 +1507,15 @@ _CAPTURE_INSTALL = """a => {
         sawPassword(watch.takeRecords());
         for(const e of document.querySelectorAll('input[type=password]')) passwordField.add(e);
     };
+    // A trailing "webauthn" token marks a field the site's passkey request may fill; the field's
+    // own name is the token before it ("username webauthn"), as for the sign-in's reader.
+    const last=e => {
+        const tokens=e.autocomplete.toLowerCase().split(/\\s+/).filter(Boolean);
+        if(tokens.length > 1 && tokens[tokens.length-1]==='webauthn') tokens.pop();
+        return tokens.pop() || '';
+    };
     const role=e => {
-        const ac=e.autocomplete.toLowerCase().split(/\\s+/).pop();
+        const ac=last(e);
         if(passwordField.has(e) || e.type==='password' || ac==='new-password' || ac==='current-password') return 'password';
         // Slice 5n (r1 Astra, Terra): a field naming one-time-code anywhere in its autocomplete
         // is a code field, never a username, whatever its type or last token says.
@@ -1553,7 +1570,7 @@ _CAPTURE_INSTALL = """a => {
             call([a.nonce,location.origin,'attempt',JSON.stringify({username:values[0],password:''}),doc]);
             return;
         }
-        const fresh=pw.find(e => e.autocomplete.toLowerCase().split(/\\s+/).pop()==='new-password');
+        const fresh=pw.find(e => last(e)==='new-password');
         const user=controls(scope).find(e => {
             const r=role(e); return (r==='username' || r==='plain_username') && e.value; });
         call([a.nonce,location.origin,'attempt',

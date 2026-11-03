@@ -1141,35 +1141,12 @@ async def test_first_browser_closes_start_window(rig):
 async def test_notices_imported(rig):
     starts = [e for e in rig.log if e[:2] == ("broker", "import_notices")]
     assert len(starts) == 1
-    rig.store.add_notice(SafeNotice(0, "credential_saved", None, "sa", "saved", rig.clock(),
+    rig.store.add_notice(SafeNotice(0, "credential_unknown", None, "sa", "warned", rig.clock(),
                                     dedupe_key="broker:7"))
     rows = await rig.ctl.notices(0)
     assert [e for e in rig.log if e[:2] == ("broker", "import_notices")][1:]
     assert rig.log.index_of("broker", "import_notices", after=rig.log.index(starts[0])) >= 0
-    assert [n.kind for n in rows] == ["credential_saved"]
-
-
-async def test_broker_client_imports_after_notice_ids(tmp_path, monkeypatch):
-    """The controller's broker client imports notices after an op that returns notice_ids,
-    each once (store dedupe), and before GET /v1/notices answers."""
-    from casa_browser import broker_client
-    from casa_browser.store import Store
-    store = Store(tmp_path / "s.db")
-    store.put_site(ACCOUNT)
-    pending = [{"notice_key": 1, "kind": "credential_saved", "site_id": "sa", "run_id": "r1",
-                "text_masked": "Casa saved a new {display_name} password", "at": "2026-10-21T12:00:00+00:00"}]
-
-    async def rpc(path, timeout, op, **args):
-        if op == "pending_notices":
-            return {"notices": [n for n in pending if n["notice_key"] > args["after"]]}
-        return {"saved": True, "item_id": "i", "notice_ids": [1]}
-    monkeypatch.setattr(broker_client, "rpc_call", rpc)
-    client = broker_client.BrokerClient(store=store)
-    await client.save_attempt("r1", "sa", "c", "Site A")
-    await client.save_attempt("r1", "sa", "c", "Site A")
-    rows = store.notices_after(0)
-    assert [n.text_masked for n in rows] == ["Casa saved a new Site A password"]
-    store.close()
+    assert [n.kind for n in rows] == ["credential_unknown"]
 
 
 # --------------------------------------------------------------------------- forget, pairing
