@@ -265,6 +265,16 @@ MIGRATIONS: tuple[str, ...] = (
     DROP TABLE approvals;
     ALTER TABLE events DROP COLUMN bundle_id;
     """,
+    # 10: the request ids whose cancel won (the operator's Stop): a cancel that ended its
+    # run, or found no run yet, records the id, and a run later created for it is created
+    # already cancelled. No foreign key: the row is what the request was, run or not; it is
+    # swept with the runs' retention.
+    """
+    CREATE TABLE cancelled_requests (
+        request_id TEXT PRIMARY KEY,
+        at TEXT NOT NULL
+    );
+    """,
 )
 
 QUESTION_STATES = ("open", "confirming", "executed", "outcome_unknown", "lapsed", "declined",
@@ -437,7 +447,8 @@ class Store:
     def create_run(self, spec: RunSpec, run_id: str, now: datetime | None = None) -> tuple[Run, bool]:
         """Queue a run. Idempotent on ``request_id``: the same request with the same
         members returns the existing run (``created=False``); different members raise
-        ``ProtocolError('conflict')``."""
+        ``ProtocolError('conflict')``. A request id in ``cancelled_requests`` is created in
+        state ``cancelled``."""
         digest = spec_digest(spec.members())
         now = now or _now()
         with self.transaction() as db:
@@ -447,10 +458,32 @@ class Store:
                     raise ProtocolError("conflict")
                 return self._run(row), False
             fifo = db.execute("SELECT COALESCE(MAX(fifo), 0) + 1 AS n FROM runs").fetchone()["n"]
+            # a request whose cancel was recorded before its run existed is created cancelled:
+            # it is never leased, so no browser starts for it
+            stopped = db.execute("SELECT 1 FROM cancelled_requests WHERE request_id=?",
+                                 (spec.request_id,)).fetchone() is not None
             db.execute("INSERT INTO runs VALUES (?,?,?,?,?,?,?,?,?,?)",
                        (run_id, fifo, spec.request_id, spec.requester_id, self._spec_json(spec),
-                        digest, "queued", _ts(now), None, 0))
+                        digest, "cancelled" if stopped else "queued", _ts(now),
+                        _ts(now) if stopped else None, 0))
             return self._run(db.execute("SELECT * FROM runs WHERE run_id=?", (run_id,)).fetchone()), True
+
+    def run_by_request(self, request_id: str) -> Run | None:
+        with self._lock:
+            row = self._db.execute("SELECT * FROM runs WHERE request_id=?",
+                                   (request_id,)).fetchone()
+        return None if row is None else self._run(row)
+
+    def cancel_request_id(self, request_id: str, now: datetime | None = None) -> None:
+        """Record that a cancel of this request id won (kept as first recorded)."""
+        with self.transaction() as db:
+            db.execute("INSERT OR IGNORE INTO cancelled_requests VALUES (?,?)",
+                       (request_id, _ts(now or _now())))
+
+    def request_cancelled(self, request_id: str) -> bool:
+        with self._lock:
+            return self._db.execute("SELECT 1 FROM cancelled_requests WHERE request_id=?",
+                                    (request_id,)).fetchone() is not None
 
     def get_run(self, run_id: str) -> Run | None:
         with self._lock:
@@ -484,7 +517,10 @@ class Store:
                               LEASED_STATES).fetchone()
             if busy:
                 return None
-            row = db.execute("SELECT * FROM runs WHERE state='queued' ORDER BY fifo LIMIT 1").fetchone()
+            # a run whose request was stopped (``cancelled_requests``) is never leased
+            row = db.execute("SELECT * FROM runs WHERE state='queued' AND request_id NOT IN "
+                             "(SELECT request_id FROM cancelled_requests) ORDER BY fifo "
+                             "LIMIT 1").fetchone()
             if row is None:
                 return None
             db.execute("UPDATE runs SET state='starting' WHERE run_id=?", (row["run_id"],))
@@ -860,7 +896,8 @@ class Store:
     def delete_runs_queue_files(self, run_ids: list[str], cutoff: datetime) -> int:
         """In one transaction: queue every private path of the runs for deletion, delete
         the runs (events, records, files and screenshots cascade) and notices older than
-        the cutoff. Returns the number of runs deleted."""
+        the cutoff, and the cancelled request ids recorded before it. Returns the number of
+        runs deleted."""
         with self.transaction() as db:
             for run_id in run_ids:
                 for table in ("files", "screenshots"):
@@ -870,6 +907,7 @@ class Store:
                                    (r["private_path"],))
                 db.execute("DELETE FROM runs WHERE run_id=?", (run_id,))
             db.execute("DELETE FROM notices WHERE at<=?", (_ts(cutoff),))
+            db.execute("DELETE FROM cancelled_requests WHERE at<=?", (_ts(cutoff),))
             return len(run_ids)
 
     def pending_deletions(self) -> list[str]:

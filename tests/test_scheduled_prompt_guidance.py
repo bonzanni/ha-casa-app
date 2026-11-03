@@ -430,6 +430,10 @@ WRITES_TO_A_CHAT_ELSEWHERE = {
         "conversation that delegated it; it is the delegate's message, governed "
         "by the resident's relay doctrine and its own silence note, not the "
         "trigger prompt's ending",
+    "tools.py::stop_work":
+        "stops a specialist's own work (browsing) and may mark that request's card; it "
+        "is refused on every turn but the operator's own live message, so it has no "
+        "scheduled arm",
     "tools.py::react":
         "sets a reaction on an active engagement's current inbound message and "
         "does nothing without one; a reaction is not a message",

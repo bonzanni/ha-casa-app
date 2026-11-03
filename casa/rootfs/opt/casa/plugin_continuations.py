@@ -86,6 +86,7 @@ class Pending:
     run_ref: str
     reason: str
     queued_at: float
+    dropped: bool = False       # its work was stopped before it started (``drop``)
 
 
 class Continuations:
@@ -108,6 +109,22 @@ class Continuations:
 
     def pending_count(self) -> int:
         return len(self._pending)
+
+    def drop(self, plugin: str, operator_id: int, refs) -> int:
+        """The operator stopped the work these references name (``plugin_stop``): every
+        pending continuation of one of them that has not started is dropped — its worker
+        returns without a turn once it holds the desk. A started one is the running session,
+        left to end itself. Returns how many were dropped."""
+        wanted = {r for r in refs if isinstance(r, str)}
+        n = 0
+        for key, pending in list(self._pending.items()):
+            if key[0] == plugin and key[1] == int(operator_id) and key[2] in wanted:
+                pending.dropped = True
+                del self._pending[key]
+                n += 1
+        if n:
+            logger.info("continuations dropped: %d", n)
+        return n
 
     async def drain(self) -> None:
         for t in list(self._tasks):
@@ -298,6 +315,8 @@ async def run_continuation(pending: Pending, *, on_start) -> None:
     progress_only: list = []
     try:
         async with _desk_turn(binding.chat_id, role, deadline=deadline):
+            if pending.dropped:
+                return          # its work was stopped while it waited: no turn
             on_start()
             record = DelegationRecord(
                 id=str(uuid.uuid4()), agent=first, started_at=time.time(),
@@ -399,9 +418,11 @@ def sweep_server(rp) -> "dict | None":
             "env": {**env, **server_env}, "cwd": str(rp.path)}
 
 
-async def call_sweep_tool(server: dict, tool: str) -> tuple[list[dict], float | None]:
-    """Start the server, call *tool* with no arguments, read its JSON text: the entries, and
-    the extra pass it asks for (seconds, or None)."""
+async def call_plugin_tool(server: dict, tool: str, args: dict, *,
+                           handed: "asyncio.Future | None" = None) -> str:
+    """Start the server, call *tool* with *args*, return the result's text. With *handed*,
+    the text is also set on that future from inside the client session, so a caller waiting
+    on it never waits for the stdio teardown, which goes on in this coroutine."""
     from mcp import ClientSession
     from mcp.client.stdio import StdioServerParameters, stdio_client
 
@@ -412,9 +433,18 @@ async def call_sweep_tool(server: dict, tool: str) -> tuple[list[dict], float | 
             await session.initialize()
             listed = await session.list_tools()
             if tool not in {t.name for t in listed.tools}:
-                raise LookupError("the declared sweep tool is not served")
-            result = await session.call_tool(tool, {})
-    text = "".join(getattr(c, "text", "") for c in (result.content or []))
+                raise LookupError("the declared tool is not served")
+            result = await session.call_tool(tool, args)
+            text = "".join(getattr(c, "text", "") for c in (result.content or []))
+            if handed is not None and not handed.done():
+                handed.set_result(text)
+    return text
+
+
+async def call_sweep_tool(server: dict, tool: str) -> tuple[list[dict], float | None]:
+    """Start the server, call *tool* with no arguments, read its JSON text: the entries, and
+    the extra pass it asks for (seconds, or None)."""
+    text = await call_plugin_tool(server, tool, {})
     data = json.loads(text) if text else {}
     runs = data.get("runs") if isinstance(data, dict) else None
     again = data.get("sweep_again_s") if isinstance(data, dict) else None
@@ -445,65 +475,78 @@ async def sweep_once() -> int:
     return queued
 
 
-async def _sweep_pass() -> tuple[int, float | None]:
-    """One pass: the continuations it queued, and the soonest extra pass a plugin asked for."""
+async def declaring_plugins(declared, *, context: str) -> list[tuple]:
+    """``(role, cfg, rp, seg, tool)`` for every loaded specialist's resolved plugin whose
+    manifest declares a tool by *declared* (``plugin_store.manifest_driver_sweep`` or
+    ``manifest_stop_tool``) — the sessions' own resolution, with unresolved env withheld —
+    deduplicated by artifact id. A role whose plugins cannot be resolved, or an invalid
+    declaration, contributes nothing."""
     import tools as tools_mod
-    from operator_calls import is_configured_operator
-    from plugin_bindings import BINDINGS
     from plugin_grants import withhold_env_unresolved
-    from plugin_store import manifest_driver_sweep
+    from plugin_registry import runtime_name
     from text_util import sanitize_segment
 
-    queued = 0
-    again: float | None = None
+    out: list[tuple] = []
     seen: set[str] = set()
     for role, cfg in list((tools_mod._agent_role_map or {}).items()):
         if getattr(cfg, "kind", "") != "specialist":
             continue
         try:
             resolution = await asyncio.to_thread(tools_mod._delegated_resolution, cfg)
-            resolution, _ = withhold_env_unresolved(resolution, context="driver sweep")
+            resolution, _ = withhold_env_unresolved(resolution, context=context)
         except Exception:  # noqa: BLE001
-            logger.warning("driver sweep: could not resolve %s's plugins", role,
+            logger.warning("%s: could not resolve %s's plugins", context, role,
                            exc_info=True)
             continue
         for rp in resolution.plugins:
             manifest = rp.manifest if isinstance(getattr(rp, "manifest", None), dict) else {}
             try:
-                tool = manifest_driver_sweep(manifest)
-            except Exception:  # noqa: BLE001 — an invalid declaration sweeps nothing
+                tool = declared(manifest)
+            except Exception:  # noqa: BLE001 — an invalid declaration declares nothing
                 tool = None
             if not tool or rp.artifact_id in seen:
                 continue
             seen.add(rp.artifact_id)
-            server = sweep_server(rp)
-            if server is None:
+            out.append((role, cfg, rp, sanitize_segment(runtime_name(rp)), tool))
+    return out
+
+
+async def _sweep_pass() -> tuple[int, float | None]:
+    """One pass: the continuations it queued, and the soonest extra pass a plugin asked for."""
+    from operator_calls import is_configured_operator
+    from plugin_bindings import BINDINGS
+    from plugin_store import manifest_driver_sweep
+
+    queued = 0
+    again: float | None = None
+    for _role, _cfg, rp, seg, tool in await declaring_plugins(manifest_driver_sweep,
+                                                              context="driver sweep"):
+        server = sweep_server(rp)
+        if server is None:
+            continue
+        try:
+            runs, soon = await asyncio.wait_for(call_sweep_tool(server, tool),
+                                                SWEEP_CALL_TIMEOUT_S)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("driver sweep of %s failed (%s)", seg, type(exc).__name__)
+            continue
+        if soon is not None:
+            again = soon if again is None else min(again, soon)
+        for r in runs:
+            run_ref, ref = r.get("run_ref"), r.get("binding_ref")
+            if not isinstance(run_ref, str) or not 0 < len(run_ref) <= 64:
                 continue
-            from plugin_registry import runtime_name
-            seg = sanitize_segment(runtime_name(rp))
-            try:
-                runs, soon = await asyncio.wait_for(call_sweep_tool(server, tool),
-                                                    SWEEP_CALL_TIMEOUT_S)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("driver sweep of %s failed (%s)", seg, type(exc).__name__)
+            binding = BINDINGS.peek(ref)
+            if binding is None or binding.plugin != seg:
                 continue
-            if soon is not None:
-                again = soon if again is None else min(again, soon)
-            for r in runs:
-                run_ref, ref = r.get("run_ref"), r.get("binding_ref")
-                if not isinstance(run_ref, str) or not 0 < len(run_ref) <= 64:
-                    continue
-                binding = BINDINGS.peek(ref)
-                if binding is None or binding.plugin != seg:
-                    continue
-                if not is_configured_operator(binding.chat_id, binding.operator_id):
-                    continue
-                if "unless_delivered" in r and _held_by_delivery(
-                        r["unless_delivered"], plugin=seg, operator_id=binding.operator_id,
-                        artifact_id=str(getattr(rp, "artifact_id", "") or "")):
-                    continue        # the operator has the card or link it waits on
-                if CONTINUATIONS.request(binding, run_ref, "sweep") == "queued":
-                    queued += 1
+            if not is_configured_operator(binding.chat_id, binding.operator_id):
+                continue
+            if "unless_delivered" in r and _held_by_delivery(
+                    r["unless_delivered"], plugin=seg, operator_id=binding.operator_id,
+                    artifact_id=str(getattr(rp, "artifact_id", "") or "")):
+                continue        # the operator has the card or link it waits on
+            if CONTINUATIONS.request(binding, run_ref, "sweep") == "queued":
+                queued += 1
     return queued, again
 
 

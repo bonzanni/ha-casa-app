@@ -843,6 +843,19 @@ def parse_cancel(body: Any) -> None:
     _obj(body, set())
 
 
+#: a request's runs: Casa admits at most eight runs per request (``run_admission.MAX_RUNS``)
+MAX_REQUEST_IDS = 8
+
+
+def parse_request_cancel(body: Any) -> tuple[str, ...]:
+    """``{"request_ids": [...]}``: every request id of one stopped request, 1–8, distinct."""
+    body = _obj(body, {"request_ids"})
+    ids = tuple(_caller_id(i) for i in _list(body["request_ids"], 1, MAX_REQUEST_IDS))
+    if len(set(ids)) != len(ids):
+        raise _refuse()
+    return ids
+
+
 def parse_delivery(body: Any) -> dict:
     body = _obj(body, {"requester_id", "delivery_id", "outcome"})
     return {"requester_id": _caller_id(body["requester_id"]),

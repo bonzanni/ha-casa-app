@@ -156,13 +156,22 @@ def requester_facts(call: OperatorCall) -> dict:
 
 async def post_question(*, identity: Any, role: str, text: str, options: list[str],
                         timeout_s: float,
-                        on_settle: Callable[[dict], Awaitable[None]]) -> bool:
+                        on_settle: Callable[[dict], Awaitable[None]],
+                        after_choice: "dict[int, list[tuple[str, str]]] | None" = None
+                        ) -> bool:
     """Post *text* under *role*'s label with one button per option to the
     operator *identity* names; ``on_settle`` runs once with the outcome —
     ``{"outcome": "answered", "choice": i}``, ``no_answer`` at the timeout or
     ``cancelled``. Returns whether the keyboard landed. Detached: the caller
     does not wait. Only that operator can answer (the resident-ask handler's
-    actor check)."""
+    actor check).
+
+    ``after_choice``: for an answered choice with an entry, the settled card
+    keeps that keyboard (``(label, callback data)`` buttons) instead of none
+    (the start card's Stop). That choice's ``on_settle`` runs BEFORE the edit
+    that shows the keyboard, and is also given the card's ``message_id`` and
+    its settled ``text``, so what the buttons act on is saved before they
+    appear."""
     from result_broker import _telegram_channel, compose_operator_message, post_label
     from verdict_broker import BROKER
 
@@ -186,7 +195,15 @@ async def post_question(*, identity: Any, role: str, text: str, options: list[st
         async def _finish(outcome: dict) -> None:
             answered = outcome.get("outcome") == "answered"
             if answered:
-                shown = f"{body}\n\n☑ {options[outcome['option_index']]}"
+                choice = int(outcome["option_index"])
+                shown = f"{body}\n\n☑ {options[choice]}"
+                keep = (after_choice or {}).get(choice)
+                if keep:
+                    await on_settle({"outcome": "answered", "choice": choice,
+                                     "message_id": message_id, "text": shown})
+                    await channel.edit_dm_message(chat_id, message_id, shown,
+                                                  buttons=list(keep))
+                    return
             else:
                 import ask_retirement
                 shown = ask_retirement.retired_body(

@@ -1,0 +1,171 @@
+---
+last_reviewed: 2026-11-03
+---
+
+# The Stop: a specialist's own work stopped at once
+
+> Code is the source of truth. This file is a map; when it and the code disagree, the code wins.
+
+## Scope
+
+How the operator stops work a specialist's plugin carries on by itself — a browsing request
+— with no model turn and no desk: the `casa.stopTool` declaration, Casa's direct call of it,
+the three paths that reach it (the Stop on a request's card, a proposal button whose stored
+call is the stop tool, the resident's `stop_work` tool), the one flight per request, the
+card mark and the one line, and the continuations a stop drops. The card that carries the
+Stop and the admission it acts on are [`plugin-operator-calls.md`](plugin-operator-calls.md);
+the continuation queue and the driver sweep whose direct call the stop shares are
+[`plugin-continuations.md`](plugin-continuations.md); the proposal tap every other stored
+call takes is [`stored-call-buttons.md`](stored-call-buttons.md); Casa Browser's own request
+cancel is [`../reference/casa-browser.md`](../reference/casa-browser.md).
+
+## Mental model
+
+**A stop never waits for the turn that drives the work.** A continuation turn holds its
+specialist's desk while it drives a run, so a stop that went through the desk — a model turn
+asked to stop — would wait for exactly the work it is meant to cut. A plugin therefore
+declares, in `casa.stopTool` (`plugin_store.manifest_stop_tool`, validated as
+`casa.driverSweep` is: a `safe` tool of the result contract that consumes nothing and calls
+nothing; an invalid declaration declares nothing), one tool Casa calls itself
+(`plugin_stop.call_stop`): Casa starts the plugin's stdio server with the sweep's own
+environment (`plugin_continuations.sweep_server`) and calls the tool through
+`plugin_continuations.call_plugin_tool` — no model, no session, no desk. The plugins asked
+are every loaded specialist's resolved plugins that declare the tool, by the sweep's own
+resolution (`plugin_stop.stop_plugins` over `plugin_continuations.declaring_plugins`). The
+answer is handed over from inside the client session, so the caller never waits for the
+server's teardown, which runs on in a tracked task that Casa's stop cancels and awaits
+(`plugin_stop.drain`, after the continuations drain).
+
+**What the tool answers.** Called with no arguments, `{"requests": [{"ref", "tasks",
+"state"}]}`: what is running. Called with `{"ref": "request:<key>"}`, the outcome of stopping
+that request: `stopped`, `ended` (it had ended on its own), `already_stopped`, `not_taken`
+(the plugin could not reach its app) or `unknown`; an answer may carry `tasks`, and one after
+which the plugin keeps refusing to drive the request (`stopped`, `already_stopped`,
+`not_taken` — `KEEPS_SEAL`) carries `refs`, every continuation reference naming it. Anything else — a timeout
+(`STOP_CALL_TIMEOUT_S`, sixty seconds), a failure, another shape — reads as `not_taken`; a
+listing that does not come back as a JSON object reads as one the plugin could not make
+(`failed`). Casa itself adds `unavailable`, when the role's resolution no longer carries the
+plugin declaring the tool, and `in_flight` (below).
+
+**One request, one flight, one telling** (`plugin_stop.stop`). The stops in flight in the
+process are keyed by plugin segment and ref: a second stop of the same request, by any path,
+answers `in_flight` at once and tells nothing. The path that holds the flight marks the card
+and tells the operator while it still holds it (its `tell`), so two taps, or a tap and the
+resident, tell him once. On an outcome of `KEEPS_SEAL`, the request's queued continuations
+are dropped
+(`Continuations.drop`): those of every returned ref, and the admission's own
+`admission:<cid>` continuation. A dropped continuation that is waiting for the desk runs no
+turn once it holds it; one already started is the running session, left to end itself
+([`plugin-continuations.md`](plugin-continuations.md)).
+
+**The mark and the line** (`plugin_stop.MARKS`, `LINES`). The request's start or status card
+— the admission's `card_message_id`, if one landed — is edited to its recorded text plus a
+mark and loses its keyboard (`settle_run_card`): `☑ Stopped` (also for `already_stopped`),
+`☑ Ended`, `☑ Stop asked` (`not_taken`). Any other outcome leaves the card with its Stop.
+The line is Casa's fixed text under the specialist's label, posted as a reply to the card
+that was tapped (`tell_line`, `TelegramChannel.send_reply_line`), and recorded as the
+resident's echo, so the resident hears it at its next turn: `Stopped.`, `It had already
+ended.`, the `not_taken` line saying the browsing stops as soon as Casa Browser answers, and
+for `unavailable` that the specialist's browser is no longer set up. `already_stopped` adds
+no line: he has been told.
+
+**The Stop on the card** (`TelegramChannel._on_run_stop_callback`, callback data
+`v1|run_stop|<cid>|0`, its own DM-scoped namespace). Fail closed, answered exactly once: the
+admission (`run_admission.CONFIRMATIONS.peek`, durable for thirty days, so a Stop after a
+restart still works) must be `admitted` and its binding known, else `expired`; the tap must
+come from the binding's chat and from the admission's operator, who is the binding's
+operator and the operator as configured now, else `not for you`. Then the toast
+`stopping…` at once, and one tracked task stops `request:<key>` of the admission's plugin for
+the binding's last role, marks the card and posts the line.
+
+**A proposal button that stores the stop tool** (`TelegramChannel._stop_tap`, called by the
+finish hook before it edits the card, and first by `_dispatch_proposal_tap`). A plugin's own card — browsing's long-run "still going" card —
+may carry a Stop button whose stored call is its declared stop tool. The tap passes the
+proposal's admission chain and commit as every tap does
+([`stored-call-buttons.md`](stored-call-buttons.md)); then, when the stored arguments are
+exactly `{"ref": <string>}` and the stored tool is the stop tool the role's current
+resolution declares for the proposal's own plugin segment and artifact, it reserves no desk
+and runs no pinned turn: one tracked task stops the request, the proposal's last line becomes
+the outcome's mark (`✖ expired` for `unknown`, `✖ unavailable`, `☑ Stop` when another path
+holds the flight, `✖ failed` when the task raises), the request's start or status card is
+marked too, and the line is posted as a reply to the proposal. Any other stored call goes to
+the desk as before.
+
+**The resident's `stop_work`** (`tools.stop_work`, granted to the assistant). Refused unless
+the turn is the operator's own live message — the spawn cap's `_is_agent_context` is false
+(the server-stamped operator marker, no engagement, no delegation) and the sender is the
+configured operator — so voice, narration, scheduled and delegated turns cannot stop
+anything. It reaches only his own requests: a ref whose admission
+(`plugin_stop.confirmation_for`) is not this operator's is neither listed nor stopped. With
+no `ref` it lists every stop plugin's running requests, each with its ref,
+its specialist's name, its tasks and its state, and says of a specialist whose listing
+`failed` that what it is doing could not be listed right now. With a `request:` ref from
+that list it stops it through the same flight, marks the card, and returns a short
+instruction instead of a line: the resident says it in one plain line, or adds nothing
+when another path has already told him (`already_stopped`, `in_flight`). A ref no plugin
+knows is an error naming the listing. The resident's prompt tells it to stop such work
+itself, never by delegation, and to ask which one when several run and the person's words
+do not say.
+
+## Contracts & invariants
+
+**INV-PLUG-056**: A Stop of a request admitted for the configured operator runs no model turn and takes no desk; after its plugin answers that it keeps the request stopped, no queued continuation of that request starts a turn.
+
+Enforced by `plugin_stop.call_stop` calling the declared tool through Casa's own stdio
+client, by `_on_run_stop_callback`, `_stop_tap` and `stop_work` reaching it outside any desk
+(the first two in a task of their own, `_stop_tap` before `_dispatch_proposal_tap` reserves
+the desk), by `_on_run_stop_callback` checking the admitted admission, the chat, the sender
+and the configured operator, `_stop_tap` running only after the proposal's own admission
+chain (INV-PROP-001), `stop_work` checking the live operator turn and the configured operator
+and starting no turn beyond the resident's own, and by `Continuations.drop` marking a
+pending continuation dropped, which `run_continuation` checks once it holds the desk and
+before the turn starts.
+
+What it does not cover: a continuation whose turn has already started, which runs on as the
+session driving the work and ends as the plugin lets it; a continuation the plugin queues
+after its answer; a ref the plugin's `stopped` answer does not return; and whether the
+plugin's app has actually stopped the work — Casa records only the plugin's answer, and a
+`not_taken` request is left to the plugin.
+
+## Failure behavior
+
+**The plugin does not answer within sixty seconds, fails, or answers another shape.**
+`not_taken`: the card reads `☑ Stop asked` and the line says the browsing stops as soon as
+Casa Browser answers; a call still running at the timeout is cancelled. **The plugin does
+not know the request** (`unknown`). The request's card keeps its Stop and no line is
+posted; a proposal reads `✖ expired`. **The plugin is no longer resolved for the role.**
+`unavailable`: no card mark, the line says so. **The card edit or the line fails.** It is logged; the stop already ran. **The stop
+task raises.** Logged; on the request's card the Stop stays, on a proposal the last line is
+`✖ failed`. **Casa restarts.** The flights are gone with the process; admissions survive,
+so a Stop tap still works. **No card landed** (the status card's post failed). Nothing is
+marked; `stop_work` still stops the request.
+
+## Extension points
+
+**A plugin with work that outlives a turn** declares `casa.stopTool` beside
+`casa.driverSweep`, answers the listing and the outcome shapes above, and returns in `refs`
+every continuation reference that names a request it keeps from being driven.
+
+## Source & test map
+
+<!-- BEGIN SOURCEMAP -->
+<!-- generated by scripts/verify_docs.py --write-nav; do not hand-edit -->
+
+**Source**
+- `casa/rootfs/opt/casa/plugin_stop.py`
+- `casa/rootfs/opt/casa/plugin_store.py::manifest_stop_tool`
+- `casa/rootfs/opt/casa/tools.py::stop_work`
+- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._on_run_stop_callback`
+- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._stop_tap`
+- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.send_reply_line`
+- `casa/rootfs/opt/casa/plugin_continuations.py::Continuations.drop`
+
+**Tests**
+- `tests/test_plugin_stop.py`
+
+**Related**
+- [`architecture/plugin-operator-calls.md`](../architecture/plugin-operator-calls.md)
+- [`architecture/plugin-continuations.md`](../architecture/plugin-continuations.md)
+- [`architecture/stored-call-buttons.md`](../architecture/stored-call-buttons.md)
+- [`reference/casa-browser.md`](../reference/casa-browser.md)
+<!-- END SOURCEMAP -->

@@ -159,3 +159,13 @@ def test_symlinked_artifacts_root_refused(env, tmp_path):
         sweep(store, NOW, 30, link_root)
     assert victim.read_text() == "keep"
     assert store.get_run("run9") is not None
+
+
+def test_old_cancelled_request_ids_expire_with_the_runs(env):
+    """The Stop's record of a request id is swept with the runs' retention: an id recorded
+    before the cutoff goes, a recent one stays."""
+    store, artifacts = env
+    store.cancel_request_id("req-old", now=NOW - timedelta(days=31))
+    store.cancel_request_id("req-new", now=NOW - timedelta(days=1))
+    sweep(store, NOW, 30, artifacts)
+    assert not store.request_cancelled("req-old") and store.request_cancelled("req-new")

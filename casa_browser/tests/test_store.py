@@ -213,7 +213,7 @@ def test_binding_keys_upgrade_from_task13_schema(tmp_path):
     db.close()
     s = store_mod.Store(tmp_path / "state.db")
     try:
-        assert s.schema_version() == 9 == len(store_mod.MIGRATIONS)
+        assert s.schema_version() == 10 == len(store_mod.MIGRATIONS)
         s.put_site(site())
         s.put_binding_key("site-a", "k1")
         s.put_binding_key("site-a", "k2")
@@ -286,7 +286,7 @@ def test_migration_9_drops_the_approval_model_and_keeps_everything_else(tmp_path
 
     s = store_mod.Store(path)
     try:
-        assert s.schema_version() == 9 == len(store_mod.MIGRATIONS)
+        assert s.schema_version() == 10 == len(store_mod.MIGRATIONS)
         tables = {r[0] for r in s._db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         assert not tables & {"approvals", "bundles", "hints"}
         columns = [r[1] for r in s._db.execute("PRAGMA table_info(events)")]
@@ -311,6 +311,39 @@ def test_migration_9_drops_the_approval_model_and_keeps_everything_else(tmp_path
     assert [r for r in _rows(path, "events")][:2] == events_before
     s = store_mod.Store(path)          # a second start applies nothing again
     try:
-        assert s.schema_version() == 9 and len(s.events_after("run0", 0)) == 3
+        assert s.schema_version() == 10 and len(s.events_after("run0", 0)) == 3
     finally:
         s.close()
+
+
+def test_a_cancelled_request_id_survives_a_reopen_and_creates_its_run_cancelled(tmp_path):
+    """The Stop's record (``cancelled_requests``) is durable: after a reopen the request id is
+    still recorded, and a run created for it then starts ``cancelled`` and is never leased;
+    another request's run is queued as before."""
+    path = tmp_path / "state.db"
+    s = Store(path)
+    s.cancel_request_id("req-stop", now=T0)
+    s.cancel_request_id("req-stop", now=T0 + timedelta(seconds=5))     # a repeat keeps it
+    s.close()
+    s = Store(path)
+    try:
+        assert s.request_cancelled("req-stop") and not s.request_cancelled("req-other")
+        run, created = s.create_run(spec("req-stop"), "run_s", now=T0)
+        assert created and run.state == "cancelled"
+        assert s._db.execute("SELECT ended_at FROM runs WHERE run_id='run_s'").fetchone()[0]
+        other, _ = s.create_run(spec("req-other"), "run_o", now=T0)
+        assert other.state == "queued"
+        assert s.lease_next_run().run_id == "run_o"
+        assert s.run_by_request("req-stop").run_id == "run_s"
+        assert s._db.execute("SELECT COUNT(*) FROM cancelled_requests").fetchone()[0] == 1
+    finally:
+        s.close()
+
+
+def test_a_queued_run_whose_request_was_stopped_is_never_leased(store):
+    """Ruling B: ``lease_next_run`` skips a queued run whose request id is recorded stopped,
+    whatever moved (or did not move) its state."""
+    store.create_run(spec("req-a"), "run_a", now=T0)
+    store.create_run(spec("req-b"), "run_b", now=T0 + timedelta(seconds=1))
+    store.cancel_request_id("req-a", now=T0)
+    assert store.lease_next_run().run_id == "run_b"

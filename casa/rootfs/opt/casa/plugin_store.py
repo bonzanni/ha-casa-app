@@ -1869,6 +1869,29 @@ def manifest_driver_sweep(manifest: dict) -> "str | None":
     return name
 
 
+def manifest_stop_tool(manifest: dict) -> "str | None":
+    """``casa.stopTool`` — the tool Casa calls directly, with no model, no session and no
+    desk, to list the work the plugin carries on by itself and to stop one request of it
+    (``plugin_stop``). Validated exactly as ``casa.driverSweep``: ABSENT → ``None``; present,
+    it must name a ``safe`` tool of the result contract that consumes nothing and calls
+    nothing, else ``StoreError(reason_code="stop_tool_invalid")``."""
+    casa = manifest.get("casa")
+    if not isinstance(casa, dict) or "stopTool" not in casa:
+        return None
+    name = casa.get("stopTool")
+    def _bad(msg: str) -> StoreError:
+        return StoreError(f"casa.stopTool: {msg}", reason_code="stop_tool_invalid")
+    if not isinstance(name, str) or not _RC_TOOL_NAME_RE.fullmatch(name):
+        raise _bad("must be a tool name")
+    contract = manifest_result_contract(manifest)
+    entry = (contract or {}).get("tools", {}).get(name)
+    if (entry is None or entry["result"] != "safe" or entry["consumes"]
+            or entry.get("calls_casa")):
+        raise _bad(f"{name!r} must be a safe tool of the result contract that "
+                   "consumes nothing and calls nothing")
+    return name
+
+
 def manifest_protected_tools(manifest: dict) -> list:
     """Guarded + STRICT casa.protectedTools extraction (A:§3.7, extended
     v0.78.0 W1), beside manifest_sysreqs. An ABSENT ``casa.protectedTools``

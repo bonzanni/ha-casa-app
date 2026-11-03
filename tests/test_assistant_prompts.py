@@ -1258,11 +1258,17 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # text, word by word: one insert and two replaces inside that paragraph on
 # each `assistant:*` carrier and nothing else; the six other carriers
 # byte-identical. No retention claim.
+# MOVED 2026-11-03 (the Stop), `assistant:text` only: one paragraph before the
+# relay paragraph — to stop or cancel work a specialist carries on by itself
+# (browsing), call stop_work yourself and say it in one plain line, never
+# delegate a stop, and ask which one when several run and his words do not say.
+# ONE `insert` on `assistant:text`, that paragraph; the eight other carriers
+# byte-identical. No retention claim.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
         "9002fe26031be571558305515656c9ad9dae14df3c35507488eb3eb14a202c37",
     "assistant:text":
-        "3701afdd59f3a55601784665ba16a7e12cff1af936f6dc04017e6f430bf710ec",
+        "fa825eeb6abd4d244086bf4b044813dc7fe2542e93284aaf07ee7111d0b88748",
     "assistant:voice":
         "b8b3c859f29e0f96d39e4d2ff3e291e145249aca45069752b0b63c0a6f751ae7",
     "butler:restricted_webhook":

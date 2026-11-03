@@ -29,7 +29,8 @@ EXPECTED_ROUTES = {
     ("POST", "/v1/runs/{run}/sign-in"),
     ("POST", "/v1/runs/{run}/live"),
     ("POST", "/v1/control/runs/{run}/live-complete"), ("POST", "/v1/runs/{run}/finish"),
-    ("POST", "/v1/runs/{run}/cancel"), ("POST", "/v1/control/sites/{site}/forget"),
+    ("POST", "/v1/runs/{run}/cancel"), ("POST", "/v1/requests/cancel"),
+    ("POST", "/v1/control/sites/{site}/forget"),
     ("GET", "/v1/records"), ("GET", "/v1/files/{file}"),
     ("POST", "/v1/control/files/{file}/delivery"), ("GET", "/v1/notices"),
     ("GET", "/v1/control/runs/{run}/judgements/pending"),
@@ -366,6 +367,7 @@ async def test_fake_serves_every_route(aiohttp_client, tmp_path):
     await call("GET", "/v1/records", "/v1/records?requester_id=finance&since=2026-01-01T00:00:00Z")
     run2 = await call("POST", "/v1/runs", "/v1/runs", run_body("req-2"))
     await call("POST", "/v1/runs/{run}/cancel", f"/v1/runs/{run2['run_id']}/cancel", {})
+    await call("POST", "/v1/requests/cancel", "/v1/requests/cancel", {"request_ids": ["req-3"]})
     await call("POST", "/v1/control/sites/{site}/forget", f"/v1/control/sites/{site['site_id']}/forget",
                {"operator_ref": "tg-cb-3"})
     await call("GET", "/v1/notices", "/v1/notices?after=0")
@@ -540,3 +542,27 @@ async def test_login_code_is_never_echoed_or_logged(aiohttp_client, tmp_path, ca
     assert code not in json.dumps(bodies) and code not in caplog.text
     events = await (await client.get(f"/v1/runs/{rid}/events?after=0", headers=headers(secret))).text()
     assert code not in events
+
+
+async def test_request_cancel_is_the_paired_requesters_only(aiohttp_client, tmp_path):
+    """The Stop of one request takes the paired requester's credential and nothing else; with
+    it, a run's request is cancelled and a request id with no run yet is recorded, in one call."""
+    client, fake, secret = await paired_client(aiohttp_client, tmp_path)
+    run = await (await client.post("/v1/runs", json=run_body("req-a"),
+                                   headers=headers(secret))).json()
+    body = {"request_ids": ["req-a", "req-none"]}
+    for auth in ("Bearer wrong", f"Bearer {secret[:-1]}", None):
+        hdrs = {PROTOCOL_HEADER: "1", **({"Authorization": auth} if auth else {})}
+        resp = await client.post("/v1/requests/cancel", json=body, headers=hdrs)
+        assert resp.status == 401
+    assert fake.store.get_run(run["run_id"]).state not in ("cancelled", "finishing")
+    resp = await client.post("/v1/requests/cancel", json=body, headers=headers(secret))
+    assert resp.status == 200 and await resp.json() == {"requests": [
+        {"request_id": "req-a", "run_id": run["run_id"], "stopped": True, "state": "cancelled"},
+        {"request_id": "req-none", "run_id": None, "stopped": True, "state": "cancelled"}]}
+    got = await (await client.get(f"/v1/runs/{run['run_id']}", headers=headers(secret))).json()
+    assert got["stopped"] is True and got["state"] == "cancelled"
+    for bad in ({}, {"request_ids": []}, {"request_ids": ["a", "a"]},
+                {"request_ids": [f"r{i}" for i in range(9)]}, {"request_ids": ["a"], "x": 1}):
+        resp = await client.post("/v1/requests/cancel", json=bad, headers=headers(secret))
+        assert resp.status == 400, bad

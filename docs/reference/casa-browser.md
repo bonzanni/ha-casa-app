@@ -97,6 +97,10 @@ proxy binding key each site's provider binding was learned under (by its id, nev
 
 - A run is idempotent on `request_id`: the same members return the existing run, different
   members are `conflict`.
+- `cancelled_requests` (migration 10) holds the request ids the operator's Stop stopped: a
+  run later created for such an id is created `cancelled` and gets only its `run_cancelled`
+  event, and `lease_next_run` never leases a queued run whose id is recorded, so no browser
+  starts for it.
 - `lease_next_run` moves the oldest `queued` run to `starting` only while no run is between
   `starting` and `finishing`; `transition` is a compare-and-set and never moves a terminal
   run.
@@ -109,7 +113,8 @@ proxy binding key each site's provider binding was learned under (by its id, nev
 records, files, screenshots and older notices: it queues the private paths and deletes the
 rows in one transaction, then unlinks each queued path and dequeues it; a path that could not
 be unlinked stays queued for the next sweep. A symlinked artifacts root is refused outright.
-A run's questions, stored responses and its files' delivery attempts go with it. Sites, pairing
+A run's questions, stored responses and its files' delivery attempts go with it, and a
+cancelled request id goes once it was recorded before the cutoff. Sites, pairing
 and profiles are never swept. Migration 9 drops the tables of the former approval model
 (`approvals`, `bundles`, `hints`) and the events' `bundle_id` column; every other row stays.
 
@@ -171,11 +176,12 @@ Routes (`{run}` scoped routes answer only for that run's own ids):
 | `GET /v1/hello` | `{protocol_version, app_version, configured, needs_locale, language_source}` |
 | `POST /v1/pair/claim` | `{secret, protocol_version}` to the first claim in the window; `unauthorized` otherwise |
 | `GET /v1/sites`, `POST /v1/control/sites` | `{sites: [{site_id, display_name, status}]}`; `{site_id}` |
-| `POST /v1/runs`, `GET /v1/runs?state=active`, `GET /v1/runs/{run}` | the run (201 new, 200 repeat); `{runs: [ActiveRun]}`; the run |
+| `POST /v1/runs`, `GET /v1/runs?state=active`, `GET /v1/runs/{run}` | the run (201 new, 200 repeat); `{runs: [ActiveRun]}`; the run with `stopped` (its request id is in `cancelled_requests`) |
 | `GET /v1/runs/{run}/events?after=N` | `{events: [...]}` in sequence order |
 | `POST /v1/runs/{run}/{observe,action,search,download,archive}` | `Observation` (with `{"sign_in": true}`, a page with sign-in fields answers a `sign_in` judgement first: [`casa-browser-signin.md`](casa-browser-signin.md)); action result; `Observation`; file record; file record |
 | `POST /v1/runs/{run}/live` (`login`, `assist`), `POST /v1/control/runs/{run}/live-complete` | live-view envelope; the run |
 | `POST /v1/runs/{run}/{finish,cancel}`, `POST /v1/control/sites/{site}/forget` | the run; `{site_id, status}` |
+| `POST /v1/requests/cancel` | `{requests: [{request_id, run_id, stopped, state}]}` (below) |
 | `GET /v1/records?requester_id=&since=`, `GET /v1/notices?after=N` | `{records}`; `{notices: [{seq, …}]}` |
 | `GET /v1/files/{file}`, `POST /v1/control/files/{file}/delivery` | bytes; delivery acknowledgement |
 | `GET /v1/control/runs/{run}/screenshots/{screenshot}`, `GET /v1/control/runs/{run}/sources` | PNG; `{sources: [{source_id, url, title_masked}]}` |
@@ -185,6 +191,18 @@ Registered origins are stored as `https://` origins in the spelling `identity.ad
 code; they are never model tools. Observations, events and records never carry an address.
 
 An account run names at least one site; an open-web run may name none, and a `start_url`.
+
+**The request cancel** (`api.cancel_requests`, `controller.RunController.cancel_requests`) is
+the requester's Stop of one request: every `request_id` it chose for it, 1–8 distinct caller
+ids, in one call, whether or not runs of them exist yet. Every id is decided in one
+synchronous step, with nothing awaited between: an id with no run is recorded (its create
+comes back cancelled); a queued run is recorded and moved to `cancelled`; the driving run,
+when its ending has not begun, is recorded, its in-flight command cut and its ending begun
+(`_begin_end`, so a command reaching the lock later is refused); a run already terminal, or
+one whose ending another command already began (a finish, an interruption), is not
+recorded. Only then is the driving run torn down under the command lock. Each id's
+`stopped` is whether it is recorded after the call, so a repeat answers the same, and
+`GET /v1/runs/{run}` carries the same fact as `stopped` (`request_stopped`).
 
 **Admission digest.** `POST /v1/runs` computes `protocol.spec_digest` over the members it
 received, `admission` removed: SHA-256 of their RFC 8785 canonical JSON, `sha256:<hex>`.

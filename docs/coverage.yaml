@@ -91,6 +91,8 @@
   doc: architecture/plugin-operator-calls.md
 - item: casa/rootfs/opt/casa/plugin_continuations.py
   doc: architecture/plugin-continuations.md
+- item: casa/rootfs/opt/casa/plugin_stop.py
+  doc: architecture/plugin-stop.md
 - item: casa/rootfs/opt/casa/drivers/brief.py
   doc: architecture/engagements.md
 - item: casa/rootfs/opt/casa/drivers/claude_code_driver.py
@@ -535,6 +537,8 @@
   doc: architecture/plugin-mutation-tools.md
 - item: tool:specialist_upgrade
   doc: architecture/plugin-mutation-tools.md
+- item: tool:stop_work
+  doc: architecture/plugin-stop.md
 - item: tool:trigger_ack_revoke
   doc: architecture/tools-interface.md
 - item: tool:vault_drop_off

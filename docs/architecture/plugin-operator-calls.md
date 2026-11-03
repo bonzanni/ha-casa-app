@@ -13,7 +13,7 @@ serves (its binding), run admission — whether the operator's own words asked f
 browsing runs the plugin is about to start — and its confirmation's state, a continuation
 turn for a run, a delivered slot's outcome, and the check of one browsing action. It covers
 the `callsCasa` declaration, the record the admission hook makes, the six internal routes,
-the binding store, the confirmation card, the admission decision and the action check. The continuation turn those routes queue,
+the binding store, the confirmation card and the Stop it keeps, the admission decision and the action check. The continuation turn those routes queue,
 and the driver sweep, are [`plugin-continuations.md`](plugin-continuations.md); the result
 contract and the hooks this extends are
 [`plugin-result-contract.md`](plugin-result-contract.md); the requester chain and the
@@ -80,6 +80,20 @@ time, the measurement the design asks for. When the call carries his words, admi
 them for each requested run's spec digest — admitted by them or put to the card — in
 `action_judgement.WORDS`: memory-only, at most 500 for a day each, keyed by plugin,
 operator and digest, because nothing durable keeps his words.
+
+**An admitted request's card carries its Stop.** When his tap on Start admits the runs, the
+settled card keeps one button, Stop (`run_admission.stop_button`, callback data
+`v1|run_stop|<cid>|0`): `operator_calls.post_question`'s `after_choice` keeps that keyboard
+for the Start choice (`edit_dm_message`'s `buttons`), and that choice's `on_settle` runs
+before the edit that shows it, so the admission is already `admitted` — with the card's
+message id and its settled text (`Confirmation.card_message_id`, `card_text`) — when the
+button appears. When his words admitted the runs there is no start card, so one status card
+(`compose_status`: `Browsing now:` over the same run lines, with the same Stop) is posted
+beside the answer in its own task, never awaited by it (`_spawn_status_card`,
+`TelegramChannel.deliver_run_card`); when it lands its message and text are recorded with
+the admission (`Confirmations.set_card`), and a failed post is only logged. The Stop's tap
+reads the admission by its id alone (`Confirmations.peek`) and compares the tapper itself;
+what it does is [`plugin-stop.md`](plugin-stop.md).
 
 **The action check judges one browsing action, bound to the bytes it judged.**
 `POST /internal/broker/action-judgement` takes `{"kind", "packet", "spec_digest"}`: the
@@ -183,6 +197,7 @@ and its own verdict set in `action_judgement.parse_reply`.
 - `casa/rootfs/opt/casa/run_admission.py`
 - `casa/rootfs/opt/casa/plugin_bindings.py`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.deliver_operator_question`
+- `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel.deliver_run_card`
 - `casa/rootfs/opt/casa/result_broker.py::DeliveryOutcomes`
 
 **Tests**

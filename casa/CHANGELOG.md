@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.347.2] - 2026-11-03
+
+### Added
+
+- A browsing task can be stopped at once. The card that started it — your Start card, or a short "Browsing now" card when your own message started it — keeps a Stop button; tapping it ends the task within seconds, even while Fido is in the middle of a step, and answers with one line: "Stopped.", or "It had already ended." Fido's 20-minute "still going" card stops the same way.
+- Typing "stop the browsing" (or "cancel it") to the assistant now works too: she stops it herself, without waiting for Fido, and says so in one line. When several tasks run and your message does not say which, she asks.
+
 ## [0.347.1] - 2026-11-03
 
 ### Changed

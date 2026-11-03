@@ -130,6 +130,8 @@
   doc: reference/casa-browser.md
 - item: route:casa_browser/rootfs/opt/casa_browser/api.py:POST:/v1/runs/{run}/cancel
   doc: reference/casa-browser.md
+- item: route:casa_browser/rootfs/opt/casa_browser/api.py:POST:/v1/requests/cancel
+  doc: reference/casa-browser.md
 - item: route:casa_browser/rootfs/opt/casa_browser/api.py:POST:/v1/runs/{run}/download
   doc: reference/casa-browser.md
 - item: route:casa_browser/rootfs/opt/casa_browser/api.py:POST:/v1/runs/{run}/finish

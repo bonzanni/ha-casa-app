@@ -280,7 +280,9 @@ longer say who posted it; the next desk turn starts a fresh log.
 **Buttons on a specialist's post** land in the same desk: a tap is a use of the desk under its
 lock and queue, the stored call its task, and a desk whose pinned run could not be confirmed
 terminated is *faulted* — every later use refused until restart
-([`stored-call-termination.md`](stored-call-termination.md)).
+([`stored-call-termination.md`](stored-call-termination.md)). The one exception is a stored
+call of the plugin's declared stop tool, which takes no desk and is called directly
+([`plugin-stop.md`](plugin-stop.md)).
 
 **The idle bound** is a module constant until tuning has an evidence base; an app option
 follows.

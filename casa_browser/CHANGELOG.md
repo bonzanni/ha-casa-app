@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.8] - 2026-11-03
+
+### Added
+
+- Stopping a browsing task by its request: the task's current step is cut at once and the task ends cancelled, and a task stopped before it even started is never started. Needs Casa 0.347.2 and Fido 0.1.25.
+
 ## [0.1.7] - 2026-11-03
 
 ### Fixed
