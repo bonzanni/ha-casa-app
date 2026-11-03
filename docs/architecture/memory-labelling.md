@@ -33,9 +33,13 @@ correlation id is never an input, since two turns can share one.
 Every event is stored `private`, `provisional`, with an `origin_tier` below which it can never
 be classified: for the opening of a turn, the clearance of the origin that sent it; for a
 resident's or a specialist's own message, the read clearance of the session that wrote it —
-the clearance its served memory and its tools were bounded by. A friend's Telegram turn and
-the resident's answer to it therefore carry the friend's clearance as their floor; a
-delegated run's request and answer carry the delegating turn's. An engagement summary is
+the clearance its served memory and its tools were bounded by. A message the operator
+sent himself is the exception (the Telegram text or caption stamped as his words, typed,
+forwarded or picked from an inline bot; not a button tap, which carries Casa's option text): it
+carries no floor and is classified like any text, so what he says in his private chat can reach
+a lower ledger while the resident's reply to it stays `private`. A
+friend's Telegram turn and the resident's answer to it carry the friend's clearance as their
+floor; a delegated run's request and answer carry the delegating turn's. An engagement summary is
 stored at its origin's tier. A turn Casa's own schedule fired is recorded `scheduled`.
 
 **What is captured is the turn's own text, never the query Casa composed.** Every sent user

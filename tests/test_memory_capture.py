@@ -1073,3 +1073,46 @@ async def test_one_background_drain_at_a_time(mem, monkeypatch):
     release.set()
     await capture.settle()
     assert len(events(mem)) == 6
+
+
+async def test_the_operators_own_words_can_reach_the_friends_ledger(
+        mem, tmp_path):
+    """The operator's message in his private DM has no floor: classified
+    ``friends``, it is pending in the friends ledger the butler is served,
+    while Ellen's reply in the same turn keeps the session's floor."""
+    from memory import writer
+    from memory_writer_support import (
+        ScriptedPort, add_each, classifier_of, new_writer, pending_seqs,
+        run_new)
+    FakeClient.reset()
+    agent = _make_agent(tmp_path)
+    told_text = "the guest wifi is casa-guest"
+    with patch("sdk_client_pool._default_make_client", FakeClient):
+        await agent._process(_operator_msg(
+            told_text, _operator_words=told_text))
+    rows = {e["text"]: e for e in await captured_events(mem)}
+    told, answer = rows["the guest wifi is casa-guest"], rows["pong"]
+    assert (told["speaker_kind"], told["origin_tier"]) == ("operator", None)
+    assert answer["origin_tier"] == "private"
+    assert (await run_new(new_writer(mem, ScriptedPort(add_each),
+                                     classifier=classifier_of("friends"))))[
+        1] == writer.COMMITTED
+    assert pending_seqs(mem, "friends") == [told["seq"]]
+
+
+@pytest.mark.parametrize("words, extra", [
+    (None, {"synthetic": "button"}),          # a tap: Casa's option text
+    ("something else", {}),                    # not the captured text
+])
+async def test_an_opening_he_did_not_send_keeps_the_floor(
+        mem, tmp_path, words, extra):
+    FakeClient.reset()
+    agent = _make_agent(tmp_path)
+    ctx = dict(extra)
+    if words is not None:
+        ctx["_operator_words"] = words
+    with patch("sdk_client_pool._default_make_client", FakeClient):
+        await agent._process(_operator_msg("the code is 1234", **ctx))
+    rows = {e["text"]: e for e in await captured_events(mem)}
+    assert rows["the code is 1234"]["speaker_kind"] == "operator"
+    assert rows["the code is 1234"]["origin_tier"] == "private"

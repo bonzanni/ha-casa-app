@@ -1037,7 +1037,9 @@ class _TurnCapture:
     """What one resident turn captures into memory: the text it opens with,
     at admission, and each text-bearing message the resident writes, as it
     is emitted (``memory/capture.py``). Built only for a turn on a
-    write-trusted channel; every event's floor is the turn's read clearance.
+    write-trusted channel. Every event's floor is the turn's read clearance,
+    except a message the operator sent himself: it has no floor and is
+    classified like any text, so what he says may reach a lower ledger.
     A capture failure is logged and never fails the turn.
 
     The turn is a run (``memory/transcript_runs.py``): :meth:`register` puts
@@ -1100,6 +1102,17 @@ class _TurnCapture:
     async def message(self, text: str, sdk_msg: Any) -> None:
         await self.run.kept(self._message(text, sdk_msg))
 
+    def _own_words(self, speaker: str) -> bool:
+        """Whether the opening is a message the operator sent himself: the
+        server-stamped ``_operator_words`` are this text. The floor exists
+        for text Casa or a model wrote, which may carry what its session
+        could read; a button tap carries Casa's option text and keeps it.
+        What he sends — typed, forwarded or picked from an inline bot — is
+        classified like any text (design §7)."""
+        return (speaker == "operator"
+                and self._msg.context.get("_operator_words")
+                == self._user_text)
+
     async def _opening(self) -> bool:
         from delegated_memory import notice_from_excluded_role
         from memory import capture, eligibility, occurrence
@@ -1128,7 +1141,8 @@ class _TurnCapture:
                 source_key=key, role=self._role, channel=msg.channel,
                 speaker_kind=speaker, origin_kind=self._origin_kind,
                 text=self._user_text, eligibility=rule,
-                origin_tier=self._floor, scheduled=self._scheduled,
+                origin_tier=None if self._own_words(speaker) else self._floor,
+                scheduled=self._scheduled,
                 speaker_id=None if user_id is None else str(user_id),
                 speaker_name=ctx.get("user_name") if self._operator_authored
                 else None,
