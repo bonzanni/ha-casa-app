@@ -19,9 +19,12 @@ The user message is one JSON object:
   local `time` it was said, who said it (`speaker`, `speaker_name`), the
   `channel`, its `origin` (`operator`, `scheduled`, `callback`,
   `notification`, `delegated_result` or `system`), whether Casa's schedule
-  sent it (`scheduled`), and its `text`. An event with a `correction` is one
-  the operator has since said was wrong or remembered wrongly: read it again
-  and make the ledger right.
+  sent it (`scheduled`), and its `text`. An event with a `correction` is the
+  operator telling Casa that something memory holds is wrong or out of date:
+  that event carries his right version. Make the ledger follow it, whether
+  what it replaces is in this batch or already in the ledger, and keep the
+  replaced value as `earlier:`. The mark is on his correcting words, never on
+  the value they replace.
 - `context`: a few earlier events of the same conversations, already filed,
   so you can read the new ones in context. Never file them again.
 - `entries` (condense only): the entries to condense.

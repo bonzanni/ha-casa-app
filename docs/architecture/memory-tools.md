@@ -93,7 +93,8 @@ is stored. The mark goes through
 tool returns `queued` at once; a retried call changes nothing. The note carries his words
 to every session from its next turn ([`memory-serving.md`](memory-serving.md)). The tool's
 `what` argument names what he corrected for the model's own call; his message is what is
-kept. A turn no message of his opened — a scheduled turn, an engagement, a delegation —
+kept, and the writer files it as his right version (INV-MEM-041,
+[`memory-writer.md`](memory-writer.md)). A turn no message of his opened — a scheduled turn, an engagement, a delegation —
 marks nothing, and says so.
 
 **The engager query reads the same memory.** An executor's `query_engager` asks a
