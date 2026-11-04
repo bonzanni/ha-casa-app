@@ -16,6 +16,7 @@ MUST_BE_EXECUTABLE = [
     ".githooks/pre-commit",
     ".githooks/pre-push",
     "scripts/attest.sh",
+    "scripts/browser-suite-affected.sh",
     "scripts/deny-sweep.sh",
     "scripts/docs_impact.sh",
     "scripts/gate.sh",

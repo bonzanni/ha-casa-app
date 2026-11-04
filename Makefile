@@ -1,6 +1,6 @@
 PY := venv_test/bin/python
 
-.PHONY: help setup test-unit test-unit-serial test-browser test-browser-integration test-browser-viewer-engines test-docker test-image lint
+.PHONY: help setup test-casa test-unit test-unit-serial test-browser test-browser-integration test-browser-viewer-engines test-docker test-image lint
 .DEFAULT_GOAL := help
 
 help: ## Show this help
@@ -90,13 +90,17 @@ suite-run: ## Protected entry point for any caller that needs the unit suite
 # cage, one after the other, so the lock is never acquired while it is already held.
 # A red Casa suite stops before the browser suite runs. PYTEST_ARGS= keeps a selector
 # meant for one suite from leaking into the other through the sub-make.
-test-unit: ## Fast unit tests, parallel + memory-caged (except docker/slow); then test-browser
+# test-casa is Casa's half alone: scripts/gate.sh runs it unconditionally and adds the
+# browser half only when the change can affect it (scripts/browser-suite-affected.sh).
+test-casa: ## Casa's unit tests only, parallel + memory-caged (except docker/slow)
 	$(SUITE) $(PY) -m pytest tests/ -m "not docker and not slow" -n auto --maxprocesses=12 --dist loadfile --tb=short
+
+test-unit: test-casa ## Fast unit tests, parallel + memory-caged (except docker/slow); then test-browser
 	@$(MAKE) --no-print-directory test-browser PYTEST_ARGS=
 
-test-unit-serial: ## Same suite, one process (for debugging a failure); then test-browser
+test-unit-serial: ## Same suite, one process (for debugging a failure); then test-browser, also serial
 	$(SUITE) $(PY) -m pytest tests/ -m "not docker and not slow" --tb=short
-	@$(MAKE) --no-print-directory test-browser PYTEST_ARGS=
+	@$(MAKE) --no-print-directory test-browser PYTEST_ARGS= BROWSER_XDIST=
 
 # The optional Casa Browser app (casa_browser/) has its own Python 3.13 venv, built by
 # scripts/setup-browser-dev.sh, and its own tests under casa_browser/tests. Its unit
@@ -104,6 +108,13 @@ test-unit-serial: ## Same suite, one process (for debugging a failure); then tes
 # PYTEST_ARGS replaces the default selection with pytest selectors relative to the repo
 # (make test-browser PYTEST_ARGS='casa_browser/tests/test_x.py'). Until casa_browser/
 # exists in the tree both targets say so and succeed: there is nothing to run.
+# Parallel like Casa's suite, but --dist worksteal rather than loadfile: one module
+# (test_controller.py) holds about 40% of the suite's time, so file-scoped distribution
+# leaves that module as the whole wall clock. Splitting a module across workers needs its
+# tests not to depend on one another's leftovers; the suite was measured green that way on
+# repeated runs, and a test that ever comes to need its module on one worker gets an
+# xdist_group mark, with this line switched to --dist loadgroup, rather than a serial run.
+BROWSER_XDIST := -n auto --maxprocesses=12 --dist worksteal
 BROWSER_APP := casa_browser
 BROWSER_PY := venv_browser/bin/python
 BROWSER_PRESENT := $(wildcard $(BROWSER_APP)/config.yaml)
@@ -113,7 +124,8 @@ ifeq ($(BROWSER_PRESENT),)
 	@echo "test-browser: no $(BROWSER_APP)/ app in this tree — nothing to run"
 else
 	@test -x $(BROWSER_PY) || { echo "test-browser: $(BROWSER_PY) is missing — run scripts/setup-browser-dev.sh" >&2; exit 1; }
-	$(SUITE) $(BROWSER_PY) -m pytest $(or $(PYTEST_ARGS),$(BROWSER_APP)/tests) -m "not docker and not slow" --tb=short
+	@$(BROWSER_PY) -c 'import xdist' 2>/dev/null || { echo "test-browser: $(BROWSER_PY) has no pytest-xdist — re-run scripts/setup-browser-dev.sh" >&2; exit 1; }
+	$(SUITE) $(BROWSER_PY) -m pytest $(or $(PYTEST_ARGS),$(BROWSER_APP)/tests) -m "not docker and not slow" $(BROWSER_XDIST) --tb=short
 endif
 
 test-browser-integration: ## Browser app integration tests, in the app's built test image

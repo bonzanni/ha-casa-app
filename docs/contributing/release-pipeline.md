@@ -11,7 +11,8 @@ last_reviewed: 2026-11-04
 How the repository's app folders become published images, tags and GitHub Releases, and
 which test lane runs for which app. It covers `.github/workflows/deploy.yml`,
 `.github/workflows/deploy-app.yml`, `scripts/browser-release-matrix.py`, the per-app
-lint and unit lanes, and the `make` targets that run them. What a document must say about
+lint and unit lanes, the `make` targets that run them, and whether `scripts/gate.sh` runs
+the browser suite. What a document must say about
 an app's code is [`doc-contract.md`](doc-contract.md); what may be published at all is
 [`../doctrine/publishing.md`](../doctrine/publishing.md).
 
@@ -66,9 +67,15 @@ validation build is.
 `tier2-functional` in `.github/workflows/qa.yml` (Python 3.11, `venv_test/` locally). The
 browser app's is the `browser-unit` job (Python 3.13, `venv_browser/` from
 `scripts/setup-browser-dev.sh`), with the same opt-out selection — everything except
-`docker` and `slow`. `make test-unit` and `make test-unit-serial` run Casa's suite and then
-`make test-browser`, as two separate invocations under the suite lock and memory cage, so
-the lock is never taken while held. `make test-browser-integration` runs the browser app's
+`docker` and `slow`. Locally, `make test-casa` and `make test-browser` run their suite in
+parallel under pytest-xdist, up to 12 workers: Casa's with `--dist loadfile`, which keeps
+each test module on one worker, and the browser app's with `--dist worksteal`, which splits
+its modules across workers, since one module holds a large share of its time. The
+`browser-unit` CI job runs its suite in one process.
+`make test-unit` runs Casa's suite (`make test-casa`) and then `make test-browser`, and
+`make test-unit-serial` runs each of the two suites in one process; each
+pair is two separate invocations under the suite lock and memory cage, so the lock is never
+taken while held. `make test-browser-integration` runs the browser app's
 integration tests in its built test image; the `browser-integration` job runs the same script
 (`casa_browser/test/run-integration.sh`) only on the nightly schedule (04:00 UTC) and on a
 manual dispatch, never on a push or a pull request, since it takes about 40 minutes; a red
@@ -77,6 +84,19 @@ container as Supervisor starts it (`NET_ADMIN` only, `seccomp=unconfined`), then
 live view's viewer in WebKit and Chromium (`run-viewer-engines.sh`, Playwright's image). The app linter in `.github/workflows/lint.yml`
 runs once per app. Until `casa_browser/` exists, every browser lane and target states that
 there is nothing to run and succeeds; once it exists, a lane that collects no test fails.
+
+**The local gate's browser suite.** `scripts/gate.sh` always runs `make test-casa`, and runs
+the browser suite only when `scripts/browser-suite-affected.sh` says the change needs it. The
+decision comes from git alone: the paths of the tree diff between the gate's base and `HEAD`,
+with rename detection off, so a move reports both its old and its new path. It is
+fail-closed: only a change whose every path lies under the Casa-only roots (`casa/`, `tests/`,
+`docs/`, `test-local/`) skips the suite, and the gate prints `browser suite skipped:` with
+the range. Any other path runs it — `casa_browser/` and also the `Makefile`, `scripts/`,
+`pytest.ini`, `.githooks/`, `.gitattributes`, `.github/` and any new top-level path — as
+does a classifier that fails. When the suite runs, the gate runs it in a fresh checkout of
+`HEAD` with the Casa-only roots removed, so a browser test that comes to depend on one of
+them fails at the commit that adds the dependency. `CASA_GATE_BROWSER=always` forces the
+suite. CI is unaffected: the `browser-unit` job runs on every pull request.
 
 ## Failure behavior
 
@@ -117,9 +137,11 @@ those lists disagrees with the script's.
 - `.github/workflows/deploy.yml`
 - `.github/workflows/deploy-app.yml`
 - `scripts/setup-browser-dev.sh`
+- `scripts/browser-suite-affected.sh`
 
 **Tests**
 - `tests/test_browser_release_matrix.py`
+- `tests/test_browser_suite_affected.py`
 
 **Related**
 - [`contributing/doc-contract.md`](../contributing/doc-contract.md)

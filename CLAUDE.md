@@ -26,10 +26,13 @@ make setup        # builds a WSL/Linux venv at venv_test/ + installs the git hoo
 Then:
 ```bash
 make test-unit    # the whole opt-out selection, PARALLEL + memory-caged (a minute or two)
-make test-unit-serial  # same suite, one process — for debugging a failure
+make test-unit-serial  # same suites, one process each — for debugging a failure
 make test-docker  # docker-backed unit tests
 make test-browser # the optional casa_browser/ app's suite (Python 3.13, venv_browser/ via
-                  # scripts/setup-browser-dev.sh); test-unit runs it after Casa's suite
+                  # scripts/setup-browser-dev.sh), parallel with --dist worksteal; test-unit
+                  # runs it after Casa's suite (make test-casa). scripts/gate.sh runs it only
+                  # when the change touches more than casa/ tests/ docs/ test-local/
+                  # (CASA_GATE_BROWSER=always forces it); CI runs both suites on every PR
 ```
 `test-unit` runs `-n auto --maxprocesses=12 --dist loadfile`; file-scoped
 distribution keeps a module's tests on one worker, which is what the suites that
