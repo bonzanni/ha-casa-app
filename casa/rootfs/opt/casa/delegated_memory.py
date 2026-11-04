@@ -160,3 +160,47 @@ def capture_desk_reply(*, channel, chat_id, user_id, user_name,
         logging.getLogger(__name__).exception(
             "memory: the operator's desk reply was not captured")
 
+
+# ---------------------------------------------------------------------------
+# INV-MEM-044: what the operator types in the engagement topic of such a
+# specialist reaches the specialist's turn, and that engagement captures
+# nothing (INV-MEM-032), so his words were lost. They are his message like any
+# other: captured once, as he typed them, classified like any message of his.
+# ---------------------------------------------------------------------------
+
+def capture_topic_message(*, channel, engagement, user_id, user_name,
+                          message_id, resident: str, text: str) -> None:
+    """Capture the operator's own words *text*, sent in the topic of
+    *engagement*, as his message: when it is a specialist's engagement, that
+    specialist keeps no memory and the sender is the channel's configured
+    operator. Speaker ``operator``, origin ``operator``, no floor, the chat's
+    *resident* as its role, keyed by the topic message (``engagement_key``,
+    the key a memory-writing specialist's engagement gives it). Detached,
+    like the desk reply: no run's transcript holds his words. Never raises."""
+    import logging
+    try:
+        if (getattr(engagement, "kind", "") != "specialist"
+                or not channel._user_id_is_operator(user_id)):
+            return
+        name = str(getattr(channel, "name", "") or "")
+        from channel_policy import writes_to_bank
+        from memory import capture, eligibility, occurrence
+        rule = eligibility.admit(
+            eligibility.Source.TOPIC_MESSAGE, text=text,
+            channel_writes=writes_to_bank(name),
+            role_writes_memory=role_writes_memory(engagement.role_or_type))
+        if rule is None:
+            return
+        item = capture.event(
+            source_key=(occurrence.engagement_key(name, engagement.id,
+                                                  str(message_id))
+                        if message_id is not None else None),
+            role=resident, channel=name, speaker_kind="operator",
+            origin_kind="operator", text=text, eligibility=rule,
+            origin_tier=None, speaker_id=str(user_id),
+            speaker_name=user_name,
+            provider_message_id=None if message_id is None else str(message_id))
+        capture.record_detached(item)
+    except Exception:  # noqa: BLE001 — memory never fails a topic turn
+        logging.getLogger(__name__).exception(
+            "memory: the operator's topic message was not captured")

@@ -53,6 +53,9 @@ class Source(str, enum.Enum):
     #: The operator's own words replying on the desk of a specialist that
     #: keeps no memory (INV-MEM-043): his message, never the specialist's.
     DESK_REPLY = "desk_reply"
+    #: The operator's own words in the engagement topic of a specialist that
+    #: keeps no memory (INV-MEM-044): his message, never the specialist's.
+    TOPIC_MESSAGE = "topic_message"
 
 
 def admit(
@@ -87,6 +90,7 @@ def admit(
     if source in (Source.ENGAGEMENT_TURN, Source.ENGAGEMENT_ANSWER,
                   Source.ENGAGEMENT_SUMMARY):
         return source.value if role_writes_memory else None
-    if source in (Source.SPECIALIST_POST, Source.DESK_REPLY):
+    if source in (Source.SPECIALIST_POST, Source.DESK_REPLY,
+                  Source.TOPIC_MESSAGE):
         return None if role_writes_memory else source.value
     raise ValueError(f"unknown capture source {source!r}")

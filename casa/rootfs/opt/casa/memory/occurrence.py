@@ -43,6 +43,14 @@ def provider_key(channel: str, chat: str, provider_message_id: str) -> str:
     return f"{PROVIDER}:{_digest(channel, chat, provider_message_id)}"
 
 
+def engagement_key(channel: str, engagement_id: str,
+                   provider_message_id: str) -> str:
+    """The key of an operator message in an engagement's topic: one key per
+    topic message, whichever seam captures it."""
+    return provider_key(channel, f"engagement:{engagement_id}",
+                        provider_message_id)
+
+
 def post_key(channel: str, chat: str, owner: str, tool_use_id: str,
              slot: str) -> str:
     """The key of Casa's line for one post Casa delivered for a specialist."""

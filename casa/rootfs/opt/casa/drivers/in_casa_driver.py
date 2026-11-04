@@ -170,8 +170,8 @@ class _EngagementCapture:
         eid = self._engagement.id
         await self._record(
             eligibility.Source.ENGAGEMENT_TURN, text,
-            source_key=occurrence.provider_key(
-                self.CHANNEL, f"engagement:{eid}", str(tg_message_id)),
+            source_key=occurrence.engagement_key(
+                self.CHANNEL, eid, str(tg_message_id)),
             provider_message_id=str(tg_message_id),
             # Only the operator reads at ``private``; a lower floor means a
             # lower-clearance sender has steered this engagement.
