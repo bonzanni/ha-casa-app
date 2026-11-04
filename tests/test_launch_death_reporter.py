@@ -880,7 +880,7 @@ class TestTheBoundaries:
 
 class TextBearingCutoffClient(ScriptedCutoffClient):
     """The production shape in full: the executor narrates, calls tools, gets
-    results — and THEN the stream dies. Text WAS posted, so `no_visible_output`
+    results — and THEN the stream dies. Text WAS written, so `no_visible_output`
     cannot catch it; only the missing ResultMessage can.
 
     Found by mutation-checking: the frozen red case's stream carries no text,
@@ -903,7 +903,7 @@ class TextBearingCutoffClient(ScriptedCutoffClient):
         res = ToolResultBlock(tool_use_id="t1", content="removed", is_error=False)
         type(self).frames_yielded += 1
         yield UserMessage(content=[res])
-        # EOF mid-tool-loop. Text was posted; no ResultMessage ever arrives.
+        # EOF mid-tool-loop. Text was written; no ResultMessage ever arrives.
 
 
 class TestTheMissingResultArmOnItsOwn:
@@ -927,11 +927,13 @@ class TestTheMissingResultArmOnItsOwn:
         assert payload["status"] == "pending", payload     # §2.A
         await _drain_owner()
 
-        # Text really did reach the topic, so `no_visible_output` cannot fire.
+        # The turn wrote text, so `no_visible_output` cannot fire. An
+        # executor's topic posts only the text after the turn's last call,
+        # and this turn wrote none there: nothing was streamed or finalized.
         assert TextBearingCutoffClient.frames_yielded == 3
         assert TextBearingCutoffClient.result_messages_yielded == 0
-        assert probe.finalize_count == 1
-        assert probe.emit_count >= 1
+        assert probe.finalize_count == 0
+        assert probe.emit_count == 0
 
         created_id = next(iter(registry._records))
         rec = registry.get(created_id)

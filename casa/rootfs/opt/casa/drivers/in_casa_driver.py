@@ -270,6 +270,57 @@ def _is_fresh_job(engagement: Any) -> bool:
     return background_jobs.is_fresh_job(engagement)
 
 
+_CLOSING_POST_TIMEOUT_S = 15.0
+"""Bound on an executor's closing-text post once its turn has raised or been
+cancelled, so a hung Telegram cannot hold the failure (or a stop) open."""
+
+
+async def _post_closing(stream: Any, text: str, *, bounded: bool) -> Any:
+    """Post an executor's closing text the way a streamed turn posts a single
+    text block — a raw first ``emit``, then ``finalize`` renders it in place —
+    so every Telegram failure leaves what streaming that block would have
+    left, and never an earlier block. The two run as ONE task the turn's
+    cancellation cannot cut: never streamed, the text is not on screen until
+    this post lands, so a cancellation — during the post, or before it on the
+    way out of a broken turn (*bounded*) — waits for this same post, within
+    :data:`_CLOSING_POST_TIMEOUT_S`, and then propagates. The post is never
+    restarted: a second one could repeat a page the first already sent."""
+    async def _deliver() -> Any:
+        await stream.emit(text)
+        return await stream.finalize(text)
+
+    post = asyncio.ensure_future(_deliver())
+    try:
+        if bounded:
+            return await asyncio.wait_for(
+                asyncio.shield(post), _CLOSING_POST_TIMEOUT_S)
+        return await asyncio.shield(post)
+    except asyncio.CancelledError:
+        await asyncio.wait({post}, timeout=_CLOSING_POST_TIMEOUT_S)
+        raise
+    finally:
+        if not post.done():
+            post.cancel()
+
+
+def _fold_closing_text(tail: list[str], sdk_msg: Any) -> None:
+    """An executor topic's rule: a turn's posted body is the text it wrote
+    after its LAST main-loop tool call. Fold one main-loop assistant message
+    into *tail*, the text-bearing runs written since the latest call: a call
+    block empties it, a text block extends the current run. Decided by block
+    position alone, never by the words."""
+    run: list[str] = []
+    for block in getattr(sdk_msg, "content", []) or []:
+        if isinstance(block, ToolUseBlock):
+            tail.clear()
+            run = []
+        elif isinstance(block, TextBlock):
+            run.append(block.text)
+    text = "".join(run)
+    if text:
+        tail.append(text)
+
+
 class _WithheldStream:
     """#1301: the stream of a turn whose record has no topic (a quiet
     scheduled run). Its words are withheld by design, not lost: ``finalize``
@@ -1355,6 +1406,14 @@ class InCasaDriver(DriverProtocol):
         # frozen with a marker and further assistant text is skipped (the
         # stream still drains). Executor engagements are out of scope.
         cap_output = getattr(engagement, "kind", "") == "specialist"
+        # An executor's topic shows a turn's steps in its step log, so the
+        # body it posts is only the text written after the turn's last
+        # main-loop tool call (_fold_closing_text): nothing streams while the
+        # turn runs, and the closing text is posted once, when it is final.
+        # Every other kind — a specialist's conversation, a job — streams
+        # every text block as before.
+        closing_only = getattr(engagement, "kind", "") == "executor"
+        closing: list[str] = []
         stream_truncated = False
         idx = 0  # Phase 4b: per-turn AssistantMessage counter.
         started_ms = time.monotonic() * 1000  # Phase 4b: turn duration anchor.
@@ -1634,6 +1693,11 @@ class InCasaDriver(DriverProtocol):
                             sdk_msg, self._session_ids.get(engagement.id))
                     # Phase 3b streaming — Task 6 output bound for specialists.
                     if isinstance(sdk_msg, AssistantMessage) and not stream_truncated:
+                        # A sub-agent writes inside a main-loop call that has
+                        # not returned: its words are never the closing text.
+                        if closing_only and getattr(
+                                sdk_msg, "parent_tool_use_id", None) is None:
+                            _fold_closing_text(closing, sdk_msg)
                         msg_text = "".join(
                             b.text for b in getattr(sdk_msg, "content", [])
                             if isinstance(b, TextBlock)
@@ -1661,8 +1725,23 @@ class InCasaDriver(DriverProtocol):
                                 accumulated = candidate
                             # #1207: nothing written after a call that is
                             # waiting on the operator's approval is shown.
-                            if approval_cut.cut is None:
+                            if approval_cut.cut is None and not closing_only:
                                 await stream.emit(accumulated)
+        except (Exception, asyncio.CancelledError):
+            # A turn that raises or is cancelled never reaches the finalize
+            # below. Streamed, its words were already on screen; an
+            # executor's closing text is posted here instead, so a question
+            # written before the turn broke is not lost. Best effort and
+            # bounded: the turn's own failure is what propagates.
+            if closing_only and closing:
+                try:
+                    await _post_closing(
+                        stream, "\n\n".join(closing).strip(), bounded=True)
+                except Exception:  # noqa: BLE001
+                    logger.warning(
+                        "engagement %s closing text not posted after a "
+                        "failed turn", engagement.id[:8], exc_info=True)
+            raise
         finally:
             # #1033: the holder's batch never outlives its turn. Reached
             # synchronously from the lock's release (no await between), so no
@@ -1680,7 +1759,8 @@ class InCasaDriver(DriverProtocol):
         # before that call — under the same cap and marker as the stream.
         cut = approval_cut.cut
         if cut is None:
-            final = accumulated.strip()
+            final = ("\n\n".join(closing) if closing_only
+                     else accumulated).strip()
         else:
             import specialist_limits
             kept = "\n\n".join(messages[:cut])
@@ -1694,7 +1774,8 @@ class InCasaDriver(DriverProtocol):
         # enum's own documented rule, hence isinstance and not truthiness.
         delivery_outcome = DeliveryOutcome.UNKNOWN
         if final:
-            res = await stream.finalize(final)
+            res = (await _post_closing(stream, final, bounded=False)
+                   if closing_only else await stream.finalize(final))
             if isinstance(res, DeliveryOutcome):
                 delivery_outcome = res
 
@@ -1854,11 +1935,14 @@ class InCasaDriver(DriverProtocol):
             reason = ""
             if result_msg is None:
                 reason = LAUNCH_MISSING_RESULT
-            elif not final and cut is None:
+            elif not accumulated.strip() and cut is None:
                 # #1207: a launch whose words were all withheld by a call
                 # still waiting on the operator's approval is not mute — the
                 # keyboard in the operator's DM is what it shows (a record
-                # exists only once that keyboard was posted).
+                # exists only once that keyboard was posted). Nor is an
+                # executor launch that wrote only before its last call: the
+                # closing rule withheld those words, and the topic shows its
+                # steps. Mute is a turn that wrote nothing at all.
                 reason = LAUNCH_NO_VISIBLE_OUTPUT
             elif delivery_outcome is DeliveryOutcome.NOT_DELIVERED:
                 # #665: strongest-known-first — a cut-off turn keeps its

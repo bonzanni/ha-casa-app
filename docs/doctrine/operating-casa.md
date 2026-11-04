@@ -60,7 +60,8 @@ file and a tool call are the agent's own machinery: "per recipe step 6: commit, 
 `casa_reload(...)`" tells the operator nothing he can use. Say in plain words what was found,
 changed or is needed from him; a result an agent is told to relay verbatim stays as written.
 Nor are the agent's steps news for him ("now committing and reloading"), so they are not
-narrated. A completion text is written for him too: it says in plain words what the agent
+narrated; in an in-process executor's topic Casa posts only the text a turn writes after its
+last tool call, so a question belongs at the end of the turn. A completion text is written for him too: it says in plain words what the agent
 changed and what is left for him, and a commit SHA, a result field or a reload scope goes in
 the completion's artifacts, never in its text.
 The configurator's prompt carries this rule for its topic (its Output discipline,

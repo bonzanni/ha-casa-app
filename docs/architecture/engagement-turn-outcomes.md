@@ -28,7 +28,7 @@ admission ticket. The reasons are under each invariant below.
 
 ## Contracts & invariants
 
-**INV-ENG-011**: An `in_casa` LAUNCH turn ends holding the turn's own terminal artifact and either a terminal engagement record, operator-visible topic output, or — when every word it wrote was withheld because a call it made is still waiting on the operator's approval (#1207) — that approval's keyboard posted to the operator — or the launch's owner reports the death: one durable strict `error` transition, one bounded notice into the still-open topic, a bounded driver teardown, and the topic aborted, whether or not the tool call that launched the engagement is still running. It is never left `active` behind an ended transport with nothing posted, and the path never writes `completed` and never captures a finalize summary. A launch turn that stopped at its turn limit is never reported dead (INV-ENG-020); when its one line fails or is cancelled it is left `active`, transport live, with nothing posted.
+**INV-ENG-011**: An `in_casa` LAUNCH turn ends holding the turn's own terminal artifact and either a terminal engagement record, operator-visible topic output, words it wrote that an executor's topic withheld because they came before the turn's last tool call, or — when every word it wrote was withheld because a call it made is still waiting on the operator's approval (#1207) — that approval's keyboard posted to the operator — or the launch's owner reports the death: one durable strict `error` transition, one bounded notice into the still-open topic, a bounded driver teardown, and the topic aborted, whether or not the tool call that launched the engagement is still running. It is never left `active` behind an ended transport with nothing posted, and the path never writes `completed` and never captures a finalize summary. A launch turn that stopped at its turn limit is never reported dead (INV-ENG-020); when its one line fails or is cancelled it is left `active`, transport live, with nothing posted.
 
 A driver's `start()` returning has always meant *the first turn ran to its end*, never *the
 engagement reported anything*, and that gap is where a launch turn could die unnoticed. The
@@ -46,7 +46,11 @@ whose words were all withheld because a call it made is still waiting on the ope
 approval is awaiting the operator too, on the keyboard: the driver observes a cut that no
 later consume released, and records nothing, because a record of that call exists only once
 its keyboard was posted. A cut that a consume
-released, a deny that left no keyboard, or no deny at all is still the mute launch.
+released, a deny that left no keyboard, or no deny at all is still the mute launch. An
+executor's topic is posted only the text a turn wrote after its last tool call
+([`engagements.md`](engagements.md)); a launch that wrote words only before that call shows
+its steps in the step log, and its words were withheld by that rule rather than lost, so it
+is not mute either. The mute launch is one that wrote no words at all.
 
 Three properties make the report safe rather than merely present. The driver only
 **observes** — it records what the turn left behind and neither raises nor reads the
@@ -185,6 +189,7 @@ by that arm's owner; the driver never raises it and never reads the record's sta
 - `tests/test_turn_limit_engagement_regressions.py`
 - `tests/test_in_casa_driver.py`
 - `tests/test_pending_approval_topic.py`
+- `tests/test_in_casa_executor_closing_text.py`
 
 **Related**
 - [`architecture/engagements.md`](../architecture/engagements.md)

@@ -67,7 +67,19 @@ Each text records steps that have already started, so a close that fails, or a t
 closed first by a completion, leaves a true record, never a claim about the present. No
 write is awaited by the turn, so a slow Telegram never delays a turn or changes its
 outcome; writes are coalesced and spaced, and each Telegram call is bounded. Nothing is
-persisted. A `claude_code` topic keeps its pinned
+persisted. Because the log shows the steps, the topic is given only the text a turn wrote
+after its last main-loop tool call: text written before or between calls ("now let me read
+the recipe") is not posted, a turn with no text after its last call posts nothing beyond
+the log, and a turn with no calls posts all its text. Which text that is follows from where
+the blocks sit, never from the words. Nothing streams while the turn runs, so no interim
+line is ever shown and later replaced. The closing text is posted when the turn ends the
+way a streamed turn posts a single block — sent raw, then rendered in place, so a failed
+render leaves the raw closing text, never an earlier line; a long text is sent one page at a
+time, so that a failed page never drops a later one — or, when the turn raises or is
+cancelled first, on its way out, within a bound. A cancellation that lands while the text is being sent waits for that
+same send, within the same bound, and the send is never restarted, so no page repeats. A sub-agent's words are inside a call and are never the closing text. A specialist's
+topic, where the operator talks with the agent turn by turn and no step log runs, still
+streams every text block. A `claude_code` topic keeps its pinned
 live summary instead. Its edits are spaced at least ten seconds apart, except when the status
 changes or a turn ends; an activity change that arrives inside that window is shown when the window ends,
 so even a short command appears, and the elapsed time on a working turn refreshes every
@@ -221,11 +233,13 @@ persisting ledger checks it — is answered in the same document.
 - `casa/rootfs/opt/casa/tools.py::_post_topic_opening`
 - `casa/rootfs/opt/casa/tools.py::engagement_launch_prompt`
 - `casa/rootfs/opt/casa/drivers/turn_progress.py::TurnProgressLine`
+- `casa/rootfs/opt/casa/drivers/in_casa_driver.py::_fold_closing_text`
 
 **Tests**
 - `tests/test_engagement_stays_open.py`
 - `tests/test_turn_progress.py`
 - `tests/test_in_casa_turn_progress.py`
+- `tests/test_in_casa_executor_closing_text.py`
 - `tests/test_engage_executor_tool.py::TestEngageHandoffLines`
 - `tests/test_delegate_to_agent.py`
 - `tests/test_delegate_to_agent_interactive.py`

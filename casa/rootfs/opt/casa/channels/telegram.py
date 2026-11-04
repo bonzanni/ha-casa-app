@@ -7405,9 +7405,22 @@ class TopicStreamHandle:
             return (DeliveryOutcome.UNKNOWN if self._maybe_delivered
                     else DeliveryOutcome.NOT_DELIVERED)
 
+        if self._message_id is None and len(render_paged(full_text)) > 1:
+            # No prior emit and several pages (an executor's closing text is
+            # never streamed, so it always arrives here): each page is sent
+            # on its own, as the overflow pages below are, so one failed page
+            # never drops the pages after it — where a question usually is.
+            landed = False
+            for display, entities in render_paged(full_text):
+                landed = await self._send_page(
+                    bot, display, entities) or landed
+            # A page that landed is on screen; with none landed the raises
+            # cannot say whether one was accepted (#665, declared residual).
+            return (DeliveryOutcome.DELIVERED if landed
+                    else DeliveryOutcome.UNKNOWN)
+
         if self._message_id is None:
-            # No prior emit: fresh message(s). v2 (RC3): send_response_to_topic
-            # paginates internally, so any size delivers rendered.
+            # No prior emit, one page: a fresh rendered message.
             try:
                 await self._channel.send_response_to_topic(
                     self._topic_id, full_text,
@@ -7481,36 +7494,41 @@ class TopicStreamHandle:
                     "Stream finalize link-target send failed: %s", exc,
                 )
         for display, entities in pages[1:]:
-            try:
-                if entities is not None:
-                    try:
-                        await bot.send_message(
-                            chat_id=self._channel.engagement_supergroup_id,
-                            message_thread_id=self._topic_id,
-                            text=display, entities=entities,
-                        )
-                    except BadRequest:
-                        for chunk in self._channel._plain_fallback_chunks(
-                                display, entities):
-                            await bot.send_message(
-                                chat_id=self._channel.engagement_supergroup_id,
-                                message_thread_id=self._topic_id,
-                                text=chunk,
-                            )
-                else:
-                    await bot.send_message(
-                        chat_id=self._channel.engagement_supergroup_id,
-                        message_thread_id=self._topic_id,
-                        text=display,
-                    )
-            except TelegramError as exc:
-                logger.warning(
-                    "Stream finalize overflow send failed: %s", exc,
-                )
+            await self._send_page(bot, display, entities)
         # An emit landed (this branch requires ``_message_id``), so the head
         # of the turn's output reached the topic: DELIVERED by the latch,
         # whatever the final edit and the overflow pages did above.
         return DeliveryOutcome.DELIVERED
+
+
+    async def _send_page(self, bot: Any, display: str, entities: Any) -> bool:
+        """Send one rendered page as its own topic message; an entity
+        BadRequest falls back to the page's plain chunks. A failure is logged
+        and returned as False, never raised, so the next page is still sent."""
+        chat_id = self._channel.engagement_supergroup_id
+        try:
+            if entities is not None:
+                try:
+                    await bot.send_message(
+                        chat_id=chat_id, message_thread_id=self._topic_id,
+                        text=display, entities=entities,
+                    )
+                except BadRequest:
+                    for chunk in self._channel._plain_fallback_chunks(
+                            display, entities):
+                        await bot.send_message(
+                            chat_id=chat_id, message_thread_id=self._topic_id,
+                            text=chunk,
+                        )
+            else:
+                await bot.send_message(
+                    chat_id=chat_id, message_thread_id=self._topic_id,
+                    text=display,
+                )
+        except TelegramError as exc:
+            logger.warning("Stream finalize page send failed: %s", exc)
+            return False
+        return True
 
 
 def _split_message(text: str) -> list[str]:

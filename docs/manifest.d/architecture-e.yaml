@@ -159,10 +159,12 @@
     - casa/rootfs/opt/casa/tools.py::_post_topic_opening
     - casa/rootfs/opt/casa/tools.py::engagement_launch_prompt
     - casa/rootfs/opt/casa/drivers/turn_progress.py::TurnProgressLine
+    - casa/rootfs/opt/casa/drivers/in_casa_driver.py::_fold_closing_text
   tests:
     - tests/test_engagement_stays_open.py
     - tests/test_turn_progress.py
     - tests/test_in_casa_turn_progress.py
+    - tests/test_in_casa_executor_closing_text.py
     - tests/test_engage_executor_tool.py::TestEngageHandoffLines
     - tests/test_delegate_to_agent.py
     - tests/test_delegate_to_agent_interactive.py

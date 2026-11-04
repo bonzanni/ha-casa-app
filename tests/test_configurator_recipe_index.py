@@ -169,16 +169,19 @@ def _output_discipline() -> str:
 
 def test_the_topic_is_not_told_each_step_as_it_runs():
     """casa-test, a Fido upgrade: the topic got "Now let me read the specialist/upgrade
-    recipe." and "Committed and reloaded. Finalizing with completion summary." The prompt
-    asked for a status sentence before every tool call; the prompt now says not to
-    narrate steps, which are not news for the operator."""
+    recipe." and "Committed and reloaded. Finalizing with completion summary." A prompt
+    line asking not to narrate did not hold for the text written before each tool call,
+    so the driver now posts only a turn's closing text; the prompt says so and keeps
+    the one instruction that matters to the operator — end the turn with the question."""
     section = _output_discipline()
     assert "One or two sentences of status update, then the tool call." not in section
+    assert "Do not narrate your steps" not in section
     assert section.count(
-        "Do not narrate your steps (no \"now let me read...\", \"committing and "
-        "reloading...\" or \"finalizing...\" lines): they are not news for him. Write in "
-        "the topic when there is something for him: a question, something you found that "
-        "he should know, or a result you are told to relay. Be terse.") == 1
+        "Only the text you write after your last tool call in a turn reaches him; what "
+        "you write before or between tool calls is not shown, and the topic already shows "
+        "your steps. So end your turn with any question you have for him, and put there "
+        "everything he should see: something you found that he should know, or a result "
+        "you are told to relay. Be terse.") == 1
 
 
 def test_the_completion_text_is_written_for_the_operator():

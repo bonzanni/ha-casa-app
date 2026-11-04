@@ -997,6 +997,8 @@ def test_turn_outcomes_row_moves_to_launch_shard():
     The row moves unchanged: its parsed content is pinned by digest to its
     base value, and no later change of the split edits it. The eval-framework
     row stays in the E shard (membership only, no count over the shard).
+    v0.347.11 binds the executor closing-text tests to INV-ENG-011 in this row,
+    so the digest is the row as it stands after that change.
 
     Specified by **astra** in the drive red-case round.
     """
@@ -1017,8 +1019,8 @@ def test_turn_outcomes_row_moves_to_launch_shard():
         json.dumps(rows[0], sort_keys=True).encode("utf-8")
     ).hexdigest()
     assert digest == (
-        "c7bec4456dd19d589cc13b0a726b473df3"
-        "ccd7833180dd77d57ec8bbaa59efd7"
+        "9dd20641f4b1dd7577a293100eb64c385b"
+        "db65a38c2867dd615e24a63063c891"
     ), digest
     retained = yaml.safe_load(
         (DOCS / "manifest.d/architecture-e.yaml").read_text()

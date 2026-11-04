@@ -135,6 +135,7 @@ RAW_TRANSPORT_FUNCTIONS = {
     ("channels/telegram.py", "edit_topic_message_rich"): "topic",
     ("channels/telegram.py", "emit"): "topic",                      # TopicStreamHandle
     ("channels/telegram.py", "finalize"): "topic",                  # TopicStreamHandle
+    ("channels/telegram.py", "_send_page"): "topic",                # TopicStreamHandle: one page of finalize
     ("channels/telegram.py", "post_ask_body_rich"): "topic",
     ("channels/telegram.py", "send_response_to_topic"): "topic",
     ("channels/telegram.py", "send_to_topic"): "topic",
