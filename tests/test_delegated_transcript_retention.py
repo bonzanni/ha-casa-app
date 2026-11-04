@@ -41,6 +41,7 @@ except ImportError:
     from test_delegate_to_agent import _origin, _specialist_cfg, _with_origin
 
 from memory import capture, transcript_runs
+from test_memory_capture import captured_events
 from test_memory_capture import mem  # noqa: F401 — a fixture
 from transcript_runs_support import (
     after_retention, events, kill_child, rows, unresolved,
@@ -344,7 +345,9 @@ async def test_a_failed_request_capture_leaves_the_run_unconfirmed(
     await _finish(await _run(env.tools, env.cfg, h), h)
     await transcript_runs.settle()
 
-    assert [e["eligibility"] for e in events(env.store)] == ["delegated_answer"]
+    # read through the spool too: under load the answer can wait there
+    assert [e["eligibility"] for e in await captured_events(env.store)] == [
+        "delegated_answer"]
     (row,) = rows(env.store)
     assert row["confirmed_at"] is None
     transcript_runs.retention_pass(env.store, now=after_retention())

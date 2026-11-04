@@ -823,6 +823,15 @@ async def handle_reply(
             channel._release_typing(context, str(chat_id))
             return
     try:
+        if not continuation and file_name is None:
+            # INV-MEM-043: what he typed is his message; memory keeps it when
+            # this specialist keeps none (never the post he quoted, never
+            # the specialist's reply)
+            from delegated_memory import capture_desk_reply
+            capture_desk_reply(
+                channel=channel, chat_id=chat_id, user_id=user_id, user_name=user_name,
+                message_id=message_id, resident=resident_role, desk_role=desk_role,
+                text=text or "")
         async with desk.use(reservation):
             if desk.faulted:
                 # S5 §14.8: a reply queued before the fault finds it here,

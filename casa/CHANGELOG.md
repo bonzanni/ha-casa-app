@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.347.8] - 2026-11-04
+
+### Fixed
+
+- When Fido (or another helper that keeps no memory) posts his answer to something you asked for, memory now marks that request done, noting that his answer came. Before, it kept the request open, waiting to learn what he said, which memory never keeps. If you tell the assistant his answer didn't help and ask him to try again, memory keeps the new request open. His messages while he works still close nothing.
+- When you reply to one of Fido's messages, memory now keeps what you wrote, as it does for anything else you say. Before, only the note that he answered was kept. What he wrote, and the message you replied to, still stay out of memory.
+
 ## [0.347.7] - 2026-11-04
 
 ### Fixed

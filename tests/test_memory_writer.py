@@ -242,6 +242,26 @@ async def test_a_correction_mark_is_read_as_his_right_version(tmp_path):
     assert CORRECTION_MEANS in " ".join(system.split())
 
 
+def test_casa_s_answer_line_is_read_as_the_errand_s_done_statement():
+    """INV-MEM-042: the writer's prompt quotes Casa's two lines for a
+    specialist that keeps no memory in the words ``post_line`` writes: his
+    answer line is the done-statement of the errand that asked him, not to
+    be waited on for its content, and the line that he only posted closes
+    nothing. Rewording either line without the prompt fails here."""
+    import result_broker as rb
+    from delegated_memory import post_line
+    answers = {post_line("Fido", k).removeprefix("Fido ") for k in rb.ANSWER_KINDS}
+    [answer] = answers
+    neutral = post_line("Fido", rb.OPERATOR_MESSAGE).removeprefix("Fido ")
+    assert answer != neutral
+    system = " ".join(writer.system_prompt().split())
+    assert ("A specialist who keeps no memory never has what he said "
+            "recorded, so do not wait for it.") in system
+    assert (f'"{answer}" is the done-statement of the errand that asked '
+            "him: mark it done") in system
+    assert f'"{neutral}" is not his answer and closes nothing.' in system
+
+
 async def test_the_worker_runs_what_a_wake_queues(tmp_path):
     """The background loop recovers, then runs a job as soon as it is
     woken, without waiting for its tick."""

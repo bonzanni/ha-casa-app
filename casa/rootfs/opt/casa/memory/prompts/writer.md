@@ -58,6 +58,11 @@ you have in full.
   `earlier: Rome (until 2026-03-02)`. Never leave two current values.
 - Retire an errand when its done-statement arrives, and errands tied to
   something that was replaced.
+- A specialist who keeps no memory never has what he said recorded, so do
+  not wait for it. Casa's line that he "posted his answer to your chat." is
+  the done-statement of the errand that asked him: mark it done, dated,
+  noting that his answer came and what it said is not recorded. A line that
+  he "posted to your chat." is not his answer and closes nothing.
 - A `line` names the need an entry answers, in the operator's words, and never
   states a value. Cues are short words or phrases a later reader might look
   for; add them, never paraphrase them away.

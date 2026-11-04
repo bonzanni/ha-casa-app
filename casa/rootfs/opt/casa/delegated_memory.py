@@ -114,3 +114,49 @@ def capture_post_line(*, channel: str, chat_id, operator_chat, resident: str,
     except Exception:  # noqa: BLE001 — a memory line never fails a send
         logging.getLogger(__name__).exception(
             "memory: the line for a specialist's post was not captured")
+
+
+# ---------------------------------------------------------------------------
+# INV-MEM-043: a swipe-reply on such a specialist's post reaches his desk, not
+# a resident turn, so no turn captured it, and memory kept only the line that
+# his answer came. The operator's own words are his message like any other:
+# captured once, as he typed them, and classified like any message of his.
+# ---------------------------------------------------------------------------
+
+def capture_desk_reply(*, channel, chat_id, user_id, user_name,
+                       message_id, resident: str, desk_role: str,
+                       text: str) -> None:
+    """Capture the operator's own words *text*, sent as a reply on the desk
+    of *desk_role* in *chat_id*, as his message: when that specialist keeps
+    no memory and the chat is the channel's configured operator chat.
+    Speaker ``operator``, origin ``operator``, no floor, the chat's
+    *resident* as its role, keyed by the provider's message id. Detached,
+    like Casa's post line: his words come from no run's transcript, so no
+    run waits on the write. Never raises."""
+    import logging
+    try:
+        operator_chat = str(getattr(channel, "chat_id", "") or "").strip()
+        if not operator_chat or str(chat_id) != operator_chat:
+            return
+        name = str(getattr(channel, "name", "") or "")
+        from channel_policy import writes_to_bank
+        from memory import capture, eligibility, occurrence
+        rule = eligibility.admit(
+            eligibility.Source.DESK_REPLY, text=text,
+            channel_writes=writes_to_bank(name),
+            role_writes_memory=role_writes_memory(desk_role))
+        if rule is None:
+            return
+        item = capture.event(
+            source_key=(occurrence.provider_key(name, str(chat_id), str(message_id))
+                        if message_id is not None else None),
+            role=resident, channel=name, speaker_kind="operator",
+            origin_kind="operator", text=text, eligibility=rule,
+            origin_tier=None, speaker_id=str(user_id),
+            speaker_name=user_name,
+            provider_message_id=None if message_id is None else str(message_id))
+        capture.record_detached(item)
+    except Exception:  # noqa: BLE001 — memory never fails a desk turn
+        logging.getLogger(__name__).exception(
+            "memory: the operator's desk reply was not captured")
+

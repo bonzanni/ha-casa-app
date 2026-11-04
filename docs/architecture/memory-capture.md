@@ -56,8 +56,15 @@ awaits the append, so every capture a turn made has returned by the time the tur
   stored-call receipt go out the same way mid-run and at the end, so nothing mechanical says
   one of them is the answer, and the post's text is never read to guess it; Fido's answer
   posted with its sources through his `show_sources` message slot is such a post. It is
-  the one capture not awaited at its seam: the landing is synchronous on the send path, so the
-  write is detached, and a send never waits for or fails on it.
+  not awaited at its seam: the landing is synchronous on the send path, so the write is
+  detached, and a send never waits for or fails on it.
+- **The operator's swipe-reply on the desk of a specialist that keeps no memory**, at the
+  start of the desk task (`specialist_desk.handle_reply`), before the specialist runs. The
+  reply reaches the specialist's desk, never a resident turn, so no opening captured it; it is
+  captured as his own message, the words he typed and nothing else (INV-MEM-043). A desk turn
+  Casa composed — an approval's continuation, a file's hand-off — captures nothing here. Like
+  the post line, the write is detached: his words come from no run's transcript, so no run's
+  confirmation waits on it, and the desk turn never waits for or fails on it.
 
 **A receipt means durable, and the receipt is all a turn waits for.**
 `memory.capture.append` makes one item durable and returns a receipt: committed in one
@@ -179,6 +186,21 @@ card of a browsing run, its status card, the line answering a Stop, a desk fault
 Casa's status text, not the specialist's post, and leave no line. The write is detached: a
 crash between the landing and the write loses the line, never the post.
 
+**INV-MEM-043**: When the operator's swipe-reply on a post of a specialist that writes no memory reaches that specialist's desk in the configured operator chat, exactly his typed words are captured once as his message — speaker `operator`, origin `operator`, no floor, the chat's resident as its role, his user id as its speaker id, keyed by the provider's message id — never the post he quoted or the specialist's reply; nothing is captured for a specialist that writes memory, a desk turn Casa composed (a continuation or a file's hand-off), another chat or a channel with no operator chat, and a capture that fails never fails the desk turn.
+
+Without it, memory kept only Casa's line that the specialist answered, and nothing of what the
+operator asked him: a follow-up such as "Saturday, not the weekday hours" left no trace for the
+writer to reopen or file. The words are his, so they are classified like any message of his;
+the eligibility rule is `desk_reply`. Pinned through the real `handle_reply` over the real
+Telegram channel and a real store: a canary in the quoted post and in the specialist's reply
+reaches no row.
+
+What it does not cover: the operator's messages in such a specialist's engagement topic,
+which stay out (INV-MEM-032), and a desk turn's words for a specialist that writes memory,
+which its own delegated capture decides. A desk reply is not marked for `correct_memory`. The
+write is detached: a crash between the desk task's start and the write loses his words, never
+the desk turn.
+
 ## Failure behavior
 
 **The store is unavailable, or busy past the capture's bound.** The item is spooled and
@@ -243,6 +265,7 @@ that writes it ([`memory-store.md`](memory-store.md)).
 - `casa/rootfs/opt/casa/delegated_memory.py::role_writes_memory`
 - `casa/rootfs/opt/casa/delegated_memory.py::notice_from_excluded_role`
 - `casa/rootfs/opt/casa/delegated_memory.py::capture_post_line`
+- `casa/rootfs/opt/casa/delegated_memory.py::capture_desk_reply`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._record_post`
 
 **Tests**
