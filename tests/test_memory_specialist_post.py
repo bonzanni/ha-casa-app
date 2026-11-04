@@ -6,7 +6,9 @@ Casa's notice carrying it and the echo lines in the resident's Casa notes are
 all kept out of the store. Without a line of its own, the writer saw a request
 handed to him and then nothing, and kept the errand open. So when a message
 Casa sends on such a specialist's behalf lands in the operator's chat, one
-event is captured: "<name> posted to your chat.", Casa's words, with the time.
+event is captured: "<name> posted to your chat.", Casa's words, with the time;
+"<name> posted his answer to your chat." when the path that sent it is the one
+that carries his answer (a relayed answer, a desk reply), never by its text.
 Never the post's body, caption, file name or buttons. Every page of one post,
 and a re-landing of it, is one event.
 
@@ -103,18 +105,111 @@ async def test_every_page_of_one_post_and_a_re_landing_are_one_event(
 
 async def test_a_desk_reply_and_a_relayed_answer_leave_a_line_too(
         mem, roles):
+    """Both are the message the specialist's turn closed with, his answer
+    (v0.347.6): the line says so. Which path sent the post decides, never its
+    text."""
     ch = _channel()
     for post in (_post(plugin="", slot="desk", tool_use_id="t-1",
-                       owner="t-1", kind="desk_reply"),
+                       owner="t-1", kind=rb.DESK_REPLY),
                  _post(plugin="", slot="relay", tool_use_id="d-9",
-                       owner="relay:d-9", kind="relayed_answer")):
+                       owner="relay:d-9", kind=rb.RELAYED_ANSWER)):
         from output_boundary import casa_text
         out = await ch.send_response(casa_text(_message(f"hi {CANARY}")),
                                      {"chat_id": OPERATOR_CHAT, "_post": post})
         assert out is DeliveryOutcome.DELIVERED
     rows = await captured_events(mem)
-    assert [e["text"] for e in rows] == ["Fido posted to your chat."] * 2
+    assert [e["text"] for e in rows] == ["Fido posted his answer to your chat."] * 2
     assert not any(CANARY in e["text"] for e in rows)
+
+
+async def test_a_relayed_answer_through_relay_answer_is_his_answer_once(
+        mem, roles, monkeypatch):
+    """The real ``relay_answer`` over the real channel: an answer of two pages
+    is one event, worded as his answer, keyed by the post's identity alone."""
+    from collections import OrderedDict
+
+    import agent as agent_mod
+    from memory import occurrence
+    from output_boundary_testing import with_scope
+    monkeypatch.setattr(tools, "_RELAYABLE", OrderedDict())
+    monkeypatch.setattr(rb, "POST_MAP", rb.PostMap())
+    ch = _channel()
+
+    class _Manager:
+        def get(self, name):
+            return ch if name == "telegram" else None
+    monkeypatch.setattr(tools, "_channel_manager", _Manager(), raising=False)
+    origin = {"role": "assistant", "channel": "telegram", "chat_id": OPERATOR_CHAT,
+              "user_id": OPERATOR_CHAT, "cid": "c1"}
+    did = "d-relay-1"
+    answer = f"The pool opens at 7 {CANARY}. " + "More detail follows. " * 400
+    assert tools._hold_answer(did, "browser", origin, answer)
+    tok = agent_mod.origin_var.set(with_scope(origin))
+    try:
+        out = await tools.relay_answer.handler({"delegation_id": did})
+    finally:
+        agent_mod.origin_var.reset(tok)
+    assert not out.get("is_error")
+    assert ch._app.bot.send_message.await_count >= 2          # two pages landed
+    rows = await captured_events(mem)
+    assert [e["text"] for e in rows] == ["Fido posted his answer to your chat."]
+    [rec] = rb.POST_MAP.owned(f"relay:{did}")[:1]
+    assert rows[0]["source_key"] == occurrence.post_key(
+        "telegram", OPERATOR_CHAT, rec.owner, rec.tool_use_id, rec.slot)
+    assert not any(CANARY in str(v) for v in rows[0].values())
+
+
+@pytest.mark.parametrize("over", [
+    dict(slot="beat", kind=rb.OPERATOR_MESSAGE),          # a progress note
+    dict(slot="sources", kind=rb.OPERATOR_MESSAGE),       # Fido's answer with sources
+    dict(slot="notice", kind=rb.OPERATOR_MESSAGE),
+    dict(slot="file", kind=rb.OPERATOR_FILE),
+    dict(slot="live", kind=rb.OPERATOR_LINK),
+    dict(slot="card", kind=rb.OPERATOR_PROPOSAL),
+    dict(plugin="browser", slot="receipt", owner="run-1", tool_use_id="run-1",
+         kind=rb.RECEIPT),
+], ids=["beat", "sources", "notice", "file", "link", "card", "receipt"])
+async def test_every_other_post_keeps_the_neutral_line(mem, roles, over):
+    """A plugin's message, file, link or card and a stored call's receipt are
+    sent the same way mid-run and at the end: nothing mechanical says which is
+    the answer, so the line stays neutral — whatever the post says (the body
+    below calls itself the final answer, and changes nothing)."""
+    from output_boundary import casa_text
+    ch = _channel()
+    post = _post(**over)
+    body = _message(f"Here is my final answer {CANARY}")
+    if over["kind"] == rb.RECEIPT:
+        await ch.send_response(casa_text(body),
+                               {"chat_id": OPERATOR_CHAT, "_post": post})
+    else:
+        await ch.deliver_operator_message(OPERATOR_CHAT, body, post=post)
+    rows = await captured_events(mem)
+    assert [e["text"] for e in rows] == ["Fido posted to your chat."]
+
+
+async def test_the_key_and_one_row_per_post_do_not_depend_on_the_wording(
+        mem, roles):
+    """The key is the post's identity (owner, tool call, slot), as before: an
+    answer's pages and a re-landing are one event, and the same identity under
+    another kind adds nothing."""
+    from memory import occurrence
+    from output_boundary import casa_text
+    ch = _channel()
+    post = _post(plugin="", slot="desk", tool_use_id="t-7", owner="t-7",
+                 kind=rb.DESK_REPLY)
+    for _ in range(2):
+        await ch.send_response(casa_text(_message("hello")),
+                               {"chat_id": OPERATOR_CHAT, "_post": post})
+    rows = await captured_events(mem)
+    assert [e["text"] for e in rows] == ["Fido posted his answer to your chat."]
+    key = occurrence.post_key("telegram", OPERATOR_CHAT, "t-7", "t-7", "desk")
+    assert rows[0]["source_key"] == key
+    # the same identity under another kind is the same key: still one row
+    await ch.deliver_operator_message(
+        OPERATOR_CHAT, _message("same identity"),
+        post=_post(plugin="", slot="desk", tool_use_id="t-7", owner="t-7"))
+    rows = await captured_events(mem)
+    assert [e["source_key"] for e in rows] == [key]
 
 
 async def test_nothing_for_a_specialist_that_keeps_memory_or_another_chat(
@@ -166,3 +261,45 @@ async def test_a_link_posted_as_a_button_leaves_a_line(mem, roles):
     rows = await captured_events(mem)
     assert [e["text"] for e in rows] == ["Fido posted to your chat."]
     assert not any(CANARY in str(v) for e in rows for v in e.values())
+
+
+# --- the desk's own reply, through the real handle_reply ----------------------
+# (the real bounded runner and ``_run_delegated_agent`` under a scripted client,
+# ``test_pending_approval_desk``'s harness)
+
+from test_desk_turn import _reply, env  # noqa: E402,F401 — fixture
+from test_pending_approval_desk import (  # noqa: E402,F401 — fixtures
+    _Scripted, _ask, _call, _result, _text, desk,
+)
+
+
+def _desk_post(env) -> rb.PostRecord:
+    [(_message, context)] = env.channel.replies
+    return context["_post"]
+
+
+async def test_a_desk_reply_that_closes_the_turn_is_his_answer(desk):
+    from delegated_memory import post_line
+    _Scripted.load(_text("The March total is 42."))
+    await _reply(desk, text="what is the March total?")
+    post = _desk_post(desk)
+    assert post.kind == rb.DESK_REPLY
+    assert post_line("Fido", post.kind) == "Fido posted his answer to your chat."
+
+
+async def test_a_desk_reply_before_a_pending_approval_is_not_his_answer(desk):
+    """Round 1, Astra S1: a desk turn that ends with an approval pending posts
+    the words written before that call (#1252) — work still waiting on the
+    operator, not the answer: the neutral line."""
+    import asyncio
+
+    from delegated_memory import post_line
+    _Scripted.load(_text("I will check that after you approve."), _call("deny-1"),
+                   _ask(desk, "deny-1"), _result("deny-1"), _text("after the call"))
+    task = asyncio.create_task(_reply(desk, text="what is the March total?"))
+    await asyncio.wait_for(desk.hook_returned.wait(), 10)
+    desk.release_result.set()
+    await asyncio.wait_for(task, 10)
+    post = _desk_post(desk)
+    assert post.kind not in rb.ANSWER_KINDS
+    assert post_line("Fido", post.kind) == "Fido posted to your chat."

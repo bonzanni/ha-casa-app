@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.347.7] - 2026-11-04
+
+### Fixed
+
+- When Fido (or another helper that keeps no memory) answers you — his answer passed on by the assistant, or his reply when you answer one of his messages — memory's short note of it now says he posted his answer, instead of only that he posted something. His messages while he works, and his links, cards and files, keep the plain note. An answer he sends together with its sources still gets the plain note.
+
 ## [0.347.6] - 2026-11-04
 
 ### Fixed

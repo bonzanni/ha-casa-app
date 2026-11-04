@@ -61,17 +61,30 @@ def notice_from_excluded_role(text: str) -> bool:
 # posts to the operator's chat stays out of memory, so the writer saw a request
 # handed to it and then nothing, and kept the errand open. Casa keeps one line
 # of its own per post instead: that the specialist posted, never what.
+# v0.347.6 (operator decision 2026-11-04): a post that is his answer — a kind
+# in ``result_broker.ANSWER_KINDS``, decided by the path that sent it — says
+# so, since the neutral line rarely closed the errand; every other post keeps
+# the neutral line.
 # ---------------------------------------------------------------------------
 
 POST_LINE = "{name} posted to your chat."
+ANSWER_LINE = "{name} posted his answer to your chat."
+
+
+def post_line(name: str, kind: str) -> str:
+    """Casa's line for a post of *kind* by the specialist named *name*."""
+    from result_broker import ANSWER_KINDS
+    return (ANSWER_LINE if kind in ANSWER_KINDS else POST_LINE).format(name=name)
 
 
 def capture_post_line(*, channel: str, chat_id, operator_chat, resident: str,
                       post) -> None:
     """Capture Casa's line for *post*, one message of which just landed in
     *chat_id*, when its poster keeps no memory and the chat is the
-    configured *operator_chat*. Detached, keyed by the post's identity, so
-    every page of it is one event. Mechanical facts only; never raises."""
+    configured *operator_chat*: :data:`ANSWER_LINE` when the post's kind is
+    his answer's, else :data:`POST_LINE`. Detached, keyed by the post's
+    identity (never its kind), so every page of it is one event. Mechanical
+    facts only; never raises."""
     import logging
     try:
         role = getattr(post, "role", "") or ""
@@ -80,20 +93,22 @@ def capture_post_line(*, channel: str, chat_id, operator_chat, resident: str,
             return
         from channel_policy import writes_to_bank
         from memory import capture, eligibility, occurrence
+        import tools as tools_mod
+        text = post_line(tools_mod._display_name_for_role(role),
+                         getattr(post, "kind", "") or "")
         rule = eligibility.admit(
-            eligibility.Source.SPECIALIST_POST, text=POST_LINE,
+            eligibility.Source.SPECIALIST_POST, text=text,
             channel_writes=writes_to_bank(channel),
             role_writes_memory=role_writes_memory(role))
         if rule is None:
             return
-        import tools as tools_mod
         item = capture.event(
             source_key=occurrence.post_key(
                 channel, chat_id, getattr(post, "owner", ""),
                 getattr(post, "tool_use_id", ""), getattr(post, "slot", "")),
             role=resident, channel=channel, speaker_kind="casa",
             origin_kind="system",
-            text=POST_LINE.format(name=tools_mod._display_name_for_role(role)),
+            text=text,
             eligibility=rule, origin_tier="private", speaker_id=role)
         capture.record_detached(item)
     except Exception:  # noqa: BLE001 — a memory line never fails a send

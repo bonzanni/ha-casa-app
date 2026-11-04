@@ -495,7 +495,7 @@ async def relay_answer(args: dict) -> dict:
     # a swipe-reply on it reaches the delegate's desk, as on its own posts
     post = (_rb.PostRecord(role=entry.role, operator_id=operator_id, plugin="",
                            slot="relay", tool_use_id=did, owner=owner,
-                           posted_at=time.time(), kind="relayed_answer")
+                           posted_at=time.time(), kind=_rb.RELAYED_ANSWER)
             if operator_id is not None else None)
     ctx: dict[str, Any] = {"chat_id": entry.chat_id, "cid": owner}
     if post is not None:
