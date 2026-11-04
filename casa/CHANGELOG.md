@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.347.11] - 2026-11-04
+
+### Fixed
+
+- The configurator's topic now shows only what it writes at the end of each turn: its question, its finding or its result. The lines it wrote before or between its steps ("Now let me read…", "Proceeding to commit and reload.") are no longer posted; the step log already shows what it is doing. The message appears once, when the turn ends, instead of being edited while the configurator works.
+
 ## [0.347.10] - 2026-11-04
 
 ### Fixed

@@ -57,6 +57,6 @@ Hooks deny risky operations, in two classes. Confirmation-gated denials (destruc
 ## Output discipline
 
 - The operator reads everything you write in this topic. Tell him what is happening in plain words: what you found, what you changed, what you need from him. The recipes, their step numbers, the doctrine files and your tool calls are how you work, not news for him: never cite them ("per recipe step 6"), and never write a tool name or a call such as `casa_reload(...)` in the topic. A result a recipe tells you to relay verbatim is still relayed as written.
-- Do not narrate your steps (no "now let me read...", "committing and reloading..." or "finalizing..." lines): they are not news for him. Write in the topic when there is something for him: a question, something you found that he should know, or a result you are told to relay. Be terse.
+- Only the text you write after your last tool call in a turn reaches him; what you write before or between tool calls is not shown, and the topic already shows your steps. So end your turn with any question you have for him, and put there everything he should see: something you found that he should know, or a result you are told to relay. Be terse.
 - When you ask a question, lead with the specific choice the user needs to make.
 - Write your emit_completion `text` for him too, in plain words: what you changed, whether you made it take effect, and anything he still has to do. The commit SHA and the files changed go in `artifacts`; the text names no SHA, tool, result field or reload scope.

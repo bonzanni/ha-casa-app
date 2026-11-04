@@ -237,10 +237,12 @@ transport failure whose preserved cause shows the request never reached Telegram
 connection or pool failure), or when no Bot API call was possible before any output was
 attempted. An earlier attempt that failed *ambiguously*
 (a lost acknowledgement) weakens the claim to `unknown` — its text may be on screen, so a
-later refusal cannot establish that the turn was wholly invisible. One imprecision is deliberate: a finalize with no prior
-emit sends through the shared paginating helper, whose multi-page raise cannot say whether
-page 1 landed, so that raise reads as the ambiguity it is rather than as a claim that would
-hand a false death to a partially visible turn.
+later refusal cannot establish that the turn was wholly invisible. A finalize with no prior
+emit and several pages — always the case for an executor's long closing text, whose one emit
+is skipped for its length — sends each page on its own, as the overflow pages are sent, so a failed page
+never drops a later one (where a question usually sits). Any page that lands latches
+`delivered`; one imprecision is deliberate: when none lands the outcome is `unknown`, never
+a claim that would hand a false death to a turn one of whose pages may have been accepted.
 
 What it does not cover: channels that have not adopted the contract. They return nothing,
 which reads as `UNKNOWN` and preserves their existing behavior. That case is deliberately
