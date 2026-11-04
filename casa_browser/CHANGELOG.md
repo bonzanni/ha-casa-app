@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.10] - 2026-11-04
+
+### Changed
+
+- A new app icon and logo in Casa's style: Casa's house, with a browser window showing a globe and a pointer where Casa's lit window is.
+
 ## [0.1.9] - 2026-11-04
 
 ### Fixed
