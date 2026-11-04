@@ -103,6 +103,17 @@ given to a run) would queue again. A run still holding the event is rejected
 at its commit. While the mark is still pending somewhere, marking again (a retried call)
 changes nothing.
 
+**A mark is on his correcting words.** The event marked is the operator's message that
+corrects memory, the one carrying the new value — `correct_memory` marks the message his turn
+opened with ([`memory-tools.md`](memory-tools.md)), never the older event holding the value
+he corrected. The run gives that event a `correction` (`{"marked_at": …}`), and the writer's
+prompt (`memory/prompts/writer.md`) reads it the same way: the marked event carries his right
+version, and the ledger follows it, whether the value it replaces came in the same batch or
+was filed long before; the replaced value moves to `earlier:`. In a `private` job with a lower
+ledger, a correction above that ledger replaces its value like any update, so the lower
+ledger's copy is withdrawn (INV-MEM-039). Read the other way round — the marked event as one
+he had since called wrong — the writer would keep the very value he corrected (INV-MEM-041).
+
 ## Contracts & invariants
 
 **INV-MEM-027**: Whether an event is still owed to a ledger is decided only by the `pending` view: it is eligible for the ledger (tier at or below it, classified unless the ledger is `private`) and has no `patched` or `no_change` disposition there committed after its latest correction mark, so `deferred` keeps it pending and a mark re-opens an event every ledger had filed; the memory package and its store record no other handled, processed or watermark state, and `commit_no` and `mark_no` are derived from the rows that carry them.
@@ -117,6 +128,16 @@ What it does not cover: the meaning of an outcome. A model that answers `no_chan
 event it should have filed files it; that is the model's judgement, not this rule's. The
 view covers every ledger of the ladder, maintained or not: an event classified below
 `private` is pending in a ledger Casa does not maintain, and nothing files it there.
+
+**INV-MEM-041**: A correction mark means one thing at both ends: `correct_memory` marks the operator's own message of the turn, the one that corrects memory, and the writer's prompt tells the model that the event carrying a `correction` is his right version, which the ledger follows, with the value it replaces kept as `earlier:`; the `correction` is carried only by the marked event, never by the earlier event holding the value it replaces.
+
+Pinned on a real store and writer: a value filed by an earlier batch, a second event in the
+same batch and his correcting message marked through `mark_operator_event`; the correction
+job's input marks only that message, and the system prompt the model is given defines the
+mark as his right version.
+
+What it does not cover: the model's reading itself. Whether a given answer makes his
+corrected value current is the model's judgement, not this rule's.
 
 **INV-MEM-028**: Only the writer's commit marks a job `committed`, in the same transaction that writes its patches, revisions, classification verdicts and a disposition for every event of the run's input, and only after checking that the ledger's revisions and every input event's correction mark are those the run's one read transaction saw and that the pending view still shows every input event pending; a stale base, a new mark or an input event filed meanwhile writes nothing and requeues the job, a run whose every input event was filed meanwhile writes nothing and ends committed, every run assembles its input afresh, and nothing but that commit writes `objects`, `revisions` or `dispositions`.
 

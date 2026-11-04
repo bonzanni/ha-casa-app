@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.347.5] - 2026-11-03
+
+### Fixed
+
+- When you correct something Casa remembers — "my pool locker is 7, not 5", or just "my gym locker is 8 now" — memory now keeps the value you just gave. Before, memory read your correction as the mistake and went on holding the old value, and the assistant would later repeat it back to you. Your old value is still kept as earlier. A value it already got wrong this way is put right by telling it the correct value once more.
+- Because of the same mix-up, a correction that made a value more private than before did not take the old value out of what the butler tells guests. It now does.
+
 ## [0.347.4] - 2026-11-03
 
 ### Fixed

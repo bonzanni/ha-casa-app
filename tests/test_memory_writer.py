@@ -199,6 +199,49 @@ async def test_a_correction_job_runs_first(tmp_path):
     assert {d[0] for d in dispositions(store)} == {a, b}
 
 
+#: What the writer's prompt says a marked event is. correct_memory marks his
+#: message of the turn — the one carrying the new value — so the prompt must
+#: read the mark that way; read the other way round it keeps the old value.
+CORRECTION_MEANS = (
+    "An event with a `correction` is the operator telling Casa that "
+    "something memory holds is wrong or out of date: that event carries his "
+    "right version. Make the ledger follow it")
+
+
+async def test_a_correction_mark_is_read_as_his_right_version(tmp_path):
+    """INV-MEM-041: the event correct_memory marks is his correcting
+    message, and the writer is told that event is his right version — for
+    a value filed by an earlier batch and for one in the same batch."""
+    store = new_store(tmp_path)
+    filed = seed(store, "My gym locker is ZQXG3.")
+    w = new_writer(store, ScriptedPort(add_each))
+    assert (await run_new(w))[1] == writer.COMMITTED
+
+    same_batch = seed(store, "And the pool locker is ZQXL5.")
+    fix = seed(store, "Correction: the gym locker is ZQXG8, not ZQXG3.")
+    [key] = [r["source_key"] for r in rows(
+        store, "SELECT source_key FROM events WHERE seq = ?", fix)]
+    marked = corrections.mark_operator_event(store, key)
+    assert marked.marked and marked.queued == ("private",)
+
+    port = ScriptedPort(no_change_all)
+    w.port = port
+    job = w.next_job()
+    assert job["kind"] == writer.CORRECTION
+    assert await w.run_job(job["job_id"]) == writer.COMMITTED
+    [prompt], [system] = port.prompts, port.systems
+    assert prompt["job"] == "correction"
+    # The mark is on his correcting words, nowhere else.
+    assert [e["seq"] for e in prompt["events"] if "correction" in e] == [fix]
+    assert [e["seq"] for e in prompt["events"]] == [same_batch, fix]
+    assert [o["body"] for o in prompt["ledger"]] == [
+        "My gym locker is ZQXG3."]
+    assert filed not in [e["seq"] for e in prompt["events"]]
+    # ...and the model is told that marked event is his right version.
+    assert system == writer.system_prompt()
+    assert CORRECTION_MEANS in " ".join(system.split())
+
+
 async def test_the_worker_runs_what_a_wake_queues(tmp_path):
     """The background loop recovers, then runs a job as soon as it is
     woken, without waiting for its tick."""
