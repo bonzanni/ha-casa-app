@@ -73,7 +73,43 @@ scripts/run-gitleaks.sh tree
 scripts/run-gitleaks.sh range "$range"
 
 echo "==> 6/7 unit gate"
-make test-unit
+# Casa's suite always runs. The browser app's suite runs when the change can affect it,
+# decided from the diff's paths alone (scripts/browser-suite-affected.sh, fail-closed:
+# only paths under the Casa-only roots it lists can skip it). CI runs both suites on
+# every pull request regardless. CASA_GATE_BROWSER=always forces the browser suite.
+browser_mode="${CASA_GATE_BROWSER:-auto}"
+case "$browser_mode" in
+  always) browser_decision="run: CASA_GATE_BROWSER=always" ;;
+  auto)   browser_decision="$(scripts/browser-suite-affected.sh "$base_sha" "$head_sha")" \
+            || browser_decision="run: the path classifier failed" ;;
+  *) echo "✋ gate: CASA_GATE_BROWSER must be 'auto' or 'always', not '$browser_mode'" >&2
+     exit 1 ;;
+esac
+make test-casa
+case "$browser_decision" in
+  "skip: "*)
+    echo "    browser suite skipped: ${browser_decision#skip: }"
+    ;;
+  *)
+    echo "    browser suite runs: ${browser_decision#run: }"
+    # In a checkout of HEAD WITHOUT the Casa-only roots: a browser test that came to
+    # depend on one of them fails here, at the commit that introduced the dependency,
+    # instead of being skipped later by a change that touches only that root. A
+    # checkout-index from a private index writes what a checkout writes (eol, modes) and,
+    # unlike git archive, honours no export-ignore.
+    browser_tree="$(mktemp -d "${TMPDIR:-/tmp}/casa-gate-browser.XXXXXX")"
+    trap 'rm -rf "${browser_tree:?}" "${browser_tree:?}.index"' EXIT
+    GIT_INDEX_FILE="$browser_tree.index" git read-tree "$head_sha"
+    GIT_INDEX_FILE="$browser_tree.index" git checkout-index --all --prefix="$browser_tree/"
+    casa_only_roots="$(scripts/browser-suite-affected.sh --casa-only-roots)"
+    [ -n "$casa_only_roots" ]
+    while IFS= read -r root; do
+      rm -rf "${browser_tree:?}/${root:?}"
+    done <<< "$casa_only_roots"
+    make -C "$browser_tree" --no-print-directory test-browser PYTEST_ARGS= \
+      BROWSER_PY="$PWD/venv_browser/bin/python"
+    ;;
+esac
 
 echo "==> 7/7 automated receipt"
 # Record the exact commit SET that was swept, not just its tip, and DIGEST it into the

@@ -203,8 +203,10 @@
     - .github/workflows/deploy.yml
     - .github/workflows/deploy-app.yml
     - scripts/setup-browser-dev.sh
+    - scripts/browser-suite-affected.sh
   tests:
     - tests/test_browser_release_matrix.py
+    - tests/test_browser_suite_affected.py
   related: [contributing/doc-contract.md, doctrine/publishing.md]
 
 - doc: contributing/doc-contract.md

@@ -173,19 +173,22 @@ def _guard_error_text() -> str:
 
 
 def _targets_reaching_the_guard() -> set[str]:
-    """Targets whose recipe expands $(SUITE), and so the guard."""
+    """Targets whose recipe expands $(SUITE), and so the guard — directly, or through a
+    prerequisite that does (test-unit runs test-casa first)."""
     text = MAKEFILE.read_text()
     op, suite = _definition(_logical_lines(text), "SUITE")
     assert op and "$(CAGE_GUARD)" in suite, (
         "SUITE does not interpolate CAGE_GUARD, so expanding it no longer "
         f"reaches the refusal: {suite!r}")
-    targets, current = set(), None
+    targets, current, prereqs = set(), None, {}
     for ln in text.splitlines():
-        m = re.match(r"^([A-Za-z0-9_.-]+)\s*:(?!=)", ln)
+        m = re.match(r"^([A-Za-z0-9_.-]+)\s*:(?!=)([^#]*)", ln)
         if m:
             current = m.group(1)
+            prereqs[current] = set(m.group(2).split())
         elif ln.startswith("\t") and current and "$(SUITE)" in ln:
             targets.add(current)
+    targets |= {t for t, deps in prereqs.items() if deps & targets}
     return targets
 
 
