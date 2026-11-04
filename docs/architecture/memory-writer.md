@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-02
+last_reviewed: 2026-11-04
 ---
 
 # Memory writer: filing captured events into the ledgers
@@ -114,6 +114,17 @@ ledger, a correction above that ledger replaces its value like any update, so th
 ledger's copy is withdrawn (INV-MEM-039). Read the other way round — the marked event as one
 he had since called wrong — the writer would keep the very value he corrected (INV-MEM-041).
 
+**His answer line closes the errand that asked him.** A specialist that keeps no memory never
+has what he said captured (INV-MEM-032); memory learns of his post only from Casa's body-free
+line ([`memory-capture.md`](memory-capture.md), INV-MEM-040). Told only to retire an errand when
+its done-statement arrives, the writer kept such an errand open, waiting for an answer's
+content that can never come. So the prompt says it plainly: the line that he "posted his
+answer to your chat." is the done-statement of the errand that asked him — marked done,
+dated, noting that the answer came and what it said is not recorded — and the line that he
+only "posted to your chat." is not his answer and closes nothing. It is a fact the model is
+given, not a rule code applies: which errand the line answers, and whether what the operator
+says next reopens it, stay the model's to read (INV-MEM-042).
+
 ## Contracts & invariants
 
 **INV-MEM-027**: Whether an event is still owed to a ledger is decided only by the `pending` view: it is eligible for the ledger (tier at or below it, classified unless the ledger is `private`) and has no `patched` or `no_change` disposition there committed after its latest correction mark, so `deferred` keeps it pending and a mark re-opens an event every ledger had filed; the memory package and its store record no other handled, processed or watermark state, and `commit_no` and `mark_no` are derived from the rows that carry them.
@@ -138,6 +149,18 @@ mark as his right version.
 
 What it does not cover: the model's reading itself. Whether a given answer makes his
 corrected value current is the model's judgement, not this rule's.
+
+**INV-MEM-042**: The writer's prompt quotes Casa's two lines for a specialist that keeps no memory in the words `delegated_memory.post_line` writes, and tells the model that the line for a post of an answer kind (`result_broker.ANSWER_KINDS`) is the done-statement of the errand that asked him, not to be waited on for its content, and that the line for any other post is not his answer and closes nothing.
+
+Pinned against the real `post_line` and `system_prompt`: each line's words, as `post_line`
+writes them for every answer kind and for another kind, sit in the prompt's sentence that says
+what the line means, so rewording a line without the prompt fails.
+
+What it does not cover: the model's reading itself — which open errand an answer line closes,
+whether a line with two errands open closes one, and whether his reply after it reopens the
+errand are the model's judgement, measured offline but not pinned. An answer posted through a
+path whose kind is not an answer kind (an answer posted with its sources through a plugin's
+message slot) leaves the neutral line, so its errand stays open (INV-MEM-040).
 
 **INV-MEM-028**: Only the writer's commit marks a job `committed`, in the same transaction that writes its patches, revisions, classification verdicts and a disposition for every event of the run's input, and only after checking that the ledger's revisions and every input event's correction mark are those the run's one read transaction saw and that the pending view still shows every input event pending; a stale base, a new mark or an input event filed meanwhile writes nothing and requeues the job, a run whose every input event was filed meanwhile writes nothing and ends committed, every run assembles its input afresh, and nothing but that commit writes `objects`, `revisions` or `dispositions`.
 

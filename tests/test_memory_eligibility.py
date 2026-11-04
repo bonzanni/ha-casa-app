@@ -16,6 +16,7 @@ DQ, DA = Source.DELEGATED_REQUEST, Source.DELEGATED_ANSWER
 ET, EA, ES = (Source.ENGAGEMENT_TURN, Source.ENGAGEMENT_ANSWER,
               Source.ENGAGEMENT_SUMMARY)
 SP = Source.SPECIALIST_POST
+DR = Source.DESK_REPLY
 
 MATRIX = [
     # source, channel, facts, admitting rule
@@ -65,6 +66,13 @@ MATRIX = [
     ("post line of a specialist that keeps memory", SP, "telegram", {},
      None),
     ("post line on voice", SP, "voice", {"role_writes_memory": False}, None),
+    ("desk reply to a no-memory specialist", DR, "telegram",
+     {"role_writes_memory": False}, "desk_reply"),
+    ("desk reply to a specialist that keeps memory", DR, "telegram", {},
+     None),
+    ("blank desk reply", DR, "telegram",
+     {"role_writes_memory": False, "text": " "}, None),
+    ("desk reply on voice", DR, "voice", {"role_writes_memory": False}, None),
 ]
 
 

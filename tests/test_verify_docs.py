@@ -1786,7 +1786,8 @@ def test_engagement_finalization_is_named_when_job_registry_changes():
 # (source file, owning document, the enforcement points that document claims IN it)
 _DECLARED_OWNERSHIP = [
     ("casa/rootfs/opt/casa/delegated_memory.py", "architecture/memory-capture.md",
-     ["role_writes_memory", "notice_from_excluded_role", "capture_post_line"]),
+     ["role_writes_memory", "notice_from_excluded_role", "capture_post_line",
+      "capture_desk_reply"]),
     ("casa/rootfs/opt/casa/config.py", "architecture/configuration.md",
      ["AgentConfig"]),
     ("casa/rootfs/opt/casa/config.py", "architecture/config-reconciliation.md",

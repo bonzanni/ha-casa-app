@@ -303,3 +303,85 @@ async def test_a_desk_reply_before_a_pending_approval_is_not_his_answer(desk):
     post = _desk_post(desk)
     assert post.kind not in rb.ANSWER_KINDS
     assert post_line("Fido", post.kind) == "Fido posted to your chat."
+
+
+# --- the operator's swipe-reply on such a desk (INV-MEM-043) -----------------
+# The real handle_reply over the real channel and a fake bot, against a real
+# store; the desk's runner answers with a canary, the quoted post carries one.
+
+QUOTED = secrets.token_hex(8)
+
+
+@pytest.fixture
+def fido_desk(env, mem, monkeypatch):
+    from test_desk_turn import OPERATOR as DESK_OPERATOR
+    assert DESK_OPERATOR == OPERATOR_CHAT
+    finance = tools._agent_role_map["finance"]
+    finance.memory = SimpleNamespace(token_budget=0)
+
+    async def respond(call):
+        return tools.DelegatedOutput(text=f"Saturday 9-17 {CANARY}")
+    env.respond = respond
+    env.channel = _channel()
+    return env
+
+
+def _desk_kw(**over):
+    kw = dict(quoted_text=f"📊 Finance\nweekday hours {QUOTED}", message_id=70)
+    kw.update(over)
+    return kw
+
+
+async def test_a_swipe_reply_on_a_no_memory_specialist_s_desk_is_his_message(
+        fido_desk, mem):
+    from memory import occurrence
+    await _reply(fido_desk, text="Saturday please, and the link", **_desk_kw())
+    [call] = fido_desk.calls
+    assert call.task == "Saturday please, and the link"   # the desk turn ran
+    rows = await captured_events(mem)
+    assert [(e["speaker_kind"], e["origin_kind"], e["role"], e["text"])
+            for e in rows] == [
+        ("operator", "operator", "assistant", "Saturday please, and the link"),
+        ("casa", "system", "assistant", "Finance posted his answer to your chat.")]
+    mine = rows[0]
+    assert mine["eligibility"] == "desk_reply" and mine["origin_tier"] is None
+    assert mine["speaker_id"] == str(OPERATOR_CHAT)
+    assert mine["speaker_name"] == "Nicola"
+    assert mine["source_key"] == occurrence.provider_key(
+        "telegram", str(OPERATOR_CHAT), "70")
+    # never the post he quoted, never the specialist's reply
+    assert not any(tok in str(v) for e in rows for v in e.values()
+                   for tok in (CANARY, QUOTED))
+
+
+async def test_no_desk_reply_event_for_a_memory_specialist_a_composed_turn_or_another_chat(
+        fido_desk, mem):
+    # a specialist that keeps memory: its own exchange capture applies, not this
+    tools._agent_role_map["finance"].memory = SimpleNamespace(token_budget=4000)
+    await _reply(fido_desk, text="one", **_desk_kw(message_id=71))
+    tools._agent_role_map["finance"].memory = SimpleNamespace(token_budget=0)
+    # Casa composed the task: an approval's continuation, a file's hand-off
+    await _reply(fido_desk, text="two", continuation=True, **_desk_kw(message_id=None))
+    await _reply(fido_desk, text="three", file_name="a.pdf", file_path="/nowhere/a.pdf",
+                 **_desk_kw(message_id=72))
+    # a channel whose operator chat is another, or none at all
+    for chat in ("7", ""):
+        fido_desk.channel = _channel(chat_id=chat)
+        await _reply(fido_desk, text="four", **_desk_kw(message_id=73))
+    rows = await captured_events(mem)
+    assert not [e for e in rows if e["speaker_kind"] == "operator"]
+
+
+async def test_a_desk_reply_capture_that_fails_never_fails_the_desk_turn(
+        fido_desk, mem, monkeypatch):
+    from memory import capture
+
+    def boom(**kw):
+        raise RuntimeError("no")
+
+    monkeypatch.setattr(capture, "event", boom)
+    await _reply(fido_desk, text="Saturday please", **_desk_kw())
+    assert len(fido_desk.calls) == 1
+    assert fido_desk.channel._app.bot.send_message.await_count == 1
+    assert await captured_events(mem) == []
+
