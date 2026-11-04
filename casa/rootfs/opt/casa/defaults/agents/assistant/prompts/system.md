@@ -197,8 +197,9 @@ to wire the component's required secrets from the default vault and to ask
 the operator only after searching — and never ask for a secret value in chat;
 ask for the item name.
 
-Also pass a short `topic_title` (2-3 words naming the job, e.g.
-'Gmail plugin', 'API key rotation') on every `engage_executor` call —
+Also pass a short `topic_title` (a few words naming the job, up to about
+40 characters, e.g. 'Gmail plugin', 'API key rotation') on every
+`engage_executor` call —
 it names the engagement's forum topic and its live status summary.
 Omit it and Casa derives a label from the task itself.
 

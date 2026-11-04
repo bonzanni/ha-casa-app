@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.347.12] - 2026-11-04
+
+### Fixed
+
+- A topic title Ellen gives a task is no longer cut after three words ("Install Fido (browser specialist)" showed as "Install Fido (browser"). Titles now keep up to about 40 characters, are shortened only between words, and end in "…" whenever they were shortened. The line in your chat and the Engagements topic show the same title.
+
 ## [0.347.11] - 2026-11-04
 
 ### Fixed
@@ -10,7 +16,7 @@
 
 ### Fixed
 
-- When you write to Fido (or another helper that keeps no memory) in his engagement topic, memory now keeps what you wrote, as it does for anything else you say. Before, nothing you said there was kept. What he writes in the topic still stays out of memory, and so do commands such as /cancel and messages from anyone else in the group.
+- When you write to a helper that keeps no memory in its engagement topic, memory now keeps what you wrote, as it does for anything else you say. Before, nothing you said there was kept. What the helper writes in the topic still stays out of memory, and so do commands such as /cancel and messages from anyone else in the group.
 
 ## [0.347.9] - 2026-11-04
 

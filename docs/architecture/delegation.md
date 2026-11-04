@@ -33,6 +33,11 @@ creates one.
 work on — a `sync` or `async` delegation once the specialist's run has been created, or an
 executor engagement once its launch has been handed off — Casa posts one silent line in
 that chat recording it (`📊 Passed to Alex.`, `⚙️ Passed to the configurator: “<title>”. …`).
+The title is the one Casa keeps for the engagement, which also names its Engagements topic:
+the engager's `topic_title` up to about 40 characters (fewer for emoji, to stay within the
+topic name's byte limit), shortened only between words and ending in “…” whenever it was
+shortened (`normalize_topic_title`), or Casa's own label from the task when that title is
+blank or unsafe.
 Every line states a hand-off that has already happened, so it stays true whatever the work
 then does; the answer or the failure still comes from the assistant. The send is spawned,
 never awaited, so it adds no wait and no cancellation point to the tool. Only a turn the spawn
