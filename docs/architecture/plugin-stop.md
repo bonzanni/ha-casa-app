@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-03
+last_reviewed: 2026-11-04
 ---
 
 # The Stop: a specialist's own work stopped at once
@@ -68,6 +68,19 @@ resident's echo, so the resident hears it at its next turn: `Stopped.`, `It had 
 ended.`, the `not_taken` line saying the browsing stops as soon as Casa Browser answers, and
 for `unavailable` that the specialist's browser is no longer set up. `already_stopped` adds
 no line: he has been told.
+
+**A request that ends on its own loses its Stop too** (`plugin_stop.settle_ended`). The
+plugin's driver sweep answer may name, in `ended`, the requests that ended without a Stop —
+`[{"ref": "request:<key>", "binding_ref"}]` ([`plugin-continuations.md`](plugin-continuations.md)).
+For each one whose binding is the plugin's own and belongs to the operator as configured now,
+and whose admission is `admitted` and still has a card, the card gets the mark a Stop that
+finds it ended would give it, `☑ Ended`, with no keyboard and no line: his answer tells him
+the rest. Nothing is marked while a Stop of the request is in flight (that path marks it).
+The plugin names a request on every pass for a while, so the admission then forgets its card
+(`Confirmations.clear_card`) after one edit attempt, landed or not, and no later pass edits it
+again; a card that could not be edited keeps its Stop, which answers `It had already ended.`
+When the binding, the channel or its bot is not there yet (a Telegram rebuild), nothing is
+tried and the card is kept for the next pass.
 
 **The Stop on the card** (`TelegramChannel._on_run_stop_callback`, callback data
 `v1|run_stop|<cid>|0`, its own DM-scoped namespace). Fail closed, answered exactly once: the
@@ -140,7 +153,8 @@ posted; a proposal reads `✖ expired`. **The plugin is no longer resolved for t
 `unavailable`: no card mark, the line says so. **The card edit or the line fails.** It is logged; the stop already ran. **The stop
 task raises.** Logged; on the request's card the Stop stays, on a proposal the last line is
 `✖ failed`. **Casa restarts.** The flights are gone with the process; admissions survive,
-so a Stop tap still works. **No card landed** (the status card's post failed). Nothing is
+so a Stop tap still works. **The ended card's edit fails.** It is tried once (`settle_ended`); the card keeps its Stop,
+and a tap on it says the request had already ended. **No card landed** (the status card's post failed). Nothing is
 marked; `stop_work` still stops the request.
 
 ## Extension points

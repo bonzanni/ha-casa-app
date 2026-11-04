@@ -441,19 +441,24 @@ async def call_plugin_tool(server: dict, tool: str, args: dict, *,
     return text
 
 
-async def call_sweep_tool(server: dict, tool: str) -> tuple[list[dict], float | None]:
-    """Start the server, call *tool* with no arguments, read its JSON text: the entries, and
-    the extra pass it asks for (seconds, or None)."""
+async def call_sweep_tool(server: dict, tool: str
+                          ) -> tuple[list[dict], float | None, list[dict]]:
+    """Start the server, call *tool* with no arguments, read its JSON text: the entries, the
+    extra pass it asks for (seconds, or None), and the requests it names as ended on their own
+    (``ended``)."""
     text = await call_plugin_tool(server, tool, {})
     data = json.loads(text) if text else {}
     runs = data.get("runs") if isinstance(data, dict) else None
     again = data.get("sweep_again_s") if isinstance(data, dict) else None
+    ended = data.get("ended") if isinstance(data, dict) else None
     if (not isinstance(again, int) or isinstance(again, bool)
             or not 0 < again < SWEEP_INTERVAL_S):
         again = None
     entries = runs if isinstance(runs, list) else []
+    ended = ended if isinstance(ended, list) else []
     return ([r for r in entries[:SWEEP_MAX_RESULTS] if isinstance(r, dict)],
-            None if again is None else max(float(again), SWEEP_AGAIN_MIN_S))
+            None if again is None else max(float(again), SWEEP_AGAIN_MIN_S),
+            [e for e in ended[:SWEEP_MAX_RESULTS] if isinstance(e, dict)])
 
 
 def _held_by_delivery(refs, *, plugin: str, operator_id: int, artifact_id: str) -> bool:
@@ -525,8 +530,8 @@ async def _sweep_pass() -> tuple[int, float | None]:
         if server is None:
             continue
         try:
-            runs, soon = await asyncio.wait_for(call_sweep_tool(server, tool),
-                                                SWEEP_CALL_TIMEOUT_S)
+            runs, soon, ended = await asyncio.wait_for(call_sweep_tool(server, tool),
+                                                       SWEEP_CALL_TIMEOUT_S)
         except Exception as exc:  # noqa: BLE001
             logger.warning("driver sweep of %s failed (%s)", seg, type(exc).__name__)
             continue
@@ -547,7 +552,33 @@ async def _sweep_pass() -> tuple[int, float | None]:
                 continue        # the operator has the card or link it waits on
             if CONTINUATIONS.request(binding, run_ref, "sweep") == "queued":
                 queued += 1
+        await _settle_ended(seg, ended)
     return queued, again
+
+
+async def _settle_ended(seg: str, ended: list[dict]) -> None:
+    """The requests the plugin names as ended on their own: each one's start or status card,
+    for a binding of this plugin and the operator as configured now, is marked ended and
+    loses its Stop (``plugin_stop.settle_ended``), once."""
+    import plugin_stop
+    from operator_calls import is_configured_operator
+    from plugin_bindings import BINDINGS
+
+    for e in ended:
+        ref = e.get("ref")
+        if (not isinstance(ref, str) or not ref.startswith(plugin_stop.REF_PREFIX)
+                or len(ref) > plugin_stop.REF_MAX):
+            continue
+        binding = BINDINGS.peek(e.get("binding_ref"))
+        if binding is None or binding.plugin != seg:
+            continue
+        if not is_configured_operator(binding.chat_id, binding.operator_id):
+            continue
+        try:
+            await plugin_stop.settle_ended(seg, int(binding.operator_id), ref)
+        except Exception as exc:  # noqa: BLE001 — the next pass names it again
+            logger.warning("driver sweep: marking an ended request failed (%s)",
+                           type(exc).__name__)
 
 
 # One pass at a time (the minute pass and an extra pass); at most one extra pass pending;

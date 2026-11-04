@@ -2703,24 +2703,24 @@ async def test_inspect_ok_payload_reports_the_resolved_ref(monkeypatch, tmp_path
 # ---------------------------------------------------------------------------
 
 _C_INSTALL_KEYBOARD = (
-    "\U0001F510 Specialist install consent\n\n"
-    "Install 'casa.spec.mtg@1.0.0' as specialist:mtg?\n"
-    "Mission: Answer MTG rules questions.\n"
+    "\U0001F510 Install casa.spec.mtg@1.0.0 as specialist:mtg?\n"
+    "Mission: Answer MTG rules questions.\n\n"
     "Default persona: mtg-judge@1.0.0\n"
-    "Dependencies: (none)\n"
+    "Dependencies: (none)\n\n"
+    "Approve to install; Deny to discard the staged fetch.\n\n"
+    "Digests:\n"
     "Root digest (approved — component + dependencies): sha256:" + "b" * 64 + "\n"
-    "Component checksum: sha256:" + "a" * 64 + "\n\n"
-    "Approve to install; Deny to discard the staged fetch."
+    "Component checksum: sha256:" + "a" * 16 + "…"
 )
 _C_UPDATE_KEYBOARD = (
-    "\U0001F510 Specialist update consent\n\n"
-    "Update specialist:mtg to 'casa.spec.mtg@1.0.0'?\n"
-    "Mission: Answer MTG rules questions.\n"
+    "\U0001F510 Update specialist:mtg to casa.spec.mtg@1.0.0?\n"
+    "Mission: Answer MTG rules questions.\n\n"
     "Default persona: mtg-judge@1.0.0\n"
-    "Dependencies: (none)\n"
+    "Dependencies: (none)\n\n"
+    "Approve to update; Deny to discard the staged fetch.\n\n"
+    "Digests:\n"
     "Root digest (approved — component + dependencies): sha256:" + "b" * 64 + "\n"
-    "Component checksum: sha256:" + "a" * 64 + "\n\n"
-    "Approve to update; Deny to discard the staged fetch."
+    "Component checksum: sha256:" + "a" * 16 + "…"
 )
 
 # The five non-success finish edits (plus the two other retirement causes),
@@ -2845,7 +2845,8 @@ async def test_inspect_consent_copy_matches_mode(monkeypatch, tmp_path, mode) ->
 async def test_update_keyboard_keeps_inspection_data_and_is_no_longer(
     monkeypatch, tmp_path,
 ) -> None:
-    """#1225: only the three Casa-authored lines change. Inspection data that
+    """#1225: only the Casa-authored lines change (since v0.347.6 two: the
+    question line and the action line). Inspection data that
     itself says "install" renders untouched, and the update keyboard is never
     longer than the install keyboard for the same inspection, so a closure that
     registers under the challenge limit as an install also registers as an
@@ -2863,8 +2864,9 @@ async def test_update_keyboard_keeps_inspection_data_and_is_no_longer(
     await specialist_install_inspect.handler(_c_args("upgrade"))
     update_text = cap["challenge_text"]
 
-    authored = {0, 2, len(install_text.split("\n")) - 1}
     install_lines = install_text.split("\n")
+    authored = {0, install_lines.index(
+        "Approve to install; Deny to discard the staged fetch.")}
     update_lines = update_text.split("\n")
     kept = [(i, a, b) for i, (a, b) in enumerate(zip(install_lines, update_lines))
             if i not in authored and a != b]

@@ -336,7 +336,8 @@ A plugin's `setup_*` tool never arrives as a `next_steps` entry: Casa owns
 plugin setup and dispatches its own turn for it, so you may receive a
 Casa-authored turn naming an exact setup tool to run some time after an
 install or update completed. Run the named tool, take no other action, and
-report what it returned — the install or update the operator asked for, plus any
+tell the operator its outcome in one short plain line, in its terms (never "the setup
+tool returned …") — the install or update the operator asked for, plus any
 consent they approved, is what authorizes this wiring, so do not ask again. If
 the named tool is absent from your tool surface, is refused, or errors, relay the
 failure and offer the manual retry; never silently claim the integration is

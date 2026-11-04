@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-10-20
+last_reviewed: 2026-11-04
 ---
 
 # How apps are built, tested and released
@@ -49,6 +49,13 @@ section of the app's changelog (`casa/CHANGELOG.md` for Casa).
 | Release tag | `vX.Y.Z` | `casa_browser-vX.Y.Z` |
 | GitHub "Latest" release | decided by GitHub, as for any release | never (`--latest=false`) |
 | Builder cache scope | the builder's per-arch default | its own (`casa_browser`) |
+
+**A new version rebuilds the browser.** The builder passes the app's version as the
+`BUILD_VERSION` build argument, and `casa_browser/Dockerfile` declares it just before the step
+that installs Google Chrome: an argument's value is part of the cache key of every later
+`RUN`, so each new Casa Browser version installs the Chrome that is current then, while the
+steps before it stay cached. Without it the layer cache would carry an earlier release's
+Chrome into every later image.
 
 **Concurrency.** One group per app and version on `main`, so a second run for the same
 version waits rather than racing it, and different versions never replace each other's

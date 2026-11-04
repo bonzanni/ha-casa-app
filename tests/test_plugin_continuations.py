@@ -582,8 +582,26 @@ async def test_an_extra_pass_comes_no_sooner_than_five_seconds(roles, monkeypatc
     rp = _plugin(tmp_path, [], extra={"sweep_again_s": 1})
     from plugin_continuations import sweep_server
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "cfg"))
-    runs, again = await pc.call_sweep_tool(sweep_server(rp), "runs_needing_driver")
-    assert runs == [] and again == 5.0
+    runs, again, ended = await pc.call_sweep_tool(sweep_server(rp), "runs_needing_driver")
+    assert runs == [] and again == 5.0 and ended == []
+
+
+@pytest.mark.parametrize("value, expected", [
+    ([{"ref": "request:k1", "binding_ref": "b"}, "x", 3],
+     [{"ref": "request:k1", "binding_ref": "b"}]),
+    ([{"ref": f"request:k{i}"} for i in range(80)],
+     [{"ref": f"request:k{i}"} for i in range(50)]),
+    ("request:k1", []), (None, []), ({"ref": "request:k1"}, [])])
+@pytest.mark.asyncio
+async def test_the_sweep_reads_the_requests_that_ended(roles, monkeypatch, tmp_path, value,
+                                                       expected):
+    """v0.347.6: the plugin names the requests that ended on their own (``ended``); only a
+    list's objects are read, at most fifty."""
+    rp = _plugin(tmp_path, [], extra={"ended": value})
+    from plugin_continuations import sweep_server
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "cfg"))
+    _runs, _again, ended = await pc.call_sweep_tool(sweep_server(rp), "runs_needing_driver")
+    assert ended == expected
 
 
 @pytest.mark.asyncio

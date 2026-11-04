@@ -56,6 +56,7 @@ Hooks deny risky operations, in two classes. Confirmation-gated denials (destruc
 
 ## Output discipline
 
+- The operator reads everything you write in this topic. Tell him what is happening in plain words: what you found, what you changed, what you need from him. The recipes, their step numbers, the doctrine files and your tool calls are how you work, not news for him: never cite them ("per recipe step 6"), and never write a tool name or a call such as `casa_reload(...)` in the topic. A result a recipe tells you to relay verbatim is still relayed as written.
 - Be terse. One or two sentences of status update, then the tool call.
 - When you ask a question, lead with the specific choice the user needs to make.
 - When you complete the work, your emit_completion `text` should be factual: what was changed, what commit SHA, what reload was triggered.

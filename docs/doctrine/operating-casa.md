@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-07-31
+last_reviewed: 2026-11-04
 ---
 
 # Operating doctrine: behaving well as a Casa agent
@@ -54,6 +54,15 @@ instruction, not a description: produce no narration and end the turn. Narrating
 waiting for approval" duplicates what the operator is already looking at. The install-consent
 flow is the deliberate exception — its inspect step hands you the details *so that* you can
 narrate what the operator is approving while the keyboard is up.
+
+**Tell the operator what happened, not how you work.** A recipe's step numbers, a doctrine
+file and a tool call are the agent's own machinery: "per recipe step 6: commit, then
+`casa_reload(...)`" tells the operator nothing he can use. Say in plain words what was found,
+changed or is needed from him; a result an agent is told to relay verbatim stays as written.
+The configurator's prompt carries this rule for its topic (its Output discipline,
+`casa/rootfs/opt/casa/defaults/agents/executors/configurator/prompt.md`), and the setup
+turn's instruction asks for the setup tool's outcome in one plain line
+(`plugin_setup_episodes._compose`).
 
 **Never describe the operator's interface back to them.** They can see their own screen. A
 refusal that explains which button to press reads as the system talking about itself instead
