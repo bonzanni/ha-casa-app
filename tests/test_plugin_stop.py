@@ -811,3 +811,157 @@ async def _answer_card(index):
     assert vb.BROKER.commit(claim)
     for _ in range(200):
         await asyncio.sleep(0)
+
+
+# -- a request that ended on its own: its card loses its Stop (the driver sweep's ``ended``) ----
+
+_REAL_CALL_PLUGIN_TOOL = pc.call_plugin_tool
+
+
+def _sweeping(env, monkeypatch, ended, *, plugin_name="browser"):
+    """A plugin declaring both the sweep and the stop; its sweep answers *ended* (a list, or a
+    callable giving one per pass). The plugin's stdio server is replaced by its answer text,
+    so the pass runs Casa's own parsing and settling."""
+    rp = ResolvedPlugin(name=plugin_name, artifact_id=ARTIFACT, path=str(env.tmp / "sweep"),
+                        version="0.1.0", manifest={"name": plugin_name, "casa": {
+                            "driverSweep": "runs_needing_driver", "stopTool": "stop_runs",
+                            "resultContract": {"version": 1, "tools": {
+                                "runs_needing_driver": {"result": "safe"},
+                                "stop_runs": {"result": "safe"}}}}})
+    (env.tmp / "sweep").mkdir(exist_ok=True)
+    (env.tmp / "sweep" / ".mcp.json").write_text(json.dumps({"mcpServers": {"browser": {
+        "command": sys.executable, "args": ["-c", "pass"]}}}))
+    env.use(rp)
+    passes: list = []
+
+    async def _call(server, tool, args, *, handed=None):
+        assert tool == "runs_needing_driver" and args == {}
+        passes.append(1)
+        return json.dumps({"runs": [], "ended": ended() if callable(ended) else ended})
+    monkeypatch.setattr(pc, "call_plugin_tool", _call)
+    return passes
+
+
+def _ended_entry(b, key="k1"):
+    return {"ref": f"request:{key}", "binding_ref": b.ref}
+
+
+async def test_a_request_that_ended_on_its_own_marks_its_card_once(env, monkeypatch):
+    c, b = env.admit()
+    passes = _sweeping(env, monkeypatch, lambda: [_ended_entry(b)])
+    await pc.sweep_once()
+    edits = _card_edits(env)
+    assert len(edits) == 1 and edits[0]["text"] == f"{CARD_TEXT}\n☑ Ended"
+    assert _buttons(edits[0]) == []                      # no Stop left on it
+    assert _lines(env) == [] and env.turns == [] and env.desk_uses == []
+    await pc.sweep_once()                                # named again on the next pass
+    assert len(passes) == 2 and len(_card_edits(env)) == 1
+    reloaded = run_admission.Confirmations(str(env.tmp / "admissions.json"))
+    assert reloaded.peek(CID).card_message_id == 0       # forgotten durably, text kept
+    assert reloaded.peek(CID).card_text == CARD_TEXT
+
+
+async def test_a_status_card_admitted_by_his_words_is_marked_too(env, monkeypatch):
+    status_text = "📊 Fido\nBrowsing now:\n• RunPod — invoice\nAsked for by Ellen."
+    c, b = env.admit()
+    run_admission.CONFIRMATIONS.set_card(CID, CARD_MID, status_text)
+    _sweeping(env, monkeypatch, [_ended_entry(b)])
+    await pc.sweep_once()
+    assert [e["text"] for e in _card_edits(env)] == [f"{status_text}\n☑ Ended"]
+
+
+@pytest.mark.parametrize("case", ["other_plugin", "unknown_binding", "not_a_request_ref",
+                                  "too_long", "not_admitted", "no_card", "another_operator",
+                                  "other_request", "not_a_dict"])
+async def test_an_ended_entry_that_is_not_his_admitted_card_marks_nothing(env, monkeypatch,
+                                                                          case):
+    import authz_grants
+    c, b = env.admit(status="pending" if case == "not_admitted" else "admitted",
+                     card=case != "no_card")
+    entry = _ended_entry(b)
+    if case == "other_plugin":
+        _, other = env.admit(plugin="bank-feed", cid="conf-" + "d" * 32)
+        entry = _ended_entry(other)
+    elif case == "unknown_binding":
+        entry["binding_ref"] = "casa-bind-unknown"
+    elif case == "not_a_request_ref":
+        entry["ref"] = "k1"
+    elif case == "too_long":
+        entry["ref"] = "request:" + "k" * 80
+    elif case == "another_operator":
+        monkeypatch.setattr(authz_grants, "_live_operator_identity", lambda: (OPERATOR, 7))
+    elif case == "other_request":
+        entry["ref"] = "request:k2"
+    elif case == "not_a_dict":
+        entry = "request:k1"
+    _sweeping(env, monkeypatch, [entry])
+    await pc.sweep_once()
+    assert _card_edits(env) == []
+
+
+async def test_a_stop_in_flight_keeps_the_card_for_its_own_mark(env, monkeypatch):
+    c, b = env.admit()
+    _sweeping(env, monkeypatch, [_ended_entry(b)])
+    plugin_stop._FLIGHTS.add(("browser", "request:k1"))
+    try:
+        await pc.sweep_once()
+    finally:
+        plugin_stop._FLIGHTS.discard(("browser", "request:k1"))
+    assert _card_edits(env) == []
+    assert run_admission.CONFIRMATIONS.peek(CID).card_message_id == CARD_MID
+
+
+async def test_a_card_that_cannot_be_edited_is_tried_once(env, monkeypatch):
+    from telegram.error import BadRequest
+    tries: list = []
+
+    async def _refuse(**kwargs):
+        tries.append(kwargs)
+        raise BadRequest("Message to edit not found")
+    env.bot.edit_message_text = _refuse
+    c, b = env.admit()
+    _sweeping(env, monkeypatch, [_ended_entry(b)])
+    await pc.sweep_once()
+    await pc.sweep_once()
+    assert len(tries) == 1                               # not retried every pass
+    assert run_admission.CONFIRMATIONS.peek(CID).card_message_id == 0
+
+
+async def test_with_no_channel_yet_the_next_pass_marks_it(env, monkeypatch):
+    c, b = env.admit()
+    _sweeping(env, monkeypatch, [_ended_entry(b)])
+    monkeypatch.setattr(rb, "_telegram_channel", lambda: None)
+    await pc.sweep_once()
+    assert run_admission.CONFIRMATIONS.peek(CID).card_message_id == CARD_MID
+    monkeypatch.setattr(rb, "_telegram_channel", lambda: env.ch)
+    await pc.sweep_once()
+    assert [e["text"] for e in _card_edits(env)] == [f"{CARD_TEXT}\n☑ Ended"]
+
+
+async def test_while_the_bot_is_rebuilt_the_next_pass_marks_it(env, monkeypatch):
+    """r1 (Astra): during a Telegram rebuild the channel exists with no bot, so no edit can be
+    tried; the card is kept for the next pass, not forgotten."""
+    c, b = env.admit()
+    _sweeping(env, monkeypatch, [_ended_entry(b)])
+    app = env.ch._app
+    env.ch._app = None                                   # what _rebuild's teardown leaves
+    await pc.sweep_once()
+    assert run_admission.CONFIRMATIONS.peek(CID).card_message_id == CARD_MID
+    env.ch._app = app
+    await pc.sweep_once()
+    assert [e["text"] for e in _card_edits(env)] == [f"{CARD_TEXT}\n☑ Ended"]
+
+
+async def test_a_stop_tap_after_the_natural_end_still_says_it_had_ended(env, monkeypatch):
+    """The card lost its Stop; a Stop from another path (Ellen's stop_work, a stale client)
+    still gets the plugin's ``ended`` and its line, and the card is not edited again."""
+    c, b = env.admit()
+    _sweeping(env, monkeypatch, [_ended_entry(b)])
+    await pc.sweep_once()
+    monkeypatch.setattr(pc, "call_plugin_tool", _REAL_CALL_PLUGIN_TOOL)
+    env.plugins["browser"] = [_plugin(env.tmp / "p", answer={"outcome": "ended"})]
+    await _tap(env)
+    await _quiet(env)
+    assert len(_card_edits(env)) == 1
+    assert [m["text"] for m in _lines(env)] == ["📊 Fido\nIt had already ended."]
+

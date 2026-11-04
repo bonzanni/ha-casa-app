@@ -463,6 +463,24 @@ def test_the_setup_courier_turn_tells_the_resident_to_relay():
     assert "relay_answer" not in text
 
 
+def test_the_setup_turn_asks_for_the_outcome_in_one_plain_line():
+    """casa-test, a Fido upgrade: the setup turn posted "The setup tool returned: Paired with
+    Casa Browser 0.1.8." Both branches ask for the outcome alone, in one plain line."""
+    import plugin_setup_episodes as pse
+    entry = {"granted_tools": ["mcp__plugin_x_srv"], "targets": ["specialist:browser"]}
+    _, text = pse._compose({"id": "ep1", "plugin": "x"}, entry, "setup")
+    assert ("and to answer with its outcome alone, in one short plain line, without naming "
+            "the tool") in text
+    entry["targets"] = ["resident:assistant"]
+    _, text = pse._compose({"id": "ep1", "plugin": "x"}, entry, "setup")
+    assert ("then tell the operator its outcome in one short plain line, in its own terms, "
+            "without naming the tool or saying what it returned.") in text
+    prompt = " ".join((Path(tools_mod.__file__).resolve().parent / "defaults/agents/assistant"
+                       / "prompts/system.md").read_text().split())
+    assert ("tell the operator its outcome in one short plain line, in its terms (never "
+            "\"the setup tool returned …\")") in prompt
+
+
 def test_only_the_assistant_is_granted_relay_answer():
     import yaml
     root = Path(tools_mod.__file__).resolve().parent / "defaults"

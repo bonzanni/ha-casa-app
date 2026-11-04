@@ -234,96 +234,90 @@ class SpecialistInstallAckStore:
             self._persist_locked(candidate)
 
 
+#: a digest the approval does not bind directly is shown by its first characters: the root
+#: digest (shown in full) covers the component and every dependency
+SHORT_DIGEST_HEX = 16
+
+
+def _short_digest(digest: str) -> str:
+    algo, sep, hexpart = str(digest).partition(":")
+    if not sep:
+        algo, hexpart = "", algo
+    if len(hexpart) <= SHORT_DIGEST_HEX:
+        return str(digest)
+    return f"{algo}{sep}{hexpart[:SHORT_DIGEST_HEX]}…"
+
+
 def render_install_consent_message(inspection: Any, *, mode: str = "install") -> str:
-    # Round-3 fix (finding #7): the identity this consent binds
-    # (`install_consent_identity(..., component_checksum=inspection.
-    # root_digest, ...)` below) is keyed on `root_digest` — the FULL-CLOSURE
-    # digest of the component PLUS every resolved dependency — not the
-    # narrow `component_checksum`. Show `root_digest` (what the tap actually
-    # binds) plus each resolved dependency's own digest, so the operator can
-    # see exactly what the approval covers; `component_checksum` stays for
-    # reference.
-    deps = ", ".join(f"{d.kind}:{d.identifier}" for d in inspection.dependencies)
-    dep_digest_lines = "".join(
-        f"  - {d.kind}:{d.identifier} = {d.digest}\n" for d in inspection.dependencies)
-    # Task 8: one block per sourced plugin dependency, from the REAL
-    # `specialist_receipt.PluginReceiptRow`s Task 8 attaches at
-    # `inspection.plugin_resolutions` (Task 7's sketch used provisional
-    # per-dependency `getattr` field names before that type existed — this
-    # replaces it with the real field set: identifier/scoped_name/
-    # manifest_name/version/source_type/content_digest/mcp_servers/
-    # protected_tools/env_names).
-    #
-    # Fix-round-1 (consent-review CRITICAL, spec §3.2): the DM must show
-    # "scoped name, manifest name, version, MCP servers/commands, protected
-    # tools, secrets surface" per plugin — the three list-valued lines below
-    # close that gap; each is omitted entirely when empty (nothing to
-    # approve in that category) rather than rendered as a bare label.
-    plugin_blocks: list[str] = []
-    for row in inspection.plugin_resolutions or ():
-        lines = [
-            f"  Bundled plugin {row.scoped_name}:",
-            f"    manifest name: {row.manifest_name}",
-            f"    version: {row.version}",
-            f"    source: {row.source_type}",
-            f"    content digest: {row.content_digest}",
-        ]
-        if row.mcp_servers:
-            lines.append(f"    MCP servers: {', '.join(row.mcp_servers)}")
-        if row.protected_tools:
-            lines.append(f"    Protected tools: {', '.join(row.protected_tools)}")
-        # #994: "required" is what the withhold gate holds the plugin on —
-        # the configurator asks the operator for these and nothing else. The
-        # exempt names (a `${VAR:-default}` the CLI satisfies itself, a
-        # `casa.setupProvides` name the plugin's own setup tool forges) are
-        # still disclosed, on a line whose label says they are not asks.
-        if row.env_names:
-            lines.append(f"    Secrets required: {', '.join(row.env_names)}")
-        exempt = getattr(row, "exempt_env_names", ()) or ()
-        if exempt:
-            lines.append(
-                "    Env referenced, not required (defaulted or provisioned by "
-                f"the plugin's own setup): {', '.join(exempt)}")
-        plugin_blocks.append("\n".join(lines))
-    plugin_section = ("\n".join(plugin_blocks) + "\n") if plugin_blocks else ""
-    # #541: the role's own casa-framework tool grants — the one place spawn/
-    # privilege tools could have entered was the one thing the operator never
-    # saw. Post-ceiling these are always consumer-safe, but the approving
-    # operator still sees what powers the specialist arrives with. Omitted
-    # entirely when the role grants none (same style as the plugin lines);
-    # getattr-defaulted so a hand-built inspection object predating the
-    # field renders unchanged.
-    role_grants = getattr(inspection, "role_tool_grants", ()) or ()
-    casa_tools_line = (
-        f"Casa tools: {', '.join(role_grants)}\n" if role_grants else "")
-    # #1225: an upgrade, and a settings change at the installed version, use
-    # this same keyboard (recipes/specialist/upgrade.md) and are worded as an
-    # update. Only these Casa-authored lines vary, and none is longer than its
-    # install counterpart, so a closure that fits the challenge limit as an
-    # install fits as an update. The identity above never sees the mode.
+    """The consent DM, in the order the operator decides by: one line saying what is asked
+    (install or update, which component at which version, as which specialist) and the
+    mission; then what it comes with — the Casa tools its role grants, its persona, its
+    dependencies and, per bundled plugin, its MCP servers, protected tools and the secrets it
+    requires or only references; then the action; and the digests last. The root digest —
+    what the approval binds, the component plus every resolved dependency — is shown in full;
+    the dependency, plugin-content and component digests it covers are shown short.
+
+    Round-3 fix (finding #7): the identity this consent binds
+    (``install_consent_identity(..., root_digest=inspection.root_digest, ...)``) is keyed
+    on ``root_digest``, the FULL-CLOSURE digest, not the narrow ``component_checksum``, so
+    the root digest is the one shown whole. Task 8 / fix-round-1 (spec §3.2): each sourced
+    plugin's scoped name, manifest name, version, source, MCP servers/commands, protected
+    tools and secrets surface are shown; a list-valued line is omitted when empty. #994: "Secrets
+    required" is what the withhold gate holds the plugin on; the exempt names (a
+    ``${VAR:-default}`` the CLI satisfies itself, a ``casa.setupProvides`` name the plugin's own
+    setup forges) are disclosed on a line whose label says they are not asks. #541: the role's
+    casa-framework tool grants are shown (``Casa tools:``), omitted when it grants none.
+    #1225: an upgrade, and a settings change at the installed version, use this same keyboard
+    and are worded as an update; only the Casa-authored first and action lines vary, and
+    neither is longer than its install counterpart, so a closure that fits the challenge
+    limit as an install fits as an update. The identity never sees the mode."""
+    target = f"{inspection.component_id}@{inspection.version}"
     if mode == "upgrade":
-        header = "\U0001F510 Specialist update consent\n\n"
-        question = (f"Update specialist:{inspection.slug} to "
-                    f"'{inspection.component_id}@{inspection.version}'?\n")
+        question = f"\U0001F510 Update specialist:{inspection.slug} to {target}?"
         action = "Approve to update; Deny to discard the staged fetch."
     else:
-        header = "\U0001F510 Specialist install consent\n\n"
-        question = (f"Install '{inspection.component_id}@{inspection.version}' as "
-                    f"specialist:{inspection.slug}?\n")
+        question = f"\U0001F510 Install {target} as specialist:{inspection.slug}?"
         action = "Approve to install; Deny to discard the staged fetch."
-    return (
-        f"{header}"
-        f"{question}"
-        f"Mission: {inspection.mission}\n"
-        f"{casa_tools_line}"
-        f"Default persona: {inspection.default_persona_ref}\n"
-        f"Dependencies: {deps or '(none)'}\n"
-        f"{dep_digest_lines}"
-        f"{plugin_section}"
-        f"Root digest (approved — component + dependencies): {inspection.root_digest}\n"
-        f"Component checksum: {inspection.component_checksum}\n\n"
-        f"{action}"
-    )
+    items: list[str] = []
+    role_grants = getattr(inspection, "role_tool_grants", ()) or ()
+    if role_grants:
+        items.append(f"Casa tools: {', '.join(role_grants)}")
+    items.append(f"Default persona: {inspection.default_persona_ref}")
+    deps = ", ".join(f"{d.kind}:{d.identifier}" for d in inspection.dependencies)
+    items.append(f"Dependencies: {deps or '(none)'}")
+    digests = [
+        f"Root digest (approved — component + dependencies): {inspection.root_digest}",
+        f"Component checksum: {_short_digest(inspection.component_checksum)}",
+    ]
+    digests += [f"{d.kind}:{d.identifier}: {_short_digest(d.digest)}"
+                for d in inspection.dependencies]
+    for row in inspection.plugin_resolutions or ():
+        items.append(f"Bundled plugin {row.scoped_name} (manifest name {row.manifest_name}, "
+                     f"version {row.version}, source {row.source_type}):")
+        if row.mcp_servers:
+            items.append(f"  MCP servers: {', '.join(row.mcp_servers)}")
+        if row.protected_tools:
+            items.append(f"  Protected tools: {', '.join(row.protected_tools)}")
+        if row.env_names:
+            items.append(f"  Secrets required: {', '.join(row.env_names)}")
+        exempt = getattr(row, "exempt_env_names", ()) or ()
+        if exempt:
+            items.append(
+                "  Env referenced, not required (defaulted or provisioned by "
+                f"the plugin's own setup): {', '.join(exempt)}")
+        digests.append(f"plugin {row.scoped_name} content: "
+                       f"{_short_digest(row.content_digest)}")
+    return "\n".join([
+        question,
+        f"Mission: {inspection.mission}",
+        "",
+        *items,
+        "",
+        action,
+        "",
+        "Digests:",
+        *digests,
+    ])
 
 
 def prompt_specialist_install_consent(

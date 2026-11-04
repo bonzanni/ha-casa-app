@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.347.6] - 2026-11-04
+
+### Fixed
+
+- A "Browsing now" card, or the start card of a browsing task, no longer keeps a live Stop button after the task ends by itself. Once Fido reports the task over, the card reads "☑ Ended" and its Stop goes away. Needs Fido 0.1.28.
+- The configurator no longer tells you its internal steps ("Per recipe step 6: commit, then casa_reload…"). It says in plain words what it found, what it changed and what it needs from you.
+- The consent message for installing or updating a specialist now starts with what you are asked: which specialist, which version. Then come what it brings (Casa tools, persona, plugins with their servers, protected tools and secrets), then the Approve/Deny line, and the digests last. The approved digest is shown in full; the others are shortened.
+- After a plugin's setup runs (for example once Fido is updated), you get its outcome as one plain line, such as "Paired with Casa Browser 0.1.9.", instead of "The setup tool returned: …".
+
 ## [0.347.5] - 2026-11-03
 
 ### Fixed

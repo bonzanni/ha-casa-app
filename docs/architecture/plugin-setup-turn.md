@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-10-03
+last_reviewed: 2026-11-04
 ---
 
 # The dispatched setup turn
@@ -26,7 +26,10 @@ manual run. A courier turn — the assistant
 delegating a specialist's setup — is judged on its delegation, by target, and on nothing
 else; its instruction then asks the assistant to pass the specialist's answer on with
 `relay_answer`, so the report reaches the operator under the specialist's own header
-([`delegate-answer-relay.md`](delegate-answer-relay.md)), and that relay settles nothing. An ordinary turn in which the resident ran the setup tool itself settles the row
+([`delegate-answer-relay.md`](delegate-answer-relay.md)), and that relay settles nothing. Both
+instructions (`plugin_setup_episodes._compose`) ask for the outcome as the operator should read
+it — one short plain line in the tool's own terms, without naming the tool — and the courier's
+asks the specialist to answer with that line alone. An ordinary turn in which the resident ran the setup tool itself settles the row
 from that evidence, so the next reload does not ask again.
 
 **The turn carries the operator's identity, for exactly the role it is addressed to.**

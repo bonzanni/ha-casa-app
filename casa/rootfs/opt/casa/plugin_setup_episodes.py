@@ -2505,9 +2505,12 @@ def _compose(ep: dict, entry: dict, tool: str) -> tuple[str | None, str]:
         preamble = (f"Plugin '{ep['plugin']}' was installed or updated and "
                     "declares a setup tool; it needed no new consent. ")
     base = f"[casa plugin setup · episode {ep['id']}] {preamble}"
+    # The outcome goes to the operator: its own sentence in one plain line, not a report
+    # about a tool ("The setup tool returned: …", casa-test, a Fido upgrade).
     tail = (
-        " Call it with no arguments, take no other action, and report the "
-        "outcome briefly."
+        " Call it with no arguments and take no other action; then tell the "
+        "operator its outcome in one short plain line, in its own terms, without "
+        "naming the tool or saying what it returned."
     )
     resident_text = (
         base + f"Run the setup tool `{namespaced}` now to (re-)point the "
@@ -2522,6 +2525,8 @@ def _compose(ep: dict, entry: dict, tool: str) -> tuple[str | None, str]:
     # header — Casa posts it when the resident relays it.
     return "assistant", (
         base + f"Delegate to the specialist '{sp}' with the instruction "
-        f"to run its setup tool `{namespaced}` now — do not substitute "
-        "another agent or tool. Call it with no arguments and take no other "
-        "action; then pass its answer on to the operator with relay_answer.")
+        f"to run its setup tool `{namespaced}` now, with no arguments and no "
+        "other action, and to answer with its outcome alone, in one short "
+        "plain line, without naming the tool — do not substitute another "
+        "agent or tool. Then pass its answer on to the operator with "
+        "relay_answer.")

@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.9] - 2026-11-04
+
+### Fixed
+
+- Every Casa Browser release now carries the Chrome that is current when the release is built. Before, a release could reuse the browser installed for an earlier one, so it could ship an older Chrome than the current stable one.
+
 ## [0.1.8] - 2026-11-03
 
 ### Added

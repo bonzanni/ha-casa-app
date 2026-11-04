@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-10-31
+last_reviewed: 2026-11-04
 ---
 
 # Plugin continuations and the driver sweep
@@ -106,6 +106,13 @@ request replaces a later one), and each pass, the minute's or an extra one, arms
 if a plugin asks again. A pass never overlaps another (`_passing`): one that starts while another
 runs returns at once, and the running one arms whatever is still asked. Casa's stop cancels the
 armed pass and a running one, and latches so that no pass starts or arms another (`stop_sweep`), before the continuations drain.
+
+**A plugin may name the requests that ended on their own** (`ended`). `call_sweep_tool` reads
+up to fifty objects from that list (anything else reads as none), and the pass hands them to
+`_settle_ended`, which keeps an entry only when its ref is a `request:` ref, its binding is
+this plugin's and the operator's as configured now, and marks that request's card ended
+(`plugin_stop.settle_ended`, [`plugin-stop.md`](plugin-stop.md)). A failure there is logged
+and leaves the continuations the pass queued as they are.
 
 **Such a specialist is never engaged in a topic.** A continuation's answer reaches the
 resident's DM, never a topic, and the specialist asks the person itself, with its own cards,

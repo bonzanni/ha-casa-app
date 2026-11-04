@@ -169,7 +169,8 @@ def line_for(outcome: str, role: str) -> "str | None":
 async def settle_run_card(c: Any, mark: str) -> bool:
     """Edit the request's start or status card to its text plus *mark*, with no keyboard, so
     a card never keeps a live Stop for a request that is stopped or ended. Nothing when no
-    card landed. True when the edit landed."""
+    card landed (or a natural end already forgot it, ``settle_ended``). True when the edit
+    landed."""
     from plugin_bindings import BINDINGS
     from result_broker import _telegram_channel
     if c is None or not getattr(c, "card_message_id", 0):
@@ -180,6 +181,34 @@ async def settle_run_card(c: Any, mark: str) -> bool:
         return False
     return bool(await channel.edit_dm_message(int(b.chat_id), int(c.card_message_id),
                                               f"{c.card_text}\n{mark}"))
+
+
+async def settle_ended(seg: str, operator_id: int, ref: str) -> bool:
+    """The plugin says the request *ref* ended on its own (its driver sweep's ``ended``): its
+    card is marked ``☑ Ended`` and loses its Stop — the mark a Stop that finds it ended gives
+    it. Nothing while a Stop of it is in flight (that path marks the card), and nothing for a
+    request Casa did not admit or whose card this has already marked. The plugin names the
+    request on every pass for a day, so the card is forgotten after one attempt
+    (``Confirmations.clear_card``), even when the edit fails: a card that cannot be edited is
+    not retried every pass, and its Stop then answers that it had already ended."""
+    import run_admission
+    from plugin_bindings import BINDINGS
+    from result_broker import _telegram_channel
+    if (seg, ref) in _FLIGHTS:
+        return False
+    c = confirmation_for(seg, operator_id, ref)
+    if c is None or c.status != "admitted" or not c.card_message_id:
+        return False
+    channel = _telegram_channel()
+    if (BINDINGS.peek(c.binding_ref) is None or channel is None
+            or getattr(channel, "bot", None) is None):
+        return False                    # no edit can be tried yet (no channel, or its bot is
+        #                                 being rebuilt): the next pass tries
+    landed = await settle_run_card(c, MARKS["ended"])
+    run_admission.CONFIRMATIONS.clear_card(c.cid)
+    logger.info("request of %s ended on its own: card %s", seg,
+                "marked" if landed else "not marked")
+    return landed
 
 
 async def tell_line(chat_id: int, role: str, outcome: str, *, reply_to: "int | None") -> None:

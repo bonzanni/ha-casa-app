@@ -369,6 +369,17 @@ class Confirmations:
             c.card_message_id, c.card_text = int(message_id), text
             self._save_locked()
 
+    def clear_card(self, cid: str) -> None:
+        """The card is marked ended (``plugin_stop.settle_ended``): it is forgotten, so no
+        later pass marks it again. Its text stays."""
+        with self._lock:
+            self._load_locked()
+            c = self._items.get(cid)
+            if c is None or not c.card_message_id:
+                return
+            c.card_message_id = 0
+            self._save_locked()
+
     def peek(self, cid: Any) -> "Confirmation | None":
         """Casa's own read (the Stop callback): no plugin or operator check — the caller
         compares the tapper itself."""

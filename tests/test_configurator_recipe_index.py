@@ -141,3 +141,20 @@ def test_specialist_recipes_reload_the_resident_whose_delegates_they_edit():
     install = " ".join((RECIPES_DIR / "specialist/install.md")
                        .read_text(encoding="utf-8").split())
     assert "reloaded and wired for delegation" not in install
+
+
+def test_the_topic_is_told_in_plain_words_not_recipe_steps():
+    """casa-test, a Fido upgrade: the configurator wrote "Per recipe step 6: commit, then
+    `casa_reload(scope="agents")`" to the operator's topic. The prompt's output discipline,
+    which the configurator reads on every engagement, says the topic is the operator's and
+    names what never goes in it."""
+    text = PROMPT.read_text(encoding="utf-8")
+    m = re.search(r"^## Output discipline.*?(?=^## |\Z)", text, re.M | re.S)
+    assert m is not None
+    section = " ".join(m.group(0).split())
+    assert section.count(
+        "The operator reads everything you write in this topic. Tell him what is happening in "
+        "plain words: what you found, what you changed, what you need from him.") == 1
+    assert "never cite them (\"per recipe step 6\"), and never write a tool name or a call " \
+           "such as `casa_reload(...)` in the topic." in section
+    assert "A result a recipe tells you to relay verbatim is still relayed as written." in section

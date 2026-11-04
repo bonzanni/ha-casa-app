@@ -365,6 +365,46 @@ def test_render_consent_message_includes_bundled_plugin_surfaces(
     assert "SOME_API_KEY" in text
 
 
+def test_the_consent_leads_with_what_is_asked_and_ends_with_the_digests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v0.347.6 (casa-test, a Fido update): the consent read as a wall of digests with the
+    version on its third line. It now leads with the one line he decides on, lists what the
+    specialist comes with, then the action, and the digests last: the approved root digest
+    whole, the ones it covers short. No fact is dropped."""
+    component_dir, manifest_path = write_minimal_component(tmp_path, slug="mtg-test")
+    digest = write_bundled_plugin(
+        component_dir, "mtg", protected_tools=["danger_tool"], env_names=["SOME_API_KEY"],
+        mcp_command_servers={"tools": {"command": "python3", "args": ["-m", "mtgserver"]}})
+    _add_dependency_row(manifest_path, _bundled_dep_row("mtg", digest, "plugins/mtg"))
+    result = _inspect(tmp_path, component_dir, monkeypatch=monkeypatch)
+    row = result.plugin_resolutions[0]
+    for mode, first, action in (
+            ("install", f"\U0001F510 Install {result.component_id}@{result.version} as "
+                        f"specialist:{result.slug}?", "Approve to install;"),
+            ("upgrade", f"\U0001F510 Update specialist:{result.slug} to "
+                        f"{result.component_id}@{result.version}?", "Approve to update;")):
+        lines = render_install_consent_message(result, mode=mode).split("\n")
+        assert lines[0] == first and lines[1] == f"Mission: {result.mission}"
+        at = next(i for i, ln in enumerate(lines) if ln.startswith(action))
+        before, after = "\n".join(lines[:at]), "\n".join(lines[at:])
+        for fact in (f"Default persona: {result.default_persona_ref}",
+                     f"Bundled plugin {row.scoped_name} (manifest name {row.manifest_name}, "
+                     f"version {row.version}, source {row.source_type}):",
+                     "tools: python3 -m mtgserver", "Protected tools: danger_tool",
+                     "Secrets required: SOME_API_KEY", "Dependencies: "):
+            assert fact in before, fact
+        assert "sha256:" not in before                          # no digest before the action
+        assert lines[at + 2] == "Digests:"
+        assert (f"Root digest (approved — component + dependencies): {result.root_digest}"
+                in after)                                       # what the tap binds, whole
+        short = row.content_digest.split(":", 1)[1][:16]
+        assert f"plugin {row.scoped_name} content: sha256:{short}…" in after
+        assert row.content_digest not in after                  # covered by the root digest
+        for d in result.dependencies:
+            assert f"{d.kind}:{d.identifier}: " in after
+
+
 # ---------------------------------------------------------------------------
 # #994: the consent's "Secrets required" list, and the commit result's
 # `required_env_vars`, were built from the COLLISION-preflight extraction

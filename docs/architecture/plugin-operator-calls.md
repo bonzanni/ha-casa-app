@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-10-31
+last_reviewed: 2026-11-04
 ---
 
 # Plugin operator calls and run admission
@@ -93,7 +93,9 @@ beside the answer in its own task, never awaited by it (`_spawn_status_card`,
 `TelegramChannel.deliver_run_card`); when it lands its message and text are recorded with
 the admission (`Confirmations.set_card`), and a failed post is only logged. The Stop's tap
 reads the admission by its id alone (`Confirmations.peek`) and compares the tapper itself;
-what it does is [`plugin-stop.md`](plugin-stop.md).
+what it does is [`plugin-stop.md`](plugin-stop.md). A request that ends on its own has its
+card marked ended there too, after which the admission forgets the card
+(`Confirmations.clear_card`) so no later pass edits it again.
 
 **The action check judges one browsing action, bound to the bytes it judged.**
 `POST /internal/broker/action-judgement` takes `{"kind", "packet", "spec_digest"}`: the

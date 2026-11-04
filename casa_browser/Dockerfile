@@ -12,10 +12,17 @@ RUN apt-get update \
     && python3 -c 'import sys; raise SystemExit(sys.version_info[:2] != (3, 13))' \
     || { echo "casa_browser needs Python 3.13 from the base image" >&2; exit 1; }
 
+# Every release installs the Chrome that is current when it is built. The builder passes the
+# app's version as BUILD_VERSION; declared here, a new version is a cache miss at the Chrome
+# step and every step after it (an ARG's value is part of each later RUN's cache key), so a
+# layer cache never ships an old Chrome under a new version. The steps above stay cached.
+ARG BUILD_VERSION=""
+
 # Google Chrome (branded, from Google's signed repository; the build log prints the version),
 # the virtual display, common fonts, NSS tools for the proxy CA and the Mesa Vulkan driver for
 # the Intel GPU (ANGLE-Vulkan, measured on the target box).
-RUN apt-get update \
+RUN echo "Casa Browser ${BUILD_VERSION}: installing the current stable Chrome" \
+    && apt-get update \
     && apt-get install -y --no-install-recommends curl gnupg \
     && curl -fsSL https://dl.google.com/linux/linux_signing_key.pub \
        | gpg --dearmor -o /usr/share/keyrings/google-linux.gpg \

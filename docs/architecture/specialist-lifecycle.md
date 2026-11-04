@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-16
+last_reviewed: 2026-11-04
 ---
 
 # The specialist install lifecycle
@@ -45,6 +45,16 @@ server-level grant included) before a consent prompt exists to approve it — an
 consent DM's `Casa tools:` line shows the grants that remain, so the approving operator
 sees what powers the specialist arrives with. Two further layers back this at load and at
 dispatch (INV-MCP-009), for installs that predate the ceiling.
+
+**The consent DM reads in the order the operator decides by**
+(`specialist_install_consent.render_install_consent_message`). Its first line asks the
+question — install which component at which version as which specialist, or update which
+specialist to which version — and the mission follows; then what the specialist comes with
+(its `Casa tools:`, its persona, its dependencies and, per bundled plugin, its manifest name,
+version, source, MCP servers, protected tools and the secrets it requires or only
+references); then the action line; and the digests last. The root digest the approval binds
+is shown whole; the component, dependency and plugin-content digests it covers are shown by
+their first sixteen hex characters (`SHORT_DIGEST_HEX`).
 
 ## Contracts & invariants
 
