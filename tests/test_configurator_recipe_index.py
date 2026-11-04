@@ -179,9 +179,10 @@ def test_the_topic_is_not_told_each_step_as_it_runs():
     assert section.count(
         "Only the text you write after your last tool call in a turn reaches him; what "
         "you write before or between tool calls is not shown, and the topic already shows "
-        "your steps. So end your turn with any question you have for him, and put there "
+        "your steps. So when you need him, end your turn with your question, and put there "
         "everything he should see: something you found that he should know, or a result "
-        "you are told to relay. Be terse.") == 1
+        "you are told to relay. When the task is done, end it with `emit_completion` "
+        "instead: its `text` is posted in the topic and is all Ellen reads. Be terse.") == 1
 
 
 def test_the_completion_text_is_written_for_the_operator():
@@ -192,18 +193,55 @@ def test_the_completion_text_is_written_for_the_operator():
     section = _output_discipline()
     assert "what commit SHA, what reload was triggered" not in section
     assert section.count(
-        "Write your emit_completion `text` for him too, in plain words: what you changed, "
-        "whether you made it take effect, and anything he still has to do. The commit SHA "
-        "and the files changed go in `artifacts`; the text names no SHA, tool, result field "
-        "or reload scope.") == 1
+        "Write your emit_completion `text` for him too, in plain words: what you found or "
+        "changed, whether you made it take effect, and anything he still has to do. For a "
+        "task that only asks for information, the text is the findings themselves, even if "
+        "you already wrote them in the topic. The commit SHA and the files changed go in "
+        "`artifacts`; the text names no SHA, tool, result field or reload scope.") == 1
     completion = " ".join(
         (CONFIGURATOR / "doctrine/completion.md").read_text(encoding="utf-8").split())
     assert "Committed SHA abc123" not in completion
     assert "`text` is what Ellen READS" not in completion
     assert ("Write `text` for the operator. Make it: - Factually complete. - Plain words: "
-            "what you changed, whether you made it take effect") in completion
+            "what you found or changed, whether you made it take effect") in completion
     assert ("no reload scopes — they are how you work, not news for him. The commit SHA "
             "and the files changed go in `artifacts` above.") in completion
+
+
+def test_an_information_task_completes_with_its_findings():
+    """casa-test, 2026-11-04, topic 3612: "review Fido's configuration and its vault
+    secrets and tell me what's wired; change nothing". The configurator ended its first
+    turn with the full report as text and no emit_completion, so the engagement stayed
+    open until the operator wrote that they were done; it then completed with a closing
+    line, and that line was all Ellen received. The prompt and completion.md say that a
+    task asking only for information completes once the answer is gathered, with the
+    findings in the completion text, which is the only thing Ellen reads."""
+    text = PROMPT.read_text(encoding="utf-8")
+    m = re.search(r"^## Communication.*?(?=^## |\Z)", text, re.M | re.S)
+    assert m is not None
+    communication = " ".join(m.group(0).split())
+    assert communication.count(
+        "A task that only asks for information is finished once you have gathered it. "
+        "Unless you have a real question for him, complete it in the same turn: there is "
+        "nothing to commit or reload, so call `emit_completion` with the findings in its "
+        "`text`. Do not end a turn with the report and wait; the engagement stays open "
+        "until you call `emit_completion`, and Ellen reads only its `text`, never the "
+        "topic.") == 1
+    completion = " ".join(
+        (CONFIGURATOR / "doctrine/completion.md").read_text(encoding="utf-8").split())
+    assert completion.count("## A task that only asks for information") == 1
+    assert ("there is nothing to commit and nothing to reload, so steps 1 and 2 are "
+            "skipped. Unless you have a real question for the operator, call "
+            "`emit_completion` in the same turn.") in completion
+    assert ("Do not end the turn with the report as text and wait: the engagement stays "
+            "open until you complete it, and Ellen reads only the completion's `text`, "
+            "never the topic.") in completion
+    assert ("That `text` carries the findings themselves, in plain words, even when you "
+            "have already written them in the topic.") in completion
+    # A findings report may need more room than a change's 2-5 sentences.
+    assert "Terse. One paragraph, 2-5 sentences." not in completion
+    assert ("Terse. A change takes one paragraph, 2-5 sentences; findings take the room "
+            "they need and no more.") in completion
 
 
 def test_no_example_completion_text_carries_the_commit_or_the_reload():

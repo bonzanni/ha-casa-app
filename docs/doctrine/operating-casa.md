@@ -62,8 +62,10 @@ changed or is needed from him; a result an agent is told to relay verbatim stays
 Nor are the agent's steps news for him ("now committing and reloading"), so they are not
 narrated; in an in-process executor's topic Casa posts only the text a turn writes after its
 last tool call, so a question belongs at the end of the turn. A completion text is written for him too: it says in plain words what the agent
-changed and what is left for him, and a commit SHA, a result field or a reload scope goes in
-the completion's artifacts, never in its text.
+found or changed and what is left for him, and a commit SHA, a result field or a reload scope goes in
+the completion's artifacts, never in its text. It is also all the engaging agent reads of the
+engagement, so a task that only asks for information completes as soon as it is answered,
+with the findings in that text rather than in a turn's closing words left waiting in the topic.
 The configurator's prompt carries this rule for its topic (its Output discipline,
 `casa/rootfs/opt/casa/defaults/agents/executors/configurator/prompt.md`) and, for the
 closing text, its completion doctrine

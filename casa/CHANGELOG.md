@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.347.13] - 2026-11-04
+
+### Fixed
+
+- When you ask the configurator only to check or review something ("tell me what's wired; change nothing"), it now finishes as soon as it has the answer, instead of waiting in its topic until you say you're done. Its findings go into its closing report, so Ellen can tell you what it found instead of saying it listed nothing.
+
 ## [0.347.12] - 2026-11-04
 
 ### Fixed
