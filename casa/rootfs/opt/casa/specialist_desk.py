@@ -939,9 +939,12 @@ async def handle_reply(
                 shown = without_sentinels(shown)
                 admitted = scope.admit(IntentKind.FINAL_REPLY, shown)
                 labelled = admitted.with_text(f"{label}\n{admitted}")
+                # a reply cut at a pending approval is not the turn's answer
                 post = rb.PostRecord(role=desk_role, operator_id=user_id, plugin="",
                                      slot="desk", tool_use_id=turn_id, owner=turn_id,
-                                     posted_at=DESKS.now(), kind="desk_reply")
+                                     posted_at=DESKS.now(),
+                                     kind=(rb.DESK_REPLY if kept is None
+                                           else rb.DESK_REPLY_BEFORE_APPROVAL))
                 delivered = False
                 try:
                     outcome = await channel.send_response(labelled, {**context, "_post": post})
@@ -1273,7 +1276,7 @@ async def handle_tap(
                     labelled = admitted.with_text(f"{label}\n{admitted}")
                     post = rb.PostRecord(role=desk_role, operator_id=user_id, plugin=seg,
                                          slot="receipt", tool_use_id=run_id, owner=run_id,
-                                         posted_at=DESKS.now(), kind="receipt")
+                                         posted_at=DESKS.now(), kind=rb.RECEIPT)
                     delivered = False
                     try:
                         outcome = await channel.send_response(labelled, {**context, "_post": post})

@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-02
+last_reviewed: 2026-11-04
 ---
 
 # Memory capture: what is kept as it happens, and what is kept out
@@ -46,8 +46,16 @@ awaits the append, so every capture a turn made has returned by the time the tur
 - **Casa's line that a specialist which keeps no memory posted to the operator's chat**, in
   the Telegram channel's `_record_post`, where every message Casa sends on a specialist's
   behalf lands: a plugin's link, message, page, proposal or file, a desk reply, a stored-call
-  receipt and a delegate's answer relayed under its name. The line is Casa's own words,
-  "Fido posted to your chat.", with the time, never anything of the post (INV-MEM-040). It is
+  receipt and a delegate's answer relayed under its name. The line is Casa's own words with
+  the time, never anything of the post (INV-MEM-040): "Fido posted his answer to your chat."
+  when the path that sent the post carries his answer — a delegate's answer relayed under its
+  name, or a desk reply, the message the specialist's turn closed with
+  (`result_broker.ANSWER_KINDS`, read from the post record's `kind`) — and "Fido posted to
+  your chat." for every other post, a desk reply cut at a call still waiting on the
+  operator's approval included (its words are posted, the work is not done). A plugin's message, page, file, link or card and a
+  stored-call receipt go out the same way mid-run and at the end, so nothing mechanical says
+  one of them is the answer, and the post's text is never read to guess it; Fido's answer
+  posted with its sources through his `show_sources` message slot is such a post. It is
   the one capture not awaited at its seam: the landing is synchronous on the send path, so the
   write is detached, and a send never waits for or fails on it.
 
@@ -155,7 +163,7 @@ own reply, which is that specialist's own output; and a Casa whose tools were ne
 initialised (an empty role map), where nothing is gated. It is the capture half of the rule; what reads the store later (ledgers, search, export, restore) is held to it by
 the mechanisms that read.
 
-**INV-MEM-040**: When a message Casa sends on behalf of a specialist that writes no memory lands in the configured operator chat, exactly one event is captured per post — Casa's words "<name> posted to your chat.", with the time, speaker `casa`, origin `system`, the chat's resident as its role, the specialist as its speaker id, a `private` floor — holding nothing of the post's body, caption, file name or buttons, and keyed by the post's identity (its owner, tool call and slot) so every page of it and a re-landing are one event; nothing is captured for a specialist that writes memory, another chat, or a channel with no operator chat.
+**INV-MEM-040**: When a message Casa sends on behalf of a specialist that writes no memory lands in the configured operator chat, exactly one event is captured per post — Casa's words "<name> posted his answer to your chat." when the post's kind is a relayed answer or a desk reply that closed its turn, and "<name> posted to your chat." for every other kind (a desk reply cut at a pending approval included), decided from the post record and never from its text, with the time, speaker `casa`, origin `system`, the chat's resident as its role, the specialist as its speaker id, a `private` floor — holding nothing of the post's body, caption, file name or buttons, and keyed by the post's identity (its owner, tool call and slot) so every page of it and a re-landing are one event; nothing is captured for a specialist that writes memory, another chat, or a channel with no operator chat.
 
 The specialist's answer stays out of memory (INV-MEM-032), and so does Casa's notice carrying
 it, so without this line the writer saw a request handed to the specialist and then nothing,
