@@ -42,4 +42,4 @@ AgentConfig — use the `agent` scope for that role. Canonical order:
 
     config_git_commit(message="wire <target> into <resident>'s delegates")
     casa_reload(scope="agent", role="<resident>")
-    emit_completion(status="ok", text="...committed SHA <sha>, called casa_reload(scope='agent') for delegates rebuild.")
+    emit_completion(status="ok", text="I added <target> to <resident>'s helpers.", artifacts=[<the commit>])

@@ -26,4 +26,4 @@ else): `delegates.yaml` is part of the resident's AgentConfig — use the
 
     config_git_commit(message="unwire <target> from <resident>'s delegates")
     casa_reload(scope="agent", role="<resident>")
-    emit_completion(status="ok", text="...committed SHA <sha>, called casa_reload(scope='agent') to drop the delegate from the registry.")
+    emit_completion(status="ok", text="I removed <target> from <resident>'s helpers.", artifacts=[<the commit>])

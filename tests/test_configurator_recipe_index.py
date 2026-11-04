@@ -158,3 +158,66 @@ def test_the_topic_is_told_in_plain_words_not_recipe_steps():
     assert "never cite them (\"per recipe step 6\"), and never write a tool name or a call " \
            "such as `casa_reload(...)` in the topic." in section
     assert "A result a recipe tells you to relay verbatim is still relayed as written." in section
+
+
+def _output_discipline() -> str:
+    text = PROMPT.read_text(encoding="utf-8")
+    m = re.search(r"^## Output discipline.*?(?=^## |\Z)", text, re.M | re.S)
+    assert m is not None
+    return " ".join(m.group(0).split())
+
+
+def test_the_topic_is_not_told_each_step_as_it_runs():
+    """casa-test, a Fido upgrade: the topic got "Now let me read the specialist/upgrade
+    recipe." and "Committed and reloaded. Finalizing with completion summary." The prompt
+    asked for a status sentence before every tool call; the prompt now says not to
+    narrate steps, which are not news for the operator."""
+    section = _output_discipline()
+    assert "One or two sentences of status update, then the tool call." not in section
+    assert section.count(
+        "Do not narrate your steps (no \"now let me read...\", \"committing and "
+        "reloading...\" or \"finalizing...\" lines): they are not news for him. Write in "
+        "the topic when there is something for him: a question, something you found that "
+        "he should know, or a result you are told to relay. Be terse.") == 1
+
+
+def test_the_completion_text_is_written_for_the_operator():
+    """The same Fido upgrade closed its topic with "specialist_upgrade returned
+    state=active ... Committed as SHA 9a44ae47..., then soft-reloaded scope=agents" — the
+    completion text the prompt and completion.md had asked to carry the SHA and the
+    reload."""
+    section = _output_discipline()
+    assert "what commit SHA, what reload was triggered" not in section
+    assert section.count(
+        "Write your emit_completion `text` for him too, in plain words: what you changed, "
+        "whether you made it take effect, and anything he still has to do. The commit SHA "
+        "and the files changed go in `artifacts`; the text names no SHA, tool, result field "
+        "or reload scope.") == 1
+    completion = " ".join(
+        (CONFIGURATOR / "doctrine/completion.md").read_text(encoding="utf-8").split())
+    assert "Committed SHA abc123" not in completion
+    assert "`text` is what Ellen READS" not in completion
+    assert ("Write `text` for the operator. Make it: - Factually complete. - Plain words: "
+            "what you changed, whether you made it take effect") in completion
+    assert ("no reload scopes — they are how you work, not news for him. The commit SHA "
+            "and the files changed go in `artifacts` above.") in completion
+
+
+def test_no_example_completion_text_carries_the_commit_or_the_reload():
+    """Every recipe's example ``emit_completion(... text="...")`` is a model the
+    configurator copies; the ones that said "committed SHA <sha>, called
+    casa_reload(scope='agent')" put exactly that in the operator's topic."""
+    docs = [CONFIGURATOR / "doctrine/completion.md", *sorted(RECIPES_DIR.rglob("*.md"))]
+    examples = []
+    for path in docs:
+        text = path.read_text(encoding="utf-8")
+        for m in re.finditer(r'emit_completion\([^)]*?text="([^"]*)"', text, re.S):
+            examples.append((path.name, " ".join(m.group(1).split())))
+    # The recipes that model a finished change all carry one (and completion.md's
+    # payload skeleton), so the scan cannot pass by matching nothing.
+    assert len(examples) >= 10, examples
+    for name, example in examples:
+        # <ref> may be a commit sha the operator named (specialist/install.md).
+        for machinery in ("SHA", "sha>", "<ref>", "casa_reload", "reloaded triggers",
+                          "scope="):
+            assert machinery not in example, (name, example)

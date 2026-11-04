@@ -59,8 +59,14 @@ narrate what the operator is approving while the keyboard is up.
 file and a tool call are the agent's own machinery: "per recipe step 6: commit, then
 `casa_reload(...)`" tells the operator nothing he can use. Say in plain words what was found,
 changed or is needed from him; a result an agent is told to relay verbatim stays as written.
+Nor are the agent's steps news for him ("now committing and reloading"), so they are not
+narrated. A completion text is written for him too: it says in plain words what the agent
+changed and what is left for him, and a commit SHA, a result field or a reload scope goes in
+the completion's artifacts, never in its text.
 The configurator's prompt carries this rule for its topic (its Output discipline,
-`casa/rootfs/opt/casa/defaults/agents/executors/configurator/prompt.md`), and the setup
+`casa/rootfs/opt/casa/defaults/agents/executors/configurator/prompt.md`) and, for the
+closing text, its completion doctrine
+(`casa/rootfs/opt/casa/defaults/agents/executors/configurator/doctrine/completion.md`), and the setup
 turn's instruction asks for the setup tool's outcome in one plain line
 (`plugin_setup_episodes._compose`).
 

@@ -138,8 +138,8 @@ call `plugin_add` for a specialist's declared plugin — see `recipes/plugin/add
    sweep only adds and evicts roles; it never re-reads a resident that is already live, so
    without the per-role reload the resident keeps its old delegate list in memory and every
    delegation to the new specialist is refused with `delegation_not_declared` (#1009).
-10. `emit_completion(status="ok", text="Installed specialist <slug> from <repo>@<ref>; reloaded the
-    specialist registry and reloaded <resident> so it can delegate to <slug>.")`.
+10. `emit_completion(status="ok", text="I installed <slug> <version> from <repo> and added it to
+    <resident>'s helpers.", artifacts=[<the commit>])`.
 
 ## Common mistakes
 

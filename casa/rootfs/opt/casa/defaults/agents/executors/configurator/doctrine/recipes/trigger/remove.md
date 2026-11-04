@@ -38,7 +38,7 @@ result's `prompt_file` says what happened:
 
     config_git_commit(message="remove <trigger-name> from <role>")
     casa_reload_triggers(role="<role>")
-    emit_completion(status="ok", text="...removed; reloaded triggers for <role>.")
+    emit_completion(status="ok", text="I removed <role>'s <trigger-name>.", artifacts=[<the commit>])
 
 Skipping the reload leaves the deleted trigger still registered in the
 live scheduler — it keeps firing until the next addon restart. See

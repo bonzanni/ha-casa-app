@@ -88,7 +88,7 @@ so say what you changed.
 
     config_git_commit(message="update <trigger-name> on <role>: <what>")
     casa_reload_triggers(role="<role>")
-    emit_completion(status="ok", text="...committed SHA <sha>, reloaded triggers for <role>.")
+    emit_completion(status="ok", text="I changed <role>'s <trigger-name>: <what you changed, in plain words>.", artifacts=[<the commit>])
 
 Skipping the reload leaves the change committed but **inert** — the
 old trigger keeps firing on its old schedule. See completion.md.

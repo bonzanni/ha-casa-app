@@ -170,24 +170,25 @@ Look at `secrets[*].status`. Every required var should report
 `resolved` (with `source: op` for 1P references, `source: plain` for
 literals). `status: unresolved` with `reason: "not in plugin-env.conf"`
 means a `set_plugin_env_reference` call is still missing. If the
-top-level `ready` is still `false`, quote its `reasons` verbatim in
-your completion (or escalate) — never finish leaving a red
-`plugin-health.json` unexplained.
+top-level `ready` is still `false`, say in your completion's text, in
+plain words, what each of its `reasons` leaves him to do, and put the
+`reasons` themselves in its `artifacts` (or escalate) — never finish
+leaving a red `plugin-health.json` unexplained.
 
 ## Canonical order
 
     config_git_commit(message="<plugin>: wire <VAR> via 1Password")
     casa_reload(scope="plugin_env")
     verify_plugin_state(plugin_name="<plugin>")   # expect secrets resolved
-    emit_completion(status="ok", text="Wired <VAR> for <plugin>; ready=<bool> (reasons=<...> if false); committed SHA <sha>; called casa_reload(scope='plugin_env') to refresh MCP-server env + plugin health.")
+    emit_completion(status="ok", text="I gave <plugin> its <what the secret is for> from 1Password, and its check came back ready (or: not ready yet: <what is left for him, in plain words>).", artifacts=[<the commit, if any>])
 
 **`plugin-env.conf` is gitignored** (it's a mode-0600 secrets file). So
 `config_git_commit` after a secret-only change stages nothing and returns
 `sha=""` **plus a `warning` explaining that only whitelisted paths are
 tracked — that is expected, NOT a failure. Do not retry the commit.** Still
-call it (it's a harmless no-op that keeps the flow uniform), but in
-`emit_completion` say "no SHA (secrets file is gitignored)" rather than
-reporting a blank `<sha>`.
+call it (it's a harmless no-op that keeps the flow uniform), but leave the
+commit out of `emit_completion`'s `artifacts` rather than reporting a blank
+`sha`.
 
 If you arrived here from the install flow, batch — call
 `casa_reload(scope='plugin_env')` first, then `casa_reload(scope='agent', role=<role>)`
@@ -248,7 +249,7 @@ subprocess inherits):
     )
     config_git_commit(message="context7: wire optional CONTEXT7_API_KEY via 1Password")
     casa_reload(scope="plugin_env")
-    emit_completion(status="ok", text="Wired CONTEXT7_API_KEY (optional, raises context7 rate limits); no SHA (secrets file gitignored); reloaded plugin_env (set_1_vars).")
+    emit_completion(status="ok", text="I added context7's optional API key from 1Password.")
 
 **Verify differently:** because context7 declares no required env var,
 `verify_plugin_state` won't report it. Confirm instead that `plugin-env.conf`
