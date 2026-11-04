@@ -346,7 +346,7 @@ class EngagementRecord:
     # while an older/equal one never overrides.
     summary_message_id: int | None = None
     summary_revision: int = 0
-    # W-R6 (v0.81.0): the persisted SHORT topic title (2-3 words). Set once at
+    # W-R6 (v0.81.0): the persisted SHORT topic title (~40 chars). Set once at
     # engage_executor ingest (engager-supplied ``topic_title`` normalized, or a
     # Casa-derived fallback from the brief/task), then read by BOTH the
     # topic-name state edit (telegram.update_topic_state) and the live-summary

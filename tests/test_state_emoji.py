@@ -91,19 +91,61 @@ def test_normalize_topic_title_passes_short_clean_title():
     assert normalize_topic_title("Gmail plugin") == "Gmail plugin"
 
 
-def test_normalize_topic_title_caps_to_three_words_at_word_boundary():
+def test_normalize_topic_title_has_no_word_cap():
     from channels.state_emoji import normalize_topic_title
-    assert normalize_topic_title("one two three four five") == "one two three"
+    # v0.347.12: the 3-word cap is gone; a short many-word title stays whole.
+    assert normalize_topic_title("one two three four five") == \
+        "one two three four five"
 
 
-def test_normalize_topic_title_caps_to_char_budget_at_word_boundary():
+# The two production titles the old 3-word cap cut silently.
+def test_normalize_topic_title_keeps_install_fido_browser_specialist_whole():
+    from channels.state_emoji import normalize_topic_title
+    assert normalize_topic_title("Install Fido (browser specialist)") == \
+        "Install Fido (browser specialist)"
+
+
+def test_normalize_topic_title_keeps_upgrade_alex_to_whole():
+    from channels.state_emoji import normalize_topic_title
+    assert normalize_topic_title("Upgrade Alex to version 0.27.0") == \
+        "Upgrade Alex to version 0.27.0"
+
+
+def test_normalize_topic_title_caps_at_forty_chars():
+    from channels.state_emoji import TOPIC_TITLE_CHAR_CAP
+    assert TOPIC_TITLE_CHAR_CAP == 40
+
+
+def test_normalize_topic_title_keeps_a_title_of_exactly_the_cap():
     from channels.state_emoji import normalize_topic_title, TOPIC_TITLE_CHAR_CAP
-    # Three long words exceed the char cap → dropped at a WORD boundary.
-    out = normalize_topic_title("configuration deployment orchestration")
+    title = "Wire the Gmail plugin secrets from vault"
+    assert len(title) == TOPIC_TITLE_CHAR_CAP
+    assert normalize_topic_title(title) == title
+
+
+def test_normalize_topic_title_cuts_between_words_and_marks_the_cut():
+    from channels.state_emoji import normalize_topic_title, TOPIC_TITLE_CHAR_CAP
+    out = normalize_topic_title(
+        "Install the Fido browser specialist and wire its vault secrets")
+    assert out == "Install the Fido browser specialist and…"
     assert len(out) <= TOPIC_TITLE_CHAR_CAP
-    # Never a mid-word cut: the result is a whitespace-joined prefix.
-    assert out in "configuration deployment orchestration"
-    assert not out.endswith(" ")
+
+
+def test_normalize_topic_title_a_shortened_title_always_shows_the_ellipsis():
+    from channels.state_emoji import normalize_topic_title, TOPIC_TITLE_CHAR_CAP
+    for raw in (
+        "Install the Fido browser specialist and wire its vault secrets",
+        "configuration deployment orchestration reconciliation pipeline",
+        "Remove the water-plants-test-automation-trigger-for-the-balcony",
+        "a " * 30,
+    ):
+        out = normalize_topic_title(raw)
+        if out != raw.strip():
+            assert out.endswith("…"), (raw, out)
+        assert len(out) <= TOPIC_TITLE_CHAR_CAP, (raw, out)
+        # Cut only between words: the kept words are a prefix of the title's.
+        kept = out[:-1].split() if out.endswith("…") else out.split()
+        assert kept == raw.split()[:len(kept)], (raw, out)
 
 
 def test_normalize_topic_title_ellipsizes_lone_long_word():
@@ -111,17 +153,53 @@ def test_normalize_topic_title_ellipsizes_lone_long_word():
     # #357: a single word longer than the cap has no word boundary to cut
     # at — ellipsize instead of returning a raw character slice that
     # masquerades as the whole word.
-    out = normalize_topic_title("restart-backup-after-migration")
+    word = "restart-backup-after-migration-and-verify-it"
+    out = normalize_topic_title(word)
+    assert out == "restart-backup-after-migration-and-veri…"
     assert len(out) <= TOPIC_TITLE_CHAR_CAP
-    assert out.endswith("…")
-    assert "restart-backup-after-migration".startswith(out[:-1])
+    assert word.startswith(out[:-1])
 
 
 def test_normalize_topic_title_ellipsizes_when_first_word_exceeds_cap():
     from channels.state_emoji import normalize_topic_title, TOPIC_TITLE_CHAR_CAP
-    out = normalize_topic_title("supercalifragilisticexpialidocious now")
+    out = normalize_topic_title(
+        "supercalifragilisticexpialidocious-and-more now")
+    assert out == "supercalifragilisticexpialidocious-and-…"
     assert len(out) <= TOPIC_TITLE_CHAR_CAP
-    assert out.endswith("…")
+
+
+# r1 (Terra): 40 emoji fit the char cap but not Telegram's 128-byte topic
+# name once the state emoji is in front.
+def test_normalize_topic_title_fits_the_topic_name_byte_limit():
+    from channels.state_emoji import (
+        STATE_EMOJI, compose_topic_title, normalize_topic_title,
+    )
+    from text_util import TELEGRAM_TOPIC_NAME_BYTES
+    for raw in ("😀" * 40, "😀😀 " * 14, "Install 😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"):
+        out = normalize_topic_title(raw)
+        assert out.endswith("…"), (raw, out)
+        for state in STATE_EMOJI:
+            name = compose_topic_title(state=state, short_task=out)
+            assert len(name.encode("utf-8")) <= TELEGRAM_TOPIC_NAME_BYTES, name
+
+
+def test_normalize_topic_title_a_cut_keeps_the_separators_it_keeps():
+    from channels.state_emoji import normalize_topic_title
+    raw = "alpha\u00a0beta  gamma delta epsilon zeta eta theta"
+    assert normalize_topic_title(raw) == "alpha\u00a0beta  gamma delta epsilon zeta…"
+
+
+# r2 (Astra): a JSON "\ud800" in the tool call decodes to a lone surrogate;
+# measuring its bytes raised UnicodeEncodeError and broke the launch.
+def test_normalize_topic_title_replaces_a_lone_surrogate():
+    from channels.state_emoji import normalize_topic_title
+    import json
+    raw = json.loads('"Repair \\ud800 lamp"')
+    assert normalize_topic_title(raw) == "Repair \ufffd lamp"
+    long = json.loads('"\\ud800' + 'x' * 50 + '"')
+    out = normalize_topic_title(long)
+    assert out.startswith("\ufffd") and out.endswith("…")
+    out.encode("utf-8")
 
 
 def test_normalize_topic_title_unsafe_text_falls_back_to_empty():
@@ -140,20 +218,12 @@ def test_normalize_topic_title_blank_and_non_str_fall_back_to_empty():
     assert normalize_topic_title(123) == ""
 
 
-# #1368: a long middle word crossing the cap must not leave the first word
-# alone — "Remove water-plants-test trigger" was shown as just "Remove" in
-# the topic name and in the hand-off line of the person's chat.
+# #1368: "Remove water-plants-test trigger" was shown as just "Remove". With
+# the 40-char cap it fits whole, so the object is kept.
 def test_normalize_topic_title_keeps_the_object_when_a_long_word_crosses_the_cap():
-    from channels.state_emoji import normalize_topic_title, TOPIC_TITLE_CHAR_CAP
-    out = normalize_topic_title("Remove water-plants-test trigger")
-    assert out == "Remove water-plants-tes…"
-    assert len(out) <= TOPIC_TITLE_CHAR_CAP
-
-
-def test_normalize_topic_title_still_cuts_at_a_word_when_that_keeps_most():
     from channels.state_emoji import normalize_topic_title
-    assert normalize_topic_title("Add water-plants-test trigger") == \
-        "Add water-plants-test"
+    assert normalize_topic_title("Remove water-plants-test trigger") == \
+        "Remove water-plants-test trigger"
 
 
 def test_concise_task_keeps_the_object_when_a_long_word_crosses_the_budget():

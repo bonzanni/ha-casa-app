@@ -2089,7 +2089,8 @@ class TestEngageExecutorBriefDelivery:
 
 
 async def _engage_with_lines(tmp_path, monkeypatch, origin, *, driver="in_casa",
-                             executor_type="configurator", task=None, split=False):
+                             executor_type="configurator", task=None, split=False,
+                             topic_title=None):
     from tools import engage_executor, init_tools
     import agent as agent_mod
     import tools as tools_mod
@@ -2127,7 +2128,13 @@ async def _engage_with_lines(tmp_path, monkeypatch, origin, *, driver="in_casa",
     mock_rec.id = "abcd1234" + "0" * 24
     mock_rec.topic_id = 42
     mock_rec.topic_title = "Gmail plugin"
-    er.create = AsyncMock(return_value=mock_rec)
+
+    async def _create(*a, **kw):
+        if topic_title is not None:
+            mock_rec.topic_title = kw["topic_title"]
+        return mock_rec
+
+    er.create = AsyncMock(side_effect=_create)
     er.mark_error = AsyncMock()
     er.try_transition_terminal = AsyncMock(return_value=True)
     er.launch_shutdown_active = MagicMock(return_value=False)
@@ -2150,14 +2157,18 @@ async def _engage_with_lines(tmp_path, monkeypatch, origin, *, driver="in_casa",
                         MagicMock(start=AsyncMock()), raising=False)
     token = agent_mod.origin_var.set(dict(origin))
     try:
-        r = await engage_executor.handler({
+        args = {
             "executor_type": executor_type,
             "task": task or "Update the Gmail plugin to the latest version.",
             "context": "",
-        })
+        }
+        if topic_title is not None:
+            args["topic_title"] = topic_title
+        r = await engage_executor.handler(args)
     finally:
         agent_mod.origin_var.reset(token)
     await asyncio.gather(*list(tools_mod._handoff_line_tasks))
+    _engage_with_lines.channel = channel
     return json.loads(r["content"][0]["text"]), lines, topic_posts
 
 
@@ -2179,6 +2190,24 @@ class TestEngageHandoffLines:
         assert topic_posts == [(42, "📋 Gmail plugin\nUpdate the Gmail plugin to "
                                     "the latest version.",
                                 {"disable_notification": True})]
+
+    # v0.347.12: production cut "Install Fido (browser specialist)" to
+    # "Install Fido (browser" in both places; one persisted title feeds both.
+    @pytest.mark.parametrize("raw, shown", [
+        ("Install Fido (browser specialist)", "Install Fido (browser specialist)"),
+        ("Install the Fido browser specialist and wire its vault secrets",
+         "Install the Fido browser specialist and…"),
+        ("Repair \ud800 lamp", "Repair \ufffd lamp"),
+    ])
+    async def test_the_line_and_the_topic_name_share_the_capped_title(
+            self, tmp_path, monkeypatch, raw, shown):
+        payload, lines, _ = await _engage_with_lines(
+            tmp_path, monkeypatch, _OP, topic_title=raw)
+        assert payload["status"] == "pending", payload
+        assert lines == [("c1", f"⚙️ Passed to the configurator: “{shown}”. "
+                                "Its topic is in Engagements.")]
+        ch = _engage_with_lines.channel
+        assert ch.open_engagement_topic.await_args.kwargs["name"] == f"🟢 {shown}"
 
     async def test_a_turn_no_operator_opened_gets_the_topic_line_only(
             self, tmp_path, monkeypatch):

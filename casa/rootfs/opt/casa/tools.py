@@ -10415,9 +10415,11 @@ def _read_executor_archive(store, role: str, procedural_epoch: str,
             "executor_type": {"type": "string"},
             "task": {"type": "string"},
             "context": {"type": "string"},
-            # W-R6 (v0.81.0): OPTIONAL short 2-3 word topic title. Normalized +
+            # W-R6 (v0.81.0): OPTIONAL short topic title. Normalized +
             # persisted at ingest; absent → a Casa-derived label from task/brief.
-            "topic_title": {"type": "string"},
+            "topic_title": {"type": "string", "description":
+                            "Short name for the job, up to about 40 "
+                            "characters; a longer one is cut with '…'."},
             "brief": {
                 "type": "object",
                 "properties": {

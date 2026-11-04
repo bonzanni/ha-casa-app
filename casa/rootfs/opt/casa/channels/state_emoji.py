@@ -7,7 +7,10 @@ from __future__ import annotations
 
 import re
 
-from text_util import is_unsafe_text, truncate_for_topic
+from text_util import (
+    TELEGRAM_TOPIC_NAME_BYTES, is_unsafe_text, replace_lone_surrogates,
+    truncate_for_topic,
+)
 
 # §6.3 state emoji.
 STATE_EMOJI: dict[str, str] = {
@@ -77,12 +80,22 @@ def concise_task(task: str) -> str:
     return truncate_for_topic(s, byte_budget=U3_TASK_BYTE_BUDGET)
 
 
-# W-R6 (v0.81.0): an engager may supply a short 2-3 word ``topic_title`` on
+# W-R6 (v0.81.0): an engager may supply a short ``topic_title`` on
 # engage_executor. It is normalized ONCE at ingest, persisted on the
-# EngagementRecord, and shared by the topic-name state edit AND the live
-# summary title — a single source. ~24 chars / 3 words, word-boundary capped.
-TOPIC_TITLE_CHAR_CAP = 24
-TOPIC_TITLE_WORD_CAP = 3
+# EngagementRecord, and shared by the topic-name state edit, the live summary
+# title and the hand-off line in the person's chat — a single source.
+# v0.347.12: about 40 chars, cut between words, and a cut always shows "…".
+# The title also stays within Telegram's topic-name byte limit once
+# compose_topic_title puts a state emoji and a space in front of it.
+TOPIC_TITLE_CHAR_CAP = 40
+TOPIC_TITLE_BYTE_CAP = TELEGRAM_TOPIC_NAME_BYTES - max(
+    len(f"{e} ".encode("utf-8")) for e in STATE_EMOJI.values())
+_WORD_RE = re.compile(r"\S+")
+
+
+def _title_fits(t: str) -> bool:
+    return (len(t) <= TOPIC_TITLE_CHAR_CAP
+            and len(t.encode("utf-8")) <= TOPIC_TITLE_BYTE_CAP)
 
 
 def normalize_topic_title(raw: object) -> str:
@@ -90,30 +103,33 @@ def normalize_topic_title(raw: object) -> str:
 
     Rejects UNSAFE-TEXT (control/bidi codepoints incl. newlines — the v0.78
     predicate) by returning ``""`` so the caller falls back to a Casa-derived
-    label. A safe title is capped to ~24 chars / 3 words at a WORD boundary,
-    or inside a word (ellipsized) when the boundary would keep under half.
+    label. A safe title longer than ``TOPIC_TITLE_CHAR_CAP`` (or the byte cap)
+    keeps the words that fit, separators untouched, and ends in "…"; the
+    result never exceeds either cap. A first word too long to fit is cut
+    inside the word, also ending in "…" (#357).
+    A lone surrogate becomes U+FFFD.
     Returns ``""`` for a non-str, blank, or unsafe value."""
     if not isinstance(raw, str):
         return ""
-    s = raw.strip()
+    # A JSON "\ud800" decodes to a lone surrogate, which cannot be encoded
+    # (to measure bytes here, or by Telegram later): U+FFFD stands in.
+    s = replace_lone_surrogates(raw).strip()
     if not s or is_unsafe_text(s):
         return ""
-    words = s.split()
-    if len(words) > TOPIC_TITLE_WORD_CAP:
-        s = " ".join(words[:TOPIC_TITLE_WORD_CAP])
-    if len(s) > TOPIC_TITLE_CHAR_CAP:
-        head = s[:TOPIC_TITLE_CHAR_CAP]
-        # #1368: cut at the last word boundary only when that keeps at least
-        # half the cap; otherwise ("Remove water-plants-test trigger" kept
-        # only "Remove") cut inside the word and ellipsize, as #357 does for
-        # a first word longer than the cap.
-        if " " in head and len(head.rsplit(" ", 1)[0].rstrip()) >= \
-                TOPIC_TITLE_CHAR_CAP // 2:
-            head = head.rsplit(" ", 1)[0]
-        else:
-            head = s[:TOPIC_TITLE_CHAR_CAP - 1].rstrip() + "…"
-        s = head.rstrip()
-    return s
+    if _title_fits(s):
+        return s
+    end = 0
+    for m in _WORD_RE.finditer(s):
+        if not _title_fits(s[:m.end()] + "…"):
+            break
+        end = m.end()
+    kept = s[:end]
+    if not kept:
+        kept = s[:TOPIC_TITLE_CHAR_CAP - 1]
+        while not _title_fits(kept + "…"):
+            kept = kept[:-1]
+        kept = kept.rstrip()
+    return kept + "…"
 
 
 def compose_topic_title(*, state: str, short_task: str) -> str:
