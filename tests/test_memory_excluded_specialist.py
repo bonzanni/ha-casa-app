@@ -308,6 +308,9 @@ async def test_search_never_returns_excluded_output(roles, mem, tmp_path):
                      "delegation_depth": 1,
                      "_handoff_chain": ("assistant", "browser")},
                     "finance answer")
+    # The producers' detached writes settle, and any capture that met the
+    # lock they held (on a loaded machine) is drained, before memory is read.
+    await captured_events(mem)
     agent_mod.origin_var.set({**ORIGIN, "_origin_route": "telegram",
                               "_origin_clearance": "private"})
     found = []
