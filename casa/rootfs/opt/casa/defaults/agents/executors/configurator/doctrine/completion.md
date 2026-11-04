@@ -10,6 +10,18 @@ Every completion path is the same three tool calls, in this order:
 
 **Never invert step 1 and step 2/3. Never call `emit_completion` BEFORE the reload step when a reload is needed.**
 
+## A task that only asks for information
+
+A task that asks you to check, review or report, and to change nothing, still
+ends with `emit_completion`, and it is finished once you have gathered the
+answer: there is nothing to commit and nothing to reload, so steps 1 and 2 are
+skipped. Unless you have a real question for the operator, call
+`emit_completion` in the same turn. Do not end the turn with the report as
+text and wait: the engagement stays open until you complete it, and Ellen
+reads only the completion's `text`, never the topic. That `text` carries the
+findings themselves, in plain words, even when you have already written them
+in the topic.
+
 `emit_completion` is the terminal action. After it lands, the engagement closes and Ellen reads the summary. If you fire `emit_completion` without first running the prescribed reload, the artifact is **COMMITTED BUT INERT** — the YAML on disk is correct, but the running Casa keeps the prior runtime state. The trigger does not fire; the new agent does not load; the new tool does not surface. From Ellen's point of view (and the operator's), you "succeeded" — but the change has no effect. This is the highest-leverage doctrine violation in this executor.
 
 ## Reload before completion — and do not linger
@@ -50,14 +62,15 @@ the outcome of your work is lost either way, so do not rely on it.
 Write `text` for the operator. Make it:
 
 - Factually complete.
-- Plain words: what you changed, whether you made it take effect (your
+- Plain words: what you found or changed, whether you made it take effect (your
   recipe says what does), and anything he still has to do (a setting to
   give, a caveat such as conversations that keep the old version).
 - Free of machinery: no commit SHA, no tool names, no result fields such as
   `state=active`, no reload scopes — they are how you work, not news for
   him. The commit SHA and the files changed go in `artifacts` above.
 - Not rhetorical. No "I have successfully completed your request" fluff.
-- Terse. One paragraph, 2-5 sentences.
+- Terse. A change takes one paragraph, 2-5 sentences; findings take the
+  room they need and no more.
 
 E.g. `"I upgraded Fido to 0.1.28. Nothing for you to set up."`.
 
