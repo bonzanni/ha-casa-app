@@ -61,7 +61,7 @@ Audit trail and rollback:
 
     config_git_commit(message="update <role>/<file>.md prompt")
     casa_reload_triggers(role="<role>")     # trigger prompt files ONLY
-    emit_completion(status="ok", text="Updated <role>'s <file>.md. Commit <sha>.")
+    emit_completion(status="ok", text="<what you changed in <role>'s <file>.md, in plain words>", artifacts=[<the commit>])
 
 ## Only consideration
 

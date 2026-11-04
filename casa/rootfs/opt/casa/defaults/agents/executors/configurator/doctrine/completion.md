@@ -47,16 +47,19 @@ the outcome of your work is lost either way, so do not rely on it.
         next_steps=[],
     )
 
-`text` is what Ellen READS. Make it:
+Write `text` for the operator. Make it:
 
 - Factually complete.
+- Plain words: what you changed, whether you made it take effect (your
+  recipe says what does), and anything he still has to do (a setting to
+  give, a caveat such as conversations that keep the old version).
+- Free of machinery: no commit SHA, no tool names, no result fields such as
+  `state=active`, no reload scopes — they are how you work, not news for
+  him. The commit SHA and the files changed go in `artifacts` above.
 - Not rhetorical. No "I have successfully completed your request" fluff.
-- Terse. One paragraph, 3-6 sentences.
+- Terse. One paragraph, 2-5 sentences.
 
-When you have already invoked the reload before this call (i.e. the
-canonical order), say so factually in the text — e.g.
-`"Committed SHA abc123, soft-reloaded triggers for assistant."` — so
-Ellen's narration to the operator is accurate.
+E.g. `"I upgraded Fido to 0.1.28. Nothing for you to set up."`.
 
 `next_steps` is empty for the configurator. In particular a plugin's `setup_*`
 MCP tool is NEVER handed back — Casa owns a declared `casa.setupTool` and runs

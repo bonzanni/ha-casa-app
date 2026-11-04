@@ -193,7 +193,7 @@ running a resident turn. It carries `job` and no prompt, its channel is
 
 1. config_git_commit(message="add <trigger-name> trigger to <role>")
 2. casa_reload_triggers(role="<role>")
-3. emit_completion(status="ok", text="...committed SHA <sha>, reloaded triggers for <role>.")
+3. emit_completion(status="ok", text="I set up <role>'s <trigger-name> to run <when, in plain words>.", artifacts=[<the commit>])
 
 Skipping step 2 leaves the trigger committed to YAML but **NOT registered** in the live scheduler — it never fires. See completion.md for the full doctrine.
 

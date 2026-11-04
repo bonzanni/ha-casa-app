@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.347.9] - 2026-11-04
+
+### Fixed
+
+- The configurator no longer narrates its steps in its topic ("Now let me read…", "Committed and reloaded. Finalizing…"). It writes there when it has a question, a finding or a result for you.
+- The configurator's closing message is written for you: what it changed, whether it made the change take effect, and anything left for you to do — without commit ids or reload details.
+
 ## [0.347.8] - 2026-11-04
 
 ### Fixed
