@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.347.10] - 2026-11-04
+
+### Fixed
+
+- When you write to Fido (or another helper that keeps no memory) in his engagement topic, memory now keeps what you wrote, as it does for anything else you say. Before, nothing you said there was kept. What he writes in the topic still stays out of memory, and so do commands such as /cancel and messages from anyone else in the group.
+
 ## [0.347.9] - 2026-11-04
 
 ### Fixed

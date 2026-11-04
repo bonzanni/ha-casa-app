@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-02
+last_reviewed: 2026-11-04
 ---
 
 # Memory labelling: occurrence, floor and tier
@@ -70,7 +70,9 @@ turn was often answered instead of classified.
 **INV-MEM-026**: Every `source_key` of an item captured into the memory store is built by `memory/occurrence.py` from no positional counter and never from the log correlation id: an operator message with a provider id is keyed by its channel, chat and provider message id, so a redelivery collapses into one event; Casa's line for a specialist's post by its channel, chat and the post's owner, tool call and slot, so its pages and a re-landing are one event; and every other live item by an id minted once when capture builds it, so a spool drain re-run adds it once while a repeat, a retry's output or a regenerated answer is a new event.
 
 The verbatim store keeps every occurrence. The engagement-topic form uses the engagement as
-its chat, since the driver that captures it knows the engagement, not the forum's chat id.
+its chat (`engagement_key`), since the driver that captures it knows the engagement, not the
+forum's chat id; the channel's seam for a specialist that keeps no memory builds the same key,
+so one topic message is one event whichever seam captures it.
 
 What it does not cover: the same words reaching two seams — an operator's message, and the
 resident quoting it back — are two items by design; and no key is meant to match anything in

@@ -17,6 +17,7 @@ ET, EA, ES = (Source.ENGAGEMENT_TURN, Source.ENGAGEMENT_ANSWER,
               Source.ENGAGEMENT_SUMMARY)
 SP = Source.SPECIALIST_POST
 DR = Source.DESK_REPLY
+TM = Source.TOPIC_MESSAGE
 
 MATRIX = [
     # source, channel, facts, admitting rule
@@ -73,6 +74,14 @@ MATRIX = [
     ("blank desk reply", DR, "telegram",
      {"role_writes_memory": False, "text": " "}, None),
     ("desk reply on voice", DR, "voice", {"role_writes_memory": False}, None),
+    ("topic message to a no-memory specialist", TM, "telegram",
+     {"role_writes_memory": False}, "topic_message"),
+    ("topic message to a specialist that keeps memory", TM, "telegram", {},
+     None),
+    ("blank topic message", TM, "telegram",
+     {"role_writes_memory": False, "text": " "}, None),
+    ("topic message on voice", TM, "voice", {"role_writes_memory": False},
+     None),
 ]
 
 

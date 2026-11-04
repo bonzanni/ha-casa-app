@@ -385,3 +385,180 @@ async def test_a_desk_reply_capture_that_fails_never_fails_the_desk_turn(
     assert fido_desk.channel._app.bot.send_message.await_count == 1
     assert await captured_events(mem) == []
 
+
+# --- the operator's messages in such a specialist's topic (INV-MEM-044) -------
+# The real handle_update over a real channel, wired to a real in_casa driver
+# whose client answers with a canary, against a real store.
+
+SUPERGROUP = -1001
+TOPIC = 555
+
+
+def _topic_update(text: str, *, user_id: int = OPERATOR_CHAT, message_id=900,
+                  thread_id: int = TOPIC):
+    u = MagicMock()
+    u.message.chat.id = SUPERGROUP
+    u.message.text = text
+    u.message.message_thread_id = thread_id
+    u.message.from_user = SimpleNamespace(id=user_id, first_name="Nicola",
+                                          is_bot=False)
+    u.message.message_id = message_id
+    return u
+
+
+class _TopicStream:
+    def __init__(self):
+        self.finals: list[str] = []
+
+    async def emit(self, text):
+        pass
+
+    async def finalize(self, text):
+        self.finals.append(text)
+        return DeliveryOutcome.DELIVERED
+
+
+@pytest.fixture
+async def topic(tmp_path, roles, mem):
+    """A topic of Fido's engagement (and one of finance's, and one of an
+    executor's) on a real channel and a real in_casa driver."""
+    import asyncio
+
+    from channels.telegram import TelegramChannel
+    from drivers.in_casa_driver import InCasaDriver
+    from engagement_registry import EngagementRegistry
+    from test_in_casa_inbound_admission import _mk_assistant, _ScriptedClient
+
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+    origin = {"role": "assistant", "channel": "telegram",
+              "user_id": OPERATOR_CHAT}
+    recs = {
+        "browser": await reg.create("specialist", "browser", "in_casa", "t",
+                                    dict(origin), topic_id=TOPIC),
+        "finance": await reg.create("specialist", "finance", "in_casa", "t",
+                                    dict(origin), topic_id=TOPIC + 1),
+        "executor": await reg.create("executor", "configurator", "in_casa",
+                                     "t", dict(origin), topic_id=TOPIC + 2),
+    }
+    stream = _TopicStream()
+    drv = InCasaDriver(topic_stream_factory=lambda tid: stream)
+    clients = {}
+    for name, rec in recs.items():
+        client = _ScriptedClient(scripts=[
+            [_mk_assistant(f"Saturday 9-17 {CANARY}")] for _ in range(4)])
+        clients[name] = client
+        drv._clients[rec.id] = client
+        drv._ctx_stack[rec.id] = client
+        drv._locks[rec.id] = asyncio.Lock()
+
+    def channel(chat_id=str(OPERATOR_CHAT)):
+        ch = TelegramChannel(bot=MagicMock(), chat_id=chat_id,
+                             engagement_supergroup_id=SUPERGROUP,
+                             default_agent="assistant")
+        ch._engagement_registry = reg
+        ch._engagement_driver = drv
+        ch._observer = MagicMock()
+        ch._driver_advance_high_water = AsyncMock()
+        ch._post_engagement_notice = AsyncMock()
+        ch._driver_admit_inbound = lambda r, t: drv.admit_inbound(r.id, t)
+        ch._driver_discharge_inbound = (
+            lambda r, tok: drv.discharge_inbound(r.id, tok))
+        ch._driver_inbound_held = (
+            lambda r, tok: drv.inbound_token_held(r.id, tok))
+
+        async def _send_user_turn(r, t, *, tg_message_id=None,
+                                  inbound_token=None, batch=None):
+            await drv.send_user_turn(r, t, tg_message_id=tg_message_id,
+                                     inbound_token=inbound_token)
+        ch._driver_send_user_turn = _send_user_turn
+        return ch
+
+    return SimpleNamespace(recs=recs, clients=clients, stream=stream,
+                           channel=channel)
+
+
+async def _say(ch, update):
+    from test_in_casa_inbound_admission import _drain
+    await ch.handle_update(update)
+    await _drain(ch)
+
+
+async def test_the_operator_s_message_in_a_no_memory_specialist_s_topic_is_his_message(
+        topic, mem):
+    from memory import occurrence
+    ch = topic.channel()
+    await _say(ch, _topic_update("Saturday please, and the link"))
+    # Fido's turn ran and streamed his reply, canary and all
+    assert topic.clients["browser"].query_prompts == [
+        "Saturday please, and the link"]
+    assert any(CANARY in f for f in topic.stream.finals)
+    rows = await captured_events(mem)
+    assert [(e["speaker_kind"], e["origin_kind"], e["role"], e["text"])
+            for e in rows] == [
+        ("operator", "operator", "assistant", "Saturday please, and the link")]
+    [mine] = rows
+    assert mine["eligibility"] == "topic_message" and mine["origin_tier"] is None
+    assert mine["channel"] == "telegram"
+    assert mine["speaker_id"] == str(OPERATOR_CHAT)
+    assert mine["speaker_name"] == "Nicola"
+    assert mine["provider_message_id"] == "900"
+    assert mine["source_key"] == occurrence.engagement_key(
+        "telegram", topic.recs["browser"].id, "900")
+    # never the specialist's reply
+    assert not any(CANARY in str(v) for e in rows for v in e.values())
+
+
+async def test_one_topic_message_is_one_event_whichever_seam_captures_it(
+        topic, mem):
+    """The same Telegram message delivered twice is one event; a specialist
+    that keeps memory captures it in its own turn under the same key, and
+    this seam adds nothing beside it."""
+    from memory import occurrence
+    ch = topic.channel()
+    await _say(ch, _topic_update("Saturday please"))
+    await _say(ch, _topic_update("Saturday please"))
+    await _say(ch, _topic_update("book it", message_id=901,
+                                 thread_id=TOPIC + 1))
+    assert topic.clients["browser"].query_prompts == ["Saturday please"] * 2
+    rows = await captured_events(mem)
+    ops = [e for e in rows if e["speaker_kind"] == "operator"]
+    assert [(e["eligibility"], e["role"], e["text"]) for e in ops] == [
+        ("topic_message", "assistant", "Saturday please"),
+        ("engagement_turn", "finance", "book it")]
+    assert ops[1]["source_key"] == occurrence.engagement_key(
+        "telegram", topic.recs["finance"].id, "901")
+
+
+async def test_no_topic_event_for_another_sender_a_command_an_executor_or_no_operator(
+        topic, mem):
+    ch = topic.channel()
+    # a command Casa consumes itself
+    await _say(ch, _topic_update("/silent", message_id=902))
+    # an executor's topic: not a specialist's engagement
+    await _say(ch, _topic_update("adjust it", message_id=903,
+                                 thread_id=TOPIC + 2))
+    assert topic.clients["executor"].query_prompts == ["adjust it"]
+    # another member of the supergroup
+    await _say(ch, _topic_update("me too", user_id=7, message_id=904))
+    # a channel with no configured operator
+    await _say(topic.channel(chat_id=""),
+               _topic_update("and me", message_id=905))
+    # each reached Fido as a turn; only the command did not
+    assert topic.clients["browser"].query_prompts == ["me too", "and me"]
+    rows = await captured_events(mem)
+    assert rows == []
+
+
+async def test_a_topic_capture_that_fails_never_fails_the_turn(
+        topic, mem, monkeypatch):
+    from memory import capture
+
+    def boom(**kw):
+        raise RuntimeError("no")
+
+    monkeypatch.setattr(capture, "event", boom)
+    ch = topic.channel()
+    await _say(ch, _topic_update("Saturday please"))
+    assert topic.clients["browser"].query_prompts == ["Saturday please"]
+    assert any(CANARY in f for f in topic.stream.finals)
+    assert await captured_events(mem) == []

@@ -65,6 +65,12 @@ awaits the append, so every capture a turn made has returned by the time the tur
   Casa composed — an approval's continuation, a file's hand-off — captures nothing here. Like
   the post line, the write is detached: his words come from no run's transcript, so no run's
   confirmation waits on it, and the desk turn never waits for or fails on it.
+- **The operator's message in the engagement topic of a specialist that keeps no memory**, in
+  `TelegramChannel.handle_update`, where it is handed to the engagement as a turn. Such an
+  engagement captures nothing of its own, so his words were lost; they are captured as his
+  message, the text he typed and nothing else (INV-MEM-044). A command Casa consumes, a
+  message the topic refuses (rate limit, an engagement that cannot take a turn) and anyone
+  else's message capture nothing here. Detached, like the desk reply, and for the same reason.
 
 **A receipt means durable, and the receipt is all a turn waits for.**
 `memory.capture.append` makes one item durable and returns a receipt: committed in one
@@ -159,8 +165,9 @@ and a role Casa no longer has loaded — whose switch it cannot read — writes 
 notice header: the opening of a resident turn that is Casa's notice naming such
 a role is not captured, while the resident's reply in that turn is; a delegated run of such
 a role captures neither side; a request is captured only with the chain's resident shape;
-an engagement of such a specialist captures no topic turn and leaves no summary, and the
-requester is still told. A delegated run's task is captured only as a resident's own words:
+an engagement of such a specialist captures no topic turn of its own and leaves no summary,
+and the requester is still told; the operator's own messages in its topic are his
+(INV-MEM-044). A delegated run's task is captured only as a resident's own words:
 a chain of at most the resident and one specialist (`len(_handoff_chain) <= 2`) on a turn
 Casa did not compose (`synthetic != "continuation"`).
 
@@ -196,10 +203,26 @@ Telegram channel and a real store: a canary in the quoted post and in the specia
 reaches no row.
 
 What it does not cover: the operator's messages in such a specialist's engagement topic,
-which stay out (INV-MEM-032), and a desk turn's words for a specialist that writes memory,
+which are INV-MEM-044's, and a desk turn's words for a specialist that writes memory,
 which its own delegated capture decides. A desk reply is not marked for `correct_memory`. The
 write is detached: a crash between the desk task's start and the write loses his words, never
 the desk turn.
+
+**INV-MEM-044**: When the operator's message in the engagement topic of a specialist that writes no memory is handed to that engagement as a turn, exactly his typed words are captured once as his message — speaker `operator`, origin `operator`, no floor, the chat's resident as its role, his user id as its speaker id, keyed by the topic message with the key a memory-writing specialist's engagement gives it (`memory.occurrence.engagement_key`) — never the specialist's turn; nothing is captured for a specialist that writes memory, an executor's or a plugin job's topic, a command Casa consumes, a sender other than the configured operator or a channel with none, and a capture that fails never fails the turn.
+
+The specialist's engagement captures nothing (INV-MEM-032), and the operator's words went down
+with it: what he asked Fido in the topic left no trace for the writer. They are his, so they
+are classified like any message of his; the eligibility rule is `topic_message`. One key per
+topic message, whichever seam captures it: a redelivery, or a specialist whose memory switch
+changed between the hand-off and its turn, adds nothing twice; a desk reply is a message in the
+operator's chat and a topic message one in the engagement supergroup, so no message reaches
+both. Pinned through the real `handle_update` over a real channel and a real `in_casa` driver
+whose specialist answers with a canary, against a real store: the canary reaches no row.
+
+What it does not cover: the operator's messages in an executor's or a plugin job's topic, and
+the rest of the engagement: the specialist's turns, its summary, Casa's cards in the topic and
+the taps answering them stay out. A topic message is not marked for `correct_memory`. The write
+is detached: a crash between the hand-off and the write loses his words, never the turn.
 
 ## Failure behavior
 
@@ -266,6 +289,7 @@ that writes it ([`memory-store.md`](memory-store.md)).
 - `casa/rootfs/opt/casa/delegated_memory.py::notice_from_excluded_role`
 - `casa/rootfs/opt/casa/delegated_memory.py::capture_post_line`
 - `casa/rootfs/opt/casa/delegated_memory.py::capture_desk_reply`
+- `casa/rootfs/opt/casa/delegated_memory.py::capture_topic_message`
 - `casa/rootfs/opt/casa/channels/telegram.py::TelegramChannel._record_post`
 
 **Tests**

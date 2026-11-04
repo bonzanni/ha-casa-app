@@ -3117,6 +3117,16 @@ class TelegramChannel(Channel):
                             lambda t, r=rec, tok=inbound_token:
                                 self._schedule_inbound_cleanup(r, tok))
                         handed_off = True
+                        # INV-MEM-044: what the operator typed here is his
+                        # message; memory keeps it when this specialist keeps
+                        # none (never the specialist's turn). Detached.
+                        from delegated_memory import capture_topic_message
+                        capture_topic_message(
+                            channel=self, engagement=rec, user_id=user_id,
+                            user_name=getattr(msg.from_user, "first_name", None)
+                            or "unknown",
+                            message_id=getattr(msg, "message_id", None),
+                            resident=self.default_agent, text=text)
                     return
                 except BaseException:
                     # #649 visibility law: an exception/cancellation before
