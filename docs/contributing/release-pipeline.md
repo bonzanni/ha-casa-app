@@ -71,7 +71,7 @@ browser app's is the `browser-unit` job (Python 3.13, `venv_browser/` from
 parallel under pytest-xdist, up to 12 workers: Casa's with `--dist loadfile`, which keeps
 each test module on one worker, and the browser app's with `--dist worksteal`, which splits
 its modules across workers, since one module holds a large share of its time. The
-`browser-unit` CI job runs its suite in one process.
+`browser-unit` CI job runs its suite the same way, with the same flags.
 `make test-unit` runs Casa's suite (`make test-casa`) and then `make test-browser`, and
 `make test-unit-serial` runs each of the two suites in one process; each
 pair is two separate invocations under the suite lock and memory cage, so the lock is never
