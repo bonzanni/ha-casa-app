@@ -150,7 +150,8 @@ jobs:
 
   # The optional Casa Browser app (casa_browser/) runs its own unit lane: Python 3.13
   # and venv_browser/ from scripts/setup-browser-dev.sh, never Casa's 3.11 environment,
-  # and the same opt-out selection as tier2. Until casa_browser/ exists in the tree the
+  # and the same opt-out selection as tier2, in parallel with the flags `make test-browser`
+  # uses (--dist worksteal). Until casa_browser/ exists in the tree the
   # lane says so in a notice and runs nothing; once it exists, a lane that collects no
   # test fails (pytest exit 5) rather than passing empty.
   browser-unit:
@@ -183,7 +184,7 @@ jobs:
         run: bash scripts/setup-browser-dev.sh
       - name: Browser unit pytest (opt-out gate — everything except docker/slow)
         if: steps.present.outputs.present == 'true'
-        run: venv_browser/bin/python -m pytest casa_browser/tests -m "not docker and not slow" -v --tb=short
+        run: venv_browser/bin/python -m pytest casa_browser/tests -m "not docker and not slow" -n auto --maxprocesses=12 --dist worksteal -v --tb=short
 
   # The browser app's integration lane: the app image and its test image are built and the
   # `docker`-marked tests run inside the app container, started with the image's own s6 /init
