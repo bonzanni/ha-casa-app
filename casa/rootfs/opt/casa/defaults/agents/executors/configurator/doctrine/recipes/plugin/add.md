@@ -59,7 +59,8 @@ artifact, installs system requirements BEFORE activation, writes the registry
 entry, then reloads the affected in-casa agents and verifies desired==active.
 **No separate casa_reload is needed** — reload + verify happen inside
 `plugin_add` (and `plugin_update` / `plugin_assign` / `plugin_unassign` /
-`plugin_remove`).
+`plugin_remove`). A `plugin_update` that returns `unchanged:true` found nothing
+to change, so it reloaded nothing.
 
 ## If a specialist has open conversations
 

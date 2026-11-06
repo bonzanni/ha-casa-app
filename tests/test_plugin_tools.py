@@ -567,6 +567,19 @@ async def test_plugin_list_reports_presence_and_seeded(monkeypatch, tmp_path):
     assert row["seeded_default"] is True
     assert row["artifact_present"] is False           # store dir absent in test
     assert row["targets"] == ["executor:plugin-developer"]
+    assert row["owner"] is None
+
+
+async def test_plugin_list_names_the_specialist_a_bundled_plugin_belongs_to(
+        monkeypatch, tmp_path):
+    st = _State()
+    _registered(st, name="finance.tx-classifier",
+                targets=["specialist:finance"])
+    st.raw["plugins"][0]["owner"] = "specialist:finance"
+    tools_mod = _wire(monkeypatch, tmp_path, st, publish=_pr())
+    r = await tools_mod.plugin_list.handler({})
+    row = json.loads(r["content"][0]["text"])["plugins"][0]
+    assert row["owner"] == "specialist:finance"
 
 
 def test_plugin_add_schema_subdir_optional():
@@ -978,6 +991,105 @@ async def test_plugin_update_invalidates_old_artifact_post_commit_pre_await(
     assert i_save < i_purge < i_reload
     # Only the OLD artifact is invalidated, never the NEW one.
     assert f"purge_artifact:{'a' * 64}" not in st.log
+
+
+def _same_release_entry(**source):
+    """An installed plugin that an update to v1 with _pr()'s artifact finds
+    already in place."""
+    return {
+        "name": "probe",
+        "source": {"type": "github", "repo": "o/r", "ref": "v1",
+                   "revision": _pr().revision, "subdir": "", **source},
+        "artifact_id": _pr().artifact_id, "version": _pr().version,
+        "targets": ["resident:assistant"]}
+
+
+def _serving(monkeypatch, tools_mod):
+    """The resolver holds the installed artifact, as it does for a healthy plugin."""
+    from plugin_registry import ResolutionResult, ResolvedPlugin
+    pr = _pr()
+    rp = ResolvedPlugin(name=pr.name, artifact_id=pr.artifact_id, path=pr.path,
+                        version=pr.version, manifest=pr.manifest)
+    monkeypatch.setattr(tools_mod.plugin_registry, "resolve_all",
+                        lambda: ResolutionResult(registry_valid=True, plugins=[rp]))
+
+
+async def test_plugin_update_to_the_same_release_changes_nothing(
+        monkeypatch, tmp_path):
+    """An update with no new release keeps the approval and the secret bound to
+    the artifact (a webhook plugin would otherwise ask again and re-run setup),
+    and neither writes the registry nor reloads the agents it serves."""
+    st = _State()
+    st.raw["plugins"].append(_same_release_entry())
+    before = json.dumps(st.raw["plugins"], sort_keys=True)
+    tools_mod = _wire(monkeypatch, tmp_path, st, publish=_pr())
+    _serving(monkeypatch, tools_mod)
+    _spy_grants_and_challenges(monkeypatch, tools_mod, st)
+    r = await tools_mod.plugin_update.handler({"name": "probe", "new_ref": "v1"})
+    payload = json.loads(r["content"][0]["text"])
+    assert payload["ok"] is True
+    assert payload["unchanged"] is True
+    assert payload["activation_committed"] is False
+    assert payload["runtime_ready"] is True
+    assert payload["verify"] == {"ready": True}
+    assert payload["version"] == _pr().version
+    assert "_published_manifest" not in payload
+    assert "setup_tool" not in payload
+    assert st.log == ["resolve", "publish"]
+    assert json.dumps(st.raw["plugins"], sort_keys=True) == before
+
+
+async def test_plugin_update_to_the_same_release_reports_a_plugin_not_ready(
+        monkeypatch, tmp_path):
+    """Changing nothing is not a claim that the plugin works."""
+    st = _State()
+    st.raw["plugins"].append(_same_release_entry())
+    tools_mod = _wire(monkeypatch, tmp_path, st, publish=_pr())
+    _serving(monkeypatch, tools_mod)
+    monkeypatch.setattr(tools_mod, "_tool_verify_plugin_state",
+                        lambda *, plugin_name: {"ready": False})
+    r = await tools_mod.plugin_update.handler({"name": "probe", "new_ref": "v1"})
+    payload = json.loads(r["content"][0]["text"])
+    assert payload["unchanged"] is True
+    assert payload["runtime_ready"] is False
+
+
+async def test_plugin_update_to_another_tag_of_the_same_commit_keeps_approvals(
+        monkeypatch, tmp_path):
+    """The entry moves and the agents reload, but the artifact the approvals are
+    bound to is still the one running."""
+    st = _State()
+    st.raw["plugins"].append(_same_release_entry(ref="v1-rc"))
+    tools_mod = _wire(monkeypatch, tmp_path, st, publish=_pr())
+    _serving(monkeypatch, tools_mod)
+    _spy_grants_and_challenges(monkeypatch, tools_mod, st)
+    r = await tools_mod.plugin_update.handler({"name": "probe", "new_ref": "v1"})
+    payload = json.loads(r["content"][0]["text"])
+    assert payload["ok"] is True
+    assert "unchanged" not in payload
+    assert st.raw["plugins"][0]["source"]["ref"] == "v1"
+    assert "save" in st.log and "reload_snapshot" in st.log
+    assert not any(e.startswith(("purge_artifact", "cancel_matching"))
+                   for e in st.log)
+
+
+async def test_plugin_update_restoring_an_unserved_artifact_reloads_and_keeps_approvals(
+        monkeypatch, tmp_path):
+    """Same release, but the resolver does not hold it (its artifact was
+    missing): publish restores the files, and only the activation path makes
+    Casa serve them again. The approvals are for this same artifact, so they stay."""
+    st = _State()
+    st.raw["plugins"].append(_same_release_entry())
+    tools_mod = _wire(monkeypatch, tmp_path, st, publish=_pr())
+    _spy_grants_and_challenges(monkeypatch, tools_mod, st)
+    r = await tools_mod.plugin_update.handler({"name": "probe", "new_ref": "v1"})
+    payload = json.loads(r["content"][0]["text"])
+    assert payload["ok"] is True
+    assert "unchanged" not in payload
+    assert payload["activation_committed"] is True
+    assert "reload_snapshot" in st.log and "dispatch:assistant" in st.log
+    assert not any(e.startswith(("purge_artifact", "cancel_matching"))
+                   for e in st.log)
 
 
 async def test_aborted_plugin_update_invalidates_nothing(monkeypatch, tmp_path):

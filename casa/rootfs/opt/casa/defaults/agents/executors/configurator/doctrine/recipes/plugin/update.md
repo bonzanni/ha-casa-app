@@ -56,6 +56,10 @@ now on; a running session keeps the tools it was built with. State both.
    on a committed result whether or not it is ready.
 4. Read the **phase fields** — they say what actually happened and what (if
    anything) to retry:
+   - `ok:true, unchanged:true` — the plugin is already on this release, and
+     nothing happened: no reload, no new approval, and no setup queued. Report
+     it as already current. Only if `runtime_ready` is false, use the
+     reload/verify retry below.
    - `ok:true` (`activation_committed:true, runtime_ready:true`) — done.
      Report readiness over the targets Casa SERVES — read them from
      `verify_plugin_state`'s `desired.targets` — and never say "every target
@@ -98,9 +102,10 @@ follow `secrets.md` (explore, then wire, then ask). Report the outcome and
 
 ## Setup is Casa's, not yours to route
 
-An update re-mints per-trigger secrets (consent re-approval rotates them), so
-a plugin whose credential is artifact-bound is left pointing the external
-service at STALE credentials until its **setup tool** runs.
+An update that changes the artifact re-mints per-trigger secrets (consent
+re-approval rotates them), so a plugin whose credential is artifact-bound is
+left pointing the external service at STALE credentials until its **setup
+tool** runs.
 
 **Casa runs it. You do not route it anywhere.** A plugin that declares
 `casa.setupTool` gets a durable per-artifact setup obligation, which Casa
