@@ -280,6 +280,25 @@ async def _scenario(steps: list[dict]) -> list:
                     out.append(await credential_driver.dispatch(request))
                 else:
                     raise ValueError('unknown credential instruction')
+            elif op == "reading_pair":
+                # The reading a sign_in verdict is held to, at the look, after ``wait`` seconds
+                # and once more, compared as the verdict's final read compares them.
+                from casa_browser import gate
+                page = mgr.session.page
+                pair_policy = decode_policy(arg['policy'])
+                async def bound():
+                    _whole, reading = await gate.PageOps().read_page_and_bound(
+                        page, (), policy=pair_policy)
+                    return dict(reading.data)
+                first = await bound()
+                await asyncio.sleep(arg['wait'])
+                second = await bound()
+                third = await bound()
+                out.append({'after_solve': gate.same_reading(first, second),
+                            'after_that': gate.same_reading(second, third)})
+            elif op == "chrome_alive":
+                out.append({'pages': [p.url for p in mgr.session.context.pages],
+                            'generation': mgr.session.generation})
             elif op == "open":
                 s = await mgr.open(arg.get("site_id"), arg.get("mode", "account"), locale)
                 out.append({"generation": s.generation, "kind": s.kind})

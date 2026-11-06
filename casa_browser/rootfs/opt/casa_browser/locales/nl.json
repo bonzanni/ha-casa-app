@@ -35,6 +35,7 @@
   "live.title": "Live weergave",
   "live.asked": "De assistent heeft je in de browser nodig.",
   "live.open_button": "Live weergave openen",
+  "live.opening": "Bezig met openen…",
   "live.not_here": "Deze live weergave is niet in deze browser geopend. Open hem vanaf de startpagina.",
   "live.replaced": "Deze pagina is niet meer de live weergave (hij is ergens anders geopend). Gebruik de pagina die hem toont.",
   "live.unrestored": "Het browservenster kon niet worden teruggezet, dus de taak is gestopt. Verder is er niets veranderd.",

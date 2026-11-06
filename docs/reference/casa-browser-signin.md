@@ -49,8 +49,12 @@ model says so plainly.
 
 The start page's sign-in (`controller.py::RunController._login`) runs only when the run navigates
 the site's start page. A step that lands on another page of the site showing a sign-in form —
-a judged click on a "Log in" link, a redirect — is signed into by the look. The plugin asks for
-it: `POST /v1/runs/{run}/observe` with `{"sign_in": true}` (`api.py::_observe_body`; `{}` stays
+a judged click on a "Log in" link, a redirect — is signed into by the look. So is a start page
+whose password field has a shown, empty box beside it in its form that the page marks with no
+role, such as a plain text username: the start page's sign-in does nothing there and answers
+`no_form`/`needs_check` (not counted in the ledger, its address taken out of `looked`), and the
+next observe looks. The plugin asks for the look:
+`POST /v1/runs/{run}/observe` with `{"sign_in": true}` (`api.py::_observe_body`; `{}` stays
 the plain observation, any other body is `unsupported`).
 
 **What is looked at** (`controller.py::RunController._look`), mechanical facts only, no I/O: an
@@ -66,7 +70,8 @@ no vault value. Its plan script (`login.py::_PLAN`) lists, in every frame of a l
 each shown input with a sign-in role, each password field and each plain text, email, telephone
 or search field, with a short id (`f1`, …), the role the page marks (or none), its label (its
 `aria-label`, `<label>` or `placeholder`), whether it is a password field and the label of its
-form's one submit button, and marks each such field and button with the look in Patchright's
+form's one submit button (one that can be pressed, else one a widget or the form's own checks
+hold disabled), and marks each such field and button with the look in Patchright's
 isolated world. It goes on only for a marked role or a password field on a login origin, the
 site's passkey request (`passkey_hint`) or 1Password's prompt. The same read binds what the
 check will judge: the look's mark in every credential-bearing frame document (the main document
@@ -98,7 +103,11 @@ then applies only while the session and the address are the ones looked at, no s
 between (the pair is still in `looked`), and a final read of the bound documents equals the
 judged one by the tap rule (`gate.py::same_reading`; `gate.py::PageOps.read_page_and_bound`,
 one pass giving the packet's reading and the bound one, so an unbound frame such as a CAPTCHA
-counts in neither reading). Then the broker's `login` with `auto`, and the named fields as
+counts in neither reading). A reading that differs at the same address, with no step between
+(a widget solved and its button came on), brings one fresh look: its `sign_in` judgement is the
+verdict reply's successor, the password already sent carried, and nothing is filled on the old
+verdict; a verdict on that fresh look fills nothing if the reading differs again. Then the
+broker's `login` with `auto`, and the named fields as
 `fields`, signs in on the page as it is (no navigation): in the judged document only the
 look's planned fields count in the driver's discovery, a role the
 check named goes to its named field alone (a newsletter box the page marks as an email field
@@ -117,7 +126,9 @@ no 1Password prompt the look did not bind, and the same digest; otherwise the
 sign-in ends `no_form`/`page_moved` with nothing more done. The judged step is the ordinary step:
 `needs_guest` while the guest is not unlocked, 1Password's passkey prompt for the linked item,
 username, password and TOTP fills, the refusals `password_change_page` and `ambiguous_fields`; a
-username-only form fills the username. After its first submit or passkey answer: a page with
+username-only form fills the username; a shown, empty box of the password's form the mapping left
+out sends nothing (`needs_live_view`/`empty_field`, the rule in
+[`casa-browser-credentials.md`](casa-browser-credentials.md)). After its first submit or passkey answer: a page with
 neither a password nor a code field to fill is the page after the sign-in (the completion rule);
 a password asked again ends `needs_live_view`/`password_again` (carried across the guest reload
 and an emailed code); no guest and no passkey answer. A first read that errors or finds no form
@@ -130,7 +141,7 @@ Nothing reloaded is filled on the old verdict.
 
 **The ledger** (`controller.py::RunController._ledger`). Every sign-in of the run that acted counts
 per site, start page or look; an outcome that acted on nothing does not (`no_form` with
-`no_form`, `probe_failed` or `page_moved`, and any `not_found`). A look may sign in when the count
+`no_form`, `needs_check`, `probe_failed` or `page_moved`, and any `not_found`). A look may sign in when the count
 is 0, or 1 and that one worked. The start page's sign-in does not consult it.
 
 ## The capture reader

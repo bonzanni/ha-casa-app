@@ -418,3 +418,15 @@ async def test_a_question_no_longer_current_opens_nothing(rig, operator, monkeyp
     await operator.get("/")
     status, _, _ = await operator.post(f"/runs/{run_id}/open")
     assert status == 409
+
+
+async def test_open_says_it_is_opening_and_presses_once(rig, operator):
+    """Both Open forms name what the button says while the view opens (app.js disables it on
+    submit, so a second tap cannot spend the form)."""
+    run_id = await waiting_run(rig)
+    _status, html, _ = await operator.get("/")
+    assert re.search(r'/runs/' + re.escape(run_id) + r'/open".*?<button class="primary" data-busy="Opening…">',
+                     html, re.S)
+    grant = rig.live.grants[run_id].grant_id
+    _status, html, _ = await operator.get(f"/live/{grant}")
+    assert '<button class="primary" data-busy="Opening…">' in html

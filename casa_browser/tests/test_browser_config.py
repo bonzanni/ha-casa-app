@@ -56,6 +56,14 @@ def test_launch_arguments():
         "--use-angle=vulkan") == 0
 
 
+def test_no_restore_bubble_and_the_launcher_admits_its_switch():
+    """A tab Chrome restores under Patchright never finishes loading: the bubble that offers
+    it must not be shown, and the launcher's allowlist must let the switch through."""
+    args = browser.launch_options(profile="site:s1", locale=LOCALE)["args"]
+    assert args.count("--hide-crash-restore-bubble") == 1
+    assert "--hide-crash-restore-bubble" in launcher.ALLOWED_FLAGS
+
+
 def test_profile_for_session():
     assert browser.profile_for("account", "s1") == "site:s1"
     assert browser.profile_for("public", None) == "ephemeral"
@@ -134,7 +142,7 @@ PATCHRIGHT_ARGV = ["/opt/casa_browser/bin/chrome-launch", "--disable-field-trial
     "--disable-infobars", "--disable-search-engine-choice-screen", "--disable-sync",
     "--disable-blink-features=AutomationControlled", "--proxy-server=http://127.0.0.1:3128",
     "--proxy-bypass-list=<-loopback>", "--lang=en-GB", "--window-position=0,0",
-    "--window-size=1920,1080", "--use-angle=vulkan",
+    "--window-size=1920,1080", "--hide-crash-restore-bubble", "--use-angle=vulkan",
     "--enable-features=CDPScreenshotNewSurface,Vulkan,DefaultANGLEVulkan,VulkanFromANGLE",
     "--user-data-dir=/run/casa-browser/controller/placeholder", "--remote-debugging-pipe", "about:blank"]
 

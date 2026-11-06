@@ -70,7 +70,7 @@ async def test_login_rejection_does_not_repeat_values(tmp_path):
 
 async def test_login_step_and_clock_bounds(tmp_path):
     r = await Rig(tmp_path).setup()
-    r.driver.steps = [Step(('password',))]
+    r.driver.steps = [Step(('username',))]
     assert (await r.call('login', run_id='run', site_id='site', driver_session='driver'))['reason'] == 'step_limit'
     assert len(r.driver.fills) == 6
     original = r.driver.submit
@@ -307,3 +307,20 @@ async def test_rpc_timeout_and_exception_text_stay_fixed(tmp_path):
     finally:
         await server.close()
         r.journal.close()
+
+
+async def test_the_bounds_on_opening_a_capture_nest(monkeypatch):
+    """Driver, then the broker's transport to it, then the controller's call: the driver answers
+    first, so the op has let go of the session when its caller gives up, and a close needs no
+    forced close (the 10 s client bound under a 30 s driver bound killed Chrome on casa-test)."""
+    from casa_browser import broker_client, login
+    from casa_browser.broker.main import DriverClient
+    seen = {}
+
+    async def call(path, bound, op, **_args):
+        seen[op] = bound
+        return {}
+    monkeypatch.setattr(broker_client, 'rpc_call', call)
+    await BrokerClient().begin_capture('r', 's', 'd', 'login')
+    assert login._CAPTURE_OPEN_S < DriverClient().timeout < seen['begin_capture']
+    assert login.CAPTURE_STOP_S + login._CAPTURE_DISPOSE_S < login._CLEANUP_TIMEOUT

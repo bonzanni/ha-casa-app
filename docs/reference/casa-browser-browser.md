@@ -45,7 +45,9 @@ and the two CDP pipe ends, plus Patchright's argv and the profile name:
   the password store and the blink features, feature lists limited to their known items, and
   `--remote-debugging-pipe`, the enforcing proxy and the removal of the loopback bypass each
   required exactly once (`launcher.py::REQUIRED_ARGS`); anything else — a sandbox, debugging, extension or
-  command-prefix switch — and any page argument except `about:blank` is refused;
+  command-prefix switch — and any page argument except `about:blank` is refused
+  (`--hide-crash-restore-bubble` is on the list and in every launch: a tab Chrome restores while
+  Patchright is attached never finishes loading, so its "Restore pages?" bubble is not shown);
 - Chrome's environment is built by the launcher (`launcher.py::chrome_env`): display, X cookie,
   a validated time zone, and a home directory whose NSS database trusts the proxy's CA;
 - one Chrome at a time; Chrome runs in its own session, and when the wrapper's connection

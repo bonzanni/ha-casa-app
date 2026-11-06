@@ -35,6 +35,7 @@
   "live.title": "Vista dal vivo",
   "live.asked": "L'assistente ha chiesto di te nel browser.",
   "live.open_button": "Apri la vista dal vivo",
+  "live.opening": "Apertura…",
   "live.not_here": "Questa vista dal vivo non è aperta in questo browser. Aprila dalla pagina iniziale.",
   "live.replaced": "Questa pagina non è più la vista dal vivo (è stata aperta altrove). Usa la pagina che la mostra.",
   "live.unrestored": "Non è stato possibile ripristinare la finestra del browser, quindi l'attività è stata fermata. Nient'altro è cambiato.",

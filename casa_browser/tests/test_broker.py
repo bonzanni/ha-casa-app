@@ -701,15 +701,18 @@ async def test_a_judging_capture_ends_unsaved_and_silent(tmp_path, end):
     assert r.writes() == [] and r.journal.pending_notices(0) == []
 
 
-@pytest.mark.parametrize('rejected_step', [('one_time_code',), ('username',)])
-async def test_a_rejected_code_or_username_step_never_allows_an_overwrite(tmp_path, rejected_step):
+@pytest.mark.parametrize('rejected_step, outcome', [
+    (('one_time_code',), {'status': 'failed', 'reason': 'rejected'}),
+    # A username step after the password is not pressed at all (one send of the password).
+    (('username',), {'status': 'needs_live_view', 'reason': 'password_again'})])
+async def test_a_rejected_code_or_username_step_never_allows_an_overwrite(tmp_path, rejected_step, outcome):
     """d1 Astra B: only a step that sent the item's password (and no code) records the item as
     rejected; a rejected code or username leaves the verified item protected."""
     r = await Rig(tmp_path).setup()
     r.driver.steps = [Step(('username', 'password')), Step(rejected_step),
                       Step(rejected_step, field_error=True)]
     reply = await r.call('login', run_id='run', site_id='site', driver_session='driver')
-    assert reply == {'status': 'failed', 'reason': 'rejected'}
+    assert reply == outcome
     assert 'rejected' not in json.loads((tmp_path / 'registry.json').read_text())['site']
     r.sdk.calls.clear()
     await _judging(r, _attempt(canary(), canary()))
@@ -1333,7 +1336,7 @@ async def test_a_passkey_hint_after_a_password_submit_asks_for_the_guest(tmp_pat
     and submit happened, nothing more."""
     r = await Rig(tmp_path).setup()
     r.driver.steps = [Step(('username', 'password')), hint, Step()]
-    assert await _ask(r) == NEEDS_GUEST
+    assert await _ask(r) == {**NEEDS_GUEST, 'password_sent': True}
     assert _acted(r) == ['fill', 'fill', 'submit']
     assert r.broker._passkey_tries == set()
 
@@ -1387,3 +1390,149 @@ async def test_guest_ask_must_be_a_boolean(tmp_path):
     for value in ('true', 1, None):
         assert await _ask(r, value) == {'error': 'unsupported'}
     assert r.driver.calls == []
+
+
+# -- a form whose button is held, or with a box beside the password ----------------------------
+
+async def test_a_box_beside_the_password_goes_to_the_check_with_nothing_done(tmp_path):
+    """Start page, a shown empty box nothing would fill beside the password: nothing filled or
+    clicked, nothing claimed (the look takes it)."""
+    r = await Rig(tmp_path).setup()
+    r.driver.steps = [Step(('password',), empty_box=True)]
+    assert await _login(r) == {'status': 'no_form', 'reason': 'needs_check'}
+    assert _acted(r) == []
+
+
+async def test_a_box_beside_the_password_on_a_later_step_is_the_operators(tmp_path):
+    """After a username step of ours the check is not asked: the live view, the password
+    unsent."""
+    r = await Rig(tmp_path).setup()
+    r.driver.steps = [Step(('username',)), Step(('password',), empty_box=True)]
+    assert await _login(r) == {'status': 'needs_live_view', 'reason': 'empty_field'}
+    assert _acted(r) == ['fill', 'submit']
+    assert [f[1] for f in r.driver.fills] == ['username']
+
+
+async def test_a_held_button_is_pressed_once_after_the_fill_when_it_comes_on(tmp_path):
+    """Both shapes: fill first (a form's own checks need the values), then wait, then one
+    press. Exactly 2 fills, 3 looks at the button, 1 submit."""
+    r = await Rig(tmp_path).setup()
+    r.driver.steps = [Step(('username', 'password'), submit_ready=False), Step()]
+    replies = iter([{'ok': False}, {'ok': False}, {'ok': True}])
+
+    async def usable():
+        return next(replies)
+    r.driver.usable = usable
+    assert await _login(r) == {'status': 'logged_in', 'reason': 'completed'}
+    order = [c[0] for c in r.driver.calls if c[0] in ('fill', 'submit', 'submit_usable')]
+    assert order == ['fill', 'fill', 'submit_usable', 'submit_usable', 'submit_usable', 'submit']
+
+
+async def test_a_ready_button_is_not_waited_for(tmp_path):
+    r = await Rig(tmp_path).setup()
+    r.driver.steps = [Step(('username', 'password')), Step()]
+    assert await _login(r) == {'status': 'logged_in', 'reason': 'completed'}
+    assert [c for c in r.driver.calls if c[0] == 'submit_usable'] == []
+
+
+async def test_a_button_that_never_comes_on_sends_nothing(tmp_path):
+    from casa_browser.broker.main import SUBMIT_WAIT_S
+    r = await Rig(tmp_path).setup()
+    r.driver.steps = [Step(('username', 'password'), submit_ready=False)]
+
+    async def usable():
+        r.clock.advance(SUBMIT_WAIT_S)
+        return {'ok': False}
+    r.driver.usable = usable
+    assert await _login(r) == {'status': 'needs_live_view', 'reason': 'submit_disabled'}
+    assert _acted(r) == ['fill', 'fill']
+
+
+async def test_a_page_change_during_the_wait_reads_again_and_presses_once(tmp_path):
+    r = await Rig(tmp_path).setup()
+    r.driver.steps = [Step(('username', 'password'), submit_ready=False), Step()]
+    replies = iter([BrokerError('page_changed'), {'ok': True}])
+
+    async def usable():
+        reply = next(replies)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+    r.driver.usable = usable
+    assert await _login(r) == {'status': 'logged_in', 'reason': 'completed'}
+    assert _acted(r).count('submit') == 1 and _acted(r).count('fill') == 4
+
+
+async def test_a_click_stopped_by_an_empty_box_is_the_operators(tmp_path):
+    """The driver's check in the click's own evaluation: no send, the live view, no error that
+    would interrupt the run."""
+    r = await Rig(tmp_path).setup()
+    r.driver.steps = [Step(('username', 'password'))]
+    r.driver.submit_reply = {'ok': False, 'empty_box': True}
+    assert await _login(r) == {'status': 'needs_live_view', 'reason': 'empty_field'}
+
+
+async def test_a_start_page_sign_in_sends_the_password_once(tmp_path):
+    """A form that comes back with no error mark after a password submit (the old loop sent it
+    up to six times): 1 password fill, 1 submit, then the operator."""
+    r = await Rig(tmp_path).setup()
+    r.driver.steps = [Step(('username', 'password')), Step(('username', 'password'))]
+    assert await _login(r) == {'status': 'needs_live_view', 'reason': 'password_again'}
+    assert [f[1] for f in r.driver.fills] == ['username', 'password']
+    assert _acted(r).count('submit') == 1
+
+
+async def test_a_password_sent_before_the_guest_restart_is_not_sent_again(tmp_path):
+    r = await Rig(tmp_path).setup()
+    r.driver.steps = [Step(('username', 'password'))]
+    assert await r.call('login', run_id='run', site_id='site', driver_session='driver',
+                        guest_ask=False, password_sent=True) == {
+        'status': 'needs_live_view', 'reason': 'password_again'}
+    assert _acted(r) == []
+
+
+async def test_after_the_password_went_out_a_username_step_is_not_pressed(tmp_path):
+    """A form keeps the password however the page shows it: a read with only the username after
+    the send stays unpressed."""
+    r = await Rig(tmp_path).setup()
+    r.driver.steps = [Step(('username', 'password')), Step(('username',))]
+    assert await _login(r) == {'status': 'needs_live_view', 'reason': 'password_again'}
+    assert _acted(r) == ['fill', 'fill', 'submit']
+
+
+async def test_after_the_password_one_code_step_is_pressed_and_no_more(tmp_path):
+    r = await Rig(tmp_path).setup()
+    r.driver.steps = [Step(('username', 'password')), Step(('one_time_code',)), Step(('one_time_code',))]
+    assert await _login(r) == {'status': 'needs_live_view', 'reason': 'password_again'}
+    assert _acted(r).count('submit') == 2
+
+
+async def test_a_filled_password_the_next_read_no_longer_shows_is_not_pressed(tmp_path):
+    """A page that re-rendered between the fill and the click and whose read no longer shows the
+    password: the form still holds it, so nothing is pressed (the old flow pressed up to six
+    times with the username alone showing)."""
+    r = await Rig(tmp_path).setup()
+    r.driver.steps = [Step(('username', 'password')), Step(('username',))]
+
+    _moving(r, {('submit', 1): 'changed'})
+    real = r.driver.settle
+    moved = {'n': 0}
+
+    async def settle(driver_session, timeout_s=30):      # the second read is the re-rendered page
+        moved['n'] += 1
+        r.driver.index = 1 if moved['n'] > 1 else 0
+        return await real(driver_session, timeout_s)
+    r.driver.settle = settle
+    assert await _login(r) == {'status': 'needs_live_view', 'reason': 'password_again'}
+    assert _acted(r).count('submit') == 0
+    assert [f[1] for f in r.driver.fills] == ['username', 'password']
+
+
+async def test_a_filled_password_still_showing_after_a_page_change_is_filled_again_once_sent(tmp_path):
+    """A re-render that keeps the field: filled again (it may be wiped), and pressed once."""
+    r = await Rig(tmp_path).setup()
+    r.driver.steps = [Step(('username', 'password')), Step()]
+    _moving(r, {('submit', 1): 'changed'})
+    assert await _login(r) == {'status': 'logged_in', 'reason': 'completed'}
+    assert [f[1] for f in r.driver.fills].count('password') == 2
+    assert [c[0] for c in r.driver.calls].count('submit') == 1

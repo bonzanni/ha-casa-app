@@ -51,7 +51,10 @@ def launch_options(*, profile: str, locale: EffectiveLocale, gpu: bool = True,
                    downloads: Path = DOWNLOADS) -> dict:
     args = [f"--proxy-server={PROXY_SERVER}", "--proxy-bypass-list=<-loopback>",
             f"--lang={locale.language}", "--window-position=0,0",
-            f"--window-size={SCREEN[0]},{SCREEN[1]}"]
+            f"--window-size={SCREEN[0]},{SCREEN[1]}",
+            # After a forced close: no "Restore pages?" bubble. A tab Chrome restores while
+            # Patchright is attached never finishes loading (measured on Chrome 151).
+            "--hide-crash-restore-bubble"]
     if gpu:
         args.extend(GPU_FLAGS)
     return {

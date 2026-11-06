@@ -2,6 +2,13 @@
 document.querySelectorAll('form[data-confirm]').forEach(f => {
   f.addEventListener('submit', ev => { if (!confirm(f.dataset.confirm)) ev.preventDefault(); });
 });
+// Open takes a while (the page, the capture): the button says so and cannot be pressed again, so
+// a second tap cannot spend the form. A page brought back from the browser's history is usable.
+document.querySelectorAll('button[data-busy]').forEach(b => {
+  const was = b.textContent;
+  b.form.addEventListener('submit', () => { b.disabled = true; b.textContent = b.dataset.busy; });
+  addEventListener('pageshow', ev => { if (ev.persisted) { b.disabled = false; b.textContent = was; } });
+});
 // One tap copies an address or code (casa-test F17): the clipboard where the page is secure,
 // else the selection's copy (Home Assistant over plain http); the code says so briefly.
 document.querySelectorAll('code.copy').forEach(c => {

@@ -21,7 +21,10 @@ class BrokerClient:
             long = op in ('login', 'fill_code', 'unlock_guest')
             # The look's read: its settle and up to three reads, within the broker's 25 s.
             bound = (max(self.timeout, 125) if long else
-                     max(self.timeout, 30) if op == 'read_sign_in' else self.timeout)
+                     max(self.timeout, 30) if op == 'read_sign_in' else
+                     # Above the broker's transport to the driver (30 s) and the driver's own
+                     # bound on opening a capture (20 s), so the driver always answers first.
+                     max(self.timeout, 35) if op == 'begin_capture' else self.timeout)
             reply = await rpc_call(self.path, bound, op, **args)
         except BrokerError as error:
             return {'error': error.code}
@@ -74,7 +77,8 @@ class BrokerClient:
 
     async def login(self, run_id, site_id, driver_session, guest_ask=False, *, auto=False,
                     password_sent=False, fields=None):
-        extra = {'auto': True, 'password_sent': password_sent} if auto else {}
+        extra = {'auto': True, 'password_sent': password_sent} if auto else (
+            {'password_sent': True} if password_sent else {})
         if auto and fields:
             extra['fields'] = dict(fields)
         return await self.call('login', run_id=run_id, site_id=site_id, driver_session=driver_session,

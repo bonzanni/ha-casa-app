@@ -35,6 +35,7 @@ import asyncio
 import json
 import logging
 import secrets
+import time
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -203,6 +204,9 @@ class _Active:
     sign_ins: dict = field(default_factory=dict)
     not_sign_in: set = field(default_factory=set, repr=False)
     notice: str | None = None
+    # The address of the account page last loaded or observed: a login view on a new session
+    # (the old one is gone) starts there rather than on a blank page.
+    page_url: str | None = field(default=None, repr=False)
 
 
 @dataclass(eq=False)
@@ -221,6 +225,7 @@ class _Look:
     guest_ask: bool | None = None
     password_sent: bool = False
     fields: tuple = field(default=(), repr=False)    # the planned fields the check was shown
+    fresh: bool = False                  # looked at again after a verdict on a page that changed
 
 
 def _sign_in_mapping(fields, named) -> dict | None:
@@ -859,12 +864,14 @@ class RunController:
         return False
 
     async def _login(self, active: _Active, site: Site, url: str, *,
-                     guest_ask: bool | None = None) -> None:
+                     guest_ask: bool | None = None, password_sent: bool = False) -> None:
         """A login needs, in order: the browser on the site's profile, the policy installed,
         a ``login`` driver session (its first lease), the start page; then the broker. While
         the guest flow has not run in this browser session, the broker stops on a passkey
         hint (``needs_guest``): the guest flow runs once, then the sign-in once more from the
-        start page."""
+        start page. A form with a box the page marks with no role (``needs_check``) is left
+        as it is for the look: Fido's next observe brings it to Casa's check, which names the
+        fields."""
         active.code_wait = None              # a new sign-in replaces a code report (S6-2)
         session = active.session
         if guest_ask is None:
@@ -874,7 +881,7 @@ class RunController:
         try:
             await self._goto(active, url)
             reply = await self.broker.login(active.run_id, site.site_id, sid,
-                                            guest_ask=guest_ask)
+                                            guest_ask=guest_ask, password_sent=password_sent)
         finally:
             forced = await self._close_driver(active, sid)
         self._looked_now(active)
@@ -890,7 +897,8 @@ class RunController:
                 self._ledger(active, site, "failed", "timeout")
                 self._login_needed(active, "timeout")   # K1: the session is gone, no retry
                 return
-            await self._login(active, site, url, guest_ask=False)
+            await self._login(active, site, url, guest_ask=False,
+                              password_sent=password_sent or reply.get("password_sent") is True)
             return
         self._ledger(active, site, reply.get("status"), reply.get("reason"))
         if reply.get("status") == "needs_code":
@@ -899,6 +907,10 @@ class RunController:
         if reply.get("status") == "no_form":
             # Slice 5u: the sign-in filled nothing and found no form — it claims nothing; the
             # model reading the page decides whether he is signed in or needs the live view.
+            if reply.get("reason") == "needs_check" and active.session is session:
+                page = session.page             # this page is the look's, whatever came before
+                if page is not None and not page.is_closed():
+                    active.looked.discard((session, page.url))
             return
         if reply.get("status") != "logged_in":
             if reply.get("reason") == "not_found" and await self._vault_judgement(active, site):
@@ -920,7 +932,8 @@ class RunController:
         that acted on nothing (``no_form`` that found no form, could not read it or found it
         moved, and any ``not_found``: no item to sign in with). The last one's success is
         kept."""
-        if (status == "no_form" and reason in ("no_form", "probe_failed", "page_moved")) \
+        if (status == "no_form" and reason in ("no_form", "probe_failed", "page_moved",
+                                               "needs_check")) \
                 or reason == "not_found":
             return
         count, _worked = active.sign_ins.get(site.site_id, (0, False))
@@ -960,7 +973,8 @@ class RunController:
                                      password_sent=False)
 
     async def _read_look(self, active: _Active, site: Site, session, url: str, *,
-                         guest_ask: bool | None, password_sent: bool) -> _AppJudgement | None:
+                         guest_ask: bool | None, password_sent: bool,
+                         fresh: bool = False) -> _AppJudgement | None:
         """The look's read, then its judgement: the page reading as an action packet has it,
         the reading of the bound documents kept for the verdict, and what a sign-in would do
         (masked labels). A read error, no sign-in fields, a shape the check already judged
@@ -1005,24 +1019,30 @@ class RunController:
             origins=sorted({*site.origins, *site.login_origins}),
             planned={"fields": fields, "passkey": passkey})
         look = _Look(site.site_id, session, url, frames, dict(bound.data), shape,
-                     guest_ask=guest_ask, password_sent=password_sent, fields=tuple(fields))
+                     guest_ask=guest_ask, password_sent=password_sent, fields=tuple(fields),
+                     fresh=fresh)
         self._freeze_app(active, "sign_in", packet, site_id=site.site_id, look=look)
         self._event(active.run_id, "sign_in_judgement", "pending",
                     f"Casa checks whether this page is the sign-in of {site.display_name}.")
         return active.app_judgements["sign_in"]
+
+    def _look_current(self, active: _Active, look: _Look) -> bool:
+        """The session and the address looked at, with no step since."""
+        session = active.session
+        if session is not look.session or self.browser.session is not session:
+            return False
+        page = session.page
+        return not (page is None or page.is_closed() or page.url != look.url
+                    or (session, look.url) not in active.looked)
 
     async def _look_holds(self, active: _Active, look: _Look) -> bool:
         """The verdict applies only to what it judged: the session and the address looked at,
         no step since (the pair is still in ``looked``), and a final read of the bound
         documents equal to the judged one (``gate.same_reading``: their blocks' text, their
         controls' state and their exact destinations)."""
-        session = active.session
-        if session is not look.session or self.browser.session is not session:
+        if not self._look_current(active, look):
             return False
-        page = session.page
-        if (page is None or page.is_closed() or page.url != look.url
-                or (session, look.url) not in active.looked):
-            return False
+        page = active.session.page
         try:
             _whole, final = await self.ops.read_page_and_bound(page, look.frames,
                                                                policy=active.policy)
@@ -1059,9 +1079,16 @@ class RunController:
             self._event(active.run_id, "sign_in_mapping", "refused",
                         f"The check's fields for the sign-in page on {name} do not fit it; "
                         "nothing is filled.")
-        if (mapping is not None and site is not None
-                and await self._look_holds(active, look)):
-            successor = await self._auto_login(active, site, look, mapping)
+        if mapping is not None and site is not None:
+            successor = None
+            if await self._look_holds(active, look):
+                successor = await self._auto_login(active, site, look, mapping)
+            elif not look.fresh and self._look_current(active, look):
+                # The same address reads differently since it was judged (a widget solved and
+                # its button came on): the check judges the page as it is now, once.
+                successor = await self._read_look(
+                    active, site, look.session, look.url, guest_ask=look.guest_ask,
+                    password_sent=look.password_sent, fresh=True)
             if successor is not None:
                 return {"outcome": "judgement_required", "generation": self._generation(active),
                         "judgement": successor.wire()}
@@ -1296,6 +1323,40 @@ class RunController:
             await page.wait_for_load_state("domcontentloaded", timeout=LOAD_TIMEOUT_MS)
         except Exception:  # noqa: BLE001 — a slow page is still the page
             pass
+        self._keep_page_url(active, page.url)
+
+    @staticmethod
+    def _keep_page_url(active: _Active, url: str) -> None:
+        if active.ref is not None and active.ref.kind == "account":
+            active.page_url = url
+
+    async def _load_for_login(self, active: _Active, site: Site) -> None:
+        """A login view does not open on an empty fresh session: the page first, the one the
+        run was last on if it is this site's, else the site's
+        start page. Through a login driver session, whose lease covers a login-only origin, as
+        a sign-in's load is. No sign-in here and no credential touched. A page that does not
+        load leaves the view as it is."""
+        session = active.session
+        page = session.page if session is not None else None
+        if page is None or page.url != "about:blank":
+            return
+        url = active.page_url
+        kept = self._target_site(active, url) if url is not None else None
+        if kept is None or kept.site_id != site.site_id:
+            url = self._start_url(site)
+        try:
+            sid = await self._driver_session(active, "login", site)
+        except _Dependency:
+            log.warning("login view: no driver session to load its page")
+            return                           # the view goes on; opening it says if it cannot
+        try:
+            self._precheck(active, url)
+            await self._goto(active, url)
+        except ProtocolError:
+            self._event(active.run_id, "page_unreachable", "blocked",
+                        "The page for the login live view did not load.")
+        finally:
+            await self._close_driver(active, sid)
 
     async def _navigate(self, active: _Active, url: str, *, before_goto=None,
                         public: bool = False) -> None:
@@ -1378,6 +1439,7 @@ class RunController:
         for attempt in range(2):
             try:
                 obs, url, title = await self.observer.observe_page(run, session, active.policy)
+                self._keep_page_url(active, url)
                 break
             except ObservationRefused as refused:
                 if refused.code == "page_off_session":
@@ -3085,6 +3147,10 @@ class RunController:
                 if active.guest_for is not session:
                     active.guest_for = session
                     await self._guest(active, site)
+                if purpose == "login":
+                    # The link goes out with the page there (a K1 under the guest flow included).
+                    await self._ensure_session(active)
+                    await self._load_for_login(active, site)
             if not self.store.transition(run_id, "running", "waiting_live"):
                 raise ProtocolError("not_ready")
             active.live = _Live(purpose, site_id=active.ref.site_id if active.ref else None,
@@ -3102,7 +3168,19 @@ class RunController:
             live = active.live
             if live is None:
                 raise ProtocolError("not_ready")
+            began = time.monotonic()
+
+            def stage(name: str) -> None:   # mechanical: a stage and its time, nothing of a page
+                log.info("live view open: %s at %.2f s", name, time.monotonic() - began)
+
             session = await self._ensure_session(active)
+            login_site = (self.store.get_site(active.ref.site_id)
+                          if live.purpose == "login" and active.ref.kind == "account" else None)
+            if login_site is not None and login_site.login_origins:
+                # The session can have been replaced since the request.
+                await self._load_for_login(active, login_site)
+                session = await self._ensure_session(active)
+            stage("session")
             if not self.store.transition(run_id, "waiting_live", "live"):
                 raise ProtocolError("not_ready")
             # Operator ruling E-T12-1 = A1: from here every failure, in any session kind,
@@ -3117,6 +3195,7 @@ class RunController:
                 await self._consume_events(active)   # earlier events are not the view's
                 live.lease = lease
                 live.token = await self.proxy.begin_manual(lease, purpose=live.purpose)
+                stage("lease")
                 if active.policy is not None:
                     active.policy = replace(active.policy, manual_lease=lease)
                 site = self.store.get_site(site_id)
@@ -3124,6 +3203,7 @@ class RunController:
                     "capture", run_id, site_id, session, self.proxy, site.login_origins,
                     reader=lambda page: self._signin_reading(active, page))
                 live.capture_sid = sid
+                stage("capture session")
                 # The capture is the view's from the moment the broker armed it (before the
                 # input is exposed), so every end of the view — a failed exposure included —
                 # ends it.
@@ -3132,6 +3212,7 @@ class RunController:
                                                purpose=live.purpose, expose=expose)
                 if "error" in reply:
                     raise _LiveUnavailable(str(reply["error"]))
+                stage("capture armed, view exposed")
                 return None
             except _LiveUnavailable as unavailable:
                 await self._live_unavailable(active, unavailable.code)

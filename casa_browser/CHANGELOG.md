@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.11] - 2026-11-06
+
+### Fixed
+
+- Automatic sign-in works on forms whose button stays disabled until a verification widget solves or until both fields are filled: it fills the form, waits up to 20 seconds for the button, and presses it once. If the button never comes on, you get the live view and nothing was sent.
+- A sign-in form with a plain username box now goes to Casa's check, which names the fields, instead of Casa Browser sending the password alone.
+- A password is never sent beside an empty box of its form, and never more than once per sign-in. A form that comes back asking again goes to the live view rather than being sent again, which could have locked an account.
+- Opening a live view no longer fails because of mismatched time limits, and a view that cannot open no longer closes Chrome by force. Frames from other sites are left alone, and each opening stage is logged with its time.
+- Open says "Opening…" and cannot be pressed twice, so a second tap no longer ends in "form expired".
+- A login live view on a new browser session starts on the page you were on, or the site's start page, instead of a blank page.
+- Chrome's "Restore pages?" bubble no longer appears after a forced close. A restored tab never finished loading.
+
 ## [0.1.10] - 2026-11-04
 
 ### Changed

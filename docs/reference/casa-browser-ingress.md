@@ -76,7 +76,9 @@ middleware (before a page exists) are English. Home Assistant's option texts are
 ## The live view
 
 **Grants and claims.** `request_live` gets a grant from `LiveView.issue` (120 s, single use;
-its path `live/{grant}` has a page with an Open form). **Open on the home page**
+its path `live/{grant}` has a page with an Open form). An Open button says "Opening…" and
+disables itself while the view opens (`static/app.js`), so a second tap cannot spend its form.
+**Open on the home page**
 (`open_from_home`) reconnects an established view — a new cookie, the old page no longer the
 viewer — or claims the run's grant, expired or not; a grant's own page (`claim`) accepts only
 that run's unexpired grant and never reconnects. Home shows a view that starts waiting by

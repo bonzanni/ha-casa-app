@@ -47,6 +47,10 @@ PAGE_CHANGES = 8
 SIGN_IN_READ_S = 25
 SETTLE_QUIET_READ_S = 10
 SIGN_IN_READS = 3
+#: how long a sign-in waits, once it filled the form, for a disabled submit button to enable
+#: (a widget still solving, the form's own checks), and how often it looks
+SUBMIT_WAIT_S = 20
+SUBMIT_POLL_S = 0.25
 #: reads of a field-free page a sign-in that filled nothing yet waits for a form with (5u):
 #: each is a settle (at least a quarter second) and a discovery, about two seconds in all
 FORM_WAITS = 6
@@ -435,7 +439,9 @@ class Broker:
         # A look's sign-in: ``bound`` while its judged step has not been submitted (or its
         # passkey answered); after it, the later steps' limits. A code continuation is after.
         after = auto and (look is None or code is not None)
+        # One send of the password per sign-in, on either route.
         sent = password_sent
+        in_form = False       # this sign-in put the password into the page, however it shows now
         touched = False       # a look's sign-in filled or clicked something
 
         async def unique_title():
@@ -473,11 +479,23 @@ class Broker:
 
         moved = {'status': 'no_form', 'reason': 'page_moved'}
 
+        async def enabled(generation, handle):
+            """The step's disabled submit button became usable within the bound."""
+            until = self.clock() + SUBMIT_WAIT_S
+            while True:
+                usable = await drive('submit_usable', driver_session=driver_session,
+                                     page_generation=generation, submit_handle=handle)
+                if usable.get('ok'):
+                    return True
+                if self.clock() >= until:
+                    return False
+                await asyncio.sleep(SUBMIT_POLL_S)
+
         async def step(code, previous_roles):
             """One sign-in step: settle, read the form, fill it, submit it. The roles it filled
             once submitted; ``_AGAIN`` to read the page again; otherwise the sign-in's
             outcome."""
-            nonlocal approved, waits, passkey_answered, after, sent, touched
+            nonlocal approved, waits, passkey_answered, after, sent, in_form, touched
             remaining = deadline - self.clock()
             if remaining <= 0:
                 return {'status': 'failed', 'reason': 'timeout'}
@@ -511,7 +529,7 @@ class Broker:
                 # "Unlock 1Password" one included) while the guest is not unlocked: nothing more
                 # is filled or clicked, and the passkey try is not spent.
                 return {'status': 'needs_guest', 'reason': 'passkey',
-                        **({'password_sent': sent} if auto else {})}
+                        **({'password_sent': sent} if auto or sent else {})}
             if fields['passkey_frame'] and not after:
                 await load()
             if (fields['passkey_frame'] and code is None and tries_key is not None
@@ -566,6 +584,13 @@ class Broker:
                         return {'status': 'no_form', 'reason': 'passkey'}
                     return {'status': 'logged_in', 'reason': 'completed'}
                 return {'status': 'needs_live_view', 'reason': 'challenge'}
+            if fields.get('empty_box') and 'password' in roles:
+                # A shown box of the form that nothing here would fill: a password never goes
+                # out beside it. From the start page, with nothing done yet, the check names the
+                # fields (the look, on Fido's next observe); nothing is claimed or counted.
+                if not auto and not touched:
+                    return {'status': 'no_form', 'reason': 'needs_check'}
+                return {'status': 'needs_live_view', 'reason': 'empty_field'}
             if not fields['submit'] or any(role not in ('username', 'password', 'one_time_code')
                                            for role in roles):
                 return {'status': 'needs_live_view', 'reason': 'ambiguous_fields'}
@@ -584,8 +609,11 @@ class Broker:
             if ('one_time_code' in roles and not has_totp and code is None) or any(
                     role != 'one_time_code' and not values.get(role) for role in roles):
                 return {'status': 'needs_live_view', 'reason': 'missing_role'}
-            if auto and sent and 'password' in roles:
-                # This look sent the password once already: never a second time.
+            if (sent and (set(roles) != {'one_time_code'} or previous_roles == {'one_time_code'})
+                    or in_form and not sent and 'password' not in roles):
+                # The password went out once, or is in a form whose read no longer shows it. A
+                # form keeps it however the page shows it, so the only step left to press is the
+                # one code step after its send: it is filled and sent once.
                 return {'status': 'needs_live_view', 'reason': 'password_again'}
             for role, handle in roles.items():
                 try:
@@ -602,19 +630,26 @@ class Broker:
                 if not await held(generation):
                     return moved
                 touched = True
+                in_form = in_form or role == 'password'
                 filled = await drive('fill', driver_session=driver_session,
                                      page_generation=generation, field_handle=handle, value=value)
                 if not filled.get('ok'):
                     raise BrokerError('refused')
+            if not fields.get('submit_ready', True) and not await enabled(generation,
+                                                                          fields['submit']):
+                # Nothing is sent; what was filled stays for the operator's view.
+                return {'status': 'needs_live_view', 'reason': 'submit_disabled'}
             if not await held(generation):
                 return moved
             submitted = await drive('submit', driver_session=driver_session,
                                     page_generation=generation, submit_handle=fields['submit'])
+            if submitted.get('empty_box'):
+                return {'status': 'needs_live_view', 'reason': 'empty_field'}
             if not submitted.get('ok'):
                 raise BrokerError('refused')
             # Only a submit that clicked ends the judged step: a page_changed before the click
             # (another frame's navigation) reads the page again under the same binding.
-            if auto and 'password' in roles:
+            if 'password' in roles:
                 sent = True
             after = auto
             return set(roles)
