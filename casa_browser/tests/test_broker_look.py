@@ -310,3 +310,30 @@ async def test_a_page_change_before_the_submit_click_keeps_the_judged_step(tmp_p
     _moving(r, {('submit', 1): 'changed'})
     assert await _auto(r) == {'status': 'logged_in', 'reason': 'completed'}
     assert _count(r, 'submit') == 1            # the step typed again, then submitted once
+
+
+async def test_a_box_the_check_did_not_map_keeps_the_password_at_home(tmp_path):
+    """The judged step with a shown empty box the mapping left out: the live view, 0 fills."""
+    r = await Rig(tmp_path).setup()
+    r.driver.steps = [Step(('password',), empty_box=True)]
+    await _look(r)
+    assert await _auto(r, fields={'password': 'f1'}) == {'status': 'needs_live_view',
+                                                         'reason': 'empty_field'}
+    assert r.driver.fills == [] and _count(r, 'submit') == 0
+
+
+async def test_a_look_waits_for_the_held_button_under_its_binding(tmp_path):
+    """The binding is asked after the wait too, right before the click: a page that moved
+    during the wait is not pressed."""
+    r = await Rig(tmp_path).setup()
+    r.driver.steps = [Step(('username', 'password'), submit_ready=False), Step()]
+    await _look(r)
+    checks = {'n': 0}
+
+    def bound(_count_so_far):
+        checks['n'] += 1
+        return (False, 'other') if checks['n'] >= 3 else None      # 2 fills, then the click
+    r.driver.bound = bound
+    assert await _auto(r) == {'status': 'no_form', 'reason': 'page_moved'}
+    assert _count(r, 'fill') == 2 and _count(r, 'submit') == 0
+    assert _count(r, 'submit_usable') == 1

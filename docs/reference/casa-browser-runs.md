@@ -174,13 +174,16 @@ needs an account session. Before that transition, a `login` view on a site with 
 takes the run's session (`_ensure_session`, which reopens one that is gone or stale, as
 `begin_live` would) and, when the guest flow has not been started for it, runs it, so the
 operator's link goes out with 1Password unlocked for its own fill. A flow that does not complete,
-or a K1 under it, lets the request go on (the claim then opens a new session whose guest has not
-run); an `assist` view runs no guest flow. `begin_live(run, expose)` — the ingress claim, before the
+or a K1 under it, lets the request go on (on a new session whose guest has not
+run); an `assist` view runs no guest flow. A `login` view on `about:blank` first loads, with no
+sign-in, the site's page the run was last on (`_Active.page_url`) or its start page
+(`_load_for_login`), at the request and again at the claim. `begin_live(run, expose)` — the ingress claim, before the
 operator's input is exposed — moves `waiting_live` → `live`; on an account session it begins the
 manual lease (`begin_manual(lease, purpose=…)`, keeping the window token), opens a `capture`
 driver session and arms the broker's
 capture through `broker_client.arm_capture_then`, which calls `expose` only after the capture is
-acknowledged; the capture belongs to the view from that acknowledgement on. Any failure while
+acknowledged; the capture belongs to the view from that acknowledgement on. Each stage is logged
+at `info` with its time and nothing of the page. Any failure while
 a view is claimed — in either session kind, at any step (the lease, the capture session, the
 capture, the exposure) — leaves through one cleanup (operator ruling 2026-10-21) and offers no
 view: the capture the broker armed is ended, the

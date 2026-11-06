@@ -416,3 +416,77 @@ async def test_a_mapping_against_the_fields_facts_signs_nothing_in(rig, read_fie
         for i, role, pw in read_fields]}
     await verdict(rig, run.run_id, await look(rig, run.run_id), {**SIGN_IN, "fields": fields})
     assert auto_logins(rig) == []
+
+
+# -- a start-page form with a plain box, and a page that changed under the verdict -------------
+
+NEEDS_CHECK = {"status": "no_form", "reason": "needs_check"}
+
+
+async def _start_page_needs_check(rig):
+    _pages(rig)
+    rig.browser.contents[START] = rig.browser.contents[LOGIN]
+    rig.broker.login_reply = NEEDS_CHECK
+    run = await rig.run()
+    rig.broker.sign_in_read = READ
+    rig.broker.login_reply = {"status": "logged_in", "reason": "completed"}
+    return run
+
+
+async def test_a_start_page_form_with_a_plain_box_goes_to_the_check(rig):
+    """Run start: no step came between, and the look still runs. Not counted in the ledger;
+    the verdict's sign-in is the run's one send."""
+    run = await _start_page_needs_check(rig)
+    assert rig.ctl.active.sign_ins == {}
+    result = await look(rig, run.run_id)
+    assert result.outcome == "judgement_required" and len(reads(rig)) == 1
+    await verdict(rig, run.run_id, result)
+    assert len(auto_logins(rig)) == 1
+    assert auto_logins(rig)[0]["fields"] == {"username": "f1", "password": "f2"}
+    assert rig.events(run.run_id, "login_needed") == []
+
+
+async def test_needs_check_clears_an_older_look_at_the_same_page(rig):
+    """The vault question's Yes reloads the same start page: an earlier sign-in had already
+    put that address in ``looked``, which must not keep the look away."""
+    run = await _start_page_needs_check(rig)
+    active = rig.ctl.active
+    site = rig.store.get_site(active.ref.site_id)
+    page = rig.page()
+    active.looked.add((active.session, page.url))
+    rig.broker.login_reply = NEEDS_CHECK
+    await rig.ctl._login(active, site, page.url)
+    assert (active.session, page.url) not in active.looked
+    rig.broker.login_reply = {"status": "logged_in", "reason": "completed"}
+    assert (await look(rig, run.run_id)).outcome == "judgement_required"
+
+
+async def test_a_page_that_changed_under_the_verdict_is_judged_again_once(rig):
+    """A widget solved between the look and the verdict: the same address reads differently.
+    Nothing filled on the old verdict; one successor judgement, and its verdict signs in."""
+    run = await phone(rig)
+    result = await look(rig, run.run_id)
+    rig.page().text = "Login Page\nUsername\nPassword\nYou are verified"
+    reply = await verdict(rig, run.run_id, result)
+    assert reply["outcome"] == "judgement_required" and auto_logins(rig) == []
+    assert len(reads(rig)) == 2
+    await verdict(rig, run.run_id, reply)
+    assert len(auto_logins(rig)) == 1
+
+
+async def test_a_page_that_keeps_changing_is_judged_again_only_once(rig):
+    run = await phone(rig)
+    result = await look(rig, run.run_id)
+    rig.page().text = "changed once"
+    reply = await verdict(rig, run.run_id, result)
+    rig.page().text = "changed twice"
+    last = await verdict(rig, run.run_id, reply)
+    assert last["outcome"] == "done" and auto_logins(rig) == [] and len(reads(rig)) == 2
+
+
+async def test_another_address_under_the_verdict_is_not_judged_again(rig):
+    run = await phone(rig)
+    result = await look(rig, run.run_id)
+    rig.page().show(FORGOT, "Forgot Password", (), "T")
+    reply = await verdict(rig, run.run_id, result)
+    assert reply["outcome"] == "done" and len(reads(rig)) == 1 and auto_logins(rig) == []

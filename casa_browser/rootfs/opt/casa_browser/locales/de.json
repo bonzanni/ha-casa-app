@@ -35,6 +35,7 @@
   "live.title": "Live-Ansicht",
   "live.asked": "Der Assistent braucht dich im Browser.",
   "live.open_button": "Live-Ansicht öffnen",
+  "live.opening": "Wird geöffnet…",
   "live.not_here": "Diese Live-Ansicht ist nicht in diesem Browser geöffnet. Öffne sie von der Startseite.",
   "live.replaced": "Diese Seite ist nicht mehr die Live-Ansicht (sie wurde woanders geöffnet). Benutze die Seite, die sie zeigt.",
   "live.unrestored": "Das Browserfenster konnte nicht wiederhergestellt werden, deshalb wurde der Auftrag gestoppt. Sonst hat sich nichts geändert.",

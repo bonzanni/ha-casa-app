@@ -35,6 +35,7 @@
   "live.title": "Live view",
   "live.asked": "The assistant asked for you in the browser.",
   "live.open_button": "Open the live view",
+  "live.opening": "Opening…",
   "live.not_here": "This live view is not open in this browser. Open it from the home page.",
   "live.replaced": "This page is no longer the live view (it was opened somewhere else). Use the page that shows it.",
   "live.unrestored": "The browser window could not be put back, so the run was stopped. Nothing else changed.",

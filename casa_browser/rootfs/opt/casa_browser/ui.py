@@ -201,7 +201,8 @@ class Ui:
                          else t("home.wait_question"))
                 items.append(f'<li class="wait"><strong>{e(_task(run))}</strong> — {e(label)} '
                              + self.form(request, f"/runs/{run.run_id}/open",
-                                         f'<button class="primary">{e(t("home.open"))}</button>', cls="inline")
+                                         f'<button class="primary" data-busy="{e(t("live.opening"))}">{e(t("home.open"))}</button>',
+                                         cls="inline")
                              + "</li>")
             parts.append(f'<section><h2>{e(t("home.live_heading"))}</h2><ul class="waits">'
                          + "".join(items) + "</ul></section>")
@@ -339,7 +340,8 @@ class Ui:
         t = self.t
         return self.page(request, t("live.title"), f"<p>{e(t('live.asked'))}</p>"
                          + self.form(request, f"/live/{grant_id}",
-                                     f'<button class="primary">{e(t("live.open_button"))}</button>'))
+                                     f'<button class="primary" data-busy="{e(t("live.opening"))}">'
+                                     f'{e(t("live.open_button"))}</button>'))
 
     async def claim(self, request: web.Request) -> web.Response:
         grant_id = request.match_info["grant"]

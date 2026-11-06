@@ -248,6 +248,8 @@ class Step:
     on_site_origin: bool = True
     passkey_frame: bool = False   # 1Password's passkey prompt is shown (slice 5v)
     passkey_hint: bool = False    # a visible webauthn field on a login origin (lazy guest)
+    submit_ready: bool = True     # the submit button can be pressed at the read
+    empty_box: bool = False       # a shown, empty box of the password's form nothing fills
 
 
 class FakeDriver:
@@ -278,6 +280,8 @@ class FakeDriver:
                        'one_time_code': 'Code', 'submit': 'Login'}
         self.read_failure = None
         self.plain = ()           # R9: the read's plain fields (no role the page marks), labels
+        self.usable = None        # async callable: submit_usable's reply (default: it can)
+        self.submit_reply = None  # submit's reply instead of the click (nothing moves)
 
     async def call(self, op, **args):
         return await getattr(self, op)(**args)
@@ -292,7 +296,12 @@ class FakeDriver:
         self.calls.append(('find_login_fields', driver_session, page_generation))
         s = self.steps[self.index]
         return LoginFields(page_generation, s.origin_ok, {r: r for r in s.roles}, s.submit,
-                           s.field_error, s.passkey_frame, s.passkey_hint)
+                           s.field_error, s.passkey_frame, s.passkey_hint,
+                           s.submit_ready, s.empty_box)
+
+    async def submit_usable(self, driver_session, page_generation, submit_handle, login_origins=None):
+        self.calls.append(('submit_usable', driver_session, page_generation, submit_handle))
+        return await self.usable() if self.usable is not None else {'ok': True}
 
     async def choose_passkey(self, driver_session, page_generation, title, username):
         """As the real driver (5v): Sign in on a prompt that offers ``title``/``username`` (the
@@ -312,6 +321,8 @@ class FakeDriver:
 
     async def submit(self, driver_session, page_generation, submit_handle):
         self.calls.append(('submit', driver_session, page_generation, submit_handle))
+        if self.submit_reply is not None:
+            return self.submit_reply
         self.index = min(self.index + 1, len(self.steps) - 1)
         return {'ok': True}
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from urllib.parse import parse_qs
 
 import pytest
 
@@ -542,7 +543,7 @@ def test_forced_close_kills_queued_action(tmp_path, op, stall):
     with ChromeSites([ACCOUNT]) as sites:
         install(sites, ACCOUNT)
         sites.pages['/settings'] = ('text/html', b'''<form onsubmit="event.preventDefault()">
-            <input id=field type=password autocomplete=current-password><button>Continue</button>
+            <input id=field type=password autocomplete=current-password value=held><button>Continue</button>
             </form><script>
             field.addEventListener('input', () => {
                 localStorage.setItem('late-effect','fill');
@@ -1474,3 +1475,263 @@ def test_r9_a_marked_field_beyond_the_plan_never_spoils_the_named_ones(tmp_path)
     assert len(read['fields']) == 200 and read['fields'][-1]['id'] == 'f200', read['fields'][-1]
     assert reply == {'status': 'logged_in', 'reason': 'completed'}, reply
     assert [p for p, _b in _posted(posts)] == ['/finish']
+
+
+# -- forms like two measured sign-in pages: a button a widget holds, a button the form's own checks
+# hold, a plain username box. The fixtures are synthetic; each shape ends in exactly one POST.
+
+_HELD_BY_WIDGET = (
+    b'<form method=post action="/finish"><label for=u>Username</label>'
+    b'<input id=u name=userName type=text><label for=p>Password</label>'
+    b'<input id=p name=password type=password>'
+    b'<input type=hidden name=cf-turnstile-response id=t><button id=b disabled>Sign In</button></form>'
+    # the widget's cross-origin iframe, and its solve a while after the form
+    b'<iframe src="https://' + OTHER.encode() + b'/frame"></iframe>'
+    b'<script>setTimeout(() => {document.getElementById("t").value = "token";'
+    b'document.getElementById("b").disabled = false;}, 3000);</script>')
+
+_HELD_BY_FORM = (
+    b'<form method=post action="/finish">'
+    b'<input name=username type=text aria-label=Username placeholder=Username required>'
+    b'<input name=userPassword type=password aria-label=Password required>'
+    b'<input id=b type=submit value="Log in" disabled aria-disabled=true></form>'
+    # both fields filled: the same node comes on, and keeps aria-disabled=true throughout
+    b'<script>const f = document.forms[0], b = document.getElementById("b");'
+    b'f.addEventListener("input", () => {b.disabled = !(f.username.value && f.userPassword.value);});'
+    b'</script>')
+
+_NEVER_ON = (
+    b'<form method=post action="/finish"><input name=username type=text aria-label=Username>'
+    b'<input name=password type=password aria-label=Password><button disabled>Sign In</button></form>')
+
+_ON_WITH_A_LATE_BOX = _HELD_BY_FORM.replace(
+    b'</script>', b'f.addEventListener("input", () => {if (!b.disabled && !f.code) {'
+    b'const x = document.createElement("input"); x.name = "code"; x.type = "text";'
+    b'f.append(x);}});</script>')
+
+_ON_WIPING_THE_PASSWORD = _HELD_BY_FORM.replace(
+    b'</script>', b'f.addEventListener("input", () => {if (!b.disabled) setTimeout(() => {'
+    b'f.userPassword.value = ""; }, 0);});</script>')
+
+_BOTH = {'username': 'f1', 'password': 'f2'}
+
+
+def _held_run(tmp_path, body, *, fields=_BOTH, finish=None):
+    """The start page's sign-in on the page, the look's read and the sign-in with the check's
+    ``fields``: the start page's reply, the read, the sign-in's reply, the POSTs."""
+    config = fixture_config(tmp_path)
+    with ChromeSites([LOGIN, ACCOUNT, OTHER]) as sites:
+        install(sites)
+        sites.pages['/signin'] = ('text/html', body, {})
+        sites.pages['/frame'] = ('text/html', b'<p>widget</p>', {})
+        sites.pages['/finish'] = ('text/html', b'', {'Location': 'https://' + ACCOUNT + '/done'})
+        sites.status['/finish'] = 303
+        sites.pages['/done'] = ('text/html', b'<p>Signed in</p>', {})
+        result = run_scenario([{'open': {'site_id': 's1'}}, instruction(config, 'setup'),
+                               {'goto': 'https://' + LOGIN + '/signin'},
+                               instruction(config, 'login'),
+                               instruction(config, 'login', auto=True, fields=fields)],
+                              broker_fixture=config)
+        return (result[3], result[4], result[6],
+                [r for r in sites.receipts.requests if r[0] == 'POST'], vault(config)[0])
+
+
+def _value_of(item, field_id):
+    return next(f['value'] for f in item['fields'] if f['id'] == field_id)
+
+
+@pytest.mark.parametrize('body, button, names', [
+    (_HELD_BY_WIDGET, 'Sign In', (b'userName', b'password')),
+    (_HELD_BY_FORM, 'Log in', (b'username', b'userPassword'))],
+    ids=['a widget holds the button', 'the form holds the button'])
+def test_a_plain_username_form_with_a_held_button_is_sent_once(tmp_path, body, button, names):
+    """The start page does nothing and hands over; the look plans the plain box and the disabled
+    button; the sign-in fills both fields, waits for the button, presses once. One POST with
+    both values."""
+    start, read, reply, posts, item = _held_run(tmp_path, body)
+    assert start == {'status': 'no_form', 'reason': 'needs_check'}, start
+    assert [(f['id'], f['role'], f['button']) for f in read['fields']][:2] == [
+        ('f1', None, button), ('f2', 'password', button)], read
+    assert reply == {'status': 'logged_in', 'reason': 'completed'}, reply
+    assert [p[2] for p in posts] == ['/finish'], posts
+    sent = parse_qs(posts[0][3].decode())
+    assert sent[names[0].decode()] == [_value_of(item, 'username')]
+    assert sent[names[1].decode()] == [_value_of(item, 'password')]
+
+
+def test_a_box_of_another_form_stops_nothing(tmp_path):
+    """A search form beside the sign-in form (its box planned, unmapped, empty) is not this
+    form's box: one POST."""
+    body = _HELD_BY_FORM + b'<form action="/search"><input name=q type=search aria-label=Search><button>Go</button></form>'
+    start, read, reply, posts, _item = _held_run(tmp_path, body)
+    assert start == {'status': 'no_form', 'reason': 'needs_check'}, start
+    assert reply == {'status': 'logged_in', 'reason': 'completed'}, reply
+    assert [p[2] for p in posts] == ['/finish'], posts
+
+
+def test_a_button_that_never_comes_on_sends_nothing(tmp_path):
+    _start, _read, reply, posts, _item = _held_run(tmp_path, _NEVER_ON)
+    assert reply == {'status': 'needs_live_view', 'reason': 'submit_disabled'}, reply
+    assert posts == []
+
+
+def test_the_password_alone_never_goes_beside_an_empty_box(tmp_path):
+    """The check named the password only, with the plain box of its form left empty: nothing
+    filled, nothing sent, the live view."""
+    start, _read, reply, posts, _item = _held_run(tmp_path, _HELD_BY_FORM, fields={'password': 'f2'})
+    assert start == {'status': 'no_form', 'reason': 'needs_check'}, start
+    assert reply == {'status': 'needs_live_view', 'reason': 'empty_field'}, reply
+    assert posts == []
+
+
+_ON_HIDING_THE_PASSWORD = _ON_WITH_A_LATE_BOX.replace(
+    b'const x =', b'f.userPassword.style.display = "none"; const x =')
+
+_ON_RETYPING_THE_PASSWORD = _ON_WITH_A_LATE_BOX.replace(
+    b'const x =', b'f.userPassword.type = "text"; const x =')
+
+
+@pytest.mark.parametrize('body', [_ON_WITH_A_LATE_BOX, _ON_WIPING_THE_PASSWORD,
+                                  _ON_HIDING_THE_PASSWORD],
+                         ids=['a box renders late', 'a re-render wipes the password',
+                              'the password is hidden with a late box'])
+def test_the_click_itself_stops_at_an_empty_box(tmp_path, body):
+    """The form changes after the fill, during the wait: the check in the click's own
+    evaluation stops it. 0 POSTs, the live view, no error."""
+    _start, _read, reply, posts, _item = _held_run(tmp_path, body)
+    assert reply == {'status': 'needs_live_view', 'reason': 'empty_field'}, reply
+    assert posts == []
+
+
+def test_a_form_that_hides_its_sent_password_is_not_pressed_again(tmp_path):
+    """An AJAX form that hides the password after the send, keeping its value: the next read
+    shows only the username, and the form would post the password again. 1 POST, the operator."""
+    body = _LABELLED.replace(b'<form method=post action="/finish">', b'<form id=f>') + (
+        b'<script>document.getElementById("f").addEventListener("submit", ev => {ev.preventDefault();'
+        b'fetch("/finish", {method: "POST", body: new URLSearchParams(new FormData(ev.target))});'
+        b'document.getElementById("p").style.display = "none";});</script>')
+    config = fixture_config(tmp_path)
+    with ChromeSites([LOGIN, ACCOUNT]) as sites:
+        install(sites)
+        sites.pages['/signin'] = ('text/html', body, {})
+        sites.pages['/finish'] = ('text/plain', b'ok', {})
+        result = run_scenario([{'open': {'site_id': 's1'}}, instruction(config, 'setup'),
+                               {'goto': 'https://' + LOGIN + '/signin'},
+                               instruction(config, 'login')], broker_fixture=config)
+        assert result[-1] == {'status': 'needs_live_view', 'reason': 'password_again'}, result[-1]
+        assert [r[2] for r in sites.receipts.requests if r[0] == 'POST'] == ['/finish']
+
+
+@pytest.mark.parametrize('extra', [b'', b'const x = document.createElement("input"); x.name = "code"; f.append(x);'],
+                         ids=['alone', 'with an empty box'])
+def test_a_form_that_hides_the_password_before_the_click_is_not_pressed(tmp_path, extra):
+    """The second reviewer case that sent six POSTs: the password's input listener hides it and
+    clones the button, an AJAX form posts its FormData on every click. The read after the page
+    change shows only the username: 0 POSTs, the operator."""
+    body = _LABELLED.replace(b'<form method=post action="/finish">', b'<form id=f>') + (
+        b'<script>const f = document.getElementById("f"), p = document.getElementById("p");'
+        b'f.addEventListener("submit", ev => {ev.preventDefault();'
+        b'fetch("/finish", {method: "POST", body: new URLSearchParams(new FormData(f))});});'
+        b'p.addEventListener("input", () => {if (p.style.display === "none") return;'
+        b'p.style.display = "none"; const b = f.querySelector("button"); b.replaceWith(b.cloneNode(true));'
+        + extra + b'});</script>')
+    config = fixture_config(tmp_path)
+    with ChromeSites([LOGIN, ACCOUNT]) as sites:
+        install(sites)
+        sites.pages['/signin'] = ('text/html', body, {})
+        sites.pages['/finish'] = ('text/plain', b'ok', {})
+        result = run_scenario([{'open': {'site_id': 's1'}}, instruction(config, 'setup'),
+                               {'goto': 'https://' + LOGIN + '/signin'},
+                               instruction(config, 'login')], broker_fixture=config)
+        assert result[-1] == {'status': 'needs_live_view', 'reason': 'password_again'}, result[-1]
+        assert [r for r in sites.receipts.requests if r[0] == 'POST'] == []
+
+
+@pytest.mark.parametrize('body', [
+    b'<form action="/finish" method=post><input name=u autocomplete=username><button>Go</button></form>'
+    b'<form action="/finish" method=post><input name=p type=password autocomplete=current-password></form>',
+    b'<form action="/finish" method=post><input name=p type=password autocomplete=current-password><button>Go</button></form>'
+    b'<form action="/finish" method=post><input name=u autocomplete=username></form>'],
+    ids=['the button is the username form', 'the button is the password form'])
+def test_a_button_of_another_form_is_never_pressed(tmp_path, body):
+    config = fixture_config(tmp_path)
+    with ChromeSites([LOGIN, ACCOUNT]) as sites:
+        install(sites)
+        sites.pages['/signin'] = ('text/html', body, {})
+        result = run_scenario([{'open': {'site_id': 's1'}}, instruction(config, 'setup'),
+                               {'goto': 'https://' + LOGIN + '/signin'},
+                               instruction(config, 'login')], broker_fixture=config)
+        assert result[-1] == {'status': 'needs_live_view', 'reason': 'ambiguous_fields'}, result[-1]
+        assert [r for r in sites.receipts.requests if r[0] == 'POST'] == []
+
+
+def test_a_password_retyped_with_a_late_box_is_not_sent(tmp_path):
+    """The binding sees the field's type change before the click: 0 POSTs."""
+    _start, _read, reply, posts, _item = _held_run(tmp_path, _ON_RETYPING_THE_PASSWORD)
+    assert reply == {'status': 'no_form', 'reason': 'page_moved'}, reply
+    assert posts == []
+
+
+@pytest.mark.parametrize('box', [b'<input type=number name=code>', b'<input type=url name=code>',
+                                 b'<textarea name=code></textarea>'],
+                         ids=['number', 'url', 'textarea'])
+def test_a_box_of_any_type_holds_the_password_back(tmp_path, box):
+    """Marked username and password, and an empty box of a type the look does not plan: the
+    start page does nothing, the check's mapping leaves it out: 0 POSTs, the live view."""
+    body = _LABELLED.replace(b'<button>', box + b'<button>')
+    start, _read, reply, posts, _item = _held_run(tmp_path, body)
+    assert start == {'status': 'no_form', 'reason': 'needs_check'}, start
+    assert reply == {'status': 'needs_live_view', 'reason': 'empty_field'}, reply
+    assert posts == []
+
+
+def test_a_form_that_comes_back_gets_the_password_once(tmp_path):
+    """The start page's sign-in on a form that returns with no error mark (the old loop posted
+    it up to six times): 1 POST, then the operator."""
+    config = fixture_config(tmp_path)
+    with ChromeSites([LOGIN, ACCOUNT]) as sites:
+        install(sites)
+        sites.pages['/signin'] = ('text/html', _LABELLED, {})
+        sites.pages['/finish'] = ('text/html', _LABELLED, {})
+        result = run_scenario([{'open': {'site_id': 's1'}}, instruction(config, 'setup'),
+                               {'goto': 'https://' + LOGIN + '/signin'},
+                               instruction(config, 'login')], broker_fixture=config)
+        assert result[-1] == {'status': 'needs_live_view', 'reason': 'password_again'}, result[-1]
+        assert [r[2] for r in sites.receipts.requests if r[0] == 'POST'] == ['/finish']
+
+
+def test_the_real_reading_moves_when_a_widget_solves_and_then_holds(tmp_path):
+    """gate.same_reading on Chrome's DOM, the reading a verdict is held to: a button a widget
+    turns on changes it (so the check judges afresh, once), the solved page then reads the same.
+    A held button with nothing happening reads the same (a verdict holds as it was)."""
+    from casa_browser.proxy_client import encode_policy
+    policy = encode_policy(h.account_policy(sites=(h.site(origins=('https://' + ACCOUNT,),
+                                                          login=('https://' + LOGIN,)),)))
+    with ChromeSites([LOGIN, ACCOUNT, OTHER]) as sites:
+        install(sites)
+        sites.pages['/signin'] = ('text/html', _HELD_BY_WIDGET, {})
+        sites.pages['/held'] = ('text/html', _HELD_BY_FORM, {})
+        sites.pages['/frame'] = ('text/html', b'<p>widget</p>', {})
+        widget = run_scenario([{'open': {'site_id': 's1'}}, {'goto': 'https://' + LOGIN + '/signin'},
+                               {'reading_pair': {'wait': 4, 'policy': policy}}])
+        form = run_scenario([{'open': {'site_id': 's1'}}, {'goto': 'https://' + LOGIN + '/held'},
+                             {'reading_pair': {'wait': 1, 'policy': policy}}])
+    assert widget[-1] == {'after_solve': False, 'after_that': True}, widget[-1]
+    assert form[-1] == {'after_solve': True, 'after_that': True}, form[-1]
+
+
+def test_a_capture_opens_beside_a_frame_elsewhere_and_chrome_stays(tmp_path):
+    """The live view's capture on the widget page, a cross-origin frame in it: armed, then
+    closed with the same Chrome running (the session generation unchanged)."""
+    config = fixture_config(tmp_path)
+    with ChromeSites([LOGIN, ACCOUNT, OTHER]) as sites:
+        install(sites)
+        sites.pages['/signin'] = ('text/html', _HELD_BY_WIDGET, {})
+        sites.pages['/frame'] = ('text/html', b'<p>widget</p>', {})
+        result = run_scenario([{'open': {'site_id': 's1'}}, instruction(config, 'setup'),
+                               {'goto': 'https://' + LOGIN + '/signin'},
+                               instruction(config, 'begin_capture'),
+                               instruction(config, 'review'),
+                               {'chrome_alive': True}], broker_fixture=config)
+        assert 'capture_id' in result[3], result[3]
+        assert result[-1] == {'pages': ['https://' + LOGIN + '/signin'], 'generation': 1}, result[-1]

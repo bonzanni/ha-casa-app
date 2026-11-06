@@ -3717,13 +3717,14 @@ async def test_an_assist_live_view_does_not_unlock_the_guest(rig):
 
 
 async def test_a_forced_close_in_the_views_guest_flow_still_grants_the_view(rig):
-    """K1 inside the sign-in view's guest flow: the request goes on; the claim opens a new
-    session (its guest not run: a declared residual) and the view starts."""
+    """K1 inside the sign-in view's guest flow: the request goes on on a new session (its guest
+    not run: a declared residual), its page loaded before the link goes out; the view starts."""
     run = await rig.run()
     rig.driver.close_modes = {"guest": "forced"}
     grant = await rig.ctl.request_live(run.run_id, "login")
     assert grant.grant_id and rig.state(run.run_id) == "waiting_live"
-    assert guest_sessions(rig) == 1 and rig.browser.session is None
+    assert guest_sessions(rig) == 1 and rig.browser.session is not None
+    assert rig.page().url != "about:blank"
     rig.driver.close_modes = {}
 
     async def expose():
@@ -3992,3 +3993,141 @@ async def test_an_ending_already_under_way_is_not_a_stop(rig):
     assert answer["rq-under-way"]["stopped"] is False
     assert not rig.store.request_cancelled("rq-under-way")
     assert rig.events(run.run_id, "run_cancelled") == []
+
+
+# -- a login view on a fresh session ------------------------------------------------------------
+
+def _opens_of_login_sessions(rig):
+    return [e for e in rig.log if e[:2] == ("open_session", "login")]
+
+
+async def _lose_the_session(rig, run):
+    """The session is gone with the run on a page: the next one starts on a blank page."""
+    active = rig.ctl.active
+    await rig.browser.close(session=active.session, force=True)
+    active.session = None
+
+
+async def test_a_login_view_on_a_fresh_session_loads_the_lost_page_first(rig):
+    run = await rig.run()
+    lost = "https://a.example/account/signin?next=1"
+    await rig.ctl._goto(rig.ctl.active, lost)
+    await _lose_the_session(rig, run)
+    await rig.ctl.request_live(run.run_id, "login")
+    assert rig.page().url == lost and rig.broker.logins[1:] == []
+
+
+async def test_a_login_view_with_no_page_of_this_site_loads_the_start_page(rig):
+    run = await rig.run()
+    active = rig.ctl.active
+    active.page_url = "https://elsewhere.example/page"
+    await _lose_the_session(rig, run)
+    await rig.ctl.request_live(run.run_id, "login")
+    assert rig.page().url == rig.ctl._start_url(rig.store.get_site(active.ref.site_id))
+
+
+async def test_a_session_replaced_between_the_request_and_open_gets_its_page(rig):
+    run = await rig.run()
+    lost = "https://a.example/account/signin"
+    await rig.ctl._goto(rig.ctl.active, lost)
+    await rig.ctl.request_live(run.run_id, "login")
+    await _lose_the_session(rig, run)
+
+    async def expose():
+        pass
+    await rig.ctl.begin_live(run.run_id, expose)
+    assert rig.state(run.run_id) == "live" and rig.page().url == lost
+
+
+async def test_a_page_already_there_is_not_loaded_again(rig):
+    run = await rig.run()
+    mark, sessions = len(rig.log), len(_opens_of_login_sessions(rig))
+    await rig.ctl.request_live(run.run_id, "login")
+    assert [e for e in rig.log[mark:] if e[0] == "goto"] == []
+    assert len(_opens_of_login_sessions(rig)) == sessions
+
+
+async def test_an_assist_view_loads_nothing(rig):
+    run = await rig.run()
+    await _lose_the_session(rig, run)
+    await rig.ctl.request_live(run.run_id, "assist")
+
+    async def expose():
+        pass
+    await rig.ctl.begin_live(run.run_id, expose)
+    assert rig.page().url == "about:blank"
+
+
+async def test_a_lost_page_that_does_not_load_still_offers_the_view(rig):
+    run = await rig.run()
+    await _lose_the_session(rig, run)
+
+    async def refuse(url):
+        raise RuntimeError("net::ERR_FAILED https://a.example/secret")
+    active = rig.ctl.active
+    session = await rig.ctl._ensure_session(active)
+    rig.page().goto_hook = refuse
+    grant = await rig.ctl.request_live(run.run_id, "login")
+    assert grant.grant_id and rig.state(run.run_id) == "waiting_live"
+    assert [e.outcome for e in rig.events(run.run_id, "page_unreachable")] == ["blocked"]
+    assert session is active.session and not rig.driver.sessions
+
+
+async def test_a_view_that_opens_logs_its_stages_and_no_address(rig, caplog):
+    import logging
+    run = await rig.run()
+    await rig.ctl.request_live(run.run_id, "login")
+
+    async def expose():
+        pass
+    with caplog.at_level(logging.INFO, logger="casa_browser.controller"):
+        await rig.ctl.begin_live(run.run_id, expose)
+    lines = [r.getMessage() for r in caplog.records if "live view open" in r.getMessage()]
+    assert [line.split(": ")[1].split(" at ")[0] for line in lines] == [
+        "session", "lease", "capture session", "capture armed, view exposed"]
+    assert not any("http" in line for line in lines)
+
+
+async def test_a_lost_page_of_another_site_of_the_run_is_not_the_views(rig, monkeypatch):
+    from dataclasses import replace as _replace
+    run = await rig.run()
+    active = rig.ctl.active
+    site = rig.store.get_site(active.ref.site_id)
+    active.page_url = "https://b.example/other"
+    await _lose_the_session(rig, run)
+    monkeypatch.setattr(rig.ctl, "_target_site",
+                        lambda _a, url: _replace(site, site_id="other") if "b.example" in url else site)
+    monkeypatch.setattr(rig.ctl, "_precheck", lambda _a, _url: None)
+    await rig.ctl.request_live(run.run_id, "login")
+    assert rig.page().url == rig.ctl._start_url(site)
+
+
+async def test_a_password_sent_before_the_guest_flow_is_carried_into_the_restart(rig):
+    """The start page's sign-in that sent the password and then met a passkey hint: the
+    restart after the guest flow carries that, so it cannot send it again."""
+    rig.broker.login_reply = {"status": "needs_guest", "reason": "passkey", "password_sent": True}
+    await rig.run()
+    logins = rig.broker.logins
+    assert [a.get("guest_ask") for a in logins[:2]] == [True, False]
+    assert logins[0].get("password_sent") in (None, False) and logins[1]["password_sent"] is True
+
+
+async def test_a_login_view_whose_page_cannot_be_loaded_is_still_offered(rig, monkeypatch):
+    """No driver session for the load: the run is not interrupted, the view goes on."""
+    from casa_browser.broker import BrokerError
+    run = await rig.run()
+    await _lose_the_session(rig, run)
+    real = rig.driver.open_session
+
+    async def refuse_login(kind, *a, **k):
+        if kind == "login":
+            raise BrokerError("refused")
+        return await real(kind, *a, **k)
+    monkeypatch.setattr(rig.driver, "open_session", refuse_login)
+    grant = await rig.ctl.request_live(run.run_id, "login")
+    assert grant.grant_id and rig.state(run.run_id) == "waiting_live"
+
+    async def expose():
+        pass
+    await rig.ctl.begin_live(run.run_id, expose)
+    assert rig.state(run.run_id) == "live"

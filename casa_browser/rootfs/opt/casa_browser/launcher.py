@@ -63,6 +63,7 @@ ALLOWED_FLAGS = frozenset({
     "--no-first-run", "--use-mock-keychain", "--no-service-autorun", "--export-tagged-pdf",
     "--disable-search-engine-choice-screen", "--edge-skip-compat-layer-relaunch",
     "--disable-infobars", "--disable-sync", "--remote-debugging-pipe",
+    "--hide-crash-restore-bubble",
 })
 FIXED_VALUES = {
     "--force-color-profile": {"srgb"},

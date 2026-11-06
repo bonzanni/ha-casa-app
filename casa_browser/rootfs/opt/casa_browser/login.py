@@ -2,6 +2,7 @@
 import asyncio
 import hashlib
 import json
+import logging
 import secrets
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, field
@@ -25,6 +26,8 @@ GUEST_SIGNIN_PATH = "/signin"
 EXTENSION_NOTIFICATION = EXTENSION_ORIGIN + "/inline/notification/"
 EXTENSION_PAGES = EXTENSION_ORIGIN + "/app/"
 
+log = logging.getLogger("casa_browser.login")
+
 @dataclass(frozen=True)
 class LoginFields:
     page_generation: int
@@ -37,6 +40,12 @@ class LoginFields:
     # ``webauthn``: the site's passkey request, and the only sign of one while the extension's
     # guest has never signed in (no prompt is shown then).
     passkey_hint: bool = False
+    # ``submit`` is a disabled button now (a widget or the form's own checks hold it): the step
+    # fills, then waits for it, within the broker's bound.
+    submit_ready: bool = True
+    # A shown, empty box of the password's form that this read will not fill: a password never
+    # goes out beside one.
+    empty_box: bool = False
 
 @dataclass(frozen=True)
 class CapturedValue:
@@ -54,7 +63,8 @@ class CapturedFields:
 DRIVER_OPS = {'find_login_fields': ('driver_session', 'page_generation'), 'fill': ('driver_session', 'page_generation', 'field_handle', 'value'), 'submit': ('driver_session', 'page_generation', 'submit_handle'), 'settle': ('driver_session', 'timeout_s'), 'choose_passkey': ('driver_session', 'page_generation', 'title', 'username'), 'guest_sign_in': ('driver_session', 'region_host', 'email', 'secret_key', 'password'), 'guest_unlock': ('driver_session', 'password'), 'guest_state': ('driver_session',), 'begin_live_capture': ('driver_session',), 'take_capture': ('driver_session', 'capture_id'), 'mark_document': ('driver_session', 'page_generation', 'mark'), 'document_marked': ('driver_session', 'page_generation', 'mark'),
               # signing in off the start page: the look's read and its binding
               'read_sign_in': ('driver_session', 'page_generation', 'mark'),
-              'sign_in_bound': ('driver_session', 'page_generation', 'mark')}
+              'sign_in_bound': ('driver_session', 'page_generation', 'mark'),
+              'submit_usable': ('driver_session', 'page_generation', 'submit_handle')}
 
 DRIVER_KINDS = {
     'settle': 'login', 'find_login_fields': 'login', 'fill': 'login',
@@ -62,7 +72,7 @@ DRIVER_KINDS = {
     'guest_state': 'guest', 'guest_sign_in': 'guest', 'guest_unlock': 'guest',
     'begin_live_capture': 'capture', 'take_capture': 'capture',
     'mark_document': 'login', 'document_marked': 'login',
-    'read_sign_in': 'login', 'sign_in_bound': 'login',
+    'read_sign_in': 'login', 'sign_in_bound': 'login', 'submit_usable': 'login',
 }
 
 @dataclass(repr=False)
@@ -91,6 +101,7 @@ class _Session:
     guest_page: object = None
     tabs: frozenset | None = None    # the guest session's start: Chrome's tabs before it (5w)
     capture_id: str | None = None
+    capture_origins: frozenset = frozenset()
     collecting: bool = False
     buffer: object = None
     listeners: list = field(default_factory=list)
@@ -102,6 +113,14 @@ class _Session:
 
 
 _OPERATION_TIMEOUT = 30
+# Opening a live view's capture. The driver answers first, so the op has let go of the session
+# when its caller gives up, and closing needs no forced close: this bound, then the broker's
+# transport (broker.main.DriverClient, 30 s), then the controller's (broker_client, 35 s).
+_CAPTURE_OPEN_S = 20
+CAPTURE_FRAME_S = 3           # one frame's reader, installed or stopped
+CAPTURE_STOP_S = 5            # every frame's stop, within the cleanup bound
+_CAPTURE_DISPOSE_S = 2
+_CAPTURE_YIELD_S = 2          # a capture op told to stop lets go of the session within this
 MAX_PLANNED = 200             # a look plans at most this many fields (ids f1 to f200)
 # Slice 5v, the guest's waits (measured: install ~3 s, popup ~1 s, each sign-in step ~1 s,
 # landing ~3.5 s). A guest op is cut at _GUEST_TIMEOUT; the broker's transport waits longer
@@ -131,6 +150,23 @@ def _frame_address(frame):
         return _url_origin(frame.url)
     except Exception:
         return None
+
+
+def _capture_frame(frame, origins):
+    """Whether a frame's document can be of a capture origin, by its address alone: a frame
+    elsewhere or an extension's own is left alone, unasked. A frame with no web origin in its
+    address (``about:blank``, ``about:srcdoc``) can inherit one, so it is asked."""
+    try:
+        if frame.url.startswith('chrome-extension:'):
+            return False
+    except Exception:
+        return True
+    address = _frame_address(frame)
+    return address is None or address in origins
+
+
+class _FrameStalled(Exception):
+    """A frame did not answer the capture's reader within CAPTURE_FRAME_S."""
 
 
 def _serialized(method):
@@ -173,13 +209,29 @@ _SET = """(e, a) => {
 }"""
 
 
+# A shown, editable box of the form that is empty and not one of ``taken``: anything a person
+# could type into, whatever its type. A password never goes out beside one.
+_EMPTY_BOX = """(f, taken) => [...f.elements].some(x => (x.tagName === 'TEXTAREA' ||
+    (x.tagName === 'INPUT' && !['hidden', 'submit', 'button', 'image', 'reset', 'checkbox', 'radio',
+                                'file', 'range', 'color'].includes(x.type))) &&
+    !taken.includes(x) && x.getClientRects().length > 0 && !x.disabled && !x.readOnly &&
+    x.value === '')"""
+_PASSWORD_BESIDE = """(e, taken) => !!e.form && (%s)(e.form, taken)""" % _EMPTY_BOX
+# Checked in the evaluation that clicks, when the step filled a password (``a.password``; the
+# page cannot talk it out of that by hiding or retyping the field): a box that rendered late or
+# a field a re-render wiped while the step waited stops the click.
 _SUBMIT = """(e, a) => {
     if (location.origin!==a.origin || e.ownerDocument!==document || !e.isConnected ||
         e.disabled || !e.getClientRects().length || !a.form || e.form!==a.form ||
         a.form.ownerDocument!==document || !a.form.isConnected ||
         !['BUTTON','INPUT'].includes(e.tagName) || e.type!=='submit') return false;
+    if (a.password && (%s)(a.form, [])) return 'empty_box';
     e.click(); return true;
-}"""
+}""" % _EMPTY_BOX
+# A form's submit button as the browser has it. Not Patchright's is_enabled, which also reads
+# aria-disabled: a measured sign-in form keeps aria-disabled=true on a button that works.
+_NOT_DISABLED = "e => !e.matches(':disabled')"
+_USABLE = "e => e.isConnected && !e.matches(':disabled') && e.getClientRects().length > 0"
 
 
 # The guest's values (5v): like ``_SET``, and the element's document must be the very page the
@@ -222,9 +274,13 @@ _PLAN = """a => {
     const submitOf = e => {
         const f = e.form;
         if (!f) return null;
+        // A disabled button is the form's when no other can be pressed: a widget or the form's
+        // own checks may be holding it.
         const bs = [...f.querySelectorAll('button:not([type]),button[type=submit],input[type=submit]')]
-            .filter(b => b.form === f && shown(b));
-        return bs.length === 1 ? bs[0] : null;
+            .filter(b => b.form === f && b.getClientRects().length > 0);
+        const usable = bs.filter(b => !b.disabled);
+        const pick = usable.length ? usable : bs;
+        return pick.length === 1 ? pick[0] : null;
     };
     const out = [];
     let n = a.start;
@@ -350,7 +406,9 @@ class DriverServer(UnixServer):
             kinds = ('login', 'guest') if op in ('settle', 'find_login_fields') else (kind,)
             if s.kind not in kinds or (op in ('fill', 'submit') and s.lease is None):
                 raise BrokerError('refused')
-            async with asyncio.timeout(_GUEST_TIMEOUT if kind == 'guest' else _OPERATION_TIMEOUT):
+            bound = (_GUEST_TIMEOUT if kind == 'guest' else
+                     _CAPTURE_OPEN_S if op == 'begin_live_capture' else _OPERATION_TIMEOUT)
+            async with asyncio.timeout(bound):
                 yield s
             if not (op == 'take_capture' and s.closed):
                 # A click that may move the page (a submit, a passkey's Sign in) is not judged
@@ -475,6 +533,7 @@ class DriverServer(UnixServer):
 
     async def _force_cleanup(self, sid, s):
         # Cancelling an await cannot retract an evaluation already queued in Chrome.
+        log.warning("a %s session could not be closed in time: Chrome is closed by force", s.kind)
         s.aborted = True
         s.closed = False
         if s.owner is not None:
@@ -515,11 +574,18 @@ class DriverServer(UnixServer):
             await self._force_cleanup(sid, s)
             return
         bound = _CLEANUP_TIMEOUT if self.cleanup_timeout is None else self.cleanup_timeout
+        if s.kind == 'capture':
+            # The reader's queued work in the background ends here and none starts (cleanup_task);
+            # the one in hand finishes, within its frame's bound.
+            for task in tuple(s.tasks):
+                if task is not s.owner:
+                    task.cancel()
         try:
             await asyncio.wait_for(s.lock.acquire(), bound)
         except TimeoutError:
-            await self._force_cleanup(sid, s)
-            return
+            if s.kind != 'capture' or not await self._capture_let_go(s):
+                await self._force_cleanup(sid, s)
+                return
         cleanup = asyncio.create_task(self._cleanup(sid, s))
         try:
             done, _ = await asyncio.wait((cleanup,), timeout=bound)
@@ -533,6 +599,19 @@ class DriverServer(UnixServer):
                 await self._force_cleanup(sid, s)
         finally:
             s.lock.release()
+
+    @staticmethod
+    async def _capture_let_go(s):
+        """A capture op that holds the session past the bound is stopped instead of Chrome
+        being closed under it: a capture has no credential effect queued in Chrome, and what
+        Chrome still answers no longer matters to it. True once it let go; the lock is held."""
+        for task in (*s.tasks, *((s.owner,) if s.owner is not None else ())):
+            task.cancel()
+        try:
+            await asyncio.wait_for(s.lock.acquire(), _CAPTURE_YIELD_S)
+            return True
+        except TimeoutError:
+            return False
 
     @staticmethod
     def _consume_task(task):
@@ -577,7 +656,7 @@ class DriverServer(UnixServer):
                 if op in ('settle', 'find_login_fields', 'fill', 'submit',
                                                    'mark_document', 'document_marked',
                                                    'choose_passkey', 'read_sign_in',
-                                                   'sign_in_bound') else set()
+                                                   'sign_in_bound', 'submit_usable') else set()
             if set(request) - optional != {'op', *keys} or any(
                     not isinstance(request[k], str) for k in keys
                     if k not in ('page_generation', 'timeout_s')):
@@ -608,7 +687,8 @@ class DriverServer(UnixServer):
                 ('choose_passkey', self.choose_passkey), ('guest_state', self.guest_state),
                 ('mark_document', self.mark_document), ('document_marked', self.document_marked),
                 ('guest_sign_in', self.guest_sign_in), ('guest_unlock', self.guest_unlock),
-                ('begin_live_capture', self.begin_live_capture), ('take_capture', self.take_capture))}
+                ('begin_live_capture', self.begin_live_capture), ('take_capture', self.take_capture),
+                ('submit_usable', self.submit_usable))}
             async with self._operation(request['driver_session'], op,
                                        request.get('page_generation')) as s:
                 if s.kind != DRIVER_KINDS[op]:
@@ -749,7 +829,7 @@ class DriverServer(UnixServer):
                 s.addresses[handle] = _frame_address(entry[1])
                 s.handles[handle] = (*entry, page_generation, name)
                 roles[name] = handle
-        buttons = []
+        buttons, held = [], []   # the forms' submit buttons, enabled and disabled
         for frame, form in forms:
             alert = await self._checked(driver_session, form.evaluate(
                 "f => !!f && [...f.querySelectorAll('[role=alert]')].some(e=>e.getClientRects().length)"),
@@ -762,21 +842,39 @@ class DriverServer(UnixServer):
                     driver_session, controls.get_properties(), page_generation)).values():
                 button = prop.as_element()
                 if (button is None or
-                        not await self._checked(driver_session, button.is_visible(), page_generation) or
-                        not await self._checked(driver_session, button.is_enabled(), page_generation)):
+                        not await self._checked(driver_session, button.is_visible(), page_generation)):
                     continue
+                enabled = await self._checked(
+                    driver_session, button.evaluate(_NOT_DISABLED), page_generation)
                 duplicate = False
-                for old in buttons:
+                for old in (*buttons, *held):
                     if old[1] is not frame:
                         continue
                     duplicate |= await self._checked(driver_session, button.evaluate(
                         '(e, other) => e===other', old[0]), page_generation)
                 if duplicate:
                     continue
-                buttons.append((button, frame, form))
+                (buttons if enabled else held).append((button, frame, form))
+        # A disabled button is the form's only when no other can be pressed.
+        chosen = buttons or held
+        empty_box = False
+        if 'password' in roles:
+            element, frame = candidates['password'][0][:2]
+            taken = [entry[0] for group in candidates.values() for entry in group
+                     if entry[1] is frame]
+            empty_box = await self._checked(driver_session, element.evaluate(
+                _PASSWORD_BESIDE, taken), page_generation) is True
         submit = None
-        if len(buttons) == 1 and not ambiguous:
-            element, frame, form = buttons[0]
+        # The button's form must be the form of every field the step fills: another form's
+        # button would send only part of them.
+        one_form = len(chosen) == 1 and not ambiguous
+        if one_form:
+            element, frame, form = chosen[0]
+            for other_frame, other in forms:
+                one_form = one_form and other_frame is frame and await self._checked(
+                    driver_session, form.evaluate('(f, o) => f === o', other),
+                    page_generation) is not False
+        if one_form:
             origin = await self._origin(driver_session, frame, page_generation)
             submit = secrets.token_urlsafe(24)
             s.addresses[submit] = _frame_address(frame)
@@ -788,7 +886,7 @@ class DriverServer(UnixServer):
         on_site = await self._on_site(s, driver_session)
         return dict(page_generation=page_generation, origin_ok=origin_ok or (not candidates and on_site),
                     roles=roles, submit=submit, field_error=bool(field_error), passkey_frame=passkey,
-                    passkey_hint=hint)
+                    passkey_hint=hint, submit_ready=bool(buttons), empty_box=empty_box)
 
     async def _on_site(self, s, sid):
         origins = s.origins | frozenset(await self._site_origins(s))
@@ -815,7 +913,8 @@ class DriverServer(UnixServer):
         if await self._origin(sid, frame, generation) != origin or origin not in self._login_origins(s):
             raise BrokerError('refused')
         if (not await self._checked(sid, element.is_visible(), generation) or
-                not await self._checked(sid, element.is_enabled(), generation)):
+                not await self._checked(sid, element.evaluate(_NOT_DISABLED) if role == 'submit'
+                                        else element.is_enabled(), generation)):
             await self._still_there(sid, element, generation)
             raise BrokerError('refused')
         return s, entry
@@ -853,13 +952,29 @@ class DriverServer(UnixServer):
         s, entry = await self._handle(driver_session, page_generation, submit_handle, 'submit')
         element, frame, form, origin, _, _ = entry
         await self._origin(driver_session, frame, page_generation)
+        password = any(entry[5] == 'password' for entry in s.handles.values())
         s.handles.clear()       # the step's approval ends at its click: the landing may move it
-        clicked = await element.evaluate(_SUBMIT, dict(origin=origin, form=form))
+        clicked = await element.evaluate(_SUBMIT, dict(origin=origin, form=form, password=password))
         self._session(driver_session)
+        if clicked == 'empty_box':
+            return {'ok': False, 'empty_box': True}
         if not clicked:
             await self._still_there(driver_session, element, page_generation)
             raise BrokerError('refused')
         return {'ok': True}
+
+    @_serialized
+    async def submit_usable(self, driver_session, page_generation, submit_handle):
+        """Whether the step's submit button can be pressed now (one read, nothing done). One
+        the page re-rendered away is a page that changed under the step."""
+        s = self._session(driver_session, page_generation)
+        entry = s.handles.get(submit_handle)
+        if entry is None or entry[5] != 'submit':
+            raise BrokerError('refused')
+        usable = await self._checked(driver_session, entry[0].evaluate(_USABLE), page_generation)
+        if usable is not True:
+            await self._still_there(driver_session, entry[0], page_generation)
+        return {'ok': usable is True}
 
     @_serialized
     async def settle(self, driver_session, timeout_s):
@@ -1291,7 +1406,10 @@ class DriverServer(UnixServer):
             raise BrokerError('refused')
         s.capture_id = secrets.token_urlsafe(24)
         s.buffer = CaptureBuffer()
+        loop = asyncio.get_running_loop()
+        began = loop.time()
         origins = s.origins | frozenset(await self._site_origins(s))
+        s.capture_origins = origins
         binding = 'capture_' + secrets.token_hex(16)
         nonce = secrets.token_urlsafe(32)
 
@@ -1339,12 +1457,20 @@ class DriverServer(UnixServer):
         s.binding = await s.browser.context.expose_binding(binding, receive)
         self._session(driver_session, capture=True)
         s.listeners.append((s.browser.context, 'binding', binding))
+        log.info("capture open: reader's binding %.2f s", loop.time() - began)
 
         async def inject(frame, strict=False):
             for attempt in range(1 if strict else INSTALL_ATTEMPTS):
                 try:
                     async with self._operation(driver_session, 'begin_live_capture'):
                         await install(frame)
+                    return
+                except _FrameStalled:
+                    # What is typed there may not be kept, so the capture says so; a later
+                    # navigation of the frame installs again. The view opens.
+                    s.buffer.mark_incomplete()
+                    log.warning("capture open: a frame at %s did not answer in %s s",
+                                _frame_address(frame) or 'no address', CAPTURE_FRAME_S)
                     return
                 except Exception:
                     if strict:
@@ -1365,10 +1491,17 @@ class DriverServer(UnixServer):
         async def install(frame):
             if s.capture_id is None:
                 return
-            origin = await self._origin(driver_session, frame, capture=True)
-            if origin not in origins:
+            if not _capture_frame(frame, origins):
                 return
-            await frame.evaluate(_CAPTURE_INSTALL, dict(key=binding, origin=origin, nonce=nonce))
+            try:
+                async with asyncio.timeout(CAPTURE_FRAME_S):
+                    origin = await self._origin(driver_session, frame, capture=True)
+                    if origin not in origins:
+                        return
+                    await frame.evaluate(_CAPTURE_INSTALL,
+                                         dict(key=binding, origin=origin, nonce=nonce))
+            except TimeoutError:
+                raise _FrameStalled from None
             self._session(driver_session, capture=True)
 
         def finished(task):
@@ -1377,6 +1510,8 @@ class DriverServer(UnixServer):
                 self._consume_task(task)
 
         def schedule(frame):
+            if s.cleanup_task is not None:
+                return
             task = asyncio.create_task(inject(frame))
             s.tasks.add(task)
             task.add_done_callback(finished)
@@ -1388,13 +1523,18 @@ class DriverServer(UnixServer):
                 read_later(READ_AFTER_LOAD_S)
 
         async def attach(page, strict=False):
+            started = loop.time()
             async with self._operation(driver_session, 'begin_live_capture'):
                 page.on('framenavigated', schedule)
                 s.listeners.append((page, 'framenavigated', schedule))
-                for frame in page.frames:
+                frames = list(page.frames)
+                for frame in frames:
                     await inject(frame, strict)
+            log.info("capture open: a page's %d frames %.2f s", len(frames), loop.time() - started)
 
         def new_page(page):
+            if s.cleanup_task is not None:
+                return
             task = asyncio.create_task(attach(page))
             s.tasks.add(task)
             task.add_done_callback(finished)
@@ -1426,14 +1566,26 @@ class DriverServer(UnixServer):
         await asyncio.gather(*s.tasks, return_exceptions=True)
         if s.aborted:
             raise BrokerError('refused')
+        # Each frame's stop is bound, and all of them together fit the cleanup bound: what a
+        # frame that does not answer held is not kept, and the capture says so.
+        loop = asyncio.get_running_loop()
+        end = loop.time() + CAPTURE_STOP_S
         for page in s.browser.context.pages:
             if page.is_closed():
                 continue
             for frame in page.frames:
+                if not _capture_frame(frame, s.capture_origins):
+                    continue
                 for _, event, key in s.listeners:
                     if event == 'binding':
                         try:
-                            await frame.evaluate("async key => {const c=globalThis[key + '_state']; if(c && c.stop)await c.stop();}", key)
+                            await asyncio.wait_for(frame.evaluate(
+                                "async key => {const c=globalThis[key + '_state']; if(c && c.stop)await c.stop();}",
+                                key), max(min(CAPTURE_FRAME_S, end - loop.time()), 0.01))
+                        except TimeoutError:
+                            s.buffer.mark_incomplete()
+                            log.warning("capture stop: a frame at %s did not answer",
+                                        _frame_address(frame) or 'no address')
                         except Exception:
                             pass
                         if s.aborted:
@@ -1441,8 +1593,11 @@ class DriverServer(UnixServer):
         s.listeners.clear()
         s.capture_id = None
         if s.binding is not None:
-            await s.binding.dispose()
-            s.binding = None
+            binding, s.binding = s.binding, None
+            try:
+                await asyncio.wait_for(binding.dispose(), _CAPTURE_DISPOSE_S)
+            except TimeoutError:
+                log.warning("capture stop: the reader's binding did not go in time")
 
     @_serialized
     async def take_capture(self, driver_session, capture_id):

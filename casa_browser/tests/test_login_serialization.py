@@ -267,6 +267,7 @@ async def test_capture_background_installation_drains_before_close(tmp_path, eve
 async def test_hung_capture_collection_cannot_read_another_frame(tmp_path, monkeypatch):
     server, _, page, frame, sid, capture_id = await capture_driver(tmp_path)
     monkeypatch.setattr(login, '_CLEANUP_TIMEOUT', 0.02)
+    monkeypatch.setattr(login, '_CAPTURE_YIELD_S', 0.02)   # an op that will not be cancelled
     entered, release = asyncio.Event(), asyncio.Event()
     other = SimpleNamespace(evaluate=AsyncMock())
     page.frames.append(other)
@@ -286,7 +287,9 @@ async def test_hung_capture_collection_cannot_read_another_frame(tmp_path, monke
         await asyncio.wait_for(server.close_session(sid), 0.5)
     finally:
         release.set()
-    assert await asyncio.wait_for(action, 1) == {'error': 'refused'}
+    # Told to stop before the forced close too, so this op, ignoring that, is cancelled twice.
+    reply = (await asyncio.wait_for(asyncio.gather(action, return_exceptions=True), 1))[0]
+    assert reply == {'error': 'refused'} or isinstance(reply, asyncio.CancelledError)
     other.evaluate.assert_not_called()
 
 
@@ -553,3 +556,160 @@ async def test_take_hands_the_attempt_to_the_broker_and_the_pages_to_the_control
     assert got['at_done']['title'] == 'Account' and seen == [page]
     assert user not in json.dumps(got) and password not in json.dumps(got)
     assert server.take_readings(capture_id) == {}
+
+
+# -- opening a live view: a failed open leaves Chrome running ---------------------------------
+
+def _never_answers(origin, hung, entered=None):
+    async def evaluate(script, arg=None):
+        if entered is not None:
+            entered.set()
+        if hung():
+            await asyncio.Event().wait()
+        return origin if script == '() => location.origin' else None
+    return evaluate
+
+
+async def _open_capture(tmp_path, frames):
+    from unittest.mock import Mock
+    server, manager, browser, page, proxy = driver(tmp_path)
+    page.frames = frames
+    page.on, page.remove_listener = Mock(), Mock()
+    browser.context.on, browser.context.remove_listener = Mock(), Mock()
+    browser.context.expose_binding = AsyncMock(return_value=SimpleNamespace(dispose=AsyncMock()))
+    proxy.status = AsyncMock(return_value=dict(run_id='run', site_id='site',
+                                               site_origins=['https://login.example']))
+    manager.close = AsyncMock()
+    sid = await server.open_session('capture', 'run', 'site', browser, proxy,
+                                    ('https://login.example',))
+    return server, manager, browser, sid
+
+
+async def test_a_frame_elsewhere_is_left_alone_by_its_address_at_open_and_at_stop(tmp_path):
+    """A frame whose address is off the capture origins, and an extension's, are never asked
+    anything: 0 evaluations, the view opens, the close is a normal one."""
+    here = SimpleNamespace(url='https://login.example/signin', evaluate=AsyncMock(
+        side_effect=_never_answers('https://login.example', lambda: False)))
+    widget = SimpleNamespace(url='https://challenges.cloudflare.com/turnstile?k=1',
+                             evaluate=AsyncMock())
+    extension = SimpleNamespace(url='chrome-extension://abc/inline/x.html', evaluate=AsyncMock())
+    server, manager, _, sid = await _open_capture(tmp_path, [here, widget, extension])
+    assert 'capture_id' in await server.dispatch(dict(op='begin_live_capture', driver_session=sid))
+    await server.close_session(sid)
+    assert widget.evaluate.await_count == 0 and extension.evaluate.await_count == 0
+    assert here.evaluate.await_count >= 2 and sid not in server._sessions
+    assert manager.close.await_count == 0
+
+
+async def test_a_frame_with_no_web_address_is_still_asked(tmp_path):
+    """about:blank can inherit a capture origin: the reader goes in."""
+    blank = SimpleNamespace(url='about:blank', evaluate=AsyncMock(
+        side_effect=_never_answers('https://login.example', lambda: False)))
+    server, _, _, sid = await _open_capture(tmp_path, [blank])
+    await server.dispatch(dict(op='begin_live_capture', driver_session=sid))
+    assert login._CAPTURE_INSTALL in [c.args[0] for c in blank.evaluate.call_args_list]
+    await server.close_session(sid)
+
+
+async def test_a_frame_that_never_answers_marks_the_capture_and_the_view_opens(tmp_path, monkeypatch):
+    """The stall is the frame's: the capture says it is incomplete, the other frames take the
+    reader, the view opens, and the close (its stop bound too) does not close Chrome."""
+    monkeypatch.setattr(login, 'CAPTURE_FRAME_S', 0.02)
+    monkeypatch.setattr(login, 'CAPTURE_STOP_S', 0.1)
+    stuck = SimpleNamespace(url='about:blank', evaluate=AsyncMock(
+        side_effect=_never_answers('https://login.example', lambda: True)))
+    next_one = SimpleNamespace(url='https://login.example/a', evaluate=AsyncMock(
+        side_effect=_never_answers('https://login.example', lambda: False)))
+    server, manager, _, sid = await _open_capture(tmp_path, [stuck, next_one])
+    reply = await server.dispatch(dict(op='begin_live_capture', driver_session=sid))
+    assert 'capture_id' in reply, reply
+    s = server._sessions[sid]
+    assert s.buffer.take().incomplete is True
+    assert login._CAPTURE_INSTALL in [c.args[0] for c in next_one.evaluate.call_args_list]
+    await asyncio.wait_for(server.close_session(sid), 1)
+    assert manager.close.await_count == 0 and sid not in server._sessions
+
+
+async def test_an_open_past_its_bound_answers_first_and_the_close_is_a_normal_one(tmp_path, monkeypatch):
+    """The whole open past its bound: ``timeout`` from the driver, the session's lock free, and
+    the close that follows does not close Chrome by force (the casa-test failure's SIGKILL)."""
+    monkeypatch.setattr(login, '_CAPTURE_OPEN_S', 0.05)
+    frame = SimpleNamespace(url='https://login.example/a', evaluate=AsyncMock(
+        side_effect=_never_answers('https://login.example', lambda: False)))
+    server, manager, browser, sid = await _open_capture(tmp_path, [frame])
+
+    async def stalls(*_a, **_k):
+        await asyncio.Event().wait()
+    browser.context.expose_binding = AsyncMock(side_effect=stalls)
+    assert await asyncio.wait_for(
+        server.dispatch(dict(op='begin_live_capture', driver_session=sid)), 2) == {'error': 'timeout'}
+    assert not server._sessions[sid].lock.locked()
+    await asyncio.wait_for(server.close_session(sid), 1)
+    assert manager.close.await_count == 0 and sid not in server._sessions
+
+
+@pytest.mark.parametrize('queued', [0, 8])
+async def test_a_close_under_a_stuck_capture_stops_the_op_not_chrome(tmp_path, monkeypatch, queued):
+    """A close while a capture op holds the session past the bound (also with queued reader
+    work that would take the lock next): the op is cancelled, the session closes normally, no
+    forced close."""
+    from unittest.mock import Mock
+    monkeypatch.setattr(login, '_CLEANUP_TIMEOUT', 0.2)
+    monkeypatch.setattr(login, 'CAPTURE_FRAME_S', 30)
+    monkeypatch.setattr(login, 'CAPTURE_STOP_S', 0.02)
+    server, _, browser, page, proxy = driver(tmp_path)
+    entered = asyncio.Event()
+    frame = SimpleNamespace(url='https://login.example/a', evaluate=AsyncMock(
+        side_effect=_never_answers('https://login.example', lambda: True, entered)))
+    page.frames = [frame]
+    page.on, page.remove_listener = Mock(), Mock()
+    browser.context.on, browser.context.remove_listener = Mock(), Mock()
+    browser.context.expose_binding = AsyncMock(return_value=SimpleNamespace(dispose=AsyncMock()))
+    proxy.status = AsyncMock(return_value=dict(run_id='run', site_id='site',
+                                               site_origins=['https://login.example']))
+    server.manager.close = AsyncMock()
+    sid = await server.open_session('capture', 'run', 'site', browser, proxy,
+                                    ('https://login.example',))
+    action = asyncio.create_task(server.dispatch(dict(op='begin_live_capture', driver_session=sid)))
+    await asyncio.wait_for(entered.wait(), 1)
+    for _ in range(queued):            # navigations seen while the open held the session
+        page.on.call_args.args[1](frame)
+    await asyncio.sleep(0)
+    await asyncio.wait_for(server.close_session(sid), 2)
+    assert server.manager.close.await_count == 0 and sid not in server._sessions
+    action.cancel()
+    await asyncio.gather(action, return_exceptions=True)
+
+
+async def test_a_close_ends_the_readers_queued_work_and_none_starts(tmp_path):
+    """A close with navigations queued behind the reader's work in hand: the one in hand
+    finishes, the queued ones never reach the page (each would take the session in its turn,
+    under the close), and a navigation seen after the close began starts nothing."""
+    server, _, page, frame, sid, _ = await capture_driver(tmp_path)
+    entered, release = asyncio.Event(), asyncio.Event()
+    installs = 0
+
+    async def evaluate(script, arg=None):
+        nonlocal installs
+        if script == '() => location.origin':
+            return 'https://login.example'
+        if script == login._CAPTURE_INSTALL:
+            installs += 1
+            entered.set()
+            await release.wait()
+
+    frame.evaluate.side_effect = evaluate
+    schedule = page.on.call_args.args[1]
+    s = server._sessions[sid]
+    for _ in range(8):
+        schedule(frame)
+    await asyncio.wait_for(entered.wait(), 1)
+    cleanup = asyncio.create_task(server.close_session(sid))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    in_flight = len(s.tasks)
+    schedule(frame)
+    assert len(s.tasks) <= in_flight
+    release.set()
+    await asyncio.wait_for(cleanup, 2)
+    assert installs == 1 and sid not in server._sessions

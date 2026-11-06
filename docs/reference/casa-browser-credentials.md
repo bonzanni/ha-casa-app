@@ -70,7 +70,23 @@ field-free page up to six more times for a form that renders late; still none on
 origin is `no_form`, which claims nothing (the item's `unverified` mark stays): `logged_in`
 follows only a submit of the broker's own (slice 5u).
 New-password and confirmation fields return `password_change_page` before any fill or
-submit on that page. Missing or ambiguous fields require a live view. 1Password's passkey
+submit on that page. Missing or ambiguous fields require a live view.
+A form's submit button counts while it is disabled when no other button of the form can be
+pressed: a widget or the form's own checks hold it (disabled means the browser's `:disabled`, not
+`aria-disabled`, which a measured site leaves set on a working button). The step fills first,
+then looks at the button (`login.py::DriverServer.submit_usable`) every quarter second for at
+most `SUBMIT_WAIT_S` (20 s), then presses once; never on is `needs_live_view`/`submit_disabled`,
+nothing sent and the filled fields left for the operator. A password never goes out beside a
+shown, editable, empty box of its form that the step does not fill (anything a person could type
+into, whatever its type): at the read (`empty_box`) that is `no_form`/`needs_check`
+from the start page with nothing done yet, which hands the page to the look, and
+`needs_live_view`/`empty_field` otherwise; the click's own evaluation
+(`login.py::_SUBMIT`) checks the form again, so a box that rendered late or a field a re-render
+wiped stops it with the same reply. The password goes out once per sign-in on either route: a
+form keeps it however the page shows it, so after it went out only one code step may still be
+pressed, and any other form, with no error mark to report as `rejected`, or a read that no longer
+shows a password this sign-in filled, is `needs_live_view`/`password_again` (`password_sent` also carries across the start page's guest
+restart). The button's form must be the form of every field the step fills. 1Password's passkey
 prompt (5v) offering the linked item — it has a username, and its title names no other vault
 login, titles compared trimmed; the prompt shows no item id) — is tried once per run and site
 (a code continuing that sign-in keeps it), its Sign in counting as the step's submit; a sign-in
@@ -92,6 +108,12 @@ no form is `no_form` (`probe_failed`, `no_form`). The look's binding ends with i
 Guest bootstrap reads the driver's state and calls sign-in or unlock with credentials
 in call arguments only, within 105 s; other states, `timeout` and driver errors are logged by
 the run controller, which goes on (no live view, slice 5s).
+Opening a capture has nested bounds, so the innermost answers first and a failed open has let go
+of the session when it is closed: the driver's 20 s (`login.py::_CAPTURE_OPEN_S`), the broker's 30 s
+transport, the controller's 35 s (`broker_client.py`). The reader skips a frame whose address is off
+the capture origins, or an extension's, without asking it; a frame that does not answer in 3 s
+marks the capture incomplete and the view still opens. A close under a capture op past its bound
+cancels the op rather than closing Chrome (`login.py::DriverServer._capture_let_go`).
 The driver implements page-bound
 login and guest sessions and context-bound capture sessions. Login sessions own their first
 and replacement proxy leases. One per-session lock covers every page and lease operation
@@ -244,6 +266,8 @@ Signing in from a card for a site that is not set up, and saving a login typed i
 **INV-BRW-050**: Forgetting a site's login removes only its item link: the site stays registered with its login origins, no vault call is made, and its next login asks the operator again.
 
 **INV-BRW-049**: The broker never changes a credential on its own: a page offering a new-password field during a login ends that login for the live view before anything is filled, and a captured value reaches the vault only through a live-view sign-in the check judged signed in (INV-BRW-048).
+
+**INV-BRW-060**: An automatic sign-in sends the password at most once per sign-in, and never while a shown, editable, empty box of its form stays unfilled: the read and the click's own evaluation both check it, and a form that asks again goes to the live view.
 
 **INV-BRW-022**: A credential is set only on the validated element of a frame whose origin is one of the active site's registered login origins, in the page and generation the driver session is bound to; it never travels as keyboard input.
 

@@ -1017,6 +1017,7 @@ async def test_submit_counts_once_armed_and_ends_the_approval_at_its_click(tmp_p
     (the next form found takes a fresh lease); the approval ends right before the click, so
     the landing navigation is never judged."""
     from unittest.mock import AsyncMock
+    from casa_browser import login
     server, _, session, page, proxy = driver(tmp_path)
     sid = await server.open_session('login', 'run', 'site', session, proxy, ('https://login.example',))
     s, frame, element, generation = _approved(server, sid)
@@ -1030,11 +1031,13 @@ async def test_submit_counts_once_armed_and_ends_the_approval_at_its_click(tmp_p
                'submit_handle': 'submit'}
     assert await server.dispatch(request) == {'error': 'page_changed'}
     assert s.submitted is True
-    element.evaluate.assert_not_called()
+    assert login._SUBMIT not in [c.args[0] for c in element.evaluate.call_args_list]
 
     seen = []
 
     async def click(script, arg=None):
+        if script != login._SUBMIT:
+            return True
         seen.append(dict(s.handles))
         frame.url = 'https://site.example/home'       # the landing, before the reply
         page.emit('framenavigated', frame)
