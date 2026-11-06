@@ -40,7 +40,7 @@ A fresh install ships with no specialists installed; see [Installing a specialis
 | `telegram_chat_id` | Telegram chat ID to restrict messages to. Leave empty to accept all chats. **Setting it is a security control**, not just a filter: this id is the operator identity, so only the sender whose Telegram user id matches it is attributed as the operator and reads memory at private clearance — any other accepted sender is recorded under its own `telegram:<id>` identity and reads at public clearance only, as does any engagement they start. Protected plugin tools (v0.139.0) can only be authorized by the configured operator: a non-operator sender's protected call is denied outright, and with the option empty (accept-all) no sender is the operator, so protected tools are denied for everyone — the add-on logs a warning at startup in that mode. Set this id unless you specifically want an open bot. |
 | `telegram_engagement_supergroup_id` | Chat ID of the dedicated Telegram forum supergroup used for interactive engagements (Tier 2 Specialist interactive mode; Tier 3 Executor types, Plan 3+). Must be a negative integer. Leave at 0 to disable engagements. |
 
-### Optional -- Memory
+### Memory
 
 Short-term conversation continuity works via the Claude Agent SDK session,
 with one exception worth knowing: changing a resident's identity — its persona,
@@ -517,7 +517,7 @@ that case is still down to her instructions.
 
 ## Voice pipeline
 
-Casa exposes two transports for Home Assistant voice / generic voice clients. The HA-side integration that consumes them ships separately in `ha-casa-integration` (phase 2.4).
+Casa exposes two transports for Home Assistant voice / generic voice clients. The HA-side integration that consumes them ships separately in `ha-casa-integration`.
 
 > **Voice is authenticated.** Both transports below are fail-closed: without a
 > webhook secret every voice request is rejected with `401` — the same
@@ -564,8 +564,7 @@ Home Assistant Supervisor support; Casa obtains its
 runtime hostname from Supervisor and refreshes the registration if the secret
 changes. The only local registration state is the returned UUID in
 `/data/casa-supervisor-discovery.json`; the webhook secret is never stored in
-that file or logged by the publisher. Disabling webhook authentication removes
-the published discovery record.
+that file or logged by the publisher.
 
 The catalog path is fixed, is mounted only while at least one voice transport
 is enabled, and returns `Cache-Control: no-store`. It does not expose prompts,
@@ -1060,8 +1059,9 @@ these tools:
   a plugin's pinned artifact, install any system requirements it declares,
   assign it to targets, then reload and verify.
 - `plugin_update(name, new_ref, expected_revision?)` — re-pin to a new release
-  and re-verify. Plugin releases are identified by an annotated `vX.Y.Z` tag
-  (v0.74.0); passing `expected_revision` (the commit the release was built at)
+  and re-verify. Plugin releases are identified by a `vX.Y.Z` tag, annotated
+  or lightweight (v0.74.0), though the plugin-developer's own releases must be
+  annotated; passing `expected_revision` (the commit the release was built at)
   makes a tag that moved afterwards abort before anything changes. The version
   is always read from the plugin's own manifest — you never supply it, so the
   stale-version class of bug is gone. Both tools report phase-aware outcomes
@@ -1480,8 +1480,8 @@ If a plugin reports a Casa-owned variable missing — `OP_SERVICE_ACCOUNT_TOKEN`
 
 ### Who runs the setup tool (v0.161.0)
 
-**Casa does, and only Casa.** You never need to ask an agent to run a setup
-tool, and no agent will offer to. When a plugin declares `casa.setupTool`, Casa
+**Casa does.** You do not need to ask an agent to run a setup tool for it to
+happen. When a plugin declares `casa.setupTool`, Casa
 records that the plugin is owed a setup run and performs it itself, dispatching
 to one of the plugin's own target agents (its tools exist nowhere else).
 
@@ -1514,7 +1514,8 @@ about whether the connection works, because it cannot see the other side.
 
 If an agent runs a plugin's setup tool itself after the run was cleared — for
 instance because Casa's own run landed in a session that had not finished
-loading the plugin, and the agent then ran it on its next turn — Casa counts
+loading the plugin and the agent then ran it on its next turn, or because you
+asked for it — Casa counts
 that run and does not ask for it again (v0.315.0). The plugin health report and
 the status tool then say the setup ran, by the assistant's own hand.
 
@@ -1554,10 +1555,13 @@ To use a plugin that needs one:
    plugin update that does not change the declaration keeps your approval; a
    rename asks again. You can withdraw it at any time, which darkens the route
    until you re-approve.
-4. **Register the exact redirect URI with the provider.** The plugin shows you
-   the precise URI to paste into the provider's app settings (it is your
-   `public_url` joined with `/callback/<effective-name>`). Providers match this
-   value byte-for-byte, so register exactly what the plugin displays.
+4. **Register the exact redirect URI with the provider.** The URI to paste into
+   the provider's app settings is your `public_url` joined with
+   `/callback/<effective-name>`, and the plugin's setup reports it. The setup
+   message you see can be one short line that leaves it out; to get it, ask the
+   assistant to run the plugin's setup again and tell you the redirect URI.
+   Providers match this value byte-for-byte, so register exactly what the plugin
+   reports.
 
 **Reverse-proxy recommendations.** The callback query string carries a bearer
 credential, so configure your proxy to **redact the query for `/callback/`
@@ -1665,7 +1669,7 @@ Specialists are no longer bundled with the app image — each one (the
 `finance` specialist, a Magic — The Gathering rules judge, and any future
 ones) lives in its own repository and is installed on demand through the
 configurator. Ask Ellen, for example: *"Install the finance specialist
-from casa-org/casa-specialist-finance"*.
+from bonzanni/casa-specialist-finance"*.
 
 What happens:
 

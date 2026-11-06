@@ -2,17 +2,19 @@
 
 An always-on fleet of Claude-powered AI agents inside your Home Assistant.
 
-- **Ellen** — the primary agent: chat with her on Telegram (streaming replies,
-  interactive engagements in forum topics, inline permission prompts), let her
-  control the home through the Home Assistant APIs, and delegate bigger jobs to
-  specialist subagents.
-- **Tina** — the voice agent: fast, concise responses tuned for Home Assistant
-  Assist voice pipelines (SSE / WebSocket).
-- **Specialists** — on-demand subagents for focused tasks (building automations,
-  research, configuration work), each with scoped tool permissions.
+- **Ellen** — the assistant: chat with her on Telegram (streaming replies,
+  interactive engagements in forum topics, inline permission prompts). She passes
+  house control to Tina and bigger jobs to specialists and to Casa's configurator.
+- **Tina** — the butler: voice-first house control in fast, concise responses,
+  tuned for Home Assistant Assist voice pipelines (SSE / WebSocket).
+- **Gary** — the concierge: a voice agent for anyone in the room, for general
+  questions, with no house control and no private data.
+- **Specialists** — agents you add from their own repositories for focused work
+  (household finances, a Magic: The Gathering rules judge), each with scoped tool
+  permissions. None are installed by default.
 
-Also on board: cron-style scheduling with real timezone handling, optional
-built-in long-term memory, secrets as 1Password `op://` references,
+Also on board: cron-style scheduling with real timezone handling, built-in
+long-term memory, secrets as 1Password `op://` references,
 a web terminal in the ingress panel, HMAC-authenticated webhooks, and a custom
 AppArmor profile.
 
