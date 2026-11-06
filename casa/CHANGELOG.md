@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.347.14] - 2026-11-06
+
+### Fixed
+
+- The five public demo personas (Bruce, Gollum, Marvin, the Terminator and Yoda) can now actually be worn. Install one, ask for it to be applied to Ellen, the butler or the concierge, and it takes effect at the next restart. Until now all three refused them, after you had already approved the install. Personas from anywhere else are still refused, and a specialist still wears only what its own role lists.
+
+### Changed
+
+- **This update starts your resident conversations fresh, once.** On the first start after updating, every conversation with Ellen, the butler and the concierge begins anew, on Telegram and on voice. Each resident keeps the persona it was wearing, unless you had already applied a new one, which takes effect at this restart as usual. Long-term memory is untouched, so what was said on Telegram can still be looked up; voice conversations never go into long-term memory. Later restarts resume as usual.
+- If you go back to an older version while a resident is wearing a demo persona, Casa will not start. Reset that resident to its default persona, and restart, before going back. If you have already gone back, stop Casa, delete that resident's persona selection files as `casa/DOCS.md` describes, and start it again: it comes up on its default persona.
+
 ## [0.347.13] - 2026-11-04
 
 ### Fixed

@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-08-25
+last_reviewed: 2026-11-06
 ---
 
 # Persona lifecycle
@@ -65,9 +65,24 @@ are the installed-personas root and the image defaults tree; a specialist's
 component-default persona is read from that component's CAS store instead, which is
 neither. So a component's bundled persona is *not* resolvable by ref — installing a
 specialist makes its persona active for that specialist and does nothing else. Whether such
-a persona could be applied to a resident is a separate question with its own answer: a fixed
-resident slot's compatibility admits only its own slug, so it depends entirely on which
-persona the component declares, and nothing stops a component declaring a slot's own.
+a persona could be applied to a resident is a separate question with its own answer
+(INV-PERS-019): it depends entirely on which persona the component declares, and nothing
+stops a component declaring a slot's own.
+
+**A resident can wear its own persona or a demo pack, and nothing else.** Each fixed slot's
+role lists two ranges under `persona.compatibility`: its own `casa/<slug>` and `demo/*`. The
+second is what makes the public demo packs, each published under `demo/<name>`, wearable on a
+stock install; a pack from any other namespace still installs and is then refused at apply.
+Admission reads only the `id` and `version` the pack declares, so the `demo/` namespace is a
+convention rather than a proof of origin, which is acceptable because a persona is presentation
+and cannot expand a role. Editing that list is not free: it moves the role checksum and so
+every resident's binding digest, and the first boot on such an image re-binds each resident on
+what it was already wearing, or on a selection already staged, which promotes at that boot as any staged selection does, and starts its stored conversations fresh once. Going back is
+harder than going forward: an image whose role does not admit the pack a resident is wearing
+refuses that candidate, retains the tuple, and then fails to load it, which is boot-fatal
+(INV-PERS-003). The way out is the offline recovery in [`personality.md`](personality.md): with
+the app stopped, delete that resident's tuple files, and the next start comes up on the slot's
+image default.
 
 **The image ships persona packs for the fixed resident slots and nothing else.** Every pack
 in the defaults tree is the image default for one of those slots, and each slot's default is
@@ -191,6 +206,13 @@ resident restart notice is not shown. And it is about what the tool surface SAYS
 does with it: an operator who is told and restarts anyway loses the conversations exactly
 as before.
 
+**INV-PERS-019**: Each shipped resident role admits, at `persona_apply`, its own slot's persona and any `demo/` pack in the version range `>=0.1.0 <1.0.0`, and refuses another namespace, a version outside that range and a sibling resident's persona, writing nothing.
+
+What it does not cover: the proof that a pack compiles, which INV-PERS-007 owns, so a `demo/` pack
+over a surface's persona ceiling is still refused. Nor where a pack came from: anyone can declare a
+`demo/` id. Nor a specialist, whose own role decides. Nor the install, which consults no role, so
+a pack no role admits can still be installed, consent tap included, and only refused at apply.
+
 **INV-PERS-011**: A persona install approval that was recorded at tap-commit, but whose requesting engagement is terminal or gone when the operator taps it, does not leave the DM claiming an install: the recorded approval is not revoked by the failed continuation, and the single approval edit is selected from the reconciliation outcome rather than written before it.
 
 The persona and specialist consent finish hooks are separately written copies of one
@@ -310,6 +332,7 @@ tuples, retained priors, pending rotations and replayable bundle journals).
 - `tests/test_tools_persona_install.py`
 - `tests/test_wholebranch_security_fixes.py`
 - `tests/test_resident_persona_restart_notice.py`
+- `tests/test_resident_demo_personas.py`
 
 **Related**
 - [`architecture/personality.md`](../architecture/personality.md)

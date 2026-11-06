@@ -80,7 +80,7 @@ the appliance a household agent should be.
 - **Executors for real work** — a configurator that changes Casa's own settings when you
   ask in chat, and a plugin-developer that builds new plugins for you.
 - **Personas** — swap how an agent sounds and behaves without changing what it's allowed
-  to do; [five demo characters](#personas) are ready to try.
+  to do; any resident can wear one of the [five demo characters](#personas).
 
 *Deep dive: [agent taxonomy](docs/architecture/agent-taxonomy.md) · [personas](docs/architecture/personality.md)*
 
@@ -363,8 +363,9 @@ which hands the job to the configurator; the voice integration installs into Hom
 
 ### Personas
 
-Five demo packs that reskin an agent's character without touching its permissions
-(fan-made, unaffiliated):
+Five demo packs that any of the three residents can wear, changing its character without
+touching its permissions (fan-made, unaffiliated). A specialist wears only what its own role
+lists:
 
 | Persona | Character |
 |---|---|
