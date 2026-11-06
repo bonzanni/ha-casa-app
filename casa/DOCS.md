@@ -1712,9 +1712,12 @@ such as items from before it recorded what it creates. It does not delete
 them and does not hold up the uninstall for them; Casa names them when it
 reports the uninstall, so you can delete them by hand. Home Assistant
 backups taken earlier still contain the data either way.
-You can also swap which persona an installed specialist uses (its bundled
-default, or another installed persona) by asking Ellen to apply a
-different persona to it.
+You can also ask Ellen to apply another installed persona to an installed
+specialist, but a specialist wears only the personas its own role lists: anything
+else, a demo persona included unless its role lists it, is refused with nothing
+changed. To go back to its bundled persona, roll the specialist back; that works
+while the bundled persona is still the one kept for rollback, so not after a second
+persona or an upgrade.
 
 **Changing a specialist while you are talking to it.** A conversation already
 open with a specialist — in its topic, or a background job it is running — is
@@ -1794,11 +1797,22 @@ the butler or the concierge a different persona — or resetting one back to its
 built-in default — takes effect at the next restart, and if that changes who
 the resident is, the restart starts fresh every conversation with that
 resident that was last held under a different persona — in practice, all of
-the ones you have going — on Telegram and on voice alike. Voice conversations are not kept at
-all, so anything said there and not repeated is gone. What was said in a
+the ones you have going — on Telegram and on voice alike. Voice conversations never go into
+long-term memory, so anything said there and not repeated is gone. What was said in a
 Telegram conversation is already in long-term memory, saved as it was said, so
 the assistant can still look it up; the fresh conversation just does not carry
 it in its context.
+
+A resident can wear its own persona, at any version from 0.1.0 up to but not including
+1.0.0, or a persona whose id starts with `demo/` in the same range: the
+[five public demo personas](https://github.com/bonzanni/ha-casa-app#personas) are of
+that kind. Install one first, then ask for it to be applied. Anything else is refused with
+nothing changed, and that includes another resident's persona. If you go back to a version
+of Casa older than 0.347.14 while a resident is wearing a demo persona, Casa will not
+start, so reset that resident to its default and restart before going back. If you have
+already gone back, stop Casa, delete `active.yaml` and `active.prior.yaml` from that
+resident's `bindings/resident-<assistant|butler|concierge>/` folder in Casa's config, and
+start it again: it comes up on its default persona.
 
 Casa's configurator is instructed to spell this out before it restarts
 anything, and the tools that stage a resident's persona return the warning
