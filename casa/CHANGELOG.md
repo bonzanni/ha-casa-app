@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.347.15] - 2026-11-06
+
+### Fixed
+
+- Asking to install a persona without naming a version now installs its newest published release, the way specialists and plugins already do, and asking for "latest" no longer fails. Casa tells you which version it took. A repository with no release or version tag is refused plainly, and nothing is fetched; you can still name a branch or a commit yourself.
+
 ## [0.347.14] - 2026-11-06
 
 ### Fixed

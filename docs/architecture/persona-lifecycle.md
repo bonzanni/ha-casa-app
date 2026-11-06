@@ -274,6 +274,8 @@ default, installed-then-image. For an in-image DEFAULT they do not, and must not
 loader reads the image root alone, so that is the root the tool restoring an in-image
 default resolves from too. The loader's joins are [`personality.md`](personality.md)'s.
 
+**INV-PERS-020**: The ref literal `latest`, given to a persona inspection, resolves before anything is staged to the tag INV-PLUG-022 chooses; the result reports that tag as `resolved_ref`, never the literal, the fetch is guarded against its peel, and a repository with no published release is refused with `no_release_found`, staging nothing.
+
 ## Failure behavior
 
 **An operator applies a persona a resident cannot compile.** Refused at the point of asking,
@@ -322,6 +324,7 @@ tuples, retained priors, pending rotations and replayable bundle journals).
 - `casa/rootfs/opt/casa/persona_install.py::validate_persona_path_segments`
 - `casa/rootfs/opt/casa/persona_install.py::installed_personas_root`
 - `casa/rootfs/opt/casa/persona_install.py::persona_pack_roots`
+- `casa/rootfs/opt/casa/persona_install.py::inspect_persona_repo`
 
 **Tests**
 - `tests/test_persona_install.py`

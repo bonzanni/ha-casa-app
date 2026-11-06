@@ -14,7 +14,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from canonical_bytes import checksum_json
-from specialist_install import SpecialistInstallError, resolve_and_fetch
+from specialist_install import (
+    SpecialistInstallError, resolve_and_fetch, resolve_release_ref,
+)
 
 # Whole-branch review F1: `commit_persona_install` and `persona_apply` join a
 # persona_id + version into filesystem paths
@@ -97,13 +99,30 @@ class PersonaInspectionResult:
     checksum: str
     display_name: str
     staged_dir: Path
+    # INV-PERS-020: the ref the inspection actually fetched — the release tag
+    # when the caller passed the literal ``latest``, else the caller's own ref.
+    resolved_ref: str = ""
 
 
 def inspect_persona_repo(
     repo: str, ref: str, *, subdir: str = "", expected_revision: str | None = None,
     staging_root: "Path | None" = None,
 ) -> PersonaInspectionResult:
+    import plugin_store
     from persona_pack import PersonaPackError, load_persona_pack
+
+    # INV-PERS-020, the same shape as INV-SPEC-018: ``latest`` is resolved to
+    # the newest published release tag before anything is staged, the tag is
+    # the ref from here on, and the fetch is guarded against its peeled commit.
+    if ref == plugin_store.LATEST_REF:
+        ref, peeled = resolve_release_ref(repo)
+        if expected_revision is not None and \
+                plugin_store.normalize_revision(expected_revision) != peeled:
+            raise SpecialistInstallError(
+                "revision_mismatch",
+                f"expected_revision {expected_revision!r} does not match the commit "
+                f"{peeled!r} that release {ref} of {repo} names")
+        expected_revision = peeled
 
     if staging_root is None:
         staging_root = installed_personas_root() / ".staging"
@@ -127,6 +146,7 @@ def inspect_persona_repo(
     return PersonaInspectionResult(
         persona_id=pack.persona_id, version=pack.version, checksum=pack.checksum,
         display_name=pack.identity.get("display_name", pack.persona_id), staged_dir=dest,
+        resolved_ref=ref,
     )
 
 

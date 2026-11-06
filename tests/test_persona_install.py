@@ -714,3 +714,141 @@ def test_commit_persona_install_publication_race_different_content_is_typed_conf
     assert not staging.exists() or not any(staging.iterdir())  # loser's staging cleaned up
     published = load_persona_pack(target_dest / "pack", target_dest / "manifest.json")
     assert published.checksum == theirs.checksum  # winner's bytes intact
+
+
+# --- INV-PERS-020: the ref literal ``latest``, resolved as specialists and
+# plugins resolve it (INV-SPEC-018, INV-PLUG-022). resolve_and_fetch is the
+# network/git seam and resolve_latest_release the release lookup; the commits
+# lookup is made to fail, because the literal must never reach it.
+
+_LATEST_TAG = "v1.2.0"
+_LATEST_PEEL = "b" * 40
+
+
+def _recording_persona_fetch(tmp_path: Path):
+    fetched = tmp_path / "fetched"
+    _write_persona_repo(fetched)
+    calls: list[tuple[str, str, str | None]] = []
+
+    def _stub(repo, ref, subdir, dest, *, expected_revision=None):
+        import shutil
+        calls.append((repo, ref, expected_revision))
+        shutil.copytree(fetched, dest)
+        return _LATEST_PEEL
+
+    return _stub, calls
+
+
+def _never_commits_lookup(repo, ref, **_kw):
+    raise AssertionError(f"commits lookup reached for {repo}@{ref}")
+
+
+def test_latest_resolves_to_the_release_tag_and_guards_the_fetch_on_its_peel(
+        tmp_path: Path, monkeypatch) -> None:
+    import plugin_store
+
+    stub, calls = _recording_persona_fetch(tmp_path)
+    monkeypatch.setattr("persona_install.resolve_and_fetch", stub)
+    monkeypatch.setattr(plugin_store, "resolve_latest_release",
+                        lambda repo, **_k: (_LATEST_TAG, _LATEST_PEEL))
+    monkeypatch.setattr(plugin_store, "resolve_ref", _never_commits_lookup)
+
+    result = inspect_persona_repo("org/repo", "latest", staging_root=tmp_path / "staging")
+
+    # The fetch sees the TAG, guarded against its peel — never the literal.
+    assert calls == [("org/repo", _LATEST_TAG, _LATEST_PEEL)]
+    assert result.resolved_ref == _LATEST_TAG
+
+
+def test_an_exact_ref_is_its_own_resolved_ref(tmp_path: Path, monkeypatch) -> None:
+    import plugin_store
+
+    stub, calls = _recording_persona_fetch(tmp_path)
+    monkeypatch.setattr("persona_install.resolve_and_fetch", stub)
+
+    def _no_release_lookup(repo, **_k):
+        raise AssertionError("release lookup reached for an exact ref")
+
+    monkeypatch.setattr(plugin_store, "resolve_latest_release", _no_release_lookup)
+
+    result = inspect_persona_repo("org/repo", "main", staging_root=tmp_path / "staging")
+
+    assert calls == [("org/repo", "main", None)]
+    assert result.resolved_ref == "main"
+
+
+def test_no_published_release_is_refused_before_anything_is_staged(
+        tmp_path: Path, monkeypatch) -> None:
+    import plugin_store
+
+    stub, calls = _recording_persona_fetch(tmp_path)
+    monkeypatch.setattr("persona_install.resolve_and_fetch", stub)
+
+    def _none(repo, **_k):
+        raise plugin_store.NoReleaseFound(f"{repo}: no published release tag (v<semver>) found")
+
+    monkeypatch.setattr(plugin_store, "resolve_latest_release", _none)
+    monkeypatch.setattr(plugin_store, "resolve_ref", _never_commits_lookup)
+
+    staging = tmp_path / "staging"
+    with pytest.raises(SpecialistInstallError) as exc_info:
+        inspect_persona_repo("org/repo", "latest", staging_root=staging)
+
+    assert exc_info.value.kind == "no_release_found"
+    assert "org/repo" in exc_info.value.detail
+    assert calls == []
+    assert not staging.exists()  # the refusal runs before the root is even created
+
+
+def test_an_expected_revision_that_is_not_the_peel_is_a_revision_mismatch(
+        tmp_path: Path, monkeypatch) -> None:
+    import plugin_store
+
+    stub, calls = _recording_persona_fetch(tmp_path)
+    monkeypatch.setattr("persona_install.resolve_and_fetch", stub)
+    monkeypatch.setattr(plugin_store, "resolve_latest_release",
+                        lambda repo, **_k: (_LATEST_TAG, _LATEST_PEEL))
+
+    staging = tmp_path / "staging"
+    with pytest.raises(SpecialistInstallError) as exc_info:
+        inspect_persona_repo("org/repo", "latest", expected_revision="c" * 40,
+                             staging_root=staging)
+
+    assert exc_info.value.kind == "revision_mismatch"
+    assert calls == []
+    assert not staging.exists()
+
+
+def test_a_commits_lookup_that_disagrees_with_the_peel_fetches_nothing(
+        tmp_path: Path, monkeypatch) -> None:
+    """The REAL resolve_and_fetch: a same-named branch shadowing the tag makes
+    the commits lookup answer with another sha, which the peel guard refuses."""
+    import plugin_store
+
+    fetched: list[str] = []
+    monkeypatch.setattr(plugin_store, "resolve_latest_release",
+                        lambda repo, **_k: (_LATEST_TAG, _LATEST_PEEL))
+    monkeypatch.setattr(plugin_store, "resolve_ref", lambda repo, ref, **_k: "c" * 40)
+    monkeypatch.setattr(plugin_store, "fetch_commit_tree",
+                        lambda repo, commit, subdir, dest, **_k: fetched.append(commit))
+
+    staging = tmp_path / "staging"
+    with pytest.raises(SpecialistInstallError) as exc_info:
+        inspect_persona_repo("org/repo", "latest", staging_root=staging)
+
+    assert exc_info.value.kind == "revision_mismatch"
+    assert fetched == []
+    assert list(staging.iterdir()) == []  # the failed staging dir is reclaimed
+
+
+def test_install_recipe_defaults_to_latest_through_the_tool() -> None:
+    import re
+
+    recipe = (Path(__file__).resolve().parents[1]
+              / "casa/rootfs/opt/casa/defaults/agents/executors/configurator"
+              / "doctrine/recipes/persona/install.md")
+    text = re.sub(r"\s+", " ", recipe.read_text(encoding="utf-8"))
+    assert 'names no version at all, pass `ref="latest"`' in text
+    assert "`resolved_ref`" in text
+    assert "`no_release_found`" in text
+    assert "never choose a branch on your own" in text

@@ -1814,6 +1814,10 @@ already gone back, stop Casa, delete `active.yaml` and `active.prior.yaml` from 
 resident's `bindings/resident-<assistant|butler|concierge>/` folder in Casa's config, and
 start it again: it comes up on its default persona.
 
+When you install a persona and name no version, Casa takes its newest published release and
+tells you which one. A repository with no release or version tag is refused unless you name
+a branch or a commit.
+
 Casa's configurator is instructed to spell this out before it restarts
 anything, and the tools that stage a resident's persona return the warning
 with the result — but nothing *forces* it into the sentence you read. **If you are asked to

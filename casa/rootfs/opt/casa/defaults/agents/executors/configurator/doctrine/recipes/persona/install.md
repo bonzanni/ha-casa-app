@@ -6,7 +6,15 @@ does not apply it to anything by itself; see `recipes/persona/apply.md` for that
 
 ## Ask the user
 
-1. **Repository locator** (`owner/repo` + a ref — branch/tag/sha).
+1. **Repository locator** (`owner/repo` + a ref — branch/tag/sha). When the operator asks for
+   the latest version, or names no version at all, pass `ref="latest"`:
+   `persona_install_inspect` resolves it server-side to the newest published release tag
+   (GitHub's latest release, else the highest `v<semver>` tag) and reports it as `resolved_ref` —
+   write `<repo>@<resolved_ref>` in any commit message and in your completion. You have no web
+   tool: do not try to browse releases or tags, and never choose a branch on your own — a branch
+   or a sha is passed only when the operator names it. A repo with no published release refuses
+   with `no_release_found` and nothing is staged; report that and ask the operator whether to
+   install a branch or a sha they name.
 
 ## Steps
 

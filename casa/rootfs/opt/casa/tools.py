@@ -19132,7 +19132,10 @@ async def specialist_uninstall(args: dict) -> dict:
 
 @tool(
     "persona_install_inspect",
-    "Fetch a persona-only repository for inspection (non-persistent staging). Returns the persona "
+    "Fetch a persona-only repository for inspection (non-persistent staging). ref may be a tag, a "
+    "sha, a branch, or the literal 'latest' — the newest published release tag, reported back as "
+    "resolved_ref, never a branch; a repository with no published release refuses with "
+    "no_release_found. Returns the persona "
     "id/version/checksum/display name, or a structured error. On success this ALSO posts the "
     "operator's DM Approve/Deny consent keyboard — unless the consent ledger already holds an "
     "approval for this exact persona identity (pre-authorized installs skip the keyboard). If "
@@ -19171,7 +19174,10 @@ async def persona_install_inspect(args: dict) -> dict:
 
     ok_payload = {"ok": True, "persona_id": result.persona_id, "version": result.version,
                   "checksum": result.checksum, "display_name": result.display_name,
-                  "staged_dir": str(result.staged_dir)}
+                  "staged_dir": str(result.staged_dir),
+                  # INV-PERS-020: the ref actually fetched — the release tag
+                  # when the caller passed ``latest``.
+                  "resolved_ref": result.resolved_ref}
 
     acks = PersonaInstallAckStore()
     identity = persona_install_consent_identity(
@@ -19276,7 +19282,7 @@ async def persona_install_inspect(args: dict) -> dict:
                 result.persona_id, exc_info=True)
             return False
 
-    _retry = (f"{args['repo']} at {args['ref']}"
+    _retry = (f"{args['repo']} at {result.resolved_ref}"
               + (f" (subdir {args['subdir']})" if args.get("subdir") else ""))
 
     async def _expire_cb() -> bool:
