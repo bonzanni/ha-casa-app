@@ -39,22 +39,22 @@ class TestQueryEngager:
             specialist_registry=MagicMock(), mcp_registry=MagicMock(),
             trigger_registry=MagicMock(), engagement_registry=reg,
         )
-        _remembers(tmp_path, monkeypatch, "Lesina paid in March.")
+        _remembers(tmp_path, monkeypatch, "Lantern paid in March.")
 
         # Monkey-patch the constrained LLM helper
         async def _fake_synth(question, context, max_tokens):
-            return "Yes, Lesina paid in March."
+            return "Yes, Lantern paid in March."
         monkeypatch.setattr("tools._synthesize_answer", _fake_synth)
 
         token = engagement_var.set(rec)
         try:
-            res = await query_engager.handler({"question": "Did Lesina pay?",
+            res = await query_engager.handler({"question": "Did Lantern pay?",
                                                 "max_tokens": 200})
         finally:
             engagement_var.reset(token)
         payload = json.loads(res["content"][0]["text"])
         assert payload["status"] == "ok"
-        assert "Lesina" in payload["text"]
+        assert "Lantern" in payload["text"]
 
     async def test_returns_unknown_when_synth_returns_unknown(self, tmp_path, monkeypatch):
         from engagement_registry import EngagementRegistry

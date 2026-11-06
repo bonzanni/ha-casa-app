@@ -4,7 +4,7 @@ never an operator-typed string.
 
 Design 2026-09-15 §2.D (and its batch-1 build record §0e): whether the
 configurator searched the vault used to depend on the brief's wording (the
-0.177.0 playbook pass said "credentials are in 1Password"; the N150 message on
+0.177.0 playbook pass said "credentials are in 1Password"; the production message on
 2026-09-15 did not, and the configurator gave up). A result field that is
 always there turns "did it think of searching?" into "did it read its own tool
 result?". The tool never wires anything: ``set_plugin_env_reference`` stays the

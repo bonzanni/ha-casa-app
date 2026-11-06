@@ -21,7 +21,7 @@ NOT part of the pytest unit gate. It is a REQUIRED pre-merge command
 (Task 11), run inside the deployed container:
 
     cat test-local/eval/ellen_brief_fidelity.py \\
-        | ssh n150-ha -- sudo -n docker exec -i addon_91d4d4c8_casa python3 -
+        | ssh <ha-host> -- sudo -n docker exec -i addon_91d4d4c8_casa python3 -
 
 Exit 0 = PASS (doctrine held), exit 1 = FAIL (diff printed).
 """

@@ -56,7 +56,7 @@ RETRY_AFTER_CAP_SECONDS = 60.0
 # [AR-5] the Bot API folds distinct failures into BadRequest; only the
 # message substring (case-insensitive) tells them apart. Extend the
 # permission list once the real insufficient-rights string is captured on
-# the N150 live verify (the bot lacks the right today).
+# the production live verify (the bot lacks the right today).
 _NOT_FOUND_SUBSTRINGS = (
     "message thread not found",
     # A deleted supergroup: the topic is unreachable forever — treat as gone.

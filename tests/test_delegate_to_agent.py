@@ -345,7 +345,7 @@ class TestSyncOk:
             result = await _with_origin(
                 delegate_to_agent.handler({
                     "agent": "finance", "task": "draft invoice",
-                    "context": "lesina march",
+                    "context": "lantern march",
                     "mode": "sync",
                 }),
                 _origin(),
@@ -1972,7 +1972,7 @@ class TestSyncCompletionPersistFailure:
             result = await _with_origin(
                 delegate_to_agent.handler({
                     "agent": "finance", "task": "draft invoice",
-                    "context": "lesina march",
+                    "context": "lantern march",
                     "mode": "sync",
                 }),
                 _origin(),

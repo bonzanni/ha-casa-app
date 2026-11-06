@@ -1,7 +1,7 @@
 # test-local/live — live-box probe drivers (block S: WS-A delegation & fleet authz)
 
-Drivers for running the exploration-playbook **block S** probes against a live
-Casa deployment (N150). Unlike `../e2e/` (local docker containers), these drive
+Drivers for running the **block S** probes against a live
+Casa deployment. Unlike `../e2e/` (local docker containers), these drive
 the production box over SSH; unlike `../audit/` (read-only), they drive real
 turns. All probes are **agent-parameterized**: pass the role/target under test,
 so the same harness verifies any future agent (a new voice resident, an MTG
@@ -23,9 +23,7 @@ harness, its ACL/session/channel/requires invariants are proven.
 
 ## Probe recipes
 
-See `docs/exploration-playbook/blocks/S-delegation-authz.md` (private docs
-tree) for the full probe definitions, expected typed errors, and pass
-criteria. Quick start (set your own host/container/chat-id — nothing is baked
+Quick start (set your own host/container/chat-id — nothing is baked
 in):
 
 ```bash

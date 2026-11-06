@@ -80,11 +80,7 @@ than writing a file that reaches nobody.
 
 ## Verify
 
-```
-/ha-prod-console:restart 91d4d4c8_casa
-```
-
-Then ask the resident a control question via its primary channel ("turn off the kitchen lights"). Check the addon logs for an `mcp__homeassistant__HassTurnOff` call — or
+Restart the Casa app, then ask the resident a control question via its primary channel ("turn off the kitchen lights"). Check the addon logs for an `mcp__homeassistant__HassTurnOff` call — or
 `mcp__homeassistant__homeassistant__HassTurnOff` on a Home Assistant that
 prefixes its tool names.
 

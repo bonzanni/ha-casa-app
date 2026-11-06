@@ -1,6 +1,6 @@
 """Tests for channels.topic_icons — locked Telegram custom_emoji_id map.
 
-Live evidence: 2026-05-13 spike against N150's bundled PTB inside
+Live evidence: 2026-05-13 spike against the production box's bundled PTB inside
 addon_91d4d4c8_casa dumped get_forum_topic_icon_stickers() and
 returned 111 stickers; these IDs are the curated "Topics" set. None of
 the original ROLE_EMOJI executor icons (⚙️ 🛠 🏗 🔁) are in that set,

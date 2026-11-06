@@ -18,7 +18,7 @@ pytestmark = [pytest.mark.unit]
 
 
 async def _setup(reg, monkeypatch, tmp_path, *,
-                 synth_answer="Yes, Lesina paid in March."):
+                 synth_answer="Yes, Lantern paid in March."):
     from tools import init_tools
 
     bus = MagicMock()
@@ -71,16 +71,16 @@ async def test_the_synthesizer_reads_the_view_and_the_search(tmp_path,
                                                              monkeypatch):
     reg, rec = await _engagement(tmp_path)
     store, contexts = await _setup(reg, monkeypatch, tmp_path)
-    add(store, [fact("Lesina", "paid in March", topic="Clients")])
-    store_event(store, "Lesina's invoice was paid by bank transfer")
+    add(store, [fact("Lantern", "paid in March", topic="Clients")])
+    store_event(store, "Lantern's invoice was paid by bank transfer")
     store_event(store, "the bins go out on tuesday")
 
-    payload = await _ask(rec, "when did Lesina pay?")
+    payload = await _ask(rec, "when did Lantern pay?")
 
-    assert payload == {"status": "ok", "text": "Yes, Lesina paid in March."}
+    assert payload == {"status": "ok", "text": "Yes, Lantern paid in March."}
     (context,) = contexts
-    assert "Lesina: paid in March" in context
-    assert "Lesina's invoice was paid by bank transfer" in context
+    assert "Lantern: paid in March" in context
+    assert "Lantern's invoice was paid by bank transfer" in context
     assert "bins" not in context
 
 
@@ -88,7 +88,7 @@ async def test_nothing_readable_is_unknown_not_absence(tmp_path, monkeypatch):
     reg, rec = await _engagement(tmp_path)
     store, contexts = await _setup(reg, monkeypatch, tmp_path)
 
-    payload = await _ask(rec, "when did Lesina pay?")
+    payload = await _ask(rec, "when did Lantern pay?")
 
     assert payload["status"] == "unknown" and contexts == []
     assert "NOT proof of absence" in payload["message"]

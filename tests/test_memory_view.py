@@ -146,13 +146,13 @@ def test_render_as_of_an_earlier_commit(tmp_path):
     store = ledger_store(tmp_path)
     first, [oid] = add(store, [fact("city", "Rome")])
     add(store, [{"op": "replace", "object_id": oid,
-                 "body": "Utrecht; earlier: Rome (until 2026-10-01)"}])
+                 "body": "Porto; earlier: Rome (until 2026-10-01)"}])
     add(store, [fact("pet", "a cat")])
     then = _render(store, 1000, commit_no=first)
-    assert "- city: Rome" in then.text and "Utrecht" not in then.text
+    assert "- city: Rome" in then.text and "Porto" not in then.text
     assert "a cat" not in then.text
     now = _render(store, 1000)
-    assert "Utrecht" in now.text and "a cat" in now.text
+    assert "Porto" in now.text and "a cat" in now.text
     # Rendering the same commit twice is byte-identical.
     assert _render(store, 1000, commit_no=first).block_hash == then.block_hash
 

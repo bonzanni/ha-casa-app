@@ -1226,7 +1226,7 @@ class TestReloadAgents:
 
 
 class TestReloadAgentsSpecialistReporting:
-    """S-3 (block-S live finding 2026-07-15, N150 log 07:49:56Z): the FIRST
+    """S-3 (block-S live finding 2026-07-15, production log 07:49:56Z): the FIRST
     ``--scope=agents`` reload after boot reported ``added_specialist_finance``
     although finance had been installed and untouched since boot. Root cause:
     boot never puts specialists into ``runtime.agents`` (they are
@@ -1987,7 +1987,7 @@ class TestReloadRefreshesDelegationRoleMap:
     """P-6 (live run 2026-07-11): ``tools._agent_role_map`` is populated once
     at boot and no reload handler refreshed it, so ``delegate_to_agent``
     resolved BOOT-TIME AgentConfigs forever — a specialist ``tools.allowed``
-    grant (lesina-invoice) stayed inert for fresh delegations until a full
+    grant (for an invoice plugin) stayed inert for fresh delegations until a full
     add-on restart, while ``casa_reload`` reported ok=True."""
 
     async def test_agent_scope_specialist_reload_refreshes_role_map(

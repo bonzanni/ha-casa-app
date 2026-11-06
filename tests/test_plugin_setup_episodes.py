@@ -1,4 +1,4 @@
-"""v0.112.0 — durable post-consent setup episodes (casa-plugin-elevenlabs#2).
+"""v0.112.0 — durable post-consent setup episodes.
 
 Round-ledger model (impl review r1): membership registered at PROMPT time,
 settlement = all members decided (deny/expiry settle too — never ack

@@ -89,7 +89,7 @@ def test_boot_invalid_registry_not_seeded_not_overwritten(monkeypatch, tmp_path)
 
 
 def test_boot_resolve_issues_reach_health(monkeypatch, tmp_path):
-    issue = PluginIssue(name="lesina", target=None, stage="resolve",
+    issue = PluginIssue(name="lantern", target=None, stage="resolve",
                         reason_code="artifact_invalid")
     reports = _wire(monkeypatch, tmp_path, resolve_issues=[issue])
     assert plugin_boot.main() == 0

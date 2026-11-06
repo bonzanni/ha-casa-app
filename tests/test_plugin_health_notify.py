@@ -51,12 +51,12 @@ def _report(tmp_path, *issues):
 
 
 async def test_new_fingerprints_send_and_mark(tmp_path):
-    p = _report(tmp_path, PluginIssue("lesina-invoice", "specialist:finance",
+    p = _report(tmp_path, PluginIssue("lantern-invoice", "specialist:finance",
                                       "resolve", "corrupt_artifact", "a" * 64))
     cm = _cm()
     await casa_core.notify_plugin_health(cm, path=str(p))
     assert len(cm._channel.sent) == 1
-    assert "lesina-invoice" in cm._channel.sent[0][0]
+    assert "lantern-invoice" in cm._channel.sent[0][0]
     # Marked → no new fingerprints remain.
     assert plugin_health.new_fingerprints(plugin_health.load_report(p)) == []
 
@@ -112,7 +112,7 @@ async def test_warning_only_change_fires_dm(tmp_path):
     must fire the operator DM — new_fingerprints now spans warnings, and the DM
     body lists them (not a vacuous '0 items')."""
     path = tmp_path / "health.json"
-    w = PluginIssue(name="lesina", target=None, stage="migration",
+    w = PluginIssue(name="lantern", target=None, stage="migration",
                     reason_code="legacy_provenance")
     plugin_health.write_report(issues=[], warnings=[w], path=path)
     report = plugin_health.load_report(path)
@@ -123,7 +123,7 @@ async def test_warning_only_change_fires_dm(tmp_path):
     assert len(cm._channel.sent) == 1
     # #551: the DM addresses the same human as the in-band notice, so it names
     # the plugin and what happened — never the internal reason code.
-    assert "lesina" in cm._channel.sent[0][0]
+    assert "lantern" in cm._channel.sent[0][0]
     assert "legacy_provenance" not in cm._channel.sent[0][0]
     # marked notified → second call is a no-op (deduped).
     await casa_core.notify_plugin_health(cm, path=str(path))
@@ -306,7 +306,7 @@ async def test_a_confirmed_dm_leaves_no_in_band_duplicate(tmp_path):
     health, awaits the DM mid-turn, and the reply that follows used to carry the
     identical warning a second time. `Agent._maybe_prepend_health_notice` asks
     `pending_notice` for exactly this text, so this is the decision it reads."""
-    p = _report(tmp_path, PluginIssue("lesina-invoice", "resident:assistant",
+    p = _report(tmp_path, PluginIssue("lantern-invoice", "resident:assistant",
                                       "resolve", "corrupt_artifact", None))
     assert plugin_health.pending_notice("assistant", p) is not None
     plugin_health._notice_memo.clear()          # a fresh turn, nothing armed
@@ -322,7 +322,7 @@ async def test_a_failed_dm_leaves_the_in_band_notice_armed(tmp_path):
     runs only after a confirmed send, so an undelivered row is unfiltered and
     the notice still carries it. This is the guarantee that makes filtering on
     `notified_fingerprints` safe."""
-    p = _report(tmp_path, PluginIssue("lesina-invoice", "resident:assistant",
+    p = _report(tmp_path, PluginIssue("lantern-invoice", "resident:assistant",
                                       "resolve", "corrupt_artifact", None))
     plugin_health._notice_memo.clear()
     await casa_core.notify_plugin_health(_cm(raise_on_send=True), path=str(p))

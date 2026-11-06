@@ -1,6 +1,6 @@
 """Warm/cold first-block latency probe (pooling spec §10).
 
-Usage: ssh n150-ha "sudo -n docker exec -i addon_91d4d4c8_casa \
+Usage: ssh <ha-host> "sudo -n docker exec -i addon_91d4d4c8_casa \
            python3 -" < test-local/eval/voice_latency_probe.py
 Prints per-turn utterance->first-block ms for 1 cold + 4 warm turns.
 

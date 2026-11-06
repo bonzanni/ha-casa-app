@@ -3916,7 +3916,7 @@ def _build_world_state_summary() -> str:
 
     # The version is exported by svc-casa/run as CASA_VERSION; the VERSION
     # files this block used to read never existed, so every engagement read
-    # "unknown" (N150, v0.311.0, 2026-09-15).
+    # "unknown" (production, v0.311.0, 2026-09-15).
     version = os.environ.get("CASA_VERSION", "").strip() or "unknown"
     lines.append(f"Addon version:        {version}")
 
@@ -22120,7 +22120,7 @@ async def remove_plugin_env_reference(args: dict) -> dict:
     # An explicit JSON Schema: the shorthand {key: type} form marks EVERY key
     # required, so the omitted-vault call the description promises was rejected
     # by the MCP input validator before the handler's #535 fallback could run
-    # (measured on the N150, 2026-09-15). `query` stays required — the recipe's
+    # (measured on the production box, 2026-09-15). `query` stays required — the recipe's
     # "never enumerate the whole vault" is enforced here, not in prose.
     {"type": "object",
      "properties": {"query": {"type": "string"},

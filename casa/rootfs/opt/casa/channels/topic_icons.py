@@ -1,7 +1,7 @@
 """Locked role → Telegram custom_emoji_id map for forum-topic bubble icons.
 
 Evidence: 2026-05-13 live dump of ``bot.get_forum_topic_icon_stickers()``
-from N150's bundled PTB (addon ``91d4d4c8_casa``). The "Topics"
+from the production box's bundled PTB (addon ``91d4d4c8_casa``). The "Topics"
 set is curated by Telegram (~111 stickers) and rotates rarely; the IDs
 below are stable. ``verify_against_telegram`` provides a boot-time
 diagnostic that warns if any ID rotates out.

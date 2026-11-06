@@ -1,7 +1,7 @@
 """``resolve_latest_release``: "latest" is a published release tag or nothing.
 
 Design 2026-09-15 §2.C: the configurator has no web tool and its brief said
-"resolve 'latest' yourself"; on the N150 (2026-09-15) it spent 90 s failing
+"resolve 'latest' yourself"; on the production box (2026-09-15) it spent 90 s failing
 and then installed ``main``. Now ``plugin_add(ref="latest")`` resolves
 server-side: GitHub's latest release, accepted only when its name is a release
 tag (``v<semver>``); else the highest release tag by numeric order; else

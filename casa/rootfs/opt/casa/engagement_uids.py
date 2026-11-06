@@ -365,7 +365,7 @@ class UidAllocator:
                 (genuine fresh install OR first Stage-2 boot of a pre-Stage-2
                 install: dirs root-owned uid 0, records UNALLOCATED) → INITIALISE
                 at ``UID_BASE - 1``, write both copies + the marker. (Preserves
-                the N150 first-boot unbrick: zero real-uid evidence there.)
+                the production first-boot unbrick: zero real-uid evidence there.)
           - the /proc scan unconfirmable, or a persist failure → POISON
             (r4 invariant).
 
@@ -453,7 +453,7 @@ class UidAllocator:
                     # of a pre-Stage-2 install: all dirs root-owned uid 0, records
                     # UNALLOCATED, no casa-eng passwd, no casa /proc uid). No uid
                     # was ever allocated → INITIALISE at UID_BASE-1 and write both
-                    # copies + the marker below. (Preserves the N150 first-boot
+                    # copies + the marker below. (Preserves the production first-boot
                     # unbrick: its pre-Stage-2 state has zero real-uid evidence.)
                     hw = UID_BASE - 1
 

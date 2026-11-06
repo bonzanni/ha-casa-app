@@ -1630,14 +1630,14 @@ class TestEngageExecutorPluginGate:
 
     async def test_engage_executor_blocks_on_plugin_issue(self, monkeypatch):
         from plugin_registry import PluginIssue, ResolutionResult
-        issue = PluginIssue(name="lesina-invoice",
+        issue = PluginIssue(name="lantern-invoice",
                             target="executor:configurator", stage="resolve",
                             reason_code="artifact_missing")
         payload, channel = await self._run(
             monkeypatch,
             ResolutionResult(registry_valid=True, issues=[issue]))
         assert payload["kind"] == "plugin_unavailable"
-        assert "lesina-invoice" in payload["message"]
+        assert "lantern-invoice" in payload["message"]
         channel.open_engagement_topic.assert_not_called()
 
     async def test_blocks_on_not_ready_plugin(self, monkeypatch):

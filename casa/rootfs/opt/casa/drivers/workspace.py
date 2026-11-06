@@ -706,7 +706,7 @@ async def provision_workspace(
     Note: filesystem I/O (mkdir, write_text, os.symlink, os.mkfifo) is
     currently synchronous despite the ``async def`` surface. The cost
     per engagement-start (one-time provisioning of a few files + one
-    FIFO) is well under 10ms on the N150, so the brief event-loop stall
+    FIFO) is well under 10ms on the production box, so the brief event-loop stall
     is acceptable. If profiling later shows otherwise, wrap the filesystem
     calls in ``asyncio.to_thread`` to match the pattern in
     ``drivers/s6_rc.py``.
@@ -1204,7 +1204,7 @@ async def _sweep_workspaces(
     (bounded ~21 MB/engagement by ``s6-log n20 s1000000``).
 
     Disk-pressure mode (§6.5 aggressive tier) is out of scope — see spec
-    §8.3. The N150 has >30 GB free.
+    §8.3. The production box has >30 GB free.
     """
     if not os.path.isdir(engagements_root):
         return

@@ -10,10 +10,8 @@ decision for each fixed message. Synthetic messages only — no operator data.
 Usage, in the Casa container (any install; it makes model calls only):
     { echo "with-contenv python3 - <<'PYEOF'"; cat test-local/eval/run_admission_probe.py; echo PYEOF; } \
       | "$HPC" exec <casa container>
-    where $HPC is the ha-console plugin's launcher: ${CLAUDE_PLUGIN_ROOT}/bin/hpc
-    inside a session that loads the plugin, else the installed copy,
-    e.g. HPC="$(ls -d ~/.claude*/plugins/cache/*/ha-console/*/bin/hpc | sort -V | tail -1)"
-    (hpc reads the payload from stdin as typed at the container prompt;
+    where $HPC is your host-console launcher
+    (it reads the payload from stdin as typed at the container prompt;
     ``docker exec`` there has no ``-i``, so the source travels inside the
     payload as a heredoc; ``with-contenv`` gives python the container's
     environment, without which the CLI reports "Not logged in")

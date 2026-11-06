@@ -1,7 +1,7 @@
 """The world-state block every executor engagement reads renders the facts the
 deployment already holds.
 
-On the N150 (v0.311.0, 2026-09-15) the configurator's prompt said
+On the production box (v0.311.0, 2026-09-15) the configurator's prompt said
 ``Addon version: unknown`` — the builder read ``/opt/casa/VERSION`` and
 ``/config/VERSION``, neither of which has ever existed; the version is in
 ``CASA_VERSION`` (``svc-casa/run``). And nothing rendered the configured default

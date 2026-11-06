@@ -1,7 +1,7 @@
 """Explore before asking: the configurator's plugin doctrine and the
 assistant's install-brief rule (design 2026-09-15 §2.D, §2.E).
 
-On the N150 (2026-09-15) the configurator ended an install with three required
+On the production box (2026-09-15) the configurator ended an install with three required
 secrets unwired and no vault search, because its recipe said to "return the
 candidate items and let the operator choose", its brief told it to report what
 the operator still needs to provide, and the assistant then invited the

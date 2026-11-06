@@ -145,7 +145,7 @@ async def test_v2_non_file_tool_skipped():
 # Bug 1 (v0.14.6) regression suite — block_dangerous_commands must
 # catch every flag-equivalent of `rm -rf` plus wrapper-shell variants.
 # Pre-fix the regex `\brm\s+-rf\b` was bypassed by all of these, which
-# was verified live on N150 production.
+# was verified live on production.
 # ------------------------------------------------------------------
 
 

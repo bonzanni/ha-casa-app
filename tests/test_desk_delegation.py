@@ -71,7 +71,7 @@ def _payload(result):
     return json.loads(result["content"][0]["text"])
 
 
-async def _delegate(task="draft invoice", context="lesina march", mode="sync", origin=None):
+async def _delegate(task="draft invoice", context="lantern march", mode="sync", origin=None):
     from tools import delegate_to_agent
     return _payload(await _with_origin(
         delegate_to_agent.handler({"agent": "finance", "task": task, "context": context,
@@ -86,7 +86,7 @@ async def test_a_sync_delegation_from_the_operator_dm_reads_and_writes_the_desk(
     assert payload["status"] == "ok" and payload["text"] == "answer 1"
     (call,) = env.calls
     assert call.task == "draft invoice"
-    assert call.context.startswith("lesina march")                 # the resident's context first
+    assert call.context.startswith("lantern march")                 # the resident's context first
     assert "<desk>" in call.context and "] the operator: earlier words" in call.context
     assert sd.DESK_FRAME in call.context                            # #1192: its own exchanges
     assert sd.turn_frame("assistant") not in call.context          # a delegation is not the operator writing
