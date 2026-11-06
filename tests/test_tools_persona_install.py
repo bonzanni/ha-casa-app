@@ -408,7 +408,7 @@ def _fake_persona_inspection(tmp_path):
     return SimpleNamespace(
         persona_id="warm-helper", version="1.0.0",
         checksum="sha256:" + "d" * 64, display_name="Warm Helper",
-        staged_dir=tmp_path / "staged",
+        staged_dir=tmp_path / "staged", resolved_ref="main",
     )
 
 
@@ -442,6 +442,57 @@ class _Handle:
         if self._hang:
             await asyncio.Event().wait()  # cancelled by the tool's wait_for bound
         return self._settled
+
+
+@pytest.mark.asyncio
+async def test_inspect_ok_payload_reports_the_resolved_ref(monkeypatch, tmp_path) -> None:
+    """INV-PERS-020: the configurator names the installed version from the ref
+    the tool resolved. For ``latest`` that is the release tag, never the literal."""
+    from persona_install import persona_install_consent_identity
+    from tools import persona_install_inspect
+
+    fake, tmp_store_cls = _wire_persona_inspect(monkeypatch, tmp_path, channel=None)
+    fake.resolved_ref = "v1.2.0"
+    tmp_store_cls().record(
+        identity=persona_install_consent_identity(
+            persona_id=fake.persona_id, version=fake.version, checksum=fake.checksum),
+        persona_id=fake.persona_id, version=fake.version, checksum=fake.checksum)
+
+    payload = _payload(await persona_install_inspect.handler(
+        {"repo": "owner/repo", "ref": "latest"}))
+
+    assert payload["ok"] is True
+    assert payload["resolved_ref"] == "v1.2.0"
+    assert "latest" not in json.dumps(payload)
+
+
+@pytest.mark.asyncio
+async def test_inspect_with_no_release_reports_no_release_found(monkeypatch, tmp_path) -> None:
+    """INV-PERS-020 at the tool: the real inspection, with only the release
+    lookup stubbed, refuses in the structured envelope and stages nothing."""
+    import plugin_store
+    from tools import persona_install_inspect
+
+    config = tmp_path / "config"
+    monkeypatch.setenv("CASA_CONFIG_DIR", str(config))
+
+    def _none(repo, **_k):
+        raise plugin_store.NoReleaseFound(f"{repo}: no published release tag (v<semver>) found")
+
+    monkeypatch.setattr(plugin_store, "resolve_latest_release", _none)
+
+    payload = _payload(await persona_install_inspect.handler(
+        {"repo": "owner/repo", "ref": "latest"}))
+
+    assert payload == {"ok": False, "kind": "no_release_found",
+                       "detail": "owner/repo: no published release tag (v<semver>) found"}
+    assert not config.exists()
+
+
+def test_inspect_tool_description_names_latest() -> None:
+    from tools import persona_install_inspect
+
+    assert "latest" in persona_install_inspect.description
 
 
 @pytest.mark.asyncio
@@ -985,6 +1036,29 @@ async def test_inspect_expiry_tells_the_engagement(monkeypatch, tmp_path) -> Non
              '"cancelled"' in text, "owner/repo" in text)
     assert facts == (True, None, True, True, True, True, True), (
         f"hand-off facts: {facts!r} {text!r}")
+
+
+@pytest.mark.asyncio
+async def test_inspect_expiry_names_the_resolved_tag_not_the_literal(monkeypatch, tmp_path) -> None:
+    """INV-PERS-020: what a retry re-inspects is the tag that was resolved."""
+    import persona_install
+
+    rec, channel, _edits, cap = await _persona_expiry(monkeypatch, tmp_path, outcome=None)
+    fake = persona_install.inspect_persona_repo()
+    fake.resolved_ref = "v1.2.0"
+
+    from tools import persona_install_inspect, engagement_var
+
+    token = engagement_var.set(SimpleNamespace(id=rec.id))
+    try:
+        await persona_install_inspect.handler({"repo": "owner/repo", "ref": "latest"})
+    finally:
+        engagement_var.reset(token)
+    await cap["finish_factory"](88, SimpleNamespace(meta={}))({"outcome": "no_answer"})
+
+    text = channel.deliver_system_turn.await_args.args[1]
+    assert "owner/repo at v1.2.0" in text
+    assert "at latest" not in text
 
 
 @pytest.mark.asyncio
