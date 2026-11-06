@@ -127,13 +127,19 @@ the appliance a household agent should be.
 ### 🧠 Memory
 
 - **Long-term memory, built in** — agents remember what matters across conversations —
-  names, preferences, the plumber's number. Each Telegram turn is captured as it happens,
-  and the assistant can search, browse and correct what was said; no extra server to run.
-- **Yours to keep or forget** — export memory, restore an export, or wipe it all from the
-  add-on terminal; a wipe keeps your reminders, triggers, settings and files (bar finished
-  engagement workspaces already past their 7-day keep period).
-- **Privacy-tiered recall** — what your assistant knows privately is not what a
-  guest-facing voice agent can repeat to whoever is in the room.
+  names, preferences, the plumber's number — with no extra server to run and no option to
+  set. Each Telegram turn is saved as it happens and filed into notes in the background;
+  voice conversations never go into long-term memory.
+- **Ask it, correct it** — ask the assistant what was said last Tuesday, and tell it when
+  something it remembers is wrong: it marks the correction and refiles its notes from it.
+- **Privacy-tiered recall** — every saved message gets a sensitivity tier, and every read
+  checks it. What your assistant knows privately is not what a voice agent can repeat to
+  whoever is in the room: the butler has notes of its own, written only from what was said
+  at `friends` and below, and the concierge has no notes and no memory tools.
+- **Yours to keep or forget** — Casa keeps an export from each of the last seven nights,
+  so a Home Assistant backup carries them. Export, restore or wipe from the app's terminal;
+  a wipe erases memory and those exports but keeps your reminders, triggers, settings and
+  files (bar finished engagement workspaces already past their 7-day keep period).
 
 *Deep dive: [memory and recall](docs/architecture/memory.md)*
 
@@ -233,8 +239,16 @@ including verification and automatic topic cleanup.
 ### 5. Add voice *(optional — talk to the fleet through Home Assistant Assist)*
 
 1. Install the companion
-   [`ha-casa-integration`](https://github.com/bonzanni/ha-casa-integration) via HACS.
-2. Add the **Casa** integration under **Settings → Devices & Services** — Casa publishes
+   [`ha-casa-integration`](https://github.com/bonzanni/ha-casa-integration) as a custom
+   repository:
+   - **Home Assistant 2026.11 or newer** — HACS is now built in as the Marketplace. Under
+     **Settings → Marketplace**, choose **Add from link**, enter the repository's URL (custom
+     repositories need a GitHub connection, approved through GitHub's device sign-in), then
+     install **Casa**.
+   - **Home Assistant 2026.4 to 2026.10** — in HACS, add the URL as a custom repository
+     (category **Integration**), install **Casa** and restart Home Assistant.
+2. Add the **Casa** integration under **Settings → Devices & Services**, unless the
+   Marketplace already opened its setup after the install — Casa publishes
    its authenticated endpoint through Supervisor discovery, so the integration finds the
    running app and its signing secret on its own.
 3. Pick a Casa agent as the conversation agent in your Assist pipeline; every voice
@@ -322,9 +336,10 @@ The install and identity mechanics are documented in the
 
 ## The Casa ecosystem
 
-Casa is one repository in a small constellation. Everything below is public and
-installable today — specialists, plugins and personas install straight from these repos
-by asking the configurator in chat.
+Casa is one repository in a small constellation. Everything below is public. Specialists,
+plugins and personas install straight from these repos when you ask the assistant in chat,
+which hands the job to the configurator; the voice integration installs into Home Assistant
+([step 5](#5-add-voice-optional--talk-to-the-fleet-through-home-assistant-assist)).
 
 ### Companion apps & integrations
 
@@ -344,6 +359,7 @@ by asking the configurator in chat.
 | Repository | What it gives you |
 |---|---|
 | [`casa-plugin-gmail`](https://github.com/bonzanni/casa-plugin-gmail) | Gmail for the assistant — read and act on the household mailbox, authorized per-user with OAuth. |
+| [`casa-plugin-quarterly-accounting`](https://github.com/bonzanni/casa-plugin-quarterly-accounting) | Quarterly bookkeeping for a business account — matches each transaction to its supporting document and builds the quarter's package. Runs on the finance specialist and uses the Gmail plugin. |
 
 ### Personas
 
