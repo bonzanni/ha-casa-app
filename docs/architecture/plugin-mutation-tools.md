@@ -193,6 +193,17 @@ no-op it always was and the result reports the access it holds (`profile`,
 `plugin_update` refuses with `profile_missing` a manifest that drops a held profile name
 before the repoint. The rules are [`plugin-access-profiles.md`](plugin-access-profiles.md)'s.
 
+**Updating a plugin to the release it is already on changes nothing.** `plugin_update` resolves
+and fetches as usual, then returns `ok: true, unchanged: true` when Casa was already serving
+that artifact and the artifact and the registry entry would both stay as they are: no registry
+write, no reload, and no approval or webhook secret dropped. `activation_committed` is false, and
+`verify` and `runtime_ready` report the plugin's real state. A repoint that only moves the entry,
+such as another tag on the same commit, and an update that restores an artifact Casa was not
+serving, still reload but keep the approvals, because they are bound to the artifact.
+
+**`plugin_list` names each plugin's `owner`** — the specialist whose bundle it comes with, or
+null for a plugin of its own. An owned plugin moves with that specialist's upgrades.
+
 **A mutation result names the ref it actually pinned** — `resolved_ref`: the tag the literal
 `latest` resolved to, or the exact ref given; the contract is INV-PLUG-022 in
 [`architecture/plugins.md`](plugins.md). A specialist inspection reports the same field under

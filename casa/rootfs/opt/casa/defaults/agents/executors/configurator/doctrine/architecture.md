@@ -240,7 +240,9 @@ Registry:
   system requirements → activate → reload → verify. Version DERIVED from the
   manifest (never supplied).
 - `plugin_update(name, new_ref)` — re-publish from a new ref, repoint, reload,
-  verify. New commit ⇒ new artifact_id (stale-code bug impossible).
+  verify. New commit ⇒ new artifact_id (stale-code bug impossible). Already on
+  that release ⇒ `unchanged:true`: no registry change and no reload, and verify
+  reports its current state.
 - `plugin_assign(name, target, profile?)` / `plugin_unassign(name, target)` —
   add/drop one target's assignment. `profile` names one of the plugin's declared
   access profiles for a NEW assignment only (omit = full); an existing

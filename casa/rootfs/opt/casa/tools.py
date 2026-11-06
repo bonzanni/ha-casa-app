@@ -17399,6 +17399,11 @@ def _plugin_update_sync(*, name: str, new_ref: str,
     if isinstance(guarded, dict):
         return guarded
     new_ref, commit = guarded      # "latest" -> the release tag it resolved to
+    # Read BEFORE publish, which restores a missing artifact: a plugin Casa is
+    # not serving needs the activation below even when nothing else moves.
+    was_serving = any(
+        rp.name == name and rp.artifact_id == old_artifact_id
+        for rp in plugin_registry.resolve_all().plugins)
     try:
         result = plugin_store.publish(name=name, repo=repo, ref=new_ref,
                                       subdir=subdir, commit=commit)
@@ -17412,6 +17417,20 @@ def _plugin_update_sync(*, name: str, new_ref: str,
     err = _tag_version_guard(new_ref, result.manifest)         # BEFORE sysreqs
     if err is not None:
         return err
+    # Already on this release, with nothing to record: the handler stops here.
+    # An approval, a webhook secret and a loaded agent are all bound to the
+    # artifact, and this is the same artifact, so there is nothing to redo.
+    if (was_serving and result.artifact_id == old_artifact_id
+            and result.version == entry.get("version")
+            and src.get("type") == "github"
+            and src.get("ref") == new_ref
+            and src.get("revision") == result.revision):
+        return {"ok": True, "unchanged": True, "name": name,
+                "targets": list(entry.get("targets") or []),
+                "artifact_id": result.artifact_id, "version": result.version,
+                "revision": result.revision, "path": result.path,
+                "resolved_ref": new_ref,
+                "old_artifact_id": old_artifact_id}
     # S8: a new manifest that no longer declares a profile some target HOLDS
     # is refused BEFORE sysreqs and the repoint — never silently widened to
     # full, never silently narrowed to nothing. A profile that stays declared
@@ -17783,7 +17802,9 @@ async def plugin_add(args: dict) -> dict:
     "Update a registered plugin to a new ref (a tag, sha or branch, or the "
     "literal 'latest' for the newest published release tag — never a branch): "
     "re-publish, install new system "
-    "requirements, repoint the registry, reload + verify. Version derives "
+    "requirements, repoint the registry, reload + verify. A plugin already on "
+    "that release returns unchanged:true: no registry change and no reload, and "
+    "verify reports its current state. Version derives "
     "from the fetched manifest. Pass expected_revision (the producer's "
     "handed-off sha) so a tag that moved after the build aborts before "
     "activation. A plugin Casa ships to a worker is not updated here — it is "
@@ -17825,10 +17846,23 @@ async def plugin_update(args: dict) -> dict:
             core.setdefault("verify", {})
             return _result(_after_plugin_change(
                 core, "updated", args["name"], [], ack, seen))
-        # A:§3.3 (r1-B8): the artifact just changed under this plugin —
+        if core.get("unchanged") is True:
+            # Nothing moved, so nothing was activated: no reload, and no
+            # open-conversation notice for a change that did not happen. Verify
+            # still reports the plugin's real state.
+            core["activation_committed"] = False
+            core["verify"] = await asyncio.to_thread(
+                _tool_verify_plugin_state, plugin_name=core["name"])
+            core["runtime_ready"] = core["verify"].get("ready") is True
+            return _result(_after_plugin_change(
+                core, "updated", core["name"], [], ack, seen))
+        # A:§3.3 (r1-B8): when the artifact just changed under this plugin,
         # invalidate the OLD artifact's grants/challenges right after the
-        # mutation commits, before the first post-commit await (reload).
-        _invalidate_lifecycle(artifact_id=core.get("old_artifact_id"))
+        # mutation commits, before the first post-commit await (reload). A
+        # repoint to the same artifact (another tag on the same commit) keeps
+        # them: they are bound to the artifact, which is still the one running.
+        if core.get("old_artifact_id") != core.get("artifact_id"):
+            _invalidate_lifecycle(artifact_id=core.get("old_artifact_id"))
         seq = await _reload_and_verify_targets(
             core["name"], core["targets"], expect="present")
         core.update(seq)
@@ -19921,6 +19955,9 @@ def _tool_plugin_list() -> dict:
             if isinstance(e.get("profiles"), dict) else {},
             "artifact_present": store_dir.is_dir(),
             "seeded_default": name in seeded,
+            # The specialist whose bundle this plugin comes with (it moves with
+            # that specialist's upgrades), or None for a plugin of its own.
+            "owner": plugin_registry.entry_owner(e),
         })
     return {
         "registry_valid": data.valid, "plugins": plugins,
@@ -21177,7 +21214,9 @@ async def consent_reprompt(args: dict) -> dict:
 @tool(
     "plugin_list",
     "List every registered plugin with its version, revision, targets, "
-    "artifact presence, and seeded-default status. `targets` is what the "
+    "artifact presence, seeded-default status and owner. `owner` names the "
+    "specialist whose bundle a plugin comes with: it moves with that "
+    "specialist's upgrades, not on its own. `targets` is what the "
     "registry stores; `effective_targets` is what Casa actually serves and "
     "`ignored_targets` what it stores but does not — for now a worker "
     "(executor:) assignment on an operator-installed plugin is ignored.",

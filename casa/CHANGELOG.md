@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.347.16] - 2026-11-06
+
+### Fixed
+
+- Updating a plugin that is already on its newest release now really does nothing. Before, "upgrade everything" still reloaded the plugin, and a plugin with a webhook, such as ElevenLabs, lost its approval: it asked you again, replaced its webhook and re-ran setup, even with no new version. Plugins with a real new version still ask for approval as before.
+- The list of installed plugins now says which specialist a bundled plugin belongs to, so the configurator knows for certain that tx-classifier and bank-feed move with Finance's upgrades.
+
 ## [0.347.15] - 2026-11-06
 
 ### Fixed

@@ -232,7 +232,7 @@ to the in-memory tool-call grants of
 peer of `casa.triggers`, parsed and intrinsically validated the same way, and gated by a
 durable operator consent that is another of those restart-surviving ledgers. Its consent
 is deliberately asymmetric to a trigger's, and the asymmetry is the thing to carry away: a
-trigger ack binds the plugin *artifact*, so any update re-consents; a callback ack binds the
+trigger ack binds the plugin *artifact*, so an update to a new artifact re-consents; a callback ack binds the
 *declaration digest* (the declared name only) and excludes the artifact, so a routine
 upgrade that leaves the declaration unchanged keeps consent — because a callback grants no
 role turn and no memory access, only a spool deposit. The mechanism lives in

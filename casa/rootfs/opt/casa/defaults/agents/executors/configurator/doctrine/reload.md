@@ -48,7 +48,7 @@ changes, addon options.json mutations, or kernel concerns.
 | Edit an executor's `prompt.md` / `observer.yaml` / `doctrine/*` | none — effective on that executor's next COLD session; a warm client is reused without rebuilding its options, so do not promise "next turn". `hooks.yaml` is NOT editable by you (see above) |
 | Install a specialist (pipeline) — new `agents/specialists/<slug>/` | `agents` — REQUIRED explicitly after `config_git_commit`; `specialist_install_commit` does NOT reload (see `recipes/specialist/install.md`) |
 | Uninstall a specialist (pipeline) — removed `agents/specialists/<slug>/` | `agents` — REQUIRED explicitly after `config_git_commit`; `specialist_uninstall` does NOT reload (see `recipes/specialist/uninstall.md`) |
-| `plugin_add`/`plugin_update`/`plugin_assign`/`plugin_unassign`/`plugin_remove` | none — the tool self-sequences its own reload + verify (§3.9) |
+| `plugin_add`/`plugin_update`/`plugin_assign`/`plugin_unassign`/`plugin_remove` | none — the tool self-sequences its own reload + verify (§3.9); a `plugin_update` returning `unchanged:true` changed nothing and reloaded nothing |
 | `set_plugin_env_reference` | `plugin_env` |
 | Multiple categories edited in one engagement | `full` |
 | Unsure | `full` |
