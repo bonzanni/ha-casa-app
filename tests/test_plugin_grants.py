@@ -32,7 +32,7 @@ from plugin_registry import ResolutionResult, ResolvedPlugin
 pytestmark = pytest.mark.unit
 
 
-def _artifact(tmp_path, name="lesina-invoice", servers=None,
+def _artifact(tmp_path, name="lantern-invoice", servers=None,
              manifest=None, artifact_id="0" * 64) -> ResolvedPlugin:
     """A store-artifact dir with an optional .mcp.json at its ROOT, wrapped as
     a ResolvedPlugin (the resolved object grants derive from)."""
@@ -46,7 +46,7 @@ def _artifact(tmp_path, name="lesina-invoice", servers=None,
 
 
 def test_sanitize_keeps_hyphens_and_underscores():
-    assert sanitize_segment("lesina-invoice") == "lesina-invoice"
+    assert sanitize_segment("lantern-invoice") == "lantern-invoice"
     assert sanitize_segment("a_b-c9") == "a_b-c9"
 
 
@@ -56,9 +56,9 @@ def test_sanitize_replaces_other_chars():
 
 def test_grants_for_resolved_live_pin(tmp_path):
     """Pin the exact live-verified string (guards format drift)."""
-    rp = _artifact(tmp_path, "lesina-invoice",
-                   {"lesina-invoice": {"command": "node"}})
-    assert grants_for_resolved(rp) == ["mcp__plugin_lesina-invoice_lesina-invoice"]
+    rp = _artifact(tmp_path, "lantern-invoice",
+                   {"lantern-invoice": {"command": "node"}})
+    assert grants_for_resolved(rp) == ["mcp__plugin_lantern-invoice_lantern-invoice"]
 
 
 def test_grants_for_resolved_multi_server(tmp_path):
@@ -263,19 +263,19 @@ def test_parse_url_only_server_is_valid(tmp_path):
 
 
 def test_protected_map_absent_is_empty(tmp_path):
-    rp = _artifact(tmp_path, "lesina-invoice",
-                   {"lesina-invoice": {"command": "node"}})
+    rp = _artifact(tmp_path, "lantern-invoice",
+                   {"lantern-invoice": {"command": "node"}})
     res = ResolutionResult(registry_valid=True, plugins=[rp])
     assert protected_map(res) == {}
 
 
 def test_protected_map_single_server(tmp_path):
     rp = _artifact(
-        tmp_path, "lesina-invoice", {"lesina-invoice": {"command": "node"}},
+        tmp_path, "lantern-invoice", {"lantern-invoice": {"command": "node"}},
         manifest={"casa": {"protectedTools": ["invoice_reset"]}})
     res = ResolutionResult(registry_valid=True, plugins=[rp])
     assert protected_map(res) == {
-        "mcp__plugin_lesina-invoice_lesina-invoice__invoice_reset":
+        "mcp__plugin_lantern-invoice_lantern-invoice__invoice_reset":
             {"artifact_id": "0" * 64, "summary": None},
     }
 
@@ -330,14 +330,14 @@ def test_protected_map_object_entry_carries_summary(tmp_path):
     """v0.78.0 W1: an object-form protectedTools entry with a summary
     threads it into the map value alongside artifact_id."""
     rp = _artifact(
-        tmp_path, "lesina-invoice", {"lesina-invoice": {"command": "node"}},
+        tmp_path, "lantern-invoice", {"lantern-invoice": {"command": "node"}},
         manifest={"casa": {"protectedTools": [
             {"name": "invoice_reset",
              "summary": "Delete the invoice draft for {period}"},
         ]}})
     res = ResolutionResult(registry_valid=True, plugins=[rp])
     assert protected_map(res) == {
-        "mcp__plugin_lesina-invoice_lesina-invoice__invoice_reset": {
+        "mcp__plugin_lantern-invoice_lantern-invoice__invoice_reset": {
             "artifact_id": "0" * 64,
             "summary": "Delete the invoice draft for {period}",
         },

@@ -5,7 +5,7 @@ deferral is on by default regardless of tool count, and an explicitly
 allowed tool is still deferred. On cold voice sessions the resulting
 ToolSearch round-trips (each a full model turn) ate the 27s voice budget
 before `delegate_to_agent` could even be called (cids ef8c68bb/8fff87ef/
-93f501bb, N150 2026-07-15).
+93f501bb, production 2026-07-15).
 
 Fix under test: the casa-framework SDK MCP server config carries
 ``alwaysLoad: True`` — the CLI's per-server eager-load knob (shipped

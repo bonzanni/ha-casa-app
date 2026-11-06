@@ -1,4 +1,4 @@
-"""FR9: the 2026-07-12 lesina-invoice incident is structurally impossible.
+"""FR9: the 2026-07-12 invoice-plugin incident is structurally impossible.
 
 Trace: v1.1.0 -> v1.2.0 update where the version field never bumped ->
 version-keyed cache hit -> verify read the highest CACHED version ->
@@ -24,7 +24,7 @@ pytestmark = pytest.mark.unit
 
 
 def _old_entry():
-    return {"name": "lesina", "source": {
+    return {"name": "lantern", "source": {
         "type": "github", "repo": "o/r", "ref": "v1",
         "revision": "git:" + "c" * 40, "subdir": ""},
         "artifact_id": "c" * 64, "version": "1.1.0",
@@ -42,9 +42,9 @@ async def test_update_with_unchanged_manifest_version_still_swaps_artifact(
     st.raw["plugins"].append(_old_entry())
     # publish returns the SAME version "1.1.0" but a new artifact ("a"*64).
     tools_mod = _wire(monkeypatch, tmp_path, st,
-                      publish=_pr("lesina", version="1.1.0"))
+                      publish=_pr("lantern", version="1.1.0"))
     r = await tools_mod.plugin_update.handler(
-        {"name": "lesina", "new_ref": "master-at-a-new-commit"})
+        {"name": "lantern", "new_ref": "master-at-a-new-commit"})
     payload = json.loads(r["content"][0]["text"])
     assert payload["ok"] is True
     assert payload["version"] == "1.1.0"          # version UNCHANGED
@@ -65,7 +65,7 @@ async def test_phantom_tag_is_hard_prepublish_failure(monkeypatch, tmp_path):
     tools_mod = _wire(monkeypatch, tmp_path, st,
                       publish_exc=RefNotFound("404"))
     r = await tools_mod.plugin_update.handler(
-        {"name": "lesina", "new_ref": "phantom-tag"})
+        {"name": "lantern", "new_ref": "phantom-tag"})
     assert json.loads(r["content"][0]["text"])["kind"] == "ref_not_found"
     assert st.raw == before                       # registry unchanged
 
@@ -81,10 +81,10 @@ def test_stale_active_binding_is_never_green(monkeypatch, tmp_path):
     from test_agent_plugin_binding import _make_agent
 
     store = tmp_path / "store"
-    e_old = entry("lesina", ["specialist:finance"], revision="git:" + "c" * 40)
-    e_new = entry("lesina", ["specialist:finance"], revision="git:" + "d" * 40)
-    mk_artifact(store, "lesina", e_old["artifact_id"], revision="git:" + "c" * 40)
-    mk_artifact(store, "lesina", e_new["artifact_id"], revision="git:" + "d" * 40)
+    e_old = entry("lantern", ["specialist:finance"], revision="git:" + "c" * 40)
+    e_new = entry("lantern", ["specialist:finance"], revision="git:" + "d" * 40)
+    mk_artifact(store, "lantern", e_old["artifact_id"], revision="git:" + "c" * 40)
+    mk_artifact(store, "lantern", e_new["artifact_id"], revision="git:" + "d" * 40)
     reg_old = tmp_path / "registry-old.json"
     reg_old.write_text(json.dumps({"schema_version": 1, "plugins": [e_old]}))
     reg_new = tmp_path / "registry-new.json"
@@ -96,7 +96,7 @@ def test_stale_active_binding_is_never_green(monkeypatch, tmp_path):
 
     def _verify(reg_path):
         from tools import _tool_verify_plugin_state
-        return _tool_verify_plugin_state(plugin_name="lesina",
+        return _tool_verify_plugin_state(plugin_name="lantern",
                                          _registry_path=reg_path,
                                          _store_root=store)
 
@@ -104,7 +104,7 @@ def test_stale_active_binding_is_never_green(monkeypatch, tmp_path):
         # 1. Agent resolves against the OLD snapshot → binding = OLD.
         plugin_registry.reload_snapshot(registry_path=reg_old, store_root=store)
         await agent._get_plugin_resolution()
-        assert agent.active_plugin_binding == {"lesina": e_old["artifact_id"]}
+        assert agent.active_plugin_binding == {"lantern": e_old["artifact_id"]}
 
         # 2. Registry updated to NEW (snapshot refreshed) WITHOUT reconstructing.
         plugin_registry.reload_snapshot(registry_path=reg_new, store_root=store)

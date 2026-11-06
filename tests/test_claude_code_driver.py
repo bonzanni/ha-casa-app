@@ -3122,7 +3122,7 @@ class TestF7AdoptSummaryOnAttach:
     """v0.79.0 (§5, F7): a LEGACY pre-v0.79 ACTIVE engagement replayed at boot
     (summary_message_id is None) gets a summary posted + persisted on attach —
     §5's invariant (no running engagement without a summary) must hold without
-    depending on N150 currently having none active."""
+    depending on production currently having none active."""
 
     async def test_adopts_summary_for_legacy_record(self, tmp_path):
         from drivers.claude_code_driver import ClaudeCodeDriver

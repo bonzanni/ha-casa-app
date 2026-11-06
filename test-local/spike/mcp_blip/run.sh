@@ -1,5 +1,5 @@
 #!/bin/bash
-# Usage: ssh n150 -t 'cd /tmp && bash /path/to/mcp_blip/run.sh'
+# Usage: ssh <ha-host> -t 'cd /tmp && bash /path/to/mcp_blip/run.sh'
 #
 # Assumes `claude` CLI is on PATH (it is, inside the casa container's
 # engagement workspaces). Run this OUTSIDE the container to avoid polluting

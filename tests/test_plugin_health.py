@@ -79,9 +79,9 @@ def test_carry_forward_dedup_and_reappearance(tmp_path):
 def test_notice_matches_role_and_registry_wide(tmp_path):
     p = tmp_path / "health.json"
     plugin_health.write_report(
-        issues=[_issue(name="lesina-invoice", target="specialist:finance")],
+        issues=[_issue(name="lantern-invoice", target="specialist:finance")],
         warnings=[], path=p)
-    assert "lesina-invoice" in plugin_health.render_notice("finance", p)
+    assert "lantern-invoice" in plugin_health.render_notice("finance", p)
     # #551: the reader IS the notified party — never tell them someone else was.
     assert "notified" not in plugin_health.render_notice("finance", p)
     assert plugin_health.render_notice("assistant", p) is None
@@ -120,7 +120,7 @@ def test_notice_reload_required_uses_incomplete_update_wording(tmp_path):
     cached persistent Agent) — say the update did not finish."""
     p = tmp_path / "h.json"
     plugin_health.write_report(
-        issues=[_issue(name="lesina-invoice", target="specialist:finance",
+        issues=[_issue(name="lantern-invoice", target="specialist:finance",
                        stage="verify", reason_code="reload_required")],
         warnings=[], path=p)
     notice = plugin_health.render_notice("finance", p)
@@ -132,7 +132,7 @@ def test_notice_reload_required_uses_incomplete_update_wording(tmp_path):
 def test_notice_targeted_issue_does_not_warn_other_roles(tmp_path):
     p = tmp_path / "h.json"
     plugin_health.write_report(
-        issues=[_issue(name="lesina-invoice", target="specialist:finance",
+        issues=[_issue(name="lantern-invoice", target="specialist:finance",
                        stage="verify", reason_code="reload_required")],
         warnings=[], path=p)
     assert plugin_health.render_notice("assistant", p) is None

@@ -1907,7 +1907,7 @@ fail-open). Unknown policy denies. Matcher mismatch returns an empty
 - **Sweeper:** APScheduler job (id `workspace_sweep`) runs every 6 hours,
   deletes terminal workspaces past `retention_until`. Missing `.casa-meta.json`
   or missing `retention_until` → leave alone (operator prunes explicitly
-  via the MCP tool). The N150 has > 30 GB free so disk-pressure aggressive
+  via the MCP tool). The production box has > 30 GB free so disk-pressure aggressive
   mode is not implemented. Exception: a resident-hosted plugin job's
   `/data/engagements/<id>` carries no meta; the engagement transcript pass
   removes it once the job's terminal status is on disk.

@@ -1,6 +1,6 @@
 """INV-ENG-021 (design 2026-09-15 §2.A): the engager is not held.
 
-On the N150 (2026-09-15) Ellen's tool call was held for three minutes because
+On the production box (2026-09-15) Ellen's tool call was held for three minutes because
 ``engage_executor`` awaited the whole in-casa launch turn inline. Now the tool
 call opens the client, hands the launch TURN to an anchored owner in one
 synchronous block, and returns ``pending``. The owner does what the tool call

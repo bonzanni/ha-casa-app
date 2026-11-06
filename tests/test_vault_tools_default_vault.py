@@ -186,7 +186,7 @@ def test_get_item_fields_handler_returns_the_projection(monkeypatch):
 
 def test_two_items_matching_one_word_carry_matched_query_never_name(monkeypatch):
     """#1019: rows name the search term under `matched_query`, never under a
-    key a reader takes for the item's name — on the N150 two items whose
+    key a reader takes for the item's name — on the production box two items whose
     titles only CONTAIN "bank" were reported as "two items literally named
     bank". The served description says the same."""
     monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "ops_CANARY_TOKEN")

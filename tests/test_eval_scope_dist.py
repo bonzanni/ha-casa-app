@@ -1,6 +1,6 @@
 """Unit tests for scripts/eval_scope_dist.py — parser only.
 
-The SSH / log-fetch side is exercised by hand on the live N150; these
+The SSH / log-fetch side is exercised by hand on the live production box; these
 tests cover the log-line parser, the per-channel bucketing, the
 histogram binning, and the threshold-cluster flag.
 """

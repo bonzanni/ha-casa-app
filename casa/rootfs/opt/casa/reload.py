@@ -2149,7 +2149,7 @@ async def reload_agents(runtime: Any, *, role: str | None = None) -> list[str]:
                 on_disk_specialists.add(ent.name)
 
     # Defer to specialist_registry's own re-scan, then diff. S-3 (block-S
-    # live finding 2026-07-15, N150 07:49:56Z): the add/evict REPORT is a
+    # live finding 2026-07-15, production 07:49:56Z): the add/evict REPORT is a
     # before/after diff of the REGISTRY, not of runtime.agents — boot never
     # puts specialists into runtime.agents (they are direct-loaded), so the
     # first agents reload after boot used to mis-report every boot-loaded

@@ -23,7 +23,7 @@ tests/test_eval_scope_dist.py) and waits for the upstream emission.
 
 Usage:
     eval_scope_dist.py --log-file /path/to/casa.log --threshold 0.35
-    eval_scope_dist.py --ha-host n150-ha --since 24h --threshold 0.35
+    eval_scope_dist.py --ha-host <ha-host> --since 24h --threshold 0.35
     eval_scope_dist.py --log-file casa.log --threshold 0.35 --json > dist.json
 """
 

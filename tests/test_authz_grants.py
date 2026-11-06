@@ -412,7 +412,7 @@ def test_authz_grant_sweep_registered_hourly_beside_engagement_sweep():
 class TestShortToolName:
     def test_mcp_namespaced_name_returns_segment_after_last_dunder(self):
         assert (
-            short_tool_name("mcp__plugin_lesina-invoice_finance__invoice_reset")
+            short_tool_name("mcp__plugin_lantern-invoice_finance__invoice_reset")
             == "invoice_reset"
         )
 
@@ -454,7 +454,7 @@ class TestRenderChallengeMessage:
         assert f"```\n{canonical}\n```" in text
 
     def test_full_tool_id_present_verbatim_even_when_mcp_namespaced(self):
-        full = "mcp__plugin_lesina-invoice_finance__invoice_reset"
+        full = "mcp__plugin_lantern-invoice_finance__invoice_reset"
         text = render_challenge_message(
             tool_name=full, enforcement_role="finance",
             canonical_json='{"id":"INV-1"}',

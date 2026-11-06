@@ -4,7 +4,7 @@
 both tools were declared with the SDK's dict shorthand, which the SDK compiles
 to ``required = every key`` (``claude_agent_sdk.create_sdk_mcp_server``'s
 ``_build_schema``), so the MCP input validator rejected every call that omitted
-``vault`` BEFORE the handler ran. Measured on the N150 on 2026-09-15:
+``vault`` BEFORE the handler ran. Measured on the production box on 2026-09-15:
 ``list_vault_items(query="gmail")`` → ``Input validation error: 'vault' is a
 required property``; the configurator gave up on wiring the plugin's secrets.
 
@@ -45,7 +45,7 @@ def test_vault_omitted_is_accepted_by_the_served_schema(
     schema = _served_schema(tool_def)
     assert schema["required"] == required
     assert "vault" in schema["properties"]
-    # The MCP validator's own verdict on the exact call the N150 refused.
+    # The MCP validator's own verdict on the exact call the production box refused.
     jsonschema.validate(omitted_call, schema)
 
 

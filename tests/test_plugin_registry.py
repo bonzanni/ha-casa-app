@@ -27,12 +27,12 @@ from plugin_registry import (
 pytestmark = pytest.mark.unit
 
 
-def _entry(name="lesina-invoice", **kw):
+def _entry(name="lantern-invoice", **kw):
     e = {
         "name": name,
         "source": {
             "type": "github",
-            "repo": "bonzanni/casa-plugin-lesina-invoice",
+            "repo": "bonzanni/casa-plugin-lantern-invoice",
             "ref": "master",
             "revision": "git:" + "2e" * 20,
             "subdir": "",
@@ -99,7 +99,7 @@ def test_load_valid_registry(tmp_path):
     p = _write(tmp_path, {"schema_version": 1, "plugins": [_entry()]})
     data = load_registry(p)
     assert data.valid is True
-    assert [e["name"] for e in data.entries] == ["lesina-invoice"]
+    assert [e["name"] for e in data.entries] == ["lantern-invoice"]
     assert data.entry_issues == []
 
 
@@ -126,7 +126,7 @@ def test_malformed_entry_is_per_entry_skip(tmp_path):
     p = _write(tmp_path, {"schema_version": 1, "plugins": [bad, good]})
     data = load_registry(p)
     assert data.valid is True
-    assert [e["name"] for e in data.entries] == ["lesina-invoice"]
+    assert [e["name"] for e in data.entries] == ["lantern-invoice"]
     assert len(data.entry_issues) == 1
     assert data.entry_issues[0].reason_code == "entry_invalid"
 

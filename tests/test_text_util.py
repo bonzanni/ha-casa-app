@@ -82,7 +82,7 @@ def test_truncate_single_long_word():
 
 
 def test_sanitize_segment_keeps_hyphens_and_underscores():
-    assert sanitize_segment("lesina-invoice") == "lesina-invoice"
+    assert sanitize_segment("lantern-invoice") == "lantern-invoice"
     assert sanitize_segment("a_b-c9") == "a_b-c9"
 
 

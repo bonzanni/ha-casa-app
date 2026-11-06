@@ -8362,7 +8362,7 @@ available for tuning.
 ### Fixed
 
 - A plugin update can no longer silently keep executing stale code
-  (the v1.1.0→v1.2.0 lesina-invoice incident): artifacts are content-addressed,
+  (the v1.1.0→v1.2.0 invoice-plugin incident): artifacts are content-addressed,
   verification compares the registry's desired state against each running
   agent's actual loaded artifact, and reports `reload_required` on any mismatch.
 
@@ -9905,7 +9905,7 @@ re-create/seed config after upgrading (or restore from a backup of the old dir).
   classification call failed and silently defaulted to `private` (leak-safe but over-restrictive:
   *all* new long-term memories ended up `private`, and the logs flooded). With `allowed_tools=[]`
   there is nothing to approve, so `acceptEdits` (the mode the rest of Casa runs as root) is
-  equivalent and works. Found live on the N150 right after the v0.45.0 deploy. A regression guard
+  equivalent and works. Found live on the production box right after the v0.45.0 deploy. A regression guard
   test now asserts the classifier never uses `bypassPermissions`.
 
 ## [0.45.0] - 2026-06-04 — Tiered memory access (4/4): full legacy retirement
@@ -10277,7 +10277,7 @@ v0.37.5 but were never struck from `docs/ROADMAP-backlog.md`.
   narration), A-3-bis LOW (assistant prompt anti-pattern forbidding
   `#[role]` constructions), and the D-1-followup attribution (already
   documented in the v0.37.1 and v0.37.5 archive entries). Struck.
-- **F-3 triage carry-forward.** N150 confirmed on HA core `2026.5.1`
+- **F-3 triage carry-forward.** Production confirmed on HA core `2026.5.1`
   (latest, no GetDateTime failure path in source). No active
   reproduction in recent logs — the tool fires only when an agent
   selects it. Backlog entry updated with current state; re-test via
@@ -10321,7 +10321,7 @@ remained red after v0.37.10 (PR #62, run 25880387018). No product change.
 ### Notes
 
 - This is a test-harness fix only. Product code on master has been
-  correct since v0.37.9; production (N150) ran healthy on 0.37.10
+  correct since v0.37.9; production ran healthy on 0.37.10
   through exploration7's operator-attended verifies (P31 + P32 + O-1
   all GREEN end-to-end). Not reverted per `feedback_ship_gate_doctrine`
   "revert if red" because reverting v0.37.9 + v0.37.10 would lose 7
@@ -10438,7 +10438,7 @@ brainstorm — it's an architectural design choice, not a hotfix.
   have workspace-scoped HOME by design (per `drivers/workspace.py`
   `render_run_script` template). The H-1 verify path is `casa-main` +
   `svc-casa-mcp` `/proc/<pid>/environ`, NOT the engagement subprocess.
-  Updated `docs/exploration-playbook/blocks/G-lifecycle.md`.
+  Updated the lifecycle test notes.
 - **LOW O-6: Ellen now scopes engage_executor `task=` to the new task.**
   Prompt section added to `defaults/agents/assistant/prompts/system.md`
   forbidding context bleed from prior conversation turns into the
@@ -10491,7 +10491,7 @@ marketplace add` workaround during plugin install) and **LOW N-1**
   mirrors the K-1 precedent.
 
 - **LOW N-1: playbook documents `casactl --scope=executors` (7th scope).**
-  `docs/exploration-testing-playbook.md::P19` and the "Granular reload
+  The playbook's step P19 and the "Granular reload
   via `casactl`" scope table both listed 6 scopes when `reload.py:709`
   has registered `executors` as a 7th since v0.37.1. `casactl --help`
   and `configurator/doctrine/reload.md` already listed all 7 — only
@@ -10576,7 +10576,7 @@ routinely exceeded the 30s `/healthz` wait_healthy ceiling between
   container (fastembed's `define_cache_dir` reads it) so the model is
   baked into a Docker layer and reused, not re-downloaded per container.
   Image gains ~2.5GB but boot now reaches `/healthz` in seconds. No
-  production image change (N150 has persistent caches across restarts).
+  production image change (Production has persistent caches across restarts).
 
 ## [0.37.5] - 2026-05-13 — Bug-bundle: E-1 + F-1 + A-3-bis
 
@@ -10634,7 +10634,7 @@ deny with empty error reason.
   icons is spec-compliant as of v0.37.1 (commit `800a3516`): numeric
   `icon_custom_emoji_id` from `getForumTopicIconStickers`, state-prefixed
   title only. 2026-05-13 exploration2 confirmed the wire shape on the
-  N150. Visual rendering pending operator-attended supergroup
+  production. Visual rendering pending operator-attended supergroup
   inspection. Memory `project_v037_1_bug_bundle_shipped` updated to
   move D-1 out of the "deferred to operator verify" list.
 
@@ -10655,7 +10655,7 @@ six findings from `docs/bug-review-2026-05-13-exploration.md`).
   silently stripped from the topic name. New `channels/topic_icons.py`
   module owns the locked role → custom_emoji_id map (📁 configurator,
   💻 plugin-developer, 💰 finance, 🤖 default), verified live
-  against N150's curated set on 2026-05-13. `compose_topic_title`
+  against the production box's curated set on 2026-05-13. `compose_topic_title`
   now emits `<state> <task>` (role lives in the bubble).
   `close_topic_with_check` renamed to `close_topic` and no longer
   flips the icon. Specialist engagement open path harmonised to
@@ -10751,7 +10751,7 @@ six findings from `docs/bug-review-2026-05-13-exploration.md`).
 - **LOW S-1: `agent_loader` rejected ANY unknown file in an agent
   directory.** Editor-backup artifacts (`.bak`/`.swp`/`.tmp`/`.orig`/`*~`)
   broke `casactl reload --scope=agent` with `LoadError: unknown
-  file(s)`. Footgun for ad-hoc N150 SSH edits using `sed -i.bak`.
+  file(s)`. Footgun for ad-hoc production SSH edits using `sed -i.bak`.
   Adds `_is_editor_backup()` helper that skips those suffixes,
   parallel to the existing dotfile skip. Diagnostic for genuine
   unknown files now mentions the whitelist + suggests `git restore`.
@@ -10762,7 +10762,7 @@ six findings from `docs/bug-review-2026-05-13-exploration.md`).
 
 ### Fixed
 - **HIGH: post-`scope=agent` reload broke turn dispatch.** v0.35.0
-  live verify on N150 hung every `/invoke/assistant` turn until 504
+  live verify on production hung every `/invoke/assistant` turn until 504
   after `casactl reload --scope=agent --role=...`.  Root cause:
   `MessageBus.register()` always replaced `self.queues[name]` with a
   fresh `asyncio.PriorityQueue`. The reload handler called
@@ -10804,7 +10804,7 @@ six findings from `docs/bug-review-2026-05-13-exploration.md`).
 ### Doctrine + playbook
 - `executors/configurator/doctrine/reload.md` rewritten.
 - All `recipes/**/*.md` updated for new tool shape.
-- `docs/exploration-testing-playbook.md` adds `casactl reload` recipes.
+- The exploration playbook adds `casactl reload` recipes.
 
 ## [0.34.3] - 2026-05-02 — Hotfix: O-1 + O-3 (P12 plugin lifecycle unblock)
 
@@ -10872,7 +10872,7 @@ resident SDK subprocesses.
 
 ### Live verification (planned)
 
-- O-1: drive a fresh plugin-developer engagement end-to-end on N150
+- O-1: drive a fresh plugin-developer engagement end-to-end on production
   post-deploy. Expect `mcp__casa-framework__emit_completion` to
   succeed (NOT `No such tool available`); engagement should finalize
   via emit_completion path, NOT via topic `/complete` slash command.
@@ -11264,7 +11264,7 @@ on user-driven turns).
 
 ### Not in this release
 
-- F-1 (ha-prod-console plugin smoke skill HMAC noise) — not Casa.
+- F-1 (host-console plugin smoke skill HMAC noise) — not Casa.
 - F-3 (HA MCP `GetDateTime ok=False`) — defer to next bug-review pass;
   check HA MCP server's current release first.
 - policies/* schema validation gap (carried over from v0.31.1).
@@ -11297,7 +11297,7 @@ Bug bundle from `docs/bug-review-2026-05-02-exploration.md`. Five
 collateral findings filed during the first exploration session against
 v0.31.1 with NPM upstream finally bound. No HIGH-severity bugs in the
 bundle — one MEDIUM doctrine drift + four LOW (telemetry, intermittent,
-third-party, contract). F-1 (ha-prod-console plugin) and F-3 (HA MCP
+third-party, contract). F-1 (host-console plugin) and F-3 (HA MCP
 GetDateTime) deferred — out of Casa scope.
 
 ### Fixed
@@ -11366,9 +11366,9 @@ GetDateTime) deferred — out of Casa scope.
 
 ### Out of scope (filed, not fixed)
 
-- **F-1 (not Casa) — ha-prod-console plugin smoke skill logs HMAC
+- **F-1 (not Casa) — host-console plugin smoke skill logs HMAC
   ERROR even when `webhook_auth_enabled: false`.** Fix belongs in the
-  ha-prod-console plugin's smoke skill, not Casa.
+  host-console plugin's smoke skill, not Casa.
 - **F-3 — HA MCP `GetDateTime` returns `ok=False`.** Tool is shadowed
   by SDK `<current_time>` injection; user-visible impact is zero.
   Investigate against current HA MCP server release in a separate
@@ -11376,7 +11376,7 @@ GetDateTime) deferred — out of Casa scope.
 
 ## [0.31.1] - 2026-05-01 — Hotfix: validate_config_repo scoping + hello-driver/hooks.yaml seed
 
-Live N150 verify against v0.31.0's E-G gate exposed two follow-on
+Live production verify against v0.31.0's E-G gate exposed two follow-on
 issues that had to be fixed before the gate works for actual
 configurator engagements.
 
@@ -11436,14 +11436,14 @@ configurator engagements.
   key was correctly refused; configurator's full-context reasoning
   trace shows the schema error message reached the model and the
   model self-corrected to add the trait inside `card:` (the only
-  free-text field in the character schema). Net result on N150:
+  free-text field in the character schema). Net result on production:
   zero schema-invalid YAML landed in the inner addon_configs git.
   v0.31.1 just unblocks the valid commit.
 - A pre-existing valid `card:` edit on `agents/assistant/
   character.yaml` plus the configurator's accidental rewrite of
   `agents/executors/hello-driver/hooks.yaml` (which corrected the
   PascalCase shape — itself the latent bug fixed in this ship) are
-  both dirty in the live N150 working tree post-v0.31.1 deploy.
+  both dirty in the live production working tree post-v0.31.1 deploy.
   Recovery: either let the next configurator engagement commit the
   card change (the now-valid hello-driver/hooks.yaml will land in
   the same commit), or manually `git -C /addon_configs/casa-agent
@@ -11538,7 +11538,7 @@ recovery.
 
 ### Documentation
 
-- `docs/exploration-testing-playbook.md::Phase Z` — three
+- Exploration playbook Phase Z — three
   load-bearing corrections after the v0.30.0 ship's Phase Z burned
   four operator secrets (rotation deferred per pre-1.0.0 latitude)
   and FATALed on a leftover schema-invalid YAML: (a) options-backup
@@ -11793,13 +11793,13 @@ and a CRITICAL deployment-visibility gap masking every
   `all_addon_configs:rw` made `/addon_configs/casa-agent/`
   persistent. E-C is the unintended consequence of that
   persistence — every fix shipped after v0.19.0 to
-  `/opt/casa/defaults/` is silently dark on the live N150 until
+  `/opt/casa/defaults/` is silently dark on the live production box until
   operator wipe.
 
 ### Success signal
 
 Next exploration session reruns
-`docs/exploration-testing-playbook.md` from P4.2 onwards. Expected:
+the exploration playbook from P4.2 onwards. Expected:
 - **P4.2:** configurator engagement closes cleanly
   (`status=completed`, `config_git_commit` + `emit_completion`
   succeed); no Bash fallback.
@@ -11862,7 +11862,7 @@ noticed; the bug was load-bearing for ~half the exploration playbook
 ## [0.28.0] - 2026-04-30 — E-16: Configurator plugin-tools gap
 
 Closes the Plan 4b consumer-side gap surfaced by the 2026-04-30 audit
-and exposed in `docs/exploration-testing-playbook.md::P12 step 3`.
+and exposed in step 3 of exploration playbook P12.
 Until this ship, the Configurator could neither call the plugin
 install/remove tools (not in `tools.allowed`) nor walk the operator
 through the flow (no `recipes/plugin/` doctrine).
@@ -11967,7 +11967,7 @@ fixes; one ship.
 
 ### Changed
 
-- **`consult_other_agent_memory` falls through to `cross_peer_context`** for disabled-but-known specialists. Memory is data, enablement is operational. Closes E-15 — live N150 verification of M6 cross_peer recall was BLOCKED on Finance disabled (per `project_memory_m6_shipped` Live N150 status). Now Ellen can recall a disabled specialist's accumulated memory.
+- **`consult_other_agent_memory` falls through to `cross_peer_context`** for disabled-but-known specialists. Memory is data, enablement is operational. Closes E-15 — live production verification of M6 cross_peer recall was BLOCKED on Finance disabled (per `project_memory_m6_shipped` Live production status). Now Ellen can recall a disabled specialist's accumulated memory.
 - **`assistant/prompts/system.md`** — hedge inverted. Ellen now prefers `consult_other_agent_memory` (cheap memory recall) and reserves `delegate_to_agent` for fresh-data cases. Tina added to the cross-role example list.
 
 ### Added
@@ -12020,8 +12020,8 @@ fixes; one ship.
 
 - Local pytest (`-m "not docker and not slow"`, `tests/` scope): pass count + 12 new tests, 0 failed.
 - Smoke 3/3 PASS (healthz / turn-assistant / voice-sse).
-- N150 telemetry distribution: 1× `call_type=self_overlay` per turn + N× `call_type=self` per turn (vs prior shape of N× `call_type=self` only).
-- N150 `BudgetTracker` warning silent for first 3 Ellen turns post-deploy.
+- Production telemetry distribution: 1× `call_type=self_overlay` per turn + N× `call_type=self` per turn (vs prior shape of N× `call_type=self` only).
+- Production `BudgetTracker` warning silent for first 3 Ellen turns post-deploy.
 
 ## [0.25.0] - 2026-04-30 — Phase 4b: SDK observability
 
@@ -12085,7 +12085,7 @@ fixes; one ship.
   `log_cid.install_logging` quiets the `opentelemetry` logger to
   WARNING as belt-and-braces against future SDK paths that emit
   through the same logger. Live evidence: 2026-04-30 06:40:22Z and
-  06:40:29Z N150 v0.23.0 cids `c8fcfca1` + `c3fae47c`.
+  06:40:29Z production v0.23.0 cids `c8fcfca1` + `c3fae47c`.
 
 ### Internal
 - Single new test `test_log_cid.py::TestInstallLogging::test_otel_logger_quieted_to_warning`
@@ -12261,7 +12261,7 @@ trail, git-history collapse).
 
 ### Verification
 
-Live-N150 smoke (post-deploy):
+Live-production smoke (post-deploy):
 
 1. `mount | grep addon_config` → expect a line of the shape
    `/dev/<X> on /addon_configs type <fstype>` (or a `bind` flag if
@@ -12813,7 +12813,7 @@ v0.15.0 deferred manual smoke.
   behind confirmation read-back) tracked as future roadmap item.
 - Tier-2 e2e exercises butler→HA directly via the mock-SDK hook;
   the Ellen→delegate_to_agent→butler two-hop chain stays covered by the
-  J.5 manual smoke (live SDK on N150).
+  J.5 manual smoke (live SDK on production).
 
 ## [0.15.0] - 2026-04-25 — Resident-to-resident delegation
 
@@ -12860,7 +12860,7 @@ the only delegator" architectural constraint.
 
 ## [0.14.12] - 2026-04-25
 
-Log-noise sweep — four fixes surfaced by a live N150 log audit
+Log-noise sweep — four fixes surfaced by a live production log audit
 (2026-04-25). All changes target log signal/noise; no behavior shifts
 beyond the heartbeat-delivery one called out below.
 
@@ -12974,7 +12974,7 @@ seed-copy populates cc-home with 5 default plugins but they all carry
 auto-enable). The binding layer (`plugins_binding.py::build_sdk_plugins`)
 filters out `enabled: false` entries — so engagements were getting
 `plugins=[]` even though all 5 plugins were structurally present.
-Live verification on N150 v0.14.9 caught this: `claude plugin list
+Live verification on production v0.14.9 caught this: `claude plugin list
 --json` showed 5/5 plugins, all `enabled=False`.
 
 ### Fixed
@@ -13029,7 +13029,7 @@ via `/run/s6/container_environment/GITHUB_TOKEN`.
   image-baked `/opt/claude-seed/` on first boot (idempotent — sentinel
   is `installed_plugins.json` in cc-home). Replaces the v0.14.8 boot
   install loop. Symlink-based — CC CLI tolerates `installPath` via
-  symlink (verified by spike D.1 on N150). No network access required
+  symlink (verified by spike D.1 on production). No network access required
   at boot for the 5 default plugins.
 
 - **`Dockerfile`** pairs each `claude plugin install` with a
@@ -13068,7 +13068,7 @@ at engagement scope). No secret material leaks anywhere.
   `/opt/claude-seed/` is rebuilt fresh in the new image; cc-home is
   refilled by the seed-copy on next boot.
 
-- The unified path is verified by the v0.14.9 spike findings on N150
+- The unified path is verified by the v0.14.9 spike findings on production
   (2026-04-25): all four spikes passed against the production
   `op://Casa/GitHub/credential` with the proposed credential-helper
   pattern.
@@ -13077,7 +13077,7 @@ at engagement scope). No secret material leaks anywhere.
 
 Boot-time fix — register the seed marketplace alongside the user
 marketplace so default plugins actually install. Caught from the
-N150 boot log: every default plugin in
+Production boot log: every default plugin in
 `defaults/agents/**/plugins.yaml` was logging
 `WARNING: plugin install skipped: <name>@casa-plugins-defaults`
 and `claude plugin list --json` returned `[]`, so the binding
@@ -13206,7 +13206,7 @@ are surgical fixes with regression tests.
   into `bash -c "..."` / `sh -c "..."`. Variants that previously
   bypassed the safety hook (`rm -r -f`, `rm --recursive --force`,
   `rm -rfv`, `rm -fR`, `/usr/bin/rm -rf`, `bash -c "rm -rf /"`,
-  `; rm -rf /`) are now all blocked. Verified live on N150 v0.14.5
+  `; rm -rf /`) are now all blocked. Verified live on production v0.14.5
   before the fix.
 - **Tarball zip-slip / symlink-escape (`system_requirements/tarball.py`).**
   `tarfile.extractall` and `zipfile.extractall` now validate every
@@ -13271,7 +13271,7 @@ are surgical fixes with regression tests.
 
 ### Tests
 
-- 37 new regression tests covering all of the above. The live N150
+- 37 new regression tests covering all of the above. The live production
   bypass for `block_dangerous_bash` is captured directly in
   `test_rm_recursive_force_all_blocked`; the rest mirror their bug
   preconditions one-for-one.
@@ -13294,7 +13294,7 @@ are surgical fixes with regression tests.
 ## [0.14.5] - 2026-04-24
 
 ### Fixed
-- **N150 turn-assistant failure after plan 4b:** `assistant/runtime.yaml`
+- **Production turn-assistant failure after plan 4b:** `assistant/runtime.yaml`
   had `cwd: /addon_configs/casa-agent/workspace` (legacy), but F.2 dropped
   the `mkdir -p workspace/...` block from setup-configs.sh. SDK spawn
   failed with `CLIConnectionError: Working directory does not exist`.
@@ -13312,7 +13312,7 @@ are surgical fixes with regression tests.
 ## [0.14.3] - 2026-04-24
 
 ### Fixed
-- **N150 boot crash on v0.14.2:** `assistant/delegates.yaml` plugin-developer
+- **Production boot crash on v0.14.2:** `assistant/delegates.yaml` plugin-developer
   entry used `{executor_type, description, typical_task, engagement_mode}`
   shape but `delegates.v1.json` schema only accepts `{agent, purpose, when}`.
   Rewrote the entry in the correct shape. All 4 delegate entries now match
@@ -13321,7 +13321,7 @@ are surgical fixes with regression tests.
 ## [0.14.2] - 2026-04-24
 
 ### Fixed
-- **N150 boot crash on v0.14.1:** `agent_loader._check_file_set` rejected
+- **Production boot crash on v0.14.1:** `agent_loader._check_file_set` rejected
   `plugins.yaml` (added by Plan 4b B.7) as "unknown file", crashing
   casa-main with exit 1 before SDK clients spawned. Added `plugins.yaml`
   to the `optional` file set for resident, specialist, and executor tiers.
@@ -13467,7 +13467,7 @@ are surgical fixes with regression tests.
 - **MCP-blip spike harness** at `test-local/spike/mcp_blip/` — throwaway
   aiohttp server + driver script that simulates mid-`tools/call` connection
   loss to empirically classify CC's MCP client as pessimistic (retries) or
-  optimistic (no retry). Runs on N150, not CI. Result feeds the
+  optimistic (no retry). Runs on production, not CI. Result feeds the
   Plan 4b / 3.6 decision.
 
 ### Changed
@@ -13496,7 +13496,7 @@ are surgical fixes with regression tests.
 
 ### Spike findings
 - (Fill in from `test-local/spike/mcp_blip/README.md` Result section
-  after running the spike on the N150. Include the 1-line verdict:
+  after running the spike on the production box. Include the 1-line verdict:
   `retry_observed=yes|no`, and the ROADMAP implication for 3.6 /
   Plan 4b.)
 
@@ -13655,7 +13655,7 @@ are surgical fixes with regression tests.
 - Mock Telegram Bot API server at `test-local/e2e/mock_telegram/server.py`
   used by the new `test_engagement.sh` (CI).
 - Manual Telegram smoke at `test-local/smoke/test_telegram_engagement.sh`
-  exercises the real Bot API; not in CI — run pre-N150 deploy.
+  exercises the real Bot API; not in CI — run pre-production deploy.
 - `.github/workflows/qa.yml` adds the engagement e2e step.
 
 ### Breaking — acceptable pre-1.0.0
@@ -13845,7 +13845,7 @@ between addon updates; breaking changes ship by updating the shipped
 defaults, not by migrating user state. Migration blocks + `.applied`
 markers + `.pre-vX.Y.Z.bak` backups are over-engineering at this
 stage — v0.8.5 proved it: the scope-corpus migration block shipped
-with v0.8.5 never fired on the N150 deploy because the overlay was
+with v0.8.5 never fired on the production deploy because the overlay was
 fresh on update; seed-if-missing produced an identical outcome.
 
 Removed:
@@ -13871,8 +13871,8 @@ Removed:
 Ship-gate doctrine saved to
 `memory/feedback_ship_gate_doctrine.md` (new this session):
 9-gate sequence per version bump; Monitor as the default for tests
-and long-running tasks; `/ha-prod-console:*` as the first choice for
-N150 interaction; pre-1.0.0 = no migrations.
+and long-running tasks; the host-console plugin as the first choice for
+production interaction; pre-1.0.0 = no migrations.
 
 Unchanged (NOT migrations):
 - `executor_registry.py` orphan-recovery tombstone — runtime
@@ -13909,7 +13909,7 @@ Spec at `docs/superpowers/specs/2026-04-21-3.2.2-scope-routing-hardening.md`.
   new `HumanFormatter` appends them as `key=val` suffix. Benefits any
   future structured log call, not just `scope_route`. New
   `STANDARD_LOGRECORD_ATTRS` constant + `_record_extras()` helper.
-- **`scripts/eval_scope_dist.py` works against live N150 logs** —
+- **`scripts/eval_scope_dist.py` works against live production logs** —
   the parser was always ready for this shape; the upstream emission
   is the change that unblocks it.
 - **One-shot v0.8.5 migration** in `setup-configs.sh` — refreshes
@@ -13979,7 +13979,7 @@ restore prior log shape.
   at `casa_core.py:427` are untouched — the env var is now sourced
   from `bashio::config 'scope_threshold'` in
   `etc/s6-overlay/s6-rc.d/svc-casa/run`. Restart-required, matching
-  every other addon option (restart cost on N150 ≈ 3 sec).
+  every other addon option (restart cost on production ≈ 3 sec).
 
 ### Known limitations
 - `scripts/eval_scope_dist.py` expects JSON-structured `scope_route`
@@ -14003,11 +14003,11 @@ restore prior log shape.
   finance/business/personal. Tracked as a 3.2.2 follow-up.
 
 ### Notes — post-deploy recipe
-- Full-mode pytest on the live N150:
+- Full-mode pytest on the live production box:
   `sudo docker exec addon_c071ea9c_casa-agent sh -c \
    'cd /opt/casa && CASA_REAL_EMBED=1 python3 -m pytest \
     /opt/casa/tests/test_scope_routing_eval.py::TestScopeRoutingTesterFull -v'`
-  (run via `/ha-prod-console:exec` after each deploy that touches
+  (run through the host console after each deploy that touches
   `scopes.yaml` descriptions or the threshold).
 
 ## 0.8.3 — 2026-04-21 — Voice-latency optimizations
@@ -14031,7 +14031,7 @@ restore prior log shape.
   since Tina only owns `house`. Assistant (3 owned scopes) still
   classifies.
 
-### Latency impact (measured on N150 with e5-large)
+### Latency impact (measured on production with e5-large)
 - Butler voice critical path: ~90 ms → ~1 ms on cache hit
 - Butler voice total per-turn overhead: ~180 ms → ~0-90 ms
   (write-path classifier removed unconditionally, read-path when
@@ -14048,7 +14048,7 @@ restore prior log shape.
   error on first init. Switched `_DEFAULT_MODEL_NAME` (and the
   setup-configs pre-warm invocation) to `intfloat/multilingual-e5-large`
   so the classifier comes up non-degraded. The large variant is ~500 MB
-  (vs ~200 MB for small) — still well within N150 capacity.
+  (vs ~200 MB for small) — still well within production capacity.
 - Write-path trust bypass — when the channel's trust tier filters out
   every scope the agent owns (`scopes_owned ∩ readable == []`), the
   write path was falling back to `default_scope` and persisting the
@@ -14082,7 +14082,7 @@ restore prior log shape.
 
 ### Image size
 - Uncompressed image grows by ~200-350 MB (Debian base + Python stack
-  larger than Alpine). No impact on the N150's 120 GB storage.
+  larger than Alpine). No impact on the production box's 120 GB storage.
 
 ## 0.8.0 — 2026-04-20 — Phase 3.2: Domain scope runtime
 
@@ -14354,7 +14354,7 @@ find their old flat YAMLs unread; seed the new tree by deleting
 
 ### Notes
 
-- No deployment steps for existing N150 users beyond `ha apps update`.
+- No deployment steps for existing users beyond `ha apps update`.
   The scope-metadata and channels-backfill migrations are idempotent;
   running an older Casa after upgrading YAMLs is a no-op (extra
   fields ignored by pre-3.1 loaders).
@@ -14364,7 +14364,7 @@ find their old flat YAMLs unread; seed the new tree by deleting
 ## 0.5.10 — 2026-04-20 — Phase 5.7: Close public dashboard
 
 ### Fixed
-- On the public hostname (`agent.oudekamp.bonzanni.casa`, addon-nginx
+- On the public hostname (addon-nginx
   `:18065`), `GET /` no longer proxies to casa-core and returns
   the dashboard HTML. It now returns a static **nginx 404** via an
   exact-match `location = /` rule placed immediately before the
@@ -14630,7 +14630,7 @@ find their old flat YAMLs unread; seed the new tree by deleting
 ### Deferred
 - **Item J — narrow AppArmor `file,` rule** (spec §3). Requires the
   complain-mode discovery loop on real Linux hardware with AppArmor
-  enabled (the N150 production box). Casa's dev machine is Windows
+  enabled (the production box). Casa's dev machine is Windows
   / Docker Desktop; kernel AppArmor is unreachable. Spec decision
   H1 explicitly warns against shipping a theoretical path list
   without the `aa-logprof` / kernel-audit capture. Left on the 5.3

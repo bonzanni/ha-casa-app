@@ -18,7 +18,7 @@
 # - This test does NOT exercise Ellen→delegate_to_agent→butler reasoning.
 #   That two-hop chain requires the in-process casa-framework MCP server
 #   (no URL) which the mock-SDK tool-invoke hook can't simulate. Real chain
-#   coverage lives in J.5 manual smoke (live SDK + Anthropic key on N150).
+#   coverage lives in J.5 manual smoke (live SDK + Anthropic key on production).
 
 set -euo pipefail
 export BOOT_TIMEOUT="${BOOT_TIMEOUT:-180}"

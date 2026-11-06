@@ -1375,8 +1375,8 @@ _SETUP_TOOL_RE = re.compile(r"^setup_[a-z0-9_]{1,64}$")
 
 
 def manifest_setup_tool(manifest: dict) -> str | None:
-    """Guarded + STRICT ``casa.setupTool`` extraction (v0.112.0,
-    casa-plugin-elevenlabs#2). ABSENT → ``None``. PRESENT-but-malformed
+    """Guarded + STRICT ``casa.setupTool`` extraction (v0.112.0).
+    ABSENT → ``None``. PRESENT-but-malformed
     (non-string, empty, whitespace/qualification, not ``setup_``-prefixed,
     outside the conservative ASCII tool-name grammar, over-long) is a
     plugin-author error: raises ``StoreError(reason_code=

@@ -123,7 +123,7 @@ def test_gather_evidence_scans_the_outbox_root(tmp_path, monkeypatch):
 
 
 def test_first_stage2_upgrade_root_owned_dirs_initialises_not_refuses(tmp_path):
-    # v0.170.1 REGRESSION (the N150 brick): first Stage-2 boot of a pre-Stage-2
+    # v0.170.1 REGRESSION (the production brick): first Stage-2 boot of a pre-Stage-2
     # install — engagement DIRS exist but are ROOT-owned (uid 0), records carry
     # UNALLOCATED_UID, no durable counter/anchor, NO marker, no casa-eng passwd,
     # no proc casa uid. Marker ABSENT → Stage 2 never initialised → reconstruct

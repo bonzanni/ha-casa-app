@@ -3,12 +3,12 @@
 **Purpose:** resolve §10.2 of the Plan 4a design spec — does Claude Code's MCP
 HTTP client retry `tools/call` after a mid-call connection loss?
 
-**Location:** run ON N150 (real `claude` CLI needed). Not CI-gated.
+**Location:** run ON the HA host (real `claude` CLI needed). Not CI-gated.
 
 ## Run
 
 ```bash
-ssh n150 -t 'cd /tmp && rm -rf mcp_blip && git clone ... && \
+ssh <ha-host> -t 'cd /tmp && rm -rf mcp_blip && git clone ... && \
   bash mcp_blip/run.sh'
 ```
 

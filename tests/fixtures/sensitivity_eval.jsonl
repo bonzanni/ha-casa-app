@@ -1,26 +1,26 @@
-{"fact": "Nicola's monthly net salary is around 5,000 EUR deposited on the 27th.", "channel": "telegram", "expected_tier": "private", "note": "income (money -> private even if household)"}
-{"fact": "The ENPICOM invoice is usually 4,200 EUR plus 21% VAT.", "channel": "telegram", "expected_tier": "private", "note": "finance/client amount"}
-{"fact": "Nicola changes the 'consulting hours' line on every invoice.", "channel": "telegram", "expected_tier": "private", "note": "finance pattern"}
+{"fact": "Daniel's monthly net salary is around 5,000 EUR deposited on the 27th.", "channel": "telegram", "expected_tier": "private", "note": "income (money -> private even if household)"}
+{"fact": "The Brightfield invoice is usually 4,200 EUR plus 21% VAT.", "channel": "telegram", "expected_tier": "private", "note": "finance/client amount"}
+{"fact": "Daniel changes the 'consulting hours' line on every invoice.", "channel": "telegram", "expected_tier": "private", "note": "finance pattern"}
 {"fact": "The household mortgage payment is 1,500 EUR per month.", "channel": "telegram", "expected_tier": "private", "note": "money is private (family does not co-manage)"}
-{"fact": "Nicola's bank is ING, account ending 4471.", "channel": "telegram", "expected_tier": "private", "note": "personal-account detail"}
-{"fact": "Nicola's email account password is a secret string.", "channel": "telegram", "expected_tier": "private", "note": "personal-account credential (rule 3)"}
-{"fact": "Nicola takes medication for high blood pressure.", "channel": "telegram", "expected_tier": "private", "note": "medical: treatment/medication -> private"}
-{"fact": "Nicola sees a therapist for anxiety.", "channel": "telegram", "expected_tier": "private", "note": "medical: mental-health -> private"}
-{"fact": "Nicola and his girlfriend are discussing whether to move in together, not yet decided.", "channel": "telegram", "expected_tier": "private", "note": "intimate + undisclosed/in-progress"}
-{"fact": "Nicola is interviewing for a new CTO role.", "channel": "telegram", "expected_tier": "private", "note": "sensitive career, undisclosed"}
-{"fact": "Nicola's work calendar shows a confidential board meeting Thursday 10:00.", "channel": "telegram", "expected_tier": "private", "note": "work-confidential"}
-{"fact": "Nicola's passport number is on file.", "channel": "telegram", "expected_tier": "private", "note": "identity-document detail"}
+{"fact": "Daniel's bank is ING, account ending 4471.", "channel": "telegram", "expected_tier": "private", "note": "personal-account detail"}
+{"fact": "Daniel's email account password is a secret string.", "channel": "telegram", "expected_tier": "private", "note": "personal-account credential (rule 3)"}
+{"fact": "Daniel takes medication for high blood pressure.", "channel": "telegram", "expected_tier": "private", "note": "medical: treatment/medication -> private"}
+{"fact": "Daniel sees a therapist for anxiety.", "channel": "telegram", "expected_tier": "private", "note": "medical: mental-health -> private"}
+{"fact": "Daniel and his girlfriend are discussing whether to move in together, not yet decided.", "channel": "telegram", "expected_tier": "private", "note": "intimate + undisclosed/in-progress"}
+{"fact": "Daniel is interviewing for a new CTO role.", "channel": "telegram", "expected_tier": "private", "note": "sensitive career, undisclosed"}
+{"fact": "Daniel's work calendar shows a confidential board meeting Thursday 10:00.", "channel": "telegram", "expected_tier": "private", "note": "work-confidential"}
+{"fact": "Daniel's passport number is on file.", "channel": "telegram", "expected_tier": "private", "note": "identity-document detail"}
 {"fact": "The home alarm disarm code is 4471.", "channel": "telegram", "expected_tier": "family", "note": "shared-space secret -> family (rule 3)"}
 {"fact": "The main home wifi password is CasaPrimary-2024.", "channel": "telegram", "expected_tier": "family", "note": "shared-space credential -> family"}
-{"fact": "Nicola's sister is going through a difficult divorce the family is helping with.", "channel": "telegram", "expected_tier": "family", "note": "family-internal sensitive matter"}
-{"fact": "Nicola likes the living-room thermostat at 20 degrees.", "channel": "voice", "expected_tier": "friends", "note": "comfort preference"}
+{"fact": "Daniel's sister is going through a difficult divorce the family is helping with.", "channel": "telegram", "expected_tier": "family", "note": "family-internal sensitive matter"}
+{"fact": "Daniel likes the living-room thermostat at 20 degrees.", "channel": "voice", "expected_tier": "friends", "note": "comfort preference"}
 {"fact": "The family is away in Sardinia the first week of August.", "channel": "telegram", "expected_tier": "friends", "note": "travel/whereabouts shared with friends"}
 {"fact": "The kids' school pickup moves to 15:30 on Wednesdays.", "channel": "telegram", "expected_tier": "friends", "note": "ordinary household logistics -> friends"}
 {"fact": "Grandma is coming to stay for two weeks in September.", "channel": "telegram", "expected_tier": "friends", "note": "household/social plan -> friends"}
 {"fact": "The family prefers vegetarian dinners on weekdays.", "channel": "voice", "expected_tier": "friends", "note": "everyday household preference"}
-{"fact": "Nicola's kids are Sofia (8) and Luca (5).", "channel": "telegram", "expected_tier": "friends", "note": "names/ages are low-sensitivity"}
-{"fact": "Nicola's birthday is March 4th.", "channel": "telegram", "expected_tier": "friends", "note": "PII / social-engineering vector -> >= friends, never public (rule 4)"}
-{"fact": "Nicola's daughter has a peanut allergy.", "channel": "voice", "expected_tier": "friends", "note": "medical: safety info -> friends (rule 1)"}
+{"fact": "Daniel's kids are Mia (8) and Tom (5).", "channel": "telegram", "expected_tier": "friends", "note": "names/ages are low-sensitivity"}
+{"fact": "Daniel's birthday is March 4th.", "channel": "telegram", "expected_tier": "friends", "note": "PII / social-engineering vector -> >= friends, never public (rule 4)"}
+{"fact": "Daniel's daughter has a peanut allergy.", "channel": "voice", "expected_tier": "friends", "note": "medical: safety info -> friends (rule 1)"}
 {"fact": "The spare-room door sticks and needs planing.", "channel": "voice", "expected_tier": "friends", "note": "house maintenance"}
 {"fact": "The good coffee beans are in the left pantry cupboard.", "channel": "voice", "expected_tier": "friends", "note": "household location"}
 {"fact": "Guests should park on the street, not the driveway.", "channel": "voice", "expected_tier": "friends", "note": "house rule for visitors"}
@@ -32,4 +32,4 @@
 {"fact": "The living room is repainted sage green.", "channel": "voice", "expected_tier": "public", "note": "non-sensitive"}
 {"fact": "The house thermostat brand is Tado.", "channel": "voice", "expected_tier": "public", "note": "device fact"}
 {"fact": "The kitchen tap is a Grohe Minta.", "channel": "voice", "expected_tier": "public", "note": "device fact"}
-{"fact": "Nicola is CTO at Lesina Holding.", "channel": "voice", "expected_tier": "public", "note": "professional role/employer -> public"}
+{"fact": "Daniel is CTO at Harbourline Holding.", "channel": "voice", "expected_tier": "public", "note": "professional role/employer -> public"}

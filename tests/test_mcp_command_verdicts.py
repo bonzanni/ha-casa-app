@@ -348,7 +348,7 @@ def test_verify_gmail_shaped_missing_interpreter_blocks(tmp_path):
 
 
 def test_verify_committed_entrypoint_ready(tmp_path):
-    """lesina-shaped: baseline interpreter + committed entry file → ready."""
+    """Committed-bundle shape: baseline interpreter + committed entry file → ready."""
     store = tmp_path / "store"
     e = entry("probe", ["specialist:finance"])
     root = mk_artifact(store, "probe", e["artifact_id"], mcp_servers={

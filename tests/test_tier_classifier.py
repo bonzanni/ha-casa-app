@@ -55,7 +55,7 @@ def _install_fake_sdk(
 
 async def test_classify_returns_parsed_tier(monkeypatch):
     _install_fake_sdk(monkeypatch, reply="private")
-    assert await tier_classifier.classify_tier("Nicola's salary is 5000 EUR") == "private"
+    assert await tier_classifier.classify_tier("Daniel's salary is 5000 EUR") == "private"
 
 
 async def test_classify_defaults_private_on_unparseable(monkeypatch):
@@ -123,7 +123,7 @@ async def test_classify_word_plus_answer_line_parses(monkeypatch):
     retentions in one session). Agreement must classify, not default."""
     _install_fake_sdk(monkeypatch, reply="private\nTier: private\n")
     assert await tier_classifier.classify_tier(
-        "Nicola's salary is 5000 EUR") == "private"
+        "Daniel's salary is 5000 EUR") == "private"
 
 
 async def test_classify_conflicting_answer_lines_still_default(monkeypatch):
@@ -131,7 +131,7 @@ async def test_classify_conflicting_answer_lines_still_default(monkeypatch):
     # prior answer stays ambiguous and falls to the leak-safe default.
     _install_fake_sdk(monkeypatch, reply="private\nTier: public")
     assert await tier_classifier.classify_tier(
-        "Nicola's salary is 5000 EUR") == DEFAULT_TIER
+        "Daniel's salary is 5000 EUR") == DEFAULT_TIER
 
 
 async def test_classify_defaults_private_on_error(monkeypatch):
