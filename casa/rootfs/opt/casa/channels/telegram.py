@@ -3575,7 +3575,7 @@ class TelegramChannel(Channel):
                 await self._cleanup_error_topic(rec)
                 return False
 
-        # v0.79.0 (§3): stamp the idle→active user turn so idle-reminder +
+        # v0.79.0 (§3): stamp the idle→active user turn so idle-suspension +
         # retention accounting see fresh activity before delivery.
         if reg is not None:
             import time as _time

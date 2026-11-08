@@ -206,21 +206,21 @@ class EngagementRecord:
     # launcher captures this at prompt-source time and the drivers compare it
     # immediately before the initial enqueue; any change aborts the launch.
     context_generation: int = 0
-    # Task 6 (spec §4.6): the concurrency Permit this interactive
-    # specialist delegation holds, if any (set by tools.py's
-    # delegate_to_agent right after `create()`, None for executor
+    # Task 6 (spec §4.6): the concurrency Permit this specialist
+    # engagement holds, if any (set by tools.py's
+    # _launch_interactive_engagement right after `create()`, None for executor
     # engagements — they never acquire one). NOT persisted to the
     # tombstone (`_write_tombstone_locked` below lists fields explicitly)
     # — a live Permit cannot survive a restart; concurrency state is
     # memory-only and resets with the process. Released exactly once by
     # `_finalize_engagement` (the shared completion/cancel/reap funnel)
     # or, for a pre-finalize failure (topic/driver-start), inline at the
-    # point of failure — see delegate_to_agent's interactive branch.
+    # point of failure — see _launch_interactive_engagement.
     permit: Any = None
     # #283: the agent-spawn occupancy token (specialist_limits.SpawnToken)
     # this record holds when its origin carries ``_agent_spawned`` — a
-    # SEPARATE field from ``permit`` (design r3: an agent-context interactive
-    # specialist holds BOTH, and sharing the field would overwrite one or
+    # SEPARATE field from ``permit`` (design r3: an agent-context specialist
+    # engagement holds BOTH, and sharing the field would overwrite one or
     # leak the other). Memory-only like ``permit`` (never tombstoned; boot
     # reconciliation re-mints it via the limiter's restore()). Attached by
     # ``create()`` itself (design r4: ownership transfers at successful
@@ -831,7 +831,7 @@ class EngagementRegistry:
         own release (and re-entrant terminal calls) are safe no-ops.
         Executor engagements carry ``permit=None`` → guarded no-op."""
         # #283: BOTH permit fields release here (design r3: an agent-context
-        # interactive specialist holds a SpecialistLimiter permit AND an
+        # specialist engagement holds a SpecialistLimiter permit AND an
         # agent-spawn token; releasing only one wedges or overspends the
         # other pool). Each release is idempotent.
         for field in ("permit", "agent_spawn_permit"):
@@ -1209,7 +1209,7 @@ class EngagementRegistry:
                     rec.origin["error_kind"] = error_kind or "emit_completion_error"
                     rec.origin["error_message"] = error_message
                 self._stamp_shutdown_reason(rec)
-                # Task 6 (spec §4.6): release the interactive delegation's
+                # Task 6 (spec §4.6): release the specialist engagement's
                 # concurrency permit on this terminal transition (no-op for
                 # executor engagements, permit=None). Safe before the write:
                 # the non-strict path has no rollback, so the record is
@@ -1319,7 +1319,7 @@ class EngagementRegistry:
                 # terminal status is durably committed — the strict path can
                 # roll the status back to live on a persist failure, and
                 # releasing a still-live engagement's permit would free its
-                # scope slot while the interactive specialist is still running.
+                # scope slot while the specialist engagement is still running.
                 self._release_permit(rec)
                 # #599: the obligation is now durable, so the discharge may
                 # start. Inside the persist task (not after the shield below)
@@ -1388,7 +1388,7 @@ class EngagementRegistry:
 
         Timestamps are deliberately untouched. A redelivery is not a new user
         turn; re-stamping ``last_user_turn_ts`` on every restart would postpone
-        the idle reminder indefinitely. That is why ``update_user_turn`` is not
+        the idle suspension indefinitely. That is why ``update_user_turn`` is not
         reused here.
 
         An UNKNOWN record delivers rather than refusing: records leave

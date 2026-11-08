@@ -3732,8 +3732,8 @@ async def main() -> None:
     # Pass the coroutine functions directly with kwargs.
     session_sweeper.start()
     # D-4 (v0.69.0): reap stale engagements FIRST, then run the idle pass —
-    # a record past the reap TTL is cancelled outright and must not receive
-    # a pointless idle reminder in the same daily run.
+    # a record past the reap TTL is cancelled outright and must not also be
+    # suspended in the same daily run.
     async def _engagement_daily_sweep() -> None:
         # reap resolves the per-record driver itself; no driver arg here.
         from tools import reap_stale_engagements
