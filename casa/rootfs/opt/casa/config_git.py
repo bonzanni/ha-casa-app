@@ -346,14 +346,11 @@ def commit_config_checked(
 def changed_paths(config_dir: str, sha: str) -> list[str]:
     """Return the repo-relative paths a commit touched (vs its first parent).
 
-    Used by the G-2 reload guard (#231/#222) to tell a plugin-registry-only
-    persist commit — already activated in-process — from a commit that also
-    edits agents/ or policies/ and therefore genuinely owes a reload, and
-    (#1086) to record which paths the obligation owes. Returns an empty list
-    on any git error (fail-safe: the caller then arms the reload obligation
-    as usual rather than wrongly suppressing it). NUL-separated (``-z``) so a
-    name git would C-quote (non-ASCII, a quote, a newline) comes back
-    literally, as the path the reload scopes know it by.
+    ``config_git_commit`` reloads what these paths ask for
+    (``reload.commit_reload_scopes``). Returns an empty list on any git error,
+    which that table reads as "reload everything" rather than "reload
+    nothing". NUL-separated (``-z``) so a name git would C-quote (non-ASCII, a
+    quote, a newline) comes back literally, as the path the table matches.
     """
     try:
         out = _run(config_dir,

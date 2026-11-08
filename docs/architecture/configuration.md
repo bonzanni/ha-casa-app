@@ -77,9 +77,9 @@ above, so it runs after the dispatch has returned and released the read/write lo
 after the entry point's own fence, so that taking the plugin-mutation lock, writing and
 releasing it is one unit that sees itself through even when the caller is cancelled. A
 caller that goes away neither drops the refresh while queued for the lock nor abandons a
-write already in flight for a newer one to lose to. There are three such entry points: the
-reload tool, the soft trigger-reload tool and the internal route. Regenerating is all it
-does — it announces nothing, and a regeneration that fails is logged rather than failing the
+write already in flight for a newer one to lose to. There are four such entry points: the
+reload tool, the soft trigger-reload tool, the configuration commit and the internal route.
+Regenerating is all it does — it announces nothing, and a regeneration that fails is logged rather than failing the
 reload it followed. A full reload therefore regenerates more than once: the executors step
 inside its cascade regenerates and announces, the plugin-environment step does the same when
 the reload asked for it, and this one runs after all of them — so two regenerations and one
@@ -92,6 +92,10 @@ bindings, schema, and specific registry files are versioned; plugin stores, stag
 the environment file and general working state are not. The whitelist is the authority, and
 it is duplicated in the boot script — both must agree. Boot commits
 `bindings/` again after the agents load, so a re-bind gets its own commit.
+
+**A configuration commit reloads what it changed**, by the path table in
+`commit_reload_scopes` (INV-TOOL-014, in
+[`engagement-reload-obligation.md`](engagement-reload-obligation.md)).
 
 **Some identity changes cannot be hot-swapped at all.** If a resident's identity changes, the
 reload path returns a restart-required outcome *before* mutating live state rather than
@@ -178,9 +182,9 @@ file itself aside.
 
 **INV-CFG-011**: A reload scope whose handler takes the plugin-mutation lock acquires that lock at the entry point, before the reload read/write lock — never underneath it.
 
-Enforced by the shared fence every reload entry point wraps its dispatch in — `casa_reload`,
-the admin reload route, and the `plugin_env` reload an Erase everything uninstall runs
-after clearing references ([`plugin-erasure.md`](plugin-erasure.md)) — over the scope set
+Enforced by the shared fence every reload entry point wraps its dispatch in — `casa_reload`
+and the configuration commit, the admin reload route, and the `plugin_env` reload an Erase
+everything uninstall runs after clearing references ([`plugin-erasure.md`](plugin-erasure.md)) — over the scope set
 the handlers' own acquisitions define.
 
 What it does not cover: it is an ordering rule, not an exclusion rule. Two fenced reloads
@@ -297,17 +301,14 @@ in the envelope without aborting another's.
 **A reload handler catches a failure and carries on.** The envelope stays `status: ok` — the
 handler returned — and carries an additive `failures` list, absent when nothing was noted: one
 `{"unit", "detail"}` entry per subordinate failure a handler notes (not every best-effort step
-notes one — INV-TOOL-012's "What it does not cover" names those), `unit` naming the resident,
-specialist or executor the failure belongs to, or null when no one unit is to blame. The
-dispatcher collects them for the whole dispatch, so a failure inside a composed scope (`full`,
-`config_sync`, the `policies` and `executors` cascades) is reported however its row was folded,
-and so are failures that write no row: a new resident or a specialist's agent that could not be
-constructed, an executor whose definition or hook policies did not load, a scan that failed as a
-whole. The list sits beside the action rows and replaces none of them. A personality-map
-refresh that fails is a `refresh_personality_maps_failed` row, and a noted failure, both after a
-registry re-scan and inside the delegation-map refresh. What the configurator's reload
-obligation makes of the list is INV-TOOL-012, in
-[`architecture/engagement-reload-obligation.md`](engagement-reload-obligation.md).
+notes one), `unit` naming the resident, specialist or executor the failure belongs to, or null
+when no one unit is to blame. The dispatcher collects them for the whole dispatch, so a failure
+inside a composed scope (`full`, `config_sync`, the `policies` and `executors` cascades) is
+reported however its row was folded, and so are failures that write no row: a new resident or a
+specialist's agent that could not be constructed, an executor whose definition or hook policies
+did not load, a scan that failed as a whole. The list sits beside the action rows and replaces
+none of them. A personality-map refresh that fails is a `refresh_personality_maps_failed` row,
+and a noted failure, both after a registry re-scan and inside the delegation-map refresh.
 
 ## Extension points
 

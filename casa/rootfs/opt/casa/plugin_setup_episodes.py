@@ -2008,8 +2008,7 @@ def report_dispatch_outcome(episode_id: str, *, tools_used_ok: set,
     A non-evidenced turn returns the row to ``pending`` (its released gate is
     kept — the verdict was earned) so the next kick re-dispatches: the
     post-reload kick is the expected healer, exactly the sequence observed
-    live (#521: G-2 forced a ``casa_reload`` seconds after the toolless
-    turn). Deliberately NO self-kick here — an immediate retry would land in
+    live (#521: a ``casa_reload`` ran seconds after the toolless turn). Deliberately NO self-kick here — an immediate retry would land in
     the same broken warm session and burn the budget in seconds; the row is
     meanwhile visible in health (``pending`` never decays). Past
     :data:`_MAX_EXECUTION_RETRIES` the obligation fails with an operator

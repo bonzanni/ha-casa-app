@@ -40,7 +40,6 @@ def _drain_deferred_set():
     import tools as tools_mod
     yield
     tools_mod._ENGAGEMENTS_DEFERRED_HARD_RELOAD.clear()
-    tools_mod._ENGAGEMENTS_PENDING_RELOAD.clear()
 
 
 def _mock_supervisor_session(status: int = 200):
@@ -109,39 +108,6 @@ class TestCasaReloadDefers:
         assert post_calls == [], (
             "casa_restart_supervised must NOT POST Supervisor when "
             f"called inside an engagement; got POST calls: {post_calls}"
-        )
-        assert rec.id in tools_mod._ENGAGEMENTS_DEFERRED_HARD_RELOAD
-
-    async def test_in_engagement_drains_pending_reload_obligation(
-        self, _drain_deferred_set,
-    ):
-        """The doctrine contract is fulfilled the moment the model
-        calls casa_restart_supervised. The v0.33.1 G-2 PENDING_RELOAD
-        set must be drained for this engagement so emit_completion's
-        defensive guard does not double-fire."""
-        import tools as tools_mod
-        from tools import casa_restart_supervised, engagement_var
-        from engagement_registry import EngagementRecord
-
-        rec = EngagementRecord(
-            id="eng-doctrine", kind="executor",
-            role_or_type="configurator", driver="claude_code",
-            status="active", topic_id=1, started_at=0.0,
-            last_user_turn_ts=0.0, last_idle_reminder_ts=0.0,
-            completed_at=None, sdk_session_id=None, origin={}, task="",
-        )
-        # Simulate config_git_commit having registered this engagement.
-        tools_mod._ENGAGEMENTS_PENDING_RELOAD.add(rec.id)
-
-        tok = engagement_var.set(rec)
-        try:
-            await casa_restart_supervised.handler({})
-        finally:
-            engagement_var.reset(tok)
-
-        assert rec.id not in tools_mod._ENGAGEMENTS_PENDING_RELOAD, (
-            "calling casa_restart_supervised inside the engagement must "
-            "drain the v0.33.1 pending-reload obligation"
         )
         assert rec.id in tools_mod._ENGAGEMENTS_DEFERRED_HARD_RELOAD
 
@@ -229,10 +195,9 @@ class TestFinalizeEngagementHonorsDeferred:
     ):
         """outcome=cancelled => drain the marker without POSTing.
 
-        Per ``completion.md`` doctrine line 61: a cancelled engagement
-        does NOT need a reload (artifact is operator-pending). If the
-        model called casa_reload mid-flight and then the user cancelled,
-        the platform shouldn't unilaterally restart.
+        If the model asked for a supervised restart mid-flight and then
+        the user cancelled, the platform shouldn't unilaterally restart:
+        that decision is the operator's.
         """
         import tools as tools_mod
         from tools import _finalize_engagement

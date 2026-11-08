@@ -158,7 +158,7 @@ async def test_the_upsert_ok_names_a_delegate_host_and_says_the_resident_needs_n
     assert "startable now, on specialist:finance" in out["message"]
     assert "Each fire resolves the host again" in out["message"]
     assert "butler needs no assignment of that plugin" in out["message"]
-    assert "casa_reload_triggers(role='butler')" in out["message"]
+    assert "config_git_commit, which reloads the role's triggers" in out["message"]
 
 
 async def test_the_upsert_ok_names_a_resident_host_through_its_own_assignment(runtime, configurator_origin, monkeypatch):

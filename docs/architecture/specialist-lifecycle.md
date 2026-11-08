@@ -106,8 +106,7 @@ them — only the specialists directory, with any missing parent, is created fir
 so under the caller's `MATERIALIZE_LOCK`. The config repository tracks `agents/**`, and boot
 and every specialist-tier reload re-materialize every active specialist, so without this
 each of them left a tracked change behind that the next configurator commit swept in —
-and the engagement-completion reload guard then forced a reload nobody needed
-(INV-TOOL-011).
+and reloaded for, though nobody had changed anything (INV-TOOL-014).
 
 What it does not cover: an edit that lands after the comparison. The next re-materialization
 compares again and rewrites it, as a fresh write always did. A changed input writes a fresh

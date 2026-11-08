@@ -1,30 +1,20 @@
-"""#1085, INV-TOOL-011: a plugin mutation's persist commit, measured on a REAL config repo.
+"""#1436: a plugin mutation commits its own registry write, on a REAL config repo.
 
-The G-2 guard's plugins-only exemption (``tools.config_git_commit``) was pinned
-only with a patched ``config_git.changed_paths`` (tests/test_config_git_commit_tool.py),
-so it never saw what a real persist commit carries. Here every commit goes
-through the real ``config_git.commit_config_checked`` and the real
-``config_git.changed_paths`` on a real repository, the specialists are really
-installed (``commit_specialist_install``) and really re-materialised
-(``specialist_materialize.current_specialist_roles_dir`` — the one function
-boot and every specialist-tier reload route through), and the pre-activation
-credit is earned through the real ``plugin_add`` sequencer
-(``_reload_and_verify_targets``).
-
-Two thin adapters only: the tool's hard-coded ``/config`` is redirected to the
-test repository (the adapters assert they were called with ``/config``), and the
-schema validator returns no errors — the fixture repository has no resident
-set, and the validator runs on the already-staged index, so it cannot change
-which paths a commit carries. The schema gate is pinned in test_config_git.py.
+Every commit goes through the real ``config_git`` functions on a real
+repository, and the mutation runs through the real ``plugin_add`` sequencer
+(``_reload_and_verify_targets``) with tests/test_plugin_tools.py's transport
+doubles. ``_redirect_commit_tool`` is shared with
+tests/test_config_git_commit_reload.py: the commit tool's hard-coded
+``/config`` is redirected to the test repository (the adapters assert they
+were called with ``/config``), and the schema validator returns no errors —
+the schema gate is pinned in test_config_git.py.
 """
 from __future__ import annotations
 
 import asyncio
-import copy
 import json
 import os
 import shutil
-import types
 from pathlib import Path
 
 import pytest
@@ -91,27 +81,6 @@ def configurator_origin():
         agent_mod.origin_var.reset(tok)
 
 
-@pytest.fixture
-def engagement():
-    import tools as tools_mod
-    eng = types.SimpleNamespace(id="5" * 32)
-    tools_mod._ENGAGEMENTS_PENDING_RELOAD.discard(eng.id)
-    tools_mod._ENGAGEMENTS_PREACTIVATED.discard(eng.id)
-    tok = tools_mod.engagement_var.set(eng)
-    try:
-        yield eng
-    finally:
-        tools_mod.engagement_var.reset(tok)
-        tools_mod._ENGAGEMENTS_PENDING_RELOAD.discard(eng.id)
-        tools_mod._ENGAGEMENTS_PREACTIVATED.discard(eng.id)
-
-
-def _state(eng) -> tuple[int, int]:
-    import tools as tools_mod
-    return (int(eng.id in tools_mod._ENGAGEMENTS_PENDING_RELOAD),
-            int(eng.id in tools_mod._ENGAGEMENTS_PREACTIVATED))
-
-
 def _redirect_commit_tool(monkeypatch, repo: _Repo, *, changed_paths_dir=None):
     import agent_loader
     import config_git
@@ -161,98 +130,6 @@ def _wire_activation(monkeypatch, tmp_path: Path, repo: _Repo, name: str):
     return tools_mod, st
 
 
-async def _activate(monkeypatch, tmp_path, repo, name, target, eng) -> list[str]:
-    tools_mod, st = _wire_activation(monkeypatch, tmp_path, repo, name)
-    r = await tools_mod.plugin_add.handler({
-        "name": name, "repo": "o/r", "ref": "v1", "targets": [target]})
-    assert json.loads(r["content"][0]["text"])["ok"] is True
-    assert _state(eng)[1] == 1         # the credit was earned by the real sequencer
-    return st.log
-
-
-async def _commit(message: str) -> str:
-    from tools import config_git_commit
-    r = await config_git_commit.handler({"message": message})
-    sha = json.loads(r["content"][0]["text"])["sha"]
-    assert sha
-    return sha
-
-
-async def test_plugin_persist_with_two_active_specialists_does_not_arm(
-        monkeypatch, tmp_path, configurator_origin, engagement):
-    """I-1a. A specialist-target mutation's own reload re-materialises EVERY
-    active specialist; unchanged inputs must leave no derived-file change, so
-    the persist commit is plugins-only and arms nothing."""
-    repo = _config_repo(tmp_path, ("alpha", "beta"))
-    real_changed = _redirect_commit_tool(monkeypatch, repo)
-    before = repo.targets()
-
-    log = await _activate(monkeypatch, tmp_path, repo, "probe", "specialist:alpha",
-                          engagement)
-    assert log.count("dispatch:alpha") == 1
-    sha = await _commit("persist plugin probe")
-
-    paths = real_changed(str(repo.root), sha)
-    changed_targets = sum(repo.targets()[s] != before[s] for s in repo.slugs)
-    assert (len(paths), changed_targets, *_state(engagement)) == (1, 0, 0, 0), paths
-    assert paths == ["plugins/registry.json"]
-
-
-async def test_resident_plugin_persist_after_specialist_reconcile_does_not_arm(
-        monkeypatch, tmp_path, configurator_origin, engagement):
-    """I-1b. Boot reconciles every active specialist AFTER its snapshot
-    commit, and every specialist-tier reload does the same. A later
-    resident-only mutation's persist commit must not sweep that in — twice
-    in a row, so a churn the forced reload would re-create is caught too."""
-    repo = _config_repo(tmp_path, ("alpha",))
-    real_changed = _redirect_commit_tool(monkeypatch, repo)
-    trace = []
-    for i in (1, 2):
-        repo.reconcile()                       # boot / earlier reload
-        await _activate(monkeypatch, tmp_path, repo, f"probe{i}",
-                        "resident:assistant", engagement)
-        sha = await _commit(f"persist plugin probe{i}")
-        paths = real_changed(str(repo.root), sha)
-        trace.append((len(paths), sum(p.startswith("agents/") for p in paths),
-                      *_state(engagement)))
-    assert trace == [(1, 0, 0, 0), (1, 0, 0, 0)]
-
-
-async def test_mixed_commit_consumes_credit_before_later_plugin_persist(
-        monkeypatch, tmp_path, configurator_origin, engagement):
-    """I-2. An arming commit spends the credit: after a reload drains the
-    obligation, a later plugins-only commit with NO new activation arms."""
-    import tools as tools_mod
-
-    repo = _config_repo(tmp_path, ())
-    real_changed = _redirect_commit_tool(monkeypatch, repo)
-    await _activate(monkeypatch, tmp_path, repo, "probe", "resident:assistant", engagement)
-
-    (repo.root / "agents" / "assistant" / "notes.md").write_text("v2\n", encoding="utf-8")
-    first = await _commit("plugin + agent edit")
-    trace = [(len(real_changed(str(repo.root), first)), *_state(engagement))]
-    tools_mod._ENGAGEMENTS_PENDING_RELOAD.discard(engagement.id)   # a reload drained it
-
-    raw = json.loads(repo.registry.read_text(encoding="utf-8"))
-    raw["seeded_defaults"] = ["hand-edited"]
-    repo.registry.write_text(json.dumps(raw), encoding="utf-8")
-    second = await _commit("registry hand edit")
-    trace.append((len(real_changed(str(repo.root), second)), *_state(engagement)))
-    assert trace == [(2, 1, 0), (1, 1, 0)]
-
-
-async def test_changed_paths_failure_arms_and_consumes_credit(
-        monkeypatch, tmp_path, configurator_origin, engagement):
-    """I-2, fail-safe arm: a changed-paths git failure arms AND spends the
-    credit."""
-    repo = _config_repo(tmp_path, ())
-    _redirect_commit_tool(monkeypatch, repo, changed_paths_dir=tmp_path / "not-a-repo")
-    (tmp_path / "not-a-repo").mkdir()
-    await _activate(monkeypatch, tmp_path, repo, "probe", "resident:assistant", engagement)
-    await _commit("persist plugin probe")
-    assert _state(engagement) == (1, 0)
-
-
 # ---------------------------------------------------------------------------
 # #1436: the plugin mutation commits the registry itself
 # ---------------------------------------------------------------------------
@@ -264,10 +141,10 @@ def _git(repo: _Repo, *args: str) -> str:
 
 
 async def test_plugin_mutation_commits_its_registry_write_itself(
-        monkeypatch, tmp_path, configurator_origin, engagement):
+        monkeypatch, tmp_path, configurator_origin):
     """#1436: a fully activated mutation leaves /config clean, in one commit
-    of its own that holds only the registry, and owes no reload — the
-    configurator's later commit finds nothing to record."""
+    of its own that holds only the registry, and leaves an unrelated edit
+    for the configurator's own commit."""
     import config_git
     import plugin_registry as preg
 
@@ -289,32 +166,3 @@ async def test_plugin_mutation_commits_its_registry_write_itself(
                 "HEAD").splitlines() == ["plugins/registry.json"]
     assert _git(repo, "status", "--porcelain") == (
         "M agents/assistant/notes.md")       # the unrelated edit is not swept
-    assert _state(engagement) == (0, 0)
-
-
-async def test_unactivated_plugin_mutation_commit_still_arms_the_reload(
-        monkeypatch, tmp_path, configurator_origin, engagement):
-    """#1436 keeps the defensive guard: when the activation did not fully
-    succeed, the commit the mutation makes arms the reload obligation for the
-    registry, as the configurator's persist commit used to."""
-    import config_git
-    import plugin_registry as preg
-    import reload as reload_mod
-
-    repo = _config_repo(tmp_path, ())
-    monkeypatch.setattr(config_git, "CONFIG_DIR", str(repo.root))
-    monkeypatch.setattr(preg, "REGISTRY_PATH", repo.registry)
-    tools_mod, _ = _wire_activation(monkeypatch, tmp_path, repo, "probe")
-
-    async def failing_dispatch(scope, *, runtime, role=None):
-        return {"status": "error", "kind": "boom"}
-
-    monkeypatch.setattr(reload_mod, "dispatch", failing_dispatch)
-    r = await tools_mod.plugin_add.handler({
-        "name": "probe", "repo": "o/r", "ref": "v1",
-        "targets": ["resident:assistant"]})
-    assert json.loads(r["content"][0]["text"])["ok"] is False
-    assert _git(repo, "status", "--porcelain") == ""
-    assert _state(engagement) == (1, 0)
-    assert tools_mod._ENGAGEMENTS_PENDING_RELOAD._owed[engagement.id].keys() \
-        == {"plugins/registry.json"}
