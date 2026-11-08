@@ -579,7 +579,7 @@ class TestScheduledAskTap:
         # end the first job, so the one-job-per-plugin claim does not refuse
         # the second start: what is under test is the later turn's origin
         await tools._finalize_engagement(
-            first, outcome="cancelled", text="done", artifacts=[], next_steps=[],
+            first, outcome="cancelled", text="done", next_steps=[],
             driver=turns.runtime.driver)
         from bus import BusMessage, MessageType
         later = BusMessage(type=MessageType.SCHEDULED, source="scheduler", target="assistant",

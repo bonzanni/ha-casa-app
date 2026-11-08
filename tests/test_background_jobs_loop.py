@@ -206,7 +206,7 @@ async def harness(tmp_path, monkeypatch, request):
 
     async def cancel(r, *, reason):
         return await tools._finalize_engagement(
-            r, outcome="cancelled", text="Cancelled by operator", artifacts=[],
+            r, outcome="cancelled", text="Cancelled by operator",
             next_steps=[], driver=h.driver)
     h.channel._finalize_cancel = cancel
     cm = ChannelManager()

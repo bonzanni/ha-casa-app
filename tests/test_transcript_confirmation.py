@@ -487,7 +487,7 @@ async def test_every_run_kind_registers_before_its_first_capture(
                      specialist_registry=MagicMock(), mcp_registry=MagicMock(),
                      trigger_registry=MagicMock(), engagement_registry=reg)
     await tools._finalize_engagement(
-        rec, outcome="completed", text="done", artifacts=[], next_steps=[],
+        rec, outcome="completed", text="done", next_steps=[],
         driver=MagicMock(cancel=AsyncMock()))
     await transcript_runs.settle()
 

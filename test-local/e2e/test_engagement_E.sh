@@ -248,7 +248,7 @@ async def main():
         async def cancel(self, rec): pass
     await tools._finalize_engagement(
         rec, outcome="completed", text="all done",
-        artifacts=[], next_steps=[],
+        next_steps=[],
         driver=StubDriver(),
     )
 
@@ -325,7 +325,7 @@ async def main():
     async def _finalize_cancel(rec, reason="user"):
         await tools._finalize_engagement(
             rec, outcome="cancelled", text=f"Cancelled by {reason}.",
-            artifacts=[], next_steps=[],
+            next_steps=[],
             driver=drv,
         )
     ch._finalize_cancel = _finalize_cancel
@@ -619,7 +619,7 @@ async def main():
     await _tools._finalize_engagement(
         rec, outcome="cancelled",
         text="resident deletion denied by casa_config_guard",
-        artifacts=[], next_steps=[],
+        next_steps=[],
         driver=StubDriver(),
     )
 

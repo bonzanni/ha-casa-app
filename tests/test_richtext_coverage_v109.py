@@ -142,7 +142,7 @@ async def _finalize_with_channel(tmp_path, tch):
     )
     await _finalize_engagement(
         rec, outcome="completed", text="**summary**",
-        artifacts=[], next_steps=[], driver=None,
+        next_steps=[], driver=None,
     )
 
 

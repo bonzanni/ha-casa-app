@@ -517,7 +517,7 @@ async def test_replayed_engagement_chosen_silence_clears_durable_obligation(
                 "cid": "route-1", "user_text": QUESTION},
         topic_id=None)
     await tools._finalize_engagement(
-        rec, outcome="completed", text="reconciled", artifacts=[],
+        rec, outcome="completed", text="reconciled",
         next_steps=[], driver=_driver_double())
     # The resident's own channel manager for the narration turn.
     tools.init_tools(

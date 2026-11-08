@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-11-04
+last_reviewed: 2026-11-08
 ---
 
 # Operating doctrine: behaving well as a Casa agent
@@ -63,8 +63,8 @@ Nor are the agent's steps news for him ("now committing and reloading"), so they
 narrated; of a delegate's run only the message it closes with is posted under its name
 ([`delegate-answer-relay.md`](../architecture/delegate-answer-relay.md)), so a question belongs
 at the end of the run. A completion text is written for him too: it says in plain words what the agent
-found or changed and what is left for him, and a commit SHA, a result field or a reload scope goes in
-the completion's artifacts, never in its text. It is also all the engaging agent reads of the
+found or changed and what is left for him, and a commit SHA, a result field or a reload scope stays
+out of it. It is also all the engaging agent reads of the
 engagement, so a task that only asks for information completes as soon as it is answered,
 with the findings in that text rather than in a turn's closing words left waiting in the topic.
 The configurator's prompt carries this rule (its Output discipline,

@@ -906,7 +906,7 @@ agent drop what it's doing and check in with you, or prefix a message with
 
 The engaged agent can also end the engagement itself by calling the
 `emit_completion` MCP tool — that produces a structured summary
-(text + artifacts + next_steps) which Ellen relays to you.
+(text + next_steps) which Ellen relays to you.
 
 ### Idle engagements
 

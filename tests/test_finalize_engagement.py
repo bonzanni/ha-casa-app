@@ -50,7 +50,7 @@ class TestFinalizeEngagement:
         driver = _driver_double()
 
         await _finalize_engagement(
-            rec, outcome="completed", text="summary", artifacts=["sha1"],
+            rec, outcome="completed", text="summary",
             next_steps=[], driver=driver,
         )
 
@@ -96,7 +96,7 @@ class TestFinalizeEngagement:
 
         await _finalize_engagement(
             rec, outcome="cancelled", text="user cancelled",
-            artifacts=[], next_steps=[], driver=driver,
+            next_steps=[], driver=driver,
         )
         assert rec.status == "cancelled"
         driver.cancel.assert_awaited_once_with(rec)
@@ -137,7 +137,7 @@ class TestFinalizeU3Transition:
         driver = _driver_double()
 
         await _finalize_engagement(
-            rec, outcome=outcome, text="x", artifacts=[],
+            rec, outcome=outcome, text="x",
             next_steps=[], driver=driver,
         )
         return telegram, rec
@@ -190,7 +190,7 @@ class TestFinalizeU3Transition:
         )
 
         await _finalize_engagement(
-            rec, outcome="completed", text="x", artifacts=[],
+            rec, outcome="completed", text="x",
             next_steps=[], driver=None,
         )
         # Close still happened despite the state-update failure.
@@ -386,7 +386,7 @@ class TestFinalizeCompletionConfirmation:
             tmp_path, rich_raises=RuntimeError("telegram 500"))
 
         won = await _finalize_engagement(
-            rec, outcome="completed", text="done", artifacts=[],
+            rec, outcome="completed", text="done",
             next_steps=[], driver=driver)
 
         assert won is FinalizeResult.FINALIZED
@@ -422,7 +422,7 @@ class TestFinalizeCompletionConfirmation:
             tmp_path, rich_returns=4242)
 
         won = await _finalize_engagement(
-            rec, outcome="completed", text="done", artifacts=[],
+            rec, outcome="completed", text="done",
             next_steps=[], driver=driver)
 
         assert won is FinalizeResult.FINALIZED
@@ -453,7 +453,7 @@ class TestFinalizeCompletionConfirmation:
         telegram.send_to_topic = AsyncMock(side_effect=_hang)
 
         won = await _finalize_engagement(
-            rec, outcome="completed", text="done", artifacts=[],
+            rec, outcome="completed", text="done",
             next_steps=[], driver=driver)
 
         assert won is FinalizeResult.FINALIZED
@@ -475,7 +475,7 @@ class TestFinalizeCompletionConfirmation:
             tmp_path, rich_raises=RuntimeError("telegram 500"))
 
         won = await _finalize_engagement(
-            rec, outcome="cancelled", text="stopped", artifacts=[],
+            rec, outcome="cancelled", text="stopped",
             next_steps=[], driver=driver)
 
         assert won is FinalizeResult.FINALIZED
@@ -522,7 +522,7 @@ class TestFinalizeCompletionConfirmation:
         telegram.close_topic = AsyncMock(side_effect=_hang)
 
         won = await _finalize_engagement(
-            rec, outcome="completed", text="done", artifacts=[],
+            rec, outcome="completed", text="done",
             next_steps=[], driver=driver)
 
         assert won is FinalizeResult.FINALIZED
@@ -573,7 +573,7 @@ class TestTheFunnelRecordsWhetherItToldTheTopic:
         reg, rec, telegram, bus, driver, events = await _build_finalize(
             tmp_path, rich_returns=4242)
         won = await _finalize_engagement(
-            rec, outcome="completed", text="done", artifacts=[],
+            rec, outcome="completed", text="done",
             next_steps=[], driver=driver)
 
         assert won is FinalizeResult.FINALIZED
@@ -593,7 +593,7 @@ class TestTheFunnelRecordsWhetherItToldTheTopic:
         reg, rec, telegram, bus, driver, events = await _build_finalize(
             tmp_path, rich_raises=RuntimeError("telegram 500"))
         won = await _finalize_engagement(
-            rec, outcome="completed", text="done", artifacts=[],
+            rec, outcome="completed", text="done",
             next_steps=[], driver=driver)
 
         assert won is FinalizeResult.FINALIZED
@@ -616,7 +616,7 @@ class TestTheFunnelRecordsWhetherItToldTheTopic:
         telegram.send_to_topic = AsyncMock(side_effect=_plain_fails)
 
         won = await _finalize_engagement(
-            rec, outcome="completed", text="done", artifacts=[],
+            rec, outcome="completed", text="done",
             next_steps=[], driver=driver)
 
         assert won is FinalizeResult.FINALIZED
@@ -642,7 +642,7 @@ class TestTheFunnelRecordsWhetherItToldTheTopic:
         telegram.send_to_topic = AsyncMock(side_effect=_plain_none)
 
         won = await _finalize_engagement(
-            rec, outcome="completed", text="done", artifacts=[],
+            rec, outcome="completed", text="done",
             next_steps=[], driver=driver)
 
         assert won is FinalizeResult.FINALIZED
@@ -672,7 +672,7 @@ class TestFinalizeConfirmationMutationPins:
             tmp_path, rich_returns=None)
 
         won = await _finalize_engagement(
-            rec, outcome="completed", text="done", artifacts=[],
+            rec, outcome="completed", text="done",
             next_steps=[], driver=driver)
 
         assert won is FinalizeResult.FINALIZED
@@ -700,7 +700,7 @@ class TestFinalizeConfirmationMutationPins:
             tmp_path, rich_raises=RuntimeError("telegram 500"))
 
         won = await _finalize_engagement(
-            rec, outcome="error", text="broke", artifacts=[],
+            rec, outcome="error", text="broke",
             next_steps=[], driver=driver)
 
         assert won is FinalizeResult.FINALIZED

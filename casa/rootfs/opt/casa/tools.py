@@ -11199,7 +11199,6 @@ async def _finalize_engagement(
     *,
     outcome: str,                       # "completed" | "cancelled" | "error"
     text: str,
-    artifacts: list[str],
     next_steps: list[dict],
     driver: Any | None,
     stale_before: float | None = None,
@@ -11955,7 +11954,7 @@ async def reap_stale_engagements(*, ttl_days: float | None = None) -> int:
                     f"(reap TTL {ttl_days:g}d). Start a new engagement to "
                     "continue this work."
                 ),
-                artifacts=[], next_steps=[],
+                next_steps=[],
                 driver=_resolve_engagement_driver(rec),
                 stale_before=cutoff,
             )
@@ -12083,12 +12082,11 @@ async def _record_pending_completion(engagement: Any, status: str, text: str) ->
     "summary. Must be called "
     "from inside an active engagement. status: 'ok' | 'partial' | 'failed' | "
     "'cancelled'.",
-    # Explicit schema: artifacts, next_steps and status are optional in the
-    # handler and in every recipe's example call; the shorthand made all four
-    # required (batch-1 diff round 1, Astra D5).
+    # Explicit schema: next_steps and status are optional in the handler and
+    # in every recipe's example call; the shorthand would make all three
+    # required.
     {"type": "object",
      "properties": {"text": {"type": "string"},
-                    "artifacts": {"type": "array"},
                     "next_steps": {"type": "array"},
                     "status": {"type": "string"}},
      # Round 2 E3: recipes/executor/scaffold.md's `emit_completion(status="partial")`
@@ -12148,16 +12146,6 @@ async def emit_completion(args: dict) -> dict:
             "message": ("text must be a string (got "
                         f"{type(text).__name__}). The engagement is still "
                         "active — call emit_completion again."),
-        })
-    artifacts = args.get("artifacts") or []
-    if isinstance(artifacts, str):
-        artifacts = [artifacts]  # a bare SHA is obviously one artifact
-    if not isinstance(artifacts, list):
-        return _result({
-            "status": "error", "kind": "invalid_args",
-            "message": ("artifacts must be a list of strings (got "
-                        f"{type(artifacts).__name__}). The engagement is "
-                        "still active — call emit_completion again."),
         })
     next_steps = args.get("next_steps") or []
     if not isinstance(next_steps, list):
@@ -12223,7 +12211,6 @@ async def emit_completion(args: dict) -> dict:
         engagement,
         outcome=outcome,
         text=text,
-        artifacts=artifacts,
         next_steps=next_steps,
         driver=driver,
         output_truncated=output_truncated,  # Task 6 (spec §4.6)
@@ -12513,7 +12500,7 @@ async def cancel_engagement(args: dict) -> dict:
 
     fin = await _finalize_engagement(
         rec, outcome="cancelled", text="Engagement cancelled.",
-        artifacts=[], next_steps=[], driver=driver,
+        next_steps=[], driver=driver,
     )
     # #289: mirror emit_completion's contract instead of acking
     # unconditionally — a persist rollback leaves the record LIVE, and a
@@ -15922,7 +15909,7 @@ async def close_specialist_engagements(slug: str, *, reason: str,
             row["opened_after_confirmation"] = rec.id not in acknowledged
         try:
             fin = await _finalize_engagement(
-                rec, outcome="cancelled", text=reason, artifacts=[],
+                rec, outcome="cancelled", text=reason,
                 next_steps=[], driver=_engagement_driver_for(rec))
         except Exception:  # noqa: BLE001 — reported per conversation
             logger.exception("closing engagement %s of %s failed", rec.id[:8], slug)

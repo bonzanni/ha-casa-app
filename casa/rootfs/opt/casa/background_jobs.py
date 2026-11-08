@@ -624,7 +624,7 @@ async def job_after_turn(rec: Any, channel: Any, *, turn_cut_off: bool = False) 
         from tools import _finalize_engagement
         await _finalize_engagement(
             latest, outcome="error", text="a batch stopped before finishing",
-            artifacts=[], next_steps=[], driver=channel._engagement_driver)
+            next_steps=[], driver=channel._engagement_driver)
         return
     await start_next_batch(latest, channel)
 
@@ -678,7 +678,7 @@ async def sweep_jobs(registry: Any, channel: Any) -> None:
             await _finalize_engagement(
                 rec, outcome="error",
                 text=f"could not be continued after {_JOB_MAX_STALLS} attempts",
-                artifacts=[], next_steps=[], driver=driver)
+                next_steps=[], driver=driver)
 
 
 async def start_next_batch(rec: Any, channel: Any) -> bool:
@@ -725,7 +725,7 @@ async def start_next_batch(rec: Any, channel: Any) -> bool:
     if detail:
         from tools import _finalize_engagement
         task = asyncio.create_task(_finalize_engagement(
-            rec, outcome="error", text=detail, artifacts=[], next_steps=[],
+            rec, outcome="error", text=detail, next_steps=[],
             driver=driver))
         channel._turn_tasks.add(task)
         task.add_done_callback(channel._turn_tasks.discard)

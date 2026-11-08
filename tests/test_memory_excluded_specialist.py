@@ -187,7 +187,7 @@ async def _finalize(tmp_path, monkeypatch, roles, role, text):
     driver = MagicMock()
     driver.cancel = AsyncMock()
     await tools._finalize_engagement(rec, outcome="completed", text=text,
-                                     artifacts=[], next_steps=[], driver=driver)
+                                     next_steps=[], driver=driver)
 
 
 async def test_a_finalized_engagement_captures_nothing(roles, mem, tmp_path,

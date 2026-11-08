@@ -33,7 +33,7 @@ class TestEmitCompletionHandler:
         token = engagement_var.set(rec)
         try:
             res = await emit_completion.handler({
-                "text": "done", "artifacts": ["sha1"], "next_steps": [], "status": "ok",
+                "text": "done", "next_steps": [], "status": "ok",
             })
         finally:
             engagement_var.reset(token)
@@ -237,16 +237,6 @@ class TestEmitCompletionValidation:
         assert payload["status"] == "acknowledged"
         assert rec.status == "error"
 
-    async def test_string_artifacts_wrapped_not_exploded(self, tmp_path):
-        """list("sha123") == ['s','h','a','1','2','3'] — the old coercion."""
-        reg, tch, bus = _wire_engagement(tmp_path)
-        rec = await self._rec(reg, tmp_path)
-        payload = await self._emit(
-            reg, rec, {"text": "done", "status": "ok", "artifacts": "sha123"})
-        assert payload["status"] == "acknowledged"
-        complete = bus.notify.await_args_list[0].args[0].content
-        assert complete.origin is not None  # sanity: DelegationComplete shape
-
     async def test_non_list_next_steps_is_tool_error(self, tmp_path):
         reg, tch, bus = _wire_engagement(tmp_path)
         rec = await self._rec(reg, tmp_path)
@@ -312,7 +302,7 @@ class TestFinalizeResultMapping:
         token = engagement_var.set(rec)
         try:
             res = await emit_completion.handler({
-                "text": "done", "artifacts": [], "next_steps": [],
+                "text": "done", "next_steps": [],
                 "status": "ok"})
         finally:
             engagement_var.reset(token)
@@ -406,7 +396,7 @@ class TestCompletionInboundGate:
         token = engagement_var.set(rec)
         try:
             res = await emit_completion.handler({
-                "text": "done", "artifacts": [], "next_steps": [],
+                "text": "done", "next_steps": [],
                 "status": status})
         finally:
             engagement_var.reset(token)
@@ -823,7 +813,7 @@ class TestEmitCompletionCancellation:
         try:
             host_task = asyncio.get_running_loop().create_task(
                 emit_completion.handler({
-                    "text": "done", "artifacts": [], "next_steps": [],
+                    "text": "done", "next_steps": [],
                     "status": "ok",
                 }))
         finally:
@@ -1074,7 +1064,7 @@ class TestOneFailingAccessorCostsOnlyItsOwnInput:
         from tools import _finalize_engagement
 
         return await _finalize_engagement(
-            rec, outcome=outcome, text="done", artifacts=[], next_steps=[],
+            rec, outcome=outcome, text="done", next_steps=[],
             driver=drv, inbound_gate=gate)
 
     # ---- red cases ----------------------------------------------------

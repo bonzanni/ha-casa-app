@@ -93,10 +93,10 @@ async def _owing_records(tmp_path):
         topic_id=None)
 
     await _finalize_engagement(
-        a, outcome="completed", text="all tidy", artifacts=[], next_steps=[],
+        a, outcome="completed", text="all tidy", next_steps=[],
         driver=_driver_double())
     await _finalize_engagement(
-        b, outcome="cancelled", text="", artifacts=[], next_steps=[],
+        b, outcome="cancelled", text="", next_steps=[],
         driver=_driver_double())
 
     c = await reg.create(
@@ -107,7 +107,7 @@ async def _owing_records(tmp_path):
                 "user_text": "reconcile the ledger please"},
         topic_id=None)
     await _finalize_engagement(
-        c, outcome="error", text="", artifacts=[], next_steps=[],
+        c, outcome="error", text="", next_steps=[],
         driver=_driver_double())
 
     # A third row that was already told, and so owes nothing. Written into
@@ -121,7 +121,7 @@ async def _owing_records(tmp_path):
                 "chat_id": "chat-C", "cid": "route-C", "user_text": "c"},
         topic_id=None)
     await _finalize_engagement(
-        told, outcome="completed", text="done", artifacts=[], next_steps=[],
+        told, outcome="completed", text="done", next_steps=[],
         driver=_driver_double())
 
     rows = _rows(tombstone)
@@ -526,7 +526,7 @@ async def test_live_engagement_finalization_is_not_marked_as_a_boot_replay(
                 "user_text": "plan Q2 please"},
         topic_id=None)
     await _finalize_engagement(
-        eng, outcome="completed", text="the plan", artifacts=[],
+        eng, outcome="completed", text="the plan",
         next_steps=[], driver=_driver_double())
 
     assert len(bus.sent) == 1
@@ -754,7 +754,7 @@ async def test_boot_replays_loaded_owed_outcome_but_defers_live_outcome(
                 "chat_id": "live-chat", "cid": "live-route",
                 "user_text": "live task"})
     await _finalize_engagement(
-        live, outcome="completed", text="live result", artifacts=[],
+        live, outcome="completed", text="live result",
         next_steps=[], driver=_driver_double())
     assert _notice_counts(bus.sent) == Counter({(live.id, False): 1})
 
@@ -918,7 +918,7 @@ async def test_a_corrupt_owed_row_finalized_live_is_told_once_live_then_next_boo
     reg, tombstone, a_id = await _corrupt_owed_non_terminal(tmp_path)
     bus = _live_tools(reg)
     await _finalize_engagement(
-        reg.get(a_id), outcome="completed", text="done now", artifacts=[],
+        reg.get(a_id), outcome="completed", text="done now",
         next_steps=[], driver=_driver_double())
 
     await casa_core._notify_recovered_engagement_outcomes(
@@ -1006,7 +1006,7 @@ async def test_an_empty_load_then_a_live_outcome_replays_nothing(tmp_path):
         origin={"role": "assistant", "channel": "telegram",
                 "chat_id": "c", "cid": "r", "user_text": "t"})
     await _finalize_engagement(
-        live, outcome="cancelled", text="", artifacts=[], next_steps=[],
+        live, outcome="cancelled", text="", next_steps=[],
         driver=_driver_double())
 
     await casa_core._notify_recovered_engagement_outcomes(

@@ -1953,7 +1953,7 @@ async def _notify_recovered_engagement_outcomes(
     role and ``send`` discards it).
 
     What a replay may say is bounded by what the tombstone actually keeps. The
-    record carries NO completion text, artifacts or next_steps — no such fields
+    record carries NO completion text or next_steps — no such fields
     exist on it — so this reports the FACT of the outcome and says plainly that
     the report itself is gone. ``result_available=False`` carries that on the
     success arm; the non-ok arms carry an explicit message, because their
@@ -3153,7 +3153,7 @@ async def main() -> None:
             from tools import _finalize_engagement
             return await _finalize_engagement(
                 rec, outcome="cancelled", text=f"Cancelled by {reason}.",
-                artifacts=[], next_steps=[],
+                next_steps=[],
                 driver=engagement_driver,
             )
         telegram_channel._finalize_cancel = _finalize_cancel
@@ -3163,7 +3163,7 @@ async def main() -> None:
             from tools import _finalize_engagement
             return await _finalize_engagement(
                 rec, outcome="completed", text="User-marked complete.",
-                artifacts=[], next_steps=[],
+                next_steps=[],
                 driver=engagement_driver,
             )
         telegram_channel._finalize_complete_user = _finalize_complete_user
