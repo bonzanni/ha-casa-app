@@ -205,7 +205,7 @@ which its own delegated capture decides. A desk reply is not marked for `correct
 write is detached: a crash between the desk task's start and the write loses his words, never
 the desk turn.
 
-**INV-MEM-044**: When the operator's message in the engagement topic of a specialist that writes no memory is handed to that engagement as a turn, exactly his typed words are captured once as his message — speaker `operator`, origin `operator`, no floor, the chat's resident as its role, his user id as its speaker id, keyed by the topic message with the key a memory-writing specialist's engagement gives it (`memory.occurrence.engagement_key`) — never the specialist's turn; nothing is captured for a specialist that writes memory, a plugin job's topic, a command Casa consumes, a sender other than the configured operator or a channel with none, and a capture that fails never fails the turn.
+**INV-MEM-044**: When the operator's message to the engagement of a specialist that writes no memory — written in its topic, or a reply in their direct chat to one of its job's posts — is handed to that engagement as a turn, exactly their typed words are captured once as their message — speaker `operator`, origin `operator`, no floor, the chat's resident as its role, their user id as its speaker id, keyed by their message with the key a memory-writing specialist's engagement gives it (`memory.occurrence.engagement_key`) — never the specialist's turn; nothing is captured for a specialist that writes memory, a plugin job's topic, a command Casa consumes, a sender other than the configured operator or a channel with none, and a capture that fails never fails the turn.
 
 The specialist's engagement captures nothing (INV-MEM-032), and the operator's words went down
 with it: what he asked Fido in the topic left no trace for the writer. They are his, so they
@@ -215,6 +215,9 @@ changed between the hand-off and its turn, adds nothing twice; a desk reply is a
 operator's chat and a topic message one in the engagement supergroup, so no message reaches
 both. Pinned through the real `handle_update` over a real channel and a real `in_casa` driver
 whose specialist answers with a canary, against a real store: the canary reaches no row.
+
+A reply into a job carries Casa's `[replying to «…»]` line for the job; the captured words are
+theirs alone, the text their admission ticket holds.
 
 What it does not cover: the operator's messages in a plugin job's topic, and
 the rest of the engagement: the specialist's turns, Casa's cards in the topic and the taps

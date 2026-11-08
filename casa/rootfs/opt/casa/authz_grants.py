@@ -893,9 +893,13 @@ class ChallengeCoordinator:
                 # releases it in the same synchronous step that admits the
                 # continuation's ticket — so the completion gate never sees
                 # both populations empty.
+                # The card is the continuation's notice target: if the job
+                # never takes the turn up, the seam (or its delivery task)
+                # tells the operator in reply to it, once.
                 return await channel._dispatch_engagement_continuation(
                     engagement_id=engagement_id, text=text,
                     inbound_reservation=inbound_reservation,
+                    notice_target=(chat_id, message_id),
                 )
             desk_role = _desk_role()
             if desk_role:

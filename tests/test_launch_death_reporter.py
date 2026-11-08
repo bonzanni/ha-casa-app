@@ -760,27 +760,25 @@ class TestCancellationHasAnOwner:
 
 
 class TestTheBoundaries:
-    async def test_inbound_admitted_during_a_dying_launch_is_disclosed(
+    async def test_inbound_admitted_during_a_dying_launch_is_not_listed(
         self, tmp_path, monkeypatch,
     ):
-        """MUTATION: drop the terminal hook's inbound snapshot → this fails.
-
-        Telegram admits an inbound ticket SYNCHRONOUSLY before its first await,
-        and an expected-non-delivery path discharges it with no telling — so a
-        message admitted while the launch turn was ending would vanish with the
-        topic, unmentioned. The funnel discloses this shape; a new
-        out-of-funnel terminal writer inherits the obligation.
-        """
+        """A message admitted while the launch turn was ending is not listed
+        in the death notice — and its ticket is still held, for its holder to
+        tell once, in reply to the message. The death report's teardown must
+        not drop the ledger entry the holder settles on."""
         probe = _Probe()
         launcher, registry, channel, driver = _build(
             tmp_path, monkeypatch, probe, ScriptedCutoffClient,
         )
         real_run = driver.run_launch_turn
+        tokens = []
 
         async def run_then_admit(rec, prompt):
             await real_run(rec, prompt)
             # The operator typed while the turn was ending.
-            driver.admit_inbound(rec.id, "wait, also remove the old config")
+            tokens.append(driver.admit_inbound(
+                rec.id, "wait, also remove the old config"))
 
         # §2.A: the launch TURN is the owner's `run_launch_turn`, not `start`.
         monkeypatch.setattr(driver, "run_launch_turn", run_then_admit)
@@ -791,41 +789,12 @@ class TestTheBoundaries:
 
         assert len(probe.notice_texts) == 1
         notice = probe.notice_texts[0]
-        assert "had no turn start recorded" in notice, notice
-        assert "wait, also remove the old config" in notice, notice
+        assert "inbound message(s)" not in notice, notice
+        assert "wait, also remove the old config" not in notice, notice
         created_id = next(iter(registry._records))
         assert registry.get(created_id).status == "error"
+        assert driver.inbound_token_held(created_id, tokens[0]) is True
 
-    async def test_a_pending_reservation_is_folded_as_an_upper_bound(
-        self, tmp_path, monkeypatch,
-    ):
-        """#664: the launch-death fold reads the MESSAGE projection — a
-        reservation held by a recognized command being processed is
-        excluded (here raw=5 vs message=1, so folding the raw count is the
-        mutation this catches) — and a total that includes anonymous
-        reservations is an upper bound, said as one.
-        """
-        probe = _Probe()
-        launcher, registry, channel, driver = _build(
-            tmp_path, monkeypatch, probe, ScriptedCutoffClient,
-        )
-        monkeypatch.setattr(
-            driver, "inbound_message_reservations", lambda eng_id: 1,
-            raising=False)
-        monkeypatch.setattr(
-            driver, "inbound_reservations", lambda eng_id: 5,
-            raising=False)
-
-        envelope = await _launch(launcher)
-        assert (await _payload(envelope))["status"] == "pending"   # §2.A
-        await _drain_owner()
-
-        assert len(probe.notice_texts) == 1
-        notice = probe.notice_texts[0]
-        assert "up to 1 inbound message(s)" in notice, notice
-        assert "5" not in notice, notice
-        # count-only: no text exists for a reservation, so no excerpt bullet
-        assert "•" not in notice, notice
 
 
 class TextBearingCutoffClient(ScriptedCutoffClient):
@@ -1069,9 +1038,9 @@ class TestTheFollowUpTurnHasAFailureOwner:
 
         inner_cleanup = ch._schedule_inbound_cleanup
 
-        def _cleanup(rec, token):
+        def _cleanup(rec, token, *rest):
             cleanup_calls.append(token)
-            return inner_cleanup(rec, token)
+            return inner_cleanup(rec, token, *rest)
         ch._schedule_inbound_cleanup = _cleanup
         return callers, cleanup_calls
 
@@ -1848,39 +1817,3 @@ class TestNotDeliveredFollowUpNotice:
         await asyncio.sleep(0)
 
         assert ch._post_engagement_notice.await_count == 0
-
-
-class TestC4LaunchDeathQuotesAReservation:
-    """C4 RED CASE — reservation quoting on the launch-death renderer.
-
-    Specified by sol (round `redcase-specify`), accepted by terra. The
-    launch-death notice must quote a reservation whose text Casa knows, while
-    its count and its "up to" hedge stay exactly as the text-less case
-    produced them — and its paragraph shape, emission condition and order are
-    untouched.
-    """
-
-    async def test_a_known_reservation_text_is_quoted_at_the_same_count(
-        self, tmp_path, monkeypatch,
-    ):
-        probe = _Probe()
-        launcher, registry, channel, driver = _build(
-            tmp_path, monkeypatch, probe, ScriptedCutoffClient,
-        )
-        monkeypatch.setattr(
-            driver, "inbound_message_reservations", lambda eng_id: 1,
-            raising=False)
-        monkeypatch.setattr(
-            driver, "inbound_reservations", lambda eng_id: 1, raising=False)
-        monkeypatch.setattr(
-            driver, "inbound_reservation_texts",
-            lambda eng_id: ["did you also restart the relay?"], raising=False)
-
-        envelope = await _launch(launcher)
-        assert (await _payload(envelope))["status"] == "pending"   # §2.A
-        await _drain_owner()
-
-        assert len(probe.notice_texts) == 1
-        notice = probe.notice_texts[0]
-        assert notice.count("• did you also restart the relay?") == 1, notice
-        assert notice.count("up to 1 inbound message(s)") == 1, notice

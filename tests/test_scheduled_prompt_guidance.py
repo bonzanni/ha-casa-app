@@ -414,6 +414,10 @@ WRITES_TO_A_CHAT_ELSEWHERE = {
     "tools.py::report_job_progress":
         "posts a background job's batch progress line to that job's engagement "
         "topic; its caller is the specialist running the job, not a scheduled turn",
+    "tools.py::ask_operator":
+        "posts a background job's question to the operator's DM under the job's "
+        "specialist; its caller is the specialist running the job, not a "
+        "scheduled turn",
     "tools.py::cancel_engagement":
         "closes an engagement's topic and notifies the engager; that notice is "
         "Casa's, not the calling turn's message",

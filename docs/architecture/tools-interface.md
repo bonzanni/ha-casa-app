@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-22
+last_reviewed: 2026-11-08
 ---
 
 # The tool interface
@@ -280,7 +280,9 @@ are described in [`memory-tools.md`](memory-tools.md) (INV-MEM-010, INV-MEM-019)
 calendar.
 
 The assistant's `start_job` and a job session's `report_job_progress` are described in
-[`background-jobs.md`](background-jobs.md).
+[`background-jobs.md`](background-jobs.md); a specialist job's `ask_operator`, and the start
+line `start_job` posts for a job the operator started, in
+[`background-job-direct-chat.md`](background-job-direct-chat.md).
 `list_inbound_files`, which lists the files the operator sent in Telegram with the path
 the Telegram default agent opens each with, and states that listing is not reading, is
 described in [`inbound-files.md`](inbound-files.md).

@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-10-07
+last_reviewed: 2026-11-08
 ---
 
 # Quiet scheduled job runs
@@ -10,7 +10,8 @@ last_reviewed: 2026-10-07
 
 A plugin job declaring `"quietWhenScheduled": true`, and what changes for a run of it that
 a schedule started: no topic, no acknowledgement, no progress line, and nobody told when it
-completes. What a job is and how it runs in batches is
+completes — until it interacts with the operator, which ends its quietness. What a job is and
+how it runs in batches is
 [`background-jobs.md`](background-jobs.md). How a schedule starts a job is
 [`job-triggers.md`](job-triggers.md). How a plugin's delivered slots reach the operator is
 [`plugin-delivered-slots.md`](plugin-delivered-slots.md).
@@ -31,6 +32,19 @@ stamps `origin["job"]["quiet"]` when the declaration has the option and the star
 `background_jobs.is_quiet_run`, or reads the record's missing topic. Runs that the operator
 or an agent starts behave as before, and so do jobs without the option, even when a
 schedule started them.
+
+**Interaction ends quietness.** A quiet run that asks the operator something
+(`ask_operator`), or that receives their reply to one of its posts, a tapped answer or an
+approval's continuation, stops being quiet before the question is posted or the turn delivered:
+`EngagementRegistry.promote_from_quiet` clears the stamp under the registry lock with the strict
+writer, rolling it back when the write fails, and the interaction is then refused — the tool
+returns an error, the reply or tap gets its one notice. The lock also waits out a pending
+terminal write: a completion that commits wins, so the promotion is refused and the end stays
+told to no one (a terminal job receives nothing); one that rolls back lets the promotion go
+through. Whether the end is told is decided inside the terminal transition, from the stamp as
+the transition commits it, so a promotion that commits first is always seen. Promoted, the run
+is told at its end like any job, and a cut-off reply turn is no longer skipped as quiet. Its
+turns' words are still withheld: it has no topic.
 
 **A quiet run has no topic.** The launcher creates its record with `topic_id` unset. The
 driver gives its turns a stream that withholds the words (`_WithheldStream`) and reports
@@ -59,8 +73,12 @@ the direct error arms that tell only in a topic. A second start while a quiet ru
 refused with `job_busy`, saying the run is in progress and to wait. There is no topic to
 `/cancel` it in.
 
-What it does not cover: the operator cannot reply to a quiet run, `/cancel` it or
-`/complete` it, since all three happen in a topic. That is accepted with the option.
+What it does not cover: the operator cannot `/cancel` or `/complete` a quiet run, since both
+happen in a topic, and it has no start line to cancel it from (it was scheduled); they can ask
+the resident to cancel it. A reply to one of its plugin's posts, or a tap on its question, goes
+into it and ends its quietness (INV-BGJOB-015).
+
+**INV-BGJOB-015**: A quiet run that asks the operator something, or receives their reply to one of its posts, a tapped answer or an approval's continuation, stops being quiet before the question is posted or the turn is delivered — through a strict write under the registry lock that waits out a pending terminal write and is rolled back, with the interaction refused, when it fails or the record has gone terminal; whether a run's end is told is decided inside its terminal transition from the record's stamp, so an interacting run is told at its end and a run nobody interacted with has its completed end told to no one.
 
 ## Failure behavior
 
@@ -90,9 +108,12 @@ reader keys on that flag or on the missing topic, never on how the run was start
 - `casa/rootfs/opt/casa/channels/telegram.py::_handler_lock_key`
 - `casa/rootfs/opt/casa/channels/telegram.py::_require_topic`
 - `casa/rootfs/opt/casa/tools.py::_told_nowhere`
+- `casa/rootfs/opt/casa/engagement_registry.py::EngagementRegistry.promote_from_quiet`
 
 **Tests**
 - `tests/test_quiet_scheduled_jobs.py`
+- `tests/test_job_dm_attention.py`
+- `tests/test_job_dm_posts_registry.py`
 
 **Related**
 - [`architecture/background-jobs.md`](../architecture/background-jobs.md)

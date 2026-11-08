@@ -525,10 +525,13 @@ class TestFailureOwnership:
 # ===========================================================================
 
 
-class TestUngatedDisclosure:
-    async def test_cancel_finalize_discloses_the_queued_text(self, tmp_path):
-        """A non-gated finalize (cancel) with a queued in_casa ticket posts
-        the dying text exactly once — silent loss became disclosed loss."""
+class TestUngatedTerminalKeepsTheTicket:
+    async def test_cancel_finalize_lists_nothing_and_leaves_the_ticket_held(
+            self, tmp_path):
+        """A non-gated finalize (cancel) over a queued in_casa ticket lists no
+        inbound message, and the ticket is still ledgered afterwards — the
+        driver teardown does not clear it — so its holder can tell that one
+        message as lost, once."""
         import agent as agent_mod
         from tools import _finalize_engagement, init_tools
 
@@ -548,7 +551,7 @@ class TestUngatedDisclosure:
             trigger_registry=MagicMock(), engagement_registry=reg,
         )
         try:
-            drv.admit_inbound(rec.id, "approval resume that died")
+            token = drv.admit_inbound(rec.id, "approval resume that died")
             fin = await _finalize_engagement(
                 rec, outcome="cancelled", text="",
                 next_steps=[], driver=drv)
@@ -557,50 +560,8 @@ class TestUngatedDisclosure:
                 str(c.args) + str(c.kwargs)
                 for c in (list(tch.send_to_topic.call_args_list)
                           + list(tch.send_response_to_topic.call_args_list)))
-            assert posted.count("approval resume that died") == 1
-            assert "1 inbound message(s)" in posted
-            # Non-durable ledger: no spool-file recoverability claim.
-            assert "spool file" not in posted
-        finally:
-            agent_mod.active_engagement_driver = None
-
-    async def test_overflow_suffix_claims_no_spool_file(self, tmp_path):
-        """Fix 7/terra seam r2 pin: with more texts than the 2,800-byte
-        excerpt budget renders, the '…and N more' suffix is appended, and
-        it claims no spool-file recoverability — the in-casa ledger is not
-        durable."""
-        import agent as agent_mod
-        from tools import _finalize_engagement, init_tools
-
-        client = _ScriptedClient()
-        reg, rec, drv = await _mk_driver_rec(tmp_path, client)
-        tch = MagicMock()
-        tch.send_to_topic = AsyncMock()
-        tch.send_response_to_topic = AsyncMock()
-        tch.close_topic = AsyncMock()
-        cm = MagicMock()
-        cm.get.return_value = tch
-        bus = MagicMock()
-        bus.notify = AsyncMock()
-        init_tools(
-            channel_manager=cm, bus=bus,
-            specialist_registry=MagicMock(), mcp_registry=MagicMock(),
-            trigger_registry=MagicMock(), engagement_registry=reg,
-        )
-        try:
-            for i in range(9):
-                drv.admit_inbound(rec.id, f"msg-{i} " + "x" * 395)
-            fin = await _finalize_engagement(
-                rec, outcome="cancelled", text="",
-                next_steps=[], driver=drv)
-            assert bool(fin) is True
-            posted = "".join(
-                str(c.args) + str(c.kwargs)
-                for c in (list(tch.send_to_topic.call_args_list)
-                          + list(tch.send_response_to_topic
-                                 .call_args_list)))
-            assert "9 inbound message(s)" in posted
-            assert "…and 3 more" in posted
-            assert "spool file" not in posted
+            assert "approval resume that died" not in posted
+            assert "inbound message(s)" not in posted
+            assert drv.inbound_token_held(rec.id, token) is True
         finally:
             agent_mod.active_engagement_driver = None

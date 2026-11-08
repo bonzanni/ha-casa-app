@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-10-07
+last_reviewed: 2026-11-08
 ---
 
 # Plugin delivered slots
@@ -73,7 +73,10 @@ the link message under it in the post map the moment its send returns — so the
 swipe-reply on any of them reaches that specialist's desk
 ([`specialist-desk.md`](specialist-desk.md)), a page that landed before a later page failed
 included. The map is memory-only and count-bounded; a reply on a forgotten message reaches
-the resident, its words unchanged, with Casa's note of what it replied to (INV-DESK-004).
+the resident, its words unchanged, with Casa's note of what it replied to (INV-DESK-004). A
+background job's posts are also filed on the job's engagement record as they land, and while
+the job lives a reply to one goes into the job instead of the desk
+([`background-job-direct-chat.md`](background-job-direct-chat.md), INV-BGJOB-012).
 
 **The channel's part for a link.**
 When a plugin tool's result carries a slot declared `operator_link`, the result broker

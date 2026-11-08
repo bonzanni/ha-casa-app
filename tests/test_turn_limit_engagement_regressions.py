@@ -30,6 +30,25 @@ except ImportError:  # pragma: no cover — direct-path collection
 
 pytestmark = [pytest.mark.asyncio]
 
+async def _batch_turn(f, n=1):
+    """A job's batch turn as ``start_next_batch`` delivers it: a system turn
+    carrying its batch number, which is what makes it a batch turn."""
+    inner = f.ch._driver_send_user_turn
+
+    async def _send(r, text, *, tg_message_id=None, inbound_token=None,
+                    batch=None):
+        return await inner(r, text, tg_message_id=tg_message_id,
+                           inbound_token=inbound_token)
+    f.ch._driver_send_user_turn = _send
+    assert await f.ch.deliver_system_turn(f.rec, f"Batch {n}", batch=n) is True
+    for _ in range(200):
+        if not f.ch._turn_tasks:
+            break
+        await asyncio.wait_for(
+            asyncio.gather(*list(f.ch._turn_tasks), return_exceptions=True),
+            _WATCHDOG_S)
+
+
 _NOT_DELIVERED_NOTICE = (
     "This turn finished, but Casa could not deliver its response to this "
     "topic."
@@ -39,19 +58,20 @@ _NOT_DELIVERED_NOTICE = (
 @pytest.mark.parametrize("shape", ["tool", "text"])
 async def test_a_batch_turn_is_unchanged(tmp_path, fake_telegram_bot,
                                          monkeypatch, caplog, shape):
-    """ruling-1141: "background job batches are unchanged". A system turn
-    into a job engagement that stops at its limit posts nothing, logs no
-    WARNING, is not cut off, and the job goes on.
+    """ruling-1141: "background job batches are unchanged". A batch turn —
+    the system turn ``start_next_batch`` delivers with its batch number —
+    that stops at its limit posts nothing, logs no WARNING, is not cut off,
+    and the job goes on.
 
     MUTATIONS: the batch exclusion removed (a line is posted); keyed on the
-    system marker alone or on the job alone (likewise, or the red case's
+    system marker or on the job instead of the batch number (the red case's
     RC7/RC8 fail); the limit falling through to the existing incomplete-turn
     WARNINGs (a WARNING is logged)."""
     f = await _followup_rig(tmp_path, fake_telegram_bot, monkeypatch,
                             _frames(shape), job=True)
     caplog.set_level(logging.DEBUG)
     caplog.clear()
-    await _system_turn(f, text="Batch 1")
+    await _batch_turn(f)
     assert len(f.client.query_prompts) == 1
     assert f.notices() == [], f.events
     assert f.results == [False]
@@ -70,7 +90,7 @@ async def test_a_batch_turn_whose_text_was_refused_still_ends_the_job(
     MUTATION: the limit winning on a batch turn (no notice, not cut off)."""
     f = await _followup_rig(tmp_path, fake_telegram_bot, monkeypatch,
                             _frames("text"), job=True, refused=True)
-    await _system_turn(f, text="Batch 1")
+    await _batch_turn(f)
     assert f.notices() == [_NOT_DELIVERED_NOTICE], f.events
     assert LINE not in f.notices()
     assert f.results == [True]

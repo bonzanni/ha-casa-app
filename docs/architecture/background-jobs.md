@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-10-06
+last_reviewed: 2026-11-08
 ---
 
 # Background jobs
@@ -16,7 +16,9 @@ in — its topic, turn admission, completion gate and finalization — is descri
 [`engagements.md`](engagements.md) and the documents it routes to; the per-role engagement
 slot is in [`delegation.md`](delegation.md).
 A job's `session` mode and what a fresh job's turns see are
-[`background-job-fresh-sessions.md`](background-job-fresh-sessions.md).
+[`background-job-fresh-sessions.md`](background-job-fresh-sessions.md). What a job puts in the
+operator's direct chat — its start line and Cancel, its questions, replies into it — is
+[`background-job-direct-chat.md`](background-job-direct-chat.md).
 
 ## Mental model
 
@@ -33,8 +35,8 @@ that delegate for with a sync delegation
 ([`specialist-job-start.md`](specialist-job-start.md)). The job runs as an engagement of the
 host specialist, with three differences: the engagement record carries the job's counters
 under `origin["job"]`, the specialist's client is opened with the job's per-batch turn limit
-and the `report_job_progress` grant, and the launch prompt asks only for a one-line
-acknowledgement.
+and the `report_job_progress` and `ask_operator` grants, and the launch prompt asks only for a
+one-line acknowledgement.
 
 A resident-hosted launch uses a dedicated `kind="plugin"` engagement. Its
 `role_or_type` names the resident, while `origin["plugin_job"]` pins the plugin registry
@@ -48,7 +50,8 @@ pinned CLI runs a read-only command without asking the fail-closed callback, and
 backgrounded command finishes, the live CLI runs a turn Casa never sent, which the next batch
 would read as its own reply. Empty settings sources, default
 permission mode and the fail-closed callback keep the resident's settings and tools out.
-The Casa-owned prompt asks the worker to park items needing answers and report progress;
+The Casa-owned prompt asks the worker to park items needing answers and report progress —
+it has no question tool, and the operator answers by replying to its posts in their direct chat;
 it supplies no resident persona or memory. Plugin authorization and result-contract hooks
 still apply. Its working directory is `/data/engagements/<id>/plugin-job`.
 
@@ -59,15 +62,18 @@ job's launch turn that runs out of turns does not fail the job either: its topic
 step-limit line and batch 1 starts as usual (INV-ENG-020). The
 specialist reports each batch with `report_job_progress`, which posts one line in the topic
 and says whether the batch moved the job toward completion.
-Messages the operator writes in the topic are delivered as their own turns, between
-batches. The job ends when the specialist calls `emit_completion`, when the operator
-`/cancel`s it, or when Casa fails it (a batch that raised or was cut off, no progress, or
-the batch cap).
+Messages the operator writes in the topic, and their replies in their direct chat to the job's
+posts, are delivered as their own turns, between batches; a specialist's job asks them through
+`ask_operator` ([`background-job-direct-chat.md`](background-job-direct-chat.md)). The job ends
+when the specialist calls `emit_completion`, when the operator cancels it (`/cancel` in the
+topic, the Cancel button in their direct chat, or through the resident's `cancel_engagement`), or
+when Casa fails it (a batch that raised or was cut off, no progress, or the batch cap).
 
 A job also declares `session` (`resume`, the default, or `fresh`); what a fresh job's turns
 see is [`background-job-fresh-sessions.md`](background-job-fresh-sessions.md). A job declaring
 `quietWhenScheduled` runs without a topic, acknowledgement or progress lines when its schedule
-started it ([`background-job-quiet-runs.md`](background-job-quiet-runs.md)).
+started it, until it interacts with the operator
+([`background-job-quiet-runs.md`](background-job-quiet-runs.md)).
 
 ## Contracts & invariants
 **INV-BGJOB-001**: A job engagement's next batch is started only while the record is live, the ended turn was not cut off, no turn is queued and no turn delivery is in progress; the previous batch is judged, the batch number chosen and the batch cap checked in the same synchronous step that admits it, and that batch is counted only once the hand-off has been accepted — a refused hand-off leaves every counter untouched.

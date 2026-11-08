@@ -161,19 +161,21 @@ def capture_desk_reply(*, channel, chat_id, user_id, user_name,
 
 
 # ---------------------------------------------------------------------------
-# INV-MEM-044: what the operator types in the engagement topic of such a
-# specialist reaches the specialist's turn, and that engagement captures
-# nothing (INV-MEM-032), so his words were lost. They are his message like any
-# other: captured once, as he typed them, classified like any message of his.
+# INV-MEM-044: what the operator types to such a specialist's engagement — in
+# its topic, or as a reply in their direct chat to one of its job's posts —
+# reaches the specialist's turn, and that engagement captures nothing
+# (INV-MEM-032), so their words were lost. They are the operator's message like any other:
+# captured once, as they typed them, classified like any message of their.
 # ---------------------------------------------------------------------------
 
 def capture_topic_message(*, channel, engagement, user_id, user_name,
                           message_id, resident: str, text: str) -> None:
-    """Capture the operator's own words *text*, sent in the topic of
-    *engagement*, as his message: when it is a specialist's engagement, that
+    """Capture the operator's own words *text*, sent to *engagement* (in its
+    topic, or as a reply to one of its job's posts in their direct chat), as
+    their message: when it is a specialist's engagement, that
     specialist keeps no memory and the sender is the channel's configured
     operator. Speaker ``operator``, origin ``operator``, no floor, the chat's
-    *resident* as its role, keyed by the topic message (``engagement_key``,
+    *resident* as its role, keyed by their message (``engagement_key``,
     the key a memory-writing specialist's engagement gives it). Detached,
     like the desk reply: no run's transcript holds his words. Never raises."""
     import logging

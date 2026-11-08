@@ -1,0 +1,758 @@
+"""A background job in the operator's direct chat: replies into a live job,
+its questions and their taps, the start line's Cancel, the one notice per
+lost message, keyboard retirement, and quiet runs that end on interaction.
+
+REAL ``TelegramChannel`` handlers and seams, REAL ``EngagementRegistry`` and
+``InCasaDriver`` (with a scripted SDK client), the REAL finalize funnel; a
+fake Bot API that records what was sent, edited and answered. The race tests
+count notices and deliveries, not statuses. No ``asyncio.sleep`` is patched.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import threading
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+try:
+    from tests.test_in_casa_inbound_admission import _ScriptedClient, _mk_assistant
+except ImportError:  # pragma: no cover — direct-path collection
+    from test_in_casa_inbound_admission import _ScriptedClient, _mk_assistant
+
+pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
+
+OPERATOR = 100
+CHAT = 100
+
+
+# ---------------------------------------------------------------------------
+# fakes
+# ---------------------------------------------------------------------------
+
+
+class _Bot:
+    """The Bot API calls the job path makes, recorded."""
+
+    def __init__(self):
+        self.sent: list[dict] = []
+        self.edits: list[dict] = []
+        self.markups: list[dict] = []
+        self._next = 1000
+        self.fail_sends = 0
+
+    async def send_message(self, chat_id, text, **kw):
+        if self.fail_sends:
+            self.fail_sends -= 1
+            raise RuntimeError("send failed")
+        self._next += 1
+        rp = kw.get("reply_parameters")
+        self.sent.append({"chat_id": chat_id, "text": str(text),
+                          "reply_to": getattr(rp, "message_id", None),
+                          "markup": kw.get("reply_markup"),
+                          "message_id": self._next})
+        return SimpleNamespace(message_id=self._next)
+
+    async def edit_message_text(self, chat_id, message_id, text, **kw):
+        self.edits.append({"chat_id": chat_id, "message_id": message_id,
+                           "text": str(text), "markup": kw.get("reply_markup")})
+        return True
+
+    async def edit_message_reply_markup(self, chat_id, message_id, reply_markup=None, **kw):
+        self.markups.append({"chat_id": chat_id, "message_id": message_id,
+                             "markup": reply_markup})
+        return True
+
+    def replies(self):
+        return [m for m in self.sent if m["reply_to"] is not None]
+
+
+class _CQ:
+    """A callback query whose answer can be held, to observe what happened
+    before the handler's first await."""
+
+    def __init__(self, data, message_id, *, user=OPERATOR, hold=False):
+        self.data = data
+        self.message = SimpleNamespace(chat=SimpleNamespace(id=CHAT),
+                                       message_id=message_id)
+        self.from_user = SimpleNamespace(id=user, first_name="Op")
+        self.answers: list[str] = []
+        self.gate = asyncio.Event()
+        if not hold:
+            self.gate.set()
+        self.answering = asyncio.Event()
+
+    async def answer(self, text=None):
+        self.answering.set()
+        await self.gate.wait()
+        self.answers.append(text)
+
+
+def _job_state(*, started_by="operator", quiet=False):
+    import background_jobs as jobs
+    decl = jobs.JobDecl("sample:work", "sample", "work", "sample:work",
+                        "Process rows", None, None, 10,
+                        quiet_when_scheduled=quiet)
+    return jobs.initial_job_state(decl, started_by=started_by)
+
+
+class _Rig:
+    pass
+
+
+async def _rig(tmp_path, monkeypatch, *, scripts=None, quiet=False,
+               started_by="operator", kind="specialist"):
+    import background_jobs as jobs
+    import tools
+    from channels.telegram import TelegramChannel
+    from drivers.in_casa_driver import InCasaDriver
+    from engagement_registry import EngagementRegistry
+
+    r = _Rig()
+    r.bot = _Bot()
+    r.reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"))
+    origin = {"role": "assistant", "channel": "telegram", "chat_id": str(CHAT),
+              "user_id": OPERATOR,
+              "job": _job_state(started_by="scheduled" if quiet else started_by,
+                                quiet=quiet)}
+    r.rec = await r.reg.create(kind, "finance", "in_casa", "t", origin,
+                               topic_id=None)
+    r.client = _ScriptedClient(scripts=list(scripts or []))
+    r.drv = InCasaDriver(topic_stream_factory=lambda tid: None)
+    r.drv._clients[r.rec.id] = r.client
+    r.drv._ctx_stack[r.rec.id] = r.client
+    r.drv._locks[r.rec.id] = asyncio.Lock()
+    r.drv._begin_turn_delivery = r.reg.begin_turn_delivery
+    ch = TelegramChannel(bot=r.bot, chat_id=str(CHAT))
+    ch._engagement_registry = r.reg
+    ch._engagement_driver = r.drv
+    ch._driver_admit_inbound = lambda rec, text: r.drv.admit_inbound(rec.id, text)
+    ch._driver_discharge_inbound = (
+        lambda rec, tok: tok is not None and r.drv.discharge_inbound(rec.id, tok))
+    ch._driver_inbound_held = (
+        lambda rec, tok: tok is not None and r.drv.inbound_token_held(rec.id, tok))
+    r.delivered: list[str] = []
+
+    async def _send(rec, text, *, tg_message_id=None, inbound_token=None,
+                    batch=None):
+        r.delivered.append(text)
+        await r.drv.send_user_turn(rec, text, inbound_token=inbound_token,
+                                   batch=batch)
+    ch._driver_send_user_turn = _send
+    r.topic_notices = AsyncMock()
+    ch._post_engagement_notice = r.topic_notices
+
+    async def _finalize_cancel(rec, reason="user"):
+        return await tools._finalize_engagement(
+            rec, outcome="cancelled", text=f"Cancelled by {reason}.",
+            next_steps=[], driver=r.drv)
+    ch._finalize_cancel = _finalize_cancel
+    r.ch = ch
+    r.after = AsyncMock()
+    monkeypatch.setattr(jobs, "job_after_turn", r.after)
+    cm = MagicMock()
+    cm.get.return_value = ch
+    r.bus = MagicMock()
+    r.bus.notify = AsyncMock()
+    tools.init_tools(channel_manager=cm, bus=r.bus,
+                     specialist_registry=MagicMock(), mcp_registry=MagicMock(),
+                     trigger_registry=MagicMock(), engagement_registry=r.reg)
+    return r
+
+
+async def _drain(r):
+    for _ in range(200):
+        pending = [t for t in (r.ch._turn_tasks | r.ch._inbound_cleanup_tasks
+                               | r.ch._job_ui_tasks) if not t.done()]
+        if not pending:
+            break
+        await asyncio.wait_for(asyncio.gather(*pending, return_exceptions=True), 10)
+    while r.reg._deferred_persists:
+        await asyncio.gather(*list(r.reg._deferred_persists),
+                             return_exceptions=True)
+
+
+def _reply_update(text, quoted_id, *, user=OPERATOR, quoted_text="📊 Finance started «Process rows».",
+                  message_id=7):
+    quoted = SimpleNamespace(message_id=quoted_id, text=quoted_text, caption=None,
+                             from_user=None, sender_chat=None, date=None)
+    msg = SimpleNamespace(text=text, message_id=message_id, reply_to_message=quoted,
+                          from_user=SimpleNamespace(id=user, first_name="Op"),
+                          sender_chat=None)
+    return SimpleNamespace(message=msg,
+                           effective_user=SimpleNamespace(id=user, first_name="Op"),
+                           effective_chat=SimpleNamespace(id=CHAT))
+
+
+def _buttons(markup):
+    return [b for row in markup.inline_keyboard for b in row]
+
+
+class _HeldWrite:
+    def __init__(self, reg):
+        self.reg = reg
+        self.real = reg._write_tombstone
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.fail = False
+        reg._write_tombstone = self._write
+
+    def _write(self, snapshot):
+        self.started.set()
+        self.release.wait(5)
+        if self.fail:
+            raise OSError("disk full")
+        self.real(snapshot)
+
+    def restore(self):
+        self.reg._write_tombstone = self.real
+
+
+async def _wait(event_like, what):
+    for _ in range(1000):
+        if event_like():
+            return
+        await asyncio.sleep(0.005)
+    raise AssertionError(f"timed out waiting for {what}")
+
+
+# ---------------------------------------------------------------------------
+# the reply route
+# ---------------------------------------------------------------------------
+
+
+class TestReplyRoute:
+    async def test_a_reply_to_a_live_jobs_post_goes_into_the_job(
+            self, tmp_path, monkeypatch):
+        r = await _rig(tmp_path, monkeypatch, scripts=[[_mk_assistant("ok")]])
+        r.reg.record_job_post(r.rec.id, 501)
+        desk = AsyncMock(return_value=True)
+        monkeypatch.setattr(r.ch, "_maybe_route_desk_reply", desk)
+        await r.ch._handle_serialized(_reply_update("use the second account", 501),
+                                      str(CHAT))
+        await _drain(r)
+        assert r.delivered == [
+            "[replying to «📊 Finance started «Process rows».»]\nuse the second account"]
+        assert desk.await_count == 0
+        assert r.bot.replies() == []
+        assert r.drv.inbound_unread_depth(r.rec.id) == 0
+
+    async def test_a_reply_to_an_ended_jobs_post_falls_through(
+            self, tmp_path, monkeypatch):
+        r = await _rig(tmp_path, monkeypatch)
+        r.reg.record_job_post(r.rec.id, 501)
+        await r.reg.try_transition_terminal(r.rec.id, "completed", strict=True)
+        desk = AsyncMock(return_value=True)
+        monkeypatch.setattr(r.ch, "_maybe_route_desk_reply", desk)
+        await r.ch._handle_serialized(_reply_update("hello", 501), str(CHAT))
+        assert desk.await_count == 1
+        assert r.delivered == []
+
+    async def test_another_sender_falls_through(self, tmp_path, monkeypatch):
+        r = await _rig(tmp_path, monkeypatch)
+        r.reg.record_job_post(r.rec.id, 501)
+        assert await r.ch._maybe_route_job_reply(
+            _reply_update("hello", 501, user=555), str(CHAT)) is False
+
+    async def test_a_plugin_post_of_the_job_is_filed_and_routes(
+            self, tmp_path, monkeypatch):
+        import result_broker
+        r = await _rig(tmp_path, monkeypatch, scripts=[[_mk_assistant("ok")]])
+        post = result_broker.PostRecord(
+            role="finance", operator_id=OPERATOR, plugin="ledger",
+            slot="operator_message", tool_use_id="tu", owner=r.rec.id,
+            posted_at=0.0)
+        r.ch._record_post(CHAT, SimpleNamespace(message_id=640), post)
+        assert r.reg.job_post_owner(640) is r.rec
+        assert await r.ch._maybe_route_job_reply(
+            _reply_update("skip that one", 640, quoted_text="📊 Finance\nrow 7"),
+            str(CHAT)) is True
+        await _drain(r)
+        assert r.delivered == ["[replying to «📊 Finance»]\nskip that one"]
+
+
+# ---------------------------------------------------------------------------
+# one notice per lost message
+# ---------------------------------------------------------------------------
+
+
+class TestOneNoticePerLostMessage:
+    async def test_a_reply_refused_because_the_job_ended_is_told_once_in_reply(
+            self, tmp_path, monkeypatch):
+        r = await _rig(tmp_path, monkeypatch)
+        await r.reg.try_transition_terminal(r.rec.id, "completed", strict=True)
+        handed = await r.ch.deliver_operator_reply(
+            r.rec, "hello", chat_id=CHAT, message_id=7)
+        await _drain(r)
+        assert handed is False
+        assert [(m["text"], m["reply_to"]) for m in r.bot.replies()] == [
+            ("The job had just ended — not delivered, please resend.", 7)]
+        assert r.topic_notices.await_count == 0
+        assert r.drv.inbound_unread_depth(r.rec.id) == 0
+
+    async def test_cancel_racing_a_queued_reply_tells_it_exactly_once(
+            self, tmp_path, monkeypatch):
+        """RACE: a reply handed off and waiting on the driver's turn lock while
+        a Cancel tap ends the job. The fence refuses the turn and the delivery
+        task — the ticket's holder — tells the operator once, in reply to their
+        message; the funnel lists nothing."""
+        r = await _rig(tmp_path, monkeypatch)
+        lock = r.drv._locks[r.rec.id]
+        await lock.acquire()                     # a batch turn is running
+        try:
+            assert await r.ch.deliver_operator_reply(
+                r.rec, "stop at row 9", chat_id=CHAT, message_id=7) is True
+            await asyncio.sleep(0)
+            cq = _CQ(f"v1|job_cancel|{r.rec.id}", 900)
+            await r.ch._on_inline_callback(SimpleNamespace(callback_query=cq))
+            await _wait(lambda: r.rec.status == "cancelled", "the cancel")
+        finally:
+            lock.release()
+        await _drain(r)
+        assert cq.answers == ["Cancelling…"]
+        assert r.delivered == ["stop at row 9"]          # sent to the driver ...
+        assert r.client.query_prompts == []              # ... never to the model
+        notices = [(m["text"], m["reply_to"]) for m in r.bot.replies()]
+        assert notices == [("The job had just ended — not delivered, please resend.", 7)]
+        assert r.topic_notices.await_count == 0
+
+    async def test_a_tapped_answer_refused_is_told_once_on_the_question(
+            self, tmp_path, monkeypatch):
+        from channels.telegram import _NoticeTarget
+        r = await _rig(tmp_path, monkeypatch)
+        await r.reg.try_transition_terminal(r.rec.id, "error", strict=True)
+        handed = await r.ch.deliver_system_turn(
+            r.rec, "[operator answered «q»: A]",
+            notice_target=_NoticeTarget(CHAT, 812, answer=True))
+        await _drain(r)
+        assert handed is False
+        assert [(m["text"], m["reply_to"]) for m in r.bot.replies()] == [
+            ("The job had already ended; your answer wasn't used.", 812)]
+
+    async def test_a_batch_turn_refused_tells_no_one(self, tmp_path, monkeypatch):
+        r = await _rig(tmp_path, monkeypatch)
+        await r.reg.try_transition_terminal(r.rec.id, "completed", strict=True)
+        assert await r.ch.deliver_system_turn(r.rec, "Batch 2", batch=2) is False
+        await _drain(r)
+        assert r.bot.sent == []
+        assert r.topic_notices.await_count == 0
+        assert r.drv.inbound_unread_depth(r.rec.id) == 0
+
+    async def test_a_cut_off_reply_turn_on_an_ended_job_is_still_told(
+            self, tmp_path, monkeypatch):
+        """No terminal state excuses an operator turn's notice: the turn took
+        the reply up, the job ended during it, and the notice says so in
+        reply to their message."""
+        r = await _rig(tmp_path, monkeypatch)
+        r.ch._driver_turn_incomplete = lambda rec, tok: "followup_missing_result"
+        r.reg.record_terminal_telling(r.rec.id, True)    # the topic WAS told
+        await r.reg.try_transition_terminal(r.rec.id, "completed", strict=True)
+        from channels.telegram import _NoticeTarget
+        assert await r.ch._report_incomplete_turn(
+            r.rec, object(), notice_target=_NoticeTarget(CHAT, 7)) is True
+        assert [(m["text"], m["reply_to"]) for m in r.bot.replies()] == [
+            ("The job ended while handling this message.", 7)]
+
+    async def test_the_topic_telling_still_excuses_a_batch_turns_notice(
+            self, tmp_path, monkeypatch):
+        r = await _rig(tmp_path, monkeypatch)
+        r.ch._driver_turn_incomplete = lambda rec, tok: "followup_missing_result"
+        r.reg.record_terminal_telling(r.rec.id, True)
+        await r.reg.try_transition_terminal(r.rec.id, "completed", strict=True)
+        assert await r.ch._report_incomplete_turn(r.rec, object(), batch=3) is True
+        assert r.bot.sent == [] and r.topic_notices.await_count == 0
+
+
+# ---------------------------------------------------------------------------
+# questions and taps
+# ---------------------------------------------------------------------------
+
+
+async def _ask(r, question="Which account?", options=("Savings", "Current")):
+    import tools
+    token = tools.engagement_var.set(r.rec)
+    try:
+        payload = await tools.ask_operator.handler(
+            {"question": question, "options": list(options)})
+    finally:
+        tools.engagement_var.reset(token)
+    return json.loads(payload["content"][0]["text"])
+
+
+class TestAskAndTap:
+    async def test_a_question_is_a_filed_post_whose_buttons_name_the_engagement(
+            self, tmp_path, monkeypatch):
+        from engagement_registry import JOB_POST_QUESTION
+        r = await _rig(tmp_path, monkeypatch)
+        out = await _ask(r)
+        assert out["status"] == "asked"
+        mid = out["message_id"]
+        post = r.bot.sent[-1]
+        assert "Which account?" in post["text"]
+        (qid,) = r.rec.questions
+        datas = [b.callback_data for b in _buttons(post["markup"])]
+        assert datas == [f"v1|job_q|{r.rec.id}|{qid}|0",
+                         f"v1|job_q|{r.rec.id}|{qid}|1",
+                         f"v1|job_cancel|{r.rec.id}"]
+        assert all(len(d.encode()) <= 64 for d in datas)
+        assert r.reg.job_post_owner(mid) is r.rec
+        assert [mid, JOB_POST_QUESTION] in r.rec.ui_posts
+
+    async def test_a_plugin_worker_cannot_ask(self, tmp_path, monkeypatch):
+        r = await _rig(tmp_path, monkeypatch, kind="plugin")
+        assert (await _ask(r))["kind"] == "not_a_job"
+        assert r.bot.sent == []
+
+    async def test_a_tap_answers_the_job(self, tmp_path, monkeypatch):
+        r = await _rig(tmp_path, monkeypatch, scripts=[[_mk_assistant("ok")]])
+        mid = (await _ask(r))["message_id"]
+        (qid,) = r.rec.questions
+        cq = _CQ(f"v1|job_q|{r.rec.id}|{qid}|1", mid)
+        await r.ch._on_inline_callback(SimpleNamespace(callback_query=cq))
+        await _drain(r)
+        assert cq.answers == ["✔"]
+        assert r.delivered == ["[operator answered «Which account?»: Current]"]
+        assert r.bot.markups and "✔ Current" in [
+            b.text for b in _buttons(r.bot.markups[-1]["markup"])]
+        assert r.drv.inbound_reservations(r.rec.id) == 0
+
+    async def test_tap_reserves_before_its_first_await_so_a_completion_is_vetoed(
+            self, tmp_path, monkeypatch):
+        """RACE: the tap's toast is its first await; held there, a successful
+        completion is refused by the reservation the tap already took — and
+        the answer is then delivered once, with no notice."""
+        import tools
+        r = await _rig(tmp_path, monkeypatch, scripts=[[_mk_assistant("ok")]])
+        mid = (await _ask(r))["message_id"]
+        (qid,) = r.rec.questions
+        cq = _CQ(f"v1|job_q|{r.rec.id}|{qid}|0", mid, hold=True)
+        tap = asyncio.ensure_future(
+            r.ch._on_inline_callback(SimpleNamespace(callback_query=cq)))
+        await asyncio.wait_for(cq.answering.wait(), 5)
+        result = await tools._finalize_engagement(
+            r.rec, outcome="completed", text="done", next_steps=[],
+            driver=r.drv, inbound_gate=True)
+        assert result is tools.FinalizeResult.PRECONDITION_FAILED
+        assert r.rec.status == "active"
+        cq.gate.set()
+        await tap
+        await _drain(r)
+        assert r.delivered == ["[operator answered «Which account?»: Savings]"]
+        assert r.bot.replies() == []
+
+    async def test_a_tap_on_a_question_the_record_no_longer_holds_delivers_nothing(
+            self, tmp_path, monkeypatch):
+        r = await _rig(tmp_path, monkeypatch)
+        cq = _CQ(f"v1|job_q|{r.rec.id}|ABCDEFGH|0", 811)
+        await r.ch._on_inline_callback(SimpleNamespace(callback_query=cq))
+        await _drain(r)
+        assert cq.answers == ["This question is no longer active — reply in words"]
+        assert r.delivered == [] and r.bot.sent == []
+        assert r.drv.inbound_reservations(r.rec.id) == 0
+
+    async def test_a_tap_on_an_ended_job_is_already_finished(
+            self, tmp_path, monkeypatch):
+        r = await _rig(tmp_path, monkeypatch)
+        mid = (await _ask(r))["message_id"]
+        (qid,) = r.rec.questions
+        await r.reg.try_transition_terminal(r.rec.id, "completed", strict=True)
+        await _drain(r)
+        r.bot.sent.clear()
+        cq = _CQ(f"v1|job_q|{r.rec.id}|{qid}|0", mid)
+        await r.ch._on_inline_callback(SimpleNamespace(callback_query=cq))
+        assert cq.answers == ["already finished"]
+        assert r.delivered == [] and r.bot.sent == []
+
+    async def test_a_tap_by_someone_else_is_refused(self, tmp_path, monkeypatch):
+        r = await _rig(tmp_path, monkeypatch)
+        mid = (await _ask(r))["message_id"]
+        (qid,) = r.rec.questions
+        cq = _CQ(f"v1|job_q|{r.rec.id}|{qid}|0", mid, user=555)
+        await r.ch._on_inline_callback(SimpleNamespace(callback_query=cq))
+        assert cq.answers == ["not for you"] and r.delivered == []
+
+    @pytest.mark.parametrize("data", [
+        "v1|job_q|nothex|ABCDEFGH|0",
+        "v1|job_q|" + "a" * 32 + "|abcdefgh|0",
+        "v1|job_q|" + "a" * 32 + "|ABCDEFGH|x",
+        "v1|job_q|" + "a" * 32 + "|ABCDEFGH|0|9",
+        "v1|job_cancel|" + "a" * 31,
+    ])
+    async def test_a_malformed_job_button_is_expired(self, tmp_path, monkeypatch, data):
+        r = await _rig(tmp_path, monkeypatch)
+        cq = _CQ(data, 1)
+        await r.ch._on_inline_callback(SimpleNamespace(callback_query=cq))
+        assert cq.answers == ["expired"]
+
+    async def test_job_buttons_are_matched_before_the_generic_parser(self):
+        from channels.telegram import _parse_callback_data, _parse_job_callback
+        data = "v1|job_q|" + "a" * 32 + "|ABCDEFGH|3"
+        assert _parse_callback_data(data) == (None, None, None, None)
+        assert _parse_job_callback(data) == ("q", "a" * 32, "ABCDEFGH", 3)
+
+
+# ---------------------------------------------------------------------------
+# start line, Cancel, keyboard retirement
+# ---------------------------------------------------------------------------
+
+
+class TestStartLineCancelAndRetirement:
+    async def test_an_operator_started_job_gets_a_silent_start_line_with_cancel(
+            self, tmp_path, monkeypatch):
+        import tools
+        from engagement_registry import JOB_POST_START
+        r = await _rig(tmp_path, monkeypatch)
+        await tools._post_job_start_line(r.rec.id)
+        (post,) = r.bot.sent
+        assert post["text"] == "📊 finance started «Process rows»."
+        assert [b.callback_data for b in _buttons(post["markup"])] == [
+            f"v1|job_cancel|{r.rec.id}"]
+        assert r.rec.ui_posts == [[post["message_id"], JOB_POST_START]]
+        assert r.reg.job_post_owner(post["message_id"]) is r.rec
+
+    async def test_a_scheduled_job_gets_none(self, tmp_path, monkeypatch):
+        import tools
+        r = await _rig(tmp_path, monkeypatch, started_by="scheduled")
+        await tools._post_job_start_line(r.rec.id)
+        assert r.bot.sent == []
+
+    async def test_cancel_ends_the_job_and_every_keyboard_is_retired(
+            self, tmp_path, monkeypatch):
+        import tools
+        r = await _rig(tmp_path, monkeypatch)
+        await tools._post_job_start_line(r.rec.id)
+        start_mid = r.bot.sent[-1]["message_id"]
+        q_mid = (await _ask(r))["message_id"]
+        cq = _CQ(f"v1|job_cancel|{r.rec.id}", start_mid)
+        await r.ch._on_inline_callback(SimpleNamespace(callback_query=cq))
+        await _drain(r)
+        assert cq.answers == ["Cancelling…"]
+        assert r.rec.status == "cancelled"
+        assert [e["text"] for e in r.bot.edits if e["message_id"] == start_mid] == [
+            "🛑 finance «Process rows»"]
+        assert [m["message_id"] for m in r.bot.markups] == [q_mid]
+        assert r.rec.ui_posts == []
+        assert r.bot.replies() == []
+
+    async def test_a_second_cancel_tap_while_the_first_runs_is_already_finishing(
+            self, tmp_path, monkeypatch):
+        r = await _rig(tmp_path, monkeypatch)
+        r.ch._job_cancels.add(r.rec.id)
+        cq = _CQ(f"v1|job_cancel|{r.rec.id}", 1)
+        await r.ch._on_inline_callback(SimpleNamespace(callback_query=cq))
+        assert cq.answers == ["already finishing"]
+
+    async def test_a_cancel_that_could_not_be_saved_keeps_the_button_and_says_so(
+            self, tmp_path, monkeypatch):
+        import tools
+        r = await _rig(tmp_path, monkeypatch)
+        await tools._post_job_start_line(r.rec.id)
+        await _drain(r)
+        start_mid = r.bot.sent[-1]["message_id"]
+
+        def _fail(snapshot):
+            raise OSError("disk full")
+        real = r.reg._write_tombstone
+        r.reg._write_tombstone = _fail
+        cq = _CQ(f"v1|job_cancel|{r.rec.id}", start_mid)
+        await r.ch._on_inline_callback(SimpleNamespace(callback_query=cq))
+        await _drain(r)
+        r.reg._write_tombstone = real
+        assert r.rec.status == "active"
+        assert r.bot.edits == [] and r.bot.markups == []
+        assert [(m["text"], m["reply_to"]) for m in r.bot.replies()] == [
+            ("The job could not be cancelled just now — tap Cancel again.", start_mid)]
+        assert r.rec.ui_posts and r.rec.id not in r.ch._job_cancels
+
+    async def test_a_keyboard_post_landing_after_the_end_is_retired_by_its_filer(
+            self, tmp_path, monkeypatch):
+        from engagement_registry import JOB_POST_QUESTION
+        r = await _rig(tmp_path, monkeypatch)
+        await r.reg.try_transition_terminal(r.rec.id, "completed", strict=True)
+        await r.ch._file_job_keyboard(r.rec, 950, JOB_POST_QUESTION)
+        assert [m["message_id"] for m in r.bot.markups] == [950]
+        assert r.rec.ui_posts == []
+
+    async def test_boot_retires_what_an_ended_job_still_carries(
+            self, tmp_path, monkeypatch):
+        from engagement_registry import JOB_POST_START
+        r = await _rig(tmp_path, monkeypatch)
+        r.reg.record_job_post(r.rec.id, 960, keyboard=JOB_POST_START)
+        r.reg._terminal_observer = None          # as if the edits never ran
+        await r.reg.try_transition_terminal(r.rec.id, "completed", strict=True)
+        assert r.ch.retire_ended_job_keyboards() == 1
+        await _drain(r)
+        assert [(e["message_id"], e["text"]) for e in r.bot.edits] == [
+            (960, "✅ finance «Process rows»")]
+        assert r.ch.retire_ended_job_keyboards() == 0
+
+    async def test_launch_death_retires_the_keyboards_too(self, tmp_path, monkeypatch):
+        import tools
+        from engagement_registry import JOB_POST_START
+        r = await _rig(tmp_path, monkeypatch)
+        r.reg.record_job_post(r.rec.id, 970, keyboard=JOB_POST_START)
+        result = await tools._report_launch_death(
+            None, r.rec, None, kind="launch_incomplete", detail="x", driver=None)
+        assert result is tools.LaunchDeathResult.REPORTED
+        await _drain(r)
+        assert [(e["message_id"], e["text"]) for e in r.bot.edits] == [
+            (970, "❌ finance «Process rows»")]
+
+
+# ---------------------------------------------------------------------------
+# quiet runs end on interaction
+# ---------------------------------------------------------------------------
+
+
+class TestQuietRunsEndOnInteraction:
+    async def test_a_quiet_run_that_asks_is_told_at_its_end(
+            self, tmp_path, monkeypatch):
+        import tools
+        r = await _rig(tmp_path, monkeypatch, quiet=True)
+        assert (await _ask(r))["status"] == "asked"
+        assert r.rec.origin["job"]["quiet"] is False
+        await tools._finalize_engagement(
+            r.rec, outcome="completed", text="done", next_steps=[], driver=r.drv)
+        assert r.rec.terminal_notification_pending is True
+        assert r.bus.notify.await_count == 1
+
+    async def test_a_quiet_run_nobody_interacted_with_is_told_nowhere(
+            self, tmp_path, monkeypatch):
+        import tools
+        r = await _rig(tmp_path, monkeypatch, quiet=True)
+        await tools._finalize_engagement(
+            r.rec, outcome="completed", text="done", next_steps=[], driver=r.drv)
+        assert r.rec.terminal_notification_pending is False
+        assert r.bus.notify.await_count == 0
+
+    async def test_a_reply_racing_a_pending_quiet_completion_is_told_once(
+            self, tmp_path, monkeypatch):
+        """RACE: the reply is routed while the quiet run's completion write is
+        pending (the record counts as live). The promotion waits for the
+        write; the completion commits, so the reply is refused with its one
+        notice and the end stays told to no one."""
+        import tools
+        r = await _rig(tmp_path, monkeypatch, quiet=True)
+        r.reg.record_job_post(r.rec.id, 501)
+        await _drain(r)
+        held = _HeldWrite(r.reg)
+        fin = asyncio.ensure_future(tools._finalize_engagement(
+            r.rec, outcome="completed", text="done", next_steps=[], driver=r.drv))
+        await _wait(held.started.is_set, "the completion write")
+        reply = asyncio.ensure_future(r.ch._maybe_route_job_reply(
+            _reply_update("one more thing", 501), str(CHAT)))
+        await _wait(lambda: r.drv.inbound_unread_depth(r.rec.id) > 0,
+                    "the reply's admission")
+        assert not reply.done()                  # its promotion is waiting
+        held.release.set()
+        await fin
+        assert await reply is True
+        held.restore()
+        await _drain(r)
+        assert r.rec.status == "completed"
+        assert r.rec.terminal_notification_pending is False
+        assert r.bus.notify.await_count == 0
+        assert r.delivered == []
+        assert [(m["text"], m["reply_to"]) for m in r.bot.replies()] == [
+            ("The job had just ended — not delivered, please resend.", 7)]
+
+    async def test_a_reply_racing_a_quiet_completion_that_rolls_back_is_delivered(
+            self, tmp_path, monkeypatch):
+        r = await _rig(tmp_path, monkeypatch, quiet=True,
+                       scripts=[[_mk_assistant("ok")]])
+        r.reg.record_job_post(r.rec.id, 501)
+        await _drain(r)
+        held = _HeldWrite(r.reg)
+        held.fail = True
+        transition = asyncio.ensure_future(r.reg.try_transition_terminal(
+            r.rec.id, "completed", strict=True))
+        await _wait(held.started.is_set, "the completion write")
+        reply = asyncio.ensure_future(r.ch._maybe_route_job_reply(
+            _reply_update("one more thing", 501), str(CHAT)))
+        await _wait(lambda: r.drv.inbound_unread_depth(r.rec.id) > 0,
+                    "the reply's admission")
+        held.release.set()
+        with pytest.raises(OSError):
+            await transition
+        held.fail = False
+        assert await reply is True
+        held.restore()
+        await _drain(r)
+        assert r.rec.status == "active"
+        assert r.rec.origin["job"]["quiet"] is False
+        assert r.delivered and r.delivered[0].endswith("one more thing")
+        assert r.bot.replies() == []
+
+    async def test_a_reply_ends_a_quiet_runs_quietness_so_its_end_is_told(
+            self, tmp_path, monkeypatch):
+        import tools
+        r = await _rig(tmp_path, monkeypatch, quiet=True,
+                       scripts=[[_mk_assistant("ok")]])
+        r.reg.record_job_post(r.rec.id, 501)
+        assert await r.ch._maybe_route_job_reply(
+            _reply_update("also check May", 501), str(CHAT)) is True
+        await _drain(r)
+        assert r.rec.origin["job"]["quiet"] is False
+        await tools._finalize_engagement(
+            r.rec, outcome="completed", text="done", next_steps=[], driver=r.drv)
+        assert r.rec.terminal_notification_pending is True
+        assert r.bus.notify.await_count == 1
+
+    async def test_a_completion_entering_while_a_promotion_commits_owes_the_telling(
+            self, tmp_path, monkeypatch):
+        """RACE: a promotion is queued on the registry lock ahead of a
+        completing funnel (another write holds the lock). The owed-telling
+        decision is made inside the transition, from the stamp the promotion
+        committed — a decision taken before the funnel waited for the lock
+        would still read the run as quiet."""
+        import tools
+        r = await _rig(tmp_path, monkeypatch, quiet=True)
+        held = _HeldWrite(r.reg)
+        other = asyncio.ensure_future(r.reg.persist_origin(r.rec.id))
+        await _wait(held.started.is_set, "another write holding the lock")
+        promotion = asyncio.ensure_future(r.reg.promote_from_quiet(r.rec.id))
+        await asyncio.sleep(0)
+        fin = asyncio.ensure_future(tools._finalize_engagement(
+            r.rec, outcome="completed", text="done", next_steps=[], driver=r.drv))
+        await asyncio.sleep(0)
+        assert r.rec.origin["job"]["quiet"] is True     # nothing promoted yet
+        held.release.set()
+        await other
+        assert await promotion is True
+        await fin
+        held.restore()
+        assert r.rec.status == "completed"
+        assert r.rec.terminal_notification_pending is True
+        assert r.bus.notify.await_count == 1
+
+
+class TestPendingTerminalRoutesIntoTheJob:
+    async def test_a_reply_routed_while_a_terminal_write_is_pending_is_delivered_after_a_rollback(
+            self, tmp_path, monkeypatch):
+        r = await _rig(tmp_path, monkeypatch, scripts=[[_mk_assistant("ok")]])
+        r.reg.record_job_post(r.rec.id, 501)
+        await _drain(r)
+        held = _HeldWrite(r.reg)
+        held.fail = True
+        transition = asyncio.ensure_future(r.reg.try_transition_terminal(
+            r.rec.id, "completed", strict=True))
+        await _wait(held.started.is_set, "the terminal write")
+        reply = asyncio.ensure_future(r.ch._maybe_route_job_reply(
+            _reply_update("wait", 501), str(CHAT)))
+        # Admitted: the routing decision and the readiness step have run up
+        # to their first wait.
+        await _wait(lambda: r.drv.inbound_unread_depth(r.rec.id) > 0,
+                    "the reply's admission")
+        held.release.set()
+        with pytest.raises(OSError):
+            await transition
+        held.fail = False
+        assert await reply is True
+        held.restore()
+        await _drain(r)
+        assert r.rec.status == "active"
+        assert r.delivered and r.delivered[0].endswith("wait")
+        assert r.bot.replies() == []

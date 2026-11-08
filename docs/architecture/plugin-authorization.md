@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-09-27
+last_reviewed: 2026-11-08
 ---
 
 # Plugin authorization
@@ -48,7 +48,11 @@ trip would take the engagement terminal while the continuation still had no exis
 The edit still precedes the dispatch — the reservation makes that order harmless rather than
 moving it — and if the dispatch does not hand off, the DM is corrected to say that the
 engagement could not be resumed to use the approval and to ask for it again, because that
-grant can serve no other caller. An engagement that ends before the tap takes its unanswered
+grant can serve no other caller. The card is also the continuation's notice target: if the job
+never takes the continuation up, the seam or its delivery task — whichever holds its ticket —
+posts one line in reply to the card, and the finish hook never does
+([`engagement-inbound-disclosure.md`](engagement-inbound-disclosure.md), INV-ENG-029). An
+engagement that ends before the tap takes its unanswered
 challenges with it (INV-PLUG-033).
 [`architecture/engagement-completion-gate.md`](engagement-completion-gate.md) owns the
 reservation's lifetime. A non-authorizable engagement record still denies, fail-closed,

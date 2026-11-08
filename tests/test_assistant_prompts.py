@@ -1156,11 +1156,19 @@ RETENTION_PARAGRAPH = " ".join(_RETENTION_SENTENCES)
 # reported"; the setup-report rule says "delegate that report to the
 # configurator" instead of "engage the configurator with that report". The six
 # other carriers byte-identical. No retention claim.
+# MOVED (a job in the direct chat), `assistant:text` only: the job paragraph's
+# "progress appears in the specialist's topic; they can write there between
+# batches or /cancel it" becomes: its questions and its result come to this
+# chat, progress appears in the topic, the person steers it by replying here
+# to the job's messages and stops it with the Cancel button on its start line
+# or by asking (`cancel_engagement`). One paragraph changed on
+# `assistant:text`; the eight other carriers byte-identical. No retention
+# claim.
 _RESIDUAL_DIGESTS = {
     "assistant:restricted_webhook":
         "1f07ca5b5a3318b184d76f1f51a764caf873a9ec67cc9c51b8fc82a493c65978",
     "assistant:text":
-        "492d933429e0c97a14ac55f9b2a314cd804f58058f6c2308ac7db684d293242d",
+        "41141a33aa08fb3cf50cbb975e73a2df082c74912b29ae130f149b696bce3ff0",
     "assistant:voice":
         "6f3e93bc630acee568ba20dfeece54e5260903f3de398358cc2dc5736f14be02",
     "butler:restricted_webhook":

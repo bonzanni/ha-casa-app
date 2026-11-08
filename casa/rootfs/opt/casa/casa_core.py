@@ -3680,6 +3680,13 @@ async def main() -> None:
     # resume (a disabled specialist's job must not be resumed).
     left_open = await _close_disabled_specialist_engagements(
         engagement_registry, specialist_registry)
+    # An ended job whose keyboards in the direct chat were not retired before
+    # the restart (the edits run on a task of their own) has them retired now.
+    if telegram_channel is not None:
+        try:
+            telegram_channel.retire_ended_job_keyboards()
+        except Exception:  # noqa: BLE001 — never fatal at boot
+            logger.warning("retiring ended jobs' keyboards failed", exc_info=True)
     await _resume_background_jobs(engagement_registry, telegram_channel, skip=left_open)
 
     # 13c. Surface any default-sync overwrites to the operator (direct

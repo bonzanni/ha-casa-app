@@ -406,16 +406,26 @@ Some plugins declare long work — classifying a year of transactions, say — a
 background job. Ask the assistant for it as usual: she starts the job and replies
 straight away. The job runs in the specialist's topic in the Engagements
 supergroup (so `telegram_engagement_supergroup_id` must be set), in batches, with
-one progress line per batch. Write in the topic between batches to steer it, or
-send `/cancel` to stop it. A specialist runs one engagement at a time, but quick
-questions to it still work while a job is open. When the job ends the topic
-closes and the assistant tells you the outcome. After a restart an open job
-posts a short "resuming" line and continues.
+one progress line per batch. A job you asked for also puts one silent line in your
+DM — "📊 Finance started «…»." — with a **Cancel** button. When a specialist's job
+needs a decision from you it asks in your DM, with a button per choice: tap one,
+or reply to the question in words. To steer a running job, reply in your DM to any
+of its messages there (its start line, a question, something its plugin posted);
+your words go into the job. You can also write in the topic between batches, send
+`/cancel` there, or ask the assistant to cancel it. If the job ended before it read
+your reply, Casa answers your message once: "The job had just ended — not delivered,
+please resend." When the job ends its DM buttons go away and the start line shows
+how it ended. A specialist runs one engagement at a time, but quick questions to it
+still work while a job is open. When the job ends the topic closes and the assistant
+tells you the outcome. After a restart an open job posts a short "resuming" line and
+continues.
 
 Jobs come from two places (v0.323.0). A specialist's plugins run their jobs in the
 specialist's own topic, as above. Plugins you installed on a resident directly run
 theirs as a worker of their own, in a topic named after the resident, with nothing
-but that plugin's own tools — so the resident stays free for you meanwhile. One job
+but that plugin's own tools — so the resident stays free for you meanwhile. Such a
+worker does not ask questions: it sets aside what needs an answer and reports it, and
+you answer by replying to its messages in your DM. One job
 runs per installed plugin. Casa checks open jobs once a minute and restarts one that
 has stalled; a job it cannot get moving again is ended and reported rather than left
 sitting there.
@@ -424,9 +434,11 @@ A plugin can mark a job quiet when scheduled (v0.344.36). A run of it that a
 schedule started opens no topic, posts no start or progress line, and tells you
 nothing when it completes; the plugin's own messages still reach your DM, so a run
 that finds something new can still say so. An approval it needs still reaches your
-DM, and a run that is cancelled or fails is still reported. You cannot write in or
-`/cancel` a quiet run, since it has no topic. Runs you or the assistant start are
-unchanged.
+DM, and a run that is cancelled or fails is still reported. A quiet run that asks you
+something, or that you answer — a reply to one of its messages, a tap on its question
+— stops being quiet, and its end is then reported like any job's. You cannot write in
+or `/cancel` a quiet run, since it has no topic; ask the assistant to cancel it. Runs
+you or the assistant start are unchanged.
 
 A specialist can also start its own plugins' jobs itself (v0.344.0). When you reply
 to one of its posts, or the assistant passes it your request, and the work is a job

@@ -147,8 +147,8 @@ silently; the second belongs on the launch-death path, with its bounded notice.
 
 **A new terminal writer** decides whether it is the one telling the engager. If it announces
 the outcome, it arms the durable obligation in the same transition that commits the terminal
-— the finalization funnel does (except for a quiet scheduled run's completed end, which is told
-to no one, INV-BGJOB-010), and so do the detached launch owner's death report and the
+— the finalization funnel does (except for the completed end of a quiet scheduled run nobody
+interacted with, which is told to no one, INV-BGJOB-010 and INV-BGJOB-015), and so do the detached launch owner's death report and the
 inline named-fault abort, the latter acknowledged by its launcher's own return when it won, and handed to the abort's own completion when the launcher was cancelled first; if it does not
 — a bare mark — it leaves the default and owes nothing; a reporter that asks to arm but loses its
 transition writes nothing, and so arms nothing. The

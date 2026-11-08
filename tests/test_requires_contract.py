@@ -800,6 +800,7 @@ class TestJobLaunchRequiresDenial:
             "mcp__casa-framework__query_engager",
             "mcp__casa-framework__emit_completion",
             "mcp__casa-framework__report_job_progress",
+            "mcp__casa-framework__ask_operator",
         )
         # #1179: the gate's resolve, then one after the topic exists (it adds
         # what was assigned in between; here nothing was, so the gate's own

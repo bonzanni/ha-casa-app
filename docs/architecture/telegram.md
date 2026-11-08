@@ -1,5 +1,5 @@
 ---
-last_reviewed: 2026-10-06
+last_reviewed: 2026-11-08
 ---
 
 # The Telegram channel
@@ -111,7 +111,11 @@ from before a restart are rejected as expired however well their format parses. 
 namespaces are `_CALLBACK_NAMESPACES`; `proposal` is
 [`stored-call-buttons.md`](stored-call-buttons.md). `run_stop`, the Stop on a browsing
 request's card, is no broker request: it reads the durable admission, so it still acts after
-a restart ([`plugin-stop.md`](plugin-stop.md)).
+a restart ([`plugin-stop.md`](plugin-stop.md)). A background job's buttons — its questions'
+options and its Cancel — are no broker requests either: their data (`v1|job_q|…`,
+`v1|job_cancel|…`) names the engagement and is resolved against its record, by the operator
+whose job it is, and is matched before the generic parser, whose four-field shape it does not
+have ([`background-job-direct-chat.md`](background-job-direct-chat.md)).
 
 ## Contracts & invariants
 

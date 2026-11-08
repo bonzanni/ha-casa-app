@@ -760,6 +760,7 @@ class _FakeChannel:
 
     async def _dispatch_engagement_continuation(
         self, *, engagement_id, text, inbound_reservation=None,
+        notice_target=None,
     ):
         # #400: the engagement-resume seam the authz finish hook uses for an
         # engagement-origin challenge (in place of _dispatch_button_continuation).
