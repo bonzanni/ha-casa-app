@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.348.0] - 2026-11-08
+
+### Changed
+
+- A change the configurator makes now goes live with the commit that records it, instead of at the end of the task. A change made in several steps goes live step by step, and a task stopped halfway keeps the changes it had already committed.
+- A commit that touches several kinds of configuration at once (for example an agent and its triggers) reloads everything, so every agent's next message starts a little slower, once, while its conversation client starts afresh.
+- A specialist's new persona goes live as soon as it is applied. A resident's new persona still waits for a restart, which the configurator asks you about first; its commits no longer try to reload it.
+
 ## [0.347.16] - 2026-11-06
 
 ### Fixed
