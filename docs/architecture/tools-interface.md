@@ -177,6 +177,28 @@ rule and is unchanged. Nor does it cover a creator-cancelled row, per the paragr
 It also says nothing about *retries of the run itself* — nothing retries a delegated run;
 the kind is diagnostic, not routing.
 
+**INV-TOOL-014**: A non-empty `config_git_commit` runs, before it returns and whoever called it, the reloads `commit_reload_scopes` names for the paths the commit changed, each through the reload tool's fence and plugin-health refresh, and returns every reload's envelope; a reload that fails or reports failures leaves the commit standing and adds a warning.
+
+The commit reads back the paths it changed and hands them to
+`reload.py::commit_reload_scopes`: a live resident's trigger inputs alone reload its
+`triggers`, any other file of it its `agent`; a resident or specialist that appears or goes,
+or a specialist's link, `agents`; an edit inside a present specialist its `agent`;
+`policies/` `policies`; an executor's definition `executors`; a mix of kinds, an unknown path
+or unreadable paths one `full`. Nothing reloads for a plugins-only commit (the plugin tools
+reload and commit their own change), a resident's staged binding under `bindings/` (only a
+restart activates it, INV-CFG-003), or an executor's prompt, observer policy or doctrine
+(read at its next session). Each runs through `tools.py::_run_reload`, as `casa_reload` does
+(INV-CFG-011). Two commits reload twice, and a cancelled task's commits stay live: nothing
+reads the caller's engagement.
+
+What it does not cover: writes no commit sees — a specialist's instance tuple, which
+`persona_apply` and the specialist bundle tools reload themselves, and `plugin-env.conf`,
+whose `plugin_env` reload the configurator calls; commits made without the tool (boot's
+re-bind, Casa's own registry and trigger-file commits); a hand-edited plugin registry, inert
+until `full`; and best-effort failures a reload does not report. A resident whose staged
+persona awaits its restart answers every reload of it with `restart_required`, so a `full`
+stops there.
+
 ## Failure behavior
 
 **A malformed request.** Invalid JSON, a missing or unknown name, a non-object request,
@@ -317,15 +339,23 @@ that distinction is the contract.
 - `casa/rootfs/opt/casa/tools.py::emit_completion`
 - `casa/rootfs/opt/casa/internal_handlers.py::_make_internal_tools_call_handler`
 - `casa/rootfs/opt/casa/mcp_envelope.py::_tool_schema`
+- `casa/rootfs/opt/casa/tools.py::config_git_commit`
+- `casa/rootfs/opt/casa/tools.py::_run_reload`
+- `casa/rootfs/opt/casa/reload.py::commit_reload_scopes`
+- `casa/rootfs/opt/casa/tools.py::_reload_after_untracked_write`
 
 **Tests**
 - `tests/test_casa_reload_role_forms.py`
 - `tests/test_internal_handlers.py`
 - `tests/test_emit_completion_tool.py`
+- `tests/test_config_git_commit_reload.py`
+- `tests/test_configurator_doctrine_commit_reloads.py`
+- `tests/test_1095_change_load_timing.py`
 
 **Related**
 - [`architecture/mcp-and-tools.md`](../architecture/mcp-and-tools.md)
 - [`architecture/engagements.md`](../architecture/engagements.md)
 - [`architecture/plugin-mutation-tools.md`](../architecture/plugin-mutation-tools.md)
 - [`architecture/tool-questions.md`](../architecture/tool-questions.md)
+- [`architecture/configuration.md`](../architecture/configuration.md)
 <!-- END SOURCEMAP -->
