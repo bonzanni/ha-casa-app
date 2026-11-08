@@ -5,8 +5,10 @@ Every configurator run, from every origin (Ellen's delegation, a swipe-reply
 on its message, an Approve continuation), takes this one process-wide lease
 before anything of the run starts, and holds it until the run's session has
 ended. A later request waits up to ``LEASE_WAIT_S``, then is refused with the
-busy text and nothing of it runs. A new run also waits for plugin erasures
-still running (``tools._ERASE_TASKS``) within the same bound.
+busy text and nothing of it runs. A new run also waits, within the same
+bound, for plugin erasures still running (``tools._ERASE_TASKS``) and for
+specialist-bundle transactions that outlived a cancelled run
+(``tools._BUNDLE_MUTATION_TASKS``): both still write what the run would read.
 
 The lease is persisted at ``LEASE_PATH`` while held. A shutdown that cancels a
 run keeps the file, so the next boot finds it, removes it, and tells the
@@ -93,32 +95,42 @@ def holder() -> "dict | None":
     return dict(_held.record) if _held is not None else None
 
 
-async def _erasures_done() -> None:
+def _leftovers() -> "tuple[list, list]":
+    """Plugin erasures and surviving bundle transactions still running."""
     import tools
+    return ([t for t in list(tools._ERASE_TASKS) if not t.done()],
+            [t for t in list(tools._BUNDLE_MUTATION_TASKS) if not t.done()])
+
+
+async def _leftovers_done() -> None:
     while True:
-        running = [t for t in list(tools._ERASE_TASKS) if not t.done()]
-        if not running:
+        erasing, bundles = _leftovers()
+        if not erasing and not bundles:
             return
-        await asyncio.wait(running)
+        await asyncio.wait(erasing + bundles)
 
 
 async def acquire(*, run_key: str, via: str, task: str) -> Lease:
-    """Take the lease, waiting up to ``LEASE_WAIT_S`` for the holder and any
-    running plugin erasure; past the bound raise :class:`ConfiguratorBusy`."""
+    """Take the lease, waiting up to ``LEASE_WAIT_S`` for the holder, any
+    running plugin erasure and any surviving bundle transaction; past the
+    bound raise :class:`ConfiguratorBusy`."""
     global _held
     lock = _get_lock()
     deadline = time.monotonic() + LEASE_WAIT_S
 
     def _busy() -> ConfiguratorBusy:
         holding = _held.record.get("task") if _held is not None else None
-        return ConfiguratorBusy(busy_text(holding or "removing a plugin's data"))
+        if not holding:
+            holding = ("removing a plugin's data" if _leftovers()[0]
+                       else "finishing a specialist change")
+        return ConfiguratorBusy(busy_text(holding))
 
     try:
         await asyncio.wait_for(lock.acquire(), max(deadline - time.monotonic(), 0.0))
     except asyncio.TimeoutError:
         raise _busy() from None
     try:
-        await asyncio.wait_for(_erasures_done(), max(deadline - time.monotonic(), 0.0))
+        await asyncio.wait_for(_leftovers_done(), max(deadline - time.monotonic(), 0.0))
     except asyncio.TimeoutError:
         lock.release()
         raise _busy() from None

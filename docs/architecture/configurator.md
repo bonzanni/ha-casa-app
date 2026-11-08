@@ -60,7 +60,7 @@ Writes are coalesced, spaced and bounded, and none is awaited by the run.
 
 ## Contracts & invariants
 
-**INV-CFG-014**: A configurator run, from any origin, takes the one process-wide configurator lease before its ceiling clock starts and before anything of the run starts, waiting up to `LEASE_WAIT_S` for the holder and for running plugin erasures; a run that cannot take it by then is refused with the busy text naming the holder's task and nothing of it runs; the lease is released when the run ends, and a failure before the run starts releases it at once.
+**INV-CFG-014**: A configurator run, from any origin, takes the one process-wide configurator lease before its ceiling clock starts and before anything of the run starts, waiting up to `LEASE_WAIT_S` for the holder, for running plugin erasures and for specialist-bundle transactions still running after their handler was cancelled; a run that cannot take it by then is refused with the busy text naming the holder's task and nothing of it runs; the lease is released when the run ends, and a failure before the run starts releases it at once.
 
 The lease is taken in `tools.py::_run_delegated_agent_bounded` (`_configurator_lease`), the
 one door every origin goes through, so a desk reply, an approval continuation and a
@@ -69,6 +69,11 @@ is released by `configurator_run.release_when_done`, a done callback on the run'
 A run of any other agent takes no lease. The erasures waited for are the plugin erasers
 `plugin_remove` and `specialist_uninstall` start (`tools._ERASE_TASKS`): an eraser runs
 outside any run, and a new run must not reconfigure a plugin whose data it is still removing.
+The bundle transactions waited for are the shielded ones `tools._run_bundle_transaction`
+keeps running after a cancelled `specialist_install_commit`, `specialist_upgrade`,
+`specialist_rollback` or `specialist_uninstall` (`tools._BUNDLE_MUTATION_TASKS`): a cancelled run's lease clears while
+such a transaction still writes `/config`. With no holder, the busy text names whichever is
+running, `removing a plugin's data` or `finishing a specialist change`.
 While held, the lease is also written to `/data/configurator-lease.json` (mode 0600,
 declared in `private_state.FILES`); a write that fails is logged and never refuses the run.
 
@@ -76,8 +81,8 @@ A run whose task is still unwinding when the bounded runner's teardown bound pas
 lease until that task really ends, though the runner itself has returned.
 
 What it does not cover: work a run left behind that outlives its task, such as a plugin
-tool's worker thread still running after its handler was cancelled; only plugin erasers are
-waited for.
+tool's worker thread still running after its handler was cancelled; only plugin erasers and
+bundle transactions are waited for.
 
 **INV-CFG-015**: A configurator run cancelled while Casa is stopping leaves its lease record on disk; the next boot removes that record and, once the channels are up, tells the operator once which task was interrupted, unless the job registry's restart recovery announces the same delegation; nothing of the run is replayed.
 

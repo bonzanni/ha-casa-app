@@ -246,6 +246,30 @@ async def test_a_new_run_waits_for_running_plugin_erasures(lease_file, monkeypat
     lease.release()
 
 
+async def test_a_new_run_waits_for_surviving_bundle_transactions(lease_file, monkeypatch):
+    """A cancelled run's shielded specialist-bundle transaction may still be
+    writing /config when its lease clears; the next run waits for it too."""
+    import configurator_run
+    import tools
+    gate = asyncio.Event()
+
+    async def _sequencer():
+        await gate.wait()
+
+    task = asyncio.create_task(_sequencer())
+    tools._BUNDLE_MUTATION_TASKS.add(task)
+    task.add_done_callback(tools._BUNDLE_MUTATION_TASKS.discard)
+    acquiring = asyncio.create_task(
+        configurator_run.acquire(run_key="k", via="delegation", task="t"))
+    await asyncio.sleep(0.05)
+    try:
+        assert not acquiring.done()
+    finally:
+        gate.set()
+    lease = await asyncio.wait_for(acquiring, 5)
+    lease.release()
+
+
 async def test_an_exception_before_the_run_releases_the_lease(lease_file, monkeypatch):
     import agent as agent_mod
     import tools

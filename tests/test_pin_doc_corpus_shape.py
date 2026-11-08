@@ -938,8 +938,8 @@ PLUGIN_SHARD_RANGES = {
 # claude_code driver's removal dropped their private-outbox and dropped-uid
 # bindings and prose.
 # The plugin-health row was re-pinned when engagement trim stage 4 moved the
-# install hold from the engagement to the configurator lease (INV-PLUG-032
-# retired for INV-CFG-018).
+# install hold from the engagement to the configurator lease (the plugin
+# invariant that held it was retired for INV-CFG-018).
 PLUGIN_SHARD_ROW_DIGESTS = {
     "architecture/plugin-authorization.md":
         "3d428f89a763a6365d072808fb7564576b964ba30cc6b1e77871eec9a45ff4e6",
