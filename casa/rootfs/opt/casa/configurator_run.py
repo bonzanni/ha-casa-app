@@ -268,9 +268,23 @@ def _operator_identity() -> Any:
     return SimpleNamespace(chat_id=op[0], operator_id=op[1])
 
 
+# Strong refs for the restart a tap fires.
+_RESTART_TASKS: set = set()
+
+
 async def _restart_on_tap(outcome: dict) -> None:
+    """The settle of the Restart now card, run after its edit. The Supervisor
+    call is fired detached: it returns only as Casa stops, and a shutdown must
+    never wait on the update handler that asked for it. The broker settles a
+    card once, so it fires once."""
     if outcome.get("outcome") != "answered":
         return
+    task = asyncio.ensure_future(_ask_for_restart())
+    _RESTART_TASKS.add(task)
+    task.add_done_callback(_RESTART_TASKS.discard)
+
+
+async def _ask_for_restart() -> None:
     import supervisor_restart
     result = await supervisor_restart.request_app_restart()
     status = result.get("supervisor_status") if isinstance(result, dict) else None

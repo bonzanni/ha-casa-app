@@ -107,8 +107,9 @@ delegation's result for a delegated one (`agent._offers_configurator_restart` ar
 `Agent.handle_message`) — after her own answer, whether or not she relayed the
 configurator's words, and not while Casa is stopping. The button is Casa's own keyboard
 (`operator_calls.post_question`, 24 h), claimed through the broker, so a second tap is
-refused; a tap calls `supervisor_restart.request_app_restart`, and a refused request is
-told in one line. A Casa restart before the tap edits the card as any retired question is
+refused; a tap calls `supervisor_restart.request_app_restart` from a task detached from the
+tap's handler, after the card's edit (that call returns only as Casa stops, and a shutdown
+must not wait on the handler that asked for it), and a refused request is told in one line. A Casa restart before the tap edits the card as any retired question is
 ([`scheduled-asks.md`](scheduled-asks.md)). Outside a delegated run — an operator-driven
 call — the tool still asks the Supervisor inline.
 

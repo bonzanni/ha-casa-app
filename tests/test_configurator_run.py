@@ -498,10 +498,41 @@ async def test_restart_needed_in_a_run_offers_a_button_spent_on_its_first_tap(
                          option_index=0, actor_id=123)
     assert BROKER.commit(claim) is True
     await BROKER.drain_hooks()
+    for _ in range(3):
+        await asyncio.sleep(0)             # the restart is fired detached
     assert posted == ["POST"]
     second = BROKER.claim(namespace="resident_ask", scope=meta["_scope"], request_id=rid,
                           option_index=0, actor_id=123)
     assert isinstance(second, str)                    # spent: a second tap is refused
+    assert posted == ["POST"]
+
+
+async def test_the_restart_tap_returns_before_the_restart_is_asked_for(monkeypatch):
+    """The tap's handler never waits on the Supervisor call: that call does not
+    return until Casa is stopping, and a shutdown waiting on its own update
+    handler hung until the Supervisor killed it. The POST runs once, detached."""
+    import configurator_run
+    import supervisor_restart
+    posted: list = []
+    answered = asyncio.Event()
+
+    async def _post():
+        posted.append("POST")
+        await answered.wait()              # the Supervisor answers only as Casa stops
+        return {"supervisor_status": 200}
+
+    monkeypatch.setattr(supervisor_restart, "request_app_restart", _post)
+    try:
+        async with asyncio.timeout(1):     # inline, in this task: no reordering
+            await configurator_run._restart_on_tap({"outcome": "answered", "choice": 0})
+        assert posted == []                # the handler returned before the POST ran
+        for _ in range(3):
+            await asyncio.sleep(0)
+        assert posted == ["POST"]          # and it then runs, detached
+    finally:
+        answered.set()
+    for _ in range(3):
+        await asyncio.sleep(0)
     assert posted == ["POST"]
 
 
