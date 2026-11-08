@@ -88,7 +88,6 @@ import sdk_logging
 import specialist_limits
 from tokens import extract_usage
 from drivers.brief import normalize_brief, render_brief_task, validate_brief
-from drivers.workspace import WORKSPACE_RETENTION_DAYS as _ws_retention_days
 from engagement_registry import TerminalPreconditionFailed, EngagementRecord, EngagementRegistry
 from specialist_registry import (
     DelegationComplete,
@@ -113,13 +112,6 @@ from voice_job_result import (
 )
 
 logger = logging.getLogger(__name__)
-
-# Plan 4a.1 §8: workspace retention for claude_code driver engagements.
-_ENGAGEMENTS_ROOT = "/data/engagements"
-# #698: ALIASED, not re-declared. The finalize funnel writes this deadline, the
-# launch-death path writes it, and ``_sweep_one_workspace`` enforces it; three
-# copies of "7" is three numbers that can drift apart.
-_WORKSPACE_RETENTION_DAYS = _ws_retention_days
 
 # Module-level references, initialized via init_tools()
 _channel_manager: ChannelManager | None = None
@@ -649,25 +641,9 @@ def _validate_delivery_filename(name: str, kind: str) -> str | None:
 
 
 def outbox_for_current_context() -> "plugin_outbox.PluginOutbox | None":
-    """The plugin outbox a media claim is made from, derived from the
-    AUTHENTICATED engagement record bound via ``engagement_var``.
-
-    Containment stage 2 (Task 11): a uid-dropped claude_code engagement's
-    producer plugins can no longer write the SHARED outbox (it stays
-    root-only, never group/world-writable) — they write a PRIVATE
-    per-engagement dir instead, keyed by the record's own ``allocated_uid``,
-    so engagement A can never point a claim at B's private outbox by
-    crafting a path argument. A record with no real uid (legacy/specialist/
-    no-engagement context) uses the shared outbox. ``None`` when no outbox
-    is initialised. Shared by ``send_media`` and the result broker's
-    ``operator_file`` delivery (S3)."""
-    from engagement_uids import owner_uid_or_none
-    eng = engagement_var.get(None)
-    _raw_uid = getattr(eng, "allocated_uid", None) if eng is not None else None
-    eng_uid = (owner_uid_or_none(_raw_uid)
-              if isinstance(_raw_uid, int) else None)
-    if eng_uid is not None:
-        return plugin_outbox.get_engagement_outbox(eng_uid)
+    """The plugin outbox a media claim is made from: the shared outbox.
+    ``None`` when no outbox is initialised. Shared by ``send_media`` and the
+    result broker's ``operator_file`` delivery (S3)."""
     return plugin_outbox.get_outbox()
 
 
@@ -1322,9 +1298,9 @@ async def send_media(args: dict) -> dict:
 # Stateless, order-safe, active-record-gated. Reads the current-inbound target
 # recorded by TelegramChannel.handle_update (keyed by engagement_id) and sets
 # ONE emoji reaction on it. The correctness guarantee is the NON-LIVE
-# REJECTION: internal_handlers binds engagement_var to an ACTIVE record only,
-# so a terminated/missing engagement yields None here and a stale target can
-# never produce a reaction. NEVER falls back to eng.origin; NEVER raises (a
+# REJECTION: only an ACTIVE bound engagement record reacts, so a
+# terminated/missing engagement is refused here and a stale target can never
+# produce a reaction. NEVER falls back to eng.origin; NEVER raises (a
 # raise would abort the turn) — every failure is a soft result.
 # ---------------------------------------------------------------------------
 
@@ -1346,9 +1322,8 @@ async def react(args: dict) -> dict:
             return _result({"status": "error", "kind": "invalid_arguments",
                             "message": "emoji must be a non-empty string"})
 
-        # Non-live rejection = the correctness guarantee. engagement_var is
-        # bound ONLY for an ACTIVE record (internal_handlers), so a terminated
-        # / missing engagement yields None → fail soft. NEVER use eng.origin.
+        # Non-live rejection = the correctness guarantee: a terminated /
+        # missing engagement fails soft. NEVER use eng.origin.
         eng = engagement_var.get(None)
         if eng is None or getattr(eng, "status", None) != "active":
             return _result({"status": "no_current_inbound",
@@ -2571,9 +2546,8 @@ def _origin_clearance_markers(origin: dict) -> tuple[str | None, str | None]:
 def _engagement_rebuild_fence() -> dict | None:
     """#369: refuse an engagement-bound tool call while the record's
     ``context_rebuild_pending`` is set (a clearance downgrade invalidated the
-    session the caller is still running in). The internal-socket choke point
-    enforces this for claude_code executors; in_casa engagements dispatch
-    tools IN-PROCESS, so the engagement-sensitive tools call this fence too.
+    session the caller is still running in). Engagements dispatch tools
+    IN-PROCESS, so the engagement-sensitive tools call this fence.
     Returns the refusal payload, or None when the call may proceed."""
     eng = engagement_var.get(None)
     if eng is None or not getattr(eng, "context_rebuild_pending", False):
@@ -2877,29 +2851,6 @@ MANDATORY_BRIDGE_CASA_GRANTS: tuple[str, ...] = SPECIALIST_CASA_GRANTS
 # S7a: the one grant a specialist's desk or delegated build may be offered for
 # starting its own plugins' jobs (``background_jobs.offers_start_job``).
 START_JOB_GRANT: str = "mcp__casa-framework__start_job"
-
-
-# Bridge grant-gate helper (imported by internal_handlers). The casa-framework
-# tools an authenticated engagement may invoke over the internal socket = the
-# grant its record PINS (persisted at creation from the definition/config plus
-# the launch-mandatory grants — the source of truth), unioned with
-# MANDATORY_BRIDGE_CASA_GRANTS so a record written before those were persisted
-# (an in-flight upgrade) still admits the two universal tools. Returns a set of
-# BARE tool names, or None to mean "server-level grant — any casa tool".
-def engagement_casa_grant_names(engagement) -> "set[str] | None":
-    if engagement is None:
-        return set()  # fail closed: no bound engagement grants nothing
-    if getattr(engagement, "kind", None) == "plugin":
-        return {
-            grant.rsplit("__", 1)[-1]
-            for grant in background_jobs.PLUGIN_JOB_CASA_GRANTS
-        }
-    allowed = set(getattr(engagement, "tools_allowed", ()) or ())
-    allowed |= set(MANDATORY_BRIDGE_CASA_GRANTS)
-    if "mcp__casa-framework" in allowed:      # server-level grant → all
-        return None
-    prefix = "mcp__casa-framework__"
-    return {t[len(prefix):] for t in allowed if t.startswith(prefix)}
 
 
 def _delegated_resolution(cfg):
@@ -10521,28 +10472,17 @@ async def _engage_executor_impl(args: dict, _spawn_holder: dict) -> dict:
                 return _gate_err
 
             # Computed BEFORE create() so it can be persisted onto the
-            # record's origin — the claude_code driver reads it (and
-            # context_text) back out of engagement.origin when provisioning
-            # the workspace CLAUDE.md.
+            # record's origin.
             world_state = _build_world_state_summary()
 
             # W3 (Task 8): persist the RAW brief VERBATIM on origin (no
             # injected default keys) — the single authoritative source every
-            # consumer re-renders from (design §211). W2 is claude_code-ONLY:
-            # the same gate sets interaction_state="first_contact_required"
-            # at create; in_casa (synchronous configurator, no turn-taking
-            # transition path) never enters that state and would otherwise
-            # get stuck awaiting.
+            # consumer re-renders from (design §211).
             _origin_extra = {
                 "context": context_text, "world_state_summary": world_state,
             }
             if brief is not None:
                 _origin_extra["brief"] = brief
-            _two_phase = bool(
-                defn.driver == "claude_code"
-                and normalized_brief is not None
-                and normalized_brief["interaction_required"]
-            )
 
             # #326: create() persists STRICTLY — a tombstone write failure
             # raises (no ghost record). Abort the just-created topic before
@@ -10567,8 +10507,6 @@ async def _engage_executor_impl(args: dict, _spawn_holder: dict) -> dict:
                     permission_mode=getattr(
                         defn, "permission_mode", "acceptEdits"),
                     plugin_artifacts=plugin_artifacts,  # §3.8 recorded binding
-                    interaction_state=(
-                        "first_contact_required" if _two_phase else ""),
                     topic_title=persisted_title,  # W-R6 durable short title
                     # #283: reservation rides the record from here (r4).
                     agent_spawn_permit=_spawn_holder.get("token"),
@@ -10629,8 +10567,7 @@ async def _engage_executor_impl(args: dict, _spawn_holder: dict) -> dict:
         except Exception as exc:  # noqa: BLE001
             logger.warning("set_initial_state_emoji(active) failed: %s", exc)
 
-        # Read + interpolate prompt template (needed by both driver paths —
-        # in_casa: options.system_prompt; claude_code: CLAUDE.md body).
+        # Read + interpolate prompt template (options.system_prompt).
         prompt_template = ""
         try:
             with open(defn.prompt_template_path, "r", encoding="utf-8") as fh:
@@ -10645,8 +10582,8 @@ async def _engage_executor_impl(args: dict, _spawn_holder: dict) -> dict:
             })
 
         # #215: the procedural epoch of THIS launch, digested from the exact
-        # bytes it consumes (the template just read + doctrine dir + the
-        # workspace instruction SOURCE for claude_code) — computed before the
+        # bytes it consumes (the template just read + doctrine dir) —
+        # computed before the
         # archive fetch (whose filter needs it) and persisted on the record
         # so finalize stamps the summary with the epoch the engagement
         # actually ran under, not the finalize-time definition.
@@ -10667,21 +10604,8 @@ async def _engage_executor_impl(args: dict, _spawn_holder: dict) -> dict:
         # Executor archive: when the executor opts in
         # (defn.memory.enabled=True, off by default), read prior engagements'
         # summaries for its type and epoch at the origin's read-clearance.
-        #
-        # #583: NOT for claude_code, which fetches its own copy in
-        # ``ClaudeCodeDriver.start`` (drivers/claude_code_driver.py) for the
-        # workspace CLAUDE.md. Doing both meant two INDEPENDENT recalls per
-        # launch — different inputs (task_text vs engagement.task, this launch's
-        # epoch vs the record's persisted one), at different times, across the
-        # workspace provisioning in between. A recall is relevance-ranked and
-        # bounded, so the two could legitimately return different slices and
-        # show one executor two versions of what happened last time. The
-        # driver's is the copy kept: it survives context compaction and is
-        # already filtered at the record's own origin markers. The slot below
-        # is still substituted (with ""), so no literal placeholder can reach
-        # the FIFO prompt.
         executor_memory_block = ""
-        if defn.memory.enabled and defn.driver != "claude_code":
+        if defn.memory.enabled:
             executor_memory_block = await _fetch_executor_archive(
                 role=executor_type, procedural_epoch=procedural_epoch,
                 origin_channel=origin.get("channel", "telegram"),
@@ -10690,15 +10614,13 @@ async def _engage_executor_impl(args: dict, _spawn_holder: dict) -> dict:
                 origin_clearance=origin.get("_origin_clearance"),
             )
 
-        # W3/Sol r5-B8: the {task} value reaches BOTH driver paths through this ONE
-        # seam (in_casa options.system_prompt AND claude_code initial FIFO prompt).
-        # When a brief is present it becomes the full rendered markdown block
-        # (render_brief_task, two-phase gated to claude_code+interaction_required —
-        # ``_two_phase`` computed at create above); no brief → the canonical
+        # W3/Sol r5-B8: the {task} value reaches options.system_prompt through
+        # this ONE seam. When a brief is present it becomes the full rendered
+        # markdown block (render_brief_task); no brief → the canonical
         # task_text (the else branch is task_text, NOT `task`, which doesn't exist
         # here — using it would break every legacy task= invocation).
         task_for_prompt = (
-            render_brief_task(normalized_brief, two_phase=_two_phase)
+            render_brief_task(normalized_brief)
             if brief is not None else task_text
         )
         prompt = (
@@ -10709,29 +10631,106 @@ async def _engage_executor_impl(args: dict, _spawn_holder: dict) -> dict:
             .replace("{executor_memory}", executor_memory_block)
         )
 
-        # Driver dispatch — in_casa uses ClaudeAgentOptions + system_prompt;
-        # claude_code uses the ExecutorDefinition + workspace-CLAUDE.md.
-        if defn.driver == "claude_code":
-            driver = getattr(agent_mod, "active_claude_code_driver", None)
-            if driver is None:
-                await _abort_launch_inline(
-                    channel, rec, topic_id,
-                    kind="no_driver", message="claude_code driver not initialized")
-                return _result({
-                    "status": "error", "kind": "no_driver",
-                    "message": "claude_code driver not initialized",
-                })
-            from drivers.driver_protocol import StaleLaunchError
+        # Driver dispatch — ClaudeAgentOptions + system_prompt.
+        # Off-loop: _build_executor_options reads hooks.yaml. §3.9: feed the
+        # SAME resolution gated + recorded above (one resolve, one binding).
+        options = await asyncio.to_thread(
+            _build_executor_options, defn, executor_type=executor_type,
+            resolution=plugin_resolution,
+            extra_casa_tools=SPECIALIST_CASA_GRANTS,
+        )
+        options.system_prompt = prompt
+
+        driver = getattr(agent_mod, "active_engagement_driver", None)
+        if driver is None:
+            await _abort_launch_inline(
+                channel, rec, topic_id,
+                kind="no_driver", message="engagement driver not initialized")
+            return _result({
+                "status": "error", "kind": "no_driver",
+                "message": "engagement driver not initialized",
+            })
+        from drivers.driver_protocol import StaleLaunchError
+        if getattr(driver, "supports_split_launch", False) is not True:
+            # A driver without the §2.A split (a fake, or a protocol
+            # consumer that has not adopted it) keeps the pre-detach
+            # shape: the whole first turn runs inside this tool call.
             try:
                 await driver.start(
-                    rec, prompt=prompt, options=defn,
+                    rec, prompt=prompt, options=options,
                     expected_generation=_ctx_gen0)
             except StaleLaunchError as exc:
-                # #369: a clearance clamp landed during launch — the prompt in
-                # hand was rendered from pre-clamp materials. Terra r5: when a
-                # clamp→rebuild cycle COMPLETED meanwhile, the engagement is
-                # ALIVE on its rebuilt floor session — only this stale prompt
-                # aborts, never the living record/topic.
+                # #369: a clearance clamp landed during launch — the prompt
+                # in hand was rendered from pre-clamp materials. Terra r5:
+                # when a clamp→rebuild cycle COMPLETED meanwhile, the
+                # engagement is ALIVE on its rebuilt floor session — only
+                # this stale prompt aborts.
+                if exc.record_live:
+                    return _result({
+                        "status": "pending", "engagement_id": rec.id,
+                        "executor_type": executor_type, "topic_id": topic_id,
+                    })
+                await _abort_launch_inline(
+                    channel, rec, topic_id,
+                    kind="clearance_changed_during_launch", message=str(exc))
+                return _result({
+                    "status": "error", "kind": "clearance_changed_during_launch",
+                    "message": str(exc),
+                })
+            except ApiErrorTurn as exc:
+                # #595: as in the interactive-specialist launch above — the
+                # carried kind reaches the terminal record, so `refusal` and
+                # `api_error` are distinguishable from a crash here too.
+                _kind = exc.kind.value
+                await _abort_launch_inline(
+                    channel, rec, topic_id,
+                    kind=_kind, message=str(exc))
+                return _result({
+                    "status": "error", "kind": _kind,
+                    "message": _USER_MESSAGES.get(exc.kind, str(exc)),
+                })
+            except Exception as exc:  # noqa: BLE001
+                await _abort_launch_inline(
+                    channel, rec, topic_id,
+                    kind="driver_start_failed", message=str(exc))
+                return _result({
+                    "status": "error", "kind": "driver_start_failed",
+                    "message": str(exc),
+                })
+
+            # #678: start() returning means the first turn ran to its END —
+            # never that the engagement reported anything. That gap is the
+            # defect: a turn cut off mid-tool-loop returns here normally,
+            # this handler answers "pending", the engaging agent narrates
+            # "started, I'll report back", and the record sits `active` with
+            # nothing ever posted. Ask the driver what the turn left behind
+            # (in_casa only — see _launch_incomplete_reason) and, if it left
+            # nothing, hand the death to its one anchored owner.
+            _incomplete = _launch_incomplete_reason(driver, rec.id)
+            if _incomplete:
+                _detail = _LAUNCH_INCOMPLETE_DETAIL.get(
+                    _incomplete, _incomplete)
+                _outcome = await asyncio.shield(_spawn_launch_death_report(
+                    channel, rec, topic_id, kind=LAUNCH_INCOMPLETE_KIND,
+                    detail=_detail, driver=driver))
+                if _outcome is not LaunchDeathResult.ALREADY_TERMINAL:
+                    return _result({
+                        "status": "error", "kind": LAUNCH_INCOMPLETE_KIND,
+                        "message": _detail,
+                    })
+                # Lost the terminal race: the engagement really did report
+                # itself between the turn's end and this read, so the engager
+                # is told what a successful launch is told.
+
+        else:
+            # Design 2026-09-15 §2.A: open the client inline (the stale-launch
+            # gate stays synchronous with this tool call), then hand the
+            # launch TURN to an anchored owner and return `pending` at once —
+            # the engaging resident's turn is not held for the first turn.
+            try:
+                await driver.open(
+                    rec, options=options, expected_generation=_ctx_gen0)
+            except StaleLaunchError as exc:
                 if exc.record_live:
                     return _result({
                         "status": "pending", "engagement_id": rec.id,
@@ -10745,9 +10744,6 @@ async def _engage_executor_impl(args: dict, _spawn_holder: dict) -> dict:
                     "message": str(exc),
                 })
             except Exception as exc:  # noqa: BLE001
-                logger.exception(
-                    "claude_code driver.start failed for %s", rec.id[:8],
-                )
                 await _abort_launch_inline(
                     channel, rec, topic_id,
                     kind="driver_start_failed", message=str(exc))
@@ -10755,143 +10751,26 @@ async def _engage_executor_impl(args: dict, _spawn_holder: dict) -> dict:
                     "status": "error", "kind": "driver_start_failed",
                     "message": str(exc),
                 })
-        else:
-            # Off-loop: _build_executor_options reads hooks.yaml. §3.9: feed the
-            # SAME resolution gated + recorded above (one resolve, one binding).
-            options = await asyncio.to_thread(
-                _build_executor_options, defn, executor_type=executor_type,
-                resolution=plugin_resolution,
-                extra_casa_tools=SPECIALIST_CASA_GRANTS,
-            )
-            options.system_prompt = prompt
-
-            driver = getattr(agent_mod, "active_engagement_driver", None)
-            if driver is None:
-                await _abort_launch_inline(
-                    channel, rec, topic_id,
-                    kind="no_driver", message="engagement driver not initialized")
+            # --- the handoff: one synchronous block, no await inside ---
+            if (_engagement_registry is not None
+                    and _engagement_registry.launch_shutdown_active()):
+                # The stop latched while open() was suspended: mint no
+                # task (its done callback would fire after the drains),
+                # report inline and answer the caller.
+                # ARMED + acknowledged on return, like every inline abort:
+                # a launcher whose own cancellation lands inside the
+                # shield leaves the obligation for the cancellation owner.
+                _detail = "Casa was stopping when this launch was cancelled"
+                await _report_launch_death_inline(
+                    channel, rec, topic_id, kind="launch_cancelled",
+                    detail=_detail, driver=driver)
                 return _result({
-                    "status": "error", "kind": "no_driver",
-                    "message": "engagement driver not initialized",
+                    "status": "error", "kind": "launch_cancelled",
+                    "message": _detail,
                 })
-            from drivers.driver_protocol import StaleLaunchError
-            if getattr(driver, "supports_split_launch", False) is not True:
-                # A driver without the §2.A split (a fake, or a protocol
-                # consumer that has not adopted it) keeps the pre-detach
-                # shape: the whole first turn runs inside this tool call.
-                try:
-                    await driver.start(
-                        rec, prompt=prompt, options=options,
-                        expected_generation=_ctx_gen0)
-                except StaleLaunchError as exc:
-                    # #369: see the claude_code branch above (incl. Terra r5's
-                    # record_live supersede).
-                    if exc.record_live:
-                        return _result({
-                            "status": "pending", "engagement_id": rec.id,
-                            "executor_type": executor_type, "topic_id": topic_id,
-                        })
-                    await _abort_launch_inline(
-                        channel, rec, topic_id,
-                        kind="clearance_changed_during_launch", message=str(exc))
-                    return _result({
-                        "status": "error", "kind": "clearance_changed_during_launch",
-                        "message": str(exc),
-                    })
-                except ApiErrorTurn as exc:
-                    # #595: as in the interactive-specialist launch above — the
-                    # carried kind reaches the terminal record, so `refusal` and
-                    # `api_error` are distinguishable from a crash here too.
-                    _kind = exc.kind.value
-                    await _abort_launch_inline(
-                        channel, rec, topic_id,
-                        kind=_kind, message=str(exc))
-                    return _result({
-                        "status": "error", "kind": _kind,
-                        "message": _USER_MESSAGES.get(exc.kind, str(exc)),
-                    })
-                except Exception as exc:  # noqa: BLE001
-                    await _abort_launch_inline(
-                        channel, rec, topic_id,
-                        kind="driver_start_failed", message=str(exc))
-                    return _result({
-                        "status": "error", "kind": "driver_start_failed",
-                        "message": str(exc),
-                    })
-
-                # #678: start() returning means the first turn ran to its END —
-                # never that the engagement reported anything. That gap is the
-                # defect: a turn cut off mid-tool-loop returns here normally,
-                # this handler answers "pending", the engaging agent narrates
-                # "started, I'll report back", and the record sits `active` with
-                # nothing ever posted. Ask the driver what the turn left behind
-                # (in_casa only — see _launch_incomplete_reason) and, if it left
-                # nothing, hand the death to its one anchored owner.
-                _incomplete = _launch_incomplete_reason(driver, rec.id)
-                if _incomplete:
-                    _detail = _LAUNCH_INCOMPLETE_DETAIL.get(
-                        _incomplete, _incomplete)
-                    _outcome = await asyncio.shield(_spawn_launch_death_report(
-                        channel, rec, topic_id, kind=LAUNCH_INCOMPLETE_KIND,
-                        detail=_detail, driver=driver))
-                    if _outcome is not LaunchDeathResult.ALREADY_TERMINAL:
-                        return _result({
-                            "status": "error", "kind": LAUNCH_INCOMPLETE_KIND,
-                            "message": _detail,
-                        })
-                    # Lost the terminal race: the engagement really did report
-                    # itself between the turn's end and this read, so the engager
-                    # is told what a successful launch is told.
-
-            else:
-                # Design 2026-09-15 §2.A: open the client inline (the stale-launch
-                # gate stays synchronous with this tool call), then hand the
-                # launch TURN to an anchored owner and return `pending` at once —
-                # the engaging resident's turn is not held for the first turn.
-                try:
-                    await driver.open(
-                        rec, options=options, expected_generation=_ctx_gen0)
-                except StaleLaunchError as exc:
-                    if exc.record_live:
-                        return _result({
-                            "status": "pending", "engagement_id": rec.id,
-                            "executor_type": executor_type, "topic_id": topic_id,
-                        })
-                    await _abort_launch_inline(
-                        channel, rec, topic_id,
-                        kind="clearance_changed_during_launch", message=str(exc))
-                    return _result({
-                        "status": "error", "kind": "clearance_changed_during_launch",
-                        "message": str(exc),
-                    })
-                except Exception as exc:  # noqa: BLE001
-                    await _abort_launch_inline(
-                        channel, rec, topic_id,
-                        kind="driver_start_failed", message=str(exc))
-                    return _result({
-                        "status": "error", "kind": "driver_start_failed",
-                        "message": str(exc),
-                    })
-                # --- the handoff: one synchronous block, no await inside ---
-                if (_engagement_registry is not None
-                        and _engagement_registry.launch_shutdown_active()):
-                    # The stop latched while open() was suspended: mint no
-                    # task (its done callback would fire after the drains),
-                    # report inline and answer the caller.
-                    # ARMED + acknowledged on return, like every inline abort:
-                    # a launcher whose own cancellation lands inside the
-                    # shield leaves the obligation for the cancellation owner.
-                    _detail = "Casa was stopping when this launch was cancelled"
-                    await _report_launch_death_inline(
-                        channel, rec, topic_id, kind="launch_cancelled",
-                        detail=_detail, driver=driver)
-                    return _result({
-                        "status": "error", "kind": "launch_cancelled",
-                        "message": _detail,
-                    })
-                _hand_off_launch_turn(driver, rec, prompt, channel, topic_id,
-                                      _launch_handle)
-                _launch_handle = None
+            _hand_off_launch_turn(driver, rec, prompt, channel, topic_id,
+                                  _launch_handle)
+            _launch_handle = None
 
     except asyncio.CancelledError:
         _abort_launch_on_cancel(channel, rec, topic_id)
@@ -10900,15 +10779,13 @@ async def _engage_executor_impl(args: dict, _spawn_holder: dict) -> dict:
         _unregister_launch_safe(_launch_handle)
     # #1350: the launch was handed off. Two lines stating facts already true,
     # neither awaited: the hand-off in the person's chat (an operator turn
-    # only), and what an in-process engagement is for at the top of its topic
-    # (a claude_code topic already opens with its pinned summary).
+    # only), and what an in-process engagement is for at the top of its topic.
     _handoff_name = _display_name_for_role(executor_type)
     _title = getattr(rec, "topic_title", "") or executor_type
     _handoff_shown = _post_handoff_line(
         origin, f"⚙️ Passed to the {_handoff_name}: “{_title}”. "
                 "Its topic is in Engagements.")
-    if defn.driver == "in_casa":
-        _post_topic_opening(channel, topic_id, _title, task_text)
+    _post_topic_opening(channel, topic_id, _title, task_text)
     return _result({
         "status": "pending",
         "engagement_id": rec.id,
@@ -11213,11 +11090,9 @@ def _abort_launch_on_cancel(channel: Any, rec: "EngagementRecord",
     durably-active record and an open topic with nothing driving them.
 
     Terra/Sol r2: the driver may in fact have gone LIVE before the
-    cancellation landed (claude_code starts its s6 service, then awaits the
-    initial-prompt enqueue — cancellation there escapes start()'s rollback),
-    so the compensation runs the driver's idempotent terminal teardown
-    (``cancel()`` — stop_service is tolerant of "already down"/never-started)
-    as well as marking the record errored and aborting the topic.
+    cancellation landed, so the compensation runs the driver's idempotent
+    terminal teardown (``cancel()``) as well as marking the record errored
+    and aborting the topic.
     Fire-and-forget and strong-ref'd, since a cancelled task cannot await.
 
     #678: the body is now the SHARED launch-death reporter, for three reasons
@@ -11225,20 +11100,17 @@ def _abort_launch_on_cancel(channel: Any, rec: "EngagementRecord",
     flipped the topic to ❌ and closed it without a single message, so the
     operator saw a failed title over an empty topic and could not tell whether
     the task had mutated anything. (2) It awaited ``driver.cancel``
-    UNBOUNDED, ahead of everything else — and for claude_code that waits on
-    the compile lock, an ``s6-rc -d change``, a logger stop and a recompile,
-    so a wedged teardown meant the record was never even marked. (3) It used
+    UNBOUNDED, ahead of everything else, so a wedged teardown meant the
+    record was never even marked. (3) It used
     ``mark_error``, which persists best-effort and so returns True over a
     swallowed tombstone-write failure, authorizing an irreversible topic close
     over a record disk still calls ``active``. The reporter marks first
     (strictly), then tells, then tears down under a bound — the finalize
-    funnel's own order, and safer here too: INV-MCP-001 binds engagement tool
-    authority to ``active``, so flipping first revokes the dying engagement's
-    tools sooner."""
+    funnel's own order, and safer here too: engagement tool authority is bound
+    to ``active``, so flipping first revokes the dying engagement's tools
+    sooner."""
     import agent as agent_mod
-    driver = (getattr(agent_mod, "active_claude_code_driver", None)
-              if rec.driver == "claude_code"
-              else getattr(agent_mod, "active_engagement_driver", None))
+    driver = getattr(agent_mod, "active_engagement_driver", None)
     # #698: the cause is READ, never inferred from the cancellation's shape.
     # A stop wrote it against this exact row before it cancelled it; anything
     # else — a creator cancel, a barge-in, a role eviction — carries none and
@@ -11415,23 +11287,7 @@ async def _report_launch_death(
                 if type(_rt) is list else [])
         except Exception:  # noqa: BLE001 — fail open
             lost_reservation_texts[:] = []
-        # #780: the THIRD spool population — envelopes a redirect evicted whose
-        # eviction notice never sent. Durable on disk, in neither population
-        # above, and with its reservation long released it had no carrier at
-        # all. Its own try, like every accessor beside it: a failure costs only
-        # this coverage. Appended last: the copy claims counts and texts,
-        # never chronology.
-        try:
-            _ev = (driver.inbound_evicted_pending_texts(rec.id)
-                   if hasattr(driver, "inbound_evicted_pending_texts") else [])
-            evicted = ([t for t in _ev if isinstance(t, str)]
-                       if type(_ev) is list else [])
-        except Exception:  # noqa: BLE001 — fail open, WITHOUT losing the above
-            logger.warning(
-                "launch-death report %s: evicted-pending accessor failed — "
-                "evicted disclosure skipped", rec.id[:8], exc_info=True)
-            evicted = []
-        lost_texts[:] = list(in_flight) + list(queued) + list(evicted)
+        lost_texts[:] = list(in_flight) + list(queued)
         return None
 
     try:
@@ -11463,44 +11319,6 @@ async def _report_launch_death(
             "engagement reported itself; nothing to tell", rec.id[:8])
         return LaunchDeathResult.ALREADY_TERMINAL
 
-    # This call won the flip and it is on disk. #599's ordering applies here
-    # exactly as in the funnel: the strict transition only SCHEDULES the uid
-    # quiesce, so telling the operator "it died" before the ladder settles
-    # would put the operator-visible effect ahead of the actual stop, while a
-    # claude_code CLI can still run native Bash/Write/Edit. Bounded and
-    # registry-shielded — it reports its own outcome and never wedges.
-    _awaiter = getattr(_engagement_registry, "await_quiesce", None)
-    if callable(_awaiter):
-        try:
-            await _awaiter(rec.id, _QUIESCE_FUNNEL_TIMEOUT_S)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001 — never abort the report
-            logger.warning(
-                "launch-death report %s: awaiting the uid quiesce failed: %s",
-                rec.id[:8], exc)
-
-    # #698: this call WON the strict flip, so the record is durably terminal —
-    # and only now may the retained workspace be given terminal metadata. The
-    # ordering is the whole safety property: metadata saying "terminal, reap
-    # after seven days" written while the record is still live would have boot
-    # replay resume the engagement into that workspace (replay selects every
-    # active/idle claude_code row and never reads .casa-meta.json) and the
-    # sweep delete it underneath the resumed CLI. Written here it can only ever
-    # follow the durable record it describes.
-    #
-    # Only for a launch the stop cancelled: that is the only launch whose
-    # workspace the rollback retained. For every other death the rollback has
-    # already removed it, and the writer would find nothing to rewrite.
-    #
-    # Synchronous, so the reporter acquires no await it did not have.
-    retained = False
-    if _launch_cause_of(rec.id) and rec.driver == "claude_code":
-        from drivers import workspace as _ws_mod
-        retained = _ws_mod.write_terminal_casa_meta(
-            engagement_id=rec.id, status="ERROR",
-            allocated_uid=rec.allocated_uid)
-
     # ONE bounded notice, while the topic is STILL OPEN.
     if topic_id is not None and channel is not None:
         text = (
@@ -11508,25 +11326,12 @@ async def _report_launch_death(
             f"({detail}). Its task may be incomplete \u2014 inspect any "
             "partial changes before retrying."
         )
-        if retained:
-            # #698: claimed IF AND ONLY IF the retention was actually
-            # recorded. Naming a window is a claim about what the sweep will
-            # do, and the sweep returns on UNDERGOING before it reads any
-            # deadline — so a workspace kept without terminal metadata has no
-            # window at all, and promising one is a durable false statement
-            # about state the operator will go looking for. The writer's own
-            # boolean is the only honest source.
-            text += (
-                f"\n\nIts workspace is retained for "
-                f"{_WORKSPACE_RETENTION_DAYS} days so its work can be "
-                "recovered; after that it is deleted."
-            )
         # #848: a reservation text that was read is evidence of a lost message
         # even when the count read raised — the paragraph is posted for it.
         # The new arm needs BOTH the observed failure and a text: a failed
         # read alone is never evidence (nothing was read), and a successful
         # zero beside a text is the driver answering off its own clamp, left
-        # exactly as it was. INV-ENG-017's failed-count clause.
+        # exactly as it was.
         if (lost_texts or lost_reservations
                 or (reservation_count_failed and lost_reservation_texts)):
             _budget, _parts = 2800, []
@@ -11534,8 +11339,8 @@ async def _report_launch_death(
             # message never became durable. The paragraph's emission condition
             # with no reservation text involved, the base sentence above and
             # this paragraph's position after the retention one are all
-            # UNCHANGED — INV-ENG-015's red cases assert this notice by
-            # whole-text equality.
+            # UNCHANGED — red cases assert this notice by whole-text
+            # equality.
             _bullets = list(lost_texts) + list(lost_reservation_texts)
             for _t in _bullets:
                 _ex = _t if len(_t) <= 400 else _t[:400] + "\u2026"
@@ -11586,8 +11391,7 @@ async def _report_launch_death(
 
 async def _post_engagement_notice(channel: Any, rec: Any, text: str) -> None:
     """#678: post a platform notice into an engagement topic through the seam
-    #649's failure owner uses (``TelegramChannel._post_engagement_notice`` —
-    the output sequencer for claude_code, a direct rich send for in_casa),
+    #649's failure owner uses (``TelegramChannel._post_engagement_notice``),
     falling back to the pair ``_finalize_engagement`` already falls back
     through for a channel that lacks it (tests, a legacy channel)."""
     poster = getattr(channel, "_post_engagement_notice", None)
@@ -11604,10 +11408,8 @@ async def _cancel_driver_bounded(driver: Any, rec: Any) -> None:
     """#678: tear the driver client down under the funnel's own bound.
 
     ``_abort_launch_on_cancel`` awaited ``driver.cancel`` UNBOUNDED ahead of
-    every operator-visible effect, and for claude_code that waits on the
-    compile lock, an ``s6-rc -d change``, a logger stop and a recompile — none
-    of them bounded — so a wedged teardown meant the operator was never told
-    at all. Same treatment ``_finalize_engagement_tail`` gives it."""
+    every operator-visible effect, so a wedged teardown meant the operator
+    was never told at all. Same treatment ``_finalize_engagement_tail`` gives it."""
     if driver is None or not hasattr(driver, "cancel"):
         return
     try:
@@ -12031,7 +11833,7 @@ def _launch_incomplete_reason(driver: Any, engagement_id: str) -> str:
 
     ``getattr``-guarded because ``launch_turn_incomplete`` is NOT part of
     ``DriverProtocol``: a bare attribute access would raise ``AttributeError``
-    on a healthy claude_code launch, and the launcher's generic
+    on a driver without it (a fake), and the launcher's generic
     ``except Exception`` would then mark that engagement errored and abort its
     topic. Call sites are the two in_casa launch branches only.
     """
@@ -12332,12 +12134,7 @@ class FinalizeResult(enum.Enum):
         return self is FinalizeResult.FINALIZED
 
 
-# #599: how long the finalize funnel waits for the scheduled uid quiesce before
-# continuing, and how long it gives the whole driver teardown. Both are bounds on
-# the funnel, NOT on the ladder: the ladder carries its own monotonic budget and
-# reports its own outcome, and this wait is deliberately slacker than that budget
-# so an outer bound can never pre-empt the ladder's own reporting.
-_QUIESCE_FUNNEL_TIMEOUT_S = 5.0
+# #599: how long the finalize funnel gives the whole driver teardown.
 _DRIVER_CANCEL_TIMEOUT_S = 20.0
 
 _DISCLOSURE_UNCONFIRMED = (
@@ -12491,20 +12288,6 @@ async def _finalize_engagement_funnel(
         text += f"\nLast progress: {last_summary}"
     now = time.time()
 
-    # 0. Pre-close spool drain (v0.79.0 §3): flush any pending inbound receipts
-    #    / eviction notices BEFORE the terminal commit + topic close, while the
-    #    topic is still open. Best-effort — the terminal boot-reconciliation
-    #    owner covers a crash-after-commit or a drain-send failure. Idempotent
-    #    (at-least-once), so running it ahead of the win/lose gate is safe.
-    if driver is not None and hasattr(driver, "drain_inbound_spool"):
-        try:
-            await driver.drain_inbound_spool(engagement)
-        except Exception as exc:  # noqa: BLE001 — never abort finalize
-            logger.warning(
-                "finalize engagement %s: inbound spool drain failed: %s",
-                engagement.id[:8], exc,
-            )
-
     # 1. Registry transition — atomic and authoritative. Only the first
     #    caller to flip the record terminal runs the finalize side effects
     #    below (L75/L24: guards against a concurrent /cancel racing this
@@ -12521,7 +12304,7 @@ async def _finalize_engagement_funnel(
     # SNAPSHOT of queued-unseen texts (all callers — surfaced to the topic
     # after the flip). Accessor failures fail OPEN with a warning: a driver
     # bug must not wedge termination forever. #807: open for THAT accessor
-    # only — each of the eight reads below is guarded on its own and
+    # only — each of the reads below is guarded on its own and
     # contributes only its own value, so a failure changes what the hook knows
     # and never what it does about everything else it read.
     unread_snapshot: list[str] = []
@@ -12536,7 +12319,7 @@ async def _finalize_engagement_funnel(
         nonlocal lost_reservations, reservation_count_failed
         if driver is None:
             return None
-        # #807: the queued-text read is ONE optional accessor among eight, and
+        # #807: the queued-text read is ONE optional accessor among several, and
         # it is guarded like every one of them — its own try, contributing only
         # its own value. It used to be the hook's precondition instead: absent,
         # it returned before the whole hook; raising, it returned before the
@@ -12611,29 +12394,10 @@ async def _finalize_engagement_funnel(
                 "reservation and in-flight arms still stand",
                 engagement.id[:8], exc_info=True)
             depth = 0
-        # #591: the accessors above answer "is the operator still waiting to be
-        # answered?", which deliberately excludes an envelope already written
-        # into the CLI's stdin FIFO. That is the right answer for the ask gate
-        # and the wrong one here, twice over: such an envelope is work that will
-        # only be taken up AFTER this transition commits, and if the engagement
-        # ends first nobody ever tells the operator it died unread. Both reads
-        # are strictly typed so a duck or mock driver reads as empty rather than
-        # fabricating a depth.
-        #
-        # Guarded SEPARATELY from the reads above (Terra, diff review): sharing
-        # their try meant a failure in either of these two erased the queued and
-        # reservation values that had already been read successfully, so adding
-        # a gate would have been able to DISABLE the gate that was there — and
-        # an accepted operator message could then be committed past with no veto
-        # at all. A failure here now costs only the new coverage.
-        #
-        # #807: and separately from EACH OTHER, for the same reason one step
-        # in. These two reads share nothing but a subject: the texts are
-        # disclosure and the count is a veto arm. While they shared a try, the
-        # texts read raising zeroed a blocking count the driver would have
-        # answered — one accessor's failure switching off a veto arm the gate
-        # could still see — and the blocking read raising discarded in-flight
-        # texts that had already been read.
+        # #591: the texts of accepted turns no turn start was recorded for —
+        # disclosure only. Strictly typed so a duck or mock driver reads as
+        # empty; guarded SEPARATELY from the reads above (Terra, diff review)
+        # so its failure costs only this coverage.
         try:
             _ift = (driver.inbound_in_flight_texts(engagement.id)
                     if hasattr(driver, "inbound_in_flight_texts") else [])
@@ -12642,19 +12406,9 @@ async def _finalize_engagement_funnel(
         except Exception:  # noqa: BLE001 — fail open, WITHOUT losing the above
             logger.warning(
                 "finalize engagement %s: in-flight-text accessor failed — the "
-                "blocking arm and the unread gate below still stand",
+                "unread gate below still stands",
                 engagement.id[:8], exc_info=True)
             in_flight = []
-        try:
-            _ifb = (driver.inbound_in_flight_blocking(engagement.id)
-                    if hasattr(driver, "inbound_in_flight_blocking") else 0)
-            blocking = _ifb if type(_ifb) is int else 0
-        except Exception:  # noqa: BLE001 — fail open, WITHOUT losing the above
-            logger.warning(
-                "finalize engagement %s: in-flight-blocking accessor failed — "
-                "the unread gate below still stands", engagement.id[:8],
-                exc_info=True)
-            blocking = 0
         # #664: a message still inside its ingress-reservation window has no
         # text anywhere, but it dies with this terminal all the same — carry
         # the DISCLOSURE projection (reservations minus the ones a recognized
@@ -12675,10 +12429,6 @@ async def _finalize_engagement_funnel(
                 exc_info=True)
             lost_reservations = 0
             reservation_count_failed = True
-        # Disclosure covers BOTH populations at any age; the veto counts only
-        # in-flight young enough to still be arriving (see the driver's
-        # in_flight_blocking_depth — an unbounded veto here could make a
-        # successful completion impossible, which this hook must never do).
         # #649: in-flight first — an accepted turn is usually older than the
         # turns still queued behind it. Best-effort, mostly-chronological;
         # cross-population order is NOT a guarantee (a system turn admitted
@@ -12703,29 +12453,9 @@ async def _finalize_engagement_funnel(
                 "the counts below still stand", engagement.id[:8],
                 exc_info=True)
             reservation_texts[:] = []
-        # #780: the THIRD spool population — envelopes a redirect evicted whose
-        # eviction notice never sent. The notice was that message's whole
-        # disclosure and it is best-effort; the pre-close drain above retried
-        # it once more, and if it still failed the row is durable on disk and
-        # in neither population above, with its reservation long released. It
-        # contributes bullets and an exact unit of the count, and NOTHING to
-        # the veto: an evicted envelope is cleared by nothing an agent can do,
-        # so a veto sourced from it could never be satisfied. Its own try —
-        # a failure costs only this coverage.
-        try:
-            _ev = (driver.inbound_evicted_pending_texts(engagement.id)
-                   if hasattr(driver, "inbound_evicted_pending_texts") else [])
-            evicted = ([t for t in _ev if isinstance(t, str)]
-                       if type(_ev) is list else [])
-        except Exception:  # noqa: BLE001 — fail open, WITHOUT losing the above
-            logger.warning(
-                "finalize engagement %s: evicted-pending accessor failed — "
-                "evicted disclosure skipped", engagement.id[:8], exc_info=True)
-            evicted = []
-        unread_snapshot[:] = list(in_flight) + list(texts) + list(evicted)
-        if inbound_gate and (depth or blocking or resv):
-            return (f"unread_inbound depth={depth} "
-                    f"in_flight={blocking} reservations={resv}")
+        unread_snapshot[:] = list(in_flight) + list(texts)
+        if inbound_gate and (depth or resv):
+            return f"unread_inbound depth={depth} reservations={resv}"
         return None
 
     if _engagement_registry is not None:
@@ -12778,8 +12508,7 @@ async def _finalize_engagement_funnel(
     # #632 (Terra, seam review): freeze the tail's payload inputs NOW —
     # before the first await after the flip. ``lower_origin_clearance`` has
     # no terminal-state refusal and rewrites the live record's ``origin`` and
-    # ``task``; this funnel suspends (quiesce wait, broker drain, topic
-    # round-trips) between the flip and the notification/summary reads, so
+    # ``task``; this funnel suspends (broker drain, topic round-trips) between the flip and the notification/summary reads, so
     # without this snapshot a post-terminal clamp lands in the
     # DelegationComplete and summary payloads. The completion records carry
     # the values that won the flip.
@@ -12789,80 +12518,11 @@ async def _finalize_engagement_funnel(
         "driver": engagement.driver,
         "role_or_type": engagement.role_or_type,
         "started_at": engagement.started_at,
-        "allocated_uid": engagement.allocated_uid,
         "procedural_epoch": getattr(engagement, "procedural_epoch", "") or "",
         "origin": dict(engagement.origin),
         "task": engagement.task,
         "summary_allowed": summary_allowed,
     }
-
-    # #599: the instant THIS call won the terminal flip, WAIT for the uid
-    # quiesce the registry scheduled with that very transition — before the
-    # broker cancel, before the summary finalize, before every Telegram
-    # round-trip below. Until this release the engagement's CLI stayed alive for
-    # that whole span: its casa tools were refused (INV-MCP-001 binds authority
-    # to ``active``) while nothing stopped its native Bash/Write/Edit, and the
-    # only stop was an unbounded ``s6-rc -d change`` at the very end.
-    #
-    # Bounded, and it never wedges: the ladder is registry-owned and reports its
-    # own outcome, so an overrun here simply continues the funnel. The wait is
-    # shielded, so a cancellation of THIS funnel does not cancel containment —
-    # it does not make the funnel's own tail uncancellable, which is
-    # pre-existing behaviour for every await after the commit.
-    if _engagement_registry is not None:
-        _awaiter = getattr(_engagement_registry, "await_quiesce", None)
-        if callable(_awaiter):
-            try:
-                await _awaiter(engagement.id, _QUIESCE_FUNNEL_TIMEOUT_S)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001 — never abort finalize
-                logger.warning(
-                    "finalize engagement %s: awaiting the uid quiesce failed: %s",
-                    engagement.id[:8], exc)
-
-    # r5-B6: the instant THIS call won the terminal flip, cancel pending
-    # broker requests so a late ask/permission tap can't be answered
-    # post-terminal, and DRAIN finish-hooks so their keyboard "expired"
-    # edits land while the topic is STILL OPEN (below closes it). Must
-    # precede the topic ops, not follow driver teardown — the old placement
-    # let a pending ask resolve after the terminal flip and scheduled its
-    # edit only after topic closure.
-    try:
-        from verdict_broker import BROKER
-        for ns in ("permission", "engagement_ask"):
-            BROKER.cancel_scope(namespace=ns, scope=engagement.id,
-                                reason="engagement_terminal")
-        await BROKER.drain_hooks()      # flush keyboard edits BEFORE close_topic
-    except Exception:  # noqa: BLE001
-        pass
-
-    # v0.79.0 (§5): terminal summary flush — set the pinned summary's absolute
-    # terminal status (✅/🛑/⚠️) and cancel its elapsed tick while the topic is
-    # STILL OPEN (before the U3 title flip + close_topic below).
-    if driver is not None and hasattr(driver, "finalize_summary"):
-        try:
-            await driver.finalize_summary(engagement, outcome)
-        except Exception as exc:  # noqa: BLE001 — never abort finalize
-            logger.warning(
-                "finalize engagement %s: summary finalize failed: %s",
-                engagement.id[:8], exc,
-            )
-
-    # v0.83.0 (§A3(b), consumer c): SETTLE every remaining open-question anchor
-    # while the topic is STILL OPEN — closing the latent gap where /cancel or
-    # /complete with a live free-text anchor left it visually open forever. Also
-    # clears the engagement's re-anchor latch + cancels its retry owner. Driver-
-    # methodized + getattr-tolerant (in_casa / legacy drivers simply don't
-    # engage). Never aborts the finalize funnel.
-    if driver is not None and hasattr(driver, "settle_all_open_questions"):
-        try:
-            await driver.settle_all_open_questions(engagement, outcome)
-        except Exception as exc:  # noqa: BLE001 — never abort finalize
-            logger.warning(
-                "finalize engagement %s: open-question settle failed: %s",
-                engagement.id[:8], exc,
-            )
 
     # [AR-4] Topic-retention ledger (2026-07-10 design): record the topic
     # for the retention sweep the moment the record flips terminal — both
@@ -12915,39 +12575,23 @@ async def _finalize_engagement_funnel(
                     f"Engagement {outcome}. Summary:\n{text}"
                     if text else f"Engagement {outcome}."
                 )
-                # W2/Sol B9 (Task 7): surface a mutating tool-use taken while
-                # the engagement was awaiting_operator — set by the
-                # claude_code driver's _on_stream_event mutating_tool seam.
-                if engagement.origin.get("interaction_violated"):
-                    summary_text += (
-                        "\n\n⚠️ This engagement took an action before you "
-                        "responded — please review."
-                    )
                 # G4 D4 (v0.96.0): surface operator messages no turn ever took
                 # up (queued at terminalization — cancel/reap/error paths; a
                 # gated completion cannot reach here with unread input), plus
-                # (#591) any already written into the CLI's stdin FIFO with no
-                # turn_start evidence back.
+                # (#591) accepted turns with no turn_start evidence back.
                 #
-                # The copy claims what Casa can actually evidence. "Never read"
-                # is not provable for the second population: the CLI can read
-                # the line and emit its init frame before the relay processes
-                # it, so a /cancel landing in that interval would assert
-                # something false about a message the agent did see. What is
-                # always true is that no turn start was RECORDED for them
-                # before the engagement ended (``consumed`` requires exactly
-                # that evidence) — so that is what it says.
+                # The copy claims what Casa can actually evidence: no turn
+                # start was RECORDED for them before the engagement ended.
                 # TOPIC-ONLY (never in `text`, which flows to the bus
                 # notification and the summary capture) and BOUNDED to one
-                # message: excerpts + count, full texts stay in the durable
-                # spool file.
+                # message: excerpts + count.
                 # #848: a reservation text that was read is evidence of a
                 # lost message even when the count read raised — the
                 # paragraph is posted for it. The new arm needs BOTH the
                 # observed failure and a text: a failed read alone is never
                 # evidence (nothing was read), and a successful zero beside
                 # a text is the driver answering off its own clamp, left
-                # exactly as it was. INV-ENG-017's failed-count clause.
+                # exactly as it was.
                 if (unread_snapshot or lost_reservations
                         or (reservation_count_failed and reservation_texts)):
                     _budget = 2800
@@ -12969,20 +12613,9 @@ async def _finalize_engagement_funnel(
                         _parts.append(f"• {_ex}")
                     _more = len(_bullets) - len(_parts)
                     # #649: "inbound", not "operator" — deliver_system_turn
-                    # continuations are Casa-authored; and the spool-file
-                    # recoverability claim is made only for drivers that
-                    # actually HAVE a durable spool (the in_casa ticket
+                    # continuations are Casa-authored. The in_casa ticket
                     # ledger is non-durable by design — the count is always
-                    # stated, the overflow text is not recoverable).
-                    # #691: and only while every bullet in the overflow IS a
-                    # spool envelope. A reservation text is by definition NOT
-                    # in the spool file, so claiming it is recoverable there
-                    # would be a false statement about state the operator would
-                    # go looking for. With no reservation texts this is exactly
-                    # the previous predicate.
-                    _spooled = (driver is not None
-                                and hasattr(driver, "drain_inbound_spool")
-                                and not reservation_texts)
+                    # stated, the overflow text is not recoverable.
                     # #664: reservations contribute a COUNT only — no text
                     # exists for a message that never reached the spool. An
                     # anonymous reservation can alias an already-spooled text
@@ -13008,67 +12641,30 @@ async def _finalize_engagement_funnel(
                         "had no turn start recorded before this engagement "
                         "ended — they may never have been read"
                         + ((":\n" + "\n".join(_parts)) if _parts else ".")
-                        + ((f"\n…and {_more} more (kept in the engagement's "
-                            "inbound spool file)." if _spooled
-                            else f"\n…and {_more} more.")
-                           if _more > 0 else "")
+                        + (f"\n…and {_more} more." if _more > 0 else "")
                     )
-                # v0.79.0 (§2 F1(c)): for a claude_code engagement, DRAIN the
-                # sequencer (settle pending narration + parked/armed intents)
-                # BEFORE posting the completion text THROUGH the single writer —
-                # completion may not overtake its causal block. The driver hook
-                # returns True when it posted (skip the direct send); a
-                # non-claude_code driver / no live sequencer falls back to the
-                # pre-v0.79 direct send.
-                posted_via_sequencer = False
-                # #678 (SEAM-1): a sequencer post that RAISES is not the same
-                # as one that reports nothing sent. ``post_completion_notice``
-                # returning None means a definite failure and NOTHING landed,
-                # so the direct send below is a legitimate second attempt; a
-                # RAISE can come from page 2 of a 4-page paginated send, so
-                # replaying the whole summary through the direct sender would
-                # duplicate content in the topic and then paint and close over
-                # the duplicate. On a raise there is no resend: the bounded
-                # plain disclosure is the only further thing said.
-                sequencer_attempt_failed = False
-                if driver is not None and hasattr(
-                        driver, "finalize_completion_post"):
-                    try:
-                        posted_via_sequencer = await driver.finalize_completion_post(
-                            engagement, summary_text)
-                    except Exception as exc:  # noqa: BLE001 — never abort finalize
-                        sequencer_attempt_failed = True
-                        logger.error(
-                            "finalize engagement %s: the sequencer completion "
-                            "post RAISED part-way — NOT replaying the summary "
-                            "(pages may already be in the topic): %s",
-                            engagement.id[:8], exc,
-                        )
-                if posted_via_sequencer:
-                    completion_post_confirmed = True
-                elif not sequencer_attempt_failed:
-                    # v0.109.0 (G2/G5): executor completion summaries are
-                    # markdown-heavy — render them, paginating past the
-                    # 4096/100-entity caps (the in_casa configurator path was
-                    # the dominant literal-``**`` topic surface). Channels
-                    # without the paged rich sender keep the plain send.
-                    #
-                    # #678: CONFIRMATION is the returned message id, not the
-                    # call returning. Both senders are typed ``-> int`` and
-                    # raise on failure, so a non-None return is a wire
-                    # acknowledgement — which is all it claims, never that a
-                    # person read it.
-                    if hasattr(tch, "send_response_to_topic"):
-                        _mid = await tch.send_response_to_topic(
-                            engagement.topic_id,
-                            summary_text,
-                        )
-                    else:
-                        _mid = await tch.send_to_topic(
-                            engagement.topic_id,
-                            summary_text,
-                        )
-                    completion_post_confirmed = _mid is not None
+                # v0.109.0 (G2/G5): executor completion summaries are
+                # markdown-heavy — render them, paginating past the
+                # 4096/100-entity caps (the in_casa configurator path was
+                # the dominant literal-``**`` topic surface). Channels
+                # without the paged rich sender keep the plain send.
+                #
+                # #678: CONFIRMATION is the returned message id, not the
+                # call returning. Both senders are typed ``-> int`` and
+                # raise on failure, so a non-None return is a wire
+                # acknowledgement — which is all it claims, never that a
+                # person read it.
+                if hasattr(tch, "send_response_to_topic"):
+                    _mid = await tch.send_response_to_topic(
+                        engagement.topic_id,
+                        summary_text,
+                    )
+                else:
+                    _mid = await tch.send_to_topic(
+                        engagement.topic_id,
+                        summary_text,
+                    )
+                completion_post_confirmed = _mid is not None
             except Exception as exc:  # noqa: BLE001
                 logger.error(
                     "finalize engagement %s: the completion post FAILED — the "
@@ -13440,59 +13036,6 @@ async def _finalize_engagement_tail(
     await summary_run.kept(
         _capture_summary(frozen, summary, allowed=_summary_allowed))
 
-    # Plan 4a.1 §8.4: update .casa-meta.json with terminal status + retention_until.
-    if frozen["driver"] == "claude_code":
-        try:
-            from drivers.workspace import load_casa_meta, write_casa_meta
-            from engagement_uids import owner_uid_or_none
-            ws = os.path.join(_ENGAGEMENTS_ROOT, eng_id)
-            if os.path.isdir(ws):
-                meta = load_casa_meta(
-                    ws, owner_uid=owner_uid_or_none(frozen["allocated_uid"]),
-                ) or {}
-                finished_iso = time.strftime(
-                    "%Y-%m-%dT%H:%M:%SZ", time.gmtime(now),
-                )
-                retention_iso = time.strftime(
-                    "%Y-%m-%dT%H:%M:%SZ",
-                    time.gmtime(now + _WORKSPACE_RETENTION_DAYS * 24 * 3600),
-                )
-                final_status = ("COMPLETED" if outcome == "completed"
-                                else "CANCELLED" if outcome == "cancelled"
-                                else "ERROR")
-                write_casa_meta(
-                    workspace_path=ws,
-                    engagement_id=eng_id,
-                    executor_type=frozen["role_or_type"],
-                    status=final_status,
-                    created_at=meta.get("created_at") or finished_iso,
-                    finished_at=finished_iso,
-                    retention_until=retention_iso,
-                    # §3.8: the immutable binding survives the terminal rewrite.
-                    plugin_artifacts=meta.get("plugin_artifacts"),
-                    # Task 8 (containment stage 2): likewise carry the
-                    # allocated uid forward — the workspace sweeper (no
-                    # registry access) reads it back from THIS field to
-                    # prune the uid's passwd/group entry once retention
-                    # deletes the workspace. Fix-loop round 1 (Important):
-                    # use engagement.allocated_uid — the AUTHORITATIVE
-                    # value, already used one line up for owner_uid_or_none
-                    # — not a round-trip through `meta`. load_casa_meta
-                    # returns None/{} on I/O error, malformed/non-object
-                    # JSON, or a refused legacy symlink; falling back to
-                    # meta.get(...) in any of those cases would silently
-                    # regress a real uid to UNALLOCATED_UID in this
-                    # terminal rewrite and permanently orphan the
-                    # casa-eng-<uid> passwd/group lines (the sweeper reads
-                    # ONLY this field).
-                    allocated_uid=frozen["allocated_uid"],
-                )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "finalize engagement %s: .casa-meta update failed: %s",
-                engagement.id[:8], exc,
-            )
-
     # Per-executor-type structured summary (only kind=executor), captured
     # beside the engagement summary above.
     if frozen["kind"] == "executor":
@@ -13592,18 +13135,10 @@ def _engagement_reap_days() -> float:
 
 
 def _resolve_engagement_driver(rec: Any) -> Any | None:
-    """Resolve the driver that owns ``rec``'s engagement lifecycle.
-
-    ``claude_code`` executors run as s6-managed subprocesses that only the
-    claude_code driver stops/removes; everything else runs in-casa. Shared by
-    ``emit_completion``, ``cancel_engagement`` and ``reap_stale_engagements``
-    so all three tear down the RIGHT process. (D-4 fix v0.69.6: the reap used
-    the in-casa driver for every record, so reaping a claude_code executor
-    closed the topic but leaked its subprocess + workspace.)"""
+    """Resolve the driver that owns ``rec``'s engagement lifecycle (the
+    in-casa driver)."""
     import agent as agent_mod
-    attr = ("active_claude_code_driver" if rec.driver == "claude_code"
-            else "active_engagement_driver")
-    return getattr(agent_mod, attr, None)
+    return getattr(agent_mod, "active_engagement_driver", None)
 
 
 async def reap_stale_engagements(*, ttl_days: float | None = None) -> int:
@@ -13878,10 +13413,7 @@ async def emit_completion(args: dict) -> dict:
     driver = None
     try:
         import agent as agent_mod  # noqa: F401
-        if engagement.driver == "claude_code":
-            driver = getattr(agent_mod, "active_claude_code_driver", None)
-        else:
-            driver = getattr(agent_mod, "active_engagement_driver", None)
+        driver = getattr(agent_mod, "active_engagement_driver", None)
     except Exception:
         pass
 
@@ -13889,8 +13421,6 @@ async def emit_completion(args: dict) -> dict:
     # (`unread_inbound` ⇒ end your turn) extended to completion. Gates ONLY
     # successful outcomes; failed/error exits stay ungated (a broken
     # engagement must be able to die) and rely on the D4 annotation.
-    # Placed BEFORE consumption-debt registration so a refusal leaves no
-    # sequencer debt (Sol g4-r1-7).
     if (outcome == "completed" and driver is not None
             and hasattr(driver, "inbound_unread_depth")):
         try:
@@ -13899,50 +13429,12 @@ async def emit_completion(args: dict) -> dict:
                   if hasattr(driver, "inbound_reservations") else 0)
         except Exception:  # noqa: BLE001 — fail open, never wedge completion
             _d = _r = 0
-        # #591: an envelope already in the CLI's stdin FIFO is work this
-        # completion would commit ahead of, so it refuses here too. Guarded
-        # separately from the reads above for the reason given in
-        # _finalize_engagement's terminal hook — a new accessor's failure must
-        # not be able to switch off the gate that already existed.
-        try:
-            _f = (driver.inbound_in_flight_blocking(engagement.id)
-                  if hasattr(driver, "inbound_in_flight_blocking") else 0)
-        except Exception:  # noqa: BLE001 — fail open, WITHOUT losing the above
-            _f = 0
         # STRICT int typing (fail open otherwise): a duck/mock driver whose
         # accessors return non-ints must read as "no unread input", never as
         # a fabricated depth (int(MagicMock()) == 1 bit us in the gate).
         _depth = _d if type(_d) is int else 0
         _resv = _r if type(_r) is int else 0
-        _flight = _f if type(_f) is int else 0
-        if _depth > 0 or _resv > 0 or _flight > 0:
-            try:
-                _rn = (driver.record_completion_refusal(engagement.id)
-                       if hasattr(driver, "record_completion_refusal") else 1)
-            except Exception:  # noqa: BLE001
-                _rn = 1
-            _n = _rn if type(_rn) is int else 1
-            # D3: from the 2nd consecutive refusal, force a turn boundary so
-            # the queued envelope actually pumps (delivery re-arms only at
-            # spawn) instead of livelocking on doctrine alone.
-            #
-            # #591: gated on the QUEUED population only, never on in-flight
-            # alone. The escalation exists because a queued envelope cannot
-            # move until a respawn re-arms delivery — an in-flight one is
-            # already past that boundary and needs nothing forced. Killing its
-            # epoch would be actively harmful: the kill is guarded to the very
-            # epoch holding the envelope, so a turn that consumed it a moment
-            # earlier dies mid-work and the message is never redelivered
-            # (consumed ⇒ no redelivery — the #341 hazard). The in-flight veto
-            # is bounded in time instead, which is what stops it livelocking.
-            if (_depth > 0 or _resv > 0) and _n >= 2 and hasattr(
-                    driver, "force_completion_turn_boundary"):
-                try:
-                    await driver.force_completion_turn_boundary(engagement)
-                except Exception:  # noqa: BLE001 — escalation is best-effort
-                    logger.warning(
-                        "completion-gate forced boundary failed for %s",
-                        engagement.id[:8], exc_info=True)
+        if _depth > 0 or _resv > 0:
             await _record_pending_completion(engagement, status_in, text)
             return _result({
                 "status": "error", "kind": "unread_inbound",
@@ -13952,16 +13444,6 @@ async def emit_completion(args: dict) -> dict:
                     "NOW; the message is delivered at your next turn start; "
                     "read it, then call emit_completion again"),
             })
-
-    # v0.79.0 (§2 F1(c)): register the emit_completion CONSUMPTION DEBT (identity
-    # hash over the raw args) so the relay silently consumes the emit_completion
-    # tool_use block instead of emitting stray narration below the completion.
-    # Best-effort — no live sequencer ⇒ no-op.
-    if driver is not None and hasattr(driver, "register_completion_consumption"):
-        try:
-            driver.register_completion_consumption(engagement.id, args)
-        except Exception:  # noqa: BLE001 — defensive, never block completion
-            logger.debug("register_completion_consumption failed", exc_info=True)
 
     fin = await _finalize_engagement(
         engagement,
@@ -13976,28 +13458,13 @@ async def emit_completion(args: dict) -> dict:
         # very client the funnel's teardown closes — the one topology in
         # which the teardown cancels the funnel's own host. Detach the tail
         # so the completion side effects survive that self-cancel. Every
-        # other caller (cancel/reap/forced delete, claude_code emit via the
-        # UDS handler) keeps the default fully-synchronous path.
-        detach_teardown_tail=(
-            engagement.driver == "in_casa" and driver is not None),
+        # other caller (cancel/reap) keeps the default fully-synchronous path.
+        detach_teardown_tail=(driver is not None),
     )
     # G4 D2 (v0.96.0): the registry-internal gate vetoed the flip (a message
     # landed between the handler gate above and the terminal critical
-    # section). Roll back the consumption debt registered above (Sol
-    # g4-r1-7) and refuse with the same retryable contract.
+    # section). Refuse with the same retryable contract.
     if fin is FinalizeResult.PRECONDITION_FAILED:
-        if driver is not None and hasattr(driver, "cancel_send_intent"):
-            try:
-                driver.cancel_send_intent(
-                    engagement.id, f"emit_completion:{engagement.id}")
-            except Exception:  # noqa: BLE001 — best-effort debt rollback
-                logger.debug("completion debt rollback failed", exc_info=True)
-        if (driver is not None
-                and hasattr(driver, "record_completion_refusal")):
-            try:
-                driver.record_completion_refusal(engagement.id)
-            except Exception:  # noqa: BLE001
-                pass
         await _record_pending_completion(engagement, status_in, text)
         return _result({
             "status": "error", "kind": "unread_inbound", "retryable": True,
@@ -14283,10 +13750,7 @@ async def cancel_engagement(args: dict) -> dict:
     driver = None
     try:
         import agent as agent_mod  # noqa: F401
-        if rec.driver == "claude_code":
-            driver = getattr(agent_mod, "active_claude_code_driver", None)
-        else:
-            driver = getattr(agent_mod, "active_engagement_driver", None)
+        driver = getattr(agent_mod, "active_engagement_driver", None)
     except Exception:
         pass
 
@@ -14602,385 +14066,6 @@ async def casa_reload_triggers(args: dict) -> dict:
     except Exception as exc:  # noqa: BLE001 — say so rather than dropping it
         result["registered_error"] = f"{type(exc).__name__}: {exc}"
     return _result(result)
-
-
-# ---------------------------------------------------------------------------
-# Plan 4a.1: workspace inspection tools
-# ---------------------------------------------------------------------------
-
-
-def _scan_engagement_workspaces(root: str, status_filter: str | None) -> list[dict]:
-    """Blocking scan of /data/engagements — must run via asyncio.to_thread.
-
-    L27: computes a du-style recursive size per workspace (os.walk + per-file
-    os.stat). claude_code workspaces can hold cloned repos / node_modules with
-    tens of thousands of files, so this runs off the shared event loop.
-    """
-    from drivers.workspace import load_casa_meta
-    entries: list[dict] = []
-    for ent in sorted(os.scandir(root), key=lambda e: e.name):
-        if not ent.is_dir():
-            continue
-        meta = load_casa_meta(ent.path) or {}
-        if status_filter and meta.get("status") != status_filter:
-            continue
-        size_bytes = 0
-        for dirpath, _dirs, files in os.walk(ent.path):
-            for f in files:
-                try:
-                    size_bytes += os.stat(os.path.join(dirpath, f)).st_size
-                except OSError:
-                    pass
-        entries.append({
-            "engagement_id": ent.name,
-            "executor_type": meta.get("executor_type"),
-            "status": meta.get("status"),
-            "created_at": meta.get("created_at"),
-            "finished_at": meta.get("finished_at"),
-            "retention_until": meta.get("retention_until"),
-            "size_bytes": size_bytes,
-        })
-    return entries
-
-
-@tool(
-    "list_engagement_workspaces",
-    "List engagement workspaces under /data/engagements with status + size. "
-    "Optional status filter. Truncates at 100 entries.",
-    {"status": str},
-)
-async def list_engagement_workspaces(args: dict) -> dict:
-    status_filter = (args.get("status") or "").strip() or None
-    root = _ENGAGEMENTS_ROOT
-
-    if not os.path.isdir(root):
-        return _result({"workspaces": [], "truncated": False, "total": 0})
-
-    entries = await asyncio.to_thread(_scan_engagement_workspaces, root, status_filter)
-
-    # #481: an engagement-bound caller sees only its own workspace — the
-    # listing is otherwise a cross-engagement reconnaissance surface
-    # (workspace ids feed peek/delete). Unbound callers list everything.
-    _caller = engagement_var.get(None)
-    if _caller is not None:
-        _own = getattr(_caller, "id", None)
-        entries = [e for e in entries if e.get("engagement_id") == _own]
-
-    total = len(entries)
-    truncated = total > 100
-    return _result({
-        "workspaces": entries[:100],
-        "truncated": truncated,
-        "total": total,
-    })
-
-
-_LIVE_ENGAGEMENT_STATES = frozenset({"active", "idle"})
-
-
-def _cross_engagement_refusal(target_id: str) -> "dict | None":
-    """#481: bind a caller-supplied workspace target to the AUTHENTICATED
-    engagement. These tools execute as casa-core (root), so their target is
-    not inherently tied to the caller; when the caller IS an engagement
-    (``engagement_var`` bound — bridge or in-process), any target other
-    than itself is refused. Unbound callers (resident/operator in-process
-    turns) keep today's behavior. Returns the refusal, or None to proceed."""
-    eng = engagement_var.get(None)
-    if eng is None or getattr(eng, "id", None) == target_id:
-        return None
-    return _result({
-        "status": "error", "kind": "cross_engagement_denied",
-        "message": ("an engagement may only operate on its own workspace "
-                    "(#481)"),
-    })
-
-
-@tool(
-    "delete_engagement_workspace",
-    "Delete /data/engagements/<id>/ and cancel+finalize the engagement if "
-    "still active or idle. Requires force=true to act on a live engagement.",
-    {"engagement_id": str, "force": bool},
-)
-async def delete_engagement_workspace(args: dict) -> dict:
-    import shutil
-
-    engagement_id = (args.get("engagement_id") or "").strip()
-    # #301: the internal/MCP forwarding path does not enforce tool schemas,
-    # so bool() truthiness would turn the string "false" into an
-    # authorization to cancel+delete a live engagement. Booleans only.
-    force = args.get("force", False)
-    if not isinstance(force, bool):
-        return _result({
-            "status": "error", "kind": "bad_request",
-            "message": "force must be a boolean",
-        })
-
-    if not engagement_id:
-        return _result({
-            "status": "error", "kind": "bad_request",
-            "message": "engagement_id is required",
-        })
-    # #481: an engagement-bound caller may only delete ITS OWN workspace.
-    _cross = _cross_engagement_refusal(engagement_id)
-    if _cross is not None:
-        return _cross
-    if _engagement_registry is None:
-        return _result({
-            "status": "error", "kind": "not_initialized",
-            "message": "engagement registry not wired",
-        })
-
-    rec = _engagement_registry.get(engagement_id)
-    if rec is None:
-        return _result({
-            "status": "error", "kind": "unknown_engagement",
-            "message": f"no engagement named {engagement_id!r}",
-        })
-
-    # Bug 12 (v0.14.6): treat ``idle`` the same as ``active``. An idle
-    # engagement is the SDK-suspended-after-24h state — its s6 service
-    # and workspace are still live and the driver may resume on the
-    # next user turn. Pre-fix the guard only checked ``active`` and
-    # quietly yanked an idle workspace out from under a still-running
-    # service.
-    if rec.status in _LIVE_ENGAGEMENT_STATES and not force:
-        return _result({
-            "status": "error", "kind": "refused",
-            "message": (
-                f"engagement is {rec.status!r} (still live); "
-                "pass force=true to cancel + delete"
-            ),
-        })
-
-    if rec.status in _LIVE_ENGAGEMENT_STATES and force:
-        # Finalize as cancelled before pulling the workspace.
-        driver = None
-        try:
-            import agent as agent_mod
-            driver = (getattr(agent_mod, "active_claude_code_driver", None)
-                      if rec.driver == "claude_code"
-                      else getattr(agent_mod, "active_engagement_driver", None))
-        except Exception:
-            pass
-        fin = await _finalize_engagement(
-            rec, outcome="cancelled",
-            text="Workspace deletion forced",
-            artifacts=[], next_steps=[],
-            driver=driver,
-        )
-        # #301: PERSIST_FAILED means the tombstone write rolled back and the
-        # record is STILL LIVE (retryable, same contract cancel_engagement
-        # honors) — deleting the workspace here would yank the files out
-        # from under a running service. ALREADY_TERMINAL is fine: the
-        # engagement is gone and the workspace is deletable.
-        if fin is FinalizeResult.PERSIST_FAILED:
-            return _result({
-                "status": "error", "kind": "finalize_persist_failed",
-                "retryable": True,
-                "message": ("cancellation could not be persisted; the "
-                            "engagement is still active and the workspace "
-                            "was left in place — retry"),
-            })
-        if not fin and fin is not FinalizeResult.ALREADY_TERMINAL:
-            return _result({
-                "status": "error", "kind": "finalize_failed",
-                "retryable": True,
-                "message": (f"finalize returned {fin.value!r}; the "
-                            "workspace was left in place — retry"),
-            })
-
-    ws = os.path.join(_ENGAGEMENTS_ROOT, engagement_id)
-    if os.path.isdir(ws):
-        try:
-            shutil.rmtree(ws)
-        except OSError as exc:
-            return _result({
-                "status": "error", "kind": "rmtree_failed",
-                "message": f"rmtree {ws}: {exc}",
-            })
-    # v0.64.0: the per-engagement s6-log dir follows the workspace on this
-    # caller-managed path too — once the workspace is gone, the retention
-    # sweep can never map to the log dir again.
-    from drivers.workspace import control_dir, engagement_log_dir
-    log_dir = engagement_log_dir(engagement_id)
-    try:
-        if os.path.isdir(log_dir):
-            shutil.rmtree(log_dir)
-    except OSError as exc:
-        logger.warning(
-            "delete_engagement_workspace: log dir rmtree %s failed: %s",
-            log_dir, exc,
-        )
-    # Task 4 (containment stage 2): the root-only control dir follows the
-    # workspace on this caller-managed path too — same reasoning as the log
-    # dir above (once the workspace is gone, nothing can map back to it).
-    ctl_dir = control_dir(engagement_id)
-    try:
-        if os.path.isdir(ctl_dir):
-            shutil.rmtree(ctl_dir)
-    except OSError as exc:
-        logger.warning(
-            "delete_engagement_workspace: control dir rmtree %s failed: %s",
-            ctl_dir, exc,
-        )
-    # Task 8 (containment stage 2): this caller-managed deletion path has
-    # its own EngagementRecord (rec, above) — use its allocated_uid
-    # directly, same guard as every other prune site.
-    from engagement_uids import owner_uid_or_none, prune_identity
-    real_uid = owner_uid_or_none(rec.allocated_uid)
-    if real_uid is not None:
-        try:
-            prune_identity(real_uid)
-        except OSError as exc:
-            logger.warning(
-                "delete_engagement_workspace: prune_identity(%s) failed: %s",
-                real_uid, exc,
-            )
-        # Task 11 (containment stage 2): the uid's private outbox dir
-        # follows the workspace on this caller-managed path too.
-        try:
-            plugin_outbox.teardown_engagement_outbox(real_uid)
-        except Exception as exc:  # noqa: BLE001 — best-effort, like prune above
-            logger.warning(
-                "delete_engagement_workspace: engagement outbox "
-                "teardown(%s) failed: %s", real_uid, exc,
-            )
-    return _result({
-        "status": "ok", "engagement_id": engagement_id,
-        "workspace_removed": os.path.isdir(ws) is False,
-    })
-
-
-_PEEK_MAX_DEFAULT = 65_536
-_PEEK_MAX_HARD = 524_288
-
-# #335 (Sol, review r1): workspace files that carry an engagement's
-# credential are NEVER returned through the inspection tool. Without this the
-# whole engagement-token boundary is decorative: any caller — including one
-# with no engagement identity at all, since an unbound tools/call dispatches
-# normally — could read a victim's ``.mcp.json`` and then authenticate as
-# that engagement. Matched on basename anywhere in the workspace, so a copy
-# in a subdirectory is refused too. The tree listing still shows the name;
-# only the CONTENTS are withheld.
-_PEEK_CREDENTIAL_BASENAMES = frozenset({".mcp.json"})
-
-
-@tool(
-    "peek_engagement_workspace",
-    "Read-only inspection of /data/engagements/<id>/. Empty path returns a "
-    "3-deep tree listing; otherwise reads file contents up to max_bytes "
-    "(default 64KB, hard cap 512KB). Path-traversal guarded.",
-    {"engagement_id": str, "path": str, "max_bytes": int},
-)
-async def peek_engagement_workspace(args: dict) -> dict:
-    from pathlib import Path as _Path
-
-    engagement_id = (args.get("engagement_id") or "").strip()
-    if not engagement_id:
-        return _result({"status": "error", "kind": "bad_request",
-                        "message": "engagement_id is required"})
-
-    # #481: an ENGAGEMENT-bound caller may only inspect its own workspace —
-    # bound at the tool layer, so safety no longer rides on grant
-    # configuration staying correct (the v0.166 gate and the
-    # validate_config_repo fence remain as belt-and-suspenders).
-    _cross = _cross_engagement_refusal(engagement_id)
-    if _cross is not None:
-        return _cross
-
-    # Security (H15): engagement_id must be a bare workspace name. Real ids
-    # are uuid4().hex; reject anything containing path separators or dots so
-    # it cannot re-root the workspace via '..' (traversal) or '/config'
-    # (absolute join). Without this the traversal guard on `path` below is
-    # useless — it anchors on the (already re-rooted) ws_root.resolve().
-    if not re.fullmatch(r"[A-Za-z0-9_-]+", engagement_id):
-        return _result({"status": "error", "kind": "bad_request",
-                        "message": f"invalid engagement_id {engagement_id!r}"})
-
-    ws_root = _Path(_ENGAGEMENTS_ROOT) / engagement_id
-    # Defense in depth: the resolved workspace must sit DIRECTLY under the
-    # engagements root — never above it or re-rooted elsewhere (also blocks
-    # symlink tricks and any future id class).
-    if ws_root.resolve().parent != _Path(_ENGAGEMENTS_ROOT).resolve():
-        return _result({"status": "error", "kind": "unknown_workspace",
-                        "message": f"no workspace for {engagement_id!r}"})
-    if not ws_root.is_dir():
-        return _result({"status": "error", "kind": "unknown_workspace",
-                        "message": f"no workspace for {engagement_id!r}"})
-
-    path_arg = (args.get("path") or "").strip()
-    if not path_arg:
-        tree = _walk_workspace_tree(ws_root, max_depth=3)
-        return _result({"status": "ok", "tree": tree})
-
-    full = (ws_root / path_arg).resolve()
-    ws_resolved = ws_root.resolve()
-    try:
-        full.relative_to(ws_resolved)
-    except ValueError:
-        return _result({"status": "error", "kind": "path_outside_workspace",
-                        "message": f"path {path_arg!r} escapes the workspace"})
-
-    if not full.is_file():
-        return _result({"status": "error", "kind": "not_a_file",
-                        "message": f"{path_arg!r} is not a regular file"})
-
-    # #335: refuse credential-bearing files outright (checked on the RESOLVED
-    # path, so a symlink or alternate spelling cannot smuggle one out).
-    if full.name in _PEEK_CREDENTIAL_BASENAMES:
-        return _result({
-            "status": "error", "kind": "credential_file",
-            "message": (
-                f"{full.name} carries this engagement's authentication "
-                "credential and is never readable through this tool"
-            ),
-        })
-
-    max_bytes = int(args.get("max_bytes") or _PEEK_MAX_DEFAULT)
-    if max_bytes > _PEEK_MAX_HARD:
-        max_bytes = _PEEK_MAX_HARD
-    if max_bytes < 1:
-        max_bytes = _PEEK_MAX_DEFAULT
-
-    def _read_prefix() -> str:
-        # M26: read only the capped byte prefix — never load the whole file
-        # into RAM (a multi-GB workspace log would OOM the container). Cap is
-        # in BYTES; a multibyte char split at the boundary decodes to a
-        # trailing U+FFFD, which is acceptable for a peek tool.
-        with open(full, "rb") as fh:
-            data = fh.read(max_bytes)
-        return data.decode("utf-8", errors="replace")
-
-    contents = await asyncio.to_thread(_read_prefix)
-    return _result({"status": "ok", "path": path_arg, "contents": contents})
-
-
-def _walk_workspace_tree(root, *, max_depth: int) -> list[dict]:
-    out: list[dict] = []
-    def _walk(d, depth):
-        if depth > max_depth:
-            return []
-        children: list[dict] = []
-        try:
-            for e in sorted(os.scandir(d), key=lambda e: e.name):
-                # #324: never follow symlinks — a link to a directory outside
-                # the workspace would list outside names/types up to
-                # max_depth. Symlinks are reported as their own type and are
-                # never recursed into (matching the containment rule the
-                # explicit-read branch enforces on resolved paths).
-                if e.is_symlink():
-                    children.append({"name": e.name, "type": "symlink"})
-                    continue
-                is_dir = e.is_dir(follow_symlinks=False)
-                entry = {"name": e.name, "type": "dir" if is_dir else "file"}
-                if is_dir and depth < max_depth:
-                    entry["children"] = _walk(e.path, depth + 1)
-                children.append(entry)
-        except OSError:
-            pass
-        return children
-    out = _walk(str(root), 1)
-    return out
 
 
 _TOPIC_CLEANUP_SCOPES = ("due", "all_terminal")
@@ -18230,8 +17315,6 @@ async def _plugin_gate_phase(tool: str, kind: str, args: dict,
 def _engagement_driver_for(rec) -> Any:
     try:
         import agent as agent_mod
-        if rec.driver == "claude_code":
-            return getattr(agent_mod, "active_claude_code_driver", None)
         return getattr(agent_mod, "active_engagement_driver", None)
     except Exception:  # noqa: BLE001
         return None
@@ -22309,9 +21392,7 @@ async def persona_ack_revoke(args: dict) -> dict:
 
 
 # Module-level tool registry — iterated by create_casa_tools() for the SDK
-# path and by the MCP HTTP bridge (mcp_bridge._build_tool_dispatch) for
-# real `claude` CLI engagements. Adding a tool here exposes it on both
-# transports automatically.
+# path. Adding a tool here exposes it automatically.
 CASA_TOOLS: tuple = (
     send_message,
     relay_answer,                  # slice 5l — a delegate's answer under its header
@@ -22349,9 +21430,6 @@ CASA_TOOLS: tuple = (
     casa_reload_triggers,
     config_trigger_upsert,          # #403 — the ONE writer path for
     config_trigger_delete,          #        agents/<role>/triggers.yaml
-    list_engagement_workspaces,
-    delete_engagement_workspace,
-    peek_engagement_workspace,
     cleanup_engagement_topics,     # v0.65.0 [AR-7] — configurator-only grant
     # Unified plugin architecture (§3.13) — registry tools.
     plugin_add,
@@ -22400,18 +21478,15 @@ CASA_TOOLS: tuple = (
 
 # #369 (Terra diff-gate r1): the context-rebuild fence is enforced CENTRALLY,
 # by wrapping every Casa tool handler at registry definition — not by
-# per-tool calls a new (or overlooked) tool can silently omit. Both
-# transports iterate CASA_TOOLS (create_casa_tools for the in-process SDK
-# path, mcp_bridge for the HTTP bridge), so one wrap covers both; the
-# internal-socket handler's own refusal stays as defense-in-depth. Only the
-# terminal-binding completion tool is exempt — its output is in-flight-turn
+# per-tool calls a new (or overlooked) tool can silently omit.
+# create_casa_tools iterates CASA_TOOLS, so one wrap covers every tool. Only
+# the terminal-binding completion tool is exempt — its output is in-flight-turn
 # residual and its idempotency check needs the record.
 _REBUILD_FENCE_EXEMPT = frozenset({"emit_completion"})
 
 # #541 layer 3 — the dispatch-time specialist ceiling. Applied in the SAME
-# central wrapper as the #369 fence, so it covers every casa tool on BOTH
-# transports (in-process SDK dispatch for in_casa engagements, the internal
-# socket for claude_code) by construction — including engagement records
+# central wrapper as the #369 fence, so it covers every casa tool by
+# construction — including engagement records
 # PINNED before the install/load ceilings existed (a pre-fix bundle's
 # self-granted spawn tool stays in record.tools_allowed and would otherwise
 # still be honored; design r2, Sol S2a + Terra S1). Union with the

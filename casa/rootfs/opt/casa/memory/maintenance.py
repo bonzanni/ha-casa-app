@@ -9,18 +9,12 @@ about a failed attempt.
 
 **The container-start step** (:func:`run`, the ``init-memory-maintenance``
 oneshot, ``python -m memory.maintenance``) is the only caller of the wipe
-loop. It runs before every longrun and every engagement service. Before its
+loop. It runs before every longrun. Before its
 first deletion it records this container's attempt in the intent, so an
-attempt that is cut off is still seen as one. The wipe loop then:
-
-* A. deletes every terminal engagement workspace whose retention has passed,
-  by the workspace sweep's own rule;
-* B. locates the executor-memory section of every remaining workspace
-  ``CLAUDE.md``, and stops before any deletion if one cannot be located;
-* C. walks the registry and applies each row's wipe rule: files and
-  directories deleted whole, transcript roots emptied, the session pointers
-  reset, each producer's staging files deleted, every executor-memory section
-  blanked (every other byte of its file kept) and every cache emptied.
+attempt that is cut off is still seen as one. The wipe loop then walks the
+registry and applies each row's wipe rule: files and directories deleted
+whole, transcript roots emptied, the session pointers reset and each
+producer's staging files deleted.
 
 Then a fresh, empty store is created and the intent is removed last. Every
 step treats an absent path as already done, so a run cut off anywhere re-runs
@@ -61,25 +55,14 @@ from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass
 
 import atomic_io
-import safe_fs
 import supervisor_restart
-from memory import executor_block, registry
+from memory import registry
 from memory.registry import Kind, Wipe, under
 
 logger = logging.getLogger(__name__)
 
 INTENT_PATH = f"{registry.MEMORY_DIR}/maintenance.json"
 INTENT_STAGING_PREFIX = ".maintenance.json."
-
-#: The workspace sweep's per-engagement facts, kept beside the workspace in
-#: its control directory (a legacy copy may still sit in the workspace).
-CASA_META = ".casa-meta.json"
-EXECUTOR_MEMORY = ".executor_memory"
-#: A real allocated engagement uid, and its private plugin outbox; the
-#: retention step removes it with its workspace, as the sweep does
-#: (``engagement_uids.UID_BASE``, ``plugin_outbox.ENGAGEMENT_OUTBOX_ROOT``).
-UID_BASE = 200000
-ENGAGEMENT_OUTBOX_ROOT = "/data/plugin-outbox-eng"
 
 #: The courtesy flag is valid this long after the Supervisor accepted.
 RESTART_GRACE_S = 300.0
@@ -176,14 +159,6 @@ class IntentUnreadable(ValueError):
 
 class MaintenanceError(RuntimeError):
     """The step cannot complete; the message is the operator's reason."""
-
-
-class Unlocatable(MaintenanceError):
-    def __init__(self, engagement_id: str) -> None:
-        super().__init__(
-            f"executor memory of engagement {engagement_id} could not be "
-            "located")
-        self.engagement_id = engagement_id
 
 
 # ---------------------------------------------------------------------------
@@ -297,14 +272,11 @@ def _iso(now: float | None = None) -> str:
 
 @dataclass
 class Counts:
-    workspaces_swept: int = 0
     paths_deleted: int = 0
     transcript_entries_deleted: int = 0
     staging_files_deleted: int = 0
     pointers_reset: int = 0
     sessions_reset: int = 0
-    sections_blanked: int = 0
-    caches_emptied: int = 0
 
     def as_dict(self) -> dict:
         return dict(self.__dict__)
@@ -447,7 +419,7 @@ def claim_outcome_notice(store) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# The wipe loop (steps A, B and C)
+# The wipe loop
 # ---------------------------------------------------------------------------
 
 def wipe_loop(*, root: str, now: float | None = None,
@@ -455,12 +427,7 @@ def wipe_loop(*, root: str, now: float | None = None,
     """Erase exactly the registry. Only :func:`run` calls this. A restore
     (*restoring*) keeps the rows its intent owns: the staged source."""
     counts = Counts()
-    _sweep_expired_workspaces(root, now, counts)          # A
-    for engagement_id, ws in _workspaces(root):           # B
-        if os.path.lexists(os.path.join(ws, "CLAUDE.md")):
-            if _locate(ws).case == 4:
-                raise Unlocatable(engagement_id)
-    for entry in registry.REGISTRY:                       # C
+    for entry in registry.REGISTRY:
         if restoring and entry.wipe is Wipe.KEEP_WHILE_INTENT:
             continue
         handler = _HANDLERS.get((entry.kind, entry.wipe))
@@ -479,8 +446,7 @@ def _reset_open_in_casa_sessions(root: str, counts: Counts) -> None:
     """Every open in_casa engagement's session transcript is gone with the
     transcript roots, so a resume of it cannot start. Each active or idle
     in_casa record gets ``context_rebuild_pending``: its next turn opens a
-    fresh session, and its record is kept. (A claude_code engagement drops
-    its session pointer at boot replay instead.)
+    fresh session, and its record is kept.
 
     The file is read strictly and never repaired: one that cannot be read or
     parsed, or that holds a malformed row, is left byte for byte as it is and
@@ -506,19 +472,13 @@ def _reset_open_in_casa_sessions(root: str, counts: Counts) -> None:
         return
     marked = 0
     for row in rows:
-        if (row["status"] in ("active", "idle") and row["driver"] != "claude_code"
+        if (row["status"] in ("active", "idle")
                 and row.get("context_rebuild_pending") is not True):
             row["context_rebuild_pending"] = True
             marked += 1
     if marked:
         atomic_io.atomic_write_json(path, rows, indent=2, mode=0o600)
     counts.sessions_reset += marked
-
-
-def _workspaces(root: str) -> Iterator[tuple[str, str]]:
-    """``(engagement id, workspace dir)`` for every real directory under the
-    engagements root, from the filesystem, whatever the engagement's status."""
-    yield from _real_subdirs(under(root, registry.ENGAGEMENTS_ROOT))
 
 
 def _real_subdirs(parent: str) -> Iterator[tuple[str, str]]:
@@ -531,181 +491,7 @@ def _real_subdirs(parent: str) -> Iterator[tuple[str, str]]:
             yield entry.name, entry.path
 
 
-def _cache_path(root: str, engagement_id: str) -> str:
-    return os.path.join(under(root, registry.ENGAGEMENT_CONTROL_ROOT),
-                        engagement_id, EXECUTOR_MEMORY)
-
-
-# --- A: retention --------------------------------------------------------
-
-def _sweep_expired_workspaces(root: str, now: float | None,
-                              counts: Counts) -> None:
-    """The workspace sweep's rule: a workspace whose recorded status is not
-    UNDERGOING and whose ``retention_until`` has passed goes whole, with its
-    control directory and its uid's outbox."""
-    now_iso = _iso(now)
-    ctl_root = under(root, registry.ENGAGEMENT_CONTROL_ROOT)
-    for engagement_id, ws in list(_workspaces(root)):
-        meta = _load_meta(os.path.join(ctl_root, engagement_id), ws)
-        if meta is None or meta.get("status") == "UNDERGOING":
-            continue
-        retention_until = meta.get("retention_until")
-        if not isinstance(retention_until, str) or retention_until > now_iso:
-            continue
-        _remove(ws)
-        _remove(os.path.join(ctl_root, engagement_id))
-        uid = meta.get("allocated_uid")
-        if isinstance(uid, int) and not isinstance(uid, bool) and uid >= UID_BASE:
-            _remove(os.path.join(under(root, ENGAGEMENT_OUTBOX_ROOT), str(uid)))
-        counts.workspaces_swept += 1
-        logger.info("memory maintenance: removed workspace %s (past its "
-                    "retention)", engagement_id)
-
-
-def _load_meta(ctl_dir: str, ws: str) -> dict | None:
-    try:
-        with open(os.path.join(ctl_dir, CASA_META), encoding="utf-8") as fh:
-            text = fh.read()
-    except FileNotFoundError:
-        try:
-            text = safe_fs.read_text_beneath(ws, CASA_META)
-        except OSError:
-            return None
-    except OSError:
-        return None
-    try:
-        data = json.loads(text)
-    except ValueError:
-        return None
-    return data if isinstance(data, dict) else None
-
-
-# --- B and C: the executor-memory section --------------------------------
-
-OPEN = executor_block.OPEN.encode()
-CLOSE = executor_block.CLOSE.encode()
-
-
-@dataclass(frozen=True)
-class _Section:
-    #: 1 one marker pair, 0 no marker pair (no executor memory), 4 not
-    #: locatable.
-    case: int
-    #: The file's bytes with the section blanked, when they differ.
-    blanked: bytes | None = None
-
-
-def _locate(ws: str) -> _Section:
-    """Case 1: exactly one marker pair, its content emptied. A file with no
-    marker pair holds no executor memory (case 0). Anything else is case 4."""
-    try:
-        text = _read_beneath(ws, "CLAUDE.md")
-    except OSError:
-        return _Section(4)
-    spans = _marker_spans(text)
-    if spans is None:
-        return _Section(4)
-    if not spans:
-        return _Section(0)
-    (start, end), = spans
-    blanked = text[:start] + text[end:]
-    return _Section(1, blanked if blanked != text else None)
-
-
-def _marker_spans(text: bytes) -> list[tuple[int, int]] | None:
-    """The ``(start, end)`` of the content between the one marker pair,
-    ``[]`` for a file with no markers, or ``None`` when the markers do not
-    make exactly one pair in order."""
-    marks = sorted([(i, OPEN) for i in _find_all(text, OPEN)]
-                   + [(i, CLOSE) for i in _find_all(text, CLOSE)])
-    if len(marks) % 2:
-        return None
-    spans = []
-    for k in range(0, len(marks), 2):
-        (o, om), (c, cm) = marks[k], marks[k + 1]
-        if om is not OPEN or cm is not CLOSE:
-            return None
-        spans.append((o + len(OPEN), c))
-    # This release writes one pair (templates carry one slot, and every
-    # other input is neutralised); more than one is not ours to choose from.
-    return spans if len(spans) <= 1 else None
-
-
-def _find_all(text: bytes, needle: bytes) -> Iterator[int]:
-    i = text.find(needle)
-    while i != -1:
-        yield i
-        i = text.find(needle, i + len(needle))
-
-
-def _read_beneath(ws: str, name: str) -> bytes:
-    fd = safe_fs.open_beneath(ws, name)
-    with os.fdopen(fd, "rb") as fh:
-        return fh.read()
-
-
-def _blank_sections(root: str, entry, counts: Counts) -> None:
-    """Every workspace ``CLAUDE.md`` keeps every byte outside its section;
-    the section is blanked, then the cache is emptied. A file that cannot be
-    located now stops the run here."""
-    for pattern in entry.staging_patterns:
-        for path in _staging_matches(root, pattern):
-            _remove(path)
-            counts.staging_files_deleted += 1
-    for engagement_id, ws in _workspaces(root):
-        if not os.path.lexists(os.path.join(ws, "CLAUDE.md")):
-            continue
-        cache = _cache_path(root, engagement_id)
-        section = _locate(ws)
-        if section.case == 4:
-            raise Unlocatable(engagement_id)
-        if section.blanked is not None:
-            _rewrite_beneath(ws, "CLAUDE.md", section.blanked)
-            counts.sections_blanked += 1
-        _empty_cache(cache, counts)
-    # Every cache, enumerated on its own: one with no CLAUDE.md beside it is
-    # an orphan (a sweep or a provisioning cut off) and is emptied at once.
-    for engagement_id, _ctl in _real_subdirs(
-            under(root, registry.ENGAGEMENT_CONTROL_ROOT)):
-        ws_file = os.path.join(under(root, registry.ENGAGEMENTS_ROOT),
-                               engagement_id, "CLAUDE.md")
-        if not os.path.lexists(ws_file):
-            _empty_cache(_cache_path(root, engagement_id), counts)
-
-
-def _rewrite_beneath(ws: str, name: str, data: bytes) -> None:
-    """Atomic rewrite without following a symlink, keeping the file's owner
-    and mode."""
-    ws_owner = os.lstat(ws).st_uid
-    owner = ws_owner if ws_owner != 0 else None
-    fd = safe_fs.open_beneath(ws, name)
-    try:
-        st = os.fstat(fd)
-    finally:
-        os.close(fd)
-    safe_fs.atomic_write_beneath(ws, name, data, owner_uid=owner,
-                                 mode=stat.S_IMODE(st.st_mode))
-    fd = safe_fs.open_beneath(ws, name)
-    try:
-        if (st.st_uid, st.st_gid) != (os.getuid(), os.getgid()):
-            os.fchown(fd, st.st_uid, st.st_gid)
-    finally:
-        os.close(fd)
-
-
-def _empty_cache(path: str, counts: Counts) -> None:
-    try:
-        st = os.lstat(path)
-    except FileNotFoundError:
-        return
-    if not stat.S_ISREG(st.st_mode) or st.st_size == 0:
-        return
-    atomic_io.atomic_write_text(path, "", mode=stat.S_IMODE(st.st_mode),
-                                prefix=f"{EXECUTOR_MEMORY}.")
-    counts.caches_emptied += 1
-
-
-# --- C: the other rows -----------------------------------------------------
+# --- the rows -----------------------------------------------------------------
 
 def _skip(root: str, entry, counts: Counts) -> None:
     """Tables go with ``memory.db``; ``meta`` comes back with the fresh store;
@@ -763,7 +549,6 @@ _HANDLERS: dict[tuple[Kind, Wipe], Callable] = {
     (Kind.TRANSCRIPTS, Wipe.DELETE): _empty_transcript_roots,
     (Kind.POINTERS, Wipe.RESET): _reset_pointers,
     (Kind.SERVED_COPY, Wipe.DELETE): _delete_whole,
-    (Kind.SERVED_COPY, Wipe.EMPTY_BLOCK): _blank_sections,
 }
 
 

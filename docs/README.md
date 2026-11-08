@@ -21,12 +21,12 @@ which is keyed on what you are about to do rather than on subsystem names.
 | When you are changing… | Read |
 |---|---|
 | Telegram message rendering, pagination and its budgets, link-destination fallback, or the UTF-16 measurement | [`architecture/telegram-rendering.md`](architecture/telegram-rendering.md) |
-| Telegram transport, callback namespaces, topic output ordering, or the outbound request boundary | [`architecture/telegram.md`](architecture/telegram.md) |
+| Telegram transport, callback namespaces, or the outbound request boundary | [`architecture/telegram.md`](architecture/telegram.md) |
 | a /v1 request or reply member, a bound on one (text lengths, list sizes), an event kind or outcome, an error code, the admission digest, the locale reported by hello, the fake controller | [`reference/casa-browser-contract.md`](reference/casa-browser-contract.md) |
 | a background job's session mode, a fresh job's conversation reset or job brief, its session-id list, the launch prompt's or a brief's Job id or Started by line, or a refused completion a fresh job's brief names | [`architecture/background-job-fresh-sessions.md`](architecture/background-job-fresh-sessions.md) |
 | a delivered-slot kind, the deposit validation of a link, message or file, the delivery hook or its receipt, the channel's operator-post methods, or the post echo ledger | [`architecture/plugin-delivered-slots.md`](architecture/plugin-delivered-slots.md) |
 | a deposit's delivery key, the remembered keyed deliveries or their file, a repeat receipt, or what a repeat still owes (a file's consumption, a More tell) | [`architecture/plugin-delivery-repeats.md`](architecture/plugin-delivery-repeats.md) |
-| a launch failure or abort, what a launch rollback removes, or restart replay | [`architecture/engagement-failure-and-restart.md`](architecture/engagement-failure-and-restart.md) |
+| a launch failure or abort, the graceful stop's launch step, or what a restart does with an engagement record | [`architecture/engagement-failure-and-restart.md`](architecture/engagement-failure-and-restart.md) |
 | a plugin access profile, the registry profiles map, casa.profiles or casa.requires, the profile plan or guard matcher, requirement candidates, dependents or leftover requirements, or the requirement_unmet warning | [`architecture/plugin-access-profiles.md`](architecture/plugin-access-profiles.md) |
 | a plugin tool result, the result contract, a capability reference or its redemption, or the broker routes | [`architecture/plugin-result-contract.md`](architecture/plugin-result-contract.md) |
 | a plugin webhook trigger's deliver value, how an opted-in fire's reply, error or fallback reaches the operator, or whether such a fire may end in silence | [`architecture/webhook-delivery.md`](architecture/webhook-delivery.md) |
@@ -43,7 +43,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | a tap's next card, the in_place answer, the edit that replaces the tapped card, a keep_card button, a Close button, or a card's pages | [`architecture/stored-call-next-card.md`](architecture/stored-call-next-card.md) |
 | adding a route, changing webhook authentication, or anything crossing the container boundary | [`architecture/http-surface.md`](architecture/http-surface.md) |
 | adding a tool, a tool's result contract, or completion semantics | [`architecture/tools-interface.md`](architecture/tools-interface.md) |
-| adding a tool, changing tool dispatch, or anything about tool authorization | [`architecture/mcp-and-tools.md`](architecture/mcp-and-tools.md) |
+| adding a tool, changing tool dispatch, anything about tool authorization, or the N8N_URL / N8N_API_KEY switch | [`architecture/mcp-and-tools.md`](architecture/mcp-and-tools.md) |
 | adding an agent or a tier, the required file set, or role resolution | [`architecture/agent-taxonomy.md`](architecture/agent-taxonomy.md) |
 | adding an evaluator, or before assuming behaviour is evaluated somewhere | [`architecture/eval-framework.md`](architecture/eval-framework.md) |
 | adding durable state, changing a corrupt-file policy, or anything about what survives | [`architecture/persistent-state.md`](architecture/persistent-state.md) |
@@ -59,7 +59,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | config-tree reconciliation, the entry-level merge, or `${VAR}` placeholder resolution | [`architecture/config-reconciliation.md`](architecture/config-reconciliation.md) |
 | deleting a finished engagement's transcripts, or a delegated run's registration, confirmation or transcript retention | [`architecture/engagement-transcript-reaping.md`](architecture/engagement-transcript-reaping.md) |
 | engagement lifecycle, engagement launch, or the driver protocol | [`architecture/engagements.md`](architecture/engagements.md) |
-| hook resolution or authentication, hook policy parameters or fallbacks, or the containment-floor snapshot | [`architecture/hook-resolution.md`](architecture/hook-resolution.md) |
+| hook resolution, hook policy parameters and their types, an executor's hooks document snapshot, or what path_scope admits | [`architecture/hook-resolution.md`](architecture/hook-resolution.md) |
 | how Chrome is launched or by whom, a launch argument, the profile mapping or forget, the managed Chrome policy, the display service, the pacing of actions, what an observation or a screenshot contains, the page-view gate, masking or handles | [`reference/casa-browser-browser.md`](reference/casa-browser-browser.md) |
 | how a deferred answer reaches a device, the delivery frame protocol, leases or TTLs, per-device ordering, or what a voice result may disclose | [`architecture/voice-delivery.md`](architecture/voice-delivery.md) |
 | how a file is fetched, captured, named, typed, bounded, stored or archived, the browser's downloads directory, a delivery outcome or its record | [`reference/casa-browser-files.md`](reference/casa-browser-files.md) |
@@ -74,23 +74,20 @@ which is keyed on what you are about to do rather than on subsystem names.
 | plugin trigger declaration, the routing overlay, trigger consent, or per-trigger secret backing | [`architecture/plugin-triggers.md`](architecture/plugin-triggers.md) |
 | read clearance, the per-sender origin stamp, which ledgers are maintained, what a lower ledger's writer job is given, a read path's per-object check, the engagement clearance clamp, or the executor-archive epoch scoping | [`architecture/memory-scoping.md`](architecture/memory-scoping.md) |
 | reminder creation or cancellation, the reminder sweep, or recurrence derivation | [`architecture/reminders.md`](architecture/reminders.md) |
-| root's access into a workspace, or where root-only engagement run-state lives | [`architecture/engagement-workspace-access.md`](architecture/engagement-workspace-access.md) |
 | search_memory, browse_memory_day, open_memory or correct_memory, the search index, or what the engager query reads | [`architecture/memory-tools.md`](architecture/memory-tools.md) |
 | specialist install identity, consent, or materialization | [`architecture/specialist-lifecycle.md`](architecture/specialist-lifecycle.md) |
 | the HA facade, HA tool exposure, or anything about what an agent may control | [`architecture/home-assistant-control.md`](architecture/home-assistant-control.md) |
-| the MCP bridge service (svc-casa-mcp), its hook-resolution route's refusals, the window in which the main application is unreachable, or the environment variables that move the MCP topology | [`architecture/mcp-bridge.md`](architecture/mcp-bridge.md) |
 | the PinnedRun controller, the pinned run's termination, walks or signals, the one release path of a pinned run, or the faulted desk | [`architecture/stored-call-termination.md`](architecture/stored-call-termination.md) |
 | the callback route, callback consent or reconciliation, or the validated redirect base URL | [`architecture/callbacks.md`](architecture/callbacks.md) |
 | the callback spool protocol, the attempt ledger or its ack protocol, or the delivery worker | [`architecture/callback-delivery.md`](architecture/callback-delivery.md) |
 | the casa.stopTool declaration or its direct call, the Stop button on a browsing request's card or its run_stop callback, a stored call of the stop tool, the stop_work tool, the outcome marks or lines of a stop, or which continuations a stop drops | [`architecture/plugin-stop.md`](architecture/plugin-stop.md) |
 | the closing-silence convention, which tool calls count as a scheduled turn's delivery, or the surfaces that state either | [`architecture/scheduled-prompt-endings.md`](architecture/scheduled-prompt-endings.md) |
-| the completion gate, or a driver's inbound count accessors — its unread depth, its in-flight blocking answer, its reservation count | [`architecture/engagement-completion-gate.md`](architecture/engagement-completion-gate.md) |
+| the completion gate, or a driver's inbound count accessors — its unread depth, its reservation count | [`architecture/engagement-completion-gate.md`](architecture/engagement-completion-gate.md) |
 | the continuation queue or turn, the origin a continuation runs under, how a continuation's answer reaches its requesters, a role's session.desk_context, the casa.driverSweep declaration, the driver sweep's direct call or the plugin resolution and client it shares with the stop, or how a stopped request's queued continuations are dropped | [`architecture/plugin-continuations.md`](architecture/plugin-continuations.md) |
 | the contribution rules, the verification discipline, or how documentation is kept honest | [`doctrine/working-on-casa.md`](doctrine/working-on-casa.md) |
 | the credential broker, its RPC transport or client, login orchestration, the guest's role, credential journal, or broker service unit | [`reference/casa-browser-credentials.md`](reference/casa-browser-credentials.md) |
 | the delegation ACL or alias resolution, the delegates block, the delegation depth cap, or the agent-spawn cap | [`architecture/delegation.md`](architecture/delegation.md) |
 | the documentation rules themselves, or adding a document to the corpus | [`contributing/doc-contract.md`](contributing/doc-contract.md) |
-| the engagement uid allocator, workspace ownership, the privilege drop, whether an engagement's process is actually stopped, or boot replay's down-first sweep | [`architecture/engagement-containment.md`](architecture/engagement-containment.md) |
 | the erase episode, the plugin_erase marker, how an erase turn's eraser call is admitted, captured or fenced, or how long the episode waits for it | [`architecture/plugin-erase-episode.md`](architecture/plugin-erase-episode.md) |
 | the event manifest surface, the emission spool, event consent or reconciliation, the delivery worker, or the ack tools | [`architecture/plugin-events.md`](architecture/plugin-events.md) |
 | the freshness windows, the explicit reset, the retirement claims, run registration and confirmation, or transcript retention | [`architecture/memory-lifecycle.md`](architecture/memory-lifecycle.md) |
@@ -129,7 +126,7 @@ which is keyed on what you are about to do rather than on subsystem names.
 | what a finished delegation still owes its creator — the announcement obligation, the retained answer, the replayed prompt, or how long a finished job row is kept | [`architecture/delegation-announcements.md`](architecture/delegation-announcements.md) |
 | what a specialist's persisted instance tuple may hold, the secret or digest guard on a tuple snapshot, the boot scrub of persisted tuples, a pending-configuration candidate and its re-commit, or how a damaged tuple is loaded at boot | [`architecture/specialist-instance-tuples.md`](architecture/specialist-instance-tuples.md) |
 | what a terminal engagement's topic or its engager is told, the outcome mark, the unconfirmed-post disclosure, or the durable obligation to notify | [`architecture/engagement-terminal-telling.md`](architecture/engagement-terminal-telling.md) |
-| what a terminal outcome discloses about inbound messages, a driver's inbound text accessors, the evicted-message population, or a reservation's disclosed text and the count over it | [`architecture/engagement-inbound-disclosure.md`](architecture/engagement-inbound-disclosure.md) |
+| what a terminal outcome discloses about inbound messages, a driver's inbound text accessors, or the count over reservations | [`architecture/engagement-inbound-disclosure.md`](architecture/engagement-inbound-disclosure.md) |
 | what a turn, a delegation, an engagement turn or a summary captures, capture eligibility or write-trust, the spool, or what keeps a no-memory specialist's output out | [`architecture/memory-capture.md`](architecture/memory-capture.md) |
 | what an in_casa launch or follow-up turn leaves behind, a launch death report, a follow-up turn's cut-off or undelivered notice, or an engagement turn that stopped at its turn limit | [`architecture/engagement-turn-outcomes.md`](architecture/engagement-turn-outcomes.md) |
 | what happens to a file or other non-text message sent in Telegram, the inbound-file folder or its sweep, list_inbound_files, or who may read an inbound file | [`architecture/inbound-files.md`](architecture/inbound-files.md) |
@@ -139,8 +136,8 @@ which is keyed on what you are about to do rather than on subsystem names.
 | whether an action is checked, the gate's page reading or packet, a verdict route, the pending judgement, the stored responses, the pacer guard's checks, the screenshot rule, or a sign-in code | [`reference/casa-browser-actions.md`](reference/casa-browser-actions.md) |
 | which document owns a part of memory, or how the parts of memory fit together | [`architecture/memory.md`](architecture/memory.md) |
 | which specialist turns are offered start_job, how a specialist's start_job resolves its job and host, the gates a specialist's own start passes, or the origin a specialist-started job records | [`architecture/specialist-job-start.md`](architecture/specialist-job-start.md) |
-| who may mark a job or an engagement terminal, terminal transitions, engagement creation strictness, finalization side effects, or engagement output ordering | [`architecture/engagement-finalization.md`](architecture/engagement-finalization.md) |
-| wipe consent or its doors, the maintenance intent, the init-memory-maintenance oneshot or its place in the s6 graph, the wipe loop, the executor-memory markers, notification-only boot, or the setup-configs guard | [`architecture/memory-wipe.md`](architecture/memory-wipe.md) |
+| who may mark a job or an engagement terminal, terminal transitions, engagement creation strictness, or finalization side effects | [`architecture/engagement-finalization.md`](architecture/engagement-finalization.md) |
+| wipe consent or its doors, the maintenance intent, the init-memory-maintenance oneshot or its place in the s6 graph, the wipe loop, notification-only boot, or the setup-configs guard | [`architecture/memory-wipe.md`](architecture/memory-wipe.md) |
 <!-- END ROUTING -->
 
 Documents stay small — a 25 KB ceiling, judged on pull requests against the merge-base —

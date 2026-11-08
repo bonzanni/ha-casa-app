@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 from unittest.mock import ANY, AsyncMock, MagicMock
 
@@ -38,7 +37,6 @@ def _make_runtime():
         mcp_registry=MagicMock(),
         session_registry=MagicMock(), channel_manager=MagicMock(),
         bus=MagicMock(), engagement_driver=MagicMock(),
-        claude_code_driver=MagicMock(),
         policy_lib=MagicMock(),
         config_dir="/x", agents_dir="/x/agents",
         home_root="/x/home", defaults_root="/opt/casa",
@@ -99,122 +97,6 @@ class TestReloadExecutorsHealth:
         actions = await reload_executors(runtime)
         assert "rebuild_executor_registry" in actions
         assert "plugin_health_regenerated" not in actions   # skipped, not fatal
-
-
-class TestReloadExecutorsHookPolicies:
-    async def test_reload_rebuilds_http_hook_policy_map_in_place(
-        self, tmp_path, monkeypatch,
-    ):
-        """#340: the /hooks/resolve handlers capture the executor policy map
-        built once at boot; reload_executors must rebuild it by MUTATING that
-        shared dict (clear+update), so a new/edited executor's parameters take
-        effect and stale-broader callbacks stop enforcing. Pre-fix the map
-        stayed frozen at boot."""
-        import tools as tools_mod
-        from types import SimpleNamespace
-        from executor_registry import ExecutorRegistry
-        from reload import reload_executors
-
-        monkeypatch.setattr(
-            tools_mod, "_regenerate_plugin_health", lambda extra: None)
-
-        async def _noop():
-            return None
-
-        monkeypatch.setattr(
-            tools_mod, "_notify_plugin_health_if_possible", _noop)
-
-        hooks_path = tmp_path / "hooks.yaml"
-        hooks_path.write_text(
-            "schema_version: 1\n"
-            "pre_tool_use:\n"
-            "  - policy: path_scope\n"
-            "    writable: [/data/engagements/]\n"
-            "    readable: [/data/engagements/]\n"
-        )
-        reg = ExecutorRegistry(str(tmp_path / "executors"))
-
-        def _fake_load():
-            reg._defs["newexec"] = SimpleNamespace(
-                driver="claude_code", hooks_path=str(hooks_path),
-            )
-
-        monkeypatch.setattr(reg, "load", _fake_load)
-
-        runtime = _make_runtime()
-        runtime.executor_registry = reg
-        # The instance the handlers captured at boot, holding a stale entry.
-        captured = {"stale-exec": {"path_scope": ("Read", None)}}
-        runtime.executor_cc_policies = captured
-
-        actions = await reload_executors(runtime)
-
-        assert "rebuild_executor_hook_policies" in actions
-        assert "newexec" in captured          # fresh entry visible to handlers
-        assert "stale-exec" not in captured   # stale entry gone
-        assert runtime.executor_cc_policies is captured  # same object, mutated
-
-    async def test_reload_keeps_old_callbacks_for_failed_executor(
-        self, tmp_path, monkeypatch,
-    ):
-        """Sol r1-1: an executor whose reload FAILS must keep its pre-reload
-        callbacks — dropping them would fall its live engagements back to the
-        broader defaults (commit_size_guard default 20 vs a configured 5). A
-        genuinely REMOVED executor's entry is still dropped."""
-        import tools as tools_mod
-        from executor_registry import ExecutorRegistry
-        from reload import reload_executors
-
-        monkeypatch.setattr(
-            tools_mod, "_regenerate_plugin_health", lambda extra: None)
-
-        async def _noop():
-            return None
-
-        monkeypatch.setattr(
-            tools_mod, "_notify_plugin_health_if_possible", _noop)
-
-        reg = ExecutorRegistry(str(tmp_path / "executors"))
-
-        def _fake_load():
-            reg._failed_types.add("broken-exec")  # load failure this round
-
-        monkeypatch.setattr(reg, "load", _fake_load)
-
-        runtime = _make_runtime()
-        runtime.executor_registry = reg
-        tight_entry = {"commit_size_guard": ("Write|Edit", object())}
-        captured = {
-            "broken-exec": tight_entry,       # fails to reload → must survive
-            "removed-exec": {"path_scope": ("Read", object())},  # gone → drop
-        }
-        runtime.executor_cc_policies = captured
-
-        actions = await reload_executors(runtime)
-
-        assert captured["broken-exec"] is tight_entry
-        assert "removed-exec" not in captured
-        assert "executor_hook_policies_kept_stale:broken-exec" in actions
-
-    async def test_reload_without_boot_map_skips_rebuild(self, monkeypatch):
-        """A runtime with no captured map (narrow test stand-ins) skips the
-        rebuild instead of crashing."""
-        import tools as tools_mod
-        from reload import reload_executors
-
-        monkeypatch.setattr(
-            tools_mod, "_regenerate_plugin_health", lambda extra: None)
-
-        async def _noop():
-            return None
-
-        monkeypatch.setattr(
-            tools_mod, "_notify_plugin_health_if_possible", _noop)
-
-        runtime = _make_runtime()
-        assert runtime.executor_cc_policies is None
-        actions = await reload_executors(runtime)
-        assert "rebuild_executor_hook_policies" not in actions
 
 
 class TestReloadError:
@@ -348,7 +230,6 @@ class TestReloadTriggers:
         ellen_dir = agents_dir / "ellen"
         ellen_dir.mkdir(parents=True)
         # Stub load_agent_from_dir + load_policies via monkeypatch.
-        import reload as reload_mod
         from types import SimpleNamespace
         fake_cfg = SimpleNamespace(
             triggers=[SimpleNamespace(name="t1")],
@@ -2248,7 +2129,6 @@ class TestGrantInvalidationSeams:
         calls = _patch_authz(monkeypatch)
         # Assert BEFORE-dispatchable ordering at call time: the swap must
         # not yet have happened when invalidation runs.
-        original = runtime.agents.get
         seen_before_swap = {}
 
         def spy_purge(role):

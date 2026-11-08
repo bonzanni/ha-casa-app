@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sys
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -144,8 +143,8 @@ class TestEngageExecutorReal:
         names. The contract under test is the MCP envelope-level
         ``isError`` flag, exercised here through the disabled-executor
         live shape (P5 cid ``20a903c3`` from the 2026-05-02 exploration:
-        plugin-developer was bundled but disabled, ``ok=True ms=7284``
-        in the tool_result log even though no engagement spawned).
+        a bundled executor was disabled, ``ok=True ms=7284`` in the
+        tool_result log even though no engagement spawned).
         """
         from tools import engage_executor
         import agent as agent_mod
@@ -164,7 +163,7 @@ class TestEngageExecutorReal:
         })
         try:
             r = await engage_executor.handler({
-                "executor_type": "plugin-developer",
+                "executor_type": "disabled-auditor",
                 "task": "build a thing", "context": "",
             })
         finally:
@@ -975,30 +974,16 @@ class TestCancelledLaunchAfterRecordCompensates:
         assert fake_driver.cancel.await_args.args[0].id == recs[0].id
 
 
-class TestEngageExecutorClaudeCode:
-    @pytest.mark.skip(reason="TODO(Phase G): Full wiring test — covered by D-block E2E")
-    async def test_dispatches_to_claude_code_driver(self, monkeypatch, tmp_path):
-        """When executor.driver == 'claude_code', engage_executor calls the
-        claude_code driver with the ExecutorDefinition as options."""
-        # See TestEngageExecutorConfigurator for the setup pattern. The real
-        # coverage lands in the E2E D-block against the mock CLI.
-        pass
-
-
 class TestExecutorArchiveFetchedOncePerLaunch:
-    """#583: a memory-enabled ``claude_code`` executor used to receive the
-    prior-engagement archive TWICE, from two independent recalls that can
-    return different snapshots — ``engage_executor``'s (interpolated into the
-    initial FIFO prompt) and ``ClaudeCodeDriver.start``'s (written into the
-    workspace ``CLAUDE.md``). The driver's is the copy that survives context
-    compaction and is filtered at the record's own origin markers, so the
-    engager's fetch is the one that goes.
+    """#583: a memory-enabled executor's launch recalls the prior-engagement
+    archive exactly once — the engager's fetch, interpolated into the launch
+    prompt.
 
-    These assert the CALL COUNT, not the rendered status: the defect was two
-    successful fetches, which no status distinguishes from one.
+    This asserts the CALL COUNT, not the rendered status: the #583 defect was
+    two successful fetches, which no status distinguishes from one.
     """
 
-    async def _launch(self, monkeypatch, tmp_path, *, driver_name):
+    async def _launch(self, monkeypatch, tmp_path):
         """Drive one engage_executor launch; return (fetch_calls, driver)."""
         from config import ExecutorMemoryConfig
         from tools import engage_executor, init_tools
@@ -1006,12 +991,11 @@ class TestExecutorArchiveFetchedOncePerLaunch:
         import tools as tools_mod
 
         defn = _mock_executor_def(
-            type="plugin-developer", driver=driver_name,
             memory=ExecutorMemoryConfig(enabled=True, token_budget=500),
         )
         reg = MagicMock()
         reg.get = MagicMock(return_value=defn)
-        reg.list_types = MagicMock(return_value=["plugin-developer"])
+        reg.list_types = MagicMock(return_value=["configurator"])
 
         er = MagicMock()
         mock_rec = MagicMock()
@@ -1052,8 +1036,6 @@ class TestExecutorArchiveFetchedOncePerLaunch:
 
         driver = MagicMock(start=AsyncMock())
         monkeypatch.setattr(
-            agent_mod, "active_claude_code_driver", driver, raising=False)
-        monkeypatch.setattr(
             agent_mod, "active_engagement_driver", driver, raising=False)
 
         token = agent_mod.origin_var.set({
@@ -1062,7 +1044,7 @@ class TestExecutorArchiveFetchedOncePerLaunch:
         })
         try:
             await engage_executor.handler({
-                "executor_type": "plugin-developer",
+                "executor_type": "configurator",
                 "task": "Add a Skill for the casa-probe-foo plugin",
                 "context": "none",
             })
@@ -1070,28 +1052,11 @@ class TestExecutorArchiveFetchedOncePerLaunch:
             agent_mod.origin_var.reset(token)
         return calls, driver
 
-    async def test_a_claude_code_launch_does_not_fetch_the_archive(
-        self, monkeypatch, tmp_path,
-    ):
-        """The engager performs ZERO archive recalls for claude_code — the
-        driver's own fetch is the launch's single recall."""
-        calls, driver = await self._launch(
-            monkeypatch, tmp_path, driver_name="claude_code")
-        assert calls == []
-        driver.start.assert_awaited_once()
-        prompt = driver.start.await_args.kwargs["prompt"]
-        # The slot is still substituted — a literal placeholder must never
-        # reach the FIFO.
-        assert "{executor_memory}" not in prompt
-        assert "ARCHIVE-BLOCK-MARKER" not in prompt
-
     async def test_an_in_casa_launch_still_fetches_the_archive_exactly_once(
         self, monkeypatch, tmp_path,
     ):
-        """in_casa has no second fetch anywhere, so its ONE recall stays —
-        this is the half the change must not take with it."""
-        calls, driver = await self._launch(
-            monkeypatch, tmp_path, driver_name="in_casa")
+        """in_casa has no second fetch anywhere, so its ONE recall stays."""
+        calls, driver = await self._launch(monkeypatch, tmp_path)
         assert len(calls) == 1
         driver.start.assert_awaited_once()
         assert "ARCHIVE-BLOCK-MARKER" in driver.start.await_args.kwargs["prompt"]
@@ -1243,8 +1208,7 @@ class TestU3TopicTitle:
 class TestOriginContextPropagation:
     """L61/L10: engage_executor's context= argument (and the world-state
     summary) must be threaded onto the EngagementRecord's origin so the
-    claude_code driver can later render them into the workspace CLAUDE.md.
-    Before the fix, origin=dict(origin_var) never carried a 'context' key,
+    driver can read them back. Before the fix, origin=dict(origin_var) never carried a 'context' key,
     so the driver's engagement.origin.get('context', '') was always empty."""
 
     async def test_context_and_world_state_land_in_created_origin(
@@ -1304,96 +1268,6 @@ class TestOriginContextPropagation:
         # Original origin_var fields must still be present.
         assert created_origin["role"] == "assistant"
         assert created_origin["channel"] == "telegram"
-
-    @pytest.mark.skipif(
-        sys.platform == "win32",
-        reason="workspace provisioning uses mkfifo/symlink (Linux-only)",
-    )
-    async def test_claude_code_driver_receives_context_and_world_state(
-        self, monkeypatch, tmp_path,
-    ):
-        """Driver-side regression: ClaudeCodeDriver.start must read the
-        origin's 'context'/'world_state_summary' back out and pass them
-        into provision_workspace. Follows the mocking pattern of
-        tests/test_claude_code_driver.py::TestStart."""
-        from drivers import claude_code_driver as ccd
-        from drivers.claude_code_driver import ClaudeCodeDriver
-        from drivers import s6_rc
-        from engagement_registry import EngagementRecord
-
-        # Task 7 (containment stage 2): stub the uid-drop preflight — its
-        # real preconditions (workspace chown, passwd entry) are landed by
-        # Task 8; this test exercises context/world_state plumbing, not the
-        # preflight itself.
-        monkeypatch.setattr(ccd, "_preflight_uid_drop", lambda rec, ws: None)
-        # Task 8: provision_workspace now really calls these for a record
-        # with a real allocated_uid (200005, below) — stub them so this
-        # test doesn't need root to chown an arbitrary uid.
-        from drivers import workspace as ws_mod
-        monkeypatch.setattr(ws_mod, "chown_workspace", lambda ws, uid, gid: None)
-        monkeypatch.setattr(ws_mod, "ensure_identity", lambda uid, home: None)
-
-        async def fake_cau():
-            pass
-
-        async def fake_start_kw(*, engagement_id):
-            pass
-
-        monkeypatch.setattr(s6_rc, "_compile_and_update_locked", fake_cau)
-        monkeypatch.setattr(s6_rc, "start_service", fake_start_kw)
-        monkeypatch.setattr(
-            s6_rc, "ENGAGEMENT_SOURCES_ROOT", str(tmp_path / "svc-root"),
-        )
-        (tmp_path / "svc-root").mkdir()
-        monkeypatch.setattr(
-            ClaudeCodeDriver, "_spawn_background_tasks",
-            lambda self, engagement: None,
-        )
-
-        async def _noop_write(self, engagement, text):
-            return None
-        monkeypatch.setattr(ClaudeCodeDriver, "_write_to_fifo", _noop_write)
-
-        defn = _mock_executor_def(driver="claude_code")
-        exec_dir = tmp_path / "defaults-executors" / "hello-driver"
-        exec_dir.mkdir(parents=True)
-        prompt_path = exec_dir / "prompt.md"
-        prompt_path.write_text(
-            "T:{task} C:{context} W:{world_state_summary}",
-        )
-        defn.prompt_template_path = str(prompt_path)
-
-        rec = EngagementRecord(
-            id="abc12345def67890", kind="executor", role_or_type="hello-driver",
-            driver="claude_code", status="active", topic_id=999,
-            started_at=0.0, last_user_turn_ts=0.0, last_idle_reminder_ts=0.0,
-            completed_at=None, sdk_session_id=None,
-            origin={
-                "channel": "telegram", "chat_id": "42",
-                "context": "repo is x/y, branch dev",
-                "world_state_summary": "ws-summary",
-            },
-            task="do it",
-            # Task 6 (containment stage 2): start() feeds allocated_uid into
-            # render_run_script's setpriv wrapper — a real allocated uid
-            # keeps this the fixture for a NORMAL (post-allocation) launch.
-            allocated_uid=200005,
-        )
-
-        drv = ClaudeCodeDriver(
-            engagements_root=str(tmp_path / "engagements"),
-            send_to_topic=AsyncMock(),
-            casa_framework_mcp_url="http://127.0.0.1:8080/mcp/casa-framework",
-        )
-        (tmp_path / "engagements").mkdir()
-
-        await drv.start(rec, prompt="system prompt body", options=defn)
-
-        claude_md = (
-            tmp_path / "engagements" / rec.id / "CLAUDE.md"
-        ).read_text(encoding="utf-8")
-        assert "C:repo is x/y, branch dev" in claude_md
-
 
 class TestFailedStartClosesTopic:
     """L23 leak guard: a failed engagement start must not leave a
@@ -1540,7 +1414,7 @@ class TestEngageExecutorPluginGate:
         import plugin_registry
 
         reg = MagicMock()
-        reg.get = MagicMock(return_value=_mock_executor_def(driver="claude_code"))
+        reg.get = MagicMock(return_value=_mock_executor_def())
         reg.list_types = MagicMock(return_value=["configurator"])
         channel = await _setup(reg)
         monkeypatch.setattr(plugin_registry, "resolve_for", lambda t: resolution)
@@ -1600,7 +1474,7 @@ class TestEngageExecutorPluginGate:
 
         reg = MagicMock()
         reg.get = MagicMock(
-            return_value=_mock_executor_def(driver="claude_code"))
+            return_value=_mock_executor_def())
         reg.list_types = MagicMock(return_value=["configurator"])
         channel = await _setup(reg)
         monkeypatch.setattr(tools_mod, "_tool_verify_plugin_state",
@@ -1653,7 +1527,7 @@ class TestEngageExecutorPluginGate:
                             version="1", manifest={})
         reg = MagicMock()
         reg.get = MagicMock(
-            return_value=_mock_executor_def(driver="claude_code"))
+            return_value=_mock_executor_def())
         reg.list_types = MagicMock(return_value=["configurator"])
         channel = await _setup(reg)
         monkeypatch.setattr(plugin_registry, "resolve_for",
@@ -1694,7 +1568,7 @@ class TestEngageExecutorPluginGate:
                             version="1", manifest={})
         reg = MagicMock()
         reg.get = MagicMock(
-            return_value=_mock_executor_def(driver="claude_code"))
+            return_value=_mock_executor_def())
         reg.list_types = MagicMock(return_value=["configurator"])
         er = MagicMock()
         mock_rec = MagicMock()
@@ -1762,7 +1636,7 @@ class TestEngageExecutorPluginGate:
 
         reg = MagicMock()
         reg.get = MagicMock(
-            return_value=_mock_executor_def(driver="claude_code"))
+            return_value=_mock_executor_def())
         reg.list_types = MagicMock(return_value=["configurator"])
         er = MagicMock()
         mock_rec = MagicMock()
@@ -1830,7 +1704,7 @@ class TestEngageExecutorPluginGate:
 
 
 # ---------------------------------------------------------------------------
-# W3 (Task 8): structured brief envelope — schema, validation, both drivers.
+# W3 (Task 8): structured brief envelope — schema, validation, delivery.
 # ---------------------------------------------------------------------------
 
 
@@ -1959,12 +1833,10 @@ class TestEngageExecutorBriefDelivery:
         assert "acceptance_criteria" not in rec.origin["brief"]
         # objective drives the canonical task (title/P32/engagement.task).
         assert rec.task == "Reset the invoice counter"
-        # not interaction-required → no first_contact_required state.
-        assert rec.interaction_state == ""
 
     async def test_configurator_in_casa_delivery(self, tmp_path, monkeypatch):
         from tools import engage_executor
-        from drivers.brief import FIRST_CONTACT_PARAGRAPH, COMPLETION_ACCOUNTING_LINE
+        from drivers.brief import COMPLETION_ACCOUNTING_LINE
         import agent as agent_mod
 
         defn = _mock_executor_def(driver="in_casa")
@@ -1981,7 +1853,7 @@ class TestEngageExecutorBriefDelivery:
             "process_requirements": ["Confirm with operator before writing",
                                      "NEVER touch prod without a backup"],
             "context": "quarterly rollover",
-            "interaction_required": True,   # ignored for in_casa (W2 claude_code-only)
+            "interaction_required": True,   # accepted and ignored
         }
         token = agent_mod.origin_var.set({
             "role": "assistant", "channel": "telegram",
@@ -2004,98 +1876,20 @@ class TestEngageExecutorBriefDelivery:
         assert "Confirm with operator before writing" in sys_prompt
         assert "NEVER touch prod without a backup" in sys_prompt
         assert COMPLETION_ACCOUNTING_LINE in sys_prompt
-        # W2 is claude_code-only: no first-contact paragraph, no stuck state.
-        assert FIRST_CONTACT_PARAGRAPH not in sys_prompt
-        rec = list(registry._records.values())[0]
-        assert rec.interaction_state == ""
-
-    async def test_claude_code_delivery_two_phase(self, tmp_path, monkeypatch):
-        from tools import engage_executor
-        from drivers.brief import FIRST_CONTACT_PARAGRAPH, COMPLETION_ACCOUNTING_LINE
-        import agent as agent_mod
-
-        defn = _mock_executor_def(driver="claude_code")
-        reg = MagicMock()
-        reg.get = MagicMock(return_value=defn)
-        reg.list_types = MagicMock(return_value=["configurator"])
-        registry = _real_registry(tmp_path)
-        driver_mock = await _brief_setup(
-            reg, defn, registry, "active_claude_code_driver", monkeypatch, tmp_path)
-
-        brief = {
-            "objective": "Migrate the widgets table",
-            "process_requirements": ["Run migrations in a transaction"],
-            "interaction_required": True,
-        }
-        token = agent_mod.origin_var.set({
-            "role": "assistant", "channel": "telegram",
-            "chat_id": "c1", "cid": "x", "user_text": "hi",
-        })
-        try:
-            r = await engage_executor.handler({
-                "executor_type": "configurator", "brief": brief,
-            })
-        finally:
-            agent_mod.origin_var.reset(token)
-
-        payload = json.loads(r["content"][0]["text"])
-        assert payload["status"] == "pending", payload
-        prompt = driver_mock.start.await_args.kwargs["prompt"]
-        assert "Migrate the widgets table" in prompt
-        assert "Run migrations in a transaction" in prompt
-        assert COMPLETION_ACCOUNTING_LINE in prompt
-        # claude_code + interaction_required → two-phase paragraph + state.
-        assert FIRST_CONTACT_PARAGRAPH in prompt
-        rec = list(registry._records.values())[0]
-        assert rec.interaction_state == "first_contact_required"
-
-    async def test_claude_code_no_interaction_no_two_phase(self, tmp_path, monkeypatch):
-        from tools import engage_executor
-        from drivers.brief import FIRST_CONTACT_PARAGRAPH
-        import agent as agent_mod
-
-        defn = _mock_executor_def(driver="claude_code")
-        reg = MagicMock()
-        reg.get = MagicMock(return_value=defn)
-        reg.list_types = MagicMock(return_value=["configurator"])
-        registry = _real_registry(tmp_path)
-        driver_mock = await _brief_setup(
-            reg, defn, registry, "active_claude_code_driver", monkeypatch, tmp_path)
-
-        token = agent_mod.origin_var.set({
-            "role": "assistant", "channel": "telegram",
-            "chat_id": "c1", "cid": "x", "user_text": "hi",
-        })
-        try:
-            r = await engage_executor.handler({
-                "executor_type": "configurator",
-                "brief": {"objective": "o", "acceptance_criteria": [],
-                          "process_requirements": []},
-            })
-        finally:
-            agent_mod.origin_var.reset(token)
-
-        payload = json.loads(r["content"][0]["text"])
-        assert payload["status"] == "pending", payload   # empty lists are valid
-        prompt = driver_mock.start.await_args.kwargs["prompt"]
-        assert FIRST_CONTACT_PARAGRAPH not in prompt
-        rec = list(registry._records.values())[0]
-        assert rec.interaction_state == ""
-
 
 # ---------------------------------------------------------------------------
 # #1350: the hand-off line in the chat and the topic's opening line
 # ---------------------------------------------------------------------------
 
 
-async def _engage_with_lines(tmp_path, monkeypatch, origin, *, driver="in_casa",
+async def _engage_with_lines(tmp_path, monkeypatch, origin, *,
                              executor_type="configurator", task=None, split=False,
                              topic_title=None):
     from tools import engage_executor, init_tools
     import agent as agent_mod
     import tools as tools_mod
 
-    defn = _mock_executor_def(driver=driver, type=executor_type)
+    defn = _mock_executor_def(type=executor_type)
     p = tmp_path / "prompt.md"
     p.write_text("You are {task}. Context: {context}.")
     defn.prompt_template_path = str(p)
@@ -2153,8 +1947,6 @@ async def _engage_with_lines(tmp_path, monkeypatch, origin, *, driver="in_casa",
                             lambda *a, **k: None)
     monkeypatch.setattr(agent_mod, "active_engagement_driver",
                         eng_driver, raising=False)
-    monkeypatch.setattr(agent_mod, "active_claude_code_driver",
-                        MagicMock(start=AsyncMock()), raising=False)
     token = agent_mod.origin_var.set(dict(origin))
     try:
         args = {
@@ -2218,21 +2010,13 @@ class TestEngageHandoffLines:
         assert lines == [] and "note" not in payload
         assert len(topic_posts) == 1
 
-    async def test_a_claude_code_engagement_gets_no_topic_line(
-            self, tmp_path, monkeypatch):
-        payload, lines, topic_posts = await _engage_with_lines(
-            tmp_path, monkeypatch, _OP, driver="claude_code")
-        assert payload["status"] == "pending", payload
-        assert len(lines) == 1 and topic_posts == []
-
-
     async def test_the_line_names_the_launched_executor(self, tmp_path, monkeypatch):
         payload, lines, _ = await _engage_with_lines(
-            tmp_path, monkeypatch, _OP, executor_type="plugin-developer")
+            tmp_path, monkeypatch, _OP, executor_type="auditor")
         assert payload["status"] == "pending", payload
-        assert lines == [("c1", "⚙️ Passed to the plugin-developer: “Gmail plugin”. "
+        assert lines == [("c1", "⚙️ Passed to the auditor: “Gmail plugin”. "
                                 "Its topic is in Engagements.")]
-        assert "passed to the plugin-developer." in payload["note"]
+        assert "passed to the auditor." in payload["note"]
 
     async def test_the_split_launch_shows_both_lines(self, tmp_path, monkeypatch):
         payload, lines, topic_posts = await _engage_with_lines(

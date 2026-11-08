@@ -14,11 +14,9 @@ import logging
 import os
 import re
 import shlex
-import uuid
 from pathlib import PurePosixPath
 from typing import Any, Awaitable, Callable
 
-from cc_tool_pattern import matches_any
 
 _logger = logging.getLogger(__name__)
 
@@ -461,17 +459,6 @@ HookCallback = Callable[
 # decision purposes) but type-compliant.
 
 
-def _active_claude_code_driver() -> Any:
-    """Resolve the live ``claude_code`` driver for the §2 F1(a) permission-
-    keyboard discrete-send seam. Returns ``None`` (⇒ eager fallback) when no
-    driver is attached (unit tests / degraded boot)."""
-    try:
-        import agent as _agent_mod
-        return getattr(_agent_mod, "active_claude_code_driver", None)
-    except Exception:  # noqa: BLE001
-        return None
-
-
 def _deny(reason: str) -> dict[str, Any]:
     """Return a PreToolUse payload that denies the tool call.
 
@@ -538,11 +525,10 @@ async def block_dangerous_commands(
     if reason is not None:
         return _deny(f"Blocked by safety hook: {reason}")
     # Sol #5: also deny a Bash write into /config/plugins (registry/store).
-    # path_scope ignores Bash, so a claude_code executor (plugin-developer,
-    # configurator) could otherwise `echo > /config/plugins/registry.json`,
-    # bypassing plugin_add validation + §3.9 sequencing. Both executors carry
-    # block_dangerous_bash, so this closes the HTTP-hook path too — the same
-    # regex the resident/specialist settings guard uses.
+    # path_scope ignores Bash, so an executor (configurator) could otherwise
+    # `echo > /config/plugins/registry.json`, bypassing plugin_add validation
+    # + §3.9 sequencing — the same regex the resident/specialist settings
+    # guard uses.
     if _PLUGINS_WRITE_RE.search(command):
         return _deny(_PLUGINS_DENY_MSG)
     return {}
@@ -555,45 +541,6 @@ async def block_dangerous_commands(
 
 class UnknownPolicyError(Exception):
     """Raised when a hooks.yaml policy or parameter is not recognised."""
-
-
-class UsesDefaultPolicies(dict):
-    """Marker: this executor is known, and declares no hook parameters.
-
-    #442 r3: the resolver refuses an authenticated request naming an executor
-    its map does not represent, so "no parameters" must be said out loud
-    rather than expressed as an absence — an absence is exactly what every
-    failure mode also looks like.
-    """
-
-
-class DenyAllPolicyMap(dict):
-    """A ``{policy: (matcher, callback)}`` map whose every callback denies.
-
-    #442 r2: a marker type, so a consumer can tell "this executor's declared
-    policies could not be built or loaded" apart from an ordinary built map.
-    ``reload`` needs that distinction — a KNOWN-GOOD pre-reload set beats
-    deny-all, while deny-all beats falling back to the broader defaults.
-    """
-
-
-def make_always_deny_hook(reason: str) -> HookCallback:
-    """Return a PreToolUse hook that denies every call it matches.
-
-    #442 r2: used where a policy set could not be BUILT. Omitting the
-    executor's entry there is not neutral — the HTTP resolver falls back to
-    the default-configured policies, which for ``casa_config_guard`` forbid
-    no write path at all, so a refused declaration would enforce LESS than
-    the operator wrote.
-    """
-    async def _hook(
-        input_data: dict[str, Any],
-        tool_use_id: str | None,
-        context: dict[str, Any],
-    ) -> dict[str, Any]:
-        return _deny(reason)
-
-    return _hook
 
 
 def _require_prefix_list(
@@ -2528,13 +2475,10 @@ def make_commit_size_guard_hook(*, max_files: int) -> HookCallback:
 # HOOK_POLICIES — two-tier registry (Plan 4a.1).
 #
 # Each entry is {"matcher": regex, "factory": fn(**kwargs) -> HookCallback}.
-# The "matcher" regex names the CC tool names the policy applies to; it's
-# used identically by both consumers:
-#   - SDK path (resolve_hooks below) passes it to HookMatcher(matcher=...).
-#   - HTTP path (_build_cc_hook_policies in casa_core.py) gates the
-#     HookCallback invocation on the CC tool name before dispatching.
+# The "matcher" regex names the CC tool names the policy applies to;
+# resolve_hooks (below) passes it to HookMatcher(matcher=...).
 # The "factory" returns a raw async HookCallback — the same coroutine shape
-# produced by make_*_hook_* helpers above. Both consumers call it directly.
+# produced by make_*_hook_* helpers above.
 # ---------------------------------------------------------------------------
 
 
@@ -2634,52 +2578,6 @@ HOOK_POLICIES: dict[str, dict[str, Any]] = {
 }
 
 
-# claude_code containment floor: the policies every claude_code executor must
-# declare to meet the baseline security requirements. Task 2: Single source of
-# truth for the floor + canonical matchers so policy matchers cannot be
-# override-routed by YAML edits.
-REQUIRED_CLAUDE_CODE_POLICIES: frozenset[str] = frozenset({
-    "block_dangerous_bash",
-    "path_scope",
-})
-
-
-def missing_required_cc_policies(declared_policy_names) -> frozenset:
-    """Return the set of required policies missing from the declared set.
-
-    Args:
-        declared_policy_names: An iterable of declared policy names.
-
-    Returns:
-        A frozenset of required policies not in declared_policy_names.
-        Empty frozenset means the floor is satisfied.
-    """
-    return REQUIRED_CLAUDE_CODE_POLICIES - frozenset(declared_policy_names)
-
-
-def canonical_matcher_for(policy_name: str) -> str:
-    """Return the canonical matcher for a registry-backed policy.
-
-    This is the single source of truth for policy matchers, ensuring that
-    YAML-editable matcher declarations cannot override registry matchers.
-
-    Args:
-        policy_name: The name of a policy in HOOK_POLICIES.
-
-    Returns:
-        The matcher string from HOOK_POLICIES[policy_name].
-
-    Raises:
-        UnknownPolicyError: If policy_name is not in HOOK_POLICIES.
-    """
-    if policy_name not in HOOK_POLICIES:
-        raise UnknownPolicyError(
-            f"unknown hook policy {policy_name!r}; "
-            f"available: {sorted(HOOK_POLICIES)}"
-        )
-    return HOOK_POLICIES[policy_name]["matcher"]
-
-
 def resolve_hooks(
     config: "HooksConfig",
     *,
@@ -2725,8 +2623,7 @@ def resolve_hooks(
         # REVISION 3 (Terra plan-review r3, #360): strip the transport-only
         # ``matcher``/``timeout`` keys before the factory call, exactly like
         # build_policy_callbacks_from_hooks_yaml already does above. Without
-        # this, a snapshot carrying a stray ``matcher`` (e.g. because
-        # hook_bridge's canonical-matcher force wrote it back, or an
+        # this, a snapshot carrying a stray ``matcher`` (e.g. because an
         # executor's yaml declared one) made every factory call raise
         # TypeError on an unexpected kwarg — turning a config-editable
         # cosmetic key into a START-time UnknownPolicyError for every
@@ -2771,19 +2668,13 @@ def build_policy_callbacks_from_hooks_yaml(
 ) -> dict[str, tuple[str, "HookCallback"]]:
     """Build ``{policy_name: (matcher, callback)}`` from an executor hooks.yaml.
 
-    H3 (v0.53.0): the claude_code HTTP hook path (hook_proxy.sh -> the
-    /hooks/resolve endpoint) previously ran only the default-configured
-    factories, dropping every per-executor ``hooks.yaml`` parameter (e.g.
-    plugin-developer's ``path_scope`` writable/readable prefixes), so the
-    default empty-prefix ``path_scope`` denied ALL Read/Write/Edit. This turns
-    an executor's parsed ``hooks.yaml`` into the same ``(matcher, callback)``
-    shape ``_build_cc_hook_policies`` produces, but with the declared params
-    applied.
+    The agent loader calls this at load for every executor as a
+    constructibility check (#312): a declaration whose factory raises fails
+    the executor at load rather than at enforcement time.
 
-    Policies with no HOOK_POLICIES factory (e.g. ``engagement_permission_relay``
-    — injected separately in casa_core with live deps) are skipped here. The
-    per-entry ``matcher``/``timeout`` keys are consumed by other paths and are
-    not factory parameters, so they are stripped before the factory call.
+    Policies with no HOOK_POLICIES factory are skipped here. The per-entry
+    ``matcher``/``timeout`` keys are not factory parameters, so they are
+    stripped before the factory call.
     """
     grouped: dict[str, tuple[str, list["HookCallback"]]] = {}
     declared_matchers: dict[str, Any] = {}
@@ -2791,7 +2682,7 @@ def build_policy_callbacks_from_hooks_yaml(
         name = entry.get("policy")
         policy = HOOK_POLICIES.get(name)
         if policy is None:
-            continue  # e.g. engagement_permission_relay — wired separately
+            continue
         # Sol r2-1: duplicate declarations of one policy must agree on their
         # declared ``matcher`` (including all leaving it absent). The server
         # cannot tell declarations apart on the wire (the request names only
@@ -2835,449 +2726,4 @@ def build_policy_callbacks_from_hooks_yaml(
         )
         for name, (matcher, callbacks) in grouped.items()
     }
-    # Round-4 (Terra P0): managed_component_guard is CODE-MANDATORY for
-    # executor sessions — the resolved set always carries it regardless of
-    # what the (config-editable, pointer-redirectable) hooks.yaml declares.
-    # Dict-key dedupe: a yaml declaration simply pre-fills the same entry.
-    # See managed_component_guard_matcher (SDK path) and
-    # drivers.hook_bridge.translate_hooks_to_settings (CC settings path).
-    if "managed_component_guard" not in out:
-        policy = HOOK_POLICIES["managed_component_guard"]
-        out["managed_component_guard"] = (
-            policy["matcher"], policy["factory"]())
-    # #631: so is resident_prompt_write_guard, and this half is only one of
-    # the two the claude_code transport needs — drivers.hook_bridge
-    # .translate_hooks_to_settings emits the settings.json entry that makes CC
-    # invoke the proxy, and this resolves that policy NAME to a callback. An
-    # entry for a policy the resolver does not know resolves to nothing.
-    #
-    # It is here, and its two neighbours are not, deliberately. `path_scope`'s
-    # PRESENCE is load-enforced on a claude_code executor, but its `writable:`
-    # prefixes are whatever that executor's own hooks.yaml declares (the
-    # bridge defaults them to empty; the shipped configurator declares
-    # `/config/agents`), so an executor whose declaration admits the resident
-    # tree would be refused by nothing else — and this guard's refusal names
-    # the corrective recipe where a scope denial cannot. On the shipped
-    # plugin-developer (`/data/engagements/` only) it is defence-in-depth. The
-    # trigger-file and response-shape guards are NOT added here because their
-    # Bash halves match a bare basename anywhere in a command, which would
-    # start refusing an executor writing its own `triggers.yaml`/
-    # `response_shape.yaml` inside /data/engagements (measured: 2 of 2
-    # denied). Symmetry for its own sake would ship a regression.
-    if "resident_prompt_write_guard" not in out:
-        policy = HOOK_POLICIES["resident_prompt_write_guard"]
-        out["resident_prompt_write_guard"] = (
-            policy["matcher"], policy["factory"]())
     return out
-
-
-# ---------------------------------------------------------------------------
-# v0.37.2 (C-1): engagement_permission_relay
-#
-# Spec: docs/superpowers/specs/2026-05-13-c1-permission-relay-fix.md §4.2, §4.3
-#
-# A PreToolUse hook that resolves the engagement from cwd, checks the
-# engagement's frozen ``tools_allowed`` snapshot, and either passes through
-# (return ``{}``) or relays the request to the operator via a Telegram
-# inline keyboard, awaiting their verdict on a per-engagement asyncio.Queue.
-# ---------------------------------------------------------------------------
-
-
-# Telegram callback_data is capped at 64 bytes; the keyboard prefix is
-# "perm:allow:" or "perm:deny:" (11 bytes), so the request_id must be
-# <= 53 bytes. We cap at 32 to leave headroom and align with hex UUIDs.
-_RID_MAX_LEN = 32
-
-
-_ENG_CWD_RE = re.compile(
-    r"^/data/engagements/([0-9a-f]{32})(?:/.*)?$"
-)
-
-
-def _engagement_id_from_cwd(cwd: str) -> str | None:
-    """Extract the 32-hex engagement id from a cwd path.
-
-    Returns None when cwd is not under ``/data/engagements/<id>/...`` — or
-    when the value is not a string at all (Terra r1: a caller-supplied
-    non-string must degrade to "no claim", never raise past a deny wrapper).
-    """
-    if not isinstance(cwd, str):
-        return None
-    m = _ENG_CWD_RE.match(cwd or "")
-    return m.group(1) if m else None
-
-
-def _perm_keyboard_finish(
-    telegram_channel: Any, topic_id: int | None, message_id: int,
-) -> Callable[[dict], "Awaitable[None]"]:
-    """Broker finish-hook (r3-B3): keyboard-edit owner for the permission
-    namespace. Fires exactly once on outcome (delivered by the broker even if
-    the creating hook task was cancelled) and edits the posted keyboard
-    message to reflect the outcome. The callback path NEVER edits the
-    keyboard — this is the only writer.
-    """
-
-    async def _finish(outcome: dict) -> None:
-        try:
-            await telegram_channel.edit_perm_keyboard_outcome(
-                topic_id=topic_id, message_id=message_id, outcome=outcome,
-            )
-        except Exception:  # noqa: BLE001 — finish hooks must never raise
-            _logger.warning(
-                "permission keyboard finish-hook edit failed "
-                "(topic=%s message_id=%s)", topic_id, message_id, exc_info=True,
-            )
-
-    return _finish
-
-
-# ---------------------------------------------------------------------------
-# R4 (v0.89.0, buttons-always): engagement_buttons_reminder
-#
-# A PreToolUse(Skill) salience backstop on the WORKSPACE hook path
-# (hook_proxy.sh -> /internal/hooks/resolve). The plugin-developer engaged
-# executor runs the STANDALONE Claude CLI, so an in-casa SDK ``can_use_tool``
-# PreToolUse hook never fires for it — this HTTP-path policy is the only seam.
-#
-# When a ``Skill`` is about to load (e.g. ``superpowers:brainstorming``, whose
-# own "present options conversationally / one question per message" HARD-GATE
-# out-competes doctrine read earlier in the turn) AND the cwd resolves to an
-# ACTIVE engagement, inject a PreToolUse ``additionalContext`` reminder that the
-# engagement channel's choice questions ALWAYS use ``ask``/``options``. This is
-# context injection, not a block/ask decision, and NOT a user-facing
-# ``systemMessage``. Trigger is tool IDENTITY (Skill) + engagement-from-cwd —
-# NEVER message content.
-# ---------------------------------------------------------------------------
-
-_BUTTONS_REMINDER_TEXT = (
-    "You are in an engagement channel — any question offering choices MUST "
-    "use the `ask` tool with `options` (tappable buttons), never prose, even "
-    "if this skill tells you to ask conversationally."
-)
-
-
-def make_engagement_buttons_reminder(
-    *,
-    engagement_registry: Any,
-) -> HookCallback:
-    """Build the PreToolUse(Skill) hook that injects the buttons-always
-    reminder when a Skill loads inside an ACTIVE engagement.
-
-    Args:
-        engagement_registry: registry exposing ``.get(engagement_id) -> record | None``.
-
-    Returns ``{"hookSpecificOutput": {"hookEventName": "PreToolUse",
-    "additionalContext": <reminder>}}`` (SDK-declared
-    ``PreToolUseHookSpecificOutput.additionalContext``) for a Skill call under
-    an active engagement; ``{}`` (allow, no context) otherwise. Never blocks.
-    """
-
-    async def _hook(
-        input_data: dict[str, Any],
-        tool_use_id: str | None,
-        context: dict[str, Any],
-    ) -> dict[str, Any]:
-        # Tool-identity gate (defense-in-depth; the wired matcher is "Skill"
-        # too). NEVER inspect message/tool content.
-        if input_data.get("tool_name") != "Skill":
-            return {}
-        # #366: identity from the authenticated context only (cwd is
-        # caller-supplied text). Unauthenticated ⇒ no reminder — this hook
-        # only ever ADDS context, so absence of identity is a silent no-op.
-        eng_id = (
-            context.get("casa_engagement_id")
-            if isinstance(context, dict) else None
-        )
-        if not eng_id:
-            return {}
-        rec = engagement_registry.get(eng_id)
-        if rec is None or getattr(rec, "status", None) != "active":
-            return {}
-        return {
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "additionalContext": _BUTTONS_REMINDER_TEXT,
-            }
-        }
-
-    return _hook
-
-
-def make_engagement_permission_relay(
-    *,
-    engagement_registry: Any,
-    telegram_channel: Any,
-    timeout_s: float = 600.0,
-) -> HookCallback:
-    """Build the PreToolUse hook that relays non-allow-listed tool calls
-    through the engagement's Telegram inline-keyboard, via the
-    Casa-owned ``verdict_broker`` (W5/Sol B3,B4).
-
-    #374/#469: the keyboard's answerer is the CONFIGURED OPERATOR
-    (``telegram_channel.operator_user_id()``), not the engagement creator —
-    approving a non-allow-listed tool is authorization, and only the
-    operator holds that authority (#368 doctrine). No configured operator
-    (accept-all mode, or a group id) ⇒ immediate deterministic deny, no
-    keyboard: posting a button nobody may tap would only hold the
-    engagement until timeout.
-
-    Args:
-        engagement_registry: registry exposing ``.get(engagement_id) -> record | None``.
-        telegram_channel: object with ``operator_user_id() -> int | None``, async
-            ``update_topic_state(*, engagement_id, new_state)``,
-            ``post_perm_keyboard(*, engagement_id, request_id, tool_name, tool_input) -> int | None``,
-            and ``edit_perm_keyboard_outcome(*, topic_id, message_id, outcome)``.
-        timeout_s: how long to wait for the operator before treating as deny.
-    """
-    # #324: per-engagement tally of relay requests currently holding the
-    # topic 'awaiting'. Two gated tools can await verdicts concurrently;
-    # the first exit's r7-B3 restore must not repaint 'active' while the
-    # sibling's keyboard is still live. Entries are deleted at zero.
-    _pending_relays: dict[str, int] = {}
-    # Sol diff-r1/r2 (#324): unserialized state edits lose to wire ordering —
-    # whichever edit LANDS last wins, regardless of which tally state it was
-    # painted for (r1: a stale 'active' after a new relay's 'awaiting'; r2:
-    # the one-shot corrective 'awaiting' after the last exit's 'active').
-    # Cut the mechanism instead of sharpening it: every paint SERIALIZES on a
-    # per-engagement lock and reads the CURRENT tally under it, so the
-    # last-serialized paint always reflects the final tally and no
-    # corrective repaints exist. Locks are retained for the process lifetime
-    # (mirrors telegram's per-topic handler locks; popping one while a
-    # waiter holds it would fork the serialization domain).
-    _state_paint_locks: dict[str, asyncio.Lock] = {}
-    # Strong refs to in-flight shielded paints (broker _setup_tasks pattern):
-    # a caller-cancelled paint continues in the background and must not be
-    # garbage-collected mid-flight.
-    _paint_tasks: set = set()
-
-    async def _do_paint(eng_id: str) -> None:
-        lock = _state_paint_locks.setdefault(eng_id, asyncio.Lock())
-        async with lock:
-            state = (
-                "awaiting" if _pending_relays.get(eng_id, 0) > 0 else "active"
-            )
-            # Terra r3 (#347): FRESH status read — an engagement that
-            # terminalized mid-hook must not be repainted; that edit could
-            # land after the terminal-state edit and leave a closed topic
-            # showing green (or amber).
-            rec_now = engagement_registry.get(eng_id)
-            if getattr(rec_now, "status", None) != "active":
-                return
-            await telegram_channel.update_topic_state(
-                engagement_id=eng_id, new_state=state,
-            )
-
-    async def _paint_topic_state(eng_id: str, *, shielded: bool) -> None:
-        # Sol diff-r3 (#324): serialization orders paints but does not
-        # guarantee completion — a cancellation aborting the FINAL exit
-        # paint mid-await would strand the topic 'awaiting'. The EXIT paint
-        # therefore runs as a SHIELDED task (never cancelled itself; the
-        # caller's cancellation propagates while the paint completes in the
-        # background). The ENTRY paint stays cancellable ON PURPOSE: it is
-        # always healed by the shielded exit paint, and shielding it would
-        # let one wedged wire edit hold the serialization lock uncancellably
-        # and wedge every later paint for the engagement.
-        if not shielded:
-            await _do_paint(eng_id)
-            return
-        task = asyncio.ensure_future(_do_paint(eng_id))
-        _paint_tasks.add(task)
-        task.add_done_callback(_paint_tasks.discard)
-        await asyncio.shield(task)
-
-    async def _hook(
-        input_data: dict[str, Any],
-        tool_use_id: str | None,
-        context: dict[str, Any],
-    ) -> dict[str, Any]:
-        # #366: identity comes ONLY from the authenticated-identity context
-        # threaded by the /internal/hooks/resolve handler (which verified the
-        # engagement token). The payload's cwd is caller-supplied text and is
-        # no longer an identity source. No authenticated identity ⇒ deny —
-        # this hook exists to gate an engagement's tool use, so a request
-        # that cannot prove WHICH engagement it is gets nothing.
-        eng_id = (
-            context.get("casa_engagement_id")
-            if isinstance(context, dict) else None
-        )
-        if not eng_id:
-            return _deny("engagement identity not authenticated")
-        rec = engagement_registry.get(eng_id)
-        if rec is None or getattr(rec, "status", None) != "active":
-            return _deny(
-                f"unknown or inactive engagement: {eng_id[:8]}"
-            )
-        # G-1 v0.37.7: short-circuit on autonomous permission modes. The
-        # executor's ``permission_mode`` in definition.yaml encodes operator
-        # intent; when ``auto`` or ``bypassPermissions`` the CC CLI is meant
-        # to proceed without operator approval — surfacing a Telegram
-        # keyboard would defeat the purpose (and hang the engagement when no
-        # operator is at the keyboard). ``acceptEdits`` and ``default`` still
-        # fall through to the allow-list + relay path.
-        mode = getattr(rec, "permission_mode", "acceptEdits") or "acceptEdits"
-        if mode in ("auto", "bypassPermissions"):
-            return {}
-        # Allow-list snapshot from engagement creation (spec §3.5).
-        allowed = tuple(getattr(rec, "tools_allowed", ()) or ())
-        if matches_any(
-            allowed,
-            input_data.get("tool_name", ""),
-            input_data.get("tool_input") or {},
-        ):
-            return {}  # pass-through: CC's allow-rule approves
-
-        # Not allow-listed — post inline keyboard and await operator verdict
-        # via the broker.
-        # #374: the approver is the configured operator. None (accept-all
-        # mode, group id, or a channel that cannot say) ⇒ deny NOW: under the
-        # broker's fail-closed claim contract no tap could ever win, so a
-        # keyboard would only hold the engagement until timeout.
-        operator_id = telegram_channel.operator_user_id()
-        if operator_id is None:
-            return _deny(
-                "no configured operator to approve this tool "
-                "(set telegram_chat_id)"
-            )
-        cc_tool_use_id = input_data.get("tool_use_id") or ""
-        rid = cc_tool_use_id[:_RID_MAX_LEN] or uuid.uuid4().hex
-        tool_name = input_data.get("tool_name", "")
-        tool_input = input_data.get("tool_input") or {}
-
-        from verdict_broker import BROKER
-
-        # #324: count this request BEFORE any await, and open the guarded
-        # block BEFORE the 'awaiting' paint — a cancel landing inside that
-        # edit previously ran no cleanup and stranded the topic 'awaiting'
-        # forever. Every request paints via the serialized painter (an
-        # idempotent edit; a 0->1-only paint would skip the paint when an
-        # earlier sibling is cancelled before its own edit lands); the
-        # painter itself decides awaiting/active from the CURRENT tally.
-        _pending_relays[eng_id] = _pending_relays.get(eng_id, 0) + 1
-        outcome: dict[str, Any] = {}
-        try:  # r7-B3 + #324: whole lifecycle guarded, awaiting paint included
-            await _paint_topic_state(eng_id, shielded=False)
-            # STATIC meta seeded ATOMICALLY at registration (F1 Sol r3 pattern —
-            # whichever party wins a same-request_id create race installs the
-            # complete metadata; register() only seeds meta on creation).
-            # message_id + finish_hook are set by the broker-owned setup task
-            # (r8-B3).
-            req, _created = BROKER.register(
-                namespace="permission", scope=eng_id, request_id=rid,
-                timeout_s=timeout_s,
-                meta={
-                    "options": ["allow", "deny"],
-                    "topic_id": rec.topic_id,
-                    "operator_id": operator_id,
-                },
-            )
-
-            # The keyboard post — a broker-owned SHIELDED setup task (r8-B3):
-            # cancelling THIS hook never interrupts an in-flight Telegram post
-            # (which may already be accepted server-side), so a same-id retry
-            # never produces a second keyboard. Post FAILURE inside the task
-            # unregisters (waiters get delivery_failed).
-            async def _post_keyboard() -> int | None:
-                await BROKER.ensure_posted(
-                    req,
-                    lambda: telegram_channel.post_perm_keyboard(
-                        engagement_id=eng_id, request_id=rid,
-                        tool_name=tool_name, tool_input=tool_input),
-                    lambda mid: _perm_keyboard_finish(
-                        telegram_channel, rec.topic_id, mid),
-                )
-                return req.meta.get("message_id")
-
-            try:
-                # v0.79.0 (§2 F1(a)): the permission keyboard is a DISCRETE send
-                # and MUST go through the single writer — never eager-post around
-                # the sequencer. Register+arm a send INTENT fenced on the GATED
-                # tool's own frame (hash = identity over the raw tool_input), and
-                # the relay posts the keyboard at that block (sealing preceding
-                # narration first); a late intent posts out-of-band through the
-                # sequencer's watcher. Only the CREATED (first-attempt) intent
-                # installs the poster + arms; a retry rides the first attempt's
-                # post and just awaits the same broker verdict below. No live
-                # sequencer / degraded boot ⇒ eager fallback (pre-v0.79 post).
-                _relay_posted = False
-                _drv = _active_claude_code_driver()
-                if _drv is not None:
-                    from channels.output_sequencer import (
-                        projection_hash as _perm_projection_hash,
-                    )
-                    _phash = _perm_projection_hash(tool_name, tool_input)
-                    _res = _drv.register_send_intent(
-                        engagement_id=eng_id, request_id=rid,
-                        tool_name=tool_name, projection_hash=_phash,
-                        poster=_post_keyboard,
-                    )
-                    # Sol r2 (#347): terminalization landing between the
-                    # active check above and this registration returns the
-                    # TERMINAL_REGISTRATION sentinel — not None, not a
-                    # tuple. Unpacking it raised TypeError and stranded the
-                    # broker request until timeout. Deny deterministically
-                    # and clear the request (no waiters yet — this call IS
-                    # the waiter and returns before awaiting).
-                    from channels.output_sequencer import (
-                        TERMINAL_REGISTRATION as _TERMINAL_REG,
-                    )
-                    if _res is _TERMINAL_REG:
-                        BROKER.unregister(
-                            namespace="permission", scope=eng_id,
-                            request_id=rid,
-                        )
-                        return _deny(
-                            f"engagement is terminal: {eng_id[:8]}"
-                        )
-                    if _res is not None:
-                        _intent, _created_intent = _res
-                        if _created_intent:
-                            # First attempt: install the real poster + ARM — the
-                            # relay posts the keyboard at the gated tool's frame.
-                            _drv.set_send_intent_poster(eng_id, rid, _post_keyboard)
-                            _drv.arm_send_intent(eng_id, rid)
-                        # F1 (Sol r2): whether we just CREATED the intent or
-                        # REATTACHED to an existing one (a permission/transport
-                        # RETRY, created=False), the relay owns the post — NEVER
-                        # eager-post around the sequencer. A retry rides the first
-                        # attempt's keyboard and awaits the same broker verdict
-                        # below. Eager fallback ONLY when there is no live
-                        # sequencer (register returned None).
-                        _relay_posted = True
-                if not _relay_posted:
-                    await _post_keyboard()
-                outcome = await BROKER.await_result(req)
-                if outcome.get("outcome") == "delivery_failed":
-                    return _deny("keyboard post failed")
-            except asyncio.CancelledError:
-                # r4-B3: single in-process awaiter, no reattach —
-                # cancellation IS logical cancel (during post OR await). The
-                # setup task completes in the background; BROKER.cancel
-                # resolves the request, and the finish-hook (installed by
-                # setup even after completion — r4-B1) edits the keyboard to
-                # "expired". NOT engagement-terminal.
-                BROKER.cancel(
-                    namespace="permission", scope=eng_id, request_id=rid,
-                    reason="tool_invocation_cancelled",
-                )
-                raise
-        finally:
-            # r7-B3: restore topic state on EVERY exit — post failure,
-            # cancellation during post or await, or normal completion.
-            # #324: drop this request from the tally, then paint through the
-            # serialized painter — it reads the post-decrement tally under
-            # the lock, so a sibling keyboard still awaiting its verdict
-            # keeps the topic 'awaiting' and the last exit paints 'active'.
-            _remaining = _pending_relays.get(eng_id, 1) - 1
-            if _remaining <= 0:
-                _pending_relays.pop(eng_id, None)
-            else:
-                _pending_relays[eng_id] = _remaining
-            await _paint_topic_state(eng_id, shielded=True)
-        o = outcome.get("outcome")
-        if o == "answered" and outcome.get("option_index") == 0:
-            return {}
-        if o == "no_answer":
-            return _deny("operator did not respond within the window")
-        return _deny("Operator denied via Telegram")
-
-    return _hook

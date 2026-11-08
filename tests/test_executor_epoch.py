@@ -10,7 +10,7 @@ from executor_epoch import compute_procedural_epoch
 pytestmark = [pytest.mark.unit]
 
 
-def _defn(tmp_path, *, driver="in_casa", checksum="rc-1",
+def _defn(tmp_path, *, checksum="rc-1",
           prompt_name="prompt.md", doctrine=True):
     exec_dir = tmp_path / "executors" / "configurator"
     exec_dir.mkdir(parents=True, exist_ok=True)
@@ -28,7 +28,6 @@ def _defn(tmp_path, *, driver="in_casa", checksum="rc-1",
         role_checksum=checksum,
         prompt_template_path=str(prompt_path),
         doctrine_dir=doctrine_dir,
-        driver=driver,
     )
 
 
@@ -73,31 +72,6 @@ class TestDigestInputs:
         before = _epoch(defn)
         defn.role_checksum = "rc-2"
         assert _epoch(defn) != before
-
-    def test_workspace_template_source_is_input_for_claude_code(self, tmp_path):
-        """Design r4/r5 (Terra): the SOURCE workspace instruction bytes are an
-        input for claude_code — .tmpl when present, the plain-copy CLAUDE.md
-        fallback otherwise — and only for claude_code."""
-        defn = _defn(tmp_path, driver="claude_code")
-        ws = tmp_path / "executors" / "configurator" / "workspace-template"
-        ws.mkdir()
-        (ws / "CLAUDE.md.tmpl").write_text("workspace rules v1 {task}\n")
-        before = _epoch(defn)
-        (ws / "CLAUDE.md.tmpl").write_text("workspace rules v2 {task}\n")
-        assert _epoch(defn) != before
-
-        # Fallback: no .tmpl, a plain CLAUDE.md is consumed and hashed.
-        (ws / "CLAUDE.md.tmpl").unlink()
-        (ws / "CLAUDE.md").write_text("plain workspace rules v1\n")
-        plain_before = _epoch(defn)
-        (ws / "CLAUDE.md").write_text("plain workspace rules v2\n")
-        assert _epoch(defn) != plain_before
-
-        # in_casa ignores the workspace template entirely.
-        in_casa = _defn(tmp_path, driver="in_casa")
-        e1 = _epoch(in_casa)
-        (ws / "CLAUDE.md").write_text("plain workspace rules v3\n")
-        assert _epoch(in_casa) == e1
 
     def test_doctrineless_executor_digests(self, tmp_path):
         defn = _defn(tmp_path, doctrine=False)

@@ -24,7 +24,6 @@ mkdir -p "$CONFIG_DIR/agents" \
          "$CONFIG_DIR/specialists/.roles-overlay" \
          "$CONFIG_DIR/schema" \
          "$DATA_DIR/sdk-sessions" \
-         "$DATA_DIR/casa-s6-services" \
          "$DATA_DIR/engagements"
 
 # Plugin media outbox (v0.73.0): a shared /data drop-box for producer plugins;

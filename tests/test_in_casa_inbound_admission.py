@@ -565,48 +565,43 @@ class TestUngatedDisclosure:
         finally:
             agent_mod.active_engagement_driver = None
 
-    async def test_overflow_suffix_claims_spool_only_for_spooled_drivers(
-            self, tmp_path):
+    async def test_overflow_suffix_claims_no_spool_file(self, tmp_path):
         """Fix 7/terra seam r2 pin: with more texts than the 2,800-byte
-        excerpt budget renders, the '…and N more' suffix claims spool-file
-        recoverability ONLY when the driver actually has a durable spool."""
+        excerpt budget renders, the '…and N more' suffix is appended, and
+        it claims no spool-file recoverability — the in-casa ledger is not
+        durable."""
         import agent as agent_mod
         from tools import _finalize_engagement, init_tools
 
-        for spooled in (False, True):
-            client = _ScriptedClient()
-            base = tmp_path / str(spooled)
-            base.mkdir()
-            reg, rec, drv = await _mk_driver_rec(base, client)
-            if spooled:
-                drv.drain_inbound_spool = AsyncMock()
-            tch = MagicMock()
-            tch.send_to_topic = AsyncMock()
-            tch.send_response_to_topic = AsyncMock()
-            tch.close_topic = AsyncMock()
-            cm = MagicMock()
-            cm.get.return_value = tch
-            bus = MagicMock()
-            bus.notify = AsyncMock()
-            init_tools(
-                channel_manager=cm, bus=bus,
-                specialist_registry=MagicMock(), mcp_registry=MagicMock(),
-                trigger_registry=MagicMock(), engagement_registry=reg,
-            )
-            try:
-                for i in range(9):
-                    drv.admit_inbound(rec.id, f"msg-{i} " + "x" * 395)
-                fin = await _finalize_engagement(
-                    rec, outcome="cancelled", text="", artifacts=[],
-                    next_steps=[], driver=drv)
-                assert bool(fin) is True
-                posted = "".join(
-                    str(c.args) + str(c.kwargs)
-                    for c in (list(tch.send_to_topic.call_args_list)
-                              + list(tch.send_response_to_topic
-                                     .call_args_list)))
-                assert "9 inbound message(s)" in posted
-                assert "…and 3 more" in posted
-                assert ("spool file" in posted) is spooled
-            finally:
-                agent_mod.active_engagement_driver = None
+        client = _ScriptedClient()
+        reg, rec, drv = await _mk_driver_rec(tmp_path, client)
+        tch = MagicMock()
+        tch.send_to_topic = AsyncMock()
+        tch.send_response_to_topic = AsyncMock()
+        tch.close_topic = AsyncMock()
+        cm = MagicMock()
+        cm.get.return_value = tch
+        bus = MagicMock()
+        bus.notify = AsyncMock()
+        init_tools(
+            channel_manager=cm, bus=bus,
+            specialist_registry=MagicMock(), mcp_registry=MagicMock(),
+            trigger_registry=MagicMock(), engagement_registry=reg,
+        )
+        try:
+            for i in range(9):
+                drv.admit_inbound(rec.id, f"msg-{i} " + "x" * 395)
+            fin = await _finalize_engagement(
+                rec, outcome="cancelled", text="", artifacts=[],
+                next_steps=[], driver=drv)
+            assert bool(fin) is True
+            posted = "".join(
+                str(c.args) + str(c.kwargs)
+                for c in (list(tch.send_to_topic.call_args_list)
+                          + list(tch.send_response_to_topic
+                                 .call_args_list)))
+            assert "9 inbound message(s)" in posted
+            assert "…and 3 more" in posted
+            assert "spool file" not in posted
+        finally:
+            agent_mod.active_engagement_driver = None

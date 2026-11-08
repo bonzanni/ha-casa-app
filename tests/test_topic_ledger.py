@@ -164,14 +164,11 @@ def recorded_sleeps(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_retention_matches_workspace_retention():
-    """TOPIC_RETENTION_DAYS is intentionally equal to the workspace window
-    (topics and workspaces expire together); the constant lives in
-    topic_ledger so telegram.py and tools.py import it without a cycle."""
-    import tools
-
+def test_topic_retention_days():
+    """A terminal engagement's topic stays TOPIC_RETENTION_DAYS; the constant
+    lives in topic_ledger so telegram.py and tools.py import it without a
+    cycle."""
     assert topic_ledger.TOPIC_RETENTION_DAYS == 7
-    assert topic_ledger.TOPIC_RETENTION_DAYS == tools._WORKSPACE_RETENTION_DAYS
 
 
 def test_module_constants():

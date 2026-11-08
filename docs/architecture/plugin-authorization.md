@@ -127,11 +127,7 @@ a challenge is the point: posting one would hand the requester their own approva
 
 What it does not cover: with `telegram_chat_id` empty ("accept all chats") there is no
 configured operator, so protected tools are denied for every sender — deliberate, and
-announced by a warning at channel construction. The in-engagement permission relay now
-follows the same rule (its keyboard is answerable only by the configured operator, and
-with none configured it denies immediately rather than posting one); in-engagement
-*questions* remain answerable by the engagement's creator, since an answer is interaction,
-not authorization. Sender identity itself is Telegram's authentication of its user ids,
+announced by a warning at channel construction. Sender identity itself is Telegram's authentication of its user ids,
 not an additional Casa-side proof.
 
 **INV-PLUG-033**: An engagement that reaches a terminal state in this process leaves no answerable authorization challenge bound to it — its unanswered challenges are withdrawn.

@@ -10,8 +10,6 @@ these tests green while nothing is deleted.
 
 from __future__ import annotations
 
-import importlib
-import importlib.util
 import json
 import time
 import uuid
@@ -71,20 +69,10 @@ def _specialists(monkeypatch, **cfgs) -> None:
 
 
 async def _run_periodic_passes(registry, tmp_path: Path, monkeypatch) -> None:
-    """The periodic passes casa_core.main schedules over terminal engagement
-    artifacts: the workspace sweep, then — once it exists — the transcript
-    reaper. At the base the reaper module is absent and only the sweep runs."""
-    from drivers import workspace
-
-    engagements_root = tmp_path / "engagements"
-    engagements_root.mkdir(exist_ok=True)
-    monkeypatch.setattr(workspace, "CONTROL_ROOT", str(tmp_path / "ctl"))
-    await workspace._sweep_workspaces(
-        engagements_root=str(engagements_root), log_root=str(tmp_path / "logs"))
-    if importlib.util.find_spec("engagement_transcript_reaper") is not None:
-        reaper = importlib.import_module("engagement_transcript_reaper")
-        await reaper.reap_engagement_transcripts(
-            registry, now=after_retention())
+    """The periodic pass casa_core.main schedules over terminal engagement
+    artifacts: the transcript reaper."""
+    import engagement_transcript_reaper as reaper
+    await reaper.reap_engagement_transcripts(registry, now=after_retention())
 
 
 async def _terminal(registry, rec_id: str, outcome: str) -> None:

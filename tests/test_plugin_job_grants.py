@@ -2,28 +2,24 @@
 from types import SimpleNamespace
 
 import agent
+import background_jobs
 import tools
 from authz_grants import GrantIdentity, resolve_grant_identity
 
 
 def test_plugin_job_offers_and_admits_only_its_two_casa_tools():
-    rec = SimpleNamespace(
-        kind="plugin",
-        tools_allowed=("mcp__casa-framework__report_job_progress",
-                       "mcp__casa-framework__emit_completion"),
-    )
-    assert tools.engagement_casa_grant_names(rec) == {
-        "report_job_progress", "emit_completion",
-    }
-    assert "query_engager" not in tools.engagement_casa_grant_names(rec)
-
-
-def test_other_engagement_kinds_keep_mandatory_bridge_grants():
-    rec = SimpleNamespace(kind="specialist", tools_allowed=())
-    assert tools.engagement_casa_grant_names(rec) == {
-        grant.rsplit("__", 1)[-1]
-        for grant in tools.MANDATORY_BRIDGE_CASA_GRANTS
-    }
+    """A plugin job's whole casa-framework surface is its two job tools —
+    no union with the specialist grants, so a worker never holds
+    query_engager. The session builder offers exactly this tuple and filters
+    Casa's MCP server to it (pinned end to end in
+    test_plugin_job_launch.py::test_worker_options_record_and_topic)."""
+    names = {g.rsplit("__", 1)[-1]
+             for g in background_jobs.PLUGIN_JOB_CASA_GRANTS}
+    assert names == {"report_job_progress", "emit_completion"}
+    assert len(background_jobs.PLUGIN_JOB_CASA_GRANTS) == 2
+    assert "mcp__casa-framework__query_engager" in tools.SPECIALIST_CASA_GRANTS
+    assert "mcp__casa-framework__query_engager" not in (
+        background_jobs.PLUGIN_JOB_CASA_GRANTS)
 
 
 def test_plugin_job_identity_is_bound_to_its_host_and_artifact():

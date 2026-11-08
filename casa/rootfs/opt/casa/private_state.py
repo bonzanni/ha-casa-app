@@ -76,8 +76,7 @@ FILES: tuple[Entry, ...] = (
     Entry("/run/s6/container_environment/SUPERVISOR_TOKEN", 0o600, CREDENTIAL,
           "Supervisor API bearer: reads every add-on's stored options, so it "
           "transitively exposes the Claude OAuth token, the GitHub PAT and the "
-          "1Password service-account token. engagement_run_template.sh unsets "
-          "it from the environment; that is theatre while the file is readable."),
+          "1Password service-account token."),
     Entry("/run/s6/container_environment/HASSIO_TOKEN", 0o600, CREDENTIAL,
           "Second bearer for the same Supervisor API surface."),
     Entry("/data/webhook_secret", 0o600, CREDENTIAL,
@@ -142,11 +141,7 @@ DIRS: tuple[Entry, ...] = (
           "later tightened to 0600 in the working tree."),
 )
 
-DIR_GLOBS: tuple[Entry, ...] = (
-    Entry("/var/log/casa-engagement-*", 0o700, PRIVATE,
-          "A SIBLING engagement's captured stdout, up to ~21 MB each. This is "
-          "the cross-engagement boundary containment Stage 2 exists to create."),
-)
+DIR_GLOBS: tuple[Entry, ...] = ()
 
 
 @dataclass

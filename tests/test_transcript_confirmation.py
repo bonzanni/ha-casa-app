@@ -384,9 +384,8 @@ import agent as agent_mod
 import tools
 from engagement_registry import EngagementRegistry
 from memory import capture as cap
-driver_kind, tombstone, cwd, root, sid = sys.argv[5:10]
+tombstone, cwd, sid = sys.argv[5:8]
 tools.EXECUTOR_CWD = cwd
-tools._ENGAGEMENTS_ROOT = root
 real_record = cap.record
 
 async def record(item):
@@ -398,10 +397,9 @@ cap.record = record
 async def main():
     reg = EngagementRegistry(tombstone_path=tombstone, bus=None)
     rec = await reg.create(
-        kind="executor", role_or_type="configurator", driver=driver_kind,
-        task="t", origin=json.loads(sys.argv[10]), topic_id=None)
-    if driver_kind == "in_casa":
-        await reg.persist_session_id(rec.id, sid)
+        kind="executor", role_or_type="configurator", driver="in_casa",
+        task="t", origin=json.loads(sys.argv[8]), topic_id=None)
+    await reg.persist_session_id(rec.id, sid)
     open(os.path.join(os.path.dirname(marker), "engagement-id"), "w").write(rec.id)
     tools.init_tools(channel_manager=MagicMock(), bus=MagicMock(notify=AsyncMock()),
                      specialist_registry=MagicMock(), mcp_registry=MagicMock(),
@@ -413,63 +411,44 @@ asyncio.run(main())
 """
 
 
-@pytest.mark.parametrize("driver", ["in_casa", "claude_code"])
 async def test_a_summary_row_blocks_until_its_summaries_are_captured(
-        home, monkeypatch, driver):
+        home, monkeypatch):
     """A real SIGKILL after the terminal flip and before the summary's
     receipt leaves the summary in no table and the ``summary`` row
     unresolved. Every transcript in the engagement's folder — its own and a
     sibling engagement's in the same shared folder — survives every reaper
-    pass; a claude_code workspace survives every workspace sweep past its
-    retention. Red case: a summary with no row lets the reaper delete
-    them."""
-    from drivers import workspace
+    pass. Red case: a summary with no row lets the reaper delete them."""
     from engagement_registry import EngagementRegistry
     from engagement_transcript_reaper import reap_engagement_transcripts
-    from test_workspace_sweeper import _write_meta
 
-    cwd, root = str(home.tmp / "executor-cwd"), home.tmp / "engagements"
-    root.mkdir()
+    cwd = str(home.tmp / "executor-cwd")
     monkeypatch.setattr(tools, "EXECUTOR_CWD", cwd)
-    monkeypatch.setattr(tools, "_ENGAGEMENTS_ROOT", str(root))
     tombstone, sid = home.tmp / "engagements.json", str(uuid.uuid4())
-    kill_child(SUMMARY_CHILD, home.store, home.tmp, driver, str(tombstone),
-               cwd, str(root), sid, json.dumps(ORIGIN),
+    kill_child(SUMMARY_CHILD, home.store, home.tmp, str(tombstone),
+               cwd, sid, json.dumps(ORIGIN),
                env={"CLAUDE_CONFIG_DIR": os.environ["CLAUDE_CONFIG_DIR"]})
-    eid = (home.tmp / "engagement-id").read_text()
 
     assert [r["status"] for r in json.loads(tombstone.read_text())] == ["completed"]
     assert summaries(home.store) == []
-    expected_dir = cwd if driver == "in_casa" else str(root / eid)
     (row,) = rows(home.store)
     assert (row["kind"], row["directory"], row["session_id"],
-            row["confirmed_at"]) == ("summary", expected_dir, None, None)
+            row["confirmed_at"]) == ("summary", cwd, None, None)
     assert unresolved(home.store) == 1
 
-    if driver == "in_casa":
-        reg = EngagementRegistry(tombstone_path=str(tombstone), bus=None)
-        await reg.load()
-        sibling = await reg.create(
-            kind="executor", role_or_type="configurator", driver="in_casa",
-            task="t", origin=dict(ORIGIN), topic_id=None)
-        other = str(uuid.uuid4())
-        await reg.persist_session_id(sibling.id, other)
-        await reg.mark_completed(sibling.id, time.time())
-        mine, theirs = write_transcript(cwd, sid), write_transcript(cwd, other)
-        for _ in range(2):
-            await reap_engagement_transcripts(reg, now=time.time() + 400 * 86400)
-            await asyncio.to_thread(transcript_runs.retention_pass, home.store,
-                                    now=after_retention())
-        assert mine.exists() and theirs.exists()
-    else:
-        ws = root / eid
-        (ws / ".home" / ".claude" / "projects").mkdir(parents=True)
-        _write_meta(ws, status="COMPLETED", retention_iso="2020-01-01T00:00:00Z")
-        monkeypatch.setattr(workspace, "CONTROL_ROOT", workspace.CONTROL_ROOT)
-        for _ in range(2):
-            await workspace._sweep_workspaces(engagements_root=str(root),
-                                              log_root=str(home.tmp / "logs"))
-        assert ws.is_dir()
+    reg = EngagementRegistry(tombstone_path=str(tombstone), bus=None)
+    await reg.load()
+    sibling = await reg.create(
+        kind="executor", role_or_type="configurator", driver="in_casa",
+        task="t", origin=dict(ORIGIN), topic_id=None)
+    other = str(uuid.uuid4())
+    await reg.persist_session_id(sibling.id, other)
+    await reg.mark_completed(sibling.id, time.time())
+    mine, theirs = write_transcript(cwd, sid), write_transcript(cwd, other)
+    for _ in range(2):
+        await reap_engagement_transcripts(reg, now=time.time() + 400 * 86400)
+        await asyncio.to_thread(transcript_runs.retention_pass, home.store,
+                                now=after_retention())
+    assert mine.exists() and theirs.exists()
 
 
 async def test_a_lost_terminal_flip_confirms_its_summary_row(home, monkeypatch):
@@ -702,9 +681,9 @@ async def test_a_reload_during_finalize_never_captures_an_uncovered_summary(
 async def test_a_finalize_cancelled_before_its_tail_confirms_its_summary_row(
         home, monkeypatch):
     """The flip lands, then the finalize is cancelled while it waits on the
-    driver (before the tail exists): no capture is outstanding, so the
-    summary run is confirmed rather than left holding its folder. Red case:
-    a row whose cleanup started only with the tail."""
+    driver's teardown (before any summary capture): no capture is
+    outstanding, so the summary run is confirmed rather than left holding its
+    folder. Red case: a row whose cleanup started only with the captures."""
     from engagement_registry import EngagementRegistry
     from tools import _finalize_engagement, init_tools
 
@@ -717,10 +696,10 @@ async def test_a_finalize_cancelled_before_its_tail_confirms_its_summary_row(
                trigger_registry=MagicMock(), engagement_registry=reg)
     waiting = asyncio.Event()
 
-    async def finalize_summary(engagement, outcome):
+    async def cancel(engagement):
         waiting.set()
         await asyncio.Event().wait()
-    driver = MagicMock(cancel=AsyncMock(), finalize_summary=finalize_summary)
+    driver = MagicMock(cancel=cancel)
     task = asyncio.create_task(_finalize_engagement(
         rec, outcome="completed", text="done", artifacts=[], next_steps=[],
         driver=driver))

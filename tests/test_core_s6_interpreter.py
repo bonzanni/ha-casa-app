@@ -32,7 +32,6 @@ from pathlib import Path
 
 import pytest
 
-from drivers import s6_rc
 import trusted_path
 from trusted_path import _root_path_fragment
 
@@ -46,8 +45,6 @@ BASHIO_PATHS = ("/usr/bin/bashio", "/usr/lib/bashio/bashio")
 CORE_SCRIPTS = (
     "s6-rc.d/svc-casa/run",
     "s6-rc.d/svc-casa/finish",
-    "s6-rc.d/svc-casa-mcp/run",
-    "s6-rc.d/svc-casa-mcp/finish",
     "s6-rc.d/svc-nginx/run",
     "s6-rc.d/svc-nginx/finish",
     "s6-rc.d/svc-ttyd/run",
@@ -204,7 +201,7 @@ def test_core_interpreter_chain(chain, rel):
 # --- K4: every core shebang names exactly the wrapper ------------------------
 
 def test_core_shebang_inventory():
-    assert len(CORE_SCRIPTS) == len(set(CORE_SCRIPTS)) == 13
+    assert len(CORE_SCRIPTS) == len(set(CORE_SCRIPTS)) == 11
     found = {str(p.relative_to(OVERLAY)) for p in OVERLAY.rglob("*")
              if p.is_file() and _first_line(p).startswith("#!/command/with-contenv")}
     assert found == set(CORE_SCRIPTS)

@@ -1,8 +1,6 @@
 """DriverProtocol — abstract base class for engagement drivers.
 
-Two implementations:
-- in_casa_driver.InCasaDriver
-- claude_code_driver.ClaudeCodeDriver
+Implementation: in_casa_driver.InCasaDriver.
 """
 
 from __future__ import annotations

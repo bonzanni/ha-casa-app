@@ -134,7 +134,7 @@ def _stop(monkeypatch, tmp_path, *, release: bool, with_bus: bool,
                 engagement_registry=engagement_registry,
                 scheduler=MagicMock(shutdown=MagicMock()),
                 session_sweeper=MagicMock(stop=AsyncMock()),
-                runtime=MagicMock(agents={}, claude_code_driver=None),
+                runtime=MagicMock(agents={}),
                 ha_facade=None,
                 bus=bus if bus is not None else MagicMock(
                     begin_shutdown=MagicMock(),

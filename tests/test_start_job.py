@@ -155,7 +155,6 @@ async def test_launch_limit_prompt_envelope_and_persistence(runtime):
     rows = json.loads(Path(runtime.registry._tombstone_path).read_text())
     assert rows[0]['origin']['job'] == jobs.initial_job_state(DECL, started_by='operator')
     assert jobs.JOB_CASA_GRANTS[0] in client.options.allowed_tools
-    assert 'report_job_progress' in tools.engagement_casa_grant_names(rec)
 
 
 async def test_launch_hook_runs_once_after_owner_finishes(runtime):

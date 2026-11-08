@@ -166,10 +166,8 @@ carries. The file set is an allowlist, and the loader refuses a directory contai
 absent from it — so a file an *agent* creates at runtime, rather than one the image ships,
 fails the whole resident the moment it first exists. **Nothing creates a file in a role
 directory today**: reminders are entries an agent adds to the role's existing `triggers.yaml`,
-marked as agent-owned, rather than a file of their own (`architecture/reminders.md`). Agents do
-create files elsewhere — an executor's workspace gets a generated `CLAUDE.md` and settings —
-but a workspace is not a role directory and this allowlist does not reach it. That is the safer
-shape precisely because of this allowlist — a new runtime-created filename is a boot failure
+marked as agent-owned, rather than a file of their own (`architecture/reminders.md`). That is
+the safer shape precisely because of this allowlist — a new runtime-created filename is a boot failure
 for the whole resident until it is added here, while a new *entry* in an already-listed file
 is not.
 

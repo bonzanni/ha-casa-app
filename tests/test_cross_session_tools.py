@@ -452,33 +452,6 @@ async def test_one_shot_launches_persist_no_session(monkeypatch, one_shot):
         _assert_persists_no_session(opts)
 
 
-def test_claude_code_driver_settings(tmp_path):
-    """The claude_code driver starts its own CLI from a rendered
-    .claude/settings.json: deny rules plus a project-level refuse (the
-    strictest value, so no other settings source relaxes it)."""
-    from config import ExecutorDefinition
-    from drivers.workspace import _build_cc_permissions, render_workspace_template
-
-    defn = ExecutorDefinition(
-        role_artifact=STUB_ROLE_ARTIFACT, type="test-fixture",
-        description="test fixture twenty-character description here",
-        model="sonnet", driver="claude_code", tools_allowed=["Read", "Bash"],
-        permission_mode="acceptEdits",
-    )
-    assert NAMES | SELF_SCHEDULING <= set(_build_cc_permissions(defn)["deny"])
-
-    tmpl = tmp_path / "tmpl"
-    (tmpl / ".claude").mkdir(parents=True)
-    (tmpl / "CLAUDE.md.tmpl").write_text("{task}", encoding="utf-8")
-    dest = tmp_path / "eng"
-    render_workspace_template(
-        template_root=tmpl, dest=dest, defn=defn, executor_type="test-fixture",
-        task="t", context="c", world_state_summary="", hooks_yaml_data={})
-    settings = json.loads((dest / ".claude" / "settings.json").read_text())
-    assert NAMES | SELF_SCHEDULING <= set(settings["permissions"]["deny"])
-    assert settings["crossSessionInbound"] == "refuse"
-
-
 def test_pinned_sdk_forwards_the_denial_and_the_refusal_to_the_cli():
     """The real pinned SDK transport turns the options into the CLI flags
     the CLI enforces: ``--disallowedTools`` and ``--settings``."""

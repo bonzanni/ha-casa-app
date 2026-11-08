@@ -151,15 +151,6 @@ class TestAskUserSchema:
         assert set(schema["properties"]) == {"question", "options", "timeout_s"}
         assert schema["properties"]["timeout_s"]["type"] == "number"
 
-    def test_exposed_via_mcp_envelope_tool_schema(self):
-        """The real MCP-bridge conversion path (mirrors v0.75's
-        engage_executor exposed-schema coverage)."""
-        from mcp_envelope import _tool_schema
-        import tools
-        schema = _tool_schema(tools.ask_user)
-        assert schema["name"] == "ask_user"
-        assert schema["inputSchema"]["required"] == ["question", "options"]
-
     def test_exposed_via_create_casa_tools_server(self):
         """The real init_tools/SDK-server harness: create_casa_tools()
         pre-computes each tool's wire schema at construction time."""
@@ -800,7 +791,6 @@ def _fake_update(chat_id, text, user_id=999):
 
 
 async def _drain_bus(bus, target="assistant"):
-    from bus import BusMessage  # noqa: F401 — for type clarity only
     q = bus.queues.get(target)
     if q is None:
         return []

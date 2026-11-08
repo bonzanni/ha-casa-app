@@ -153,18 +153,6 @@ def test_enforce_covers_the_quarantine_alias_shape(tmp_path: Path) -> None:
     assert _mode(casabak) == 0o600
 
 
-def test_enforce_covers_every_engagement_log_dir(tmp_path: Path) -> None:
-    """Sibling engagement stdout was the worst finding in the advisory: ~21 MB
-    per engagement, readable by every other engagement uid."""
-    a = _mkdir(tmp_path, "/var/log/casa-engagement-aaa", 0o755)
-    b = _mkdir(tmp_path, "/var/log/casa-engagement-bbb", 0o755)
-    unrelated = _mkdir(tmp_path, "/var/log/nginx", 0o755)
-    private_state.enforce(root=str(tmp_path))
-    assert _mode(a) == 0o700
-    assert _mode(b) == 0o700
-    assert _mode(unrelated) == 0o755
-
-
 def test_enforce_is_idempotent_and_quiet_on_a_clean_boot(tmp_path: Path) -> None:
     _touch(tmp_path, "/data/webhook_secret", 0o644)
     private_state.enforce(root=str(tmp_path))
@@ -259,9 +247,8 @@ def test_config_sync_report_stays_group_and_world_readable(tmp_path: Path) -> No
 
 
 def test_plugin_store_artifacts_stay_world_readable(tmp_path: Path) -> None:
-    """The dropped process loads its assigned plugin artifacts directly; the
-    uid-drop preflight already refuses to start an engagement whose
-    --plugin-dir is not world-readable (INV-CONT-004)."""
+    """Plugin artifacts are loaded by whichever process runs the plugin, so
+    the repair never tightens the store or the registry."""
     artifact = _touch(tmp_path, "/config/plugins/store/x/abc/manifest.json", 0o644)
     registry = _touch(tmp_path, "/config/plugins/registry.json", 0o644)
     private_state.enforce(root=str(tmp_path))
@@ -307,7 +294,7 @@ def test_credential_modes_ok_ignores_group_only_readability_of_private_files(
 
 
 # ---------------------------------------------------------------------------
-# The boot call site — once per boot, from main(), independent of boot replay.
+# The boot call site — once per boot, from main().
 # ---------------------------------------------------------------------------
 
 
@@ -324,13 +311,14 @@ def _function_body(func) -> list:
     return ast.parse(textwrap.dedent(inspect.getsource(func))).body[0].body
 
 
-def test_main_repairs_private_state_on_every_boot_before_replay() -> None:
-    """INV-STATE-005 promises the repair on EVERY boot. It used to live inside
-    boot replay, so a replay that raised early, or a tree without replay,
-    silently skipped it. Pinned structurally, as the other boot-order pins in
-    this suite are: a TOP-LEVEL, unguarded call statement in ``main``'s own body
-    (not inside an ``if``/``try``/``with``/loop, which a mutation could make
-    dead), placed before the statement that runs boot replay."""
+def test_main_repairs_private_state_on_every_boot_before_any_channel_starts(
+) -> None:
+    """INV-STATE-005 promises the repair on EVERY boot, before anything that
+    could start a privilege-dropped process. Pinned structurally, as the other
+    boot-order pins in this suite are: a TOP-LEVEL, unguarded call statement in
+    ``main``'s own body (not inside an ``if``/``try``/``with``/loop, which a
+    mutation could make dead), placed before the statement that starts the
+    channels."""
     import casa_core
 
     body = _function_body(casa_core.main)
@@ -340,25 +328,11 @@ def test_main_repairs_private_state_on_every_boot_before_replay() -> None:
         and _called_name(stmt.value) == "_repair_private_state"
     ]
     assert len(repair) == 1, "main() must call _repair_private_state() once"
-    replay = [
+    start = [
         i for i, stmt in enumerate(body)
-        if any(_called_name(n) == "replay_undergoing_engagements"
-               for n in ast.walk(stmt))
+        if any(_called_name(n) == "start_all" for n in ast.walk(stmt))
     ]
-    assert replay and repair[0] < replay[0]
-
-
-def test_boot_replay_no_longer_runs_the_repair() -> None:
-    """Exactly once per boot: with ``main`` calling it, replay must not."""
-    import casa_core
-
-    names = {
-        _called_name(n)
-        for stmt in _function_body(casa_core.replay_undergoing_engagements)
-        for n in ast.walk(stmt)
-    }
-    assert "enforce" not in names
-    assert "_repair_private_state" not in names
+    assert start and repair[0] < start[0]
 
 
 def test_the_boot_repair_runs_enforce_and_never_raises(monkeypatch) -> None:

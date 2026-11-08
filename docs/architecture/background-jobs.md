@@ -120,7 +120,7 @@ permanently. What it does not cover: a job still inside its launch turn belongs 
 owner, and a restart there ends it with the launch failure's own notice rather than resuming
 it.
 
-**INV-BGJOB-004**: A resident-hosted job's session is offered exactly its declaring plugin's tools, `Skill`, `ToolSearch` and the two job tools, and the bridge admits exactly the same set — never a delegation, messaging, memory or question tool, and never the resident's own settings, prompt or plugins.
+**INV-BGJOB-004**: A resident-hosted job's session is offered exactly its declaring plugin's tools, `Skill`, `ToolSearch` and the two job tools — never a delegation, messaging, memory or question tool, and never the resident's own settings, prompt or plugins.
 
 Its authorization identity is bound to the host resident and the pinned artifact, so the
 plugin's protected tools reach Casa's ordinary approval challenge rather than being refused

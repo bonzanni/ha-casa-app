@@ -17,7 +17,6 @@ bug-review-2026-05-01-exploration4.md::K-1 has the full evidence.
 """
 from __future__ import annotations
 
-import os
 import subprocess
 from pathlib import Path
 
@@ -179,22 +178,6 @@ class TestClaudeOauthBlock:
         assert rc == 0
         assert not target.exists(), "should not have written; op resolve failed"
         assert "K-1" in out
-
-
-def test_run_template_does_not_unset_claude_oauth_token() -> None:
-    """The engagement run template MUST NOT include CLAUDE_CODE_OAUTH_TOKEN
-    in its `unset` list — otherwise K-1 is reintroduced.
-    """
-    template = Path(
-        "casa/rootfs/opt/casa/scripts/engagement_run_template.sh"
-    ).read_text(encoding="utf-8")
-    # Find the unset line; assert OAuth token is not on it.
-    for line in template.splitlines():
-        if line.strip().startswith("unset "):
-            assert "CLAUDE_CODE_OAUTH_TOKEN" not in line, (
-                "engagement run template must not unset the OAuth token; "
-                "see K-1"
-            )
 
 
 def test_setup_configs_has_oauth_block() -> None:

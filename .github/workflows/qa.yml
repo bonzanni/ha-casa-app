@@ -85,43 +85,10 @@ jobs:
           bash test-local/e2e/test_engagement_E.sh
       - name: Delegation E-block
         run: bash test-local/e2e/test_delegation_E.sh
-      # #603: the settling evidence for the terminal uid quiesce (#599). In
-      # tier2 rather than tier3 on purpose — tier3 does not run on pull
-      # requests, and a containment guarantee that is only checked on a
-      # schedule can be red for a week before anyone notices.
-      - name: Engagement terminal quiesce (#603)
-        env:
-          CASA_USE_MOCK_CLAUDE: "1"
-        run: bash test-local/e2e/test_engagement_quiesce.sh
       - name: HA delegation
         run: |
           pip install "$(grep -i '^aiohttp==' casa/requirements.txt)"
           bash test-local/e2e/test_ha_delegation.sh
-      # #937: the ONE enabled harness in this workflow that performs a real
-      # ClaudeCodeDriver.start — compile the s6-rc database, start the service,
-      # drive the MCP surface across a restart. It lived only in tier3, which
-      # runs on a schedule and never on a push or a PR, so the base drift that
-      # broke every claude_code launch on every released image (#925) was green
-      # in every push-time tier for three weeks. COPIED, not moved: tier3 keeps
-      # its own copy, because nightly-alarm needs tier3-hardening and a move
-      # would take the step out of the scheduled run entirely.
-      #
-      # The harness exits 0 with a SKIP: line when CASA_USE_MOCK_CLAUDE is not
-      # 1, so a step that lost its env block would be green while launching
-      # nothing. The grep is the asserted-POSITIVE guard against that: it fires
-      # on every run and demands the terminal marker, so a dropped env block,
-      # an early exit 0 anywhere in the harness, or any future silent-skip path
-      # turns this step red. tee, not a command substitution: under set -e a
-      # captured-output form exits before printing, destroying the log of the
-      # very run that failed. tests/test_qa_mcp_restart_launch.py pins all of it.
-      - name: MCP restart survival — real claude_code launch (#937)
-        shell: bash
-        env:
-          CASA_USE_MOCK_CLAUDE: "1"
-        run: |
-          set -euo pipefail
-          bash test-local/e2e/test_mcp_restart_survival.sh 2>&1 | tee /tmp/mcp-restart-survival.log
-          grep -Fxq -- '=== ALL PASS — mcp_restart_survival ===' /tmp/mcp-restart-survival.log
 
   baseline-runtime:
     runs-on: ubuntu-latest
@@ -248,16 +215,6 @@ jobs:
           echo "e2e base io.hass.version=$base"
       - name: Concurrency
         run: bash test-local/e2e/test_concurrency.sh
-      - name: MCP restart survival
-        env:
-          CASA_USE_MOCK_CLAUDE: "1"
-        run: bash test-local/e2e/test_mcp_restart_survival.sh
-      # D-block stays disabled until v0.14.10's D/P-block sweep ships.
-      # When re-enabled, uncomment the step below (env var stays):
-      # - name: Engagement D-block
-      #   env:
-      #     CASA_USE_MOCK_CLAUDE: "1"
-      #   run: bash test-local/e2e/test_engagement_D.sh
 
   # A scheduled-only tier can stay red for a week with nothing to show for it.
   # tier3-hardening does not run on pull requests and does not run on the push

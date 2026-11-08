@@ -55,8 +55,7 @@ during `open()` finds the ledger latched: an owner enrolled after the stop began
 before it runs, and a tool call that resumes from `open()` to find the latch set mints no owner
 at all — it reports the cancellation inline, armed, and acknowledges on return like every
 other inline abort. A driver without the split — a fake, or a protocol consumer that has not
-adopted it — keeps the pre-detach shape, the whole first turn inside the tool call; the
-`claude_code` driver's launch is a spool write and needs nothing.
+adopted it — keeps the pre-detach shape, the whole first turn inside the tool call.
 
 **What the owner does is what the tool call did, after `start()` returned.** The API-fault
 arm, the generic arm and the INV-ENG-011 observation arm are the same three, and they reach

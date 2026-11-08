@@ -16,8 +16,8 @@ import shlex
 # #987: the directory plugin ``verify_bin`` executables are published into.
 # ``setup-configs.sh`` prepends it to the PATH of every s6 service, casa-core
 # included, ahead of the whole image PATH — so a bare ``s6-rc`` resolved there
-# runs whatever a plugin published under that name. Every program
-# ``drivers.s6_rc`` runs is resolved, and runs, under ``_trusted_env()`` instead.
+# runs whatever a plugin published under that name. A program Casa runs as
+# root is resolved, and runs, under ``_trusted_env()`` instead.
 PLUGIN_TOOLS_BIN = "/config/tools/bin"
 
 
@@ -27,12 +27,11 @@ def _trusted_env() -> dict[str, str]:
     ``realpath``, so another spelling of the same directory (``//config/...``,
     a trailing slash, a symlink to it) is removed too. An empty or relative
     entry is removed as well (#1248): it means the current directory, which
-    can be the tools directory, and the image PATH never has one. The
-    engagement scripts' root phase filters its PATH by the same rule
-    (``_root_path_fragment``). Passed as ``env=``:
-    CPython's POSIX ``subprocess`` resolves a bare program name against the
-    PATH of the env it is given, and the program inherits that env, so what
-    s6-rc in turn runs by name is resolved the same way. No absolute program
+    can be the tools directory, and the image PATH never has one. The core
+    s6 interpreter filters its PATH by the same rule (``_root_path_fragment``).
+    Passed as ``env=``: CPython's POSIX ``subprocess`` resolves a bare program
+    name against the PATH of the env it is given, and the program inherits
+    that env, so what it in turn runs by name is resolved the same way. No absolute program
     path is hard-coded: the image PATH stays the source of truth across base
     bumps (#925)."""
     env = dict(os.environ)
@@ -48,26 +47,24 @@ def _trusted_env() -> dict[str, str]:
 
 def trusted_path() -> str | None:
     """The PATH ``_trusted_env`` hands a program (``None`` when there is no
-    PATH at all). Both ``setpriv`` preflights resolve ``setpriv`` on it, as
-    the engagement run script's root phase does (#1248)."""
+    PATH at all): where a root-run program should be looked up (#1248)."""
     return _trusted_env().get("PATH")
 
 
 def _root_path_fragment() -> str:
-    """#1248: the shell lines both engagement service scripts run before any
-    other program, as root. ``setup-configs.sh`` puts the plugin tools
-    directory first on every s6 service's PATH, and a plugin publishes its
-    ``verify_bin`` executables there under any name, so a bare ``cat``,
-    ``mkdir``, ``s6-log`` or ``setpriv`` would run what a plugin published.
-    The fragment saves the inherited PATH in ``_casa_cli_path`` (the run
-    script hands it back to the dropped CLI) and rebuilds PATH from the
+    """#1248: the shell lines that filter PATH before any other program runs
+    as root (``scripts/core-bashio.sh`` carries them byte for byte).
+    ``setup-configs.sh`` puts the plugin tools directory first on every s6
+    service's PATH, and a plugin publishes its ``verify_bin`` executables
+    there under any name, so a bare ``cat`` or ``mkdir`` would run what a
+    plugin published. The fragment saves the inherited PATH in
+    ``_casa_cli_path`` (handed back at the final exec) and rebuilds PATH from the
     ABSOLUTE entries that are not the tools directory (string-equal, or the
     same directory by ``-ef``) — the rule ``_trusted_env``
     applies, written in POSIX-shell builtins so bash and dash run it alike.
     If no entry is left it exits before running anything: an empty PATH
     would search the working directory. The variables are lowercase, so no
-    ``extra_env`` key (upper-snake only) can name them. Its last line is the
-    marker ``drivers.s6_rc.run_script_is_stale`` requires."""
+    ``extra_env`` key (upper-snake only) can name them."""
     tools = shlex.quote(PLUGIN_TOOLS_BIN)
     return (
         "_casa_cli_path=$PATH\n"

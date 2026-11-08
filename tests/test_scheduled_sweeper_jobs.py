@@ -2,7 +2,8 @@
 
 casa_core.py registers two scheduled jobs with the AsyncIOScheduler —
 `engagement_idle_sweep` (cron 08:00 daily) and `workspace_sweep`
-(interval 6h). Until v0.15.2 these were registered as
+(interval 6h; the id is historical, the job sweeps engagement topics).
+Until v0.15.2 these were registered as
 ``lambda: asyncio.create_task(coro(...))``. APScheduler's
 ``AsyncIOExecutor`` runs sync callables in a worker thread, so the
 lambda fired in a thread with no running loop and raised
@@ -29,17 +30,6 @@ def test_engagement_idle_sweep_target_is_coroutine_function():
         "function so AsyncIOScheduler dispatches it on the running loop. "
         "If this fails after a refactor, do NOT re-wrap with a sync "
         "lambda — find another fix."
-    )
-
-
-def test_workspace_sweep_target_is_coroutine_function():
-    from drivers.workspace import _sweep_workspaces
-
-    assert asyncio.iscoroutinefunction(_sweep_workspaces), (
-        "_sweep_workspaces must be a coroutine function so "
-        "AsyncIOScheduler dispatches it on the running loop. If this "
-        "fails after a refactor, do NOT re-wrap with a sync lambda — "
-        "find another fix."
     )
 
 
@@ -78,12 +68,11 @@ def test_engagement_topics_sweep_target_is_coroutine_function():
     )
 
 
-def test_workspace_sweep_job_runs_both_workspace_and_topics_passes():
+def test_workspace_sweep_job_runs_the_topics_pass():
     """Static wiring guard (v0.65.0): the ``workspace_sweep`` job must be
-    registered with a closure that awaits BOTH ``_sweep_workspaces`` (as
-    ``_sweep_ws``) and ``_sweep_engagement_topics(channel_manager)``.
-    Silently dropping either half would disable that sweeper with no test
-    noticing — topics and workspaces expire together."""
+    registered with a closure that awaits
+    ``_sweep_engagement_topics(channel_manager)``. Silently dropping it would
+    disable the topic sweeper with no test noticing."""
     text = _CASA_CORE_SRC.read_text(encoding="utf-8")
 
     closure = re.search(
@@ -95,13 +84,10 @@ def test_workspace_sweep_job_runs_both_workspace_and_topics_passes():
     assert closure, (
         "casa_core.py no longer defines the _sweep_workspaces_and_topics "
         "closure right before its scheduler.add_job registration — if it "
-        "was renamed/refactored, update this pin so the both-passes "
+        "was renamed/refactored, update this pin so the topics-pass "
         "contract stays guarded."
     )
     body = closure.group("body")
-    assert re.search(r"await _sweep_ws\(|await _sweep_workspaces\(", body), (
-        "the workspace_sweep closure must await the workspace sweep"
-    )
     assert re.search(
         r"await _sweep_engagement_topics\(channel_manager\)", body
     ), (

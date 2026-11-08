@@ -131,17 +131,6 @@ def test_run_script_execs_venv_python():
     assert "exec python3 " not in script
 
 
-def test_svc_casa_mcp_run_script_execs_venv_python():
-    """Symmetric guard for the other long-run Python service."""
-    p = (
-        Path(__file__).resolve().parent.parent
-        / "casa" / "rootfs" / "etc" / "s6-overlay"
-        / "s6-rc.d" / "svc-casa-mcp" / "run"
-    )
-    script = p.read_text(encoding="utf-8")
-    assert "exec /opt/casa/venv/bin/python3 /opt/casa/svc_casa_mcp.py" in script
-
-
 @pytest.mark.parametrize("option,var", [
     ("telegram_bot_token", "TELEGRAM_BOT_TOKEN"),
     ("telegram_chat_id", "TELEGRAM_CHAT_ID"),
@@ -226,7 +215,7 @@ def test_run_script_null_normalizes_the_model_options():
             f"{var} must not be exported straight from bashio — an unset "
             f'optional yields the literal "null" and FATALs role resolution'
         )
-        assert f'!= "null" ]' in script and f"={fallback}" in script, (
+        assert '!= "null" ]' in script and f"={fallback}" in script, (
             f'{var} must fall back to {fallback} when bashio returns "null"'
         )
 

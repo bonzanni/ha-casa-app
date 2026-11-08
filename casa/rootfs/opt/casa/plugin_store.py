@@ -2247,8 +2247,7 @@ def _ensure_parent_chain_traversable(dest: Path, store_root: Path) -> None:
     artifact directory ITSELF world-traversable, but a dropped-uid engagement
     process reaching a `--plugin-dir` path must also be able to traverse
     every directory ABOVE it — the plugin-store root and the plugin-name
-    directory in between — neither of which the preflight's per-artifact
-    mode check (`claude_code_driver._preflight_uid_drop`) inspects. Grants
+    directory in between. Grants
     o+x (traversal only, no listing, no write — `0o001`) on every directory
     from *store_root* down to (but not including) *dest* itself. Scoped
     strictly to the plugin-store tree: a *dest* that does not resolve under

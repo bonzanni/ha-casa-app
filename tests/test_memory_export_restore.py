@@ -264,7 +264,7 @@ async def test_no_non_exported_copy_survives(tmp_path, monkeypatch):
     exported = Path(shutil.move(export.export(store),
                                 str(tmp_path / "exported")))
     await build(tree, monkeypatch)   # a canary in every registry row
-    assert len(w.hits(root, tree.canaries)) >= 24
+    assert len(w.hits(root, tree.canaries)) >= 17
 
     assert r.stage(root, str(exported)) == "staged"
     p = r.run_step(root, proc)

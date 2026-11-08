@@ -19,40 +19,44 @@ Casa is a Home Assistant app: a container running several supervised services, i
 a fleet of Claude-powered agents answers messages arriving over Telegram and a voice
 channel.
 
-Four services run under s6, each with a single job:
+Three services run under s6, each with a single job:
 
 | Service | Job |
 |---|---|
 | `svc-casa` | the main async application — channels, agents, HTTP surface |
-| `svc-casa-mcp` | an MCP bridge, supervised as its own service with its own lifetime |
 | `svc-nginx` | the front door — two listeners: HA ingress (Supervisor-source-restricted) and the published external API port, which has no source restriction and relies on route-level refusals |
-| `svc-ttyd` | an optional terminal, off unless enabled — an unauthenticated root shell, so it binds a root-restricted UNIX socket (not TCP loopback) that only the nginx worker and root can reach, keeping it away from a dropped-uid engagement |
+| `svc-ttyd` | an optional terminal, off unless enabled — an unauthenticated root shell, so it binds a root-restricted UNIX socket (not TCP loopback) that only the nginx worker and root can reach |
 
-The static service table is not the whole process story: executor engagements compile and
-supervise *dynamic* s6 service/logger pairs of their own — created, recovered and forcibly
-terminated per engagement, outside the four services above. And two environment switches
-shape the process family broadly: `LOG_FORMAT` selects the log output shape (the format
+Two environment switches shape the process family broadly: `LOG_FORMAT` selects the log output shape (the format
 itself belongs to `architecture/observability.md`), and the `CASA_*` path/version variables
 (`CASA_CONFIG_DIR`, `CASA_DATA_DIR`, `CASA_DEFAULTS_DIR`, `CASA_BINDINGS_DIR`,
 `CASA_VERSION`, `CASA_IMAGE_VERSION`) redirect *specific loaders and reports*, not the
 application uniformly — treating them as global root overrides silently splits reads from
 writes.
 
-The four services' `run` and `finish` scripts and the four one-shots' scripts all run
-through one interpreter, `/opt/casa/scripts/core-bashio.sh`, rather than naming bashio
+The three services' `run` and `finish` scripts run through one interpreter, `/opt/casa/scripts/core-bashio.sh`, rather than naming bashio
 directly. Config materialisation puts the plugin tools directory first on every service's
 PATH, and a plugin publishes executables there under any name, so the interpreter removes
-that directory from PATH before bashio, its library or the script looks anything up — the
-rule the engagement scripts' root phase uses — and refuses to start when no other entry is
-left. The PATH it was given is handed back only at three final execs: the main application
-and the MCP service start Python with it, so the agent CLI and plugin MCP servers still find
-plugin tools first, and the terminal's shell, named by absolute path, gets it too.
+that directory from PATH before bashio, its library or the script looks anything up, and
+refuses to start when no other entry is left. The PATH it was given is handed back only at
+the final execs: the main application starts Python with it, so the agent CLI and plugin MCP
+servers still find plugin tools first, and the terminal's shell, named by absolute path, gets
+it too.
+
+Two small modules hold mechanisms kept for the future script runner rather than for a live
+caller in every path. `trusted_path.py` holds the plugin-tools-free PATH rule: the Python
+form (`trusted_path`) for programs Casa runs as root, and the same rule as POSIX shell
+(`_root_path_fragment`), which the core interpreter above carries byte for byte.
+`uid_kill.py` holds the observed kill-by-uid ladder: `kill_uid_until_empty` sends `SIGKILL`
+to every live process under one uid through a pid-pinning primitive, re-enumerates until two
+consecutive scans find none, and claims extinction only on that observation, never on "we
+signalled everything we saw"; with no such primitive it signals nothing and reports the kill
+unverified. `live_pids_for_uid` is the enumeration it reads, zombies excluded.
 
 Four `init-*` one-shots exist — config validation, config materialisation, nginx setup and
 the plugin store — but they do **not** all precede every service. Each service names only
-the one-shots it needs: the nginx setup gates `svc-nginx` alone, the plugin store gates both
-the main application and the MCP service, and the terminal depends only on config
-materialisation. Read the ordering in the `dependencies.d` directories, not here and not in
+the one-shots it needs: the nginx setup gates `svc-nginx` alone, the plugin store gates the
+main application, and the terminal depends only on config materialisation. Read the ordering in the `dependencies.d` directories, not here and not in
 a log statement; it is data, and it is what is actually true.
 
 Agents come in three tiers. Tier is the main axis along which lifetime, reach, validation
@@ -145,10 +149,14 @@ is what the host renders.
 - `casa/rootfs/opt/casa/trusted_path.py::trusted_path`
 - `casa/rootfs/opt/casa/trusted_path.py::_root_path_fragment`
 - `casa/config.yaml::options`
+- `casa/rootfs/opt/casa/uid_kill.py::kill_uid_until_empty`
+- `casa/rootfs/opt/casa/uid_kill.py::live_pids_for_uid`
 
 **Tests**
 - `tests/test_casa_core_agent_loading.py`
 - `tests/test_setup_nginx_ingress.py`
+- `tests/test_uid_kill.py`
+- `tests/test_trusted_path.py`
 
 **Related**
 - [`architecture/agent-taxonomy.md`](../architecture/agent-taxonomy.md)

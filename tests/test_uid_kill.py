@@ -1,13 +1,9 @@
-"""#599 — the bounded, observed uid quiesce ladder.
+"""#599 — the bounded, observed kill-by-uid ladder (``uid_kill``).
 
 Every test drives the ladder with an injected ``sleep``/``monotonic`` and a fake
 ``/proc`` tree, so nothing here touches a real process or the shared
 ``asyncio.sleep`` attribute (memory-cage rule).
 """
-import pytest
-
-from engagement_quiesce import quiesce_engagement
-from engagement_uids import UNALLOCATED_UID
 from uid_kill import (
     UID_BASE, QuiesceResult, kill_uid_until_empty, live_pids_for_uid,
 )
@@ -105,7 +101,7 @@ def test_a_stopped_process_is_not_inert(tmp_path):
 def test_an_unallocated_uid_enumerates_nothing(tmp_path):
     proc = FakeProc(tmp_path)
     proc.set({42: (0, "R")})
-    assert live_pids_for_uid(UNALLOCATED_UID, proc_root=proc.path) == []
+    assert live_pids_for_uid(-1, proc_root=proc.path) == []
 
 
 # --- the kill loop ----------------------------------------------------------
@@ -269,8 +265,8 @@ async def test_a_zombie_parent_does_not_certify_the_pass_that_hides_its_child(
 
 async def test_a_lingering_zombie_does_not_block_a_real_extinction(tmp_path):
     """Sol, re-review: requiring "no trace at all" held a real extinction hostage
-    to whenever init reaps a zombie, and contradicted INV-CONT-006's published
-    "zombies count as extinct"."""
+    to whenever init reaps a zombie, and contradicted the rule that zombies
+    count as extinct."""
     proc = FakeProc(tmp_path)
     proc.set({42: (UID, "Z")})
     res = await kill_uid_until_empty(
@@ -282,103 +278,6 @@ async def test_a_lingering_zombie_does_not_block_a_real_extinction(tmp_path):
 
 # --- the full ladder --------------------------------------------------------
 
-def _latch(calls, ok=True):
-    async def latch_down(*, engagement_id):
-        calls.append(("latch", engagement_id))
-    async def wanted_down(*, engagement_id):
-        calls.append(("probe", engagement_id))
-        return ok
-    return latch_down, wanted_down
-
-
-async def test_ladder_latches_before_it_kills(tmp_path):
-    proc = FakeProc(tmp_path)
-    proc.set({42: (UID, "R")})
-    sigr = RecordingSignaller(proc, alive={42: (UID, "R")})
-    calls: list = []
-    latch_down, wanted_down = _latch(calls)
-
-    async def latch_recording(*, engagement_id):
-        await latch_down(engagement_id=engagement_id)
-
-    res = await quiesce_engagement(
-        engagement_id="e" * 32, uid=UID, latch_down=latch_recording,
-        wanted_down=wanted_down, proc_root=proc.path, sleep=_nosleep,
-        monotonic=_clock(), pidfd_open=sigr.open, pidfd_send=sigr.send,
-        close=sigr.close)
-    assert res.extinct and res.latched
-    assert calls[0][0] == "latch"
-
-
-async def test_an_unverified_latch_is_never_extinct_even_when_empty(tmp_path):
-    """Red case — the load-bearing one. The kill loop empties the set, but s6 is
-    still wanted-up and may put a fresh CLI back, so this is NOT an extinction.
-    Asserting the OUTCOME, not the call order (a round-1 finding: the earlier
-    plan's test proved only that the latch was called)."""
-    proc = FakeProc(tmp_path)
-    proc.set({42: (UID, "R")})
-    sigr = RecordingSignaller(proc, alive={42: (UID, "R")})
-    calls: list = []
-    latch_down, wanted_down = _latch(calls, ok=False)
-
-    res = await quiesce_engagement(
-        engagement_id="e" * 32, uid=UID, latch_down=latch_down,
-        wanted_down=wanted_down, proc_root=proc.path, latch_attempts=2,
-        sleep=_nosleep, monotonic=_clock(), pidfd_open=sigr.open,
-        pidfd_send=sigr.send, close=sigr.close)
-    assert live_pids_for_uid(UID, proc_root=proc.path) == []   # it DID empty
-    assert not res.extinct and not res.latched
-    assert "wanted-down" in res.reason
-
-
-async def test_a_raising_latch_command_does_not_raise_out_of_the_ladder(tmp_path):
-    """A ladder that raised inside a terminal transition would wedge the funnel
-    it exists to protect."""
-    proc = FakeProc(tmp_path)
-    proc.set({})
-
-    async def latch_down(*, engagement_id):
-        raise OSError("s6-svc missing")
-
-    async def wanted_down(*, engagement_id):
-        raise OSError("s6-svstat missing")
-
-    res = await quiesce_engagement(
-        engagement_id="e" * 32, uid=UID, latch_down=latch_down,
-        wanted_down=wanted_down, proc_root=proc.path, latch_attempts=1,
-        sleep=_nosleep, monotonic=_clock())
-    assert not res.extinct and not res.latched
-
-
-async def test_an_unallocated_uid_is_reported_not_signalled(tmp_path):
-    proc = FakeProc(tmp_path)
-    calls: list = []
-    latch_down, wanted_down = _latch(calls)
-    res = await quiesce_engagement(
-        engagement_id="e" * 32, uid=UNALLOCATED_UID, latch_down=latch_down,
-        wanted_down=wanted_down, proc_root=proc.path, sleep=_nosleep,
-        monotonic=_clock())
-    assert not res.extinct
-    assert calls == []            # specialist/in-casa records are never touched
-
-
 def test_result_is_falsy_unless_extinct():
     assert not QuiesceResult(extinct=False, reason="x")
     assert QuiesceResult(extinct=True)
-
-
-def test_the_ladder_and_the_latch_share_one_unset_sentinel():
-    """``quiesce_engagement`` passes its ``_UNSET`` pidfd defaults straight into
-    ``kill_uid_until_empty``, which compares them with ``uid_kill._UNSET`` by
-    identity. A second sentinel would be called as a pidfd primitive and raise
-    ``TypeError`` out of a ladder that must never raise; no ladder test above
-    reaches that call with the defaults, so pin the identity itself."""
-    import inspect
-
-    import engagement_quiesce
-    import uid_kill
-
-    assert engagement_quiesce._UNSET is uid_kill._UNSET
-    params = inspect.signature(quiesce_engagement).parameters
-    for name in ("pidfd_open", "pidfd_send"):
-        assert params[name].default is uid_kill._UNSET

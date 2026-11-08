@@ -1,25 +1,21 @@
-"""Task 7 / v0.83.0 §A3 — the answered-RESERVATION token lifecycle +
-enqueue-time answer promotion (F-ORDER linearization).
+"""The in_casa driver's inbound accounting at the Telegram ingress, and the
+completion gate it feeds.
 
-Free-text anchor questions are answered by the operator's next Telegram
-message. The answer-lifecycle decision is LINEARIZED with the answer's visible
-arrival (Sol r6-2 + r7-1): the Telegram handler sets a per-message reservation
-TOKEN in the same synchronous section as the topic high-water advance, so a
-concurrent ``result``-finalize that observed the answer's high-water also
-observes the reservation (and does not re-post the question below its answer).
-The reservation is PROMOTED (unconditionally) at durable enqueue and CAS-rolled-
-back on every non-delivery path.
+An operator message to an engagement topic is admitted as a text-bearing
+ticket SYNCHRONOUSLY, before the handler's first await, and every path settles
+it — delivery, command classification, cancellation while suspended, and a
+delivery task cancelled before its first step. A system continuation instead
+holds an ingress RESERVATION (the #663 lease) until its text is admitted. Both
+populations veto a successful completion (INV-ENG-003).
 
-REAL registry over a tmp tombstone + REAL ``_InboundSpool`` + REAL driver
-methods + the REAL Telegram handler (fake bot / fake update). Injected clocks;
-never patches ``<module>.asyncio.sleep`` (the shared attribute — the memory-cage
-rule)."""
+REAL registry over a tmp tombstone + REAL ``InCasaDriver`` + the REAL Telegram
+handler (fake bot / fake update). Event-driven coordination only; never patches
+``<module>.asyncio.sleep`` (the shared attribute — the memory-cage rule)."""
 
 from __future__ import annotations
 
 import asyncio
 import json
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -30,497 +26,6 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 # fakes / helpers
 # ---------------------------------------------------------------------------
-
-
-class _FakeWriter:
-    def __init__(self, result: bool = True):
-        self.result = result
-        self.calls: list[str] = []
-
-    async def __call__(self, text: str) -> bool:
-        self.calls.append(text)
-        return self.result
-
-
-class _RecordNotice:
-    def __init__(self, ok: bool = True):
-        self.ok = ok
-        self.calls: list[tuple] = []
-
-    async def __call__(self, text, reply_to):
-        self.calls.append((text, reply_to))
-        return self.ok
-
-
-class _FakeSequencer:
-    def __init__(self):
-        self.reply_targets: list = []
-
-    def set_turn_reply_to(self, message_id):
-        self.reply_targets.append(message_id)
-
-
-async def _make_registry(tmp_path: Path):
-    from engagement_registry import EngagementRegistry
-
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
-    rec = await reg.create(
-        "executor", "configurator", "claude_code", "t",
-        {"user_id": 77}, topic_id=555)
-    return reg, rec
-
-
-async def _add_anchor(reg, rec, *, mid, text="Q1: DB name?"):
-    n = await reg.allocate_question_number(rec.id)
-    await reg.add_open_question(rec.id, n, mid, text=text, kind="anchor")
-    return n
-
-
-def _make_driver(tmp_path: Path, reg, *, edit_topic_message=None):
-    from drivers.claude_code_driver import ClaudeCodeDriver
-
-    return ClaudeCodeDriver(
-        engagements_root=str(tmp_path / "engagements"),
-        send_to_topic=AsyncMock(),
-        casa_framework_mcp_url="http://x",
-        edit_topic_message=edit_topic_message,
-        registry=reg,
-    )
-
-
-def _wire_spool(drv, rec, tmp_path, *, writer_ok=True, sequencer=None,
-                spool_path=None):
-    """Attach a REAL ``_InboundSpool`` wired to the driver's promotion +
-    delivery-settle hooks (exactly as ``start()`` wires it in production)."""
-    from drivers.claude_code_driver import _InboundSpool
-
-    seq = sequencer if sequencer is not None else _FakeSequencer()
-    spool = _InboundSpool(
-        engagement_id=rec.id,
-        spool_path=spool_path or str(tmp_path / f"{rec.id}.spool.jsonl"),
-        write_fifo=_FakeWriter(writer_ok),
-        send_notice=_RecordNotice(),
-        is_turn_running=lambda: False,
-        current_epoch=lambda: 1,
-        sequencer=seq,
-        registry=drv._registry,
-        settle_anchor_on_delivery=lambda op: drv._settle_open_anchor(rec, op),
-        promote_answer_on_enqueue=lambda: drv._promote_answer_on_enqueue(rec),
-    )
-    drv._inbound[rec.id] = spool
-    return spool, seq
-
-
-# ===========================================================================
-# 1. reservation invisibility + rollback restore (effective/union view)
-# ===========================================================================
-
-
-class TestReservationVisibility:
-    async def test_reserve_hides_question_rollback_restores(self, tmp_path):
-        reg, rec = await _make_registry(tmp_path)
-        n = await _add_anchor(reg, rec, mid=8001)
-        drv = _make_driver(tmp_path, reg)
-
-        assert drv._effective_open_question_numbers(rec.id) == [n]
-
-        token = drv.reserve_answer(rec.id)
-        assert token is not None
-        # Reserved-but-unpromoted counts as ANSWERED for gates/summary/re-anchor.
-        assert drv._effective_open_question_numbers(rec.id) == []
-        assert drv._reserved_question_number(rec.id) == n
-
-        assert await drv.rollback_answer_reservation(rec.id, token) is True
-        assert drv._effective_open_question_numbers(rec.id) == [n]
-        assert drv._reserved_question_number(rec.id) is None
-
-    async def test_reserve_hides_question_from_real_summary(self, tmp_path):
-        from channels.output_sequencer import OutputSequencer
-        from drivers.summary_controller import (
-            SummaryController, STATUS_WORKING,
-        )
-
-        reg, rec = await _make_registry(tmp_path)
-        n = await _add_anchor(reg, rec, mid=8001)
-        drv = _make_driver(tmp_path, reg)
-        eid = rec.id
-
-        edits: list[tuple[int, str]] = []
-
-        async def _send(topic_id, text):
-            return 500
-
-        async def _edit(topic_id, mid, text):
-            edits.append((mid, text))
-            return True
-
-        async def _park(_dt):
-            import asyncio
-            await asyncio.Event().wait()
-
-        seq = OutputSequencer(
-            engagement_id=eid, topic_id=555,
-            send_message=_send, edit_message=_edit)
-        ctrl = SummaryController(
-            engagement_id=eid, sequencer=seq, goal_line="goal",
-            open_question_numbers=lambda:
-                drv._effective_open_question_numbers(eid),
-            message_id=500, _sleep=_park,
-        )
-        drv._summaries[eid] = ctrl
-        drv._turn_running[eid] = True
-
-        await drv.recompute_engagement_status(eid)
-        assert f"Open questions: Q{n}" in edits[-1][1]
-
-        # Reservation lands → the summary drops the open-question line + returns
-        # to ⚙️ working (not stuck ⏳ on a question whose answer is arriving).
-        drv.reserve_answer(eid)
-        await drv.recompute_engagement_status(eid)
-        assert "Open questions" not in edits[-1][1]
-        assert edits[-1][1].splitlines()[0] == STATUS_WORKING
-        ctrl.shutdown()
-
-
-# ===========================================================================
-# 2. reserve semantics — no anchor → None; single-anchor double-reserve
-# ===========================================================================
-
-
-class TestReserveSemantics:
-    async def test_no_open_anchor_returns_none(self, tmp_path):
-        reg, rec = await _make_registry(tmp_path)
-        drv = _make_driver(tmp_path, reg)
-        assert drv.reserve_answer(rec.id) is None
-        assert drv._answer_reservations.get(rec.id) is None
-
-    async def test_second_reserve_finds_no_unreserved_anchor(self, tmp_path):
-        reg, rec = await _make_registry(tmp_path)
-        await _add_anchor(reg, rec, mid=8001)
-        drv = _make_driver(tmp_path, reg)
-
-        t1 = drv.reserve_answer(rec.id)
-        assert t1 is not None
-        # The only anchor is already reserved → nothing left to reserve.
-        assert drv.reserve_answer(rec.id) is None
-        # The first reservation is NOT clobbered.
-        assert drv._answer_reservations[rec.id][0] == t1
-
-    async def test_answered_anchor_is_not_reserved(self, tmp_path):
-        reg, rec = await _make_registry(tmp_path)
-        n = await _add_anchor(reg, rec, mid=8001)
-        drv = _make_driver(tmp_path, reg)
-        await reg.mark_question_answered(rec.id, n)
-        assert drv.reserve_answer(rec.id) is None
-
-
-# ===========================================================================
-# 3. CAS rollback semantics + Task-9 seam
-# ===========================================================================
-
-
-class TestRollbackCAS:
-    async def test_wrong_token_is_noop_current_not_clobbered(self, tmp_path):
-        reg, rec = await _make_registry(tmp_path)
-        await _add_anchor(reg, rec, mid=8001)
-        drv = _make_driver(tmp_path, reg)
-
-        t1 = drv.reserve_answer(rec.id)
-        assert await drv.rollback_answer_reservation(rec.id, "wrong") is False
-        assert drv._answer_reservations.get(rec.id) is not None
-        assert await drv.rollback_answer_reservation(rec.id, t1) is True
-        assert drv._answer_reservations.get(rec.id) is None
-
-    async def test_none_token_is_noop(self, tmp_path):
-        reg, rec = await _make_registry(tmp_path)
-        drv = _make_driver(tmp_path, reg)
-        assert await drv.rollback_answer_reservation(rec.id, None) is False
-
-    async def test_successful_rollback_calls_seam_failed_does_not(self, tmp_path):
-        reg, rec = await _make_registry(tmp_path)
-        await _add_anchor(reg, rec, mid=8001)
-        drv = _make_driver(tmp_path, reg)
-
-        called: list[str] = []
-
-        async def _spy(eid):
-            called.append(eid)
-
-        drv._on_reservation_rolled_back = _spy
-
-        t1 = drv.reserve_answer(rec.id)
-        await drv.rollback_answer_reservation(rec.id, t1)
-        assert called == [rec.id]
-
-        # A failed CAS (stale token) must NOT fire the seam.
-        called.clear()
-        await drv.rollback_answer_reservation(rec.id, "wrong")
-        assert called == []
-
-    async def test_default_seam_is_noop(self, tmp_path):
-        reg, rec = await _make_registry(tmp_path)
-        drv = _make_driver(tmp_path, reg)
-        assert await drv._on_reservation_rolled_back(rec.id) is None
-
-
-# ===========================================================================
-# 4. promotion at durable enqueue — unconditional, consumes reservation
-# ===========================================================================
-
-
-class TestPromotion:
-    async def test_enqueue_promotes_settles_and_records_mid(self, tmp_path):
-        reg, rec = await _make_registry(tmp_path)
-        n = await _add_anchor(reg, rec, mid=8001)
-
-        edits: list[tuple[int, str]] = []
-
-        async def _edit(topic_id, mid, text, *, clear_keyboard=False):
-            edits.append((mid, text))
-            return True
-
-        drv = _make_driver(tmp_path, reg, edit_topic_message=_edit)
-        spool, seq = _wire_spool(drv, rec, tmp_path)
-
-        token = drv.reserve_answer(rec.id)
-        assert token is not None
-
-        # FIFO busy → the reader is unarmed (no on_spawn), so enqueue does NOT
-        # deliver; promotion still runs at durable enqueue.
-        disp = await drv.send_user_turn(rec, "it is prod-db", tg_message_id=42)
-        assert disp == "queued"
-
-        # Promotion consumed the reservation + marked the anchor answered.
-        assert drv._answer_reservations.get(rec.id) is None
-        # Settle ran EXACTLY once (confirmed → entry removed).
-        assert len(edits) == 1
-        assert edits[0][0] == 8001 and "✅ answered below" in edits[0][1]
-        assert reg.open_question_entries(rec.id) == []
-        assert drv._effective_open_question_numbers(rec.id) == []
-
-        # The envelope carries the anchor mid.
-        env = spool._envelopes[-1]
-        assert env.answer_anchor_mid == 8001
-
-        # Delivery LATER only THREADS — no second settle edit.
-        await spool.on_spawn()
-        assert len(edits) == 1                    # unchanged
-        assert seq.reply_targets[-1] == 8001
-
-    async def test_promotion_is_unconditional_without_reservation(self, tmp_path):
-        reg, rec = await _make_registry(tmp_path)
-        await _add_anchor(reg, rec, mid=8001)
-
-        edits: list = []
-
-        async def _edit(topic_id, mid, text, *, clear_keyboard=False):
-            edits.append((mid, text))
-            return True
-
-        drv = _make_driver(tmp_path, reg, edit_topic_message=_edit)
-        _wire_spool(drv, rec, tmp_path)
-
-        # No reserve_answer() at all — promotion still fires (any delivered
-        # operator message answers the one open question).
-        disp = await drv.send_user_turn(rec, "answer", tg_message_id=42)
-        assert disp == "queued"
-        assert reg.open_question_entries(rec.id) == []
-
-    async def test_promotion_persist_failure_sets_overlay_settle_still_runs(
-        self, tmp_path,
-    ):
-        reg, rec = await _make_registry(tmp_path)
-        n = await _add_anchor(reg, rec, mid=8001)
-
-        edits: list = []
-
-        async def _edit(topic_id, mid, text, *, clear_keyboard=False):
-            edits.append((mid, text))
-            return True
-
-        drv = _make_driver(tmp_path, reg, edit_topic_message=_edit)
-        _wire_spool(drv, rec, tmp_path)
-
-        # The strict answered-persist raises → overlay covers the live process
-        # (Task-6 §A3 answered-persist-failure policy).
-        reg.mark_question_answered = AsyncMock(side_effect=OSError("disk full"))
-
-        disp = await drv.send_user_turn(rec, "answer", tg_message_id=42)
-        assert disp == "queued"
-        assert n in drv._answered_overlay.get(rec.id, set())
-        # The visual settle STILL ran despite the failed durable write.
-        assert edits and "✅ answered below" in edits[-1][1]
-        # Effective view treats it answered immediately (overlay ∪ persisted).
-        assert drv._effective_open_question_numbers(rec.id) == []
-
-    async def test_post_promotion_rollback_cas_fails(self, tmp_path):
-        reg, rec = await _make_registry(tmp_path)
-        await _add_anchor(reg, rec, mid=8001)
-
-        async def _edit(topic_id, mid, text, *, clear_keyboard=False):
-            return True
-
-        drv = _make_driver(tmp_path, reg, edit_topic_message=_edit)
-        _wire_spool(drv, rec, tmp_path)
-
-        token = drv.reserve_answer(rec.id)
-        await drv.send_user_turn(rec, "answer", tg_message_id=42)
-        # Promotion consumed the reservation → a late rollback CAS fails.
-        assert await drv.rollback_answer_reservation(rec.id, token) is False
-
-
-# ===========================================================================
-# 5. A-rejected / B-success interleaving → stays answered
-# ===========================================================================
-
-
-class TestInterleaving:
-    async def test_a_rejected_b_success_stays_answered(self, tmp_path):
-        reg, rec = await _make_registry(tmp_path)
-        await _add_anchor(reg, rec, mid=8001)
-
-        async def _edit(topic_id, mid, text, *, clear_keyboard=False):
-            return True
-
-        drv = _make_driver(tmp_path, reg, edit_topic_message=_edit)
-        _wire_spool(drv, rec, tmp_path)
-
-        # A reserves.
-        token_a = drv.reserve_answer(rec.id)
-        assert token_a is not None
-
-        # B enqueues successfully → promotion (unconditional) consumes A's
-        # reservation and answers the question.
-        disp_b = await drv.send_user_turn(rec, "B answers", tg_message_id=50)
-        assert disp_b == "queued"
-        assert drv._answer_reservations.get(rec.id) is None
-
-        # A's enqueue then fails → A rolls back with token_a. The CAS FAILS
-        # (reservation already promoted) → the question STAYS answered.
-        assert await drv.rollback_answer_reservation(rec.id, token_a) is False
-        assert drv._effective_open_question_numbers(rec.id) == []
-        assert reg.open_question_entries(rec.id) == []
-
-
-# ===========================================================================
-# 6. disposition propagation through send_user_turn (whole-chain contract)
-# ===========================================================================
-
-
-class TestDisposition:
-    async def test_send_user_turn_returns_queued(self, tmp_path):
-        reg, rec = await _make_registry(tmp_path)
-        drv = _make_driver(tmp_path, reg)
-        _wire_spool(drv, rec, tmp_path)
-        assert await drv.send_user_turn(rec, "hi", tg_message_id=1) == "queued"
-
-    async def test_send_user_turn_returns_dropped_full(self, tmp_path):
-        reg, rec = await _make_registry(tmp_path)
-        drv = _make_driver(tmp_path, reg)
-        spool, _ = _wire_spool(drv, rec, tmp_path)
-        # Force the ordinary lane to appear full.
-        spool._ordinary_count = lambda: 999
-        disp = await drv.send_user_turn(rec, "hi", tg_message_id=1)
-        assert disp == "dropped_full"
-
-    async def test_send_user_turn_returns_error_on_persist_failure(self, tmp_path):
-        reg, rec = await _make_registry(tmp_path)
-        drv = _make_driver(tmp_path, reg)
-        spool, _ = _wire_spool(drv, rec, tmp_path)
-
-        def _boom():
-            raise OSError("disk full")
-
-        spool._persist = _boom
-        disp = await drv.send_user_turn(rec, "hi", tg_message_id=1)
-        assert disp == "error"
-
-    async def test_rejection_does_not_promote(self, tmp_path):
-        reg, rec = await _make_registry(tmp_path)
-        await _add_anchor(reg, rec, mid=8001)
-        drv = _make_driver(tmp_path, reg, edit_topic_message=AsyncMock(
-            return_value=True))
-        spool, _ = _wire_spool(drv, rec, tmp_path)
-        spool._ordinary_count = lambda: 999   # capacity full → dropped_full
-
-        drv.reserve_answer(rec.id)
-        disp = await drv.send_user_turn(rec, "answer", tg_message_id=1)
-        assert disp == "dropped_full"
-        # A rejected enqueue never durably spooled → NO promotion; the question
-        # is still open (the reservation is rolled back by the caller/handler).
-        assert reg.open_question_entries(rec.id)[0].get("answered") is False
-
-
-# ===========================================================================
-# 7. legacy envelope (no answer_anchor_mid) → delivery-time settle fallback
-# ===========================================================================
-
-
-class TestLegacyEnvelope:
-    async def test_legacy_envelope_uses_delivery_time_settle(self, tmp_path):
-        reg, rec = await _make_registry(tmp_path)
-        await _add_anchor(reg, rec, mid=8001)
-
-        edits: list = []
-
-        async def _edit(topic_id, mid, text, *, clear_keyboard=False):
-            edits.append((mid, text))
-            return True
-
-        drv = _make_driver(tmp_path, reg, edit_topic_message=_edit)
-
-        # A legacy spool line: no ``answer_anchor_mid`` key (pre-Task-7).
-        spool_path = tmp_path / f"{rec.id}.spool.jsonl"
-        legacy = json.dumps({
-            "text": "the answer", "tg_message_id": 42, "priority": False,
-            "receipt": "not_required", "notice": "none", "notice_text": None,
-            "enqueued_at": 1.0, "delivery_epoch": None, "state": "queued",
-            "seq": 0, "is_initial": False,
-        })
-        spool_path.write_text(legacy + "\n", encoding="utf-8")
-
-        spool, seq = _wire_spool(
-            drv, rec, tmp_path, spool_path=str(spool_path))
-        env = spool._envelopes[-1]
-        assert env.answer_anchor_mid is None    # legacy → field absent
-
-        # Delivery falls back to the delivery-time settle path.
-        await spool.on_spawn()
-        assert len(edits) == 1 and "✅ answered below" in edits[0][1]
-        assert seq.reply_targets[-1] == 8001
-
-
-# ===========================================================================
-# 8. envelope persistence round-trips the new field
-# ===========================================================================
-
-
-class TestEnvelopePersistence:
-    async def test_answer_anchor_mid_round_trips(self):
-        from drivers.claude_code_driver import _Envelope
-
-        env = _Envelope(
-            text="x", tg_message_id=1, priority=False, receipt="not_required",
-            notice="none", enqueued_at=1.0, delivery_epoch=None,
-            state="queued", seq=0, answer_anchor_mid=8001)
-        back = _Envelope.from_line(env.to_line())
-        assert back.answer_anchor_mid == 8001
-
-    async def test_legacy_line_defaults_none(self):
-        from drivers.claude_code_driver import _Envelope
-
-        legacy = json.dumps({
-            "text": "x", "tg_message_id": 1, "priority": False,
-            "receipt": "not_required", "notice": "none", "enqueued_at": 1.0,
-            "delivery_epoch": None, "state": "queued", "seq": 0,
-        })
-        back = _Envelope.from_line(legacy)
-        assert back.answer_anchor_mid is None
-
-
-# ===========================================================================
-# 9. REAL Telegram handler — command paths roll back; delivery hands off
-# ===========================================================================
 
 
 def _mk_update(*, chat_id, text, thread_id=None, user_id=77):
@@ -536,575 +41,183 @@ def _mk_update(*, chat_id, text, thread_id=None, user_id=77):
 
 
 async def _drain_turns(ch) -> None:
-    import asyncio
     tasks = list(getattr(ch, "_turn_tasks", ()) or ())
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
+async def _drain_all(ch) -> None:
+    """Drain the delivery tasks AND the task-end cleanup tasks their
+    done-callbacks create (one loop iteration later — hence the bare yield;
+    nothing waits for a duration and no ``asyncio.sleep`` is patched)."""
+    for _ in range(20):
+        tasks = [t for s in ("_turn_tasks", "_inbound_cleanup_tasks")
+                 for t in list(getattr(ch, s, ()) or ())]
+        if not tasks:
+            return
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.sleep(0)
+    raise AssertionError("tracked tasks did not drain in 20 passes")
+
+
+def _assistant(text):
+    from claude_agent_sdk import AssistantMessage, TextBlock
+    try:
+        return AssistantMessage(content=[TextBlock(text=text)], model="m")
+    except TypeError:
+        m = AssistantMessage.__new__(AssistantMessage)
+        m.content = [TextBlock(text=text)]
+        return m
+
+
+class _OneShotClient:
+    """Fake ClaudeSDKClient: every turn answers one line immediately."""
+
+    def __init__(self):
+        self.query_prompts: list[str] = []
+
+    async def query(self, prompt: str) -> None:
+        self.query_prompts.append(prompt)
+
+    def receive_response(self):
+        async def _gen():
+            yield _assistant("ok")
+        return _gen()
+
+    async def close(self) -> None:
+        pass
+
+
 async def _handler_ctx(tmp_path, fake_telegram_bot):
-    """A channel wired to a REAL driver + registry with one open anchor."""
+    """A channel wired to a REAL in_casa driver + registry, with the
+    admission-ticket seams mirroring casa_core's wiring."""
     from channels.telegram import TelegramChannel
+    from drivers.in_casa_driver import InCasaDriver
+    from engagement_registry import EngagementRegistry
 
-    reg, rec = await _make_registry(tmp_path)
-    n = await _add_anchor(reg, rec, mid=8001)
-    drv = _make_driver(tmp_path, reg, edit_topic_message=AsyncMock(
-        return_value=True))
+    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
+    rec = await reg.create(
+        "executor", "configurator", "in_casa", "t",
+        {"user_id": 77}, topic_id=555)
+    client = _OneShotClient()
+    drv = InCasaDriver(topic_stream_factory=lambda tid: _FakeStreamHandle())
+    drv._clients[rec.id] = client
+    drv._ctx_stack[rec.id] = client
+    drv._locks[rec.id] = asyncio.Lock()
 
     ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
                          engagement_supergroup_id=-1001)
     ch._engagement_registry = reg
-    ch._driver_advance_high_water = AsyncMock()
-    ch._driver_reserve_answer = lambda r: drv.reserve_answer(r.id)
-
-    async def _rb(r, tok, *, suppress_reanchor=False):
-        # Mirrors casa_core's real _driver_rollback_answer_reservation seam,
-        # which forwards F2's suppress_reanchor to the driver.
-        return await drv.rollback_answer_reservation(
-            r.id, tok, suppress_reanchor=suppress_reanchor)
-
-    ch._driver_rollback_answer_reservation = _rb
-    ch._post_engagement_notice = AsyncMock()
-    return ch, reg, rec, drv, n
-
-
-class TestHandlerRollback:
-    async def test_silent_rolls_back_not_answered(
-        self, tmp_path, fake_telegram_bot,
-    ):
-        ch, reg, rec, drv, n = await _handler_ctx(tmp_path, fake_telegram_bot)
-        ch._observer = MagicMock()
-
-        u = _mk_update(chat_id=-1001, text="/silent", thread_id=555, user_id=77)
-        await ch.handle_update(u)
-
-        assert drv._answer_reservations.get(rec.id) is None      # rolled back
-        assert reg.open_question_entries(rec.id)[0].get("answered") is False
-        assert drv._effective_open_question_numbers(rec.id) == [n]
-
-    async def test_cancel_originator_rolls_back(
-        self, tmp_path, fake_telegram_bot,
-    ):
-        ch, reg, rec, drv, n = await _handler_ctx(tmp_path, fake_telegram_bot)
-        ch._finalize_cancel = AsyncMock()
-
-        u = _mk_update(chat_id=-1001, text="/cancel", thread_id=555, user_id=77)
-        await ch.handle_update(u)
-
-        ch._finalize_cancel.assert_awaited_once()
-        assert drv._answer_reservations.get(rec.id) is None
-        assert reg.open_question_entries(rec.id)[0].get("answered") is False
-
-    async def test_complete_originator_rolls_back(
-        self, tmp_path, fake_telegram_bot,
-    ):
-        ch, reg, rec, drv, n = await _handler_ctx(tmp_path, fake_telegram_bot)
-        ch._finalize_complete_user = AsyncMock()
-
-        u = _mk_update(
-            chat_id=-1001, text="/complete", thread_id=555, user_id=77)
-        await ch.handle_update(u)
-
-        ch._finalize_complete_user.assert_awaited_once()
-        assert drv._answer_reservations.get(rec.id) is None
-
-    async def test_rejected_originator_command_rolls_back(
-        self, tmp_path, fake_telegram_bot,
-    ):
-        ch, reg, rec, drv, n = await _handler_ctx(tmp_path, fake_telegram_bot)
-        ch._finalize_cancel = AsyncMock()
-
-        # A NON-originator /cancel (rec origin user_id=77, update from 999).
-        u = _mk_update(chat_id=-1001, text="/cancel", thread_id=555, user_id=999)
-        await ch.handle_update(u)
-
-        ch._finalize_cancel.assert_not_awaited()          # refused
-        ch._post_engagement_notice.assert_awaited()       # refusal notice
-        assert drv._answer_reservations.get(rec.id) is None
-        assert reg.open_question_entries(rec.id)[0].get("answered") is False
-
-
-# ===========================================================================
-# 9b. M5 — the FOURTH-consumer acceptance matrix through a REAL OutputSequencer
-#     (ordered fake wire). For each non-delivery cause the anchor must end LAST
-#     (re-anchored copy is the final wire post); terminal-finalize SETTLES.
-# ===========================================================================
-
-
-class _OrderedWire:
-    """One ordered fake wire backing BOTH the text send (notices) and the markup
-    send (re-anchor ``post_discrete``), so wire order == a single monotonic mid
-    sequence (mirrors ``test_anchor_reanchor._Wire``)."""
-
-    def __init__(self, *, start: int = 1000):
-        self._n = start
-        self.posts: list[tuple[str, int, str]] = []
-        self.edits: list[tuple[str, int, str]] = []
-
-    def _mid(self) -> int:
-        self._n += 1
-        return self._n
-
-    async def send_text(self, topic, text, **kw) -> int:
-        mid = self._mid()
-        self.posts.append(("text", mid, text))
-        return mid
-
-    async def send_markup(self, topic, text, markup, reply_to=None):
-        mid = self._mid()
-        self.posts.append(("markup", mid, text))
-        return mid
-
-    async def edit_text(self, topic, mid, text, clear_keyboard=False) -> bool:
-        self.edits.append(("text", mid, text))
-        return True
-
-    async def edit_markup(self, topic, mid, text, markup) -> bool:
-        self.edits.append(("markup", mid, text))
-        return True
-
-
-def _make_driver_seq(tmp_path, reg, wire):
-    from drivers.claude_code_driver import ClaudeCodeDriver
-
-    return ClaudeCodeDriver(
-        engagements_root=str(tmp_path / "engagements"),
-        send_to_topic=wire.send_text,
-        casa_framework_mcp_url="http://x",
-        edit_topic_message=wire.edit_text,
-        send_topic_message_markup=wire.send_markup,
-        edit_topic_message_markup=wire.edit_markup,
-        registry=reg)
-
-
-def _entry(reg, rec, n):
-    for q in reg.open_question_entries(rec.id):
-        if q.get("n") == n:
-            return q
-    return None
-
-
-async def _handler_ctx_seq(tmp_path, fake_telegram_bot):
-    """A channel wired to a REAL driver + REAL OutputSequencer over an ordered
-    wire, with one open anchor at a LOW mid and content already posted below it
-    (high-water > anchor) so a rollback consumer's re-anchor genuinely fires.
-    Platform notices route THROUGH the sequencer onto the same ordered wire."""
-    from channels.telegram import TelegramChannel
-
-    reg, rec = await _make_registry(tmp_path)
-    n = await _add_anchor(reg, rec, mid=500)     # LOW mid → notices land below
-    wire = _OrderedWire()
-    drv = _make_driver_seq(tmp_path, reg, wire)
-    seq = drv._ensure_sequencer(rec)
-    seq._high_water = 600                          # content posted below the anchor
-
-    ch = TelegramChannel(bot=fake_telegram_bot, chat_id=100,
-                         engagement_supergroup_id=-1001)
-    ch._engagement_registry = reg
+    ch._engagement_driver = drv
     ch._observer = MagicMock()
-    ch._driver_advance_high_water = AsyncMock()
-    ch._driver_reserve_answer = lambda r: drv.reserve_answer(r.id)
+    ch._post_engagement_notice = AsyncMock()
+    ch._driver_admit_inbound = lambda r, text: drv.admit_inbound(r.id, text)
+    ch._driver_discharge_inbound = (
+        lambda r, tok: drv.discharge_inbound(r.id, tok))
+    ch._driver_inbound_held = (
+        lambda r, tok: drv.inbound_token_held(r.id, tok))
 
-    async def _rb(r, tok, *, suppress_reanchor=False):
-        # Mirrors casa_core's real _driver_rollback_answer_reservation seam,
-        # which forwards F2's suppress_reanchor to the driver.
-        return await drv.rollback_answer_reservation(
-            r.id, tok, suppress_reanchor=suppress_reanchor)
-
-    ch._driver_rollback_answer_reservation = _rb
-    # Route platform notices through the REAL sequencer onto the shared wire.
-    ch._driver_post_notice = lambda r, text: seq.post_platform_notice(text)
-    return ch, reg, rec, drv, seq, wire, n
-
-
-class TestFourthConsumerReanchorMatrix:
-    async def test_silent_command_reanchors_anchor_last(
-        self, tmp_path, fake_telegram_bot,
-    ):
-        ch, reg, rec, drv, seq, wire, n = await _handler_ctx_seq(
-            tmp_path, fake_telegram_bot)
-        u = _mk_update(chat_id=-1001, text="/silent", thread_id=555, user_id=77)
-        await ch.handle_update(u)      # rollback + re-anchor are synchronous here
-
-        # The command notice (text) posted BELOW the anchor, then the re-anchored
-        # copy (markup) is the FINAL wire message.
-        assert [k for k, _, _ in wire.posts] == ["text", "markup"]
-        reanchor_mid = wire.posts[-1][1]
-        assert seq.high_water == reanchor_mid
-        assert _entry(reg, rec, n)["tg_message_id"] == reanchor_mid
-        # A command is NOT an answer.
-        assert _entry(reg, rec, n).get("answered") is False
-        assert drv._answer_reservations.get(rec.id) is None
-
-    async def test_rejected_originator_command_reanchors_anchor_last(
-        self, tmp_path, fake_telegram_bot,
-    ):
-        ch, reg, rec, drv, seq, wire, n = await _handler_ctx_seq(
-            tmp_path, fake_telegram_bot)
-        ch._finalize_cancel = AsyncMock()
-        # A NON-originator /cancel (rec origin user_id=77, update from 999) →
-        # refused + refusal notice + reservation rolled back.
-        u = _mk_update(chat_id=-1001, text="/cancel", thread_id=555, user_id=999)
-        await ch.handle_update(u)
-
-        ch._finalize_cancel.assert_not_awaited()
-        assert wire.posts and wire.posts[-1][0] == "markup"
-        reanchor_mid = wire.posts[-1][1]
-        assert _entry(reg, rec, n)["tg_message_id"] == reanchor_mid
-        assert _entry(reg, rec, n).get("answered") is False
-
-    async def test_dropped_full_delivery_reanchors_anchor_last(
-        self, tmp_path, fake_telegram_bot,
-    ):
-        ch, reg, rec, drv, seq, wire, n = await _handler_ctx_seq(
-            tmp_path, fake_telegram_bot)
-        ch._driver_send_user_turn = AsyncMock(return_value="dropped_full")
-        u = _mk_update(chat_id=-1001, text="answer", thread_id=555, user_id=77)
-        await ch.handle_update(u)
-        await _drain_turns(ch)
-
-        assert wire.posts and wire.posts[-1][0] == "markup"
-        reanchor_mid = wire.posts[-1][1]
-        assert seq.high_water == reanchor_mid
-        assert _entry(reg, rec, n)["tg_message_id"] == reanchor_mid
-        assert _entry(reg, rec, n).get("answered") is False
-        assert drv._answer_reservations.get(rec.id) is None
-
-    async def test_persistence_error_delivery_reanchors_anchor_last(
-        self, tmp_path, fake_telegram_bot,
-    ):
-        ch, reg, rec, drv, seq, wire, n = await _handler_ctx_seq(
-            tmp_path, fake_telegram_bot)
-        ch._driver_send_user_turn = AsyncMock(side_effect=RuntimeError("boom"))
-        u = _mk_update(chat_id=-1001, text="answer", thread_id=555, user_id=77)
-        await ch.handle_update(u)
-        await _drain_turns(ch)
-
-        # Sol r12-1 (fixed in telegram.py): ``_deliver_turn_bg`` posts the
-        # "Turn failed" notice FIRST and only then rolls back — so the rollback
-        # consumer's re-posted question is the strictly LAST wire message,
-        # below the notice.
-        reanchor = [(k, mid) for k, mid, _ in wire.posts if k == "markup"]
-        assert reanchor, "the rollback consumer did not re-anchor"
-        reanchor_mid = reanchor[-1][1]
-        assert any(k == "text" and "Turn failed" in t for k, _, t in wire.posts)
-        assert wire.posts[-1][0] == "markup", (
-            "the re-anchored question must be the LAST wire message "
-            f"(got trailing {wire.posts[-1]!r})"
-        )
-        assert wire.posts[-1][1] == reanchor_mid
-        assert _entry(reg, rec, n)["tg_message_id"] == reanchor_mid
-        assert _entry(reg, rec, n).get("answered") is False
-
-    async def test_handler_cancellation_reanchors_anchor_last(
-        self, tmp_path, fake_telegram_bot,
-    ):
-        ch, reg, rec, drv, seq, wire, n = await _handler_ctx_seq(
-            tmp_path, fake_telegram_bot)
-        started = asyncio.Event()
-
-        async def _blocking(rec_, text, *, tg_message_id=None):
-            started.set()
-            await asyncio.Event().wait()   # block until cancelled
-
-        ch._driver_send_user_turn = _blocking
-        u = _mk_update(chat_id=-1001, text="answer", thread_id=555, user_id=77)
-        await ch.handle_update(u)
-        await asyncio.wait_for(started.wait(), timeout=1.0)
-        for t in list(ch._turn_tasks):
-            t.cancel()
-        await _drain_turns(ch)
-
-        # Cancellation → rollback → re-anchor. The anchor ends LAST.
-        assert wire.posts and wire.posts[-1][0] == "markup"
-        reanchor_mid = wire.posts[-1][1]
-        assert _entry(reg, rec, n)["tg_message_id"] == reanchor_mid
-        assert drv._answer_reservations.get(rec.id) is None
-
-    async def test_terminal_finalize_settles_not_reanchors(
-        self, tmp_path, fake_telegram_bot,
-    ):
-        ch, reg, rec, drv, seq, wire, n = await _handler_ctx_seq(
-            tmp_path, fake_telegram_bot)
-        # The terminal-finalize consumer SETTLES open anchors rather than
-        # re-anchoring (closing the /cancel-with-live-anchor gap).
-        await drv.settle_all_open_questions(rec, "cancelled")
-
-        assert not any(k == "markup" for k, _, _ in wire.posts)   # no re-anchor
-        assert any(mid == 500 and "engagement ended" in text
-                   for _, mid, text in wire.edits)
-        assert reg.open_question_entries(rec.id) == []
-
-    async def test_terminal_finalize_failure_reanchors_anchor_last(
-        self, tmp_path, fake_telegram_bot,
-    ):
-        """F2 (whole-branch r2): a /cancel whose STRICT terminal transition
-        FAILS (finalize returns False → engagement stays live, nothing settled)
-        must NOT strand the live anchor above the command. The suppression is
-        gated on finalize success, so the rollback runs WITHOUT suppression and
-        the fourth-consumer re-anchor moves the anchor below the command."""
-        ch, reg, rec, drv, seq, wire, n = await _handler_ctx_seq(
-            tmp_path, fake_telegram_bot)
-
-        async def _failing_finalize(_rec, reason="user"):
-            # Strict terminal transition lost / rolled back → engagement live.
-            return False
-
-        ch._finalize_cancel = _failing_finalize
-        u = _mk_update(chat_id=-1001, text="/cancel", thread_id=555, user_id=77)
-        await ch.handle_update(u)
-
-        # Re-anchored (NOT suppressed) → the markup copy is the LAST wire post.
-        assert wire.posts and wire.posts[-1][0] == "markup"
-        reanchor_mid = wire.posts[-1][1]
-        assert seq.high_water == reanchor_mid
-        assert _entry(reg, rec, n)["tg_message_id"] == reanchor_mid
-        assert _entry(reg, rec, n).get("answered") is False
-        assert drv._answer_reservations.get(rec.id) is None
-
-    async def test_terminal_finalize_success_settles_no_reanchor(
-        self, tmp_path, fake_telegram_bot,
-    ):
-        """F2: a /cancel whose finalize SUCCEEDS lets its own
-        ``settle_all_open_questions`` own the open anchor (settled once); the
-        terminal rollback is then suppressed so no redundant re-anchor copy is
-        posted. Finalize runs FIRST — a still-held reservation is inert to
-        settle, which never reads the reservation state."""
-        ch, reg, rec, drv, seq, wire, n = await _handler_ctx_seq(
-            tmp_path, fake_telegram_bot)
-
-        async def _ok_finalize(_rec, reason="user"):
-            # Mirror production: a winning finalize settles the open anchors
-            # while the answered reservation is still held.
-            assert drv._answer_reservations.get(rec.id) is not None
-            await drv.settle_all_open_questions(_rec, "cancelled")
-            return True
-
-        ch._finalize_cancel = _ok_finalize
-        u = _mk_update(chat_id=-1001, text="/cancel", thread_id=555, user_id=77)
-        await ch.handle_update(u)
-
-        assert not any(k == "markup" for k, _, _ in wire.posts)   # no re-anchor
-        assert reg.open_question_entries(rec.id) == []            # settled once
-        assert drv._answer_reservations.get(rec.id) is None
+    async def _send_user_turn(r, text, *, tg_message_id=None,
+                              inbound_token=None):
+        await drv.send_user_turn(r, text, inbound_token=inbound_token)
+        return None
+    ch._driver_send_user_turn = _send_user_turn
+    return ch, reg, rec, drv, client
 
 
-class TestM4NoticeAwaitCancellation:
-    """§A3 wave 2 — M4: a CancelledError while AWAITING the ``Turn failed``
-    notice must NOT leak the answered reservation. The rollback is guaranteed by
-    a try/finally around the notice (the CancelledError still propagates)."""
+def _block_first_await(reg):
+    """Block the handler's FIRST await (the clearance clamp) until released."""
+    entered = asyncio.Event()
+    gate = asyncio.Event()
+    real_lower = reg.lower_origin_clearance
 
-    async def test_cancel_during_failure_notice_rolls_back_reservation(
-        self, tmp_path, fake_telegram_bot,
-    ):
-        ch, reg, rec, drv, seq, wire, n = await _handler_ctx_seq(
-            tmp_path, fake_telegram_bot)
-        # Reserve the answer (as the handler does synchronously at entry).
-        token = drv.reserve_answer(rec.id)
-        assert token is not None
-        assert drv._answer_reservations.get(rec.id) is not None
-
-        # Delivery raises a NON-terminal Exception → reach the failure-notice
-        # block; the notice await BLOCKS so we can cancel mid-await.
-        ch._driver_send_user_turn = AsyncMock(side_effect=RuntimeError("boom"))
-        entered = asyncio.Event()
-
-        async def _blocking_notice(_rec, _text):
-            entered.set()
-            await asyncio.Event().wait()      # block until cancelled
-
-        ch._driver_post_notice = _blocking_notice
-
-        task = asyncio.ensure_future(ch._deliver_turn_bg(
-            rec, "answer", tg_message_id=999, answer_token=token))
-        await asyncio.wait_for(entered.wait(), timeout=1.0)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-
-        # M4: the reservation was rolled back despite the cancellation.
-        assert drv._answer_reservations.get(rec.id) is None
-
-
-class TestHandlerDelivery:
-    async def test_accepted_delivery_keeps_reservation_for_bg_owner(
-        self, tmp_path, fake_telegram_bot,
-    ):
-        ch, reg, rec, drv, n = await _handler_ctx(tmp_path, fake_telegram_bot)
-        # A fake send that ACCEPTS (does not actually promote here) — the
-        # handler must NOT roll back on the accepted path (the bg task owns it).
-        ch._driver_send_user_turn = AsyncMock(return_value="queued")
-
-        u = _mk_update(
-            chat_id=-1001, text="prod-db", thread_id=555, user_id=77)
-        await ch.handle_update(u)
-        await _drain_turns(ch)
-
-        ch._driver_send_user_turn.assert_awaited_once()
-        assert ch._driver_send_user_turn.await_args.kwargs.get(
-            "tg_message_id") == 999
-        # Not rolled back (accepted → the enqueue promoted it in production).
-        assert drv._answer_reservations.get(rec.id) is not None
-
-    async def test_rejected_delivery_rolls_back(
-        self, tmp_path, fake_telegram_bot,
-    ):
-        ch, reg, rec, drv, n = await _handler_ctx(tmp_path, fake_telegram_bot)
-        ch._driver_send_user_turn = AsyncMock(return_value="dropped_full")
-
-        u = _mk_update(chat_id=-1001, text="answer", thread_id=555, user_id=77)
-        await ch.handle_update(u)
-        await _drain_turns(ch)
-
-        assert drv._answer_reservations.get(rec.id) is None
-
-    async def test_raised_delivery_rolls_back(
-        self, tmp_path, fake_telegram_bot,
-    ):
-        ch, reg, rec, drv, n = await _handler_ctx(tmp_path, fake_telegram_bot)
-        ch._driver_send_user_turn = AsyncMock(side_effect=RuntimeError("boom"))
-
-        u = _mk_update(chat_id=-1001, text="answer", thread_id=555, user_id=77)
-        await ch.handle_update(u)
-        await _drain_turns(ch)
-
-        assert drv._answer_reservations.get(rec.id) is None
+    async def blocking_lower(eng_id, clearance):
+        entered.set()
+        await gate.wait()
+        return await real_lower(eng_id, clearance)
+    reg.lower_origin_clearance = blocking_lower
+    return entered, gate
 
 
 class TestInboundIngressReservation:
-    """G4 D2 (v0.96.0, Sol code-r1-2/r2-1 mandatory): the ingress
-    reservation is visible BEFORE the handler's FIRST await (the high-water
-    advance) and is released on every path — delivery, command
-    classification, and cancellation while suspended."""
-
-    async def _ctx(self, tmp_path, fake_telegram_bot):
-        ch, reg, rec, drv, n = await _handler_ctx(tmp_path, fake_telegram_bot)
-        ch._observer = MagicMock()
-        # #691: the double mirrors casa_core's adapter, which now forwards the
-        # message this reservation is FOR as well as its kind.
-        ch._driver_reserve_inbound = (
-            lambda r, command=False, text=None, message_id=None: (
-                drv.reserve_inbound(r.id, command=command, text=text,
-                                    message_id=message_id), True)[1])
-        ch._driver_release_inbound = (
-            lambda r, command=False, message_id=None:
-                drv.release_inbound_reservation(
-                    r.id, command=command, message_id=message_id))
-        return ch, reg, rec, drv
+    """The operator message's admission ticket is visible BEFORE the handler's
+    first await and is settled on every path — delivery, command
+    classification, and cancellation while suspended. It is a ticket, never
+    also a reservation: one message must not count twice in the veto."""
 
     async def test_reservation_visible_at_first_await(
         self, tmp_path, fake_telegram_bot,
     ):
-        ch, reg, rec, drv = await self._ctx(tmp_path, fake_telegram_bot)
-        seen: list[int] = []
-
-        async def spying_high_water(r, mid):
-            # THE first await of the handler — a completion racing this
-            # suspension must already see the reservation.
-            seen.append(drv.inbound_reservations(rec.id))
-        ch._driver_advance_high_water = spying_high_water
+        ch, reg, rec, drv, client = await _handler_ctx(
+            tmp_path, fake_telegram_bot)
+        entered, gate = _block_first_await(reg)
 
         u = _mk_update(chat_id=-1001, text="please reconsider the design",
                        thread_id=555, user_id=77)
-        await ch.handle_update(u)
-        await _drain_turns(ch)
-
-        assert seen and seen[0] >= 1
-        # enqueue resolved → released; unread accounting lives in the spool.
+        task = asyncio.create_task(ch.handle_update(u))
+        await asyncio.wait_for(entered.wait(), 5)
+        # A completion racing this suspension already sees the message.
+        assert drv.inbound_unread_depth(rec.id) == 1
+        assert drv.inbound_unread_texts(rec.id) == [
+            "please reconsider the design"]
         assert drv.inbound_reservations(rec.id) == 0
+        gate.set()
+        await task
+        await _drain_all(ch)
 
-    async def test_the_reservation_carries_the_text_keyed_by_message_id(
+        # Delivered → the ticket is gone.
+        assert client.query_prompts == ["please reconsider the design"]
+        assert drv.inbound_unread_depth(rec.id) == 0
+        assert drv.inbound_unread_texts(rec.id) == []
+
+    async def test_a_recognized_command_takes_nothing(
         self, tmp_path, fake_telegram_bot,
     ):
-        """#691, and the mutant it kills: the Telegram seam forwarding no
-        message id at reserve. Until the background enqueue resolves, the
-        handler's local `text` is the only copy of what the operator said —
-        so the reservation must be holding it, keyed by the update's own
-        message id, at the handler's FIRST await."""
-        ch, reg, rec, drv = await self._ctx(tmp_path, fake_telegram_bot)
-        seen: list[dict] = []
-
-        async def spying_high_water(r, mid):
-            seen.append(dict(drv._inbound_reservation_texts.get(rec.id, {})))
-        ch._driver_advance_high_water = spying_high_water
-
-        u = _mk_update(chat_id=-1001, text="please reconsider the design",
-                       thread_id=555, user_id=77)
-        await ch.handle_update(u)
-        assert len(seen) == 1
-        assert seen[0] == {999: "please reconsider the design"}
-
-        await _drain_turns(ch)
-        # Durable now, so the reservation's copy is gone and the count with it.
-        assert drv.inbound_reservation_texts(rec.id) == []
-        assert drv.inbound_reservations(rec.id) == 0
-
-    async def test_a_recognized_command_carries_no_text_through_the_seam(
-        self, tmp_path, fake_telegram_bot,
-    ):
-        """The birth classification survives the seam: a recognized command
-        reserves (it still vetoes a racing completion) and records nothing."""
-        ch, reg, rec, drv = await self._ctx(tmp_path, fake_telegram_bot)
-        seen: list[tuple] = []
-
-        async def spying_high_water(r, mid):
-            seen.append((drv.inbound_reservations(rec.id),
-                         dict(drv._inbound_reservation_texts.get(rec.id, {}))))
-        ch._driver_advance_high_water = spying_high_water
+        """A recognized command is consumed by the handler itself: no ticket
+        and no reservation at the first await, nothing left after, and it
+        never reaches the client."""
+        ch, reg, rec, drv, client = await _handler_ctx(
+            tmp_path, fake_telegram_bot)
+        entered, gate = _block_first_await(reg)
 
         u = _mk_update(chat_id=-1001, text="/silent", thread_id=555,
                        user_id=77)
-        await ch.handle_update(u)
-        await _drain_turns(ch)
-        assert len(seen) == 1
-        assert seen[0][0] >= 1
-        assert seen[0][1] == {}
-
-    async def test_command_path_takes_then_releases(
-        self, tmp_path, fake_telegram_bot,
-    ):
-        """Non-vacuous (Sol code-r2-1): the reservation IS taken before the
-        command branch runs, and the finally releases it."""
-        ch, reg, rec, drv = await self._ctx(tmp_path, fake_telegram_bot)
-        seen: list[int] = []
-
-        async def spying_high_water(r, mid):
-            seen.append(drv.inbound_reservations(rec.id))
-        ch._driver_advance_high_water = spying_high_water
-
-        u = _mk_update(chat_id=-1001, text="/silent", thread_id=555,
-                       user_id=77)
-        await ch.handle_update(u)
-        await _drain_turns(ch)
-        assert seen and seen[0] >= 1        # reservation existed during the await
-        assert drv.inbound_reservations(rec.id) == 0   # and was released
+        task = asyncio.create_task(ch.handle_update(u))
+        await asyncio.wait_for(entered.wait(), 5)
+        assert (drv.inbound_unread_depth(rec.id),
+                drv.inbound_reservations(rec.id)) == (0, 0)
+        gate.set()
+        await task
+        await _drain_all(ch)
+        ch._observer.silence.assert_called_once_with(rec.id)
+        assert client.query_prompts == []
+        assert (drv.inbound_unread_depth(rec.id),
+                drv.inbound_reservations(rec.id)) == (0, 0)
 
     async def test_cancellation_while_suspended_releases(
         self, tmp_path, fake_telegram_bot,
     ):
-        """Handler cancelled while blocked on the high-water await — the
-        finally must still release the reservation."""
-        import asyncio as _asyncio
-        ch, reg, rec, drv = await self._ctx(tmp_path, fake_telegram_bot)
-        gate = _asyncio.Event()
-        entered = _asyncio.Event()
-
-        async def blocking_high_water(r, mid):
-            entered.set()
-            await gate.wait()
-        ch._driver_advance_high_water = blocking_high_water
+        """Handler cancelled while blocked on its first await — the ticket is
+        told (one bounded notice) and then discharged, never leaked."""
+        ch, reg, rec, drv, client = await _handler_ctx(
+            tmp_path, fake_telegram_bot)
+        entered, _gate = _block_first_await(reg)
 
         u = _mk_update(chat_id=-1001, text="hello there", thread_id=555,
                        user_id=77)
-        task = _asyncio.create_task(ch.handle_update(u))
-        await entered.wait()
-        assert drv.inbound_reservations(rec.id) >= 1   # held while suspended
+        task = asyncio.create_task(ch.handle_update(u))
+        await asyncio.wait_for(entered.wait(), 5)
+        assert drv.inbound_unread_depth(rec.id) == 1   # held while suspended
         task.cancel()
         try:
             await task
-        except _asyncio.CancelledError:
+        except asyncio.CancelledError:
             pass
-        assert drv.inbound_reservations(rec.id) == 0   # released on cancel
+        assert drv.inbound_unread_depth(rec.id) == 0   # discharged on cancel
+        notices = [c.args[1] for c in
+                   ch._post_engagement_notice.await_args_list]
+        assert sum("could not be delivered" in n for n in notices) == 1
+        assert client.query_prompts == []
 
 
 # ===========================================================================
@@ -1239,7 +352,6 @@ class TestInCasaCompletionInboundGate:
         ch._engagement_registry = reg
         ch._engagement_driver = drv
         ch._observer = MagicMock()
-        ch._driver_advance_high_water = AsyncMock()
 
         async def _send_user_turn(r, text, *, tg_message_id=None):
             # Mirrors casa_core's in_casa branch (casa_core.py:4386-4389).
@@ -1311,16 +423,20 @@ class TestInCasaCompletionInboundGate:
             first = asyncio.create_task(drv.send_user_turn(rec, "first"))
             await asyncio.wait_for(client.first_streaming.wait(), 5)
 
-            # Event-controlled seam INSIDE _finalize_engagement (step 0),
-            # which runs AFTER emit_completion's handler pre-check and BEFORE
-            # try_transition_terminal invokes its terminal hook: the operator
-            # update is admitted exactly in that window.
-            async def _drain(engagement):
+            # Event-controlled seam at the entry of the registry's terminal
+            # transition, which runs AFTER emit_completion's handler pre-check
+            # and BEFORE try_transition_terminal invokes its terminal hook:
+            # the operator update is admitted exactly in that window. (The
+            # seam used to be the funnel's spool drain, which is gone.)
+            real_transition = reg.try_transition_terminal
+
+            async def _admitting_transition(*args, **kwargs):
                 u = _mk_update(chat_id=-1001, text="operator message",
                                thread_id=555, user_id=77)
                 await ch.handle_update(u)
                 await asyncio.wait_for(lock.second_waiting.wait(), 5)
-            drv.drain_inbound_spool = _drain
+                return await real_transition(*args, **kwargs)
+            reg.try_transition_terminal = _admitting_transition
 
             payload = await self._emit_ok(rec)
             assert payload["status"] == "error"
@@ -1342,44 +458,21 @@ class TestInCasaCompletionInboundGate:
 
 
 class TestReservationKindThreading:
-    """#664: the command classification is decided ONCE, at the reservation's
-    birth in the handler, and travels with it to release — across the
-    channel hook, the casa_core wrapper, and the driver. A dropped kind at
-    any hop either falsely discloses the command being processed (reserve
-    hop) or leaves a phantom command counter that later hides one real
-    message (release hop)."""
-
-    async def _spied_ctx(self, tmp_path, fake_telegram_bot):
-        ch, reg, rec, drv, n = await _handler_ctx(tmp_path, fake_telegram_bot)
-        ch._observer = MagicMock()
-        calls: list[tuple[str, bool]] = []
-
-        def _res(r, command=False, text=None, message_id=None):
-            calls.append(("reserve", command))
-            drv.reserve_inbound(r.id, command=command, text=text,
-                                message_id=message_id)
-            return True
-
-        def _rel(r, command=False, message_id=None):
-            calls.append(("release", command))
-            drv.release_inbound_reservation(r.id, command=command,
-                                            message_id=message_id)
-
-        ch._driver_reserve_inbound = _res
-        ch._driver_release_inbound = _rel
-        return ch, reg, rec, drv, calls
+    """#664: a reservation's command classification travels with it from
+    reserve to release. A command reservation vetoes a racing completion but
+    is never disclosed as a lost message; a dropped kind at release would
+    leave a phantom command counter that later hides one real message."""
 
     async def test_a_recognized_command_reserves_and_releases_as_command(
         self, tmp_path, fake_telegram_bot,
     ):
-        ch, reg, rec, drv, calls = await self._spied_ctx(
+        ch, reg, rec, drv, client = await _handler_ctx(
             tmp_path, fake_telegram_bot)
-        u = _mk_update(chat_id=-1001, text="/silent", thread_id=555,
-                       user_id=77)
-        await ch.handle_update(u)
-        await _drain_turns(ch)
-        assert calls == [("reserve", True), ("release", True)], calls
-        # end-to-end: nothing lingers on any counter after the command
+        drv.reserve_inbound(rec.id, command=True)
+        assert drv.inbound_reservations(rec.id) == 1          # vetoes
+        assert drv.inbound_message_reservations(rec.id) == 0  # not disclosed
+        drv.release_inbound_reservation(rec.id, command=True)
+        # nothing lingers on any counter after the command
         assert drv.inbound_reservations(rec.id) == 0
         assert drv.inbound_message_reservations(rec.id) == 0
         # ...and a subsequent ordinary reservation projects as exactly one
@@ -1387,87 +480,44 @@ class TestReservationKindThreading:
         drv.reserve_inbound(rec.id)
         assert drv.inbound_message_reservations(rec.id) == 1
         drv.release_inbound_reservation(rec.id)
+        assert drv.inbound_reservations(rec.id) == 0
 
     async def test_an_ordinary_message_reserves_and_releases_as_message(
         self, tmp_path, fake_telegram_bot,
     ):
-        ch, reg, rec, drv, calls = await self._spied_ctx(
+        """The production reserver — the #663 continuation lease — reserves
+        as a message, and its idempotent double release returns every
+        counter to zero."""
+        ch, reg, rec, drv, client = await _handler_ctx(
             tmp_path, fake_telegram_bot)
-        u = _mk_update(chat_id=-1001, text="please look again",
-                       thread_id=555, user_id=77)
-        await ch.handle_update(u)
-        await _drain_turns(ch)
-        assert ("reserve", False) in calls, calls
-        assert ("reserve", True) not in calls, calls
-        assert ("release", True) not in calls, calls
+        lease = ch.engagement_inbound_reservation(rec.id)
+        assert lease.take() is True
+        assert drv.inbound_reservations(rec.id) == 1
+        assert drv.inbound_message_reservations(rec.id) == 1
+        lease.release()
+        lease.release()                       # second release is a no-op
         assert drv.inbound_reservations(rec.id) == 0
-
-    def test_casa_core_wrappers_forward_the_kind(self):
-        """The production wrappers are closures inside casa_core.main(),
-        unreachable without booting it — pin the forwarding at the source
-        (the idiom test_callback_wiring.py already uses for main()'s
-        wiring). Mutation: dropping `command=command` at either hop fails
-        here."""
-        import ast as _ast
-        from pathlib import Path as _Path
-        src = (_Path(__file__).resolve().parents[1]
-               / "casa" / "rootfs" / "opt" / "casa"
-               / "casa_core.py").read_text(encoding="utf-8")
-        tree = _ast.parse(src)
-        found = {}
-        for node in _ast.walk(tree):
-            if (isinstance(node, _ast.FunctionDef) and node.name in (
-                    "_driver_reserve_inbound", "_driver_release_inbound")):
-                kwonly = [a.arg for a in node.args.kwonlyargs]
-                forwards = any(
-                    isinstance(c, _ast.Call)
-                    and any(k.arg == "command"
-                            and isinstance(k.value, _ast.Name)
-                            and k.value.id == "command"
-                            for k in c.keywords)
-                    for c in _ast.walk(node))
-                found[node.name] = ("command" in kwonly, forwards)
-        assert found.get("_driver_reserve_inbound") == (True, True), found
-        assert found.get("_driver_release_inbound") == (True, True), found
+        assert drv.inbound_message_reservations(rec.id) == 0
 
 
 class TestIngressReservationTaskOwnership:
-    """C4 RED CASE, ROUND 2 — the reservation a cancelled delivery task never
-    releases.
-
-    Specified by sol (round `redcase2-specify`); accepted by terra.
-
-    A delivery task cancelled BEFORE its first coroutine step never runs
-    `_deliver_turn_bg`, so its release closure never runs either. That is a
-    RETAINED reservation, never a double release, and it must FAIL TOWARD
-    DISCLOSURE: the operator's words are still the only copy and a racing
-    terminal must be able to quote them. The #649 task-end backstop settles the
-    admission TICKET and must not consume the ingress reservation with it — if
-    it ever did, the count would go to zero, the occurrence would vanish, no
-    spool envelope would exist, and the terminal would report nothing lost,
-    with every other case in this cluster still green.
+    """A delivery task cancelled BEFORE its first coroutine step never runs
+    ``_deliver_turn_bg``, so none of its own settle paths run either. It must
+    FAIL TOWARD DISCLOSURE: the task-end backstop tells the operator while the
+    ticket is still ledgered (so a racing terminal could still quote the
+    words), and only then discharges it.
     """
 
     async def test_cancel_before_first_coroutine_step_retains_the_disclosure(
         self, tmp_path, fake_telegram_bot,
     ):
-        ch, reg, rec, drv, _n = await _handler_ctx(tmp_path, fake_telegram_bot)
-        ch._observer = MagicMock()
+        ch, reg, rec, drv, client = await _handler_ctx(
+            tmp_path, fake_telegram_bot)
+        held_at_notice: list[list[str]] = []
 
-        def _res(r, command=False, text=None, message_id=None):
-            drv.reserve_inbound(r.id, command=command, text=text,
-                                message_id=message_id)
-            return True
-
-        def _rel(r, command=False, message_id=None):
-            drv.release_inbound_reservation(r.id, command=command,
-                                            message_id=message_id)
-
-        ch._driver_reserve_inbound = _res
-        ch._driver_release_inbound = _rel
-        # The hand-off only happens when a delivery seam is wired; the shared
-        # harness leaves it out because most of its cases never reach it.
-        ch._driver_send_user_turn = AsyncMock(return_value="queued")
+        async def _notice(r, text):
+            held_at_notice.append(drv.inbound_unread_texts(rec.id))
+        ch._post_engagement_notice = AsyncMock(side_effect=_notice)
 
         class _CancelOnAdd(set):
             """`self._turn_tasks.add(task)` runs synchronously immediately
@@ -1482,10 +532,11 @@ class TestIngressReservationTaskOwnership:
 
         u = _mk_update(chat_id=-1001, text="hello", thread_id=555, user_id=77)
         await ch.handle_update(u)
-        for _ in range(20):
-            await asyncio.sleep(0)
+        await _drain_all(ch)
 
-        assert drv.inbound_message_reservations(rec.id) == 1
-        assert drv.inbound_reservation_texts(rec.id) == ["hello"]
-        assert drv.inbound_unread_texts(rec.id) == []
-        assert drv.inbound_in_flight_texts(rec.id) == []
+        notices = [c.args[1] for c in
+                   ch._post_engagement_notice.await_args_list]
+        assert sum("could not be delivered" in n for n in notices) == 1
+        assert held_at_notice == [["hello"]]
+        assert drv.inbound_unread_depth(rec.id) == 0
+        assert client.query_prompts == []

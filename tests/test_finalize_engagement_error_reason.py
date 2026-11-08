@@ -124,64 +124,20 @@ async def test_outcome_error_handles_empty_text(tmp_path, caplog):
     )
 
 
-async def test_interaction_violated_appends_violation_line_to_summary(
+async def test_completed_engagement_posts_the_plain_summary(
     tmp_path,
 ) -> None:
-    """W2/Sol B9 (Task 7): when the driver's mutating_tool seam flagged
-    ``origin["interaction_violated"]`` (via
-    ``registry.set_interaction_violated``), _finalize_engagement appends a
-    violation line to the completion-message summary it posts into the
-    topic."""
+    """Sanity: a completed engagement gets the plain completion summary,
+    with nothing appended."""
     from engagement_registry import EngagementRegistry
     from tools import _finalize_engagement, init_tools
 
     reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
     rec = await reg.create(
-        kind="executor", role_or_type="configurator", driver="claude_code",
+        kind="executor", role_or_type="configurator", driver="in_casa",
         task="t", origin={"role": "assistant", "channel": "telegram"},
         topic_id=42,
     )
-    await reg.set_interaction_violated(rec.id)
-    assert rec.origin.get("interaction_violated") is True
-
-    tch = MagicMock()
-    tch.send_to_topic = AsyncMock()
-    tch.send_response_to_topic = AsyncMock()
-    tch.close_topic = AsyncMock()
-    cm = MagicMock()
-    cm.get.return_value = tch
-    init_tools(
-        channel_manager=cm, bus=MagicMock(notify=AsyncMock()),
-        specialist_registry=MagicMock(), mcp_registry=MagicMock(),
-        trigger_registry=MagicMock(), engagement_registry=reg,
-    )
-
-    await _finalize_engagement(
-        rec, outcome="completed", text="all done",
-        artifacts=[], next_steps=[], driver=None,
-    )
-
-    tch.send_response_to_topic.assert_awaited_once()  # v0.109.0 rich summary
-    posted_text = tch.send_response_to_topic.await_args.args[1]
-    assert "all done" in posted_text
-    assert "review" in posted_text.lower()
-
-
-async def test_no_interaction_violated_flag_omits_violation_line(
-    tmp_path,
-) -> None:
-    """Sanity: an engagement that was never flagged gets the plain
-    completion summary — no violation line appended."""
-    from engagement_registry import EngagementRegistry
-    from tools import _finalize_engagement, init_tools
-
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
-    rec = await reg.create(
-        kind="executor", role_or_type="configurator", driver="claude_code",
-        task="t", origin={"role": "assistant", "channel": "telegram"},
-        topic_id=42,
-    )
-    assert rec.origin.get("interaction_violated") is None
 
     tch = MagicMock()
     tch.send_to_topic = AsyncMock()

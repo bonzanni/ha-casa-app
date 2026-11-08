@@ -74,9 +74,8 @@ receive plugin paths, and their declared tool list is passed to the SDK as *auto
 a convenience rather than an enforcement boundary: sub-agent spawning bypasses an
 allowed-tools list, and only the disallowed list is CLI-enforced. What actually constrains an
 executor is the code-mandatory clamps merged into every options build — sub-agent spawn tools
-are hard-denied, Bash is hard-denied unless the declaration allows it (an in_casa executor's
-options count only a bare `Bash`; a `claude_code` executor's settings count a scoped
-`Bash(<pattern>)` too), and guard hooks
+are hard-denied, Bash is hard-denied unless the declaration allows it (an executor's options
+count only a bare `Bash`), and guard hooks
 protect managed components and agent-home settings. A plugin declaring protected tools
 protects resident and specialist calls; it creates no equivalent gate on the executor path.
 

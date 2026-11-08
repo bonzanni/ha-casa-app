@@ -48,7 +48,7 @@ class TestRegistryInitAndLoad:
         assert reg.active_and_idle() == []
 
     async def test_load_reads_active_records(self, tmp_path):
-        from engagement_registry import EngagementRegistry, EngagementRecord
+        from engagement_registry import EngagementRegistry
 
         tombstone = tmp_path / "engagements.json"
         tombstone.write_text(json.dumps([
@@ -86,79 +86,6 @@ class TestRegistryInitAndLoad:
         # File truncated to []
         assert json.loads(tombstone.read_text()) == []
         assert any("corrupt" in r.message.lower() for r in caplog.records)
-
-
-class TestBackfillAllocatedUid:
-    """Containment Stage 2 (Task 10): boot replay backfills a real OS uid onto a
-    legacy claude_code record via ``backfill_allocated_uid``. Fail-closed with
-    no allocator; idempotent when a real uid is already present."""
-
-    def _tmp_allocator(self, tmp_path):
-        from engagement_uids import UidAllocator
-        d = tmp_path / "uidalloc"; d.mkdir()
-        passwd = str(d / "passwd"); group = str(d / "group")
-        open(passwd, "w").close(); open(group, "w").close()
-        # proc_scanner: deterministic, don't scan the real /proc. Without it
-        # reconstruct() folds the HOST's live uids, and any uid >= UID_BASE on
-        # the machine running the suite (snap services sit in the 500000s) reads
-        # as "a uid was already allocated" and poisons the allocator.
-        alloc = UidAllocator(
-            str(d / "c.json"), passwd_path=passwd, group_path=group,
-            proc_scanner=lambda: set())
-        alloc.reconstruct(known_uids=[], dir_owner_uids=[])
-        return alloc
-
-    async def test_backfills_and_persists(self, tmp_path):
-        from engagement_registry import EngagementRegistry
-        from engagement_uids import UID_BASE, UNALLOCATED_UID
-
-        path = str(tmp_path / "e.json")
-        reg = EngagementRegistry(
-            tombstone_path=path, bus=None,
-            uid_allocator=self._tmp_allocator(tmp_path))
-        rec = await reg.create(
-            kind="executor", role_or_type="x", driver="claude_code",
-            task="t", origin={}, topic_id=1)
-        # create() already allocated one; force the legacy sentinel to exercise
-        # the backfill path directly.
-        rec.allocated_uid = UNALLOCATED_UID
-        uid = await reg.backfill_allocated_uid(rec.id)
-        assert uid >= UID_BASE
-        assert rec.allocated_uid == uid
-        # Persisted to the tombstone (strict).
-        saved = json.loads(Path(path).read_text())
-        assert any(r["id"] == rec.id and r["allocated_uid"] == uid
-                   for r in saved)
-
-    async def test_idempotent_when_uid_already_real(self, tmp_path):
-        from engagement_registry import EngagementRegistry
-        from engagement_uids import UID_BASE
-
-        reg = EngagementRegistry(
-            tombstone_path=str(tmp_path / "e.json"), bus=None,
-            uid_allocator=self._tmp_allocator(tmp_path))
-        rec = await reg.create(
-            kind="executor", role_or_type="x", driver="claude_code",
-            task="t", origin={}, topic_id=1)
-        first = rec.allocated_uid
-        assert first >= UID_BASE
-        # A record that already carries a real uid is returned unchanged — no
-        # second allocation.
-        again = await reg.backfill_allocated_uid(rec.id)
-        assert again == first
-
-    async def test_fail_closed_without_allocator(self, tmp_path):
-        from engagement_registry import EngagementRegistry
-        from engagement_uids import UidStateError, UNALLOCATED_UID
-
-        reg = EngagementRegistry(
-            tombstone_path=str(tmp_path / "e.json"), bus=None)  # no allocator
-        rec = await reg.create(
-            kind="executor", role_or_type="x", driver="claude_code",
-            task="t", origin={}, topic_id=1)
-        assert rec.allocated_uid == UNALLOCATED_UID
-        with pytest.raises(UidStateError):
-            await reg.backfill_allocated_uid(rec.id)
 
 
 class TestRegistryCreate:
@@ -257,8 +184,10 @@ class TestRegistryStateTransitions:
         from engagement_registry import EngagementRegistry
 
         reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
-        old = await reg.create("executor", "configurator", "claude_code", "t1", {}, 1)
+        old = await reg.create("executor", "configurator", "in_casa", "t1", {}, 1)
         await reg.mark_completed(old.id, completed_at=time.time() - 31 * 86400)
+        # An in_casa record ages out only once the transcript reaper is done.
+        await reg.mark_transcripts_reaped([old.id])
         fresh = await reg.create("specialist", "finance", "in_casa", "t2", {}, 2)
         rows = json.loads((tmp_path / "e.json").read_text())
         ids = [r["id"] for r in rows]
@@ -273,7 +202,7 @@ class TestRegistryStateTransitions:
 
         base = {
             "kind": "executor", "role_or_type": "configurator",
-            "driver": "claude_code", "started_at": 1000.0,
+            "driver": "in_casa", "started_at": 1000.0,
             "last_user_turn_ts": 1000.0, "origin": {}, "task": "t",
         }
         tombstone = tmp_path / "engagements.json"
@@ -309,9 +238,6 @@ class TestRegistryStateTransitions:
             "driver": "in_casa", "status": "idle", "topic_id": 2,
             "started_at": 1000.0, "last_user_turn_ts": 1000.0,
             "origin": {}, "task": "t",
-            # #335: a row WITHOUT auth_token triggers the load() backfill
-            # rewrite — carry one so no-reconcile really means no rewrite.
-            "auth_token": "tok-e-idle",
         }]))
         before = tombstone.read_text()
         reg = EngagementRegistry(tombstone_path=str(tombstone), bus=None)
@@ -326,7 +252,7 @@ class TestRegistryStateTransitions:
         path = str(tmp_path / "e.json")
         reg1 = EngagementRegistry(tombstone_path=path, bus=None)
         rec = await reg1.create(
-            "executor", "configurator", "claude_code", "install plugin X",
+            "executor", "configurator", "in_casa", "install plugin X",
             {"channel": "telegram", "chat_id": "123"}, 1,
         )
         await reg1.mark_completed(rec.id, completed_at=time.time())
@@ -436,7 +362,6 @@ class TestRegistryStateTransitions:
         EVERY mutated field (status, completed_at, error metadata) and, on a
         tombstone-write failure, restores the FULL snapshot and re-raises — no
         closed topic with a torn (memory ≠ disk) terminal record."""
-        import engagement_registry as er_mod
         from engagement_registry import EngagementRegistry
 
         reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
@@ -511,7 +436,7 @@ class TestRegistryStateTransitions:
 
         reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
         live = await reg.create("specialist", "finance", "in_casa", "t", {}, 1)
-        gone = await reg.create("specialist", "ops", "claude_code", "t", {}, 2)
+        gone = await reg.create("specialist", "ops", "in_casa", "t", {}, 2)
         await reg.try_transition_terminal(gone.id, "completed")
         ids = {r.id for r in reg.terminal_records()}
         assert gone.id in ids and live.id not in ids
@@ -534,11 +459,9 @@ class TestChannelStateFields:
             tombstone_path=str(tmp_path / "engagements.json"), bus=None,
         )
         rec = await reg.create(
-            kind="executor", role_or_type="plugin-developer",
-            driver="claude_code", task="t", origin={}, topic_id=42,
+            kind="executor", role_or_type="configurator",
+            driver="in_casa", task="t", origin={}, topic_id=42,
         )
-        assert rec.pinned_message_id is None
-        assert rec.progress_message_id is None
         assert rec.current_state_emoji is None
 
     async def test_set_channel_state_persists_each_field(self, tmp_path):
@@ -547,15 +470,10 @@ class TestChannelStateFields:
             tombstone_path=str(tmp_path / "engagements.json"), bus=None,
         )
         rec = await reg.create(
-            kind="executor", role_or_type="plugin-developer",
-            driver="claude_code", task="t", origin={}, topic_id=42,
+            kind="executor", role_or_type="configurator",
+            driver="in_casa", task="t", origin={}, topic_id=42,
         )
-        await reg.set_channel_state(
-            rec.id, pinned_message_id=100, progress_message_id=101,
-            current_state_emoji="🟢",
-        )
-        assert rec.pinned_message_id == 100
-        assert rec.progress_message_id == 101
+        await reg.set_channel_state(rec.id, current_state_emoji="🟢")
         assert rec.current_state_emoji == "🟢"
 
     async def test_set_channel_state_leaves_omitted_fields_untouched(self, tmp_path):
@@ -564,13 +482,11 @@ class TestChannelStateFields:
             tombstone_path=str(tmp_path / "engagements.json"), bus=None,
         )
         rec = await reg.create(
-            kind="executor", role_or_type="plugin-developer",
-            driver="claude_code", task="t", origin={}, topic_id=42,
+            kind="executor", role_or_type="configurator",
+            driver="in_casa", task="t", origin={}, topic_id=42,
         )
-        await reg.set_channel_state(rec.id, pinned_message_id=100)
         await reg.set_channel_state(rec.id, current_state_emoji="🟡")
-        assert rec.pinned_message_id == 100
-        assert rec.progress_message_id is None
+        await reg.set_channel_state(rec.id)
         assert rec.current_state_emoji == "🟡"
 
     async def test_channel_fields_round_trip_through_tombstone(self, tmp_path):
@@ -578,20 +494,15 @@ class TestChannelStateFields:
         tombstone = tmp_path / "engagements.json"
         reg = EngagementRegistry(tombstone_path=str(tombstone), bus=None)
         rec = await reg.create(
-            kind="executor", role_or_type="plugin-developer",
-            driver="claude_code", task="t", origin={}, topic_id=42,
+            kind="executor", role_or_type="configurator",
+            driver="in_casa", task="t", origin={}, topic_id=42,
         )
-        await reg.set_channel_state(
-            rec.id, pinned_message_id=42, progress_message_id=43,
-            current_state_emoji="🟢",
-        )
+        await reg.set_channel_state(rec.id, current_state_emoji="🟢")
 
         reg2 = EngagementRegistry(tombstone_path=str(tombstone), bus=None)
         await reg2.load()
         rec2 = reg2.get(rec.id)
         assert rec2 is not None
-        assert rec2.pinned_message_id == 42
-        assert rec2.progress_message_id == 43
         assert rec2.current_state_emoji == "🟢"
 
     async def test_set_channel_state_unknown_engagement_noop(self, tmp_path):
@@ -600,7 +511,7 @@ class TestChannelStateFields:
             tombstone_path=str(tmp_path / "engagements.json"), bus=None,
         )
         # Should not raise.
-        await reg.set_channel_state("does-not-exist", pinned_message_id=1)
+        await reg.set_channel_state("does-not-exist", current_state_emoji="🟢")
 
 
 @pytest.fixture
@@ -620,8 +531,8 @@ class TestToolsAllowedField:
     async def test_default_empty_tuple(self, registry):
         rec = await registry.create(
             kind="executor",
-            role_or_type="plugin-developer",
-            driver="claude_code",
+            role_or_type="configurator",
+            driver="in_casa",
             task="probe",
             origin={},
             topic_id=None,
@@ -632,8 +543,8 @@ class TestToolsAllowedField:
         allow = ("Bash(npm*)", "Read", "Edit(/data/engagements/*)")
         rec = await registry.create(
             kind="executor",
-            role_or_type="plugin-developer",
-            driver="claude_code",
+            role_or_type="configurator",
+            driver="in_casa",
             task="probe",
             origin={},
             topic_id=None,
@@ -648,8 +559,8 @@ class TestToolsAllowedField:
         await reg1.load()
         await reg1.create(
             kind="executor",
-            role_or_type="plugin-developer",
-            driver="claude_code",
+            role_or_type="configurator",
+            driver="in_casa",
             task="t",
             origin={},
             topic_id=None,
@@ -671,8 +582,8 @@ class TestToolsAllowedField:
         path.write_text(json.dumps([{
             "id": "a" * 32,
             "kind": "executor",
-            "role_or_type": "plugin-developer",
-            "driver": "claude_code",
+            "role_or_type": "configurator",
+            "driver": "in_casa",
             "status": "active",
             "topic_id": 42,
             "started_at": 1700000000.0,
@@ -818,391 +729,9 @@ class TestTombstoneAtomicity:
 # ---------------------------------------------------------------------------
 
 
-class TestInteractionState:
-    async def test_default_is_empty_string(self, registry):
-        rec = await registry.create(
-            kind="executor", role_or_type="configurator", driver="claude_code",
-            task="t", origin={}, topic_id=1,
-        )
-        assert rec.interaction_state == ""
-
-    @pytest.mark.parametrize("current,event,expected", [
-        # first_contact: only valid from first_contact_required.
-        ("first_contact_required", "first_contact", "awaiting_operator"),
-        ("awaiting_operator", "first_contact", None),
-        ("authorized", "first_contact", None),
-        ("", "first_contact", None),
-        # operator_answered / operator_turn: valid from EITHER
-        # pre-authorized state (r3-B4 — a fast tap beats the agent's
-        # first reply), never backwards, never from "" or "authorized".
-        ("first_contact_required", "operator_answered", "authorized"),
-        ("awaiting_operator", "operator_answered", "authorized"),
-        ("authorized", "operator_answered", None),
-        ("", "operator_answered", None),
-        ("first_contact_required", "operator_turn", "authorized"),
-        ("awaiting_operator", "operator_turn", "authorized"),
-        ("authorized", "operator_turn", None),
-        ("", "operator_turn", None),
-        # Unknown event is always a no-op.
-        ("first_contact_required", "bogus_event", None),
-        ("awaiting_operator", "bogus_event", None),
-    ])
-    async def test_transition_table(self, registry, current, event, expected):
-        rec = await registry.create(
-            kind="executor", role_or_type="configurator", driver="claude_code",
-            task="t", origin={}, topic_id=1,
-        )
-        rec.interaction_state = current
-        result = await registry.advance_interaction_state(rec.id, event)
-        assert result == expected
-        assert rec.interaction_state == (expected if expected is not None else current)
-
-    async def test_unknown_engagement_returns_none(self, registry):
-        assert await registry.advance_interaction_state(
-            "ghost", "first_contact",
-        ) is None
-
-    async def test_atomicity_concurrent_calls_resolve_to_one_transition(self, registry):
-        """Two coroutines race the SAME event on the SAME record: the lock
-        serializes read-compute-write, so exactly one call sees the
-        pre-transition state (and wins) while the other sees the
-        already-advanced state (and no-ops)."""
-        rec = await registry.create(
-            kind="executor", role_or_type="configurator", driver="claude_code",
-            task="t", origin={}, topic_id=1,
-        )
-        rec.interaction_state = "awaiting_operator"
-        results = await asyncio.gather(
-            registry.advance_interaction_state(rec.id, "operator_answered"),
-            registry.advance_interaction_state(rec.id, "operator_answered"),
-        )
-        assert results.count("authorized") == 1
-        assert results.count(None) == 1
-        assert rec.interaction_state == "authorized"
-
-    async def test_advance_raises_and_rolls_back_on_persist_failure(
-        self, registry, monkeypatch,
-    ):
-        """B3 (Sol r1): advance_interaction_state persists STRICTLY — a REAL
-        tombstone-write failure (the underlying file write raises, not the
-        method) must propagate AND roll the in-memory field back to its prior
-        value, so a restart never restores stale ``awaiting_operator`` after
-        the callback thinks it authorized."""
-        import engagement_registry as er
-
-        rec = await registry.create(
-            kind="executor", role_or_type="configurator", driver="claude_code",
-            task="t", origin={}, topic_id=1,
-        )
-        rec.interaction_state = "first_contact_required"
-
-        def _boom(*_a, **_k):
-            raise OSError("disk full")
-
-        monkeypatch.setattr(er, "atomic_write_json", _boom)
-
-        with pytest.raises(OSError):
-            await registry.advance_interaction_state(rec.id, "operator_answered")
-
-        # Rolled back: authorization never reached disk, so the in-memory
-        # field must NOT be left advanced.
-        assert rec.interaction_state == "first_contact_required"
-
-    async def test_persists_across_tombstone_round_trip(self, tmp_path, bus):
-        from engagement_registry import EngagementRegistry
-
-        path = str(tmp_path / "engagements.json")
-        reg1 = EngagementRegistry(tombstone_path=path, bus=bus)
-        rec = await reg1.create(
-            kind="executor", role_or_type="configurator", driver="claude_code",
-            task="t", origin={}, topic_id=1,
-        )
-        rec.interaction_state = "first_contact_required"
-        result = await reg1.advance_interaction_state(rec.id, "first_contact")
-        assert result == "awaiting_operator"
-
-        reg2 = EngagementRegistry(tombstone_path=path, bus=bus)
-        await reg2.load()
-        rec2 = reg2.get(rec.id)
-        assert rec2 is not None
-        assert rec2.interaction_state == "awaiting_operator"
-
-    async def test_pre_v0_75_0_tombstone_loads_with_empty_default(self, tmp_path, bus):
-        """Back-compat: tombstones written before Task 7 lack the field."""
-        from engagement_registry import EngagementRegistry
-
-        path = tmp_path / "engagements.json"
-        path.write_text(json.dumps([{
-            "id": "b" * 32,
-            "kind": "executor",
-            "role_or_type": "configurator",
-            "driver": "claude_code",
-            "status": "active",
-            "topic_id": 42,
-            "started_at": 1700000000.0,
-            "last_user_turn_ts": 1700000000.0,
-            "last_idle_reminder_ts": 0.0,
-            "completed_at": None,
-            "sdk_session_id": None,
-            "origin": {},
-            "task": "legacy",
-        }]))
-        reg = EngagementRegistry(tombstone_path=str(path), bus=bus)
-        await reg.load()
-        rec = reg._records["b" * 32]
-        assert rec.interaction_state == ""
-
-
-class TestSetInteractionViolated:
-    async def test_sets_origin_flag(self, registry):
-        rec = await registry.create(
-            kind="executor", role_or_type="configurator", driver="claude_code",
-            task="t", origin={}, topic_id=1,
-        )
-        assert rec.origin.get("interaction_violated") is None
-        await registry.set_interaction_violated(rec.id)
-        assert rec.origin.get("interaction_violated") is True
-
-    async def test_unknown_engagement_is_noop(self, registry):
-        await registry.set_interaction_violated("ghost")  # must not raise
-
-    async def test_persists_through_tombstone(self, tmp_path, bus):
-        from engagement_registry import EngagementRegistry
-
-        path = str(tmp_path / "engagements.json")
-        reg1 = EngagementRegistry(tombstone_path=path, bus=bus)
-        rec = await reg1.create(
-            kind="executor", role_or_type="configurator", driver="claude_code",
-            task="t", origin={}, topic_id=1,
-        )
-        await reg1.set_interaction_violated(rec.id)
-
-        reg2 = EngagementRegistry(tombstone_path=path, bus=bus)
-        await reg2.load()
-        rec2 = reg2.get(rec.id)
-        assert rec2 is not None
-        assert rec2.origin.get("interaction_violated") is True
-
-    async def test_raises_and_rolls_back_on_persist_failure(
-        self, registry, monkeypatch,
-    ):
-        """B3 (Sol diff r2): set_interaction_violated persists STRICTLY — a
-        REAL tombstone-write failure must PROPAGATE and roll the in-memory
-        origin flag back, so the driver seam (which only marks
-        ``_violation_flagged`` after a successful return) retries next frame
-        instead of permanently losing the completion warning across a
-        restart."""
-        import engagement_registry as er
-
-        rec = await registry.create(
-            kind="executor", role_or_type="configurator", driver="claude_code",
-            task="t", origin={}, topic_id=1,
-        )
-        assert rec.origin.get("interaction_violated") is None
-
-        def _boom(*_a, **_k):
-            raise OSError("disk full")
-
-        monkeypatch.setattr(er, "atomic_write_json", _boom)
-
-        with pytest.raises(OSError):
-            await registry.set_interaction_violated(rec.id)
-
-        # Rolled back: the flag never reached disk, so the in-memory origin
-        # must NOT be left set (else a restart would lose the un-persisted flag
-        # silently while the driver believed it succeeded).
-        assert rec.origin.get("interaction_violated") is None
-
-
 # ---------------------------------------------------------------------------
 # v0.79.0 (§4) — persisted question numbering + open-question ledger
 # ---------------------------------------------------------------------------
-
-
-class TestQuestionNumbering:
-    async def test_allocate_is_monotonic_and_persisted(self, tmp_path):
-        from engagement_registry import EngagementRegistry
-
-        tombstone = tmp_path / "engagements.json"
-        reg = EngagementRegistry(tombstone_path=str(tombstone), bus=None)
-        rec = await reg.create("executor", "configurator", "claude_code", "t", {}, 1)
-
-        assert await reg.allocate_question_number(rec.id) == 1
-        assert await reg.allocate_question_number(rec.id) == 2
-        assert await reg.allocate_question_number(rec.id) == 3
-        assert rec.next_question_number == 4
-
-        # Survives a reload: numbering is NEVER rewound.
-        reg2 = EngagementRegistry(tombstone_path=str(tombstone), bus=None)
-        await reg2.load()
-        assert await reg2.allocate_question_number(rec.id) == 4
-
-    async def test_open_question_ledger_add_close_accessor(self, tmp_path):
-        from engagement_registry import EngagementRegistry
-
-        tombstone = tmp_path / "engagements.json"
-        reg = EngagementRegistry(tombstone_path=str(tombstone), bus=None)
-        rec = await reg.create("executor", "configurator", "claude_code", "t", {}, 1)
-
-        n1 = await reg.allocate_question_number(rec.id)
-        await reg.add_open_question(rec.id, n1, 5001)
-        n2 = await reg.allocate_question_number(rec.id)
-        await reg.add_open_question(rec.id, n2, 5002)
-        assert reg.open_question_numbers(rec.id) == [1, 2]
-
-        await reg.close_open_question(rec.id, n1)
-        assert reg.open_question_numbers(rec.id) == [2]
-
-        # open_questions survive reload; next_question_number preserved.
-        reg2 = EngagementRegistry(tombstone_path=str(tombstone), bus=None)
-        await reg2.load()
-        assert reg2.open_question_numbers(rec.id) == [2]
-        assert reg2.get(rec.id).open_questions[0]["tg_message_id"] == 5002
-        assert await reg2.allocate_question_number(rec.id) == 3
-
-    async def test_add_open_question_idempotent_on_number(self, tmp_path):
-        from engagement_registry import EngagementRegistry
-
-        tombstone = tmp_path / "engagements.json"
-        reg = EngagementRegistry(tombstone_path=str(tombstone), bus=None)
-        rec = await reg.create("executor", "configurator", "claude_code", "t", {}, 1)
-        await reg.add_open_question(rec.id, 1, 100)
-        await reg.add_open_question(rec.id, 1, 200)  # same number → update, no dup
-        assert reg.open_question_numbers(rec.id) == [1]
-        assert rec.open_questions[0]["tg_message_id"] == 200
-
-    async def test_allocate_rolls_back_on_persist_failure(self, tmp_path, monkeypatch):
-        import engagement_registry as er
-        from engagement_registry import EngagementRegistry
-
-        tombstone = tmp_path / "engagements.json"
-        reg = EngagementRegistry(tombstone_path=str(tombstone), bus=None)
-        rec = await reg.create("executor", "configurator", "claude_code", "t", {}, 1)
-
-        def _boom(*_a, **_k):
-            raise OSError("disk full")
-
-        monkeypatch.setattr(er, "atomic_write_json", _boom)
-        with pytest.raises(OSError):
-            await reg.allocate_question_number(rec.id)
-        # Rolled back — the number never reached disk, so it must not be consumed.
-        assert rec.next_question_number == 1
-
-    async def test_pre_v0_79_0_tombstone_loads_with_safe_defaults(self, tmp_path, bus):
-        """Caller-audit item 5 (T5): a tombstone written before v0.79.0 lacks
-        next_question_number/open_questions/summary_message_id/summary_revision
-        entirely — loading it must not raise, and each field must fall back to
-        its safe default (matching test_pre_v0_75_0_tombstone_loads_with_empty_default's
-        pattern for interaction_state)."""
-        from engagement_registry import EngagementRegistry
-
-        path = tmp_path / "engagements.json"
-        path.write_text(json.dumps([{
-            "id": "c" * 32,
-            "kind": "executor",
-            "role_or_type": "configurator",
-            "driver": "claude_code",
-            "status": "active",
-            "topic_id": 42,
-            "started_at": 1700000000.0,
-            "last_user_turn_ts": 1700000000.0,
-            "last_idle_reminder_ts": 0.0,
-            "completed_at": None,
-            "sdk_session_id": None,
-            "origin": {},
-            "task": "legacy",
-        }]))
-        reg = EngagementRegistry(tombstone_path=str(path), bus=bus)
-        await reg.load()
-        rec = reg._records["c" * 32]
-        assert rec.next_question_number == 1
-        assert rec.open_questions == ()
-        assert rec.summary_message_id is None
-        assert rec.summary_revision == 0
-        # And the allocators work normally from that safe baseline.
-        assert await reg.allocate_question_number(rec.id) == 1
-        assert await reg.allocate_summary_revision(rec.id) == 0
-
-
-class TestSummaryState:
-    """v0.79.0 (§5): summary_message_id persistence + monotonic revision."""
-
-    async def test_set_summary_message_id_persists_and_reloads(self, tmp_path):
-        from engagement_registry import EngagementRegistry
-
-        path = str(tmp_path / "e.json")
-        reg = EngagementRegistry(tombstone_path=path, bus=None)
-        rec = await reg.create(
-            kind="executor", role_or_type="hello", driver="claude_code",
-            task="t", origin={}, topic_id=5,
-        )
-        await reg.set_summary_message_id(rec.id, 4242)
-        assert reg.get(rec.id).summary_message_id == 4242
-        # Reload from disk.
-        reg2 = EngagementRegistry(tombstone_path=path, bus=None)
-        await reg2.load()
-        assert reg2.get(rec.id).summary_message_id == 4242
-
-    async def test_allocate_summary_revision_is_monotonic(self, tmp_path):
-        from engagement_registry import EngagementRegistry
-
-        path = str(tmp_path / "e.json")
-        reg = EngagementRegistry(tombstone_path=path, bus=None)
-        rec = await reg.create(
-            kind="executor", role_or_type="hello", driver="claude_code",
-            task="t", origin={}, topic_id=5,
-        )
-        assert await reg.allocate_summary_revision(rec.id) == 0
-        assert await reg.allocate_summary_revision(rec.id) == 1
-        assert await reg.allocate_summary_revision(rec.id) == 2
-        assert reg.get(rec.id).summary_revision == 3
-        # Survives a reload (never rewound).
-        reg2 = EngagementRegistry(tombstone_path=path, bus=None)
-        await reg2.load()
-        assert reg2.get(rec.id).summary_revision == 3
-        assert await reg2.allocate_summary_revision(rec.id) == 3
-
-    async def test_allocate_unknown_engagement_returns_none(self, tmp_path):
-        from engagement_registry import EngagementRegistry
-
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
-        assert await reg.allocate_summary_revision("nope") is None
-        await reg.set_summary_message_id("nope", 1)  # no-op, no raise
-
-
-class TestF6StrictLedgerPersistence:
-    """v0.79.0 (§4/§5, Sol F6): ``add_open_question`` and
-    ``set_summary_message_id`` are STRICT — a tombstone-write failure rolls the
-    mutated field back (full-field) and RE-RAISES so a caller can fail closed."""
-
-    async def test_add_open_question_strict_rolls_back_and_raises(self, tmp_path):
-        import unittest.mock as _mock
-        from engagement_registry import EngagementRegistry
-
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
-        rec = await reg.create("executor", "configurator", "claude_code", "t", {}, 1)
-        assert rec.open_questions == ()
-        with _mock.patch.object(
-            reg, "_write_tombstone", side_effect=OSError("disk full"),
-        ):
-            with pytest.raises(OSError):
-                await reg.add_open_question(rec.id, 1, 500, text="Q1: hi")
-        # Rolled back — no phantom open question the ledger/summary can't back.
-        assert rec.open_questions == ()
-
-    async def test_set_summary_message_id_strict_rolls_back_and_raises(self, tmp_path):
-        import unittest.mock as _mock
-        from engagement_registry import EngagementRegistry
-
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
-        rec = await reg.create("executor", "configurator", "claude_code", "t", {}, 1)
-        assert rec.summary_message_id is None
-        with _mock.patch.object(
-            reg, "_write_tombstone", side_effect=OSError("disk full"),
-        ):
-            with pytest.raises(OSError):
-                await reg.set_summary_message_id(rec.id, 777)
-        assert rec.summary_message_id is None
 
 
 class TestTerminalGuards:
@@ -1213,7 +742,7 @@ class TestTerminalGuards:
 
     async def test_mark_idle_never_overwrites_terminal(self, registry):
         rec = await registry.create(
-            kind="executor", role_or_type="configurator", driver="claude_code",
+            kind="executor", role_or_type="configurator", driver="in_casa",
             task="t", origin={}, topic_id=1,
         )
         assert await registry.try_transition_terminal(rec.id, "cancelled")
@@ -1222,7 +751,7 @@ class TestTerminalGuards:
 
     async def test_mark_error_loses_to_terminal_winner(self, registry):
         rec = await registry.create(
-            kind="executor", role_or_type="configurator", driver="claude_code",
+            kind="executor", role_or_type="configurator", driver="in_casa",
             task="t", origin={}, topic_id=1,
         )
         assert await registry.try_transition_terminal(rec.id, "cancelled")
@@ -1233,7 +762,7 @@ class TestTerminalGuards:
 
     async def test_mark_error_wins_on_live_record(self, registry):
         rec = await registry.create(
-            kind="executor", role_or_type="configurator", driver="claude_code",
+            kind="executor", role_or_type="configurator", driver="in_casa",
             task="t", origin={}, topic_id=1,
         )
         won = await registry.mark_error(rec.id, kind="boom", message="m")
@@ -1243,14 +772,14 @@ class TestTerminalGuards:
 
     async def test_mark_completed_and_cancelled_respect_terminal(self, registry):
         rec = await registry.create(
-            kind="executor", role_or_type="configurator", driver="claude_code",
+            kind="executor", role_or_type="configurator", driver="in_casa",
             task="t", origin={}, topic_id=1,
         )
         assert await registry.try_transition_terminal(rec.id, "cancelled")
         await registry.mark_completed(rec.id, completed_at=123.0)
         assert registry.get(rec.id).status == "cancelled"
         rec2 = await registry.create(
-            kind="executor", role_or_type="configurator", driver="claude_code",
+            kind="executor", role_or_type="configurator", driver="in_casa",
             task="t", origin={}, topic_id=2,
         )
         assert await registry.try_transition_terminal(rec2.id, "completed")
@@ -1271,7 +800,7 @@ class TestTerminalGuards:
         monkeypatch.setattr(er, "atomic_write_json", _boom)
         with pytest.raises(OSError):
             await registry.create(
-                kind="executor", role_or_type="configurator", driver="claude_code",
+                kind="executor", role_or_type="configurator", driver="in_casa",
                 task="t", origin={}, topic_id=99,
             )
         assert registry.active_and_idle() == []
@@ -1349,7 +878,7 @@ class TestResumeFailCountPersistence:
         monkeypatch.setattr(er, "atomic_write_json", gated_write)
 
         create_task = asyncio.ensure_future(registry.create(
-            kind="executor", role_or_type="configurator", driver="claude_code",
+            kind="executor", role_or_type="configurator", driver="in_casa",
             task="t", origin={}, topic_id=44,
         ))
         await asyncio.to_thread(write_entered.wait, 5)
@@ -1390,7 +919,7 @@ class TestResumeFailCountPersistence:
         monkeypatch.setattr(er, "atomic_write_json", gated_write)
 
         create_task = asyncio.ensure_future(registry.create(
-            kind="executor", role_or_type="configurator", driver="claude_code",
+            kind="executor", role_or_type="configurator", driver="in_casa",
             task="t", origin={}, topic_id=45,
         ))
         await asyncio.to_thread(write_entered.wait, 5)
@@ -1468,132 +997,6 @@ class TestPersistSessionIdCancellationSafety:
         assert rec.sdk_session_id == "sess-abc"
 
 
-class TestAllocatedUid:
-    """Containment Stage 2 (Task 3): claude_code engagements get a distinct,
-    persisted, never-reused OS uid via an injected ``UidAllocator``."""
-
-    @staticmethod
-    def _make_allocator(tmp_path):
-        from engagement_uids import UidAllocator
-
-        alloc = UidAllocator(counter_path=str(tmp_path / "uid_counter.json"),
-                             proc_scanner=lambda: set())  # see above
-        alloc.reconstruct(known_uids=[], dir_owner_uids=[])
-        return alloc
-
-    @pytest.fixture
-    def registry_with_allocator(self, tmp_path):
-        from engagement_registry import EngagementRegistry
-
-        alloc = self._make_allocator(tmp_path)
-        reg = EngagementRegistry(
-            tombstone_path=str(tmp_path / "engagements.json"),
-            bus=None,
-            uid_allocator=alloc,
-        )
-        return reg, alloc
-
-    async def test_create_allocates_uid_for_claude_code(
-        self, registry_with_allocator,
-    ):
-        reg, _alloc = registry_with_allocator
-        rec = await reg.create(
-            kind="executor", role_or_type="plugin-developer",
-            driver="claude_code", task="t", origin={}, topic_id=1,
-        )
-        assert rec.allocated_uid >= 200000
-
-    async def test_create_does_not_allocate_for_specialist_in_casa(
-        self, registry_with_allocator,
-    ):
-        reg, _alloc = registry_with_allocator
-        rec = await reg.create(
-            kind="specialist", role_or_type="finance",
-            driver="in_casa", task="t", origin={}, topic_id=1,
-        )
-        from engagement_uids import UNALLOCATED_UID
-
-        assert rec.allocated_uid == UNALLOCATED_UID
-
-    async def test_two_claude_code_creates_get_distinct_uids(
-        self, registry_with_allocator,
-    ):
-        reg, _alloc = registry_with_allocator
-        rec1 = await reg.create(
-            kind="executor", role_or_type="plugin-developer",
-            driver="claude_code", task="t1", origin={}, topic_id=1,
-        )
-        rec2 = await reg.create(
-            kind="executor", role_or_type="plugin-developer",
-            driver="claude_code", task="t2", origin={}, topic_id=2,
-        )
-        assert rec1.allocated_uid != rec2.allocated_uid
-
-    async def test_uid_persists_and_reloads(self, registry_with_allocator, tmp_path):
-        from engagement_registry import EngagementRegistry
-
-        reg, _alloc = registry_with_allocator
-        rec = await reg.create(
-            kind="executor", role_or_type="plugin-developer",
-            driver="claude_code", task="t", origin={}, topic_id=1,
-        )
-        uid = rec.allocated_uid
-
-        reg2 = EngagementRegistry(
-            tombstone_path=str(tmp_path / "engagements.json"), bus=None,
-        )
-        await reg2.load()
-        reloaded = reg2.get(rec.id)
-        assert reloaded is not None
-        assert reloaded.allocated_uid == uid
-
-    async def test_legacy_record_loads_with_sentinel(self, tmp_path):
-        from engagement_registry import EngagementRegistry
-        from engagement_uids import UNALLOCATED_UID
-
-        tombstone = tmp_path / "engagements.json"
-        legacy_row = {
-            "id": "legacy-1",
-            "kind": "executor",
-            "role_or_type": "plugin-developer",
-            "driver": "claude_code",
-            "status": "completed",
-            "topic_id": 99,
-            "started_at": 1000.0,
-            "last_user_turn_ts": 1000.0,
-            "last_idle_reminder_ts": 0.0,
-            "completed_at": 1001.0,
-            "sdk_session_id": None,
-            "origin": {},
-            "task": "legacy task",
-            # No "allocated_uid" key — predates this field.
-        }
-        tombstone.write_text(json.dumps([legacy_row]))
-
-        reg = EngagementRegistry(tombstone_path=str(tombstone), bus=None)
-        await reg.load()
-        rec = reg.get("legacy-1")
-        assert rec is not None
-        assert rec.allocated_uid == UNALLOCATED_UID
-
-    async def test_no_allocator_leaves_sentinel(self, tmp_path):
-        """Fail-closed default (no Task-10 boot wiring yet): a claude_code
-        create() with no uid_allocator injected must not silently mint a
-        root/bogus uid — it leaves the sentinel for downstream preflight to
-        refuse."""
-        from engagement_registry import EngagementRegistry
-        from engagement_uids import UNALLOCATED_UID
-
-        reg = EngagementRegistry(
-            tombstone_path=str(tmp_path / "engagements.json"), bus=None,
-        )
-        rec = await reg.create(
-            kind="executor", role_or_type="plugin-developer",
-            driver="claude_code", task="t", origin={}, topic_id=1,
-        )
-        assert rec.allocated_uid == UNALLOCATED_UID
-
-
 class TestChannelStateStrictAndInitial:
     """#529: the topic-state sentinel scheme needs (a) a STRICT
     ``set_channel_state`` whose persistence failure propagates and rolls the
@@ -1610,8 +1013,8 @@ class TestChannelStateStrictAndInitial:
             tombstone_path=str(tmp_path / "engagements.json"), bus=None,
         )
         rec = await reg.create(
-            kind="executor", role_or_type="plugin-developer",
-            driver="claude_code", task="t", origin={}, topic_id=42,
+            kind="executor", role_or_type="configurator",
+            driver="in_casa", task="t", origin={}, topic_id=42,
         )
         return reg, rec
 
@@ -1722,7 +1125,7 @@ class TestBeginTurnDelivery:
         reg = EngagementRegistry(
             tombstone_path=str(tmp_path / name), bus=None)
         rec = await reg.create(
-            "executor", "plugin-developer", "claude_code", "t", {}, 1)
+            "executor", "configurator", "in_casa", "t", {}, 1)
         return reg, rec
 
     async def test_seam_is_not_a_coroutine_function(self):

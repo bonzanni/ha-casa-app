@@ -2,10 +2,8 @@
 
 A canary goes into every registry row (the store's tables, the spool and its
 drain snapshot, the search index, a finished and an in-progress export, a
-staged restore source, a transcript of every role and of an engagement, the root's own transcript
-directory, the session pointers, an explanation record, and the
-executor-memory block of an open and of a completed retained engagement),
-plus a staging file each named producer's atomic helper leaves when a real
+staged restore source, a transcript of every role, the root's own transcript
+directory, the session pointers and an explanation record), plus a staging file each named producer's atomic helper leaves when a real
 process is killed between its write and its rename. A further canary is
 captured after consent, in the window before the restart.
 
@@ -22,7 +20,7 @@ import time
 import pytest
 
 import memory_wipe_support as w
-from memory import capture, executor_block, maintenance, registry
+from memory import capture, maintenance, registry
 from memory.store import MemoryStore
 
 pytestmark = [pytest.mark.unit]
@@ -102,34 +100,7 @@ async def build(tree: w.Tree, monkeypatch) -> dict:
                {"explanation_store": explanation_store})
     explanation_store.ExplanationStore(u("/data/explanations")).record(rec)
 
-    # executor memory: an open engagement, provisioned, and a completed one
-    # still inside its retention
-    open_ws = await w.provision(root, w.EID_OPEN,
-                                memory=w.memory_block(tree.canary()),
-                                monkeypatch=monkeypatch)
-    w.write(u(f"/data/engagement-ctl/{w.EID_OPEN}/.casa-meta.json"),
-            json.dumps({"status": "UNDERGOING", "retention_until": None}))
-    w.write(open_ws / f".home/.claude/projects/-data-engagements-"
-            f"{w.EID_OPEN}/{w.SID}.jsonl", tree.canary())
-    block = w.memory_block(tree.canary())
-    done_ws = w.marked_workspace(root, w.EID_DONE, block)
-    w.write(done_ws / f".home/.claude/projects/-data-engagements-"
-            f"{w.EID_DONE}/{w.SID}.jsonl", tree.canary())
-
     # staging files, each left by a real process killed before its rename
-    child = w.run_child(_kill_on_rename("\n".join([
-        "import types",
-        "from drivers import workspace as ws",
-        f"ws.CONTROL_ROOT = {str(u('/data/engagement-ctl'))!r}",
-        f"open({str(u(f'/data/engagement-ctl/{w.EID_OPEN}/.executor_memory'))!r},"
-        f" 'w').write({w.memory_block(tree.canary())!r})",
-        "defn = types.SimpleNamespace(type='x', prompt_template_path="
-        f"{str(root / 'defs' / w.EID_OPEN / 'prompt.md')!r})",
-        "rec = types.SimpleNamespace(allocated_uid=-1, origin={}, task='t')",
-        f"ws.refresh_claude_md({str(open_ws)!r}, defn=defn, rec=rec)",
-    ])))
-    assert w.killed(child), child.stderr
-    assert len(list(open_ws.glob(".CLAUDE.md.casa-tmp.*"))) == 1
     child = w.run_child(_kill_on_rename("\n".join([
         "from session_registry import SessionRegistry",
         f"SessionRegistry({str(u('/data/sessions.json'))!r})._write("
@@ -145,12 +116,6 @@ async def build(tree: w.Tree, monkeypatch) -> dict:
     ])))
     assert w.killed(child), child.stderr
     assert len(list(u("/data/explanations").glob("*.tmp"))) == 1
-    # what each CLAUDE.md must read afterwards: every byte outside the
-    # section kept, the section empty
-    facts["claude_md"] = {
-        ws: _outside_markers((ws / "CLAUDE.md").read_text())
-        for ws in (open_ws, done_ws)}
-
     # what the wipe keeps
     tree.keep(u("/data/reminders.json"), json.dumps(
         [{"id": "r1", "text": "water the plants", "due": "2026-11-03T08:00"}]))
@@ -158,21 +123,7 @@ async def build(tree: w.Tree, monkeypatch) -> dict:
     tree.keep(u("/data/agent-inbox/invoice.pdf"), b"%PDF-1.4 kept")
     tree.keep(u("/config/agents/assistant/prompt.md"), "You are Ellen.\n")
     tree.keep(u("/config/agents/assistant/runtime.yaml"), "token_budget: 4000\n")
-    tree.keep(u(f"/data/engagement-ctl/{w.EID_OPEN}/.session_id"), w.SID)
-    tree.keep(u(f"/data/engagement-ctl/{w.EID_OPEN}/.inbound_spool.jsonl"),
-              '{"n": 1}\n')
-    tree.keep(open_ws / ".mcp.json", (open_ws / ".mcp.json").read_bytes())
     return facts
-
-
-def _outside_markers(text: str) -> str:
-    o, c = executor_block.OPEN, executor_block.CLOSE
-    out, rest = [], text
-    while o in rest:
-        head, _, tail = rest.partition(o)
-        out.append(head + o)
-        rest = c + tail.partition(c)[2]
-    return "".join(out) + rest
 
 
 async def test_wipe_erases_every_registry_row_and_keeps_the_rest(
@@ -180,9 +131,9 @@ async def test_wipe_erases_every_registry_row_and_keeps_the_rest(
     tree = w.Tree(tmp_path / "root")
     root = tree.root
     proc = w.fake_proc(tmp_path)
-    facts = await build(tree, monkeypatch)
+    await build(tree, monkeypatch)
     before = w.hits(root, tree.canaries)
-    assert len(before) >= 24, before
+    assert len(before) >= 17, before
 
     # consent at a door, then a turn in the window captures another canary
     assert maintenance.write_wipe_intent(str(root)) == "written"
@@ -204,15 +155,8 @@ async def test_wipe_erases_every_registry_row_and_keeps_the_rest(
         assert not (u(registry.MEMORY_DIR) / gone).exists(), gone
     assert not u("/data/explanations").exists()
     assert list(u("/data").glob(".sessions.json.*.tmp")) == []
-    for ws, expected in facts["claude_md"].items():
-        after = (ws / "CLAUDE.md").read_text()
-        assert after == expected
-        assert after.count(executor_block.OPEN + executor_block.CLOSE) == 1
-        assert list(ws.glob(".CLAUDE.md.casa-tmp.*")) == []
     # every transcript root is emptied
-    roots = [u("/config/cc-home/.claude/projects"), u("/root/.claude/projects"),
-             *u("/data/engagements").glob("*/.home/.claude/projects")]
-    assert len(roots) == 4
+    roots = [u("/config/cc-home/.claude/projects"), u("/root/.claude/projects")]
     assert sum(len(list(d.iterdir())) for d in roots) == 0
 
     # a fresh, empty store records the outcome; nothing can be re-imported
@@ -265,19 +209,6 @@ def test_a_row_with_no_handler_stops_the_wipe(tmp_path, monkeypatch):
         maintenance.wipe_loop(root=str(tmp_path / "root"))
 
 
-def test_a_symlinked_engagement_transcript_root_is_never_followed(tmp_path):
-    """An engagement's own directories are not followed: a link planted in
-    place of its transcript root is not emptied through."""
-    root, proc = tmp_path / "root", w.fake_proc(tmp_path)
-    outside = w.write(tmp_path / "elsewhere" / "keep.txt", "outside")
-    claude = w.under(root, f"/data/engagements/{w.EID_OPEN}/.home/.claude")
-    claude.mkdir(parents=True)
-    (claude / "projects").symlink_to(outside.parent)
-    assert maintenance.write_wipe_intent(str(root)) == "written"
-    assert w.run_oneshot(root, proc).stdout.strip() == "done"
-    assert outside.read_text() == "outside"
-
-
 def test_a_killed_intent_write_leaves_staging_the_wipe_deletes(tmp_path):
     root, proc = tmp_path / "root", w.fake_proc(tmp_path)
     child = w.run_child(_kill_on_rename("\n".join([
@@ -323,7 +254,7 @@ async def _record_file(path):
     reg = EngagementRegistry(tombstone_path=str(path), bus=None)
     for eid, driver, status in (("e1" * 16, "in_casa", "active"),
                                 ("e2" * 16, "in_casa", "completed"),
-                                ("e3" * 16, "claude_code", "active"),
+                                ("e3" * 16, "in_casa", "cancelled"),
                                 ("e4" * 16, "in_casa", "idle")):
         reg._records[eid] = EngagementRecord(
             id=eid, kind="executor", role_or_type="configurator",

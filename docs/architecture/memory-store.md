@@ -69,13 +69,10 @@ list, so a store missing from it is one they would silently skip. The registry c
 - the tables of `memory.db` and the file with its SQLite sidecars;
 - the rest of `/data/memory`: the capture spool and the snapshot a drain stores from, the
   search index, local exports, a staged restore source, and the maintenance intent;
-- the SDK transcript roots: the resident home's `.claude/projects`, each engagement
-  workspace's `.home/.claude/projects`, and `/root/.claude/projects` when it is a real
-  directory;
+- the SDK transcript roots: the resident home's `.claude/projects`, and
+  `/root/.claude/projects` when it is a real directory;
 - the session pointers in `/data/sessions.json`;
-- served copies of memory-derived text: the explanation records in `/data/explanations/`,
-  and each engagement's executor-memory block (its control-directory cache and the
-  `CLAUDE.md` it is rendered into).
+- served copies of memory-derived text: the explanation records in `/data/explanations/`.
 
 The `memory.db` row also names the served-view renderer as its producer: a session's view
 is recorded there (in `session_views`, its hash and base, no text), and the text itself is
@@ -88,7 +85,7 @@ writer names its staging file after its target (`.sessions.json.<random>.tmp`) f
 reason; the shared atomic writer's default name, `.<random>.tmp`, names nothing.
 
 The registry imports nothing from the running Casa process, and neither does the rest of
-the `memory` package beyond three stdlib-only helpers (`atomic_io`, `safe_fs`,
+the `memory` package beyond two stdlib-only helpers (`atomic_io` and
 `supervisor_restart`), so it can be used while that process is not running: the
 container-start step that carries out a wipe walks this list with no Casa process up
 ([`memory-wipe.md`](memory-wipe.md)). The maintenance intent's row also declares the
@@ -113,7 +110,7 @@ observes, never a path it is told:
 - **Every write, as it happens.** Each named producer runs in a sandbox that stands in for
   the filesystem root, with the configuration the code gives it — the paths its class is
   constructed with (each construction call evaluated statically, or its default), the
-  workspace path from the engagement launch template, the module's own constants — and with
+  module's own constants — and with
   its optional memory-bearing inputs filled, so a write behind a condition on one of them
   happens.
   An audit hook (`sys.addaudithook`) records each write the run issues at the moment it is
@@ -128,8 +125,7 @@ observes, never a path it is told:
   in the producer's row. A file it creates and then renames into place — the file a crash
   before the rename leaves behind — must match one of the row's staging patterns. Any other
   write the producer issues must land in its row or on a short, explicit list of files it
-  writes that carry no memory (the rest of an engagement workspace, for the executor-memory
-  producer).
+  writes that carry no memory.
 - **Reach.** Every memory-bearing call site must issue at least one write during the runs; a
   site no run triggers fails the pin until a run triggers it.
 - **Transcript roots.** Every launcher is scanned: each `HOME` or `CLAUDE_CONFIG_DIR` a

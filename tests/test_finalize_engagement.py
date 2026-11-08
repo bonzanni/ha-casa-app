@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ast
-import json
 import re
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -14,27 +13,9 @@ pytestmark = pytest.mark.unit
 
 
 def _driver_double():
-    """A driver double shaped like the REAL engagement drivers.
-
-    A bare ``MagicMock()`` fabricates EVERY attribute, so the funnel's
-    ``hasattr`` probes find ``finalize_completion_post``, ``finalize_summary``,
-    ``settle_all_open_questions`` and ``drain_inbound_spool`` — none of which
-    ``InCasaDriver`` has — and awaiting their non-awaitable returns raises
-    ``TypeError`` into the guards around each one.
-
-    Before #678 that was invisible: the completion post's failure was swallowed
-    and the funnel painted and closed regardless, so these tests asserted a
-    close that only happened because the double was broken. Now a fabricated
-    ``finalize_completion_post`` tells the funnel a sequencer post was
-    ATTEMPTED and failed part-way, and it correctly declines to replay the
-    summary. The double was always wrong; what changed is that it is no longer
-    silent.
-    """
+    """A driver double whose ``cancel`` is awaitable, like ``InCasaDriver``'s."""
     d = MagicMock()
     d.cancel = AsyncMock()
-    for hook in ("finalize_completion_post", "finalize_summary",
-                 "settle_all_open_questions", "drain_inbound_spool"):
-        delattr(d, hook)
     return d
 
 
@@ -85,55 +66,6 @@ class TestFinalizeEngagement:
         assert rec.status == "completed"
         assert rec.completed_at is not None
 
-    async def test_spool_drain_precedes_topic_close(self, tmp_path):
-        """v0.79.0 (§3): the pre-close inbound spool drain runs BEFORE the
-        topic is closed (so pending receipts/notices post while the topic is
-        still open), and the terminal transition is STRICT."""
-        from engagement_registry import EngagementRegistry
-        from tools import _finalize_engagement, init_tools
-
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
-        rec = await reg.create(
-            kind="executor", role_or_type="hello", driver="claude_code",
-            task="t",
-            origin={"role": "assistant", "channel": "telegram", "chat_id": "1"},
-            topic_id=42,
-        )
-
-        order: list[str] = []
-        telegram = MagicMock()
-        telegram.send_to_topic = AsyncMock()
-        telegram.send_response_to_topic = AsyncMock()
-
-        async def _close(*, thread_id):
-            order.append("close_topic")
-        telegram.close_topic = AsyncMock(side_effect=_close)
-        cm = MagicMock()
-        cm.get.return_value = telegram
-        bus = MagicMock()
-        bus.notify = AsyncMock()
-
-        init_tools(
-            channel_manager=cm, bus=bus,
-            specialist_registry=MagicMock(), mcp_registry=MagicMock(),
-            trigger_registry=MagicMock(), engagement_registry=reg,
-        )
-
-        driver = _driver_double()
-
-        async def _drain(engagement):
-            order.append("drain")
-        driver.drain_inbound_spool = AsyncMock(side_effect=_drain)
-
-        await _finalize_engagement(
-            rec, outcome="completed", text="s", artifacts=[], next_steps=[],
-            driver=driver,
-        )
-
-        assert order == ["drain", "close_topic"]
-        driver.drain_inbound_spool.assert_awaited_once_with(rec)
-        assert rec.status == "completed"
-
     async def test_cancel_outcome_uses_cancel_path(self, tmp_path):
         from engagement_registry import EngagementRegistry
         from tools import _finalize_engagement, init_tools
@@ -170,130 +102,6 @@ class TestFinalizeEngagement:
         driver.cancel.assert_awaited_once_with(rec)
 
 
-async def test_finalize_writes_retention_for_claude_code_driver(
-    tmp_path, monkeypatch,
-):
-    """Plan 4a.1: _finalize_engagement must update .casa-meta.json with
-    retention_until = now + 7 days when driver=='claude_code' and a
-    workspace dir exists."""
-    import json
-    from pathlib import Path
-    import tools as tools_mod
-    from engagement_registry import EngagementRecord, EngagementRegistry
-    from drivers.workspace import casa_meta_path, provision_control_dir, write_casa_meta
-    from tools import _finalize_engagement
-
-    ws = tmp_path / "eng1"
-    ws.mkdir()
-    # Task 4 (containment stage 2): .casa-meta.json lives in the control dir.
-    provision_control_dir("eng1")
-    write_casa_meta(
-        workspace_path=str(ws), engagement_id="eng1",
-        executor_type="hello-driver", status="UNDERGOING",
-        created_at="2026-04-23T08:00:00Z",
-        finished_at=None, retention_until=None,
-    )
-
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "tomb.json"), bus=None)
-    rec = EngagementRecord(
-        id="eng1", kind="executor", role_or_type="hello-driver",
-        driver="claude_code", status="active", topic_id=None,
-        started_at=0.0, last_user_turn_ts=0.0, last_idle_reminder_ts=0.0,
-        completed_at=None, sdk_session_id=None, origin={}, task="t",
-    )
-    reg._records["eng1"] = rec
-
-    monkeypatch.setattr(tools_mod, "_engagement_registry", reg)
-    monkeypatch.setattr(tools_mod, "_channel_manager", None)
-    monkeypatch.setattr(tools_mod, "_bus", None)
-    # Point the hardcoded /data/engagements path to tmp.
-    monkeypatch.setattr(tools_mod, "_ENGAGEMENTS_ROOT", str(tmp_path),
-                        raising=False)
-
-    await _finalize_engagement(
-        rec, outcome="completed", text="done",
-        artifacts=[], next_steps=[], driver=None,
-    )
-
-    meta = json.loads(Path(casa_meta_path("eng1")).read_text())
-    assert meta["status"] == "COMPLETED"
-    assert meta["retention_until"] is not None
-    # Parseable as ISO 8601 Z.
-    import re
-    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z",
-                        meta["retention_until"])
-
-
-async def test_finalize_preserves_real_allocated_uid_when_meta_unreadable(
-    tmp_path, monkeypatch,
-):
-    """Fix-loop round 1 (Important): the terminal .casa-meta.json rewrite
-    must persist the RECORD's allocated_uid, never a round-trip through
-    ``load_casa_meta`` — that helper returns None/{} on I/O error,
-    malformed/non-object JSON, or a refused legacy symlink, and falling
-    back to ``meta.get("allocated_uid", ...)`` in any of those cases would
-    silently regress a real uid to UNALLOCATED_UID in this rewrite,
-    permanently orphaning that uid's casa-eng-<uid> passwd/group lines
-    (the registry-less sweeper reads ONLY this field to decide what to
-    prune)."""
-    import json
-    from pathlib import Path
-
-    import tools as tools_mod
-    from drivers.workspace import casa_meta_path, provision_control_dir, write_casa_meta
-    from engagement_registry import EngagementRecord, EngagementRegistry
-    from engagement_uids import UID_BASE
-    from tools import _finalize_engagement
-
-    ws = tmp_path / "eng-uid-fin"
-    ws.mkdir()
-    provision_control_dir("eng-uid-fin")
-    write_casa_meta(
-        workspace_path=str(ws), engagement_id="eng-uid-fin",
-        executor_type="hello-driver", status="UNDERGOING",
-        created_at="2026-04-23T08:00:00Z",
-        finished_at=None, retention_until=None,
-        allocated_uid=UID_BASE + 42,
-    )
-
-    # Simulate load_casa_meta returning None (unreadable/malformed/refused)
-    # — exactly the fallback case the finding calls out. _finalize_engagement
-    # does `from drivers.workspace import load_casa_meta` INSIDE the
-    # function body, so the patch target is drivers.workspace's own
-    # attribute, not a name on the tools module. If the fix regressed to
-    # ``meta.get("allocated_uid", ...)``, this would make the finalize
-    # rewrite fall back to UNALLOCATED_UID.
-    import drivers.workspace as ws_mod
-    monkeypatch.setattr(ws_mod, "load_casa_meta", lambda *a, **kw: None)
-
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "tomb.json"), bus=None)
-    rec = EngagementRecord(
-        id="eng-uid-fin", kind="executor", role_or_type="hello-driver",
-        driver="claude_code", status="active", topic_id=None,
-        started_at=0.0, last_user_turn_ts=0.0, last_idle_reminder_ts=0.0,
-        completed_at=None, sdk_session_id=None, origin={}, task="t",
-        allocated_uid=UID_BASE + 42,
-    )
-    reg._records["eng-uid-fin"] = rec
-
-    monkeypatch.setattr(tools_mod, "_engagement_registry", reg)
-    monkeypatch.setattr(tools_mod, "_channel_manager", None)
-    monkeypatch.setattr(tools_mod, "_bus", None)
-    monkeypatch.setattr(tools_mod, "_ENGAGEMENTS_ROOT", str(tmp_path),
-                        raising=False)
-
-    await _finalize_engagement(
-        rec, outcome="completed", text="done",
-        artifacts=[], next_steps=[], driver=None,
-    )
-
-    meta = json.loads(Path(casa_meta_path("eng-uid-fin")).read_text())
-    assert meta["status"] == "COMPLETED"
-    # The real uid must survive the terminal rewrite — this is what the
-    # sweeper will read to decide which passwd/group entry to prune.
-    assert meta["allocated_uid"] == UID_BASE + 42
-
-
 class TestFinalizeU3Transition:
     """E-12 (v0.37.0) Task 23: terminal-state U3 flip from _finalize_engagement."""
 
@@ -303,8 +111,8 @@ class TestFinalizeU3Transition:
 
         reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
         rec = await reg.create(
-            kind="executor", role_or_type="plugin-developer",
-            driver="claude_code", task="t",
+            kind="executor", role_or_type="configurator",
+            driver="in_casa", task="t",
             origin={"role": "assistant", "channel": "telegram",
                     "chat_id": "12345"},
             topic_id=42,
@@ -358,8 +166,8 @@ class TestFinalizeU3Transition:
 
         reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
         rec = await reg.create(
-            kind="executor", role_or_type="plugin-developer",
-            driver="claude_code", task="t",
+            kind="executor", role_or_type="configurator",
+            driver="in_casa", task="t",
             origin={"role": "assistant", "channel": "telegram",
                     "chat_id": "12345"},
             topic_id=42,
@@ -390,186 +198,6 @@ class TestFinalizeU3Transition:
         assert rec.status == "completed"
 
 
-class TestFinalizeEngagementBrokerCleanup:
-    """v0.75.0 (W5/Sol B3,B4, r5-B6): _finalize_engagement must cancel_scope
-    + drain_hooks IMMEDIATELY after winning the terminal transition, BEFORE
-    the topic-close ops — so a pending ask's keyboard-edit finish-hook lands
-    while the topic is still open, and a tap arriving after the terminal
-    flip is rejected (stale)."""
-
-    async def test_broker_cleanup_precedes_topic_close_and_taps_go_stale(
-        self, tmp_path, monkeypatch,
-    ):
-        import verdict_broker
-        from verdict_broker import VerdictBroker
-        from engagement_registry import EngagementRegistry
-        from tools import _finalize_engagement, init_tools
-
-        fresh_broker = VerdictBroker()
-        monkeypatch.setattr(verdict_broker, "BROKER", fresh_broker)
-
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
-        rec = await reg.create(
-            kind="specialist", role_or_type="finance", driver="in_casa",
-            task="t",
-            origin={"role": "assistant", "channel": "telegram", "chat_id": "1"},
-            topic_id=42,
-        )
-
-        order: list[str] = []
-        telegram = MagicMock()
-
-        async def _send_to_topic(*a, **kw):
-            order.append("send_to_topic")
-            return 1
-
-        async def _close_topic(*a, **kw):
-            order.append("close_topic")
-
-        telegram.send_to_topic = AsyncMock(side_effect=_send_to_topic)
-        telegram.send_response_to_topic = AsyncMock(side_effect=_send_to_topic)
-        telegram.close_topic = AsyncMock(side_effect=_close_topic)
-        cm = MagicMock()
-        cm.get.return_value = telegram
-        bus = MagicMock()
-        bus.notify = AsyncMock()
-
-        init_tools(
-            channel_manager=cm, bus=bus,
-            specialist_registry=MagicMock(), mcp_registry=MagicMock(),
-            trigger_registry=MagicMock(), engagement_registry=reg,
-        )
-
-        # A pending engagement_ask on this engagement, with a finish hook
-        # that records into the SAME order list.
-        req, created = fresh_broker.register(
-            namespace="engagement_ask", scope=rec.id, request_id="ask-1",
-            timeout_s=5.0,
-        )
-        assert created is True
-
-        async def _hook(outcome):
-            order.append("keyboard_edit")
-
-        fresh_broker.set_finish_hook(req, lambda outcome: _hook(outcome))
-
-        driver = _driver_double()
-
-        won = await _finalize_engagement(
-            rec, outcome="completed", text="done", artifacts=[],
-            next_steps=[], driver=driver,
-        )
-        assert bool(won) is True   # FinalizeResult.FINALIZED (D5)
-
-        assert "keyboard_edit" in order
-        assert order.index("keyboard_edit") < order.index("send_to_topic")
-        assert order.index("keyboard_edit") < order.index("close_topic")
-
-        # A tap arriving after the terminal flip is rejected (stale) — the
-        # cancel_scope call already resolved (and retired) the request.
-        claim = fresh_broker.claim(
-            namespace="engagement_ask", scope=rec.id, request_id="ask-1",
-            option_index=0, actor_id=1,
-        )
-        assert claim == "stale"
-
-    async def test_broker_cleanup_swallows_drain_failure(
-        self, tmp_path, monkeypatch,
-    ):
-        """A drain_hooks()/cancel_scope() failure must not abort the rest of
-        the finalize funnel — the topic must still close."""
-        import verdict_broker
-        from engagement_registry import EngagementRegistry
-        from tools import _finalize_engagement, init_tools
-
-        class _ExplodingBroker:
-            def cancel_scope(self, **kw):
-                raise RuntimeError("broker down")
-
-            async def drain_hooks(self):
-                raise AssertionError("unreachable — cancel_scope raised first")
-
-        monkeypatch.setattr(verdict_broker, "BROKER", _ExplodingBroker())
-
-        reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
-        rec = await reg.create(
-            kind="specialist", role_or_type="finance", driver="in_casa",
-            task="t", origin={"role": "assistant", "channel": "telegram"},
-            topic_id=42,
-        )
-
-        telegram = MagicMock()
-        telegram.send_to_topic = AsyncMock()
-        telegram.send_response_to_topic = AsyncMock()
-        telegram.close_topic = AsyncMock()
-        cm = MagicMock()
-        cm.get.return_value = telegram
-        bus = MagicMock()
-        bus.notify = AsyncMock()
-
-        init_tools(
-            channel_manager=cm, bus=bus,
-            specialist_registry=MagicMock(), mcp_registry=MagicMock(),
-            trigger_registry=MagicMock(), engagement_registry=reg,
-        )
-
-        won = await _finalize_engagement(
-            rec, outcome="completed", text="done", artifacts=[],
-            next_steps=[], driver=None,
-        )
-        assert bool(won) is True   # FinalizeResult.FINALIZED (D5)
-        telegram.close_topic.assert_awaited_once()
-
-
-async def test_finalize_preserves_plugin_artifacts_in_casa_meta(
-        tmp_path, monkeypatch):
-    """§3.8: the terminal .casa-meta.json rewrite must NOT drop the
-    immutable plugin_artifacts recorded at engagement start."""
-    import tools as tools_mod
-    from drivers.workspace import load_casa_meta, provision_control_dir, write_casa_meta
-    from engagement_registry import EngagementRegistry
-    from tools import _finalize_engagement, init_tools
-
-    eng_root = tmp_path / "engagements"
-    monkeypatch.setattr(tools_mod, "_ENGAGEMENTS_ROOT", str(eng_root))
-
-    reg = EngagementRegistry(tombstone_path=str(tmp_path / "e.json"), bus=None)
-    rec = await reg.create(
-        kind="executor", role_or_type="plugin-developer",
-        driver="claude_code", task="t",
-        origin={"role": "assistant", "channel": "telegram", "chat_id": "1"},
-        topic_id=42)
-
-    ws = eng_root / rec.id
-    ws.mkdir(parents=True)
-    # Task 4 (containment stage 2): .casa-meta.json lives in the control dir.
-    provision_control_dir(rec.id)
-    artifacts = [{"name": "superpowers", "artifact_id": "a" * 64,
-                  "path": "/config/plugins/store/superpowers/" + "a" * 64}]
-    write_casa_meta(
-        workspace_path=str(ws), engagement_id=rec.id,
-        executor_type="plugin-developer", status="UNDERGOING",
-        created_at="2026-07-13T00:00:00Z", finished_at=None,
-        retention_until=None, plugin_artifacts=artifacts)
-
-    telegram = MagicMock()
-    telegram.send_to_topic = AsyncMock()
-    telegram.close_topic = AsyncMock()
-    cm = MagicMock()
-    cm.get.return_value = telegram
-    init_tools(channel_manager=cm, bus=MagicMock(),
-               specialist_registry=MagicMock(), mcp_registry=MagicMock(),
-               trigger_registry=MagicMock(), engagement_registry=reg)
-    driver = _driver_double()
-
-    await _finalize_engagement(rec, outcome="completed", text="s",
-                               artifacts=[], next_steps=[], driver=driver)
-
-    meta = load_casa_meta(str(ws))
-    assert meta["status"] == "COMPLETED"
-    assert meta["plugin_artifacts"] == artifacts       # NOT dropped
-
-
 # --- G4 D5 (v0.96.0): typed finalize result --------------------------------
 
 
@@ -598,8 +226,8 @@ def test_terminal_hook_abort_raises_and_leaves_live():
         with tempfile.TemporaryDirectory() as td:
             reg = EngagementRegistry(tombstone_path=td + "/e.json", bus=None)
             rec = await reg.create(
-                kind="executor", role_or_type="plugin-developer",
-                driver="claude_code", task="t",
+                kind="executor", role_or_type="configurator",
+                driver="in_casa", task="t",
                 origin={"role": "assistant"}, topic_id=1)
             calls = []
             def hook():
@@ -681,43 +309,11 @@ notice now warns about is the retention deletion, which is true of every
 terminal topic and is the thing the operator can still act on."""
 
 
-class _FakeSequencer:
-    """Only the two members ``ClaudeCodeDriver.finalize_completion_post``
-    touches, plus a counted ``post_completion_notice`` whose return value is
-    the confirmation the funnel must respect. ``None`` is the pinned SDK-side
-    contract for a DEFINITE send failure (output_sequencer.py's #392/#332
-    rule), and it is returned WITHOUT raising — which is exactly why a
-    "did it raise?" predicate cannot see this route."""
-
-    def __init__(self, confirm):
-        self._confirm = confirm
-        self.posts: list[str] = []
-        self.drains = 0
-        self.flushes = 0
-        self.seals = 0
-
-    async def await_completion_drain(self, rid):
-        self.drains += 1
-        return True
-
-    async def flush_armed_intents(self):
-        self.flushes += 1
-
-    async def seal_narration(self):
-        self.seals += 1
-
-    async def post_completion_notice(self, text):
-        self.posts.append(text)
-        return self._confirm
-
-
-async def _build_finalize(tmp_path, *, rich_returns=None, rich_raises=None,
-                          sequencer=None):
+async def _build_finalize(tmp_path, *, rich_returns=None, rich_raises=None):
     """Real registry + on-disk tombstone; a channel double whose senders are
     genuinely awaitable (a bare MagicMock fabricates every attribute and then
     raises TypeError when awaited, which is how eight tests in this repo came
     to assert the pre-fix paint-and-close over a topic that got nothing)."""
-    import agent as agent_mod
     from engagement_registry import EngagementRegistry
     from tools import init_tools
 
@@ -763,43 +359,8 @@ async def _build_finalize(tmp_path, *, rich_returns=None, rich_raises=None,
         engagement_registry=reg,
     )
 
-    driver = MagicMock()
-    driver.cancel = AsyncMock()
-    if sequencer is None:
-        # No sequencer hook at all — the pre-v0.79 direct-send route.
-        del driver.finalize_completion_post
-    else:
-        from drivers.claude_code_driver import ClaudeCodeDriver
-
-        async def _hook(engagement, summary_text):
-            return await ClaudeCodeDriver.finalize_completion_post(
-                _SeqHolder(sequencer), engagement, summary_text)
-        driver.finalize_completion_post = _hook
-    del driver.finalize_summary
-    del driver.settle_all_open_questions
-    del driver.drain_inbound_spool
+    driver = _driver_double()
     return reg, rec, telegram, bus, driver, events
-
-
-class _AlwaysSeq(dict):
-    """``self._sequencers`` for the holder below: ``.get(engagement_id)``
-    resolves to the one scripted sequencer whatever the id."""
-
-    def __init__(self, seq):
-        super().__init__()
-        self._seq = seq
-
-    def get(self, key, default=None):
-        return self._seq
-
-
-class _SeqHolder:
-    """Minimal ``self`` for the real, unbound
-    ``ClaudeCodeDriver.finalize_completion_post`` — it reads only
-    ``self._sequencers``."""
-
-    def __init__(self, seq):
-        self._sequencers = _AlwaysSeq(seq)
 
 
 class TestFinalizeCompletionConfirmation:
@@ -811,10 +372,8 @@ class TestFinalizeCompletionConfirmation:
     open terminal topic still accepts messages that its already-appended
     retention entry later deletes.
 
-    Pre-fix this is false two ways: the direct send's exception is swallowed
-    and the paint and close proceed regardless; and on the sequencer route
-    ``post_completion_notice`` returns ``None`` for a definite failure while
-    ``finalize_completion_post`` discards that value and returns ``True``.
+    Pre-fix this is false: the direct send's exception is swallowed and the
+    paint and close proceed regardless.
     """
 
     async def test_a_raising_direct_post_leaves_the_topic_unmarked(self, tmp_path):
@@ -852,90 +411,11 @@ class TestFinalizeCompletionConfirmation:
         assert driver.cancel.await_count == 1
         assert bus.notify.await_count == 1
 
-    async def test_an_unconfirmed_sequencer_post_falls_back_to_the_direct_send(
-        self, tmp_path,
-    ):
-        """The route a "did it raise?" predicate is blind to: the real
-        ``ClaudeCodeDriver.finalize_completion_post`` over a sequencer whose
-        completion send reports a definite failure by returning ``None``.
-
-        MUTATION: restore ``finalize_completion_post``'s unconditional
-        ``return True`` → this fails (paint and close each become 1 and the
-        disclosure never happens).
-        """
-        from tools import FinalizeResult, _finalize_engagement
-
-        seq = _FakeSequencer(confirm=None)
-        reg, rec, telegram, bus, driver, events = await _build_finalize(
-            tmp_path, rich_returns=777, sequencer=seq)
-
-        won = await _finalize_engagement(
-            rec, outcome="completed", text="done", artifacts=[],
-            next_steps=[], driver=driver)
-
-        assert won is FinalizeResult.FINALIZED
-        assert len(seq.posts) == 1                       # attempted once
-        # A part-way sequencer failure must NOT be replayed through the rich
-        # sender: post_completion_notice returning None means nothing landed,
-        # so the direct send is the legitimate second attempt.
-        assert telegram.send_response_to_topic.await_count == 1
-        assert telegram.update_topic_state.await_count == 1
-        assert telegram.close_topic.await_count == 1
-
-    async def test_an_unconfirmed_sequencer_and_a_failing_direct_send(
-        self, tmp_path,
-    ):
-        """Both routes fail: no paint, one close, one disclosure, tail
-        intact."""
-        from tools import FinalizeResult, _finalize_engagement
-
-        seq = _FakeSequencer(confirm=None)
-        reg, rec, telegram, bus, driver, events = await _build_finalize(
-            tmp_path, rich_raises=RuntimeError("telegram 500"), sequencer=seq)
-
-        won = await _finalize_engagement(
-            rec, outcome="completed", text="done", artifacts=[],
-            next_steps=[], driver=driver)
-
-        assert won is FinalizeResult.FINALIZED
-        assert len(seq.posts) == 1
-        assert telegram.send_response_to_topic.await_count == 1
-        assert telegram.send_to_topic.await_count == 1
-        assert telegram.update_topic_state.await_count == 0
-        assert telegram.close_topic.await_count == 1
-        assert driver.cancel.await_count == 1
-        assert bus.notify.await_count == 1
-
-    async def test_a_confirmed_sequencer_post_paints_and_closes_once(
-        self, tmp_path,
-    ):
-        """The CONTROL. A confirmed sequencer post skips the direct send and
-        paints and closes exactly once each, with no disclosure."""
-        from tools import FinalizeResult, _finalize_engagement
-
-        seq = _FakeSequencer(confirm=555)
-        reg, rec, telegram, bus, driver, events = await _build_finalize(
-            tmp_path, sequencer=seq)
-
-        won = await _finalize_engagement(
-            rec, outcome="completed", text="done", artifacts=[],
-            next_steps=[], driver=driver)
-
-        assert won is FinalizeResult.FINALIZED
-        assert len(seq.posts) == 1
-        assert telegram.send_response_to_topic.await_count == 0
-        assert telegram.send_to_topic.await_count == 0
-        assert telegram.update_topic_state.await_count == 1
-        assert telegram.close_topic.await_count == 1
-        assert events == ["paint:completed", "close"]
-        assert driver.cancel.await_count == 1
-        assert bus.notify.await_count == 1
-
     async def test_a_confirmed_direct_post_paints_and_closes_once(
         self, tmp_path,
     ):
-        """The CONTROL for the no-sequencer route: a rich send that returns a
-        message id is confirmation."""
+        """The CONTROL: a rich send that returns a message id is
+        confirmation."""
         from tools import FinalizeResult, _finalize_engagement
 
         reg, rec, telegram, bus, driver, events = await _build_finalize(
@@ -951,40 +431,6 @@ class TestFinalizeCompletionConfirmation:
         assert telegram.update_topic_state.await_count == 1
         assert telegram.close_topic.await_count == 1
         assert events == ["rich", "paint:completed", "close"]
-
-    async def test_a_partway_sequencer_failure_is_not_replayed(self, tmp_path):
-        """SEAM-1 (Sol): a sequencer post that RAISES may have posted some of
-        its pages, so replaying the whole summary through the rich sender
-        duplicates content and then paints and closes over it. A raise is
-        therefore distinguished from an unconfirmed ``None``: no direct
-        resend, straight to the bounded disclosure.
-
-        MUTATION: treat a raise like ``False`` → the rich send count becomes 1
-        and this fails.
-        """
-        from tools import FinalizeResult, _finalize_engagement
-
-        class _RaisingSequencer(_FakeSequencer):
-            async def post_completion_notice(self, text):
-                self.posts.append(text)
-                raise RuntimeError("page 2 of 4 failed")
-
-        seq = _RaisingSequencer(confirm=None)
-        reg, rec, telegram, bus, driver, events = await _build_finalize(
-            tmp_path, rich_returns=777, sequencer=seq)
-
-        won = await _finalize_engagement(
-            rec, outcome="completed", text="done", artifacts=[],
-            next_steps=[], driver=driver)
-
-        assert won is FinalizeResult.FINALIZED
-        assert len(seq.posts) == 1
-        assert telegram.send_response_to_topic.await_count == 0   # NOT replayed
-        assert telegram.send_to_topic.await_count == 1            # disclosure
-        assert telegram.update_topic_state.await_count == 0
-        assert telegram.close_topic.await_count == 1
-        assert driver.cancel.await_count == 1
-        assert bus.notify.await_count == 1
 
     async def test_a_wedged_disclosure_is_bounded(self, tmp_path, monkeypatch):
         """MUTATION: remove the disclosure's bound → this hangs. The wedged
@@ -1218,8 +664,7 @@ class TestFinalizeConfirmationMutationPins:
         Both reviewers found the same gap: every direct-send case in the
         accepted red case either RAISES or returns ``4242``, so nothing pinned
         the third possibility — a sender that returns normally having sent
-        nothing. That is not hypothetical on this path: it is exactly what the
-        sequencer seam does, and a channel implementation is free to do it too.
+        nothing. A channel implementation is free to do that.
         """
         from tools import FinalizeResult, _finalize_engagement
 
@@ -1400,19 +845,9 @@ def test_every_terminal_notice_rule_pointer_names_a_document_carrying_the_rule()
 
 
 def test_the_finalization_citations_that_are_not_about_the_rule_stay():
-    """Regression, green at base (not a red case): two comments cite
-    engagement-finalization.md correctly — the driver for the direct-send
-    fallback, the #632 suite for INV-ENG-010 — and must not be swept up in a
-    retarget of the rule pointers."""
-    src, tree = _module_tree("casa/rootfs/opt/casa/drivers/claude_code_driver.py")
-    fns = [
-        n for n in ast.walk(tree)
-        if isinstance(n, ast.AsyncFunctionDef | ast.FunctionDef)
-        and n.name == "finalize_completion_post"
-    ]
-    assert len(fns) == 1
-    fn_src = "\n".join(src.splitlines()[fns[0].lineno - 1:fns[0].end_lineno])
-    assert "architecture/engagement-finalization.md" in fn_src
+    """Regression, green at base (not a red case): the #632 suite's comment
+    cites engagement-finalization.md correctly for INV-ENG-010 and must not
+    be swept up in a retarget of the rule pointers."""
     _src, tree = _module_tree("tests/test_emit_completion_tool.py")
     classes = [
         n for n in tree.body

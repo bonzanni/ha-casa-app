@@ -16,9 +16,7 @@ rolls back and what a restart replays are in
 [`architecture/engagement-failure-and-restart.md`](engagement-failure-and-restart.md), terminal
 transitions are in
 [`architecture/engagement-finalization.md`](engagement-finalization.md), the completion gate
-is in [`architecture/engagement-completion-gate.md`](engagement-completion-gate.md), and the OS
-boundary a `claude_code` engagement runs inside is in
-[`architecture/engagement-containment.md`](engagement-containment.md).
+is in [`architecture/engagement-completion-gate.md`](engagement-completion-gate.md).
 
 ## Mental model
 

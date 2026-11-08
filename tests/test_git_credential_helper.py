@@ -4,6 +4,11 @@ The helper is invoked by git when an HTTPS clone needs credentials.
 It reads $GITHUB_TOKEN from process env. If the var is unset/empty,
 emit nothing → git treats as anonymous. If set, emit
 'username=x-access-token\npassword=$GITHUB_TOKEN\n' on stdout.
+
+The image-wide /etc/gitconfig routes GitHub access through that helper; the
+token is set at app boot by setup-configs.sh (written to
+/run/s6/container_environment/GITHUB_TOKEN) and is never embedded in the
+gitconfig itself.
 """
 from __future__ import annotations
 
@@ -76,3 +81,13 @@ def test_erase_action_is_noop() -> None:
     r = _run("erase", env={"GITHUB_TOKEN": "ghp_x"})
     assert r.returncode == 0, r.stderr
     assert r.stdout == ""
+
+
+def test_etc_gitconfig_credential_helper_present() -> None:
+    """github-access goes through the credential helper, not URL embedding."""
+    cfg = Path("casa/rootfs/etc/gitconfig").read_text()
+    assert "git-credential-casa.sh" in cfg
+    assert "x-access-token" not in cfg, (
+        "Token must come from helper at request time, never be embedded in "
+        "the gitconfig URL section"
+    )

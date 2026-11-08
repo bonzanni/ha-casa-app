@@ -8,7 +8,7 @@ program each body execs last is replaced by a recorder at its ONE absolute
 occurrence, so a body that execs something else, or by bare name, fails the
 replacement count instead of passing.
 
-- svc-casa, svc-casa-mcp and svc-ttyd's ttyd get the inherited PATH back, tools
+- svc-casa and svc-ttyd's ttyd get the inherited PATH back, tools
   directory first, and no `_casa_cli_path`.
 - svc-ttyd's disabled branch, `install` and the finish scripts stay filtered.
 - the wrapper's filter is `_root_path_fragment()`'s, once, and agrees with
@@ -23,13 +23,44 @@ from pathlib import Path
 
 import pytest
 
-from drivers import s6_rc
 import trusted_path
 from trusted_path import _root_path_fragment
 from test_core_s6_interpreter import (
     DEFAULT_BLOCK, OVERLAY, WRAPPER, Chain, _populate, _stub, _write_exec)
 from test_core_s6_interpreter import pytestmark  # noqa: F401 — same host needs
-from test_engagement_root_path import _CASES, _case_path
+
+# #1248's ten PATH spellings of the plugin tools directory.
+_CASES = ("exact", "trailing-slash", "leading-double-slash", "dot-segment",
+          "dotdot-segment", "symlink",
+          "empty-leading", "empty-interior", "empty-trailing", "relative")
+
+
+def _entry_cases(tools: Path, tmp_path: Path) -> dict[str, str]:
+    link = tmp_path / "tools-link"
+    if not link.exists():
+        link.symlink_to(tools)
+    return {
+        "exact": str(tools),
+        "trailing-slash": str(tools) + "/",
+        "leading-double-slash": "/" + str(tools),
+        "dot-segment": str(tools.parent / "." / "tools"),
+        "dotdot-segment": str(tools / ".." / "tools"),
+        "symlink": str(link),
+    }
+
+
+def _case_path(case: str, tools: Path, trusted: Path, tmp_path: Path) -> str:
+    safe = f"{trusted}:/usr/bin"
+    if case == "empty-leading":
+        return ":" + safe
+    if case == "empty-interior":
+        return f"{trusted}::/usr/bin"
+    if case == "empty-trailing":
+        return safe + ":"
+    if case == "relative":
+        return "rel:" + safe
+    return _entry_cases(tools, tmp_path)[case] + ":" + safe
+
 
 _LIBRARY = """printf "library\\n" >> "{log}"
 jq >/dev/null
@@ -50,7 +81,6 @@ bashio::exit.nok() {{ _k_rec exit.nok; exit 1; }}
 
 FINAL_PROGRAMS = {
     "s6-rc.d/svc-casa/run": "/opt/casa/venv/bin/python3",
-    "s6-rc.d/svc-casa-mcp/run": "/opt/casa/venv/bin/python3",
     "s6-rc.d/svc-ttyd/run": "/usr/bin/ttyd",
 }
 
@@ -110,9 +140,9 @@ def _last_code_line(rel: str) -> str:
     return code[-1]
 
 
-# --- K2: the two Python services get the inherited PATH back ------------------
+# --- K2: the Python service gets the inherited PATH back ----------------------
 
-@pytest.mark.parametrize("rel", ["s6-rc.d/svc-casa/run", "s6-rc.d/svc-casa-mcp/run"])
+@pytest.mark.parametrize("rel", ["s6-rc.d/svc-casa/run"])
 def test_python_service_gets_the_inherited_path_back(body, rel):
     assert _last_code_line(rel).startswith("exec /opt/casa/venv/bin/python3 /opt/casa/")
 
@@ -165,7 +195,7 @@ def _without_stubs(lines: list[str]) -> list[str]:
 
 
 @pytest.mark.parametrize("code", ["0", "1", "256"])
-@pytest.mark.parametrize("rel", ["s6-rc.d/svc-casa/finish", "s6-rc.d/svc-casa-mcp/finish",
+@pytest.mark.parametrize("rel", ["s6-rc.d/svc-casa/finish",
                                  "s6-rc.d/svc-nginx/finish", "s6-rc.d/svc-ttyd/finish"])
 def test_finish_script_sees_the_same_arguments(body, rel, code):
     direct = body.run(rel, argv=[code], interpreter=body.launcher, path=body.filtered,

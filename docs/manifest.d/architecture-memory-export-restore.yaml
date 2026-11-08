@@ -12,7 +12,6 @@
     - tests/test_memory_export_restore.py
     - tests/test_memory_restore_crash.py
     - tests/test_admin_memory_export_restore_routes.py
-    - tests/test_executor_memory_blank.py
   related: [architecture/memory-store.md, architecture/memory-wipe.md, architecture/memory-capture.md, architecture/memory-writer.md, architecture/persistent-state.md]
   defines_invariants: [INV-MEM-037]
   invariant_tests:

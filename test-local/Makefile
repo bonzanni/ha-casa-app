@@ -71,7 +71,6 @@ test-tier2: test-tier1
 test-tier3: build
 	cd $(ROOT) && $(MAKE) suite-run PYTEST_ARGS='-m "slow"' || true
 	cd $(ROOT) && bash test-local/e2e/test_concurrency.sh
-	cd $(ROOT) && CASA_USE_MOCK_CLAUDE=1 bash test-local/e2e/test_mcp_restart_survival.sh
 
 test-all: test-tier1 test-tier2 test-tier3
 

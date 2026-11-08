@@ -19,7 +19,6 @@ import signal
 import subprocess
 import sys
 import time
-from functools import partial
 from pathlib import Path
 
 import pytest
@@ -62,14 +61,10 @@ async def _restart():
     return {{"supervisor_status": 200}}
 supervisor_restart.request_app_restart = _restart
 casa_core.verify_effective_cli = lambda: "0.0.0 (stub)"
-replays = []
-async def _replay(**kw):
-    replays.append(1)
-casa_core.replay_undergoing_engagements = _replay
 {prelude}
 asyncio.run(casa_core.main())
 print("RESULT " + json.dumps({{"opens": opens, "binds": binds,
-      "replays": len(replays), "restarts": len(restarts),
+      "restarts": len(restarts),
       "sends": len(sends)}}))
 """
 
@@ -141,14 +136,14 @@ def _attempted(error=None, *, kind="wipe", cid="c1"):
 def test_a_recorded_attempt_puts_casa_main_in_notification_only_mode(tmp_path):
     result, lines = run_main(tmp_path, _attempted(), cid="c2")
     assert lines == [maintenance.INTERRUPTED_LINES["wipe"]]
-    assert result == {"opens": [], "binds": [], "replays": 0, "restarts": 0,
+    assert result == {"opens": [], "binds": [], "restarts": 0,
                       "sends": 1}
     intent = json.loads((tmp_path / "memory" / "maintenance.json").read_text())
     assert intent["notified_container_ids"] == ["c2"]
 
 
 def test_the_line_carries_the_error_or_the_fixed_interrupted_literal(tmp_path):
-    reason = f"executor memory of engagement {w.EID_DONE} could not be located"
+    reason = "no wipe rule for 'spool'"
     _, lines = run_main(tmp_path / "a", _attempted(reason), cid="c2")
     assert lines == [
         f"The memory wipe failed at startup ({reason}). I'm not taking "
@@ -187,8 +182,7 @@ def test_no_attempt_boots_normally_and_requests_the_restart_again():
 
 #: Everything that reads memory or lets anything run, which must come after
 #: the intent check.
-CONSUMERS = ("_read_plugin_env", "MemoryStore",
-             "replay_undergoing_engagements", "start_all",
+CONSUMERS = ("_read_plugin_env", "MemoryStore", "start_all",
              "start_internal_unix_runner", "AppRunner", "start_agent_loop")
 
 
@@ -234,14 +228,13 @@ def test_the_check_comes_before_every_memory_consumer():
     assert order_violations(source) == []
 
 
-def test_the_order_check_reports_a_check_moved_after_boot_replay():
+def test_the_order_check_reports_a_check_moved_after_start_all():
     source = CASA_CORE.read_text(encoding="utf-8")
     moved = source.replace(
         "memory_maintenance.read_intent)", "memory_maintenance.read_intent_x)"
     ).replace("    await channel_manager.start_all()\n",
               "    await channel_manager.start_all()\n"
               "    memory_maintenance.read_intent()\n", 1)
-    assert "after replay_undergoing_engagements" in order_violations(moved)
     assert "after start_all" in order_violations(moved)
 
 
@@ -324,7 +317,7 @@ def test_an_earlier_containers_attempt_alone_is_still_an_attempt(tmp_path):
     assert w.container_id_of(c2) not in ids
     result, lines = run_main(tmp_path / "main", intent, cid=w.container_id_of(c2))
     assert lines == [maintenance.INTERRUPTED_LINES["wipe"]]
-    assert result["replays"] == 0 and result["restarts"] == 0
+    assert result["restarts"] == 0
 
 
 def test_container_id_tracks_pid_1s_start_and_the_boot():
@@ -365,40 +358,6 @@ def test_an_unreadable_intent_is_an_attempt_that_deletes_nothing(tmp_path):
 
 
 # --- 9g: the services that start without casa-main --------------------------------
-
-async def test_svc_casa_mcp_answers_its_required_errors_without_casa_main(
-        tmp_path):
-    from aiohttp.test_utils import TestClient, TestServer
-    import svc_casa_mcp
-
-    absent = str(tmp_path / "internal.sock")
-    app = svc_casa_mcp._build_app(
-        tools=[], forward_to_internal=partial(
-            svc_casa_mcp._forward_to_internal, socket_path=absent))
-    async with TestClient(TestServer(app)) as client:
-        r = await client.post("/mcp/casa-framework", json={
-            "jsonrpc": "2.0", "id": 7, "method": "tools/call",
-            "params": {"name": "send_message", "arguments": {}}})
-        assert r.status == 200
-        assert await r.json() == {"jsonrpc": "2.0", "id": 7, "error": {
-            "code": -32000, "message": "casa_temporarily_unavailable: "
-            "casa-main internal socket unreachable"}}
-        r = await client.post("/hooks/resolve", json={
-            "hook_event_name": "PreToolUse", "tool_name": "Bash",
-            "tool_input": {"command": "true"}})
-        assert r.status == 200
-        assert await r.json() == {"hookSpecificOutput": {
-            "hookEventName": "PreToolUse", "permissionDecision": "deny",
-            "permissionDecisionReason": "casa_temporarily_unavailable: "
-            "casa-main internal socket unreachable"}}
-        tails = list(svc_casa_mcp.CHANNEL_FORWARD_TIMEOUTS)
-        assert tails
-        for tail in tails:
-            r = await client.post(f"/internal/channel/{tail}", json={"a": 1})
-            assert r.status == 503, tail
-            assert await r.json() == {"ok": False,
-                                      "error": "casa_temporarily_unavailable"}
-
 
 # --- 9g: the projects migration while an intent exists -------------------------------
 
@@ -471,7 +430,7 @@ def test_casa_main_meeting_an_intent_that_is_not_utf8_tells_and_waits(tmp_path):
     assert lines == ["Memory maintenance could not read its record, so "
                      "nothing was deleted. Remove /data/memory/maintenance.json, "
                      "then restart the app."]
-    assert result == {"opens": [], "binds": [], "replays": 0, "restarts": 0,
+    assert result == {"opens": [], "binds": [], "restarts": 0,
                       "sends": 1}
     _, again = run_main(tmp_path, None, cid="c3")
     assert len(again) == 1
@@ -498,8 +457,7 @@ def test_a_failing_bookkeeping_write_never_crashes_notification_only(tmp_path):
         result, lines = run_main(tmp_path, intent if start == "c2" else None,
                                  cid=start, prelude=EFBIG)
         assert lines == []
-        assert result == {"opens": [], "binds": [], "replays": 0,
-                          "restarts": 0, "sends": 0}
+        assert result == {"opens": [], "binds": [], "restarts": 0, "sends": 0}
     kept = json.loads(path.read_text())
     assert kept["attempts"] == intent["attempts"]
     assert kept["notified_container_ids"] == []
@@ -512,5 +470,5 @@ def test_an_intent_path_that_cannot_be_read_never_boots_normally(tmp_path):
     (tmp_path / "memory" / "maintenance.json").mkdir(parents=True)
     result, lines = run_main(tmp_path, None, cid="c2")
     assert lines == []
-    assert result == {"opens": [], "binds": [], "replays": 0, "restarts": 0,
+    assert result == {"opens": [], "binds": [], "restarts": 0,
                       "sends": 0}

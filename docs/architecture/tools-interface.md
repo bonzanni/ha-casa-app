@@ -24,9 +24,9 @@ that cannot be delivered, or that is over before the tool returns, is in
 
 ## Mental model
 
-**One registry is the whole surface.** A single module-level tuple of handlers drives both
-the SDK server an agent sees and the bridge's dispatch map. Adding a tool there exposes it
-on both transports; grant filtering is a separate, later cut against fully-qualified names —
+**One registry is the whole surface.** A single module-level tuple of handlers drives the
+SDK server an agent sees. Adding a tool there exposes it; grant filtering is a separate,
+later cut against fully-qualified names —
 with one coarse escape: a *server-level* `mcp__casa-framework` grant exposes every tool at
 once, and only its absence makes filtering per-tool. The SDK server also loads eagerly
 (`alwaysLoad`), so every added tool's schema lands in every SDK session's up-front context
@@ -39,11 +39,9 @@ when the payload says `status: "error"` or `ok: false`. Statuses like *unavailab
 failures. And the wrapper is a convention, not a law: at least one tool returns raw
 envelopes without it, so "every error becomes `is_error`" is not a property of the surface.
 
-**Argument-schema validation depends on the transport.** The SDK path registers the
+**Argument-schema validation happens on the SDK path.** The SDK path registers the
 decorated tools with their schemas, and MCP validation there rejects a missing required
-argument or a bad enum before the handler runs — code and tests rely on it. The internal
-bridge route checks only that the name is known and passes the arguments through, so a
-tool reachable both ways must carry its own validation for the bridge side.
+argument or a bad enum before the handler runs — code and tests rely on it.
 
 **A grant can be narrower inside the tool.** Some tools check the caller's role
 themselves, past the grant: `cleanup_engagement_topics` is granted to the configurator and
@@ -146,14 +144,6 @@ block.
 What it does not cover: tools that do not call the wrapper. A handler returning raw
 envelopes carries its own error semantics.
 
-**INV-TOOL-002**: Internal tool calls bind engagement authority only for an active record; completion alone may bind a terminal record, so a duplicate completion gets its truthful already-terminal answer.
-
-Enforced by the internal handler's binding check against an explicit terminal-binding
-allowlist containing exactly the completion tool.
-
-What it does not cover: it does not authorize any other tool after termination, and it is
-a binding rule, not an argument or schema check.
-
 **INV-TOOL-006**: A delegated run the CLI aborted reaches every non-voice caller-facing consumer as a failure — the durable row ends failed with the mapped abort kind, the tool result and completion notification carry an error status with no partial text, a success write is unreachable, and a failed abort write retries only a failure transition carrying the original typed failure. Completion is never keyed on empty answer text.
 
 Enforced in both non-voice terminal implementations: the synchronous arm tests the recorded
@@ -201,21 +191,12 @@ stops there.
 
 ## Failure behavior
 
-**A malformed request.** Invalid JSON, a missing or unknown name, a non-object request,
-and any non-object `params` or `arguments` — truthy or falsy alike — all come back as
-typed JSON-RPC-style error objects from the route, before any tool runs (an absent or
-null value defaults to an empty object instead); a tool that raises becomes an error
-object rather than a transport failure.
-
-**Ill-typed arguments, though, reach the tool.** The route validates the request
-*envelope*, not the argument types a tool declares: the internal forwarding path does not
-enforce a tool's declared schema, so a handler receives whatever the caller sent. A
-declared `bool` can therefore arrive as a string, and Python's truthiness makes the string
-`"false"` indistinguishable from `True` to a `bool(...)` coercion. Any argument that acts
-as an authorization — a `force` that permits a destructive path, a flag that waives a
-refusal — must be type-checked in the handler and rejected as a bad request, not coerced.
-Treating the declaration as if something upstream enforced it is how a refusal becomes
-opt-out by typo.
+**An authorizing argument is type-checked in the handler.** Any argument that acts as an
+authorization — a `force` that permits a destructive path, a flag that waives a refusal —
+must be type-checked in the handler and rejected as a bad request, not coerced: Python's
+truthiness makes the string `"false"` indistinguishable from `True` to a `bool(...)`
+coercion. Treating the declaration as if something upstream enforced it for every caller is
+how a refusal becomes opt-out by typo.
 
 **A completion is invalid or refused.** Bad arguments and the unread-inbound veto both leave
 the engagement active; a duplicate completion is acknowledged as already terminal; a failed
@@ -316,7 +297,8 @@ specialist and wait for the answer, is described in
 ## Extension points
 
 **A new tool** is a decorated handler added to the registry tuple — that alone puts it on
-both transports, which is why the addition is also a security decision; grant filtering and
+the SDK server of every session whose grants reach it, which is why the addition is also a
+security decision; grant filtering and
 the coverage ledger pick it up from there.
 
 **A new terminal side effect** for engagements goes after the winner is decided in the
@@ -337,8 +319,6 @@ that distinction is the contract.
 - `casa/rootfs/opt/casa/tools.py::_result`
 - `casa/rootfs/opt/casa/tools.py::select_casa_tools`
 - `casa/rootfs/opt/casa/tools.py::emit_completion`
-- `casa/rootfs/opt/casa/internal_handlers.py::_make_internal_tools_call_handler`
-- `casa/rootfs/opt/casa/mcp_envelope.py::_tool_schema`
 - `casa/rootfs/opt/casa/tools.py::config_git_commit`
 - `casa/rootfs/opt/casa/tools.py::_run_reload`
 - `casa/rootfs/opt/casa/reload.py::commit_reload_scopes`

@@ -88,19 +88,19 @@ class TestExecutorRegistryFailedLogging:
 
         # configurator: valid
         _write(str(tmp_path), "configurator")
-        # plugin-developer: broken (permission_mode typo)
+        # broken-exec: broken (permission_mode typo)
         broken = textwrap.dedent("""\
             schema_version: 1
-            type: plugin-developer
+            type: broken-exec
             description: A reasonably long description that meets minLength 20.
             model: sonnet
-            driver: claude_code
+            driver: in_casa
             enabled: true
             tools:
               allowed: [Read]
               permission_mode: acceptedits
         """)
-        d = os.path.join(str(tmp_path), "executors", "plugin-developer")
+        d = os.path.join(str(tmp_path), "executors", "broken-exec")
         os.makedirs(os.path.join(d, "doctrine"), exist_ok=True)
         with open(os.path.join(d, "definition.yaml"), "w") as fh:
             fh.write(broken)
@@ -110,17 +110,17 @@ class TestExecutorRegistryFailedLogging:
         r = ExecutorRegistry(str(tmp_path / "executors"))
         with caplog.at_level("INFO", logger="executor_registry"):
             r.load()
-        # configurator loaded; plugin-developer failed but logged.
+        # configurator loaded; broken-exec failed but logged.
         assert r.list_types() == ["configurator"]
         assert any(
-            "plugin-developer" in rec.message and "permission_mode" in rec.message
+            "broken-exec" in rec.message and "permission_mode" in rec.message
             for rec in caplog.records if rec.levelname == "ERROR"
         )
         assert any(
             "loaded=" in rec.message
             and "failed=" in rec.message
             and "configurator" in rec.message
-            and "plugin-developer" in rec.message
+            and "broken-exec" in rec.message
             for rec in caplog.records
             if rec.levelname == "INFO"
         ), "expected final summary log line with loaded=/failed=/disabled= shape"

@@ -492,46 +492,6 @@ def test_reload_launch_explanation_keeps_its_reviewed_claims():
         assert (owners, total) == ([expected_owner], 1), (marker, owners, total)
 
 
-def test_the_completion_veto_and_the_inbound_disclosure_declare_from_two_documents():
-    """#873: the refusal of a successful completion and the disclosure of
-    inbound messages that died with the engagement are two subjects, so
-    INV-ENG-003 and INV-ENG-017 are declared by two different documents.
-
-    DECLARED under D34 rather than pinned from prior support: the base tree
-    does not have this property — one document declared both — and that is
-    the defect. Its evidence is the code the two documents map. In
-    ``casa/rootfs/opt/casa/tools.py`` at e42cb59c the completion veto and the
-    inbound disclosure are two distinct operations with different guards and
-    different inputs: ``_terminal_hook`` (:9035) refuses the transition by
-    returning a non-None reason built from the COUNT reads, while a separate
-    rendering block (:9457) posts what died with the engagement, guarded on
-    the text snapshots and the disclosure reservation count alone and feeding
-    no veto. Two operations, two subjects, two declaring documents.
-
-    Scope, stated so the declaration claims no more than the change
-    guarantees: this pins the OWNERSHIP SPLIT and nothing else. It does not
-    claim either document's prose is correct, one-hop sufficient, or that the
-    payload moved byte-identically — ``docs/contributing/doc-contract.md``
-    assigns each of those to a reviewer on purpose, "because a machine test
-    for 'a split happened' would prescribe the shape of the fix". Both owners
-    are resolved through the MANIFEST, never a hard-coded path, so this
-    follows either invariant if it is ever rehoused.
-
-    Red case demonstrated at e42cb59c, the pre-split base: both ids resolve to
-    ``architecture/engagement-completion-gate.md`` — they are the first and
-    third entries of one row's ``defines_invariants`` — so the two owners are
-    equal and this fails. Not an import or missing-path failure: the new
-    document is never named here.
-
-    Mutation-checked: returning INV-ENG-017 to the completion-gate row fails
-    this test alone.
-
-    Specified by **terra** in the drive red-case round; accepted by **astra**.
-    """
-    assert (_declaring_document("INV-ENG-003")
-            != _declaring_document("INV-ENG-017"))
-
-
 def test_mutation_envelope_and_committed_removal_disclosure_are_separate():
     """#1113: keep the mutation envelope's three invariants together,
     separate from committed-removal disclosure and its failure paragraphs.
@@ -714,45 +674,6 @@ SOCKET_UNREACHABLE_CLAIMS = (
 )
 
 
-def test_bridge_owner_documents_all_socket_unreachable_responses():
-    """#903: the document that owns the bridge module describes every response
-    an unreachable casa-main socket produces, in its own Failure behavior.
-
-    The bridge answers that one condition three different ways — a retryable
-    JSON-RPC error to a tool call, a fail-closed permission verdict to a hook
-    resolution, and an HTTP 503 to an internal channel call. At the base the
-    owning document named only the first, and named it under a TIMEOUT cause;
-    a reader who arrived asking why a call was refused learned nothing about
-    the other two, and nothing about the socket-unreachable cause at all.
-
-    The owner is resolved through ``docs/coverage.yaml`` rather than
-    hard-coded, so this follows the module if it is ever reassigned — unlike
-    ``RELOAD_LAUNCH_CLAIMS`` above, whose hard-coded owner literal a recent
-    split had to update by hand.
-
-    This pins the RESPONSES, not the cold-boot window that is one occasion for
-    them. The same three answers are equally what a restart produces, so the
-    pin holds whichever way #880 rules on the window, and it declares no
-    invariant id: a known limitation is prose under this corpus's own contract,
-    never red-pinned.
-
-    Red case demonstrated at 06edfc56: the counts are ``(0, 0, 0)``. Ownership
-    resolves and the section is found, so this is not an import or missing-path
-    failure — the three descriptions are simply absent.
-
-    Mutation-checked: deleting any one description, reversing a polarity,
-    substituting the timeout cause for the socket-unreachable one, or moving a
-    description out of Failure behavior into another section each fails this
-    test alone.
-
-    Specified by **astra** in the drive red-case round; accepted by **terra**.
-    """
-    owner = _ledger_owner("casa/rootfs/opt/casa/svc_casa_mcp.py")
-    section = _normalized(_section(owner, "Failure behavior"))
-    counts = tuple(section.count(claim) for claim in SOCKET_UNREACHABLE_CLAIMS)
-    assert counts == (1, 1, 1), (owner, counts)
-
-
 # #908: the two remaining conditions under which the bridge's hook-resolution
 # route answers `deny`. #903 covered the third (the internal socket being
 # unreachable) and nothing else — every bullet it published is prefixed "When
@@ -789,51 +710,6 @@ OTHER_HOOK_REFUSAL_CLAIMS = (
     'error ({type(exc).__name__}). The tool was not run. Check addon logs."`, '
     'and the exception is logged at ERROR with its traceback.',
 )
-
-
-def test_bridge_owner_documents_other_hook_refusals():
-    """#908: the document that owns the bridge module describes the route's
-    OTHER two deny triggers, not only the socket-unreachable one.
-
-    The behavioural subject is INV-MCP-011 — every refusal the route produces
-    itself is delivered as an HTTP 200 `deny`, because the calling shim reads
-    any non-2xx as a transport failure and answers allow. This test is corpus
-    SHAPE only: it asserts the owning document states each trigger's complete
-    response, and asserts nothing about the running handler. The behaviour is
-    pinned separately, by
-    ``tests/test_svc_casa_mcp.py::test_svc_hooks_resolve_own_refusals_are_http_200``.
-
-    The declared id is deliberately NOT counted here. Counting it would give
-    this test a second, independent reason to fail and would establish neither
-    response description; the declaration and its test binding are already the
-    corpus verifier's own gates.
-
-    #912 closed the residual this docstring used to record as open: an
-    exception the handler does not catch no longer escapes as aiohttp's own
-    500 for the shim to convert into an allow, and the third claim above is
-    that arm's description. What the guarantee still does not cover is stated
-    by the document rather than here: `asyncio.CancelledError` and anything
-    else outside `Exception` still propagates.
-
-    Red case demonstrated at c9e05f58: the counts are ``(0, 0)``. Ownership
-    resolves through the coverage ledger and the section is found — the two
-    descriptions are simply absent, so this is not an import or missing-path
-    failure.
-
-    Mutation-checked per description: deletion, duplication, changing the
-    status from 200 to 500, reversing the decision to allow, substituting the
-    socket-unreachable cause, altering the reason, and moving the description
-    out of Failure behavior each fail this test alone, leaving
-    ``SOCKET_UNREACHABLE_CLAIMS`` at ``(1, 1, 1)``. A pure whitespace reflow
-    does not, by construction: ``_normalized`` collapses runs of whitespace
-    before counting.
-
-    Specified by **astra** in the drive red-case round; accepted by **terra**.
-    """
-    owner = _ledger_owner("casa/rootfs/opt/casa/svc_casa_mcp.py")
-    section = _normalized(_section(owner, "Failure behavior"))
-    counts = tuple(section.count(claim) for claim in OTHER_HOOK_REFUSAL_CLAIMS)
-    assert counts == (1, 1, 1), (owner, counts)
 
 
 def test_turn_limit_stop_and_turn_conduct_are_separate():
@@ -962,7 +838,9 @@ def test_turn_outcomes_row_moves_to_launch_shard():
     base value, and no later change of the split edits it. The eval-framework
     row stays in the E shard (membership only, no count over the shard).
     v0.347.11 binds the executor closing-text tests to INV-ENG-011 in this row,
-    so the digest is the row as it stands after that change.
+    and the claude_code driver's removal then drops its boot-replay and
+    claude_code anchors and bindings from it, so the digest is the row as it
+    stands after those changes.
 
     Specified by **astra** in the drive red-case round.
     """
@@ -983,67 +861,14 @@ def test_turn_outcomes_row_moves_to_launch_shard():
         json.dumps(rows[0], sort_keys=True).encode("utf-8")
     ).hexdigest()
     assert digest == (
-        "9dd20641f4b1dd7577a293100eb64c385b"
-        "db65a38c2867dd615e24a63063c891"
+        "052d4c0469a7dc5cc6cf04a4111c97cc0b"
+        "0b301afd3aa91b53bae4f11d6e9538"
     ), digest
     retained = yaml.safe_load(
         (DOCS / "manifest.d/architecture-e.yaml").read_text()
     )
     assert any(entry["doc"] == "architecture/eval-framework.md"
                for entry in retained)
-
-
-def test_root_workspace_crossings_and_uid_containment_are_separate():
-    """#1281: the split separates root's crossings into an engagement's
-    workspace from the uid and its extinction.
-
-    The seam is the one the document names itself at 814ce23c:
-    ``docs/architecture/engagement-containment.md:11-15`` lists how root
-    reaches into the workspace and where root-only run-state lives as their
-    own clauses beside the uid, the preflight and the boot sweep; the row's
-    ``when_changing`` (``docs/manifest.d/architecture-e.yaml:85-87``) routes
-    "root's access into a workspace" as its own clause, while
-    ``defines_invariants`` (``:122``) lists INV-CONT-002/003 beside
-    001/004/005/006 on one document. The document is past the 25 KB ceiling
-    at that base and INV-DOC-007 (``docs/contributing/doc-contract.md:75``)
-    owes the split.
-
-    At 814ce23c all six ids resolve to one document: the ownership counts
-    are (1, 1, 1), not (1, 1, 2). The ledger arm and the ten payload-location
-    checks independently hold at base and are regression arms.
-
-    Pins ownership and lead location; byte-identical movement and
-    completeness of the passages remain review obligations.
-
-    Specified by **astra** in the drive red-case round.
-    """
-    moved = {_declaring_document(inv)
-             for inv in ("INV-CONT-002", "INV-CONT-003")}
-    retained = {_declaring_document(inv)
-                for inv in ("INV-CONT-001", "INV-CONT-004",
-                            "INV-CONT-005", "INV-CONT-006")}
-    counts = (len(moved), len(retained), len(moved | retained))
-    assert counts == (1, 1, 2), (counts, moved, retained)
-    owner = _declaring_document("INV-CONT-002")
-    assert _ledger_owner("casa/rootfs/opt/casa/safe_fs.py") == owner
-    texts = {doc: _normalized((DOCS / doc).read_text())
-             for doc in _text_corpus()}
-    for lead in (
-        "Two directories, not one",
-        "Root still reaches in",
-        "Enforced by `safe_fs.py`'s `open_beneath`/`read_text_beneath` "
-        "and `atomic_write_beneath`,",
-        "What it does not cover: root's own reachability into a workspace",
-        "That root is reachable by the subprocess via `--add-dir`,",
-        "What it does not cover: a static, symbol-name-based check",
-        "Root's accessor meets a symlink.",
-        "A file resolves cleanly but is owned by the wrong uid.",
-        "A new root-side read or write",
-        "New run-state that only root touches",
-    ):
-        total = sum(text.count(lead) for text in texts.values())
-        owned = texts[owner].count(lead)
-        assert (total, owned) == (1, 1), (lead, total, owned)
 
 
 def test_transcript_reaping_and_durable_finalization_are_separate():
@@ -1072,8 +897,7 @@ def test_transcript_reaping_and_durable_finalization_are_separate():
     """
     moved = _declaring_document("INV-ENG-027")
     retained = {_declaring_document(inv)
-                for inv in ("INV-ENG-001", "INV-ENG-002",
-                            "INV-ENG-005", "INV-ENG-010")}
+                for inv in ("INV-ENG-001", "INV-ENG-002", "INV-ENG-010")}
     counts = (len(retained), len(retained | {moved}))
     assert counts == (1, 2), (counts, retained, moved)
     assert _ledger_owner(
@@ -1109,11 +933,14 @@ PLUGIN_SHARD_RANGES = {
 # edits it in the same change. v0.347.3: the plugin-delivered-slots row gains
 # one `covers` source (result_broker.compose_operator_link_button, the link's
 # button form) and nothing else; its digest is that row's.
+# The plugin-delivered-files and plugin-handoff rows were re-pinned when the
+# claude_code driver's removal dropped their private-outbox and dropped-uid
+# bindings and prose.
 PLUGIN_SHARD_ROW_DIGESTS = {
     "architecture/plugin-authorization.md":
         "3d428f89a763a6365d072808fb7564576b964ba30cc6b1e77871eec9a45ff4e6",
     "architecture/plugin-delivered-files.md":
-        "81641b189ea4c55a2a74db557fad021f85798e0a9b19ca06a5d311114bf9786c",
+        "06be628ad8c9cd6134135f26b8eb4c8e5934a528e1946133b419997878f9328e",
     "architecture/plugin-delivered-slots.md":
         "a5e5e2693943fc701b9e5109f94ac5cc89317e11beb9f87cfe1283086df40975",
     "architecture/plugin-events.md":
@@ -1121,7 +948,7 @@ PLUGIN_SHARD_ROW_DIGESTS = {
     "architecture/plugin-access-profiles.md":
         "ca1c473801e423b91cffc4744b02bd49ce7a0d78332e13a9b6670e703e85133e",
     "architecture/plugin-handoff.md":
-        "3af1f708251df9880de6b38f607635651c76b223824c9c71361afd04b6d80d37",
+        "83914c68bf237085ef09f7ff8937b9bbf9dac214c3a769b40e7308850975a4f2",
     "architecture/plugin-health.md":
         "cf8eb3d389f0dda9b94d518e613df11ed17ca8a76aa51cf3b1a6af8adfb7dedf",
 }
@@ -1262,7 +1089,7 @@ def test_question_lifecycle_and_tool_interface_are_separate():
     """
     moved = _declaring_document("INV-TOOL-008")
     retained = {_declaring_document(inv)
-                for inv in ("INV-TOOL-001", "INV-TOOL-002", "INV-TOOL-006")}
+                for inv in ("INV-TOOL-001", "INV-TOOL-006")}
     counts = (len(retained), len(retained | {moved}))
     assert counts == (1, 2), (counts, retained, moved)
     texts = {doc: _normalized((DOCS / doc).read_text())
@@ -1272,55 +1099,6 @@ def test_question_lifecycle_and_tool_interface_are_separate():
         "A question is over before the tool returns.",
         "Enforced by one synchronous sample of that live map",
         "The delivery marker is not the oracle and never was",
-    ):
-        total = sum(text.count(lead) for text in texts.values())
-        owned = texts[moved].count(lead)
-        assert (total, owned) == (1, 1), (lead, total, owned)
-
-
-def test_bridge_refusal_surface_and_tool_dispatch_are_separate():
-    """#1266: the split separates the bridge's own refusal and availability
-    surface from tool dispatch and authorization.
-
-    The seam is the one the document names itself at e22525f3:
-    ``docs/architecture/mcp-and-tools.md:9-13`` lists "the separate bridge
-    service" as its own subject beside the internal dispatch path and where
-    authorization happens; the row (``docs/manifest.d/architecture-f-mcp.yaml:76-100``)
-    routes only tool dispatch and authorization in ``when_changing``, while
-    ``covers`` holds ``svc_casa_mcp.py`` and ``defines_invariants`` lists
-    INV-MCP-011 beside the dispatch and authorization ids on one document;
-    ``docs/architecture/http-surface.md:15,27`` assigns the bridge to that
-    document. The document is past the 25 KB ceiling at that base and
-    INV-DOC-007 (``docs/contributing/doc-contract.md:75``) owes the split.
-
-    At e22525f399fd131930a8db41acb48d8c663b3f04, the partition counts
-    are (1, 1), not (1, 2). The ledger and ten payload-location checks
-    independently hold at base and are regression arms.
-
-    Pins ownership and payload location; byte-identical movement and
-    completeness remain review obligations.
-
-    Specified by **astra** in the drive red-case round.
-    """
-    moved = _declaring_document("INV-MCP-011")
-    retained = {_declaring_document(inv) for inv in (
-        "INV-MCP-001", "INV-MCP-002", "INV-MCP-003", "INV-MCP-004",
-        "INV-MCP-005", "INV-MCP-009", "INV-MCP-010", "INV-MCP-013",
-        "INV-MCP-014",
-    )}
-    counts = (len(retained), len(retained | {moved}))
-    assert counts == (1, 2), (counts, retained, moved)
-    assert _ledger_owner("casa/rootfs/opt/casa/svc_casa_mcp.py") == moved
-
-    texts = {doc: _normalized((DOCS / doc).read_text())
-             for doc in _text_corpus()}
-    for lead in (
-        *SOCKET_UNREACHABLE_CLAIMS,
-        *OTHER_HOOK_REFUSAL_CLAIMS,
-        "Bridge tool forwarding carries a hard three-minute timeout",
-        "Two environment variables move pieces of this topology",
-        "The shim is deliberately fail-open on transport",
-        "The last of those is why the route holds an unnarrowed catch",
     ):
         total = sum(text.count(lead) for text in texts.values())
         owned = texts[moved].count(lead)

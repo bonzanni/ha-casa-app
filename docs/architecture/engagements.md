@@ -23,13 +23,8 @@ that refuses a success over input nobody read is
 address and launch one another — the delegation ACL, the depth cap, the agent-spawn cap —
 lives in [`architecture/delegation.md`](delegation.md). What an `in_casa` launch or
 follow-up turn must leave behind, and who reports one that did not, is
-[`architecture/engagement-turn-outcomes.md`](engagement-turn-outcomes.md). The OS boundary a `claude_code`
-engagement runs inside — its uid, workspace ownership, the privilege drop, and the
-confirmed-down sweep boot replay requires — is
-[`architecture/engagement-containment.md`](engagement-containment.md); root's access into
-that workspace is
-[`architecture/engagement-workspace-access.md`](engagement-workspace-access.md). It does not cover the
-turn loop itself, nor what a driver's underlying runtime does once started.
+[`architecture/engagement-turn-outcomes.md`](engagement-turn-outcomes.md). It does not cover
+the turn loop itself, nor what a driver's underlying runtime does once started.
 
 ## Mental model
 
@@ -79,11 +74,7 @@ time, so that a failed page never drops a later one — or, when the turn raises
 cancelled first, on its way out, within a bound. A cancellation that lands while the text is being sent waits for that
 same send, within the same bound, and the send is never restarted, so no page repeats. A sub-agent's words are inside a call and are never the closing text. A specialist's
 topic, where the operator talks with the agent turn by turn and no step log runs, still
-streams every text block. A `claude_code` topic keeps its pinned
-live summary instead. Its edits are spaced at least ten seconds apart, except when the status
-changes or a turn ends; an activity change that arrives inside that window is shown when the window ends,
-so even a short command appears, and the elapsed time on a working turn refreshes every
-minute.
+streams every text block.
 
 **A specialist's engagements are its open conversations, and a change to the specialist
 does not reach them.** One keeps the personality and the plugin versions it started with
@@ -94,33 +85,9 @@ reload removes the specialist, and when a reload or a boot reads it disabled (IN
 through the terminal funnel, outcome `cancelled`; a close that fails leaves that one open.
 
 **Much less survives a restart than the word "durable" suggests.** The record persists;
-concurrency permits, live drivers, output sequencers, inbound reservations and various
+concurrency permits, live drivers, inbound reservations and various
 in-flight maps do not. A record found `active` at startup is rewritten to `idle`, because no
 live driver survived to make `active` true.
-
-**A turn being handed to the CLI is what makes a `claude_code` record live again.** An
-operator turn that was queued but never consumed is redelivered to the respawned CLI after a
-restart, and that delivery — not the restart, and not the respawn — is what returns the
-record to `active`. The distinction is load-bearing rather than bookkeeping: the tool
-authority an engagement holds over the internal dispatch path is bound to a record that is
-`active` (INV-MCP-001), so a turn delivered against an idled record would run stripped of
-every non-terminal tool the engagement owns, and the refusal would blame its grant. The same
-decision refuses the delivery outright once the record is terminal. It covers the first byte
-only: a terminal transition landing after a turn has begun cannot revoke it, because a pipe
-has no rollback — stopping an in-flight turn is the finalize path's driver teardown.
-
-**A `claude_code` turn whose CLI dies is lost, and Casa says so rather than resuming it.**
-The run script respawns and waits on its input pipe; the dead turn's message was already
-consumed when that turn started, so nothing is redelivered and nothing runs until the
-operator's next message arrives — one queued during the dead turn is delivered by the
-respawn itself — and the session resumes with it. On the spawn that
-follows a turn that started and has no result — and is not a forced suspend Casa caused —
-the driver moves
-the topic's status line off working exactly as a turn end does, posts one plain notice that
-the turn stopped and was not resumed (ahead of any queued message the respawn then delivers,
-and ahead of a re-anchored question), and tells the observer the same. A run that died
-before its turn started lost nothing: the message it was given is delivered again, so there
-is no notice, and the observer is told exactly that.
 
 **Durable is not indefinite, and engagements can speak up unprompted.** A daily sweep
 suspends a live session after a day idle and posts recurring idle reminders (three days for
@@ -132,40 +99,22 @@ engagement events and may post a bounded LLM interjection into the resident chat
 at three per engagement and suppressible with `/silent`. The cap holds under concurrent dispatch: a
 budget slot is reserved before evaluation and returned if nothing is posted.
 
-**A `claude_code` record carries an OS uid, and what that uid means is not this document's
-subject.** The allocation, the ownership it implies, and the boundary built on it are in
-[`architecture/engagement-containment.md`](engagement-containment.md).
-
 ## Contracts & invariants
 
-**INV-ENG-014**: Once a `claude_code` launch's rollback has been entered, every removal it was entered to run — the s6 service directory, the workspace tree, the control directory that holds `.casa-meta.json`, the uid's passwd/group identity and its private outbox — is attempted; a cancellation delivered at one of the rollback's own awaits skips none of those attempts. That cancellation is never swallowed: it is re-raised once the attempts have run, carrying the failure it interrupted rather than replacing it.
-
-**What it does not cover.** *Attempted* is not *succeeded*: every removal keeps the
-best-effort floor it always had, so an I/O or permission failure leaves that artifact behind,
-and two of the five do not even say that they did — see
-[`architecture/engagement-failure-and-restart.md`](engagement-failure-and-restart.md). It says
-nothing about **which** removals a rollback is entered to run for which cause; that is
-INV-ENG-015 below, which extends this one through the *entered to run* clause rather than
-qualifying it. A rollback entered for a stop-caused abort is entered to run fewer removals
-and still skips none of them. The removal order, the mechanism, and why the removals being
-synchronous is what makes the guarantee cheap are in the same document.
-
-**INV-ENG-015**: A `claude_code` launch that Casa's graceful-stop cleanup finds registered is cancelled by a stop that recorded its cause against that launch first, so the cause is carried rather than inferred from the cancellation: a terminal write that observes that cause carries `origin.shutdown_reason = "casa_shutdown"` as a signal separate from the outcome, which it never replaces, and the reason it records states that Casa was stopping rather than attributing the end to a cancelled tool call; a rollback that observes that cause before its removals removes the s6 service source and recompiles but retains the workspace tree, the control directory, the uid's identity and its private outbox; the operator-facing notice claims retention only where that retention was actually recorded; the cleanup does not return until each such launch and its death report have run to completion; and a terminal `.casa-meta.json` carrying a retention deadline is written for that retained workspace only after a strict terminal transition has durably committed that engagement's record, and exactly once for that workspace, so such metadata never precedes the durable terminal record it describes and a retained workspace is never reaped while a live record still owns it.
-
-**What it does not cover** is stated where the behaviour is: the enrolment window, the
-attempted-not-guaranteed notice, the ordered-not-complete stamp, and the three paths that
-leave a retained workspace unreaped are under *A graceful stop cancels a launch* in
-[`architecture/engagement-failure-and-restart.md`](engagement-failure-and-restart.md). An
-ordinary abort and a creator or barge-in cancellation are outside this invariant entirely:
-both keep the full five-removal set, unchanged.
+The record's own contracts are defined where the behaviour is: the terminal transition and
+creation strictness in [`architecture/engagement-finalization.md`](engagement-finalization.md),
+turn admission in [`architecture/engagement-turn-admission.md`](engagement-turn-admission.md),
+the completion gate in
+[`architecture/engagement-completion-gate.md`](engagement-completion-gate.md), and what a
+launch or turn must leave behind in
+[`architecture/engagement-turn-outcomes.md`](engagement-turn-outcomes.md).
 
 ## Failure behavior
 
 What a launch abort rolls back and how far it gets, which launch-failure arms answer the
 calling turn rather than the operator's topic, and what a restart replays or refuses, are in
 [`architecture/engagement-failure-and-restart.md`](engagement-failure-and-restart.md). The
-invariants that behaviour is measured against are INV-ENG-014 and INV-ENG-015 above, under
-Contracts & invariants, and INV-ENG-011 in
+invariant that behaviour is measured against is INV-ENG-011 in
 [`architecture/engagement-turn-outcomes.md`](engagement-turn-outcomes.md).
 
 ## Extension points
@@ -176,46 +125,33 @@ rebuild fresh at the record's current clearance). `start()` — or `open()`, for
 that declares the split launch of INV-ENG-021 — may raise `StaleLaunchError` at its last
 suspension point; the launcher then aborts rather than deliver a prompt rendered from
 pre-downgrade materials. A driver without the split keeps its whole first turn inside the
-launching tool call. A driver that runs its agent as a separate OS
-process, or that reaches into a workspace as root, owes the rules in
-[`architecture/engagement-containment.md`](engagement-containment.md) and, for that reach,
-[`architecture/engagement-workspace-access.md`](engagement-workspace-access.md) as well — the protocol
-says nothing about identity or filesystem reach.
+launching tool call. The protocol says nothing about OS identity or filesystem reach: a
+driver that runs its agent as a separate OS process owes its own containment.
 
-**`start()`'s `prompt` is the first turn, for every driver.** For an in-process engagement
-that is the opening user message; for one that runs its agent in a workspace it is the text
-enqueued to the inbound spool (an empty one is suppressed rather than delivered as a blank
-turn). It is *not* the workspace's standing instructions, which the driver renders
-separately from the executor's own template. The two are therefore distinct surfaces, and a
-launcher that interpolates something into one has not put it in the other — which is why a
-memory-enabled launch fetches the prior-engagement archive on exactly one of those paths
-per driver rather than both (see [`architecture/memory-scoping.md`](memory-scoping.md)
-for which, and why the duplicate mattered).
-
-Nothing after the launch fetches it again. A replay that re-renders the workspace reuses the
-block the launch cached, and a clearance rebuild *clears* that block rather than refetching
-— a refetch there would read at the clearance the rebuild has just left, which is the thing
-the rebuild exists to stop.
+**`start()`'s `prompt` is the first turn.** For the in-process driver that is the opening
+user message; a memory-enabled launch interpolates the prior-engagement archive into it (see
+[`architecture/memory-scoping.md`](memory-scoping.md)). Nothing after the launch fetches the
+archive again: a clearance rebuild *clears* the cached block rather than refetching — a
+refetch there would read at the clearance the rebuild has just left, which is the thing the
+rebuild exists to stop.
 
 **A new durable field** must be added to the record, its load path and its write path
 together — otherwise it exists at runtime and silently vanishes across a restart. A field that
 records an OBLIGATION owes three more decisions: what arms it (and, if the answer depends on
 which caller wrote the terminal rather than on any property of the record, it is an explicit
 argument to the transition, not a predicate), whether the strict rollback restores it, and
-whether a record carrying it survives the terminal-retention expiry. Two do so today, for the
-same reason: expiring the row would delete the obligation along with the state needed to
-discharge it. `quiesce_pending` is the kill a terminal `claude_code` record still owes
-(INV-CONT-006); `terminal_notification_pending` is the telling a finalized outcome still owes
-the party that asked for the work (INV-ENG-018, in
-[`architecture/engagement-terminal-telling.md`](engagement-terminal-telling.md)). A legacy row missing
-either key decodes as owing NOTHING — the opposite default would discharge the whole
+whether a record carrying it survives the terminal-retention expiry. One does so today:
+expiring the row would delete the obligation along with the state needed to discharge it.
+`terminal_notification_pending` is the telling a finalized outcome still owes the party that
+asked for the work (INV-ENG-018, in
+[`architecture/engagement-terminal-telling.md`](engagement-terminal-telling.md)). A legacy row
+missing the key decodes as owing NOTHING — the opposite default would discharge the whole
 tombstone's worth of obligations at the first boot after an upgrade.
 
 **A new origin value that may hold a live object** must be registered as non-persistable, or
 serialization will either fail or persist something meaningless.
 
-**A new terminal path, and a new topic output**, belong with the finalize funnel and the
-per-engagement sequencer in
+**A new terminal path, and a new topic output**, belong with the finalize funnel in
 [`architecture/engagement-finalization.md`](engagement-finalization.md).
 Whether a terminal writer needed authority to assert *that* outcome — and why neither
 persisting ledger checks it — is answered in the same document.
@@ -228,7 +164,6 @@ persisting ledger checks it — is answered in the same document.
 **Source**
 - `casa/rootfs/opt/casa/engagement_registry.py::EngagementRecord`
 - `casa/rootfs/opt/casa/drivers/driver_protocol.py::DriverProtocol`
-- `casa/rootfs/opt/casa/drivers/claude_code_driver.py::ClaudeCodeDriver`
 - `casa/rootfs/opt/casa/tools.py::engage_executor`
 - `casa/rootfs/opt/casa/tools.py::_post_topic_opening`
 - `casa/rootfs/opt/casa/tools.py::engagement_launch_prompt`
@@ -243,10 +178,8 @@ persisting ledger checks it — is answered in the same document.
 - `tests/test_engage_executor_tool.py::TestEngageHandoffLines`
 - `tests/test_delegate_to_agent.py`
 - `tests/test_delegate_to_agent_interactive.py`
-- `tests/test_claude_code_driver.py`
 - `tests/test_engagement_registry.py`
 - `tests/test_observer.py`
-- `tests/test_boot_replay.py`
 - `tests/test_in_casa_inbound_admission.py`
 
 **Related**
@@ -254,7 +187,6 @@ persisting ledger checks it — is answered in the same document.
 - [`architecture/turn-loop.md`](../architecture/turn-loop.md)
 - [`architecture/sdk-client-pool.md`](../architecture/sdk-client-pool.md)
 - [`architecture/delegation.md`](../architecture/delegation.md)
-- [`architecture/engagement-containment.md`](../architecture/engagement-containment.md)
 - [`architecture/engagement-finalization.md`](../architecture/engagement-finalization.md)
 - [`architecture/engagement-completion-gate.md`](../architecture/engagement-completion-gate.md)
 - [`architecture/engagement-turn-admission.md`](../architecture/engagement-turn-admission.md)

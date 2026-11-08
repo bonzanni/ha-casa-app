@@ -682,7 +682,7 @@ class ExecutorDefinition:
     type: str
     description: str
     model: str
-    driver: str                                  # "in_casa" | "claude_code"
+    driver: str                                  # "in_casa"
     enabled: bool = True
     tools_allowed: list[str] = field(default_factory=list)
     tools_disallowed: list[str] = field(default_factory=list)
@@ -701,10 +701,6 @@ class ExecutorDefinition:
     hooks_document: dict = field(default_factory=dict)
     observer_policy_path: str | None = None
     doctrine_dir: str = ""
-    # --- Plan 4a additions (claude_code driver) ---
-    extra_dirs: list[str] = field(default_factory=list)
-    mirror_chat_to_topic: bool = True
-    plugins_dir: str = ""   # absolute path to per-executor plugins/ dir; "" = none
     # --- M4 addition (engagement memory) ---
     memory: ExecutorMemoryConfig = field(default_factory=ExecutorMemoryConfig)
     # --- Personality Phase A, Task 5/6 addition ---

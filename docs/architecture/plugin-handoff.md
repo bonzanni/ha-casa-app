@@ -58,11 +58,6 @@ does guarantee is narrower and mechanical — that a path handed to a consumer i
 from *outside* the folder (INV-HANDOFF-001), which is the outcome that would turn "attach
 this file" into "mail this credential".
 
-**Uid-dropped executors cannot see it.** The folder is `0770` and owned by root, the user
-Casa runs as; a `claude_code` executor engagement runs under its own dropped uid and gid with
-its supplementary groups cleared, so its plugins can neither publish into the folder nor
-capture from it.
-
 **Sharing an inbound file copies it.** `share_inbound_file(path)` takes a path exactly as
 `list_inbound_files` shows it, publishes a copy as producer `casa` under the operator's
 filename, and returns the handoff path plus the seven-day retention. The inbox copy is
@@ -169,5 +164,4 @@ operator's files to plugins; it is useful only to an agent that has an inbox.
 - [`architecture/inbound-files.md`](../architecture/inbound-files.md)
 - [`architecture/plugin-runtime.md`](../architecture/plugin-runtime.md)
 - [`architecture/persistent-state.md`](../architecture/persistent-state.md)
-- [`architecture/engagement-containment.md`](../architecture/engagement-containment.md)
 <!-- END SOURCEMAP -->

@@ -29,8 +29,7 @@ The deposit requires the media `kind` — one of the kinds `send_media` has a po
 COMPOSED form, the label line, a newline and the caption, fits the media caption cap
 (`bad_caption`; overflow is refused, never truncated — the label's length is known at
 deposit from the call's identity). The path is not read at deposit. At delivery the hook
-claims it from the outbox the authenticated engagement record names — a uid-dropped
-engagement's private outbox, else the shared one — exactly as `send_media` does, so a path
+claims it from the shared outbox exactly as `send_media` does, so a path
 outside the outbox, a missing file or a symlink is not proven; the kind's policy (magic
 gate, extension allowlist, size cap) runs on the claimed bytes; the channel sends them
 through the kind's method with the composed caption as plain text, and the claim is removed

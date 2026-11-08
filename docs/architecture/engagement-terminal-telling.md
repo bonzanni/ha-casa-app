@@ -94,17 +94,13 @@ that the delivery happened.
 **Confirmation is the message id the sender returned, not the fact that the call returned.**
 Both direct topic senders are typed to return an id and to raise on failure, so a non-`None`
 return is a wire acknowledgement — which is all it claims, and never that a person read it.
-The distinction matters because of the sequencer route: the sequencer's completion seam
-reports a *definite* send failure by returning nothing, without raising, and the driver hook
-in front of it used to discard that answer and report success. On that route the funnel
-skipped its own direct send and painted and closed with no exception raised anywhere for
-anyone to catch. A predicate built on "did the call raise?" is blind to it entirely.
+A predicate built on "did the call raise?" would be blind to a sender that returns having
+sent nothing, which is why the id, not the absence of an exception, is the fact.
 
-A sequencer attempt that *raises* is treated differently from one that reports nothing sent.
-A raise can come part-way through a paginated send, so some pages may already be in the
-topic; replaying the whole summary through the direct sender would duplicate content and
-then paint and close over the duplicate. A definite "nothing sent" is safe to follow with a
-direct attempt; a raise is not, and gets only the disclosure.
+A post that *raises* is never followed by a second attempt at the summary. A raise can come
+part-way through a paginated send, so some pages may already be in the topic; replaying the
+whole summary would duplicate content and then paint and close over the duplicate. It gets
+only the disclosure.
 
 The rule is uniform across outcomes. A cancellation emoji over a topic that never heard why
 is the same false assertion as a completion emoji, so `completed`, `cancelled` and `error`

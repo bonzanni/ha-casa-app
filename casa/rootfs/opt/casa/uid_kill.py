@@ -1,7 +1,7 @@
 """Bounded, observed kill of every process running under one uid.
 
-Kept apart from ``engagement_quiesce``, which latches an engagement's s6 service
-down and then runs this ladder, so the ladder depends on nothing s6-specific.
+Kept for the script runner, which kills by uid; the ladder depends on nothing
+s6-specific.
 
 **Why the ladder kills rather than freezes.** Two review rounds killed a
 freeze-then-verify design: signal *delivery* is not *stopped* (a target was still
@@ -20,8 +20,7 @@ Zombies count as extinct: a ``Z`` member cannot execute, fork or write, and it
 lingers only until it is reaped, so treating it as live would turn a harmless
 transient into a false NOT_VERIFIED.
 
-Signalling goes through the same race-free primitive
-``casa_core._best_effort_kill_uid`` uses: ``pidfd_open`` pins the exact process
+Signalling goes through a race-free primitive: ``pidfd_open`` pins the exact process
 instance, the uid is re-verified from the now-current ``/proc/<pid>/status``, and
 ``pidfd_send_signal`` reaches only the pinned process — never a pid reuser. With
 no pidfd primitives the ladder signals NOTHING and reports NOT_VERIFIED; a
@@ -77,9 +76,9 @@ class _Signaller:
 
     Resolved via a sentinel so an injected ``None`` EXPLICITLY means "primitive
     unavailable" and reaches the skip path, while the production default uses the
-    real primitives (the same sentinel discipline ``_best_effort_kill_uid``
-    learned the expensive way — an injected ``None`` that fell back to the real
-    ``os.pidfd_open`` made the unavailable-path test signal for real).
+    real primitives (a discipline learned the expensive way — an injected
+    ``None`` that fell back to the real ``os.pidfd_open`` made the
+    unavailable-path test signal for real).
     """
 
     pidfd_open: object = None

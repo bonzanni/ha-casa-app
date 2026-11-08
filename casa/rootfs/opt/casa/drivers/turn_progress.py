@@ -29,8 +29,7 @@ logger = logging.getLogger(__name__)
 _SPACING_S = 3.0      # at least this long between two writes of the line
 _IO_TIMEOUT_S = 3.0   # bound on each Telegram call and on the close's drain
 
-# Tool-use activity phrases and the elapsed format, shared with the
-# claude_code driver's pinned summary (``drivers.summary_controller``).
+# Tool-use activity phrases and the elapsed format.
 _MCP_SERVER_CAP = 32      # §5 P1-B: cap the mcp server substring AT SOURCE.
 
 # §5 S5: coarse tool_use → activity mapping.

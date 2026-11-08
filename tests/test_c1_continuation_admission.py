@@ -782,11 +782,12 @@ class TestACompletionRacingTheContinuationIsRefused:
             agent_mod.active_engagement_driver = None
 
     async def test_a_reservation_born_during_finalize_is_vetoed_by_the_hook(
-            self, tmp_path, fake_telegram_bot):
-        """The window itself. ``_finalize_engagement`` drains the inbound
-        spool BEFORE ``try_transition_terminal`` runs its terminal hook, so a
-        tap committing there is admitted AFTER ``emit_completion``'s pre-check
-        read zero — the exact interleaving the dossier reproduced. The refusal
+            self, tmp_path, fake_telegram_bot, monkeypatch):
+        """The window itself. ``_finalize_engagement`` awaits the summary
+        run's registration BEFORE ``try_transition_terminal`` runs its
+        terminal hook, so a tap committing there is admitted AFTER
+        ``emit_completion``'s pre-check read zero — the exact interleaving the
+        dossier reproduced. The refusal
         must carry the TERMINAL HOOK's copy, not the pre-check's, proving the
         veto fired inside the transition's critical section.
 
@@ -807,11 +808,15 @@ class TestACompletionRacingTheContinuationIsRefused:
                 acks=_Acks(events), reconcile_cb=None,
                 inbound_reservation=_lease(ch, rec.id, events))
 
-            async def _drain(engagement):
+            import tools
+            real_register = tools._register_summary_run
+
+            async def _register(engagement, **kw):
                 # The operator's tap lands HERE — after the handler pre-check
                 # read (0, 0, 0), before the terminal hook re-reads.
                 coord.on_commit_sync(0, {})
-            drv.drain_inbound_spool = _drain
+                return await real_register(engagement, **kw)
+            monkeypatch.setattr(tools, "_register_summary_run", _register)
 
             payload = await _emit_ok(rec)
             facts = (payload.get("status"), payload.get("kind"),

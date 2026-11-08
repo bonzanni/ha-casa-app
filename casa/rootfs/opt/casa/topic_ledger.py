@@ -33,9 +33,8 @@ from atomic_io import PRIVATE, atomic_write_json
 
 logger = logging.getLogger(__name__)
 
-# Intentionally equal to tools._WORKSPACE_RETENTION_DAYS — topics and
-# workspaces expire together. The constant lives HERE so telegram.py and
-# tools.py can both import it without a cycle.
+# How long a terminal engagement's topic stays. The constant lives HERE so
+# telegram.py and tools.py can both import it without a cycle.
 TOPIC_RETENTION_DAYS = 7
 
 LEDGER_PATH = "/data/topic-ledger.json"

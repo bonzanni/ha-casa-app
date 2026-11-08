@@ -52,8 +52,6 @@ _ANNOTATION_ONLY_BASELINE = frozenset({
     ("config.py", "BindingRecord"),
     ("config.py", "CompiledPromptBundle"),
     ("config.py", "SpeakerProvenance"),
-    ("drivers/claude_code_driver.py", "OutputSequencer"),
-    ("drivers/claude_code_driver.py", "SummaryController"),
     ("hooks.py", "HooksConfig"),
     ("tools.py", "AgentConfig"),
     ("tools.py", "SpeakerProvenance"),
