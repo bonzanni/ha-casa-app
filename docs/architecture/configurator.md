@@ -146,9 +146,10 @@ is told directly. Each continuation is a run like any other, under the lease.
 **Install time is off the ceiling.** `plugin_add`, `plugin_update`,
 `specialist_install_inspect`, `specialist_install_commit`, `specialist_upgrade`,
 `persona_install_inspect` and `persona_install_commit` are wrapped by
-`tools.py::_off_the_ceiling`, which pauses the run's ceiling clock for the whole call: each
-fetch or install step has its own bound, and the ceiling stays the backstop for a run that
-loops.
+`tools.py::_off_the_ceiling`, which pauses the run's ceiling clock for the call, up to
+`_OFF_THE_CEILING_MAX_S` (30 minutes) per call: past that the clock runs again while the call
+goes on, so a call stuck behind a stalled mutation (waiting on the plugin lock) cannot keep
+the run, and its lease, alive forever. The ceiling stays the backstop for a run that loops.
 
 ## Failure behavior
 

@@ -547,6 +547,55 @@ async def test_install_tools_pause_the_ceiling(name, monkeypatch):
     assert clock.left() is not None          # and resumed after
 
 
+async def test_a_paused_install_call_is_bounded_and_the_ceiling_applies_again(
+        lease_file, monkeypatch):
+    """Install time does not count toward the ceiling, but it is not unbounded:
+    an install call stuck behind a stalled mutation stops pausing the clock
+    after its own bound, so the run (and its lease) still ends."""
+    import agent as agent_mod
+    import configurator_run
+    import tools
+    monkeypatch.setattr(tools, "_DELEGATION_CEILING_S", 0.2)
+    monkeypatch.setattr(tools, "_CEILING_PAUSE_POLL_S", 0.02)
+    monkeypatch.setattr(tools, "_CEILING_TEARDOWN_BOUND_S", 0.5)
+    monkeypatch.setattr(tools, "_OFF_THE_CEILING_MAX_S", 0.1, raising=False)
+    monkeypatch.setattr(agent_mod, "process_stopping", lambda: False)
+    stalled = asyncio.Lock()
+    await stalled.acquire()                  # an earlier mutation that never ends
+
+    async def _install(args):
+        async with stalled:
+            return {"content": [{"type": "text", "text": "{}"}]}
+
+    install = tools._off_the_ceiling(_install)
+
+    async def _runner(cfg, task_text, context_text, *, resolution=None,
+                      output_format=None, tool_counts=None):
+        await install({})
+        return SimpleNamespace(text="done", run_aborted=False)
+
+    monkeypatch.setattr(tools, "_run_delegated_agent", _runner)
+    tok = agent_mod.origin_var.set(_origin(execution_role="configurator",
+                                           _delegation_id="d"))
+    try:
+        run = asyncio.create_task(
+            tools._run_delegated_agent_bounded(_configurator_cfg(), "add plugin x", ""))
+    finally:
+        agent_mod.origin_var.reset(tok)
+    try:
+        done, _ = await asyncio.wait({run}, timeout=5)
+        assert done, "the paused install call kept the run alive"
+        with pytest.raises(tools.DelegationCeilingExceeded):
+            run.result()
+    finally:
+        run.cancel()
+        stalled.release()
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert configurator_run.holder() is None
+    assert not lease_file.exists()
+
+
 # -- D4: plugin health DMs are held while the lease is held --------------------
 
 async def test_plugins_being_installed_are_held_until_the_lease_ends(lease_file, monkeypatch):

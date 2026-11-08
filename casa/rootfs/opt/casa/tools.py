@@ -6099,16 +6099,40 @@ def _ceiling_paused():
         clock.resume()
 
 
+# The longest one install-like call keeps its run's ceiling clock paused
+# (D3). Fetch and install time does not count toward the ceiling, but it is not
+# unbounded: a call still running past this — say, waiting on the plugin lock
+# behind a stalled mutation — counts again, so the run and its lease still end.
+_OFF_THE_CEILING_MAX_S: float = 30 * 60.0
+
+
 def _off_the_ceiling(handler):
     """Engagement trim stage 4 (D3): a tool whose call fetches or installs
     (a repository fetch, npm or venv setup, system requirements) runs with its
-    run's ceiling clock paused. Each step has its own bound; the ceiling stays
-    the backstop for a run that loops. The body is read off ``__wrapped__`` at
-    call time."""
+    run's ceiling clock paused, for at most ``_OFF_THE_CEILING_MAX_S`` per
+    call; past that the clock runs again while the call goes on. The ceiling
+    stays the backstop for a run that loops. The body is read off
+    ``__wrapped__`` at call time."""
     @functools.wraps(handler)
     async def _paused(args: dict) -> dict:
-        with _ceiling_paused():
+        clock = _ceiling_clock.get()
+        if clock is None:
             return await _paused.__wrapped__(args)
+        clock.pause()
+        resumed = False
+
+        def _resume() -> None:
+            nonlocal resumed
+            if not resumed:
+                resumed = True
+                clock.resume()
+
+        timer = asyncio.get_running_loop().call_later(_OFF_THE_CEILING_MAX_S, _resume)
+        try:
+            return await _paused.__wrapped__(args)
+        finally:
+            timer.cancel()
+            _resume()
     return _paused
 
 
