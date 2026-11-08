@@ -43,11 +43,9 @@ from __future__ import annotations
 import asyncio
 import builtins
 import re
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-import yaml
 
 GUARD = "resident_prompt_write_guard"
 # The four file-writing primitives, and ONLY those: the guard's whole contract.
@@ -557,9 +555,14 @@ class TestTheGuardIsCodeMandatoryEverywhereCasaBuildsHooks:
         from drivers.hook_bridge import translate_hooks_to_settings
         from hooks import build_policy_callbacks_from_hooks_yaml
 
-        pd_hooks = yaml.safe_load(Path(
-            "casa/rootfs/opt/casa/defaults/agents/executors/plugin-developer"
-            "/hooks.yaml").read_text(encoding="utf-8")) or {}
+        # A claude_code executor's hooks.yaml carrying the containment floor
+        # (the shipped plugin-developer's floor, which no longer ships).
+        pd_hooks = {"pre_tool_use": [
+            {"policy": "block_dangerous_bash"},
+            {"policy": "path_scope", "writable": ["/data/engagements/"],
+             "readable": ["/data/engagements/"]},
+            {"policy": "managed_component_guard"},
+        ]}
 
         def _routes_exactly_the_file_tools(matcher) -> bool:
             return (all(_routes(matcher, p) for p in PRIMITIVES)

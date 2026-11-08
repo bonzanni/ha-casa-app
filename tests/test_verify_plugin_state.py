@@ -367,58 +367,6 @@ def test_verify_plugin_secrets_shim(tmp_path, monkeypatch):
     assert "secrets" in out and isinstance(out["secrets"], list)
 
 
-def test_bundled_registry_authorized_for_plugin_developer(tmp_path, monkeypatch):
-    """Sol R2-5 (fast unit guard, NOT the proof): the checked-in default
-    registry × the real plugin-developer definition — grants derived from
-    fixture artifacts mirroring each bundled plugin's .mcp.json server keys
-    must be fully authorized. (context7 is the only MCP-bearing default.)"""
-    import json
-    import agent as agent_mod
-    import yaml
-
-    root = Path(__file__).resolve().parent.parent / "casa" / "rootfs" / "opt" / "casa"
-    default_reg_path = root / "defaults" / "plugin-registry.json"
-    if not default_reg_path.is_file():
-        pytest.skip("default plugin-registry.json lands in Task 18")
-    default_reg = json.loads(default_reg_path.read_text(encoding="utf-8"))
-    defn_raw = yaml.safe_load(
-        (root / "defaults" / "agents" / "executors" / "plugin-developer"
-         / "definition.yaml").read_text(encoding="utf-8"))
-    allowed = list((defn_raw.get("tools") or {}).get("allowed") or [])
-
-    store = tmp_path / "store"
-    reg_entries = []
-    for e in default_reg["plugins"]:
-        servers = {"context7": {}} if e["name"] == "context7" else None
-        src = e["source"]
-        # #923: carry the shipped entry's OWN source type. These ARE Casa's
-        # bundled plugins; building them as github-sourced would model the one
-        # population the ruling says never reaches a worker.
-        ent = entry(e["name"], e["targets"], revision=src["revision"],
-                    subdir=src.get("subdir", ""),
-                    source_type=src.get("type", "github"))
-        mk_artifact(store, e["name"], ent["artifact_id"],
-                    revision=src["revision"], subdir=src.get("subdir", ""),
-                    mcp_servers=servers)
-        reg_entries.append(ent)
-    mk_registry(tmp_path, reg_entries)
-
-    class _ExecReg:
-        def is_disabled(self, t):
-            return False
-
-        def get(self, t):
-            return SimpleNamespace(tools_allowed=allowed)
-
-    monkeypatch.setattr(agent_mod, "active_runtime",
-                        _runtime(executor_registry=_ExecReg()), raising=False)
-    for e in reg_entries:
-        r = _verify(tmp_path, name=e["name"])
-        row = r["targets"][0]
-        assert row["authorization"]["missing"] == [], (
-            f"{e['name']}: unauthorized {row['authorization']['missing']}")
-
-
 # --- Sol review regressions -------------------------------------------------
 
 def _mk_artifact_raw(store, name, artifact_id, *, plugin_json, mcp_text=None,

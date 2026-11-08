@@ -59,7 +59,7 @@ RUN case "${TARGETARCH}" in \
        -o /usr/bin/ttyd \
     && chmod +x /usr/bin/ttyd
 
-# gh CLI for plugin-developer's GitHub repo creation + push (§6.1 / §6.3 / §8.5)
+# gh CLI: plugin_store resolves plugin refs and releases with `gh api`
 ARG GH_CLI_VERSION=2.45.0
 RUN set -eux; \
     case "$(dpkg --print-architecture)" in \
@@ -128,28 +128,7 @@ RUN python3 -c 'import subprocess, sys; [subprocess.run([p], stdin=subprocess.DE
 COPY requirements.txt /tmp/
 RUN /opt/casa/venv/bin/pip install --no-cache-dir -r /tmp/requirements.txt
 
-# --- Bundled plugin artifacts (unified plugin architecture, spec 3.6) --------
-# Network-bound layer kept BEFORE `COPY rootfs /` so routine code changes do
-# not re-fetch. Inputs are narrow-COPY'd; pins are exact commits checked into
-# defaults/plugin-registry.json — the build NEVER resolves a tag/branch.
-#
-# Build-time SSH→HTTPS rewrite + auth flow through /etc/gitconfig + the
-# credential helper; ship them via narrow COPYs so the fetch does not depend
-# on the broad `COPY rootfs /` below (re-copied identically later, harmless).
-COPY rootfs/etc/gitconfig /etc/gitconfig
-COPY rootfs/opt/casa/scripts/git-credential-casa.sh /opt/casa/scripts/git-credential-casa.sh
-COPY rootfs/opt/casa/plugin_registry.py rootfs/opt/casa/plugin_store.py rootfs/opt/casa/plugin_triggers.py rootfs/opt/casa/plugin_callbacks.py rootfs/opt/casa/plugin_events.py rootfs/opt/casa/callback_attempts.py rootfs/opt/casa/atomic_io.py rootfs/opt/casa/text_util.py /opt/casa/
-COPY rootfs/opt/casa/scripts/build_plugin_bundle.py /opt/casa/scripts/build_plugin_bundle.py
-COPY rootfs/opt/casa/defaults/plugin-registry.json /opt/casa/defaults/plugin-registry.json
-RUN python3 /opt/casa/scripts/build_plugin_bundle.py \
-      --registry /opt/casa/defaults/plugin-registry.json \
-      --out /opt/casa/plugin-bundle \
- && rm -rf /opt/casa/.bundle-staging \
- && chmod -R a-w /opt/casa/plugin-bundle \
- && chmod -R a+rX /opt/casa/plugin-bundle
-
-# Copy application (frequently-changing layer; kept AFTER the bundle build so a
-# code edit does not bust the seed-install layer cache — L31).
+# Copy application (frequently-changing layer, kept last).
 COPY rootfs /
 
 # Set permissions for s6-rc services and scripts

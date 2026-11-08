@@ -130,63 +130,6 @@ def test_template_path_writes_translated_hooks(tmp_path, executor_defaults):
     assert any(c.endswith("hook_proxy.sh path_scope") for c in commands)
 
 
-def test_template_path_handles_bundled_plugin_developer(tmp_path):
-    """Regression: bundled plugin-developer definition.yaml + hooks.yaml +
-    workspace-template/ flow through render_workspace_template cleanly, and
-    settings.json carries NO enabledPlugins (§3.3)."""
-    import yaml
-    from config import ExecutorDefinition
-    from drivers.workspace import render_workspace_template
-
-    here = Path(__file__).resolve().parent.parent
-    plugin_dev_dir = (
-        here / "casa" / "rootfs" / "opt" / "casa" / "defaults"
-        / "agents" / "executors" / "plugin-developer"
-    )
-    raw_defn = yaml.safe_load((plugin_dev_dir / "definition.yaml").read_text(encoding="utf-8"))
-    raw_hooks = yaml.safe_load((plugin_dev_dir / "hooks.yaml").read_text(encoding="utf-8")) or {}
-    tools = raw_defn.get("tools") or {}
-    defn = ExecutorDefinition(role_artifact=STUB_ROLE_ARTIFACT,
-        type=raw_defn["type"], description=raw_defn["description"],
-        model="sonnet", driver=raw_defn["driver"],
-        tools_allowed=list(tools.get("allowed", [])),
-        permission_mode=tools.get("permission_mode", "acceptEdits"),
-    )
-    dest = tmp_path / "engagements" / "eng-bundled"
-    render_workspace_template(
-        template_root=plugin_dev_dir / "workspace-template",
-        dest=dest, defn=defn, hooks_yaml_data=raw_hooks,
-        executor_type=defn.type, task="probe task", context="probe context",
-        world_state_summary="",
-    )
-    settings = json.loads((dest / ".claude" / "settings.json").read_text())
-    assert settings["permissions"]["allow"] == defn.tools_allowed
-    assert settings["permissions"]["defaultMode"] == defn.permission_mode
-    assert "PreToolUse" in settings["hooks"]
-    assert len(settings["hooks"]["PreToolUse"]) >= 1
-    assert "enabledPlugins" not in settings          # §3.3
-
-    # Task 10 doctrine: first contact + as-directed brainstorming + completion accounting
-    claude_md = (dest / "CLAUDE.md").read_text(encoding="utf-8")
-    assert "## First contact" in claude_md
-    assert "intended approach" in claude_md
-    assert "process requirement" in claude_md
-
-    # v0.79.0 (§6/T5) doctrine: turn discipline — one question at a time via
-    # the ask tool, the inbound gate, and the redirect/STOP priority lane.
-    assert "## Turn discipline" in claude_md
-    assert "One question at a time" in claude_md
-    assert "options: []" in claude_md
-    assert "unread_inbound" in claude_md
-    assert "[OPERATOR REDIRECT" in claude_md
-    assert "doctrine/engagement-conduct.md" in claude_md
-    doctrine_card = (
-        plugin_dev_dir / "doctrine" / "engagement-conduct.md"
-    ).read_text(encoding="utf-8")
-    assert "STOP" in doctrine_card
-    assert "redirect: <text>" in doctrine_card
-
-
 # --- run-script --plugin-dir plumbing (§3.8) --------------------------------
 
 def test_render_run_script_plugin_dir_flags():

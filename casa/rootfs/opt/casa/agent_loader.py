@@ -57,8 +57,8 @@ DEFAULT_ROLES_DIR = os.path.join(os.path.dirname(__file__), "defaults", "roles")
 
 # Round-6 P0-2 (Sol): executor permission modes ranked by permissiveness.
 # The image-owned role artifact's tools.permission_mode is the CEILING a
-# definition.yaml may not exceed (shipped: configurator=acceptEdits,
-# plugin-developer=auto). "bypassPermissions" is deliberately ABSENT — it
+# definition.yaml may not exceed (shipped: configurator=acceptEdits).
+# "bypassPermissions" is deliberately ABSENT — it
 # would reduce allowed_tools to mere auto-approval and is NEVER honored for
 # executors, whatever the role says; see load_all_executors for the clamp.
 _EXECUTOR_PERMISSION_MODE_RANK: dict[str, int] = {
@@ -2110,8 +2110,7 @@ def load_all_executors(
             # turn the clamped allowlist into mere auto-approval and
             # resurrect everything the allowlist excludes. The role
             # artifact's required tools.permission_mode (role.v1.json — a
-            # free string; shipped: configurator=acceptEdits,
-            # plugin-developer=auto) is the CEILING: the definition may
+            # free string; shipped: configurator=acceptEdits) is the CEILING: the definition may
             # declare an equally- or less-permissive mode, never a more
             # permissive one, and "bypassPermissions" is NEVER honored for
             # an executor regardless of the role (it has no rank).

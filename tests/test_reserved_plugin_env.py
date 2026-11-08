@@ -7,23 +7,17 @@ value with the literal string — the exact gmail-v0.4.0 token-in-a-
 literal-directory bug, which Casa's own doctrine used to instruct.
 
 Enforcement: self-declaring a reserved CLI var is a blocking verify reason
-(``mcp_reserved_env``) and a pre-push guard finding.
+(``mcp_reserved_env``).
 """
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
 from plugin_fixtures import entry, mk_artifact, mk_registry
 
 pytestmark = pytest.mark.unit
-
-_ROOTFS = Path(__file__).resolve().parent.parent / "casa" / "rootfs"
-_DOCTRINE = (_ROOTFS / "opt" / "casa" / "defaults" / "agents" / "executors"
-             / "plugin-developer" / "doctrine")
-
 
 # ---------------------------------------------------------------------------
 # plugin_store.reserved_env_violations
@@ -98,18 +92,3 @@ def test_verify_blocks_reserved_env(tmp_path):
         _store_root=tmp_path / "store")
     assert r["ready"] is False
     assert "mcp_reserved_env" in r["reasons"]
-
-
-# ---------------------------------------------------------------------------
-# doctrine drift-guards
-# ---------------------------------------------------------------------------
-
-
-def test_doctrine_forbids_self_declaration():
-    text = (_DOCTRINE / "casa-self-containment.md").read_text(encoding="utf-8")
-    assert "never declare" in text.lower()
-    assert "CLAUDE_PLUGIN_DATA" in text
-    assert "mcp_reserved_env" in text          # enforcement is named
-    # The old advice must be gone — "declare it to receive it" WAS the bug;
-    # the literal form may appear only as the marked anti-example.
-    assert "to receive it" not in text

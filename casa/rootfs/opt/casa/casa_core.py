@@ -4029,10 +4029,6 @@ _PASSWORD_ENV_VARS = (
     "CLAUDE_CODE_OAUTH_TOKEN",
     "TELEGRAM_BOT_TOKEN",
     "WEBHOOK_SECRET",
-    # #277: context7_api_key is password-typed too — exported by svc-casa/run;
-    # without this entry an op:// value reached the context7 MCP server as the
-    # literal reference.
-    "CONTEXT7_API_KEY",
 )
 
 

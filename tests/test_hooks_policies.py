@@ -311,24 +311,6 @@ class TestHookNoopReturnsEmptyDict:
         )
         assert result == {}, f"expected empty dict, got {result!r}"
 
-    async def test_self_containment_guard_non_bash(self):
-        from hooks import make_self_containment_guard
-        hook = make_self_containment_guard()
-        result = await hook(
-            {"tool_name": "Read", "tool_input": {"file_path": "/x"}},
-            None, {},
-        )
-        assert result == {}, f"expected empty dict, got {result!r}"
-
-    async def test_self_containment_guard_non_git_push(self):
-        from hooks import make_self_containment_guard
-        hook = make_self_containment_guard()
-        result = await hook(
-            {"tool_name": "Bash", "tool_input": {"command": "ls -la"}},
-            None, {},
-        )
-        assert result == {}, f"expected empty dict, got {result!r}"
-
 
 class TestPathScopeToolResultsOverflow:
     """#1082: an oversized tool result that Claude Code diverts to

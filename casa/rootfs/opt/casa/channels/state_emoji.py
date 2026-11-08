@@ -24,7 +24,6 @@ STATE_EMOJI: dict[str, str] = {
 # §6.3 role emoji.
 ROLE_EMOJI: dict[str, str] = {
     "configurator": "⚙️",
-    "plugin-developer": "🛠",
 }
 
 _DEFAULT_ROLE_EMOJI = "🤖"

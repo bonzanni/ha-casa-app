@@ -34,7 +34,7 @@ MODEL_MAP: dict[str, str] = {
 # per-role decision: the assistant (Opus 5.5) at medium; the butler, the
 # concierge, the tier classifier, the observer and query_engager's synthesis
 # (Haiku 5.5) at low; the finance specialist (Sonnet 5.5) at medium; the
-# configurator and the plugin-developer (pinned to Sonnet 5) at high. Casa
+# configurator (pinned to Sonnet 5) at high. Casa
 # passes it explicitly because the CLI's own default differs by model and
 # moves between CLI versions. An id not listed here gets no effort, and the
 # CLI's default applies.
@@ -52,7 +52,7 @@ MODEL_EFFORT: dict[str, str] = {
 # no longer run. A resident only ever resolves one of MODEL_MAP's values, so a
 # recorded pre-5.5 id is always one of these three and resumes on its
 # successor. Applied to that record only: ``claude-sonnet-5`` is still a model
-# Casa runs, for the configurator and the plugin-developer.
+# Casa runs, for the configurator.
 _RESIDENT_MODEL_SUCCESSOR: dict[str, str] = {
     "claude-opus-5": MODEL_MAP["opus"],
     "claude-sonnet-5": MODEL_MAP["sonnet"],

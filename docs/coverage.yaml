@@ -225,8 +225,6 @@
   doc: architecture/plugins.md
 - item: casa/rootfs/opt/casa/plugin_callbacks.py
   doc: architecture/callbacks.md
-- item: casa/rootfs/opt/casa/plugin_completion_guard.py
-  doc: architecture/plugins.md
 - item: casa/rootfs/opt/casa/plugin_dispatch.py
   doc: architecture/plugin-events.md
 - item: casa/rootfs/opt/casa/plugin_env_conf.py
@@ -360,8 +358,6 @@
 - item: option:casa_tz
   doc: reference/operator-options.md
 - item: option:claude_oauth_token
-  doc: reference/operator-options.md
-- item: option:context7_api_key
   doc: reference/operator-options.md
 - item: option:enable_terminal
   doc: reference/operator-options.md
@@ -676,8 +672,6 @@
 - item: casa/rootfs/opt/casa/personality_types.py
   doc: architecture/personality.md
 - item: casa/rootfs/opt/casa/plugin_env_extractor.py
-  doc: architecture/plugins.md
-- item: casa/rootfs/opt/casa/scripts/build_plugin_bundle.py
   doc: architecture/plugins.md
 - item: casa/rootfs/opt/casa/scripts/reconcile_system_requirements.py
   doc: architecture/specialist-lifecycle.md

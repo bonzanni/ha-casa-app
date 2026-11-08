@@ -144,9 +144,8 @@ Two halves, and both are load-bearing. A code-mandatory PreToolUse guard — car
 executor, every resident, and, since the resident-prompt guard's wiring made it visible,
 every *delegated* resident too — refuses the write. It is applied uniformly rather than only
 to an agent the loader knows has `Bash`. No shipped resident carries `Bash` today (#460
-removed it from the assistant, the last one that did), but the `plugin-developer` executor
-still does, and the guard's universality is what makes that fact irrelevant to whether it
-runs. The typed replacement then makes the change *inside* Casa, and the read, judgement
+removed it from the assistant, the last one that did), and no shipped executor does either;
+the guard's universality is what keeps whether it runs from depending on that fact. The typed replacement then makes the change *inside* Casa, and the read, judgement
 and write are held under `trigger_write_lock.PASS_LOCK`, which the `config_sync` reconciler
 also holds across its entire pass (#458): a reminder or configurator write can only land
 before or after a pass, never in the middle of the reconciler's own read-decide-write, and

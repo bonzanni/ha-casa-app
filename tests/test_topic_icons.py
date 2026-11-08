@@ -16,10 +16,6 @@ class TestIconIdForRole:
         from channels.topic_icons import icon_id_for_role
         assert icon_id_for_role("configurator") == "5357315181649076022"
 
-    def test_plugin_developer_maps_to_laptop_id(self):
-        from channels.topic_icons import icon_id_for_role
-        assert icon_id_for_role("plugin-developer") == "5350554349074391003"
-
     def test_finance_maps_to_money_bag_id(self):
         from channels.topic_icons import icon_id_for_role
         assert icon_id_for_role("finance") == "5350452584119279096"

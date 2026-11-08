@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
-import pathlib
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -78,7 +77,7 @@ async def wired(tmp_path):
         task="t", origin={"role": "assistant", "channel": "telegram"},
         topic_id=TOPIC,
         # v0.166.0: react is a bridge tool, so the engagement must grant it for
-        # the gate to dispatch — as the real plugin-developer definition does.
+        # the gate to dispatch — as a definition that lists it does.
         tools_allowed=("mcp__casa-framework__react",),
     )
 
@@ -213,20 +212,6 @@ async def test_react_invalid_arguments(wired):
     assert wired.bot.reactions == []
 
 
-def test_react_doctrine_marks_non_decisional():
-    """Doctrine states reactions are non-decisional and never an approval
-    shortcut for the verdict broker / ask."""
-    doctrine = pathlib.Path(
-        "casa/rootfs/opt/casa/defaults/agents/executors/"
-        "plugin-developer/doctrine/engagement-conduct.md"
-    ).read_text(encoding="utf-8")
-    low = doctrine.lower()
-    assert "react" in low
-    assert "non-decisional" in low or "not a decision" in low
-    # explicitly forbids using a reaction as an ask/approval shortcut
-    assert "approval" in low and "ask" in low
-
-
 def test_react_never_touches_ask_answer_seam():
     """Structural guarantee: react cannot consume/settle an open ask — it never
     references the answer-reservation / broker / ask-gate machinery."""
@@ -242,16 +227,9 @@ def test_react_granted_by_definition_not_by_a_blanket_resume_grant():
 
     v0.166.0: the bridge grant-gate admits react only when the engagement's
     record carries it, and the record is pinned from the definition. So react
-    must come from the plugin-developer DEFINITION — the resume builder must NOT
+    must come from an executor's DEFINITION — the resume builder must NOT
     add it unconditionally, or a resumed configurator (whose definition lacks
     react) would be offered a tool the gate rejects."""
-    import yaml
-    defn = yaml.safe_load(pathlib.Path(
-        "casa/rootfs/opt/casa/defaults/agents/executors/"
-        "plugin-developer/definition.yaml"
-    ).read_text(encoding="utf-8"))
-    assert "mcp__casa-framework__react" in defn["tools"]["allowed"]
-
     # The mandatory grant sets never carry react.
     assert "mcp__casa-framework__react" not in tools.SPECIALIST_CASA_GRANTS
     assert "mcp__casa-framework__react" not in tools.MANDATORY_BRIDGE_CASA_GRANTS

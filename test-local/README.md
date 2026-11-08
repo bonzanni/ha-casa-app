@@ -92,7 +92,6 @@ product has not shipped for months — measured, and it cost two harness runs.
 | `e2e/test_concurrency.sh` | 3 | parallel `/invoke` with simulated SDK latency |
 | `e2e/test_mcp_restart_survival.sh` | 2 + 3 | engagement TCP keep-alive across `svc-casa-mcp` restart (needs `CASA_USE_MOCK_CLAUDE=1`). The only enabled harness that performs a real `ClaudeCodeDriver.start`, so since #937 CI runs it in `tier2-functional` (the push gate) as well as in `tier3-hardening` (the scheduled copy `nightly-alarm` covers). |
 | `e2e/test_engagement_D.sh` | 3 | D-1..D-12 — claude_code driver lifecycle on mock-CLI overlay (needs `CASA_USE_MOCK_CLAUDE=1`; CI step currently commented out, see "Deferred CI steps" below) |
-| `e2e/test_engagement_P.sh` | 2 | P-1..P-9 — plugin-developer + Configurator install flow (needs `CASA_USE_MOCK_CLAUDE=1` + `CASA_PLAN_4B=1`; CI step currently commented out) |
 
 `e2e/common.sh` provides shared helpers (`build_image`, `wait_healthy`,
 `stop_container`, `assert_log_contains`, `start_mock_telegram_server`,
@@ -163,15 +162,14 @@ gh workflow run qa.yml --ref master
 
 ### Deferred CI steps
 
-Two engagement steps are commented out in `qa.yml` pending the
-v0.14.10 D/P-block sweep follow-up:
+One engagement step is commented out in `qa.yml` pending the
+v0.14.10 D-block sweep follow-up:
 
-- `tier2-functional` → `Engagement P-block` (`test_engagement_P.sh`)
 - `tier3-hardening` → `Engagement D-block` (`test_engagement_D.sh`)
 
-The split scripts exist and parse cleanly. To re-enable, drop the
+The split script exists and parses cleanly. To re-enable, drop the
 leading `# ` markers on the YAML block — the `env:` block + step body
-are already in place. Both run locally today; the comment-out is a
+are already in place. It runs locally today; the comment-out is a
 CI-side decision deferred until the harness regressions tracked since
 v0.14.8 are swept.
 

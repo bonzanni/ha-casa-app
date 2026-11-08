@@ -73,8 +73,8 @@ the trigger-file and response-shape guards still do, and was measured wrong in
 both directions — it refused reads the invariant promises to allow and missed
 writes — because what a shell command writes to is not decidable from its text.
 So a shell-capable agent can still make the edit. It is inert for a bundle-bound
-resident; no shipped resident holds `Bash` and the configurator has none, so the
-one shipped path is the plugin-developer's shell, and whether that tree gets an
+resident; no shipped resident holds `Bash` and the configurator has none, so no
+shipped agent takes that path, and giving an operator-defined shell agent an
 execution boundary is a separate decision from this guard. Nor the claude_code
 transport's fail-open when the hook resolver is unreachable, which is a property
 of that transport that the managed-state guard shares. Actual specialist
@@ -97,7 +97,7 @@ The two guards differ here. The response-shape guard keeps a coarse shell backst
 command that names `response_shape.yaml` and is not provably read-only is refused — it
 recognises the accidental spelling, not every one. The prompt-file guard classifies no shell
 command at all, so a shell-capable agent can still edit `prompts/system.md` — inert for a
-bundle-bound resident, and a separate decision for the plugin-developer's tree.
+bundle-bound resident, and no shipped agent holds a shell.
 
 ## Extension points
 

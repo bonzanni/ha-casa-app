@@ -61,7 +61,7 @@ delegation against the current environment. Every successful reload — plugin-e
 the secrets, or any agent-reconstructing scope — kicks the episode worker.
 
 What it does not cover: the executor path, whose options builder hands out plugin paths
-without this gate (the same asymmetry as INV-PLUG-006 — a configurator or plugin-developer
+without this gate (the same asymmetry as INV-PLUG-006 — a configurator
 executor must be able to work on a plugin whose secrets are not wired yet). Since #923 the
 paths handed out there are Casa's own: an executor resolves the bundled population only,
 so this ungated hand-out no longer reaches an operator-installed plugin at all. A *malformed*

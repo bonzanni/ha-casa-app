@@ -217,9 +217,9 @@ refusal — must be type-checked in the handler and rejected as a bad request, n
 Treating the declaration as if something upstream enforced it is how a refusal becomes
 opt-out by typo.
 
-**A completion is invalid or refused.** Bad arguments, the plugin-developer release guard,
-and the unread-inbound veto all leave the engagement active; a duplicate completion is
-acknowledged as already terminal; a failed strict persist reports retryable.
+**A completion is invalid or refused.** Bad arguments and the unread-inbound veto both leave
+the engagement active; a duplicate completion is acknowledged as already terminal; a failed
+strict persist reports retryable.
 
 **An `in_casa` completion's own acknowledgement can be lost.** A winning in_casa
 `emit_completion` tears down the client hosting the tool call itself, and the control

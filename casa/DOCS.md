@@ -14,7 +14,7 @@ Three long-lived **residents** ship with Casa:
 | Butler | Tina | Voice-first house control (lights, climate, locks, media, sensors), in short spoken answers. |
 | Concierge | Gary | A medium-trust voice agent for anyone in the room: general questions and delegated lookups, no house control and no private data. |
 
-Two more tiers extend the fleet without changing the residents. **Specialists** are ephemeral agents a resident delegates focused work to — finances, a mailbox, a hobby domain — installed from git repositories. **Executors** are task-bounded agents that work in a dedicated Telegram topic: the *configurator* changes Casa's own configuration for you, and the *plugin-developer* builds new plugins. Specialists, plugins and personas all install the same way, by asking in chat.
+Two more tiers extend the fleet without changing the residents. **Specialists** are ephemeral agents a resident delegates focused work to — finances, a mailbox, a hobby domain — installed from git repositories. **Executors** are task-bounded agents that work in a dedicated Telegram topic: the *configurator* changes Casa's own configuration for you. Specialists, plugins and personas all install the same way, by asking in chat.
 
 A fresh install ships with no specialists installed; see [Installing a specialist from a repository](#installing-a-specialist-from-a-repository).
 
@@ -149,7 +149,6 @@ just its name inside `/data/memory/exports/`.
 |--------|-------------|
 | `enable_terminal` | Enable a web terminal accessible via the ingress panel. Default: `false`. |
 | `webhook_secret` | Optional manual override for the HMAC secret that authenticates webhook, invoke and voice requests. Leave empty and Casa generates one in `/data/webhook_secret`, retrievable through the web terminal. Authentication is always on. |
-| `context7_api_key` | API key for the bundled Context7 documentation plugin (plugin-developer toolbox). Optional; an entry in the plugin env store overrides it. |
 | `engagement_reap_days` | Auto-close engagements after this many days without activity (daily sweep cancels them and closes their Telegram topic; the engaging agent is notified). Set `0` to disable. Default: `7`. |
 | `log_level` | Log verbosity: `debug`, `info`, `warning`, or `error`. Default: `info`. Flip to `debug` for verbose troubleshooting without rebuilding the image. |
 | `specialist_max_concurrency` | Max specialist delegations in flight fleet-wide at once (see [Delegation limits](#delegation-limits)). Range 1-20. Default: `2`. |
@@ -1050,7 +1049,7 @@ immutable copy that every tier loads the same way.
   a new commit produces a new artifact, never an in-place overwrite.
 
 Residents and specialists load their assigned plugins directly through the
-Claude Agent SDK. Executor engagements (e.g. plugin-developer) pin their exact
+Claude Agent SDK. Executor engagements pin their exact
 artifacts at launch and load them via `--plugin-dir`, so a plugin update never
 changes the code a running engagement is already executing.
 
@@ -1064,8 +1063,7 @@ these tools:
   assign it to targets, then reload and verify.
 - `plugin_update(name, new_ref, expected_revision?)` — re-pin to a new release
   and re-verify. Plugin releases are identified by a `vX.Y.Z` tag, annotated
-  or lightweight (v0.74.0), though the plugin-developer's own releases must be
-  annotated; passing `expected_revision` (the commit the release was built at)
+  or lightweight (v0.74.0); passing `expected_revision` (the commit the release was built at)
   makes a tag that moved afterwards abort before anything changes. The version
   is always read from the plugin's own manifest — you never supply it, so the
   stale-version class of bug is gone. Both tools report phase-aware outcomes
@@ -1074,8 +1072,7 @@ these tools:
 - `plugin_assign(name, target)` / `plugin_unassign(name, target)` — change which
   agents load a plugin. Targets look like `resident:ellen` or
   `specialist:finance`. **For now you cannot give a plugin of your own to a
-  worker** (`executor:plugin-developer` and the like): workers come with the set
-  of plugins Casa ships with them, and adding, assigning or re-pinning one is
+  worker** (an `executor:<type>` target): adding, assigning or re-pinning one is
   refused with the reason stated, before anything is installed. A worker target
   that is already stored on a plugin you installed stays in the registry file
   but is ignored — `plugin_list` shows it under `ignored_targets`, the plugin
@@ -1479,7 +1476,7 @@ Anything *not* declared and *not* defaulted still blocks the plugin as
 before.
 
 If a plugin reports a Casa-owned variable missing — `OP_SERVICE_ACCOUNT_TOKEN`,
-`ONEPASSWORD_DEFAULT_VAULT`, `CONTEXT7_API_KEY` — the fix is the matching
+`ONEPASSWORD_DEFAULT_VAULT` — the fix is the matching
 **app option**, not `plugin-env.conf`; the message names the option.
 
 ### Who runs the setup tool (v0.161.0)
@@ -1636,10 +1633,9 @@ outside that isolation.
 
 ### Fresh install & rollback
 
-The registry (`/config/plugins/registry.json`) is the single source of truth. On
-a fresh install Casa seeds it with the bundled default plugins; a newer release
-adds any newly-introduced defaults on the next boot, and a default you remove is
-never re-added. Rollback is safe — the registry format is stable across
+The registry (`/config/plugins/registry.json`) is the single source of truth. A
+fresh install starts with an empty registry: the app image ships no default
+plugins. Rollback is safe — the registry format is stable across
 releases, so a downgraded app image reads the same registry as before —
 with one boundary: a plugin version whose manifest uses the object form of
 `casa.protectedTools` (with a `summary`, introduced in 0.78.0) is rejected
@@ -2022,10 +2018,7 @@ Plugins are managed through the unified registry + immutable store — see
 [Plugins](#plugins-v0710) for the full model. There is no marketplace and no
 `enabledPlugins`: the registry (`/config/plugins/registry.json`) is the single
 assignment authority, and each pinned plugin resolves to an immutable artifact
-under `/config/plugins/store/<name>/<artifact-id>/`. The five defaults
-(superpowers, plugin-dev, skill-creator, mcp-server-dev, context7) are seeded
-from the app image and assigned to the plugin-developer executor — that
-assignment is Casa's, and for now it is the only way a plugin reaches a worker.
+under `/config/plugins/store/<name>/<artifact-id>/`.
 
 ## 1Password integration (v0.14.1)
 
@@ -2033,25 +2026,8 @@ Set `onepassword_service_account_token` (from https://developer.1password.com/do
 as a plaintext app option — it's the single root of trust and cannot
 self-reference. Set `onepassword_default_vault` to the vault name (default
 "Casa"). Every other password-typed option (`claude_oauth_token`,
-`telegram_bot_token`, `webhook_secret`, `context7_api_key`) accepts either
+`telegram_bot_token`, `webhook_secret`) accepts either
 plaintext OR an `op://` reference.
 
 Plugin env vars resolved via `plugin-env.conf` (`/config/plugin-env.conf`),
 managed by Configurator.
-
-## Plugin-developer (v0.14.1)
-
-Ask the primary assistant to build a plugin. It engages plugin-developer in
-a dedicated Telegram topic. Plugin-developer asks public/private, authors
-the plugin in its own GitHub repo, pushes, and emits completion. Assistant
-relays; on your confirm, Configurator adds it to the registry (`plugin_add`)
-and assigns it to the target agents + asks for secrets via 1P Q&A.
-
-Prerequisites:
-
-- `onepassword_service_account_token` set (plaintext).
-- 1P item titled exactly `GitHub` in the vault named by
-  `onepassword_default_vault` (default `Casa`), with a field labeled
-  `credential` holding a GitHub PAT with `repo` scope. Plugin-developer
-  resolves `op://${onepassword_default_vault}/GitHub/credential` at
-  engagement spawn — no separate app option.

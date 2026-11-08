@@ -35,7 +35,7 @@ system covers repository and plugin configuration, not the manifest.
 
 **Every option read is "null"-normalized.** bashio returns the literal string "null" for a
 key absent from the stored options; every read in the run script guards that sentinel
-before exporting. One group exports conditionally — the Telegram API base, the webhook secret, the Context7 key, the timezone, the log level and the reap TTL
+before exporting. One group exports conditionally — the Telegram API base, the webhook secret, the timezone, the log level and the reap TTL
 are exported only when set to a real value; the public URL is normalized the same way but
 always exported, empty when unset. The rest export unconditionally after normalization —
 empty (or the script-side fallback) when the key is deleted, never the "null" literal.
@@ -56,7 +56,6 @@ container variable can survive an empty option elsewhere.
 | `onepassword_service_account_token` | `OP_SERVICE_ACCOUNT_TOKEN` | secret resolver (`op` CLI); setup's token blocks | empty | restart |
 | `onepassword_default_vault` | `ONEPASSWORD_DEFAULT_VAULT` | setup's GitHub-token block; the configurator's vault tools fall back to it when their `vault` argument is omitted; `plugin_add` and `plugin_update` search it for a plugin's unresolved secrets; every executor engagement's world state names it | Casa | restart |
 | `webhook_secret` | `WEBHOOK_SECRET` (else the persisted secret file) | setup's secret block; main startup | generated and persisted when empty | restart |
-| `context7_api_key` | `CONTEXT7_API_KEY` | Context7 MCP subprocess (plugin-env loading may overwrite) | empty | restart |
 | `primary_agent_model` | `PRIMARY_AGENT_MODEL` | role-slot model options → role model resolution | opus | restart |
 | `voice_agent_model` | `VOICE_AGENT_MODEL` | role-slot model options → role model resolution | haiku | restart |
 | `enable_terminal` | `ENABLE_TERMINAL` | nginx setup, ttyd service, dashboard | false | restart |

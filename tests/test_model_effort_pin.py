@@ -4,7 +4,7 @@ effort decided for it.
 The decision, per call path under the shipped option defaults: the assistant
 on Opus 5.5 at medium; the butler, the concierge, the tier classifier, the
 observer and query_engager's synthesis on Haiku 5.5 at low; the finance
-specialist on Sonnet 5.5 at medium; the configurator and the plugin-developer on
+specialist on Sonnet 5.5 at medium; the configurator on
 Sonnet 5 at high; the Casa Browser action check on Opus 5.5 at high, fixed; the memory writer on Opus 5.5 at medium. The CLI's own defaults (model and effort) move with every
 CLI release, so a call that leaves either out silently changes behaviour on
 the next bump — which is what these tests pin.
@@ -139,7 +139,7 @@ def test_observer_is_wired_to_the_full_haiku_id():
     assert ast.unparse(kw["model_name"]) == "resolve_model('haiku')"
 
 
-@pytest.mark.parametrize("executor", ["configurator", "plugin-developer"])
+@pytest.mark.parametrize("executor", ["configurator"])
 def test_shipped_executors_stay_on_sonnet_5(executor):
     from role_artifact import load_role_artifact
     from role_slot import _ha_model_options, materialize_role

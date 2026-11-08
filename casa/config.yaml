@@ -34,7 +34,6 @@ options:
   onepassword_service_account_token: ""
   onepassword_default_vault: "Casa"
   webhook_secret: ""
-  context7_api_key: ""
 
   # Model selection
   primary_agent_model: "opus"
@@ -70,7 +69,6 @@ schema:
   onepassword_service_account_token: password?
   onepassword_default_vault: str?
   webhook_secret: password?
-  context7_api_key: password?
   primary_agent_model: "list(opus|sonnet|haiku)?"
   voice_agent_model: "list(opus|sonnet|haiku)?"
   enable_terminal: bool?

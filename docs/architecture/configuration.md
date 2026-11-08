@@ -112,9 +112,9 @@ mutation committing after a successful load can still advance what the following
 refresh reads; that state is internally consistent and converges, because reloads
 serialize per scope and the mutating flow's own sequencer re-runs the refresh last.
 
-**Secret indirection covers every password-typed option.** Exactly four options resolve an
+**Secret indirection covers every password-typed option.** Exactly three options resolve an
 external `op://` secret reference at startup — the Claude OAuth token, the Telegram bot
-token, the webhook secret and the context7 API key. Resolved values are cached for the
+token and the webhook secret. Resolved values are cached for the
 process lifetime by the reference string; the plugin-environment reload scope invalidates
 that cache first, so rotating a referenced field takes effect on reload for plugin
 variables but requires a restart for the four startup options. Every successful reload

@@ -158,25 +158,6 @@ class TestHookBridgeTranslate:
             assert entry["hooks"][0]["command"].endswith("casa_config_guard")
             assert "timeout" not in entry["hooks"][0]
 
-    def test_translates_bundled_plugin_developer_hooks_yaml(self):
-        """L-1b regression: bundled snake_case hooks.yaml must translate."""
-        import yaml
-        from pathlib import Path
-        from drivers.hook_bridge import translate_hooks_to_settings
-
-        here = Path(__file__).resolve().parent.parent
-        hooks_path = (
-            here / "casa" / "rootfs" / "opt" / "casa" / "defaults"
-            / "agents" / "executors" / "plugin-developer" / "hooks.yaml"
-        )
-        raw = yaml.safe_load(hooks_path.read_text(encoding="utf-8")) or {}
-        settings = translate_hooks_to_settings(
-            raw, proxy_script_path="/opt/casa/scripts/hook_proxy.sh",
-        )
-        assert "PreToolUse" in settings["hooks"]
-        assert len(settings["hooks"]["PreToolUse"]) >= 1
-
-
 class TestCanonicalMatcherForced:
     """Task 4 (#360, Sol r2 generalization): every registry-backed policy's
     matcher is forced to HOOK_POLICIES' canonical value, not just the floor
@@ -200,25 +181,25 @@ class TestCanonicalMatcherForced:
         )
         assert entry["matcher"] == "Bash"
 
-    def test_self_containment_guard_matcher_forced_to_canonical(self):
-        """Verified against the registry: HOOK_POLICIES['self_containment_guard']
-        ['matcher'] is 'Bash'."""
+    def test_commit_size_guard_matcher_forced_to_canonical(self):
+        """A registry policy outside the containment floor: its yaml matcher
+        is replaced by HOOK_POLICIES['commit_size_guard']['matcher'] too."""
         from drivers.hook_bridge import translate_hooks_to_settings
         from hooks import HOOK_POLICIES
 
-        expected = HOOK_POLICIES["self_containment_guard"]["matcher"]
-        assert expected == "Bash"
+        expected = HOOK_POLICIES["commit_size_guard"]["matcher"]
+        assert expected == "Write|Edit"
 
         settings = translate_hooks_to_settings(
             {"pre_tool_use": [
-                {"policy": "self_containment_guard", "matcher": "Read"},
+                {"policy": "commit_size_guard", "matcher": "Read"},
             ]},
             proxy_script_path=PROXY,
         )
         pre = settings["hooks"]["PreToolUse"]
         entry = next(
             e for e in pre
-            if e["hooks"][0]["command"].endswith("self_containment_guard")
+            if e["hooks"][0]["command"].endswith("commit_size_guard")
         )
         assert entry["matcher"] == expected
 
@@ -330,44 +311,6 @@ class TestTimeoutPassthrough:
         )
         cc_hook = out["hooks"]["PreToolUse"][0]["hooks"][0]
         assert "timeout" not in cc_hook
-
-    def test_bundled_engagement_permission_relay_has_600s_timeout(self):
-        """Bundled C-1 policy must surface timeout=600 in CC settings.
-
-        v0.37.4: only claude_code-driver executors carry this policy.
-        Configurator was reverted (driver: in_casa — the hook's cwd
-        resolver can't match its tool calls; see spec §4.6).
-        """
-        import yaml
-        from pathlib import Path
-        from drivers.hook_bridge import translate_hooks_to_settings
-
-        here = Path(__file__).resolve().parent.parent
-        for executor in ("plugin-developer",):
-            hooks_path = (
-                here / "casa" / "rootfs" / "opt" / "casa" / "defaults"
-                / "agents" / "executors" / executor / "hooks.yaml"
-            )
-            raw = yaml.safe_load(hooks_path.read_text(encoding="utf-8")) or {}
-            settings = translate_hooks_to_settings(
-                raw, proxy_script_path=PROXY,
-            )
-            relay_entries = [
-                entry
-                for entry in settings["hooks"].get("PreToolUse", [])
-                if any(
-                    "engagement_permission_relay" in h["command"]
-                    for h in entry["hooks"]
-                )
-            ]
-            assert relay_entries, (
-                f"{executor} hooks.yaml missing engagement_permission_relay"
-            )
-            cc_hook = relay_entries[0]["hooks"][0]
-            assert cc_hook.get("timeout") == 600, (
-                f"{executor}: expected timeout=600, got "
-                f"{cc_hook.get('timeout')!r}"
-            )
 
     def test_configurator_does_not_carry_relay_policy(self):
         """v0.37.4: configurator's bundled defaults must NOT include

@@ -13674,11 +13674,6 @@ _COMPLETION_STATUS_TO_OUTCOME = {
 }
 _COMPLETION_TEXT_MAX = 8000
 
-# A.2 (v0.74.0): executor types whose ok-completions carry release artifacts
-# that MUST pass the mechanical release-identity gate before finalization.
-_COMPLETION_GUARDED_EXECUTOR_TYPES = frozenset({"plugin-developer"})
-
-
 @tool(
     "report_job_progress",
     "Report this background job's batch progress in its topic. `progressed` is "
@@ -13877,45 +13872,6 @@ async def emit_completion(args: dict) -> dict:
     if status_in == "partial":
         text = f"[partial] {text}" if text else "[partial]"
     outcome = _COMPLETION_STATUS_TO_OUTCOME[status_in]
-
-    # A.2 (v0.74.0): producer completion guard — the enforcement seam that
-    # makes forgetting the release ritual impossible. For a plugin-developer
-    # ok-completion, EVERY casa_plugin_repo artifact must carry a verified
-    # release identity (annotated vX.Y.Z tag pushed to the remote, peeling
-    # to exactly the completion's `revision`, matching the REMOTE
-    # plugin.json.version and the completion's own `version`). Rejection is
-    # a TOOL error BEFORE finalization — the engagement stays live so the
-    # producer can fix the release (or retry a transient remote-visibility
-    # lag) and emit again. Guard crashes fail CLOSED: an unverifiable
-    # release must never finalize as ok.
-    if (status_in == "ok"
-            and getattr(engagement, "kind", "") == "executor"
-            and getattr(engagement, "role_or_type", "")
-            in _COMPLETION_GUARDED_EXECUTOR_TYPES):
-        import plugin_completion_guard
-        try:
-            guard_failures = await asyncio.to_thread(
-                plugin_completion_guard.validate_completion_artifacts,
-                artifacts)
-        except Exception as exc:  # noqa: BLE001 — fail closed, stay live
-            logger.exception("completion guard crashed for engagement %s",
-                             engagement.id[:8])
-            guard_failures = [{"index": None, "reason_code": "guard_error",
-                               "message": str(exc)[:200]}]
-        if guard_failures:
-            return _result({
-                "status": "error", "kind": "completion_rejected",
-                "failures": guard_failures,
-                "message": (
-                    "completion rejected: casa_plugin_repo artifact(s) "
-                    "failed release-identity validation. Required: an "
-                    "ANNOTATED tag named 'v' + plugin.json.version, pushed "
-                    "atomically with the branch, peeling on the remote to "
-                    "the completion's `revision`. Fix the release (or retry "
-                    "shortly if GitHub was transiently unavailable) and "
-                    "call emit_completion again — the engagement is still "
-                    "active."),
-            })
 
     # Driver is discovered via the agent singleton accessible through the
     # agent module (plan-1 pattern).

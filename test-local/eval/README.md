@@ -3,7 +3,6 @@
 Measurement and live-model checks run against a live Casa (see each script's
 header for the required options/env); none is part of the pytest unit gate.
 
-- `context7_keytest.py` — probe: context7 MCP key wiring through add-on options
 - `ellen_brief_fidelity.py` — live-model gate (W3/Sol B11): pins the
   invoice_reset mistranslation — Ellen's `engage_executor` call must carry
   process instructions VERBATIM in `brief.process_requirements` with

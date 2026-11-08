@@ -224,8 +224,7 @@ per-client id in the CLI environment it builds — the hooks and the plugin's se
 agree on it by construction, not by lookup.
 
 **Executor sessions** are the open question (#923): they need an approval identity before
-they can carry the contract, and holding them to it today would refuse the bundled
-documentation-lookup plugin the plugin-developer relies on.
+they can carry the contract.
 
 ## Source & test map
 

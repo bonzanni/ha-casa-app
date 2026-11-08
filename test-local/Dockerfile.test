@@ -68,22 +68,6 @@ COPY test-local/mock-claude-sdk /tmp/mock-claude-sdk
 RUN /opt/casa/venv/bin/pip install --no-cache-dir --force-reinstall --no-deps /tmp/mock-claude-sdk \
  && python3 -c "from claude_agent_sdk import ClaudeSDKClient; print('mock SDK active')"
 
-# --- Bundled plugin artifacts (mirrors production Dockerfile, spec 3.6) ---
-# Runs BEFORE `COPY casa/rootfs /` (cache); pins are exact commits in
-# defaults/plugin-registry.json. /etc/gitconfig + credential helper narrow-
-# COPY'd for the authenticated github.com fetch.
-COPY casa/rootfs/etc/gitconfig /etc/gitconfig
-COPY casa/rootfs/opt/casa/scripts/git-credential-casa.sh /opt/casa/scripts/git-credential-casa.sh
-COPY casa/rootfs/opt/casa/plugin_registry.py casa/rootfs/opt/casa/plugin_store.py casa/rootfs/opt/casa/plugin_triggers.py casa/rootfs/opt/casa/plugin_callbacks.py casa/rootfs/opt/casa/plugin_events.py casa/rootfs/opt/casa/callback_attempts.py casa/rootfs/opt/casa/atomic_io.py casa/rootfs/opt/casa/text_util.py /opt/casa/
-COPY casa/rootfs/opt/casa/scripts/build_plugin_bundle.py /opt/casa/scripts/build_plugin_bundle.py
-COPY casa/rootfs/opt/casa/defaults/plugin-registry.json /opt/casa/defaults/plugin-registry.json
-RUN python3 /opt/casa/scripts/build_plugin_bundle.py \
-      --registry /opt/casa/defaults/plugin-registry.json \
-      --out /opt/casa/plugin-bundle \
- && rm -rf /opt/casa/.bundle-staging \
- && chmod -R a-w /opt/casa/plugin-bundle \
- && chmod -R a+rX /opt/casa/plugin-bundle
-
 COPY casa/rootfs /
 
 RUN find /etc/s6-overlay/s6-rc.d -name 'up' -o -name 'run' -o -name 'finish' \

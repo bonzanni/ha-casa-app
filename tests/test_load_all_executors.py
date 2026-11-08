@@ -793,8 +793,8 @@ class TestRoleCeilingClamp:
 
     def test_shipped_files_clamp_is_noop(self, caplog):
         """(d) shipped parity: the real definition.yaml and role.yaml lists
-        are equal for both executors, so the clamp changes nothing and logs
-        no drop."""
+        are equal for the shipped executor, so the clamp changes nothing and
+        logs no drop."""
         import logging
         from pathlib import Path
         import yaml
@@ -807,16 +807,13 @@ class TestRoleCeilingClamp:
         with caplog.at_level(logging.ERROR):
             out, failed = load_all_executors(str(agents_base))
         assert failed == []
-        for t in ("configurator", "plugin-developer"):
+        for t in ("configurator",):
             declared = yaml.safe_load(
                 (agents_base / "executors" / t / "definition.yaml")
                 .read_text(encoding="utf-8"))["tools"]["allowed"]
             assert out[t].tools_allowed == list(declared), t
-        # Round-6 P0-2: shipped modes are within their role ceilings
-        # (plugin-developer legitimately ships "auto" — declared in BOTH
-        # its definition.yaml and its image-owned role.yaml).
+        # Round-6 P0-2: shipped modes are within their role ceilings.
         assert out["configurator"].permission_mode == "acceptEdits"
-        assert out["plugin-developer"].permission_mode == "auto"
         assert not any(
             "beyond its role ceiling" in r.getMessage()
             or "permission_mode" in r.getMessage()

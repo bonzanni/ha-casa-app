@@ -161,31 +161,3 @@ async def test_non_skill_tool_emits_nothing():
         },
     )
     assert body == {}
-
-
-def test_bundled_hooks_yaml_registers_skill_matcher_in_settings():
-    """The generated .claude/settings.json (translate_hooks_to_settings) must
-    carry a ``Skill`` PreToolUse matcher wired to hook_proxy.sh with the
-    ``engagement_buttons_reminder`` policy, so the standalone CLI forwards Skill
-    calls to the resolver."""
-    from drivers.hook_bridge import translate_hooks_to_settings
-
-    hooks_yaml = yaml.safe_load(
-        (_DEV / "hooks.yaml").read_text(encoding="utf-8")
-    )
-    settings = translate_hooks_to_settings(
-        hooks_yaml, proxy_script_path="/opt/casa/scripts/hook_proxy.sh",
-    )
-    pre = settings["hooks"]["PreToolUse"]
-    skill_entries = [
-        e for e in pre
-        if e["matcher"] == "Skill"
-        and any(
-            "engagement_buttons_reminder" in h.get("command", "")
-            for h in e["hooks"]
-        )
-    ]
-    assert len(skill_entries) == 1, (
-        "expected exactly one Skill PreToolUse matcher wired to "
-        "engagement_buttons_reminder"
-    )

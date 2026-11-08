@@ -40,4 +40,4 @@ def test_finance_and_mtg_are_no_longer_bundled_in_the_image() -> None:
     slots = _discover_image_role_slots()
     assert "finance" not in slots
     assert "mtg" not in slots
-    assert {"assistant", "butler", "concierge", "configurator", "plugin-developer"} <= slots
+    assert {"assistant", "butler", "concierge", "configurator"} <= slots

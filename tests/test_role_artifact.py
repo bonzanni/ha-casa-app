@@ -51,7 +51,6 @@ _REAL_ROLE_DIRS = [
     # exists, so there is no real shipped specialist role artifact to
     # enumerate here.
     ("executor", "configurator"),
-    ("executor", "plugin-developer"),
 ]
 
 

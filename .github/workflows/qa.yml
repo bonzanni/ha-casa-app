@@ -122,13 +122,6 @@ jobs:
           set -euo pipefail
           bash test-local/e2e/test_mcp_restart_survival.sh 2>&1 | tee /tmp/mcp-restart-survival.log
           grep -Fxq -- '=== ALL PASS — mcp_restart_survival ===' /tmp/mcp-restart-survival.log
-      # P-block stays disabled until v0.14.10's D/P-block sweep ships.
-      # When re-enabled, uncomment the step below (env vars stay):
-      # - name: Engagement P-block
-      #   env:
-      #     CASA_USE_MOCK_CLAUDE: "1"
-      #     CASA_PLAN_4B: "1"
-      #   run: bash test-local/e2e/test_engagement_P.sh
 
   baseline-runtime:
     runs-on: ubuntu-latest

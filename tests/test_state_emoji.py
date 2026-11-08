@@ -15,7 +15,7 @@ def test_state_emoji_table_covers_locked_states():
 def test_role_emoji_table_covers_known_executors():
     from channels.state_emoji import ROLE_EMOJI
     assert ROLE_EMOJI["configurator"] == "⚙️"
-    assert ROLE_EMOJI["plugin-developer"] == "🛠"
+    assert "plugin-developer" not in ROLE_EMOJI      # no longer shipped
     # casa-builder and automation-builder removed — never shipped as
     # actual executors; entries dropped 2026-05-13 as part of v0.37.1
     # D-1 cleanup. ROLE_EMOJI is retained for any future caller that

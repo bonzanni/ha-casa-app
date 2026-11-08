@@ -354,10 +354,10 @@ async def test_shipped_configurator_stack_allows_resident_write():
 
 
 async def test_shipped_yaml_declares_policy_for_both_executors():
-    """Both shipped executor hooks.yaml files carry the policy, and
+    """The shipped executor hooks.yaml carries the policy, and
     build_policy_callbacks_from_hooks_yaml materializes it (HTTP hook path)."""
     from hooks import build_policy_callbacks_from_hooks_yaml
-    for executor in ("configurator", "plugin-developer"):
+    for executor in ("configurator",):
         data = _shipped_hooks_yaml(executor)
         declared = [e.get("policy") for e in data["pre_tool_use"]]
         assert "managed_component_guard" in declared, executor
@@ -883,11 +883,11 @@ class TestGuardIsCodeMandatoryClaudeCode:
         assert "/opt/casa/scripts/hook_proxy.sh managed_component_guard" in cmds
 
     async def test_shipped_yaml_settings_not_double_emitted(self):
-        """(3) Shipped plugin-developer yaml declares the policy (bare ->
+        """(3) The shipped executor yaml declares the policy (bare ->
         matcher '.*' covers) — exactly one guard entry emitted."""
         import yaml as yaml_mod
         from drivers.hook_bridge import translate_hooks_to_settings
-        for executor in ("configurator", "plugin-developer"):
+        for executor in ("configurator",):
             raw = yaml_mod.safe_load(
                 (_EXECUTORS_DIR / executor / "hooks.yaml")
                 .read_text(encoding="utf-8"))

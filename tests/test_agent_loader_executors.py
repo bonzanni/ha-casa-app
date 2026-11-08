@@ -196,7 +196,8 @@ def test_assistant_executors_yaml_seed_loads():
     # The remaining seed list must match the real executor registry shape;
     # see test_assistant_prompts.test_executors_yaml_lists_only_real_registered_executor_types
     # for the cross-check against agents/executors/.
-    assert {"configurator", "plugin-developer"}.issubset(types)
+    assert {"configurator"}.issubset(types)
+    assert "plugin-developer" not in types
 
 
 # ---------------------------------------------------------------------------

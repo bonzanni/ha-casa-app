@@ -405,10 +405,8 @@ def normalize_cli_provided_refs(text: str) -> str:
     their bare spelling. SHARED, not duplicated: every place that reasons
     about artifact containment by testing for the exact ``${CLAUDE_PLUGIN_
     ROOT}`` prefix must apply this first, or the defaulted spelling walks
-    past it. Two such places exist — this module's ``mcp_command_verdicts``
-    and the pre-push launch-ref guard in ``hooks._scan_mcp_launch_refs`` —
-    and the second was found only after the first was fixed (r2, Terra), so
-    they read from ONE definition rather than each keeping a copy."""
+    past it. This module's ``mcp_command_verdicts`` is that place today; a
+    second reader takes this one definition rather than keeping a copy."""
     return _CLI_PROVIDED_DEFAULTED_RE.sub(r"${\1}", text)
 
 
@@ -1534,7 +1532,6 @@ _MAX_ENV_DECLARATIONS = 32
 CASA_OWNED_ENV_OPTIONS: dict[str, str] = {
     "OP_SERVICE_ACCOUNT_TOKEN": "onepassword_service_account_token",
     "ONEPASSWORD_DEFAULT_VAULT": "onepassword_default_vault",
-    "CONTEXT7_API_KEY": "context7_api_key",
 }
 
 

@@ -76,16 +76,6 @@ if [ "$_webhook_secret" != "null" ] && [ -n "$_webhook_secret" ]; then
     export WEBHOOK_SECRET="$_webhook_secret"
 fi
 unset _webhook_secret
-# v0.110.0 (#232): the context7 plugin is SEEDED (part of the shipped
-# plugin-developer toolbox), so its key is static app config — an add-on
-# option, not an engagement-wired vault secret (that path is for dynamically
-# installed plugins). Exported only when set; plugin-env.conf, sourced later
-# by casa_core, still overrides it (operator override layer).
-_casa_context7_key="$(bashio::config 'context7_api_key')"
-if [ -n "$_casa_context7_key" ] && [ "$_casa_context7_key" != "null" ]; then
-    export CONTEXT7_API_KEY="$_casa_context7_key"
-fi
-unset _casa_context7_key
 
 # #205: guard these two the way setup-configs.sh already does. Both are
 # `list(...)?` — OPTIONAL — in config.yaml's schema, so their `options:` block
