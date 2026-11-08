@@ -94,8 +94,7 @@ it is duplicated in the boot script — both must agree. Boot commits
 `bindings/` again after the agents load, so a re-bind gets its own commit.
 
 **A configuration commit reloads what it changed**, by the path table in
-`commit_reload_scopes` (INV-TOOL-014, in
-[`engagement-reload-obligation.md`](engagement-reload-obligation.md)).
+`commit_reload_scopes` (INV-TOOL-014, in [`tools-interface.md`](tools-interface.md)).
 
 **Some identity changes cannot be hot-swapped at all.** If a resident's identity changes, the
 reload path returns a restart-required outcome *before* mutating live state rather than

@@ -11,7 +11,7 @@ last_reviewed: 2026-10-02
 The admission side of ending an engagement: what a *successful* completion is refused over,
 how "unread" and "in flight" differ and why the gate needs both, and what each driver counts.
 Completion owes no reload: each configuration commit reloads what it changed (INV-TOOL-014, in
-[`architecture/engagement-reload-obligation.md`](engagement-reload-obligation.md)).
+[`architecture/tools-interface.md`](tools-interface.md)).
 What a terminal outcome then discloses about the messages that died with the engagement is in
 [`architecture/engagement-inbound-disclosure.md`](engagement-inbound-disclosure.md). The terminal
 transition itself, the strictness that keeps the persisted and in-memory records agreeing, the
@@ -263,5 +263,4 @@ scoped to what a driver can evidence, which is why the accessors are the seam.
 - [`architecture/engagement-turn-admission.md`](../architecture/engagement-turn-admission.md)
 - [`architecture/telegram.md`](../architecture/telegram.md)
 - [`architecture/tools-interface.md`](../architecture/tools-interface.md)
-- [`architecture/engagement-reload-obligation.md`](../architecture/engagement-reload-obligation.md)
 <!-- END SOURCEMAP -->
